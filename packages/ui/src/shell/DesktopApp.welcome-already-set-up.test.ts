@@ -146,7 +146,8 @@ describe("DesktopApp on a machine that finished setup before the welcome flow", 
     expect(host.querySelector('[data-testid="setup-run"]')).toBeNull();
     const finish = host.querySelector('[data-testid="setup-agent-finish"]');
     expect(finish).toBeTruthy();
-    expect(finish!.querySelector('[data-testid="setup-agent-open-sessions"]')?.textContent?.trim()).toBe("Continue in HQ Sessions");
+    expect(finish!.querySelector('[data-testid="setup-agent-open-sessions"]')?.textContent?.trim()).toBe("Continue in HQ Desktop");
+    expect(host.querySelector('[data-testid="setup-channel-intro"]')?.textContent).not.toContain("HQ Sessions");
     expect(finish!.querySelector('[data-testid="setup-run-again"]')).toBeTruthy();
     expect(api.start).not.toHaveBeenCalled();
   }, 15_000);

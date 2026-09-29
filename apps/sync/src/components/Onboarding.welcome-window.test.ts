@@ -37,6 +37,7 @@ vi.mock('./onboarding/OnboardingWizard.svelte', async () => {
 import { flushSync, mount, tick, unmount } from 'svelte';
 
 import Onboarding from './Onboarding.svelte';
+import { CONSENT_STEP_INDEX, DIRECTORY_STEP_INDEX } from '../lib/onboarding-wizard';
 
 async function settle(): Promise<void> {
   for (let i = 0; i < 12; i += 1) {
@@ -182,6 +183,44 @@ describe('Onboarding: the welcome flow window', () => {
     );
   });
 
+  it('opens folder recovery directly when a completed install has lost its HQ root', async () => {
+    component = mount(Onboarding, {
+      target: host,
+      props: {
+        state: 'NeedsInstall',
+        mode: 'onboarding',
+        setupEvidence: {
+          installCompleted: true,
+          firstRunCompleted: true,
+          installInProgress: false,
+          manifestIncomplete: false,
+          hadMachineId: true,
+          hqRootValid: false,
+        },
+      },
+    });
+    await settle();
+
+    const stub = host.querySelector<HTMLElement>('[data-testid="wizard-stub"]');
+    expect(stub).not.toBeNull();
+    expect(stub?.dataset.mode).toBe('onboarding');
+    expect(stub?.dataset.initialStep).toBe(String(DIRECTORY_STEP_INDEX));
+    expect(stub?.dataset.initialStep).toBe('1');
+    expect(stub?.dataset.recoveringMissingRoot).toBe('true');
+  });
+
+  it('does not treat a genuine first install as missing-root recovery', async () => {
+    component = mount(Onboarding, {
+      target: host,
+      props: { state: 'NeedsInstall', mode: 'onboarding' },
+    });
+    await settle();
+
+    const stub = host.querySelector<HTMLElement>('[data-testid="wizard-stub"]');
+    expect(stub?.dataset.initialStep).toBe('0');
+    expect(stub?.dataset.recoveringMissingRoot).toBe('false');
+  });
+
   it('plays the replay in the same window and ends it without first-run writes', async () => {
     const onfinish = vi.fn();
     component = mount(Onboarding, {
@@ -227,7 +266,7 @@ describe('Onboarding: the welcome flow window', () => {
     });
     await settle();
     expect(host.querySelector<HTMLElement>('[data-testid="wizard-stub"]')?.dataset.initialStep).toBe(
-      '3',
+      String(CONSENT_STEP_INDEX),
     );
     host.querySelector<HTMLButtonElement>('[data-testid="wizard-stub-finish"]')?.click();
     await settle();

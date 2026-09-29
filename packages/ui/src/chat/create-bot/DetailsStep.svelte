@@ -348,7 +348,7 @@
       <div class="cb-field">
         <span class="cb-label" id="create-bot-memory-label">Memory</span>
         <div class="cb-pills" role="radiogroup" aria-labelledby="create-bot-memory-label">
-          {#each [{ id: "synced", label: "HQ synced" }, { id: "local", label: "This Mac only" }] as const as option (option.id)}
+          {#each [{ id: "synced", label: "HQ synced" }, { id: "local", label: `This ${hostNoun} only` }] as const as option (option.id)}
             <button
               type="button"
               class="cb-pill"

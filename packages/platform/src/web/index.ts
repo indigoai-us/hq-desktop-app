@@ -1114,6 +1114,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
   readonly shell: PlatformAdapter["shell"] = {
     openInEditor: async () => DESKTOP_ONLY,
     openClaudeCodeLink: async () => DESKTOP_ONLY,
+    openCodexDeepLink: async () => DESKTOP_ONLY,
     openFileInClaude: async () => DESKTOP_ONLY,
     launchClaudeCode: async () => DESKTOP_ONLY,
     launchCodexWorkspace: async () => DESKTOP_ONLY,

@@ -137,7 +137,10 @@ describe('Dock icon: on by default, with a Settings opt-out', () => {
       const lifecycle = readRepo('src-tauri/src/commands/lifecycle.rs');
       const setup = lifecycle.slice(lifecycle.indexOf('pub fn setup_lifecycle'));
       const body = setup.slice(0, setup.indexOf('\n}\n'));
-      expect(body).toMatch(/tools_present_for_lifecycle_gate\(hq_resolved, node_resolved\)/);
+      expect(body).toMatch(/probe_local_toolchain_for_startup\([\s\S]*?launch_agent_relaunch/);
+      expect(body).toMatch(
+        /tools_present_for_lifecycle_gate\([\s\S]*?hq_program\.kind[\s\S]*?node_program\.kind[\s\S]*?\)/,
+      );
       expect(body).not.toMatch(
         /tools_present[^\n]*=[^\n]*bundled_hq_cli_ready|&& crate::commands::install_deps::bundled_hq_cli_ready/,
       );

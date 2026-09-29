@@ -17,7 +17,7 @@
    * is reached, so a company bot is never made under a name nobody has seen.
    */
   import { onMount, untrack } from "svelte";
-  import { hostComputerNoun } from "@hq/platform";
+  import { hostComputerNoun, primaryEnterKeyHint } from "@hq/platform";
   import type {
     AdapterPromise,
     AgentProvisionOptionsView,
@@ -106,6 +106,31 @@
     onsignedin?: ((runtime: BotRuntime) => void | Promise<void>) | null;
     /** Re-read runtime readiness from the host (Check again / Try again). */
     onrecheckruntimes?: (() => void | Promise<void>) | null;
+    /**
+     * Live AiTools payload for the install-choice panel that renders in the
+     * "coding tool · not installed" state. When missing the panel falls
+     * back to a neutral "Checking…" line. Null while the probe is running.
+     */
+    aiTools?: import("../../install-choice/install-choice.js").AiTools | null;
+    /** HQ folder path passed into `claude://code/new?folder=`. Optional. */
+    hqFolderPath?: string;
+    /**
+     * Open the assistant desktop app with the install prompt pre-filled.
+     * When provided, the "not installed" state offers "Set up with Claude"
+     * / "Set up with ChatGPT" buttons for whichever apps are detected.
+     */
+    onopenassistant?: (
+      assistant: import("../../install-choice/install-choice.js").AssistantId,
+      url: string,
+    ) => Promise<import("../../install-choice/install-choice.js").InstallOutcome>;
+    /**
+     * HQ's own one-click installer for a coding tool (fallback when no
+     * assistant app is available). Kept separate from the wizard's own
+     * `oncreate` — this only runs the installer, never creates a bot.
+     */
+    onassistedinstall?: (
+      tool: import("../../install-choice/install-choice.js").CodingTool,
+    ) => Promise<import("../../install-choice/install-choice.js").InstallOutcome>;
     avatarPacks?: AvatarPack[] | null;
     loadAvatarPacks?: (() => Promise<AvatarPack[]>) | null;
     /** Sign-in poll interval; tests shorten it. */
@@ -136,6 +161,10 @@
     loadAvatarPacks = null,
     pollMs = 1500,
     previewPlacement = null,
+    aiTools = null,
+    hqFolderPath = "",
+    onopenassistant,
+    onassistedinstall,
   }: Props = $props();
 
   const templates = $derived<readonly LocalBotWorkerOption[]>(companyTemplates(botWorkers ?? []));
@@ -146,6 +175,12 @@
    * mid-flow.
    */
   const hostNoun = hostComputerNoun();
+  /**
+   * The "submit form with primary modifier + Enter" hint on the footer. Reads
+   * "⌘↵" on macOS and "Ctrl+Enter" on Windows / Linux so a person on a PC
+   * never sees a Mac key symbol they cannot press.
+   */
+  const primaryEnterHint = primaryEnterKeyHint();
   const companies = $derived(agentTargets ?? []);
   const ownerCompanies = $derived(botCompanies ?? []);
   const canLocal = $derived(!!oncreate);
@@ -470,6 +505,10 @@
           onsignedin={onsignedin ?? undefined}
           onrecheck={onrecheckruntimes ?? undefined}
           {pollMs}
+          {aiTools}
+          {hqFolderPath}
+          {onopenassistant}
+          {onassistedinstall}
         />
       {:else if draft.home === "cloud"}
         <CloudDetailsStep
@@ -509,7 +548,7 @@
         {prevStep(step, draft) ? "Back" : "Cancel"}
       </button>
       <span class="flow-issue" data-testid="create-bot-issue" aria-live="polite">{issue ?? ""}</span>
-      <span class="flow-hint" aria-hidden="true">⌘↵ TO CREATE</span>
+      <span class="flow-hint" aria-hidden="true">{primaryEnterHint} TO CREATE</span>
       <button
         type="button"
         class="flow-primary"

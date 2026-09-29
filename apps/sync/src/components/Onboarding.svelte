@@ -2,7 +2,14 @@
   import { invoke } from '@tauri-apps/api/core';
   import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
   import { onDestroy, onMount } from 'svelte';
-  import { initialStepForLifecycle, CONSENT_STEP_INDEX, WELCOME_SIGNIN_STEP_INDEX, type WizardMode } from '../lib/onboarding-wizard';
+  import {
+    CONSENT_STEP_INDEX,
+    initialStepForLifecycle,
+    isMissingRootRecovery,
+    WELCOME_SIGNIN_STEP_INDEX,
+    type WizardMode,
+  } from '../lib/onboarding-wizard';
+  import type { StartupSetupEvidence } from '../lib/unexpected-startup-surface';
   import type { OnboardingFlow } from '../lib/onboarding-step-telemetry';
   import OnboardingWizard from './onboarding/OnboardingWizard.svelte';
 
@@ -21,6 +28,8 @@
      * flag writes.
      */
     mode?: WizardMode | 'replay';
+    /** Persisted setup markers used to route a missing-root install to recovery. */
+    setupEvidence?: StartupSetupEvidence | null;
     /** The `prs_*` the re-prompt is keyed to (reprompt mode only). */
     repromptPersonUid?: string | null;
   }
@@ -29,6 +38,7 @@
     state: lifecycleStateProp,
     onfinish,
     mode = 'onboarding',
+    setupEvidence = null,
     repromptPersonUid = null,
   }: Props = $props();
 
@@ -128,12 +138,14 @@
     // sign-in, directory or setup to run. The replay opens on the welcome.
     initialStep =
       mode === 'onboarding'
-        ? initialStepForLifecycle(lifecycleStateProp)
+        ? initialStepForLifecycle(lifecycleStateProp, setupEvidence)
         : mode === 'replay'
           ? WELCOME_SIGNIN_STEP_INDEX
           : CONSENT_STEP_INDEX;
     onboardingFlow =
-      lifecycleStateProp === 'InstallResume' || lifecycleStateProp === 'NeedsAuthForInstall'
+      lifecycleStateProp === 'InstallResume' ||
+      lifecycleStateProp === 'NeedsAuthForInstall' ||
+      isMissingRootRecovery(lifecycleStateProp, setupEvidence)
         ? 'resume'
         : 'first_install';
   });
@@ -169,6 +181,7 @@
 <OnboardingWizard
   {initialStep}
   {onboardingFlow}
+  recoveringMissingRoot={isMissingRootRecovery(lifecycleStateProp, setupEvidence)}
   {mode}
   {repromptPersonUid}
   {wallpaper}

@@ -45,7 +45,6 @@
     registerShortcuts,
     type ShortcutBinding,
   } from "../common/keyboard-shortcuts.js";
-  import { createGoChord } from "../common/go-chord.js";
   import {
     SIDEBAR_OVERLAY_MAX_PX,
     sidebarLayout,
@@ -862,7 +861,34 @@
       onrefresh(): Promise<void>;
       downloadUrlFor(tool: "claude" | "codex"): string;
       onopen(url: string): Promise<{ ok: boolean; reason?: string }> | void;
+      /**
+       * Open one of the assistant desktop apps with a fixed install prompt
+       * pre-filled. Wired to `open_claude_code_link` /
+       * `open_codex_deep_link` via the install-guide adapter. When present,
+       * the shared InstallChoice panel offers a "Set up with Claude" or
+       * "Set up with ChatGPT" button on both the New bot wizard and the
+       * setup assistant.
+       */
+      onopenassistant?(
+        assistant: "claude-desktop" | "chatgpt-desktop",
+        url: string,
+      ): Promise<{ ok: boolean; reason?: string }>;
     } | null;
+    /**
+     * Live AiTools payload. Passed through the New-bot wizard so the
+     * shared InstallChoice panel can decide which assistant buttons to
+     * offer without a per-open probe. Null while the initial probe runs.
+     */
+    aiTools?: import("../install-choice/install-choice.js").AiTools | null;
+    /** Open the assistant desktop app with a pre-filled install prompt. */
+    onopenassistant?: (
+      assistant: import("../install-choice/install-choice.js").AssistantId,
+      url: string,
+    ) => Promise<import("../install-choice/install-choice.js").InstallOutcome>;
+    /** HQ's own one-click installer for a coding tool. */
+    onassistedinstall?: (
+      tool: import("../install-choice/install-choice.js").CodingTool,
+    ) => Promise<import("../install-choice/install-choice.js").InstallOutcome>;
   }
 
   let {
@@ -926,6 +952,9 @@
     rowExtrasError = false,
     rowExtras = null,
     setupInstallGuide = null,
+    aiTools = null,
+    onopenassistant,
+    onassistedinstall,
   }: Props = $props();
 
   const derivedChrome = $derived(accountChromeFromSelf(self));
@@ -8013,16 +8042,6 @@
     void navigate(destination);
   }
 
-  // `g a` used to flip a standalone Atlas view. Main moved Atlas into a chat
-  // tab, so the chord hands the destination to the navigation controller and
-  // the history/back-forward stack stays correct.
-  const goChord = createGoChord((letter: string) => {
-    if (letter !== "a") return false;
-    meetingFocusRequest = null;
-    void navigate({ kind: "atlas" });
-    return true;
-  });
-
   /** Run a sidebar entry point, mounting the rail first if it is collapsed. */
   function withSidebar(fn: (actions: ChatSidebarActions) => void): void {
     if (sidebarActions) {
@@ -8062,7 +8081,6 @@
       run: () => {
         cheatSheetOpen = false;
         paletteOpen = !paletteOpen;
-        goChord.reset();
       },
     },
     {
@@ -8309,13 +8327,6 @@
         return;
       }
 
-      // US-016: `g a` opens Atlas (Slack-style go chord). Unmodified chords
-      // are not a registry concern, so they keep a bubble-phase listener.
-      if (event.metaKey || event.ctrlKey || event.altKey) return;
-      if (paletteOpen || cheatSheetOpen) return;
-      if (goChord.handleKeydown(event)) {
-        event.preventDefault();
-      }
     }
     window.addEventListener("keydown", onKey);
 
@@ -8703,6 +8714,10 @@
           botRuntimeReady={localBotRuntimeReady}
           botRuntimeStatus={localBotRuntimeStatus}
           onrecheckruntimes={recheckLocalBotRuntimes}
+          {aiTools}
+          hqFolderPath={hqFolderPath ?? ""}
+          {onopenassistant}
+          {onassistedinstall}
           botWorkers={localBotWorkers}
           {existingBotNames}
           {botSignIn}

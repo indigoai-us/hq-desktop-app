@@ -1,6 +1,7 @@
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use sha2::{Digest, Sha256};
+use std::net::TcpListener;
 
 // hq-prod stack (canonical post-2026-04-25 cutover). MUST stay in sync with
 // cognito.rs's COGNITO_CLIENT_ID — drift between the two breaks token refresh
@@ -19,6 +20,46 @@ pub fn cognito_client_id() -> String {
 }
 pub const DEFAULT_COGNITO_DOMAIN_PREFIX: &str = "vault-indigo-hq-prod";
 pub const REDIRECT_URI: &str = "http://localhost:53682/callback";
+const IPV4_LOOPBACK_HOST: &str = "127.0.0.1";
+const IPV6_LOOPBACK_HOST: &str = "::1";
+
+/// Bind loopback listeners using the supplied, pre-registered callback ports
+/// in order. IPv4 is required because the callback URI uses `localhost` and
+/// browsers may resolve it to either loopback family; IPv6 is added on the
+/// selected port when available. The returned vector contains only sockets
+/// for one selected port.
+pub fn bind_loopback_listeners(ports: &[u16]) -> std::io::Result<Vec<TcpListener>> {
+    let mut first_error = None;
+    for port in ports {
+        let ipv4 = match TcpListener::bind((IPV4_LOOPBACK_HOST, *port)) {
+            Ok(listener) => listener,
+            Err(error) => {
+                first_error.get_or_insert(error);
+                continue;
+            }
+        };
+        let selected_port = ipv4.local_addr()?.port();
+
+        match TcpListener::bind((IPV6_LOOPBACK_HOST, selected_port)) {
+            Ok(ipv6) => return Ok(vec![ipv4, ipv6]),
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+                first_error.get_or_insert(error);
+                continue;
+            }
+            // Some hosts have IPv4 loopback but no IPv6 loopback. Keep the
+            // IPv4 listener there; on dual-stack hosts both families are
+            // bound before the callback URI is returned.
+            Err(_) => return Ok(vec![ipv4]),
+        }
+    }
+
+    Err(first_error.unwrap_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::AddrNotAvailable,
+            "no registered loopback callback ports are available",
+        )
+    }))
+}
 
 /// Cognito hosted-UI domain prefix.
 ///
@@ -71,6 +112,15 @@ pub struct AuthorizeRequest<'a> {
 }
 
 pub fn build_authorize_url_from(request: &AuthorizeRequest<'_>) -> String {
+    build_authorize_url_from_redirect(request, REDIRECT_URI)
+}
+
+/// Build the same authorization request using a different callback URI that
+/// is already registered to the static app client.
+pub fn build_authorize_url_from_redirect(
+    request: &AuthorizeRequest<'_>,
+    redirect_uri: &str,
+) -> String {
     let mut url = format!(
         "{base}?response_type=code\
          &client_id={client_id}\
@@ -81,7 +131,7 @@ pub fn build_authorize_url_from(request: &AuthorizeRequest<'_>) -> String {
          &code_challenge_method=S256",
         base = cognito_authorize_url(),
         client_id = cognito_client_id(),
-        redirect_uri = REDIRECT_URI,
+        redirect_uri = redirect_uri,
         state = request.state,
         challenge = request.challenge,
     );
@@ -390,6 +440,37 @@ mod tests {
     }
 
     #[test]
+    fn bind_loopback_listeners_uses_the_next_registered_port_when_primary_is_taken() {
+        let occupied = std::net::TcpListener::bind((IPV4_LOOPBACK_HOST, 0))
+            .expect("reserve an IPv4 loopback port");
+        let occupied_port = occupied.local_addr().unwrap().port();
+        let fallback_reservation = std::net::TcpListener::bind((IPV4_LOOPBACK_HOST, 0))
+            .expect("reserve a candidate IPv4 loopback port");
+        let fallback_port = fallback_reservation.local_addr().unwrap().port();
+        drop(fallback_reservation);
+
+        let listeners = bind_loopback_listeners(&[occupied_port, fallback_port])
+            .expect("use the next available registered callback port");
+        let selected_port = listeners
+            .iter()
+            .find_map(|listener| {
+                let address = listener.local_addr().ok()?;
+                address.ip().is_ipv4().then_some(address.port())
+            })
+            .expect("localhost callback must retain its IPv4 loopback listener");
+
+        assert_eq!(selected_port, fallback_port);
+        assert!(listeners.iter().all(|listener| {
+            listener
+                .local_addr()
+                .map(|address| address.port() == selected_port)
+                .unwrap_or(false)
+        }));
+        std::net::TcpStream::connect((IPV4_LOOPBACK_HOST, selected_port))
+            .expect("selected callback port accepts a localhost connection");
+    }
+
+    #[test]
     fn parse_callback_treats_empty_values_as_absent() {
         assert_eq!(
             callback("GET /callback?code=&state=y HTTP/1.1\r\n\r\n"),
@@ -562,6 +643,34 @@ mod tests {
             assert!(!url.contains("identity_provider"));
             assert!(url.contains("&nonce=n"));
             assert!(url.contains("code_challenge_method=S256"));
+        });
+    }
+
+    #[test]
+    fn authorize_url_uses_the_selected_registered_loopback_redirect() {
+        with_default_cognito_env(|| {
+            let redirect_uri = "http://localhost:8765/callback";
+            let authorize_url = build_authorize_url_from_redirect(
+                &AuthorizeRequest {
+                    state: "fallback-state",
+                    challenge: "fallback-challenge",
+                    identity_provider: Some("Google"),
+                    nonce: None,
+                },
+                redirect_uri,
+            );
+            let parsed = url::Url::parse(&authorize_url).expect("Cognito authorize URL");
+
+            assert_eq!(
+                parsed
+                    .query_pairs()
+                    .find(|(key, _)| key == "redirect_uri")
+                    .map(|(_, value)| value.into_owned())
+                    .as_deref(),
+                Some(redirect_uri)
+            );
+            assert!(authorize_url.contains("state=fallback-state"));
+            assert!(authorize_url.contains("code_challenge=fallback-challenge"));
         });
     }
 

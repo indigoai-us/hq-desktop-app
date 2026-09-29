@@ -1694,6 +1694,49 @@
   border-top-color: #000;
   animation: hq-welcome-spin 0.9s linear infinite;
 }
+/* The optional follow-on steps offered from the ready screen: first-folder
+   sync and the teammate invite. Same geometry as the connector import. */
+.hq-welcome .s-follow-on .h {
+  font-size: 34px;
+}
+.hq-welcome .s-follow-on .note {
+  text-align: center;
+}
+.hq-welcome .invite-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(360px, 100%);
+  margin: 24px auto 0;
+  text-align: left;
+}
+.hq-welcome .invite-form label {
+  color: var(--w-muted);
+  font-size: 13px;
+  line-height: 18px;
+}
+.hq-welcome .invite-form input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 40px;
+  padding: 9px 11px;
+  border: 1px solid var(--w-choose-border);
+  border-radius: var(--w-radius-button);
+  background: var(--w-choose-bg);
+  color: var(--w-text);
+  font: inherit;
+  font-size: 14px;
+}
+.hq-welcome .invite-form input:focus-visible {
+  outline: 1.5px solid var(--w-text);
+  outline-offset: 2px;
+}
+.hq-welcome .invite-form input:disabled {
+  opacity: 0.6;
+}
+.hq-welcome .invite-form .btns {
+  margin-top: 8px;
+}
 
 @media (prefers-reduced-motion: reduce) {
   .hq-welcome *,

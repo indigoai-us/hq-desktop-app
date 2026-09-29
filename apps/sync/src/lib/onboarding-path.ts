@@ -58,6 +58,13 @@ function separatorFor(path: string): '/' | '\\' {
   return path.includes('\\') ? '\\' : '/';
 }
 
+export function appendChildFolderPath(parent: string, childName: string): string {
+  const normalizedParent = trimTrailingSeparators(parent);
+  const separator = separatorFor(parent);
+  const joiner = normalizedParent.endsWith(separator) ? '' : separator;
+  return `${normalizedParent}${joiner}${childName}`;
+}
+
 export function friendlyPath(path: string, homeDir?: string | null): string {
   const trimmedPath = trimTrailingSeparators(path.trim());
   const trimmedHome = homeDir ? trimTrailingSeparators(homeDir.trim()) : '';

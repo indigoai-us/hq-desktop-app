@@ -76,6 +76,12 @@ export const SETUP_ERROR_KINDS = [
   'content_symlink_creation_failed',
   'content_symlink_helper_spawn_failed',
   'content_symlink_helper_exit_nonzero',
+  // Answers the Funnel Pulse triage question: which directory-validation
+  // branch is rejecting setup — non-HQ contents, write access, or a failed check?
+  'directory_nonempty_non_hq',
+  'directory_child_nonempty_non_hq',
+  'directory_not_writable',
+  'directory_check_failed',
   'unknown',
 ] as const;
 
@@ -837,19 +843,25 @@ export function withTimeout<T>(
 }
 
 /**
- * Timeout a long-running setup operation only after it has stopped reporting
- * activity for `ms`. The subscriber is installed before the timer starts and
- * is always removed when the operation settles or times out.
+ * Timeout a long-running setup operation after it has stopped reporting
+ * activity for `ms`. `maxElapsedMs`, when set, bounds its total run time. The
+ * subscriber is installed before the timer starts and is always removed when
+ * the operation settles or times out.
  */
 export function withProgressTimeout<T>(
   promise: Promise<T>,
   ms: number,
-  onTimeout: () => Error,
+  onTimeout: (timeoutMs?: number) => Error,
   subscribeToProgress: (onProgress: () => void) => () => void,
   onTimeoutCancel?: () => void | Promise<void>,
+  maxElapsedMs?: number,
 ): Promise<T> {
   if (!(ms > 0)) return promise;
   return new Promise<T>((resolve, reject) => {
+    const maxDeadline =
+      maxElapsedMs != null && maxElapsedMs > 0
+        ? Date.now() + maxElapsedMs
+        : null;
     let timer: ReturnType<typeof setTimeout>;
     let settled = false;
     let unlisten = () => {};
@@ -859,6 +871,10 @@ export function withProgressTimeout<T>(
     };
     const reset = () => {
       clearTimeout(timer);
+      const remainingMs =
+        maxDeadline == null ? ms : Math.max(0, maxDeadline - Date.now());
+      const timeoutMs = Math.min(ms, remainingMs);
+      const reachedMaxElapsed = maxDeadline != null && remainingMs <= ms;
       timer = setTimeout(() => {
         if (settled) return;
         settled = true;
@@ -866,9 +882,9 @@ export function withProgressTimeout<T>(
           void onTimeoutCancel?.();
         } finally {
           clear();
-          reject(onTimeout());
+          reject(onTimeout(reachedMaxElapsed ? maxElapsedMs : ms));
         }
-      }, ms);
+      }, timeoutMs);
     };
     unlisten = subscribeToProgress(reset);
     reset();

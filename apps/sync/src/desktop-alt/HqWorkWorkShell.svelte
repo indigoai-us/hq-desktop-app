@@ -91,6 +91,29 @@
       invokeFn(command, args as never) as Promise<T>,
     openUrl: (url: string) => openBrowserUrl(url),
   });
+  /**
+   * Live AiTools state for the shared InstallChoice panel used by BOTH the
+   * setup assistant and the New bot wizard. Hydrated on mount and refreshed
+   * on every runtime re-check, so the wizard's "not installed" state
+   * renders assistant buttons the moment `detect_ai_tools` sees the
+   * Claude Desktop or ChatGPT app on disk. Kept null while the probe
+   * runs the first time — the panel renders a neutral "Checking…" line
+   * rather than making a false claim either way.
+   */
+  let installChoiceAiTools = $state<
+    import('@hq/ui').AiTools | null
+  >(null);
+  async function refreshInstallChoiceAiTools(): Promise<void> {
+    try {
+      const res = await adapter.shell.detectAiTools();
+      installChoiceAiTools = res.ok
+        ? (res.value as unknown as import('@hq/ui').AiTools)
+        : null;
+    } catch {
+      installChoiceAiTools = null;
+    }
+  }
+  void refreshInstallChoiceAiTools();
   onDestroy(() => {
     void adapter.dispose?.();
   });
@@ -646,7 +669,8 @@
       try {
         // The plan URL is server-selected. Keep the desktop's approved-host
         // boundary before rendering an action that can open it.
-        const approvedUrl = approvedExternalUrl(upgradeUrl);
+        const attributedUrl = withDesktopLimitEntrySurface(upgradeUrl);
+        const approvedUrl = approvedExternalUrl(attributedUrl);
         planLimitNotices = [
           ...planLimitNotices.filter(
             (notice) => notice.company !== company || notice.upgradeUrl !== approvedUrl,
@@ -815,6 +839,27 @@
     );
   }
 
+  function withDesktopLimitEntrySurface(value: string): string {
+    const url = new URL(value);
+    const callbackUrl = url.searchParams.get('callbackUrl');
+    if (callbackUrl) {
+      const callback = new URL(callbackUrl, url.origin);
+      const callbackParts = callback.pathname.split('/').filter(Boolean);
+      if (callbackParts.length === 5 && callbackParts[0] === 'api' && callbackParts[1] === 'companies' &&
+        /^cmp_[A-Za-z0-9_-]+$/.test(callbackParts[2]) && callbackParts[3] === 'billing' && callbackParts[4] === 'upgrade') {
+        callback.searchParams.set('entrySurface', 'desktop_limit');
+        url.searchParams.set('callbackUrl', `${callback.pathname}${callback.search}${callback.hash}`);
+        return url.toString();
+      }
+    }
+    const parts = url.pathname.split('/').filter(Boolean);
+    if (parts.length === 3 && parts[0] === 'companies' && parts[2] === 'billing') {
+      url.searchParams.set('entrySurface', 'desktop_limit');
+      return url.toString();
+    }
+    return value;
+  }
+
   async function openPlanLimitUpgrade(url: string): Promise<void> {
     try {
       await openApprovedExternalUrl(url);
@@ -937,6 +982,13 @@
         onactivethreadchange={setActiveReplyThread}
         {extraPages}
         {setupInstallGuide}
+        aiTools={installChoiceAiTools}
+        onopenassistant={setupInstallGuide.onopenassistant}
+        onassistedinstall={async (tool) => {
+          const outcome = await setupInstallGuide.oninstall(tool);
+          if (outcome.ok) await refreshInstallChoiceAiTools();
+          return outcome;
+        }}
         bootTimeoutMs={bootTimeoutMs}
         onShellReady={() => {
           void invokeFn('shell_ready');
@@ -983,27 +1035,13 @@
     overflow: hidden;
   }
 
-  /* PR #772's staged window backing, below the shared surface tokens.
-     AppKit supplies the blur; repeating backdrop-filter inside WebKit washes
-     the native window out. Preserve the existing opacity control, with the
-     reference's .82/.86 alphas at its default transparency of 65.
-     The dark backing follows the supplied rendered PR reference: unobstructed
-     canvas samples (600,200) = #171435 and (540,940) = #12182e on its
-     1920x1305 preview. This retains that reference appearance across desktops. */
+  /* No window backing here. The shell's own ground (`--v4-ground` on
+     .desktop-shell) is the single layer that scales with the Appearance
+     window-opacity setting. A second full-window fill at this level (PR #772's
+     staged backing, alpha floor .72/.78) stacked under that ground and made
+     the window read as solid at every slider value. */
   .hq-work-embedded {
-    background: rgb(250 250 252 / clamp(0.72, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.276923), 1));
-  }
-
-  @media (prefers-color-scheme: dark) {
-    :global(:root:not([data-force-theme="light"])) .hq-work-embedded {
-      --reference-window-alpha: clamp(0.78, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.215385), 1);
-      background: linear-gradient(180deg, rgb(23 20 53 / var(--reference-window-alpha)), rgb(18 24 46 / var(--reference-window-alpha)));
-    }
-  }
-
-  :global(:root[data-force-theme="dark"]) .hq-work-embedded {
-    --reference-window-alpha: clamp(0.78, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.215385), 1);
-    background: linear-gradient(180deg, rgb(23 20 53 / var(--reference-window-alpha)), rgb(18 24 46 / var(--reference-window-alpha)));
+    background: transparent;
   }
 
   .lifecycle-state {

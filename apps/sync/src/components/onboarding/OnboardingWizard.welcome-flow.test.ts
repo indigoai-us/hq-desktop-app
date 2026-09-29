@@ -35,7 +35,10 @@ vi.mock('@tauri-apps/plugin-http', () => ({
 import { flushSync, mount, tick, unmount } from 'svelte';
 
 import OnboardingWizard from './OnboardingWizard.svelte';
-import { __resetWizardRouterCompletionForTests } from '../../lib/onboarding-wizard';
+import {
+  READY_STEP_INDEX,
+  __resetWizardRouterCompletionForTests,
+} from '../../lib/onboarding-wizard';
 import { __resetInstallerStepTelemetryForTests } from '../../lib/installer-step-telemetry';
 
 const TOOLS = {
@@ -425,7 +428,7 @@ describe('welcome flow: the usage-data answer on the ready screen', () => {
 describe('welcome flow: Claude Code and Codex on the ready screen', () => {
   it('offers HQ Desktop as the large card and the installed tools as smaller buttons under it', async () => {
     stubInvoke();
-    mountAt(5);
+    mountAt(READY_STEP_INDEX);
     await flushUntil(() => Boolean(byId('onboarding-launch-codex')), 'the tool options');
 
     const launchers = byId<HTMLElement>('onboarding-launchers')!;
@@ -457,7 +460,7 @@ describe('welcome flow: Claude Code and Codex on the ready screen', () => {
 
   it('opens Claude Code the way the ready screen always did, then finishes', async () => {
     stubInvoke();
-    const onfinish = mountAt(5);
+    const onfinish = mountAt(READY_STEP_INDEX);
     await flushUntil(() => Boolean(byId('onboarding-launch-claude')), 'the Claude Code option');
     byId('onboarding-launch-claude')!.click();
     await flushUntil(() => onfinish.mock.calls.length === 1, 'the finish');

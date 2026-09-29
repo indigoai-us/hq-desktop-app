@@ -43,6 +43,135 @@ The release moves it under the version it ships in.
   Next and Done. The flow respects Reduce Motion, works from the keyboard
   and with a screen reader, and pauses its animation when the window is
   hidden.
+- After a fresh install, HQ Desktop shows an eight-step guided tour once,
+  starting on the setup page. It points out the setup bot, the Files button,
+  the "+" button for a new bot, the Companies section, Meetings, the web
+  console, the Launch menu and the Command-K palette. Next moves on; Skip,
+  Done or Esc ends the tour and leaves you on the page you were on.
+  "Take the tour" in the Command-K palette plays it again.
+- Core updates now report distinct clone failure causes and retry network or unsupported Git filtering failures once.
+
+## [0.10.356] — 2026-09-29
+
+- If a Core update overlaps an active HQ change, HQ defers it and retries on a later check instead of reporting an update failure.
+- Pin the third-party actions used by the release monitor and UI-only publish workflow to their resolved commits.
+- The optional setup-stage timeout mitigation is off until enabled in hq-flags. When enabled, dependency install, template download and extraction, and search indexing timers restart when that stage reports progress and still stop at a maximum elapsed time.
+
+## [0.10.355] — 2026-09-29
+
+- After an updater restart, HQ checks local tools again before reopening setup for an existing installation. If the HQ folder is missing, the folder picker opens so it can be found or installed again. An unanswered consent question still appears at startup.
+- After setup, people in a single-member company can optionally invite a
+  teammate. The step is off until its hq-flags rollout is enabled and can be
+  skipped.
+
+## [0.10.354] — 2026-09-29
+
+- If HQ cannot refresh saved credentials at launch, it keeps the loading screen up and checks again every five seconds. It shows sign-in after Cognito confirms the credentials are invalid.
+- Core update failures now classify active HQ changes, generic clone failures, and rsync partial transfers separately in diagnostics.
+- Core update rescue error classes for deferred updates and restore symlink races now pass Sentry's diagnostic filter.
+- Build workflows now pin third-party actions to fixed commits. Manual Windows checks use read-only repository access.
+
+## [0.10.353] — 2026-09-29
+
+- The Window opacity slider in Settings > Appearance now works. Lowering it makes the window see-through, 100% keeps it fully solid, and the setting is remembered after the app restarts. On Macs the glass effect turns off at 100%.
+- With `desktop.push-events` enabled, realtime events trigger share and direct-message refreshes. If the connection drops, the app checks every five minutes, including while all windows are hidden, so tray launches retain a notification long-stop. Scheduled checks pause while push is connected. When the flag is off, the existing 60-second cadence continues.
+- Core update diagnostics now group deferred baseline refreshes separately from local
+  baseline read or write failures.
+- History search now requires 2 to 100 characters, matching the server limit.
+
+## [0.10.352] — 2026-09-28
+
+- After setup passes, people can start syncing their HQ folder right away. The optional first-folder step is off until its hq-flags rollout is enabled, and can be skipped.
+
+## [0.10.351] — 2026-09-28
+
+- The New bot wizard and the setup assistant now offer "Set up with Claude"
+  and "Set up with ChatGPT" buttons when the app finds no coding tool on this
+  computer. Clicking one opens the person's assistant desktop app with a
+  short install prompt already in the composer; the assistant does the
+  install and tells the person to switch back to HQ. When neither assistant
+  app is on the computer, HQ still runs its own one-click installer, so the
+  panel never dead-ends. The main text no longer mentions `npm`, a terminal,
+  or a file path. The two places share one component and one adapter so they
+  cannot drift.
+- The "Install Claude Code" button now says what is happening while it
+  works. During the install the panel reads "Installing Claude Code on this
+  PC. This usually takes about a minute. No need to click anything.", and
+  as soon as the installer finishes HQ re-checks by itself. When the tool is
+  found on the second look, the panel confirms "Claude Code is installed.
+  Sign in to finish." and offers Sign in as the primary action. No more
+  "Working…" for 30-40 seconds followed by the panel snapping back to its
+  original state. The same behaviour applies to Codex.
+- If the install fails, HQ shows a plain-language reason instead of raw
+  installer output. Known signals (no internet, permission denied, an
+  antivirus block, a missing dependency, no disk space) become one-sentence
+  explanations that name the tool and the next step. Anything HQ does not
+  recognise falls back to "HQ couldn't finish installing Claude Code. You
+  can try again or install Claude Code yourself, then click Check again."
+  The raw error still goes to the app log for support.
+- The footer next to Next in the New bot wizard no longer contradicts the
+  panel above. When the panel shows the install path it now reads "Finish
+  setting up Claude Code above."; after installing and before signing in it
+  reads "Sign in to Claude Code above." The panel and the footer read as one
+  thought, never two competing sentences.
+- The setup assistant's top line no longer opens with "No coding tool is
+  signed in on this computer yet. Sign in to Claude Code, Codex, or Grok,
+  then retry.". It now reads "HQ needs a coding tool signed in on this
+  PC to finish setup. Sign in above, then Retry." Purpose first, and no
+  three-tool list right after the person installed one.
+- Windows template setup can reuse matching content links and use a gated copy or junction fallback for selected link errors.
+
+## [0.10.350] — 2026-09-28
+
+- With `desktop.setup-directory-parent-fallback` enabled, HQ uses a fresh `hq`
+  subfolder when the chosen location already has files. Before setup, it checks
+  the suggested `~/hq` folder too. If HQ cannot write to a location, the folder
+  step explains how to choose a different one or grant access. The flag
+  defaults off.
+
+- On Windows, setup can wait for the desktop CLI updater to finish before reporting a dependency failure. The default-off hq-flags rollout also gives selected-prefix rename locks more time to clear between retries.
+
+- Channel messages now keep mentions aligned with their person or agent IDs and within the 25-person limit.
+
+- Sync plan-limit upgrade links now carry desktop_limit attribution into billing telemetry.
+
+- Desktop sign-in now retries once after an expired or mismatched browser
+  callback and uses another registered localhost callback port when the
+  default port is occupied. If the retry fails, the provider buttons stay
+  available.
+- The New bot wizard no longer replaces the app with a "Something went wrong"
+  screen on Windows. When the runtime CLI was not found, the "Where HQ looked"
+  list could hold the same folder twice (on 64-bit Windows the Program Files
+  and ProgramW6432 env vars point at the same place), and the wizard's list
+  rendering crashed on the repeat. The list is now deduplicated before it is
+  shown, and the folder appears once.
+- Small copy fixes in the New bot wizard for Windows: the Memory choice now
+  reads "This PC only" instead of "This Mac only", and the create-form
+  keyboard hint reads "Ctrl+Enter TO CREATE" instead of the Mac symbol on a
+  PC.
+- Core updates now retry with the bundled Git when the system Git is too old for partial clone filtering.
+- Removed an unused internal script left over from the old installer. No change to how the app updates.
+- After desktop sign-in, the browser tab no longer leaves the one-time sign-in code in the address bar or history: the page clears it and closes itself where the browser allows.
+- Behind the `desktop.hq-daemon` flag (off by default), the app runs
+  `hq daemon` as its own child process in place of its background sync
+  runner, sync supervisor, Work Mesh service and scheduled CLI updates. The
+  daemon handles sync, Work Mesh, bots, search indexing and its own updates,
+  and the app restarts it if it exits. Turning sync on or off in the app turns
+  the daemon's sync unit on or off. The app still shows conflicts, plan-limit
+  notices, errors and changed files from each sync pass. The flag is read at
+  launch and needs an installed `hq` new enough to be hosted; otherwise the
+  app keeps its own services.
+
+## [0.10.349] — 2026-09-28
+
+- The returning-user setup welcome uses current HQ Desktop wording, and the
+  retired `g a` shortcut no longer opens a stale Atlas destination.
+
+## [0.10.348] — 2026-09-27
+
+- When an update restarts the app before the HQ folder is available, people
+  who have completed setup stay on the normal app surface instead of seeing
+  onboarding again.
 
 - Setup and bot-picker copy now names the user's actual computer instead of
   guessing. On macOS the app says "this Mac", on Windows "this PC", and on
@@ -55,6 +184,7 @@ The release moves it under the version it ships in.
   expectation under "Getting your HQ ready": on Windows it explains that
   antivirus scans and background installs make setup take longer, so a
   long-running step no longer looks stuck.
+- MIGRATION.md: restore the historical updater endpoint URLs with '(retired, never launched)' annotations and add a dated note that the shipped app uses GitHub Releases for updates. Wave 2a of the getindigo.ai deprecation (docs-only, no runtime change).
 
 ## [0.10.347] — 2026-09-27
 

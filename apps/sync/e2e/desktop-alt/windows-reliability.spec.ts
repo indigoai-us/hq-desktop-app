@@ -398,7 +398,11 @@ describe('desktop-alt Windows reliability — daemon lifecycle (US-002)', () => 
     // The fixture harness mirrors this fallback; if production drops it, the
     // artifact contract above would silently stop describing real captures.
     expect(core).toContain('fn parenthesized_runtime_frame_token');
-    expect(main).toContain('start_daemon_for_app_launch(handle)');
+    // Launch starts sync through the host chooser; its legacy path keeps the
+    // app_launch origin.
+    const host = readRepoFile('src-tauri/src/commands/hq_daemon_host.rs');
+    expect(main).toContain('commands::hq_daemon_host::setup_sync_host(app.handle())');
+    expect(host).toContain('start_daemon_for_app_launch(handle)');
     expect(daemon).toContain('start_daemon_for_supervisor_respawn(handle.clone())');
   });
 });

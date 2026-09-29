@@ -40,7 +40,8 @@ export type InstallerFetch = (
  *
  * apps/sync wizard steps map onto that vocabulary wherever a step genuinely
  * corresponds. New names are introduced only when there is no equivalent.
- * Post-ready extras are omitted so they do not fork the install funnel.
+ * Optional extras without a historical equivalent are omitted so they do not
+ * fork the install funnel.
  *
  *   welcome-signin     → signin
  *                        + welcome on first-run `entered`
@@ -69,6 +70,8 @@ export const INSTALLER_STEP_BY_WIZARD_STEP = {
   'welcome-signin': 'signin',
   directory: 'install',
   setup: 'setup',
+  'first-folder-sync': null,
+  'invite-teammate': null,
   consent: 'consent',
   'connector-import': 'connector-import',
   ready: 'done',

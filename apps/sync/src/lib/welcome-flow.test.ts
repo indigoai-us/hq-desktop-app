@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  CONNECTOR_IMPORT_STEP_INDEX,
   CONSENT_STEP_INDEX,
   DIRECTORY_STEP_INDEX,
+  FIRST_FOLDER_SYNC_STEP_INDEX,
+  INVITE_TEAMMATE_STEP_INDEX,
   READY_STEP_INDEX,
   SETUP_STEP_INDEX,
   WELCOME_SIGNIN_STEP_INDEX,
@@ -62,6 +65,25 @@ describe('welcome flow scene order', () => {
     expect(previousScene('consent', false)).toBeNull();
     expect(nextScene('shortcut', false)).toBe('ready');
     expect(previousScene('connectors', false)).toBeNull();
+    expect(previousScene('first-folder', false)).toBeNull();
+    expect(previousScene('invite', false)).toBeNull();
+  });
+
+  it('gives each optional follow-on step its own screen at the ready position', () => {
+    expect(sceneForStep(FIRST_FOLDER_SYNC_STEP_INDEX)).toBe('first-folder');
+    expect(sceneForStep(INVITE_TEAMMATE_STEP_INDEX)).toBe('invite');
+    expect(sceneForStep(CONNECTOR_IMPORT_STEP_INDEX)).toBe('connectors');
+    const ready = welcomeChrome({ scene: 'ready', replay: false, setupCompleted: true });
+    for (const scene of ['first-folder', 'invite', 'connectors'] as const) {
+      // Offered from the ready screen: the ticks read as the ready position,
+      // with no Back, Skip intro or install card of their own.
+      expect(welcomeChrome({ scene, replay: false, setupCompleted: true })).toEqual({
+        ...ready,
+        back: false,
+        skip: null,
+        installCard: false,
+      });
+    }
   });
 });
 

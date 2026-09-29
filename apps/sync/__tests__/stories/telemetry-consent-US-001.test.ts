@@ -170,26 +170,28 @@ afterEach(() => {
 });
 
 describe('US-001 wizard step model', () => {
-  it('keeps consent and connector import between setup and ready in the step model', () => {
+  it('keeps first-folder, invite, consent and connector import between setup and ready in the step model', () => {
     // The step model is unchanged underneath: the consent-only runs still use
     // the consent step, and step telemetry keeps its ids.
-    expect(WIZARD_STEPS.slice(0, 6).map((s) => s.id)).toEqual([
+    expect(WIZARD_STEPS.slice(0, 8).map((s) => s.id)).toEqual([
       'welcome-signin',
       'directory',
       'setup',
+      'first-folder-sync',
+      'invite-teammate',
       'consent',
       'connector-import',
       'ready',
     ]);
-    expect(CONSENT_STEP).toBe(3);
-    expect(WIZARD_STEPS.find((s) => s.id === 'connector-import')?.index).toBe(4);
-    expect(READY_STEP).toBe(5);
+    expect(CONSENT_STEP).toBe(5);
+    expect(WIZARD_STEPS.find((s) => s.id === 'connector-import')?.index).toBe(6);
+    expect(READY_STEP).toBe(7);
   });
 
   it('gates the consent step until the question is answered', () => {
     const base = { installPath: '/tmp/hq' };
-    expect(getStepValidity(3, { ...base, consentAnswered: false })).toBe(false);
-    expect(getStepValidity(3, { ...base, consentAnswered: true })).toBe(true);
+    expect(getStepValidity(CONSENT_STEP, { ...base, consentAnswered: false })).toBe(false);
+    expect(getStepValidity(CONSENT_STEP, { ...base, consentAnswered: true })).toBe(true);
   });
 });
 

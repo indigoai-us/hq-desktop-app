@@ -47,7 +47,7 @@ describe("SetupFinale", () => {
     const sessions = el.querySelector<HTMLButtonElement>('[data-testid="setup-agent-open-sessions"]');
     const claude = el.querySelector<HTMLButtonElement>('[data-testid="setup-agent-open-claude"]');
     const codex = el.querySelector<HTMLButtonElement>('[data-testid="setup-agent-open-codex"]');
-    expect(sessions?.textContent?.trim()).toBe("Continue in HQ Sessions");
+    expect(sessions?.textContent?.trim()).toBe("Continue in HQ Desktop");
     expect(claude?.textContent?.trim()).toBe("Continue in Claude Code");
     expect(codex?.textContent?.trim()).toBe("Continue in Codex");
     for (const button of [sessions, claude, codex]) expect(button?.getAttribute("data-variant")).toBe("primary");
