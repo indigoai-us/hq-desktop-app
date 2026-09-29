@@ -242,6 +242,20 @@ pub enum AuthSessionStatus {
     NonHumanPrincipal,
 }
 
+/// Classify an unsuccessful startup auth resolution from a fresh token-store
+/// read. The first read can race an updater restart while the file is being
+/// replaced, so only an explicit absent result can conclude signed-out.
+pub fn startup_auth_status_after_unresolved_credentials(
+    initial_tokens: Result<Option<CognitoTokens>, String>,
+    latest_tokens: Result<Option<CognitoTokens>, String>,
+) -> AuthSessionStatus {
+    match (initial_tokens, latest_tokens) {
+        (Ok(None), Ok(None)) | (Err(_), Ok(None)) => AuthSessionStatus::CredentialsAbsent,
+        (Ok(Some(_)), Ok(None)) => AuthSessionStatus::CredentialsInvalid,
+        (_, Ok(Some(_))) | (_, Err(_)) => AuthSessionStatus::RefreshTemporarilyUnavailable,
+    }
+}
+
 /// Convert the authoritative native session classification into the startup
 /// command result. Only a transient refresh failure is unresolved; a
 /// definitively invalid credential remains a signed-out verdict.
@@ -1219,6 +1233,58 @@ mod tests {
         assert!(
             result.is_err(),
             "temporary refresh failure with saved credentials must stay unresolved"
+        );
+    }
+
+    #[test]
+    fn updater_restart_token_race_stays_unresolved_after_one_startup_probe() {
+        // HQ-DESKTOP-7Z reports surface=sign-in after prior_surface=loading,
+        // from_updater_restart=true, lifecycle_state=SteadyState,
+        // config_valid=false, auth_session_status=credentials_absent,
+        // session_restore_state=unauthenticated_with_token, token_present=present,
+        // keychain_status=not_used_token_file, auth_check_failed=true,
+        // probe_attempts=1, ms_since_launch=0-999, and token_file_age_minutes=null.
+        // Model the initial empty read followed by the token file's return.
+        // The initial get_tokens() saw no file; the immediate recheck finds
+        // the token file after the updater has finished replacing it.
+        let initial_tokens = Ok(None);
+        let latest_tokens = Ok(Some(token_generation("updater-restart-race")));
+        let status =
+            startup_auth_status_after_unresolved_credentials(initial_tokens, latest_tokens);
+        let result = startup_auth_state_result(
+            AuthState {
+                authenticated: false,
+                expires_at: None,
+                account_id: None,
+                email: None,
+                display_name: None,
+            },
+            &status,
+        );
+
+        assert_eq!(status, AuthSessionStatus::RefreshTemporarilyUnavailable);
+        assert!(
+            result.is_err(),
+            "the startup gate must keep loading and probe again"
+        );
+    }
+
+    #[test]
+    fn startup_treats_a_fresh_absent_token_store_as_signed_out() {
+        assert_eq!(
+            startup_auth_status_after_unresolved_credentials(Ok(None), Ok(None)),
+            AuthSessionStatus::CredentialsAbsent,
+        );
+    }
+
+    #[test]
+    fn unreadable_token_store_does_not_conclude_signed_out_at_startup() {
+        assert_eq!(
+            startup_auth_status_after_unresolved_credentials(
+                Ok(None),
+                Err("temporary token-store read failure".into()),
+            ),
+            AuthSessionStatus::RefreshTemporarilyUnavailable,
         );
     }
 

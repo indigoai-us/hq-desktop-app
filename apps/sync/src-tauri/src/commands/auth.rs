@@ -404,7 +404,12 @@ fn startup_auth_state_result(
 /// refresh is observed after Cognito has invalidated its file and becomes a
 /// fail-closed signed-out state.
 async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, AuthSessionEnvelope) {
-    let before = cognito::get_tokens().await.ok().flatten();
+    let before_read = cognito::get_tokens().await;
+    let before = before_read
+        .as_ref()
+        .ok()
+        .and_then(|tokens| tokens.as_ref())
+        .cloned();
     let outcome =
         crate::commands::dm_notify::resolve_notification_credentials_classified(app).await;
     let (state, status, account_id, reason, refresh_failure_class) = match outcome {
@@ -445,13 +450,37 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
                 )
             }
         },
-        Err(error) if before.is_none() => (
-            signed_out_state(),
-            AuthSessionStatus::CredentialsAbsent,
-            None,
-            Some("No HQ Work credentials are saved on this device."),
-            error.refresh_failure_class,
-        ),
+        Err(error) if before.is_none() => {
+            // A missing first read is not enough to show sign-in at startup:
+            // the updater may be replacing the token file at the same time.
+            // Recheck the authoritative store so a token that appeared after
+            // the first probe keeps the startup gate unresolved instead of
+            // becoming a one-probe signed-out verdict. This also honors token
+            // invalidation markers, unlike the raw presence hint.
+            let latest_tokens = cognito::get_tokens().await;
+            let status = cognito::startup_auth_status_after_unresolved_credentials(
+                before_read,
+                latest_tokens,
+            );
+            let (reason, status) = if status == AuthSessionStatus::CredentialsAbsent {
+                (
+                    Some("No HQ Work credentials are saved on this device."),
+                    AuthSessionStatus::CredentialsAbsent,
+                )
+            } else {
+                (
+                    Some("HQ Work could not confirm saved credentials while startup was settling."),
+                    AuthSessionStatus::RefreshTemporarilyUnavailable,
+                )
+            };
+            (
+                signed_out_state(),
+                status,
+                None,
+                reason,
+                error.refresh_failure_class,
+            )
+        }
         Err(error) => {
             let after = cognito::get_tokens().await.ok().flatten();
             let refresh_failure_class = error.refresh_failure_class;
