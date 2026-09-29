@@ -6683,7 +6683,7 @@ error: clone failed";
     }
 
     #[test]
-    fn rescue_skip_marker_survives_redaction_without_snapshot_classification() {
+    fn rescue_skip_marker_does_not_shadow_clone_failure_classification() {
         let raw_stderr = concat!(
             "HQ_RESCUE_SKIPPED_KIND=snapshot-copy-unreadable\n",
             "HQ_RESCUE_SNAPSHOT_COPY_CODE=EDEADLK\n",
@@ -6696,7 +6696,7 @@ error: clone failed";
         assert!(!stderr.contains("HQ_RESCUE_SNAPSHOT_COPY_CODE=EDEADLK"));
         assert_eq!(
             classify_rescue_stderr_failure(&stderr),
-            RescueFailureCategory::Unknown
+            RescueFailureCategory::CloneFailed
         );
     }
 
