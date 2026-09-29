@@ -8,6 +8,9 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- On macOS, HQ Sync restarts after an abnormal exit and waits at least 30
+  seconds between crash restarts. Existing enabled LaunchAgents are refreshed
+  on app startup, and the updater handoff avoids a duplicate restart.
 - Core updates now report distinct clone failure causes and retry network or unsupported Git filtering failures once.
 
 ## [0.10.356] — 2026-09-29
@@ -29,10 +32,6 @@ The release moves it under the version it ships in.
 - Core update failures now classify active HQ changes, generic clone failures, and rsync partial transfers separately in diagnostics.
 - Core update rescue error classes for deferred updates and restore symlink races now pass Sentry's diagnostic filter.
 - Build workflows now pin third-party actions to fixed commits. Manual Windows checks use read-only repository access.
-
-- On macOS, HQ Sync restarts after an abnormal exit and waits at least 30
-  seconds between crash restarts. Existing enabled LaunchAgents are refreshed
-  on app startup, and the updater handoff avoids a duplicate restart.
 
 ## [0.10.353] — 2026-09-29
 
