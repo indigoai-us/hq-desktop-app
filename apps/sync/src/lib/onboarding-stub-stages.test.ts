@@ -82,7 +82,13 @@ describe('honest onboarding stage reporting', () => {
     expect(wizard).toContain('let finishInProgress = false;');
     expect(wizard).toContain('if (finishing || finishInProgress) return false;');
     expect(wizard).toContain('disabled={finishing ||');
-    expect(wizard).toMatch(/data-testid="onboarding-install-\{slot\.kind\}"\n\s+disabled=\{finishing\}/);
+    // A recorded setup failure never disables the ready screen's tool
+    // buttons. (Product decision 2026-09-27: the ready screen has no install
+    // links any more, only buttons for installed tools.)
+    expect(wizard).not.toContain('data-testid="onboarding-install-');
+    expect(wizard).toMatch(
+      /data-testid="onboarding-launch-\{slot\.kind\}"\n\s+disabled=\{finishing \|\| launching !== null \|\| finishBlocked\}/,
+    );
   });
 
   it('shows a live sub-status and an elapsed cue under the active band', () => {

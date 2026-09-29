@@ -9,6 +9,12 @@
 
   interface Props {
     oncomplete: () => void;
+    /**
+     * Called once there is something to show (connectors were found). Until
+     * then the step renders nothing, so the welcome flow keeps the screen it
+     * was on instead of flashing an empty panel for an auto-skip.
+     */
+    onoffer?: () => void;
     onTelemetry?: (event: {
       action: 'entered' | 'started' | 'completed' | 'skipped' | 'failed';
       detectedToolCount?: number;
@@ -31,7 +37,7 @@
     errorCategory: ErrorCategory;
   }
 
-  let { oncomplete, onTelemetry }: Props = $props();
+  let { oncomplete, onoffer, onTelemetry }: Props = $props();
   let connectorCount = $state(0);
   let detectedSourceSet = $state<ConnectorImportSourceSet>('unknown');
   let status = $state<'detecting' | 'offer' | 'importing' | 'success' | 'failure'>(
@@ -65,6 +71,7 @@
           return;
         }
         status = 'offer';
+        onoffer?.();
       } catch {
         // Detection is optional. Do not make a probe failure block setup.
         onTelemetry?.({
@@ -169,15 +176,18 @@
 {/if}
 
 <style>
-  .h { margin: 0; color: var(--c-text); font-size: 22px; font-weight: 500; line-height: 28px; letter-spacing: -0.4px; }
-  .body { margin: 12px 0 0; color: var(--c-muted); font-size: 14px; line-height: 20px; }
+  /* Rendered inside the welcome flow's dark veil: Fraunces title, Geist body,
+     the flow's button geometry. */
+  .h { margin: 0; color: var(--c-text); font-family: 'Fraunces', Georgia, 'Times New Roman', serif; font-size: 34px; font-weight: 300; font-variation-settings: 'wght' 300, 'SOFT' 0, 'WONK' 1; line-height: 1.04; letter-spacing: -0.04em; }
+  .body { margin: 14px 0 0; color: var(--c-muted); font-size: 15px; line-height: 22px; }
   .body code { font-family: ui-monospace, "SF Mono", Menlo, Monaco, monospace; font-size: 0.92em; }
-  .btns { display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; }
-  .btn { font-family: inherit; font-size: 14px; font-weight: 400; line-height: 20px; padding: 10px 16px; border: none; border-radius: 8px; cursor: pointer; }
+  .btns { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 28px; }
+  .btn { font-family: inherit; font-size: 14px; font-weight: 400; line-height: 20px; padding: 9px 18px; border: none; border-radius: 8px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
   .btn-primary { background: var(--c-btn-bg); color: var(--c-btn-fg); }
   .btn-secondary { background: var(--c-btn2-bg); color: var(--c-btn2-fg); }
-  .btn:disabled { cursor: not-allowed; opacity: .48; }
+  .btn:disabled { cursor: default; opacity: .45; }
   .btn:focus-visible { outline: 1.5px solid var(--c-focus-ring, var(--c-text)); outline-offset: var(--c-focus-offset, 2px); }
-  .spinner { display: inline-block; width: 11px; height: 11px; margin-right: 6px; border: 1.5px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .7s linear infinite; vertical-align: -1px; }
+  .spinner { display: inline-block; width: 11px; height: 11px; border: 1.5px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .7s linear infinite; vertical-align: -1px; }
   @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
 </style>

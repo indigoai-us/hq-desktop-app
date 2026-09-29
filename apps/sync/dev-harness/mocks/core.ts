@@ -126,14 +126,6 @@ function harnessOutpostSessions(): unknown[] {
   ];
 }
 
-function onboardingContinuationVariant(): 'control' | 'continuation' {
-  if (typeof window === 'undefined') return 'control';
-  const params = new URLSearchParams(window.location.search);
-  return params.get('view') === 'onboarding' && params.get('continuation') === 'on'
-    ? 'continuation'
-    : 'control';
-}
-
 function isOnboardingCaptureScenario(): boolean {
   const scenario = harnessScenario();
   return (
@@ -656,7 +648,29 @@ const AGENT_SESSION_EVENTS: [number, unknown][] = [
 ];
 
 
+/**
+ * Guided-tour preview — `?tour=1`. The host answers as a fresh install that
+ * owes the guided setup and has never shown the tour, so the shell's real
+ * auto-start gate runs (Harness.svelte also clears the local "seen" key).
+ * Without the flag `get_setup_status` stays unhandled, as before.
+ */
+function tourPreviewEnabled(): boolean {
+  if (typeof window === 'undefined') return false;
+  return new URLSearchParams(window.location.search).get('tour') === '1';
+}
+
 const handlers: Record<string, Handler> = {
+  get_setup_status: () =>
+    tourPreviewEnabled()
+      ? {
+          hqRootValid: true,
+          configured: true,
+          hqFolderPath: settings.hqPath,
+          welcomeSetupOwed: true,
+          welcomeTourShown: false,
+        }
+      : null,
+  mark_welcome_tour_shown: () => null,
   // Deterministic full-desktop route for visual QA:
   //   ?view=desktop&route=company:indigo:projects
   // Mirrors the native pending-route handoff consumed once on mount.
@@ -1263,10 +1277,9 @@ This final paragraph verifies spacing after a thematic break.
     harnessScenario() === 'onboarding-capture-completion-failed-required-stage'
       ? new Promise<never>(() => {})
       : null,
-  // The first-run sign-in preview supports both real rollout arms. The
-  // continuation arm uses display-only fixture text rather than an address so
-  // screenshots can demonstrate the account affordance without exposing an
-  // email-shaped value.
+  // The first-run wizard starts no browser continuation; it only records the
+  // launch receipt through these commands. The rollout stays on the control
+  // arm, and the identity is display-only fixture text, not an address.
   desktop_continuation_context: () => ({
     installAttemptId: 'preview-installation',
     appVersion: '0.10.229',
@@ -1275,7 +1288,7 @@ This final paragraph verifies spacing after a thematic break.
   desktop_continuation_config: () => ({
     protocolVersion: 1,
     minimumDesktopVersion: '0.10.229',
-    variant: onboardingContinuationVariant(),
+    variant: 'control',
     rolloutPercent: 100,
   }),
   desktop_continuation_may_start: () => null,

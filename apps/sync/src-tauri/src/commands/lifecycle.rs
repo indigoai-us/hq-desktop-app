@@ -481,6 +481,9 @@ pub struct SetupStatus {
     /// machine set up before the welcome flow existed, or once the guided run
     /// finished. See `hq_desktop_core::lifecycle::welcome_setup_owed`.
     pub welcome_setup_owed: bool,
+    /// The desktop window's first-run guided tour was already shown here.
+    /// See `hq_desktop_core::lifecycle::welcome_tour_shown`.
+    pub welcome_tour_shown: bool,
 }
 
 #[tauri::command]
@@ -517,6 +520,7 @@ pub fn get_setup_status() -> SetupStatus {
         // the unavailable state that made launch conservative.
         welcome_setup_owed: !settings_unavailable
             && hq_desktop_core::lifecycle::welcome_setup_owed(&menubar, root_valid),
+        welcome_tour_shown: hq_desktop_core::lifecycle::welcome_tour_shown(&menubar),
     }
 }
 
@@ -535,6 +539,21 @@ pub fn mark_welcome_setup_complete() -> Result<(), String> {
                 Value::String(Utc::now().to_rfc3339()),
             ),
         ],
+    )
+}
+
+/// The desktop window's first-run guided tour started showing. Recorded as
+/// soon as it appears (not when it finishes) so a crash or quit mid-tour does
+/// not replay it on every launch. The command palette can still replay it.
+#[tauri::command]
+pub fn mark_welcome_tour_shown() -> Result<(), String> {
+    let path = paths::menubar_json_path()?;
+    hq_desktop_core::first_run::merge_menubar_flags(
+        &path,
+        &[(
+            hq_desktop_core::lifecycle::WELCOME_TOUR_SHOWN_KEY,
+            Value::Bool(true),
+        )],
     )
 }
 
