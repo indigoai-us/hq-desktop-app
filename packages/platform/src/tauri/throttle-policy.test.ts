@@ -121,6 +121,23 @@ describe("Sync adapter Lambda invoke 504 retry", () => {
     expect(slept[0]).toBeLessThanOrEqual(75);
   });
 
+  it("applies the existing throttle policy after the one 504 retry", async () => {
+    const slept: number[] = [];
+    const { adapter, hqProCalls } = makeAdapter(
+      [
+        { status: 504, body: '{"message":"Internal server error"}' },
+        { status: 503, body: '{"error":"temporarily unavailable"}' },
+        { status: 200, body: '{"displayName":"A"}' },
+      ],
+      slept,
+    );
+
+    const result = await adapter.identity.getProfile();
+
+    expect(result).toMatchObject({ ok: true, value: { displayName: "A" } });
+    expect(hqProCalls()).toBe(3);
+  });
+
   it("does not retry a second 504", async () => {
     const slept: number[] = [];
     const { adapter, hqProCalls } = makeAdapter(
