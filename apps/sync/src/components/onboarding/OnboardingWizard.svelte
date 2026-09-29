@@ -3107,8 +3107,8 @@
                   class="btn btn-secondary"
                   type="button"
                   data-testid="onboarding-invite-skip"
-                  onclick={() => advanceTo(CONSENT_STEP_INDEX, 'skipped')}
-                >Skip</button>
+                  onclick={() => advanceTo(CONSENT_STEP_INDEX, inviteSent ? null : 'skipped')}
+                >{inviteSent ? 'Continue' : 'Skip'}</button>
               </div>
             </form>
           </section>

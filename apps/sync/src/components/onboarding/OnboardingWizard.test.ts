@@ -2533,6 +2533,29 @@ describe('invite teammate onboarding step', () => {
     });
   });
 
+  it('labels the optional action Skip before send and Continue after success', async () => {
+    await reachInviteScenario();
+    const continueButton = host.querySelector<HTMLButtonElement>(
+      '[data-testid="onboarding-invite-skip"]',
+    );
+    expect(continueButton?.textContent?.trim()).toBe('Skip');
+
+    const email = host.querySelector<HTMLInputElement>(
+      '[data-testid="onboarding-invite-email"]',
+    );
+    if (!email) throw new Error('Expected the invite email field.');
+    email.value = inviteEmail;
+    email.dispatchEvent(new Event('input', { bubbles: true }));
+    await flush();
+    host.querySelector<HTMLButtonElement>('[data-testid="onboarding-invite-send"]')?.click();
+    await flushUntil(() => host.textContent?.includes('Invitation sent.') === true);
+
+    expect(
+      host.querySelector<HTMLButtonElement>('[data-testid="onboarding-invite-skip"]')
+        ?.textContent?.trim(),
+    ).toBe('Continue');
+  });
+
   it('shows a safe send error state and keeps Skip available', async () => {
     await reachInviteScenario({
       inviteResponses: [
@@ -2587,7 +2610,7 @@ describe('invite teammate onboarding step', () => {
     });
   });
 
-  it('records invite shown, sent, and skipped with companyUid and no email', async () => {
+  it('records invite shown and sent with companyUid and no email', async () => {
     await reachInviteScenario();
     const email = host.querySelector<HTMLInputElement>(
       '[data-testid="onboarding-invite-email"]',
@@ -2602,7 +2625,7 @@ describe('invite teammate onboarding step', () => {
     await flush();
 
     const rows = inviteStepRows();
-    expect(rows.map((row) => row.action)).toEqual(['entered', 'completed', 'skipped']);
+    expect(rows.map((row) => row.action)).toEqual(['entered', 'completed']);
     expect(rows.every((row) => row.companyUid === 'cmp_demo')).toBe(true);
     expect(rows.some((row) => 'email' in row || 'inviteeEmail' in row)).toBe(false);
     expect(JSON.stringify(rows)).not.toContain(inviteEmail);
