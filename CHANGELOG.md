@@ -50,6 +50,13 @@ The release moves it under the version it ships in.
   Done or Esc ends the tour and leaves you on the page you were on.
   "Take the tour" in the Command-K palette plays it again.
 
+- A local bot's model picker lists specific model versions: Claude Opus 5.5,
+  Opus 5, Sonnet 5 and Haiku 4.5; GPT-6 Astra and GPT-5.5 for Codex; and
+  Grok 4.7, 4.6 and 4.5. Bots that already use the older Opus, Sonnet or Haiku
+  setting show it as "(latest in Claude Code)". When a specific model is
+  picked, a note says to update the coding tool if the bot cannot start with
+  it, and a bot whose tool does not know its model now says so in plain words.
+
 - In a DM with a bot, the "is thinking" / "working on it" line now
   disappears as soon as the bot's reply appears, instead of staying under
   the reply for a few more seconds. It shows again when you send another
