@@ -4,6 +4,7 @@ import type { Workspace } from "../chat/workspaces.js";
 import {
   DEFAULT_WINDOW_TRANSPARENCY,
   MAX_WINDOW_OPACITY,
+  MAX_WINDOW_TRANSPARENCY,
   MIN_SLIDER_WINDOW_OPACITY,
 } from "./appearance-seam.js";
 import {
@@ -202,14 +203,16 @@ describe("window opacity", () => {
     expect(vars.get("--hq-window-alpha-dark")).toBe("1.00");
   });
 
-  // Regression: the floor must be able to express the shipped default
-  // (DEFAULT_WINDOW_TRANSPARENCY = 65 → opacity 35). A 50 floor made the
-  // default unrepresentable, so a fresh install seeded the slider at 50 and
-  // the first drag visibly jumped the window.
-  it("clamps to a slider range that can express the shipped default", () => {
+  // Regression: the slider range must express the shipped default (100%,
+  // transparency 0) AND every value the host can apply (transparency range
+  // is exactly the slider range), so the slider can never show a clamped
+  // value while the window uses another.
+  it("clamps to a slider range that matches the host's transparency range", () => {
     const { root } = fakeRoot();
+    expect(DEFAULT_WINDOW_TRANSPARENCY).toBe(0);
+    expect(MAX_WINDOW_OPACITY - DEFAULT_WINDOW_TRANSPARENCY).toBe(100);
     expect(MIN_SLIDER_WINDOW_OPACITY).toBe(
-      MAX_WINDOW_OPACITY - DEFAULT_WINDOW_TRANSPARENCY,
+      MAX_WINDOW_OPACITY - MAX_WINDOW_TRANSPARENCY,
     );
     expect(applyWindowOpacity(35, root, null)).toBe(35);
     expect(applyWindowOpacity(10, root, null)).toBe(MIN_SLIDER_WINDOW_OPACITY);
@@ -249,8 +252,7 @@ describe("window opacity", () => {
     expect(readHostWindowOpacity(fakeRoot().root)).toBeNull();
     const { root } = fakeRoot({ windowTransparency: "65" });
     expect(hasAppearanceHost(root)).toBe(true);
-    // transparency 65 is the shipped default → opacity 35, and the read must
-    // report it verbatim rather than clamping it up to the old 50 floor.
+    // transparency 65 (the old default) → opacity 35, reported verbatim.
     expect(readHostWindowOpacity(root)).toBe(35);
     expect(readHostWindowOpacity(fakeRoot({ windowTransparency: "20" }).root)).toBe(80);
     expect(readHostWindowOpacity(fakeRoot({ windowTransparency: "nope" }).root)).toBeNull();

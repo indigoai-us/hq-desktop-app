@@ -567,8 +567,14 @@ describe("PrototypeSettingsPanes window opacity", () => {
     // and drop the user's forced Light. So the detail must be complete.
     rootEl().dataset.forceTheme = "light";
     const requests: unknown[] = [];
-    const onRequest = (event: Event) =>
-      requests.push((event as CustomEvent).detail);
+    // Emulate the desktop host: apply the request, then announce it. The
+    // slider must show the value the host APPLIED, not an optimistic copy.
+    const onRequest = (event: Event) => {
+      const detail = (event as CustomEvent).detail;
+      requests.push(detail);
+      rootEl().dataset.windowTransparency = String(detail.windowTransparency);
+      window.dispatchEvent(new CustomEvent("hq:appearance-change", { detail }));
+    };
     window.addEventListener("hq:appearance-request", onRequest);
     try {
       const slider = mountAppearance();
@@ -601,10 +607,20 @@ describe("PrototypeSettingsPanes window opacity", () => {
     expect(slider.value).toBe("90");
   });
 
-  it("applies the local pref itself when no host is installed", async () => {
+  it("applies the shared Appearance record itself when no host is installed", async () => {
+    memoryStorage.setItem(
+      "hq-sync.appearance.v1",
+      JSON.stringify({
+        v: 2,
+        colorTheme: "system",
+        windowTransparency: 30,
+        windowTransparencySet: true,
+      }),
+    );
+    // The retired second store is ignored.
     memoryStorage.setItem(
       "hq-work-settings-prefs",
-      JSON.stringify({ windowOpacity: 70 }),
+      JSON.stringify({ windowOpacity: 90 }),
     );
     const slider = mountAppearance();
     await tick();
@@ -612,5 +628,32 @@ describe("PrototypeSettingsPanes window opacity", () => {
     expect(
       rootEl().style.getPropertyValue("--hq-window-transparency-factor"),
     ).toBe("0.30");
+  });
+
+  // Regression: a fresh profile must render the slider at the value the
+  // window actually uses — 100%, fully solid — not a second store's default.
+  it("shows 100% on a fresh profile with no stored Appearance", async () => {
+    const slider = mountAppearance();
+    await tick();
+    expect(slider.value).toBe("100");
+    expect(host.querySelector(".range-val")?.textContent).toBe("100%");
+    expect(
+      rootEl().style.getPropertyValue("--hq-window-transparency-factor"),
+    ).toBe("0.00");
+  });
+
+  // Regression: the user saw "100%" in the slider while the window applied a
+  // lower value, because the slider read hq-work-settings-prefs and the window
+  // read the host's record. The slider must equal the applied marker on boot.
+  it("slider equals the host-applied value on boot even when the old pref disagrees", async () => {
+    memoryStorage.setItem(
+      "hq-work-settings-prefs",
+      JSON.stringify({ windowOpacity: 100 }),
+    );
+    rootEl().dataset.windowTransparency = "25";
+    const slider = mountAppearance();
+    await tick();
+    expect(slider.value).toBe("75");
+    expect(host.querySelector(".range-val")?.textContent).toBe("75%");
   });
 });

@@ -18,6 +18,19 @@
   import BrandLogoSlot from "../brand/BrandLogoSlot.svelte";
   import { isEntitledBrand, type CachedBrand } from "../brand/brand.js";
   import Caret from "../common/Caret.svelte";
+  import { onMount, tick } from "svelte";
+  import {
+    readAppearanceState,
+    setAppearanceColorTheme,
+    setAppearanceWindowOpacity,
+    subscribeAppearance,
+    type AppearanceState,
+  } from "../settings/appearance-store.js";
+  import {
+    MAX_SLIDER_WINDOW_OPACITY,
+    MIN_SLIDER_WINDOW_OPACITY,
+    type ColorTheme,
+  } from "../settings/appearance-seam.js";
   import "./tokens.css";
   import "../chat/chat-tokens.css";
 
@@ -350,6 +363,7 @@
     launchOpen = !launchOpen;
     if (launchOpen) {
       coreOpen = false;
+      appearanceOpen = false;
       launchErrors = {};
       void ensureLaunchFolder();
     }
@@ -590,7 +604,10 @@
 
   function openCore(): void {
     coreOpen = !coreOpen;
-    if (coreOpen) launchOpen = false;
+    if (coreOpen) {
+      launchOpen = false;
+      appearanceOpen = false;
+    }
   }
 
   $effect(() => {
@@ -607,6 +624,98 @@
       if (event.key === "Escape") coreOpen = false;
     }
 
+    window.addEventListener("mousedown", onMouseDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("mousedown", onMouseDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  });
+  /**
+   * Appearance menu: theme (Light / Dark / System) + window opacity.
+   *
+   * Reads and writes ONLY through `appearance-store.ts`, the same functions
+   * Settings > Appearance uses, so both controls always agree, persist to the
+   * one Appearance record, and drive the native backdrop through the host.
+   */
+  const APPEARANCE_THEME_OPTIONS: ReadonlyArray<{ id: ColorTheme; label: string }> = [
+    { id: "light", label: "Light" },
+    { id: "dark", label: "Dark" },
+    { id: "system", label: "System" },
+  ];
+  let appearanceOpen = $state(false);
+  let appearance = $state<AppearanceState>(readAppearanceState());
+  let appearanceContainer: HTMLDivElement | null = $state(null);
+  let appearanceButton: HTMLButtonElement | null = $state(null);
+  let appearancePanel: HTMLDivElement | null = $state(null);
+  const appearanceId = `titlebar-appearance-${Math.random().toString(36).slice(2, 8)}`;
+
+  onMount(() =>
+    subscribeAppearance((next) => {
+      appearance = next;
+    }),
+  );
+
+  function focusCheckedTheme(): void {
+    void tick().then(() => {
+      appearancePanel
+        ?.querySelector<HTMLElement>("[role='radio'][aria-checked='true']")
+        ?.focus();
+    });
+  }
+
+  function toggleAppearance(): void {
+    appearanceOpen = !appearanceOpen;
+    if (appearanceOpen) {
+      coreOpen = false;
+      launchOpen = false;
+      // Re-read on open: another window may have changed it.
+      appearance = readAppearanceState();
+      focusCheckedTheme();
+    }
+  }
+
+  function closeAppearance(restoreFocus: boolean): void {
+    appearanceOpen = false;
+    if (restoreFocus) appearanceButton?.focus();
+  }
+
+  function chooseTheme(theme: ColorTheme): void {
+    appearance = setAppearanceColorTheme(theme);
+  }
+
+  function setWindowOpacity(value: number): void {
+    appearance = setAppearanceWindowOpacity(value);
+  }
+
+  function onThemeKeyDown(event: KeyboardEvent, index: number): void {
+    const delta =
+      event.key === "ArrowRight" || event.key === "ArrowDown"
+        ? 1
+        : event.key === "ArrowLeft" || event.key === "ArrowUp"
+          ? -1
+          : 0;
+    if (delta === 0) return;
+    event.preventDefault();
+    const count = APPEARANCE_THEME_OPTIONS.length;
+    chooseTheme(APPEARANCE_THEME_OPTIONS[(index + delta + count) % count]!.id);
+    focusCheckedTheme();
+  }
+
+  $effect(() => {
+    if (!appearanceOpen) return;
+    function onMouseDown(event: MouseEvent) {
+      if (!(event.target instanceof Node)) return;
+      if (appearanceContainer && !appearanceContainer.contains(event.target)) {
+        closeAppearance(false);
+      }
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeAppearance(true);
+      }
+    }
     window.addEventListener("mousedown", onMouseDown);
     window.addEventListener("keydown", onKeyDown);
     return () => {
@@ -1033,6 +1142,85 @@
         </button>
       {/snippet}
     </Tooltip>
+    <div class="appearance-wrap" bind:this={appearanceContainer}>
+      <Tooltip label="Appearance" align="end">
+        {#snippet trigger(describedBy: string)}
+          <button
+            type="button"
+            class="v4-icon-btn"
+            class:active={appearanceOpen}
+            data-testid="titlebar-appearance"
+            aria-label="Appearance"
+            aria-haspopup="dialog"
+            aria-expanded={appearanceOpen}
+            aria-describedby={describedBy || undefined}
+            bind:this={appearanceButton}
+            onclick={toggleAppearance}
+          >
+            <!-- Half-filled circle: light/dark contrast, same 16px stroke idiom. -->
+            <svg class="v4-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <circle cx="8" cy="8" r="5.75" stroke="currentColor" stroke-width="1.2" />
+              <path d="M8 2.25a5.75 5.75 0 0 1 0 11.5Z" fill="currentColor" />
+            </svg>
+          </button>
+        {/snippet}
+      </Tooltip>
+      {#if appearanceOpen}
+        <div
+          class="appearance-menu v4-popover-strong-surface"
+          role="dialog"
+          aria-label="Appearance"
+          data-testid="titlebar-appearance-menu"
+          bind:this={appearancePanel}
+        >
+          <div class="appearance-row">
+            <span class="appearance-label" id={`${appearanceId}-theme`}>Theme</span>
+            <div
+              class="appearance-segmented"
+              role="radiogroup"
+              aria-labelledby={`${appearanceId}-theme`}
+              data-testid="titlebar-appearance-theme"
+            >
+              {#each APPEARANCE_THEME_OPTIONS as option, index (option.id)}
+                <button
+                  type="button"
+                  role="radio"
+                  class="appearance-segment"
+                  class:on={appearance.colorTheme === option.id}
+                  aria-checked={appearance.colorTheme === option.id}
+                  tabindex={appearance.colorTheme === option.id ? 0 : -1}
+                  data-theme={option.id}
+                  data-testid={`titlebar-appearance-theme-${option.id}`}
+                  onclick={() => chooseTheme(option.id)}
+                  onkeydown={(event) => onThemeKeyDown(event, index)}
+                >{option.label}</button>
+              {/each}
+            </div>
+          </div>
+          <div class="appearance-row">
+            <label class="appearance-label" for={appearanceId}>Window opacity</label>
+            <div class="appearance-range">
+              <input
+                id={appearanceId}
+                type="range"
+                min={MIN_SLIDER_WINDOW_OPACITY}
+                max={MAX_SLIDER_WINDOW_OPACITY}
+                value={appearance.windowOpacity}
+                aria-valuetext={`${appearance.windowOpacity}%`}
+                data-testid="titlebar-appearance-opacity"
+                oninput={(event) => setWindowOpacity(Number(event.currentTarget.value))}
+              />
+              <output
+                class="appearance-value"
+                for={appearanceId}
+                data-testid="titlebar-appearance-opacity-value"
+                >{appearance.windowOpacity}%</output
+              >
+            </div>
+          </div>
+        </div>
+      {/if}
+    </div>
     {#if showCore}
       <div class="v4-core-wrap" bind:this={coreContainer}>
         <Tooltip label="HQ Core: sync, packs, and updates" align="end">
@@ -1481,5 +1669,105 @@
     .v4-core-pill {
       transition: none;
     }
+  }
+
+  .appearance-wrap {
+    position: relative;
+    flex: 0 0 auto;
+  }
+
+  /* Same surface contract as the Launch menu (.v4-launch-menu): the
+     near-opaque --v4-popover-strong, because a nested backdrop-filter is
+     neutered outside its parent's backdrop root. Anchored bottom-end: the
+     button sits near the right edge, next to Core. */
+  .appearance-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 10000;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 248px;
+    max-width: calc(100vw - 24px);
+    padding: 10px 12px 12px;
+    border: 1px solid var(--panel-border, var(--line2));
+    border-radius: 10px;
+    background: var(--v4-popover-strong, var(--panel-bg, var(--btn-bg)));
+    box-shadow: var(--panel-shadow, 0 8px 24px rgba(0, 0, 0, 0.18));
+    color: var(--t1);
+    font-size: 12.5px;
+  }
+
+  .appearance-row {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .appearance-label {
+    color: var(--t2);
+    font-size: 11.5px;
+    font-weight: 500;
+  }
+
+  .appearance-segmented {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 2px;
+    padding: 2px;
+    border: 1px solid var(--line2);
+    border-radius: 8px;
+  }
+
+  .appearance-segment {
+    appearance: none;
+    -webkit-appearance: none;
+    padding: 4px 6px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--t2);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+  }
+
+  .appearance-segment:hover {
+    background: var(--hover);
+  }
+
+  /* --ice-ink flips per theme (hq-work-theme-aware-ink); --ice would vanish
+     on light. */
+  .appearance-segment.on {
+    color: var(--ice-ink, var(--t1));
+    border-color: var(--ice-ink, var(--line2));
+    background: var(--hover);
+  }
+
+  .appearance-segment:focus-visible,
+  .appearance-range input:focus-visible {
+    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
+    outline-offset: 1px;
+  }
+
+  .appearance-range {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .appearance-range input[type="range"] {
+    flex: 1 1 auto;
+    min-width: 0;
+    accent-color: var(--ice-ink, var(--t1));
+  }
+
+  .appearance-value {
+    min-width: 38px;
+    color: var(--t1);
+    font-family: var(--mono, ui-monospace, monospace);
+    font-size: 11.5px;
+    text-align: right;
   }
 </style>

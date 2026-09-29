@@ -8,6 +8,10 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- New installs start with the window fully solid (100% opacity). The Window opacity slider now always shows the opacity the window is actually using, including the first time the app opens after an update. Before, it could read 100% while the window was more see-through.
+- If you never changed window opacity, the update resets it to 100%. If you did change it, your setting is kept.
+- A new Appearance button in the top bar, next to the notifications bell, lets you switch between Light, Dark, and System themes and adjust window opacity without opening Settings. Changes there and in Settings > Appearance stay in sync.
+
 ## [0.10.353] — 2026-09-29
 
 - The Window opacity slider in Settings > Appearance now works. Lowering it makes the window see-through, 100% keeps it fully solid, and the setting is remembered after the app restarts. On Macs the glass effect turns off at 100%.

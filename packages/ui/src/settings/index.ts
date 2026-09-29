@@ -42,6 +42,14 @@ export {
   readStoredTheme,
 } from "./shell-settings-model.js";
 export { readSettingsPrefs } from "./settings-prefs.js";
+export {
+  bootAppearance,
+  readAppearanceState,
+  setAppearanceColorTheme,
+  setAppearanceWindowOpacity,
+  subscribeAppearance,
+} from "./appearance-store.js";
+export type { AppearanceState } from "./appearance-store.js";
 export { createShellAppearanceSeam } from "./settings-theme-seam.js";
 export {
   readLiveSyncStatus,
