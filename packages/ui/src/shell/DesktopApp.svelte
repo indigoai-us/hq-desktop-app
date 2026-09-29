@@ -25,6 +25,7 @@
    */
   import {
     CLAUDE_PROVIDER_FLAG,
+    HUMAN_ONLY_CONVERSATIONS_FLAG,
     failure,
     hostComputerNoun,
     startJitteredPoll,
@@ -1684,6 +1685,43 @@
   /** Sidebar entry points for app-wide shortcuts; null while unmounted. */
   let sidebarActions = $state<ChatSidebarActions | null>(null);
   let cheatSheetOpen = $state(false);
+
+  /**
+   * desktop.human-only-conversations — canary flag read at mount, refreshed
+   * whenever the flag registry publishes a new snapshot. A missing key,
+   * failed read, signed-out session, or offline registry all resolve to
+   * `false` (the safe default). Callers hide mesh / non-human messages in
+   * conversation views and reorder the sidebar by last human message when
+   * this is true. See `packages/platform/src/humanMessage.ts` for the rule.
+   */
+  let humanOnlyConversations = $state(false);
+  $effect(() => {
+    const identity = adapter?.identity;
+    if (!identity || typeof identity.hasFeature !== "function") return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const initial = await identity.hasFeature(
+          HUMAN_ONLY_CONVERSATIONS_FLAG,
+        );
+        if (cancelled) return;
+        humanOnlyConversations = initial.ok && initial.value === true;
+      } catch {
+        // Registry outage / partial mock — stay dark.
+      }
+    })();
+    const unsubscribe =
+      typeof identity.subscribeFeature === "function"
+        ? identity.subscribeFeature(HUMAN_ONLY_CONVERSATIONS_FLAG, (result) => {
+            if (cancelled) return;
+            humanOnlyConversations = result.ok && result.value === true;
+          })
+        : undefined;
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  });
 
   // ── Personal local bots (local-bots US-009) ────────────────────────────────
   // The host's bots API shells to `hq bot list --json`; rows carry the server's
@@ -8729,6 +8767,7 @@
           companyCreate={companyCreateSeam}
           oncreateagent={canCreateCloudBots ? createCloudBotEntry : null}
           loadClaudeProviderFlag={() => adapter.identity.hasFeature(CLAUDE_PROVIDER_FLAG)}
+          humanOnly={humanOnlyConversations}
           loadCloudProvisionOptions={(companyUid) => adapter.agents.getProvisionOptions(companyUid)}
           oncreatebot={adapter.bots ? createBotEntry : null}
           botRuntimeReady={localBotRuntimeReady}
@@ -9607,6 +9646,7 @@
                 <ChannelConversation
                   restoreScroll={pendingRestoreScroll}
                   {localBots}
+                  humanOnly={humanOnlyConversations}
                   messages={timelineWithActivity}
                   onseen={async () => {
                     const row = selectedRow;
