@@ -382,7 +382,7 @@ export function createSyncPlatformAdapter(
     ) {
       const delayMs = lambdaInvokeRetryDelayMs(requestPolicy.random);
       await (requestPolicy.sleep ?? sleepForLambdaInvokeRetry)(delayMs);
-      attempted = await makeAttempt();
+      attempted = await hqProAttempt<T>(method, path, body);
     }
     return attempted.result;
   }
