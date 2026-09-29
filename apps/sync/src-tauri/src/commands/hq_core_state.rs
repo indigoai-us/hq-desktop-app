@@ -344,6 +344,8 @@ pub(crate) enum RescueFailureCategory {
     RsyncBroken,
     PreserveRestoreFailed,
     RestoreSymlinkRace,
+    UpdateDeferredHqChange,
+    CloneFailed,
     Unknown,
 }
 
@@ -370,6 +372,8 @@ impl RescueFailureCategory {
         Self::RsyncBroken,
         Self::PreserveRestoreFailed,
         Self::RestoreSymlinkRace,
+        Self::UpdateDeferredHqChange,
+        Self::CloneFailed,
         Self::Unknown,
     ];
 
@@ -396,6 +400,8 @@ impl RescueFailureCategory {
             Self::RsyncBroken => "rsync-broken",
             Self::PreserveRestoreFailed => "preserve-restore-failed",
             Self::RestoreSymlinkRace => "restore-symlink-race",
+            Self::UpdateDeferredHqChange => "update-deferred-hq-change",
+            Self::CloneFailed => "clone-failed",
             Self::Unknown => "unknown",
         }
     }
@@ -1150,6 +1156,10 @@ const RESCUE_STDERR_PATTERNS: &[RescueStderrPattern] = &[
         category: RescueFailureCategory::Network,
         needle: "from promisor remote",
     },
+    RescueStderrPattern {
+        category: RescueFailureCategory::CloneFailed,
+        needle: "error: clone failed",
+    },
 ];
 
 const CLONE_CHECKOUT_FAILURE_NEEDLE: &str = "clone succeeded, but checkout failed";
@@ -1181,6 +1191,10 @@ const SPAWN_ERROR_PATTERNS: &[RescueStderrPattern] = &[
     RescueStderrPattern {
         category: RescueFailureCategory::LockContention,
         needle: NPM_CACHE_OTHER_WINDOW_NEEDLE,
+    },
+    RescueStderrPattern {
+        category: RescueFailureCategory::UpdateDeferredHqChange,
+        needle: "update deferred while an hq change is active",
     },
     RescueStderrPattern {
         category: RescueFailureCategory::MissingDependency,
@@ -1267,6 +1281,10 @@ fn classify_rescue_stderr_failure(stderr: &str) -> RescueFailureCategory {
             return RescueFailureCategory::RestoreSymlinkRace
         }
         None => {}
+    }
+
+    if stderr.contains("rsync error:") && stderr.contains("were not transferred") {
+        return RescueFailureCategory::RsyncPartialTransfer;
     }
 
     RESCUE_STDERR_PATTERNS
@@ -2390,7 +2408,8 @@ fn core_update_rescue_step_for_category(category: RescueFailureCategory) -> &'st
         | RescueFailureCategory::Dns
         | RescueFailureCategory::Tls
         | RescueFailureCategory::OutdatedDependency
-        | RescueFailureCategory::NotFound => "clone",
+        | RescueFailureCategory::NotFound
+        | RescueFailureCategory::CloneFailed => "clone",
         RescueFailureCategory::LockContention => "npm-cache",
         RescueFailureCategory::RsyncBroken | RescueFailureCategory::RsyncPartialTransfer => "rsync",
         RescueFailureCategory::NpxResolveFailed => "npm-install",
@@ -2404,6 +2423,8 @@ fn core_update_rescue_error_class_for_category(category: RescueFailureCategory) 
     match category {
         RescueFailureCategory::RsyncBroken => "rsync_failed",
         RescueFailureCategory::RsyncPartialTransfer => "rsync_partial",
+        RescueFailureCategory::UpdateDeferredHqChange => "update_deferred_hq_change",
+        RescueFailureCategory::CloneFailed => "clone_failed",
         RescueFailureCategory::NpxResolveFailed => "npx_resolve_failed",
         RescueFailureCategory::RestoreSymlinkRace => "restore_symlink_race",
         _ => "unknown",
@@ -6226,10 +6247,37 @@ error: clone failed";
     }
 
     #[test]
-    fn rescue_generic_clone_failure_remains_unknown() {
+    fn sentry_unknown_cohort_20260929_active_hq_change_deferral_gets_own_kind() {
+        // Redacted shape from 34 eligible post-0.10.304 events.
         assert_eq!(
-            classify_rescue_stderr_failure("error: clone failed"),
-            RescueFailureCategory::Unknown
+            classify_core_update_error(
+                CoreUpdateErrorKind::RescueSpawn,
+                "Update deferred while an HQ change is active",
+                None,
+            )
+            .label(),
+            "update-deferred-hq-change"
+        );
+    }
+
+    #[test]
+    fn sentry_unknown_cohort_20260929_redacted_rsync_partial_gets_known_kind() {
+        // Redacted shape from 30 eligible events; file names and rsync metadata are omitted.
+        assert_eq!(
+            classify_rescue_stderr_failure(
+                "rsync error: some [redacted] were not transferred (see previous errors) (code 23)"
+            )
+            .label(),
+            "rsync-partial-transfer"
+        );
+    }
+
+    #[test]
+    fn sentry_unknown_cohort_20260929_generic_clone_failure_gets_own_kind() {
+        // Redacted shape from 20 eligible events.
+        assert_eq!(
+            classify_rescue_stderr_failure("error: clone failed").label(),
+            "clone-failed"
         );
     }
 
@@ -6635,7 +6683,7 @@ error: clone failed";
     }
 
     #[test]
-    fn rescue_skip_marker_survives_redaction_without_snapshot_classification() {
+    fn rescue_skip_marker_does_not_shadow_clone_failure_classification() {
         let raw_stderr = concat!(
             "HQ_RESCUE_SKIPPED_KIND=snapshot-copy-unreadable\n",
             "HQ_RESCUE_SNAPSHOT_COPY_CODE=EDEADLK\n",
@@ -6648,7 +6696,7 @@ error: clone failed";
         assert!(!stderr.contains("HQ_RESCUE_SNAPSHOT_COPY_CODE=EDEADLK"));
         assert_eq!(
             classify_rescue_stderr_failure(&stderr),
-            RescueFailureCategory::Unknown
+            RescueFailureCategory::CloneFailed
         );
     }
 
