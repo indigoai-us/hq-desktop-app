@@ -10,6 +10,19 @@ The release moves it under the version it ships in.
 
 - First-run setup now retries a just-published npm package when the registry
   briefly returns E404 or ETARGET, while keeping setup progress active.
+
+- The "Syncing initial cloud data" step of a new install now finishes in
+  seconds instead of about two minutes. Once your personal vault is set up,
+  the step hands the upload to HQ's background sync, which was already
+  pushing the same files. The step only does this when background sync is
+  running, Auto-sync and Personal sync are on, sync is not paused, and you are
+  signed in. In every other case the step uploads the files itself, now eight
+  at a time instead of one at a time. When the step hands off, the app checks
+  that background sync actually saved your personal files and uploads them
+  itself if it did not. The `desktop.install-initial-sync-handoff` flag
+  controls this and is on by default; turning it off restores the previous
+  one-file-at-a-time upload.
+
 - First-time setup is now one five-screen welcome flow that fills the screen
   (everything below the menu bar and beside the Dock) with no window
   shadow. On macOS the background is your own desktop wallpaper, blurred
@@ -66,6 +79,7 @@ The release moves it under the version it ships in.
 
 - Setup uses HQ's managed Node.js and npm to install qmd and the HQ CLI.
 - Sign-in keeps working after an internal error during an earlier sign-in attempt, instead of failing until the app restarts.
+- When creating a cloud bot, each size now shows its own monthly price ($100, $250 or $500). If your company pays a different amount, that amount appears underneath.
 
 ## [0.10.358] — 2026-09-29
 
