@@ -26,6 +26,18 @@ describe('bulletproof recovery wiring', () => {
     expect(main).toContain('updater::reinstall_latest_release');
   });
 
+  it('closes an untouched recovery window when shell_ready arrives after the timeout', () => {
+    const watchdog = read('apps/sync/src-tauri/src/boot_watchdog.rs');
+    expect(watchdog).toContain('DismissRecovery');
+    expect(watchdog).toContain('late_timer_decision');
+    const recovery = read('apps/sync/src-tauri/src/recovery.rs');
+    expect(recovery).toContain('WatchdogEvent::DismissRecovery');
+    expect(recovery).toContain('closing recovery window');
+    expect(recovery).toContain('async runtime stalled');
+    const main = read('apps/sync/src-tauri/src/main.rs');
+    expect(main).toContain('crate::recovery::spawn_runtime_stall_sentinel');
+  });
+
   it('reports shell_ready from the HQ Work shell after first paint', () => {
     const shell = read('apps/sync/src/desktop-alt/HqWorkWorkShell.svelte');
     expect(shell).toContain("invokeFn('shell_ready')");

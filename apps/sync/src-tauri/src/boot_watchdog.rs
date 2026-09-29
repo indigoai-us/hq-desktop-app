@@ -10,6 +10,14 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 pub const DEFAULT_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(20);
+/// A watchdog timer that wakes this much later than requested means the async
+/// runtime itself was stalled (blocked workers, process suspension). The UI's
+/// `shell_ready` invoke was queued behind the same stall, so firing recovery
+/// immediately would alarm on a shell that is about to come up.
+pub const LATE_FIRE_TOLERANCE: Duration = Duration::from_secs(2);
+/// Extra time granted once after a late timer wake, so the queued UI work can
+/// drain before the recovery window opens.
+pub const STALL_GRACE: Duration = Duration::from_secs(10);
 pub const FORCE_RECOVERY_ENV: &str = "HQ_DESKTOP_FORCE_RECOVERY";
 pub const WATCHDOG_TIMEOUT_ENV: &str = "HQ_DESKTOP_WATCHDOG_SECS";
 pub const SAFE_MODE_FILE_NAME: &str = "desktop-safe-mode";
@@ -56,7 +64,38 @@ pub enum WatchdogEvent {
     None,
     StartTimer,
     CancelTimer,
-    OpenRecovery { trigger: RecoveryTrigger },
+    OpenRecovery {
+        trigger: RecoveryTrigger,
+    },
+    /// `shell_ready` arrived after the watchdog already opened recovery for a
+    /// timeout: the shell is healthy, so an untouched recovery window closes.
+    DismissRecovery,
+}
+
+/// What the timer task should do when its sleep returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LateTimerDecision {
+    /// Woke on time (or grace already spent): apply the timeout.
+    Fire,
+    /// Woke late by `late`: log a runtime stall and sleep `grace` more first.
+    Grace { late: Duration, grace: Duration },
+}
+
+/// Pure decision for a timer that slept `expected` but observed `elapsed`.
+pub fn late_timer_decision(
+    expected: Duration,
+    elapsed: Duration,
+    grace_used: bool,
+) -> LateTimerDecision {
+    let late = elapsed.saturating_sub(expected);
+    if grace_used || late < LATE_FIRE_TOLERANCE {
+        LateTimerDecision::Fire
+    } else {
+        LateTimerDecision::Grace {
+            late,
+            grace: STALL_GRACE,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,7 +129,11 @@ impl BootWatchdog {
     pub fn on_shell_ready(&mut self) -> WatchdogEvent {
         match self.phase {
             WatchdogPhase::Ready => WatchdogEvent::None,
-            WatchdogPhase::Waiting | WatchdogPhase::Idle | WatchdogPhase::TimedOut => {
+            WatchdogPhase::TimedOut => {
+                self.phase = WatchdogPhase::Ready;
+                WatchdogEvent::DismissRecovery
+            }
+            WatchdogPhase::Waiting | WatchdogPhase::Idle => {
                 self.phase = WatchdogPhase::Ready;
                 WatchdogEvent::CancelTimer
             }
@@ -165,7 +208,9 @@ impl WatchdogRuntime {
         let mut machine = self.machine.lock().unwrap_or_else(|e| e.into_inner());
         let event = f(&mut machine);
         match event {
-            WatchdogEvent::StartTimer | WatchdogEvent::CancelTimer => {
+            WatchdogEvent::StartTimer
+            | WatchdogEvent::CancelTimer
+            | WatchdogEvent::DismissRecovery => {
                 self.generation.fetch_add(1, Ordering::AcqRel);
             }
             WatchdogEvent::OpenRecovery { .. } | WatchdogEvent::None => {}
@@ -291,6 +336,55 @@ mod tests {
         );
         assert_eq!(dog.phase(), WatchdogPhase::TimedOut);
         assert_eq!(dog.on_timeout(), WatchdogEvent::None);
+    }
+
+    #[test]
+    fn late_shell_ready_after_timeout_dismisses_recovery() {
+        let mut dog = BootWatchdog::default();
+        dog.on_window_created();
+        dog.on_timeout();
+        assert_eq!(dog.phase(), WatchdogPhase::TimedOut);
+        assert_eq!(dog.on_shell_ready(), WatchdogEvent::DismissRecovery);
+        assert_eq!(dog.phase(), WatchdogPhase::Ready);
+        // Idempotent: a second report is a no-op.
+        assert_eq!(dog.on_shell_ready(), WatchdogEvent::None);
+    }
+
+    #[test]
+    fn dismiss_recovery_bumps_generation_like_cancel() {
+        let runtime = WatchdogRuntime::default();
+        runtime.apply(|dog| dog.on_window_created());
+        runtime.apply(|dog| dog.on_timeout());
+        let before = runtime.generation();
+        assert_eq!(
+            runtime.apply(|dog| dog.on_shell_ready()),
+            WatchdogEvent::DismissRecovery
+        );
+        assert!(runtime.generation() > before);
+    }
+
+    #[test]
+    fn late_timer_wake_grants_one_grace_then_fires() {
+        let expected = Duration::from_secs(20);
+        assert_eq!(
+            late_timer_decision(expected, Duration::from_millis(20_400), false),
+            LateTimerDecision::Fire
+        );
+        assert_eq!(
+            late_timer_decision(expected, Duration::from_millis(24_500), false),
+            LateTimerDecision::Grace {
+                late: Duration::from_millis(4_500),
+                grace: STALL_GRACE
+            }
+        );
+        assert_eq!(
+            late_timer_decision(expected, Duration::from_millis(24_500), true),
+            LateTimerDecision::Fire
+        );
+        assert_eq!(
+            late_timer_decision(expected, Duration::from_secs(19), false),
+            LateTimerDecision::Fire
+        );
     }
 
     #[test]
