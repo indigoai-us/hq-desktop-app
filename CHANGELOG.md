@@ -20,10 +20,13 @@ The release moves it under the version it ships in.
   the reply for a few more seconds. It shows again when you send another
   message or the bot reports new work.
 
-- Startup sign-in diagnostics now distinguish an invalidated saved token from a token-store read race without sending credential data.
 - Setup uses HQ's managed Node.js and npm to install qmd and the HQ CLI.
-- Desktop sync commands now recover their valid state after a mutex is poisoned.
 - Sign-in keeps working after an internal error during an earlier sign-in attempt, instead of failing until the app restarts.
+
+## [0.10.358] — 2026-09-29
+
+- Startup sign-in diagnostics now distinguish an invalidated saved token from a token-store read race without sending credential data.
+- Desktop sync commands now recover their valid state after a mutex is poisoned.
 
 - Auto-sync memory-ceiling reports now include the active sync phase and its
   elapsed-time bucket, so recurring memory failures can be compared across scan,
