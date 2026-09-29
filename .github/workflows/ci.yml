@@ -97,6 +97,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - name: Rescue clone failure classification
+        run: bash imports/hq-sync-win/scripts/tests/replace-rescue-clone-failure.sh
       # pnpm version is read from the root package.json "packageManager" field;
       # passing an explicit version here is rejected as a conflict.
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0

@@ -8,9 +8,11 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
-- The Home portfolio now lists local Personal projects from the Personal and
-  root project trees, and status changes save back to each project's source
-  board.
+- The Home portfolio lists local Personal projects, saves their status to the
+  source board, and builds Personal board summaries from those local projects.
+- Core updates now report distinct clone failure causes and retry network or unsupported Git filtering failures once.
+
+## [0.10.356] — 2026-09-29
 - If a Core update overlaps an active HQ change, HQ defers it and retries on a later check instead of reporting an update failure.
 - Pin the third-party actions used by the release monitor and UI-only publish workflow to their resolved commits.
 - The optional setup-stage timeout mitigation is off until enabled in hq-flags. When enabled, dependency install, template download and extraction, and search indexing timers restart when that stage reports progress and still stop at a maximum elapsed time.

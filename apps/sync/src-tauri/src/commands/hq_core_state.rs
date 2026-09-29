@@ -812,6 +812,18 @@ fn core_update_rescue_step_from_raw(raw: &str, error_class: &str) -> &'static st
 fn core_update_rescue_error_class(line: &str) -> Option<&'static str> {
     let lower = line.to_ascii_lowercase();
     let trimmed = lower.trim_start();
+    if let Some(class) = trimmed.strip_prefix("hq_rescue_clone_failure_class=") {
+        return match class {
+            "network" => Some("clone_network"),
+            "auth" => Some("clone_auth"),
+            "filter_unsupported" => Some("clone_filter_unsupported"),
+            "git_unusable" => Some("clone_git_unusable"),
+            "path" => Some("clone_path"),
+            "exists" => Some("clone_exists"),
+            "unknown" => Some("clone_unknown"),
+            _ => None,
+        };
+    }
     let diagnostic_line = trimmed.starts_with("error")
         || trimmed.starts_with("fatal")
         || trimmed.starts_with("npm err")
@@ -7451,6 +7463,41 @@ error: clone failed";
     #[test]
     fn rescue_telemetry_classifies_each_supported_error_class() {
         for (raw, expected_step, expected_class) in [
+            (
+                "==> Cloning\nHQ_RESCUE_CLONE_FAILURE_CLASS=network\nerror: clone failed",
+                "clone",
+                "clone_network",
+            ),
+            (
+                "==> Cloning\nHQ_RESCUE_CLONE_FAILURE_CLASS=auth\nerror: clone failed",
+                "clone",
+                "clone_auth",
+            ),
+            (
+                "==> Cloning\nHQ_RESCUE_CLONE_FAILURE_CLASS=filter_unsupported\nerror: clone failed",
+                "clone",
+                "clone_filter_unsupported",
+            ),
+            (
+                "==> Cloning\nHQ_RESCUE_CLONE_FAILURE_CLASS=git_unusable\nerror: clone failed",
+                "clone",
+                "clone_git_unusable",
+            ),
+            (
+                "==> Cloning\nHQ_RESCUE_CLONE_FAILURE_CLASS=path\nerror: clone failed",
+                "clone",
+                "clone_path",
+            ),
+            (
+                "==> Cloning\nHQ_RESCUE_CLONE_FAILURE_CLASS=exists\nerror: clone failed",
+                "clone",
+                "clone_exists",
+            ),
+            (
+                "==> Cloning\nHQ_RESCUE_CLONE_FAILURE_CLASS=unknown\nerror: clone failed",
+                "clone",
+                "clone_unknown",
+            ),
             ("==> Cloning\nerror: clone failed", "clone", "clone_failed"),
             (
                 "==> Checkout\nerror: clone succeeded, but checkout failed",
@@ -7502,6 +7549,24 @@ error: clone failed";
             assert_eq!(telemetry.rescue_step, expected_step, "raw={raw:?}");
             assert_eq!(telemetry.rescue_error_class, expected_class, "raw={raw:?}");
         }
+    }
+
+    #[test]
+    fn clone_failure_class_survives_redaction_without_retaining_credentials() {
+        let token = "sc013-test-token-do-not-leak";
+        let raw = format!(
+            "==> Cloning\nHQ_RESCUE_CLONE_FAILURE_CLASS=network\nerror: clone failed\nfatal: unable to access 'https://x-access-token:{token}@github.com/indigoai-us/hq-core.git'"
+        );
+        let redacted = hq_telemetry::redact_core_update_diagnostic_tail(&raw);
+
+        assert!(redacted.contains("HQ_RESCUE_CLONE_FAILURE_CLASS=network"));
+        assert!(!redacted.contains(token));
+        assert!(!redacted.contains("x-access-token:"));
+        assert!(redacted.len() <= hq_telemetry::SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES);
+
+        let telemetry = CoreUpdateRescueTelemetry::from_raw(&redacted, 1);
+        assert_eq!(telemetry.rescue_error_class, "clone_network");
+        assert_eq!(telemetry.rescue_step, "clone");
     }
 
     #[test]
