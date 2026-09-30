@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Opening a conversation no longer shows an empty pane when recent activity was hidden; older messages from people load automatically.
+
 ## [0.10.362] — 2026-09-30
 
 - Conversations now hide work-mesh activity even when it is posted under a person's name, and the sidebar orders by messages people typed.

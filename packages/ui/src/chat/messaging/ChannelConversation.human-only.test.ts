@@ -234,6 +234,139 @@ describe("ChannelConversation human-only mode", () => {
     expect(text).toContain("stefan-real-typed-xyz");
   });
 
+  it("default-on: newest 55 mesh rows + older human rows renders humans without clicks (no empty pane)", async () => {
+    // Owner report shape: newest window is all work-mesh, older messages are human.
+    // Before the fix, windowing ran on RAW rows so the visible pane was empty and
+    // showed "No activity yet" with a "Show 55 earlier messages" button.
+    const mesh = Array.from({ length: 55 }, (_, i) => ({
+      eventId: `evt_mesh_${i}`,
+      direction: "in" as const,
+      fromDisplayName: "work-mesh",
+      body: MESH_BODY,
+      createdAt: `2026-08-28T15:${String(20 + Math.floor(i / 60)).padStart(2, "0")}:${String(i % 60).padStart(2, "0")}.000Z`,
+      isMeshEvent: true as const,
+    }));
+    const humans = [
+      { eventId: "h1", direction: "in" as const, fromDisplayName: "Ada", body: "human-earlier-alpha-xyz", createdAt: "2026-08-28T15:10:00.000Z" },
+      { eventId: "h2", direction: "in" as const, fromDisplayName: "Ada", body: "human-earlier-beta-xyz", createdAt: "2026-08-28T15:11:00.000Z" },
+      { eventId: "h3", direction: "in" as const, fromDisplayName: "Ada", body: "human-earlier-gamma-xyz", createdAt: "2026-08-28T15:12:00.000Z" },
+    ];
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(ChannelConversation, {
+      target: host,
+      props: { humanOnly: true, messages: [...humans, ...mesh] },
+    });
+    await tick();
+    const text = host.textContent ?? "";
+    expect(host.querySelector('[data-testid="conversation-empty"]')).toBeNull();
+    expect(text).toContain("human-earlier-alpha-xyz");
+    expect(text).toContain("human-earlier-beta-xyz");
+    expect(text).toContain("human-earlier-gamma-xyz");
+    // No "Show N earlier messages" button because nothing visible is hidden.
+    expect(host.querySelector('[data-testid="conversation-load-earlier"]')).toBeNull();
+  });
+
+  it("default-on: 'Show N earlier' count is the visible count, not the raw count", async () => {
+    // 25 visible human rows total; window is 20 (TIMELINE_WINDOW) so 5 are
+    // hidden. Interleaved mesh rows must NOT be added into the count.
+    const rows: Array<Record<string, unknown>> = [];
+    for (let i = 0; i < 25; i += 1) {
+      rows.push({
+        eventId: `h_${i}`,
+        direction: "in" as const,
+        fromDisplayName: "Ada",
+        body: `human-msg-${i}-xyz`,
+        createdAt: `2026-08-28T14:${String(i).padStart(2, "0")}:00.000Z`,
+      });
+      rows.push({
+        eventId: `m_${i}`,
+        direction: "in" as const,
+        fromDisplayName: "work-mesh",
+        body: MESH_BODY,
+        createdAt: `2026-08-28T14:${String(i).padStart(2, "0")}:30.000Z`,
+        isMeshEvent: true as const,
+      });
+    }
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(ChannelConversation, {
+      target: host,
+      props: { humanOnly: true, messages: rows },
+    });
+    await tick();
+    const btn = host.querySelector('[data-testid="conversation-load-earlier"]');
+    expect(btn).not.toBeNull();
+    expect(btn?.textContent ?? "").toContain("Show 5 earlier messages");
+  });
+
+  it("default-on: auto-fetches older pages when local window is empty but server has more", async () => {
+    let calls = 0;
+    const onloadearlier = async () => {
+      calls += 1;
+    };
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(ChannelConversation, {
+      target: host,
+      props: {
+        humanOnly: true,
+        hasEarlier: true,
+        onloadearlier,
+        messages: [
+          { eventId: "evt_mesh_only", direction: "in" as const, fromDisplayName: "work-mesh", body: MESH_BODY, createdAt: "2026-08-28T15:14:05.000Z", isMeshEvent: true as const },
+        ],
+      },
+    });
+    await tick();
+    await tick();
+    await tick();
+    expect(calls).toBeGreaterThanOrEqual(1);
+  });
+
+  it("default-on: auto-fetch is bounded even if every page is mesh-only", async () => {
+    let calls = 0;
+    const onloadearlier = async () => {
+      calls += 1;
+    };
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(ChannelConversation, {
+      target: host,
+      props: {
+        humanOnly: true,
+        hasEarlier: true,
+        onloadearlier,
+        messages: [
+          { eventId: "evt_mesh_only_b", direction: "in" as const, fromDisplayName: "work-mesh", body: MESH_BODY, createdAt: "2026-08-28T15:14:05.000Z", isMeshEvent: true as const },
+        ],
+      },
+    });
+    // Give the effect several ticks to run through the cap.
+    for (let i = 0; i < 20; i += 1) await tick();
+    expect(calls).toBeLessThanOrEqual(5);
+  });
+
+  it("flag off: auto-fetch is NOT triggered by an empty local page", async () => {
+    let calls = 0;
+    const onloadearlier = async () => {
+      calls += 1;
+    };
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(ChannelConversation, {
+      target: host,
+      props: {
+        humanOnly: false,
+        hasEarlier: true,
+        onloadearlier,
+        messages: [],
+      },
+    });
+    for (let i = 0; i < 5; i += 1) await tick();
+    expect(calls).toBe(0);
+  });
+
   it("default-on: keeps untagged agent replies and actionable lifecycle cards", async () => {
     host = document.createElement("div");
     document.body.appendChild(host);
