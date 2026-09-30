@@ -81,6 +81,20 @@ pub enum LateTimerDecision {
     Grace { late: Duration, grace: Duration },
 }
 
+/// Pure decision for whether an about-to-open recovery window should be
+/// skipped because the desktop shell reported ready during the auto-check
+/// gap. Menu and safe-mode triggers always open (support/user-initiated),
+/// only the automatic watchdog-timeout / webview-crash paths defer to the
+/// live shell state.
+pub fn should_skip_recovery_open(phase: WatchdogPhase, trigger: RecoveryTrigger) -> bool {
+    match trigger {
+        RecoveryTrigger::WatchdogTimeout | RecoveryTrigger::WebviewCrash => {
+            matches!(phase, WatchdogPhase::Ready)
+        }
+        RecoveryTrigger::Menu | RecoveryTrigger::SafeMode => false,
+    }
+}
+
 /// Pure decision for a timer that slept `expected` but observed `elapsed`.
 pub fn late_timer_decision(
     expected: Duration,
@@ -385,6 +399,37 @@ mod tests {
             late_timer_decision(expected, Duration::from_secs(19), false),
             LateTimerDecision::Fire
         );
+    }
+
+    #[test]
+    fn skip_recovery_open_when_shell_ready_during_auto_check() {
+        // watchdog-timeout: skip when Ready, open when TimedOut.
+        assert!(should_skip_recovery_open(
+            WatchdogPhase::Ready,
+            RecoveryTrigger::WatchdogTimeout,
+        ));
+        assert!(!should_skip_recovery_open(
+            WatchdogPhase::TimedOut,
+            RecoveryTrigger::WatchdogTimeout,
+        ));
+        // webview-crash: skip only when shell reported ready.
+        assert!(should_skip_recovery_open(
+            WatchdogPhase::Ready,
+            RecoveryTrigger::WebviewCrash,
+        ));
+        assert!(!should_skip_recovery_open(
+            WatchdogPhase::Crashed,
+            RecoveryTrigger::WebviewCrash,
+        ));
+        // Menu + safe-mode always open regardless of phase.
+        assert!(!should_skip_recovery_open(
+            WatchdogPhase::Ready,
+            RecoveryTrigger::Menu,
+        ));
+        assert!(!should_skip_recovery_open(
+            WatchdogPhase::Ready,
+            RecoveryTrigger::SafeMode,
+        ));
     }
 
     #[test]

@@ -12,8 +12,8 @@ use url::Url;
 
 use crate::boot_watchdog::{
     consume_safe_mode_flag, force_recovery_from_env, late_timer_decision, safe_mode_requested,
-    ui_state_reset_script, LateTimerDecision, RecoveryTrigger, WatchdogEvent, WatchdogRuntime,
-    WATCHDOG_TIMEOUT_ENV,
+    should_skip_recovery_open, ui_state_reset_script, LateTimerDecision, RecoveryTrigger,
+    WatchdogEvent, WatchdogRuntime, WATCHDOG_TIMEOUT_ENV,
 };
 use crate::updater::{self, UpdateInfo};
 use crate::util::logfile::log;
@@ -291,6 +291,22 @@ pub async fn open_recovery_window(
             Err(error) => {
                 boot_log(&format!("recovery auto-check failed: {error}"));
             }
+        }
+    }
+
+    // Race guard: an auto-check can spend seconds on the network. If the
+    // desktop shell reported ready during that gap, the DismissRecovery
+    // event fired against a window that did not exist yet — so opening it
+    // now would put a Recovery dialog over a healthy shell. Bail out and
+    // clear the pending flag before we build.
+    if let Some(runtime) = app.try_state::<WatchdogRuntime>() {
+        if should_skip_recovery_open(runtime.phase(), trigger) {
+            runtime.mark_recovery_open(false);
+            boot_log(&format!(
+                "shell ready during recovery auto-check; not opening recovery window (trigger={})",
+                trigger.as_str()
+            ));
+            return Ok(());
         }
     }
 

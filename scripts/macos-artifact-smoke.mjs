@@ -169,6 +169,7 @@ const SAFE_BOOT_LOG_PATTERNS = [
   new RegExp(`^watchdog timeout(?: after \\d+\\.\\d+s)? — desktop shell did not report ready$`),
   new RegExp(`^watchdog timer woke \\d+\\.\\d+s late — async runtime stalled; granting \\d+s grace before recovery$`),
   new RegExp(`^async runtime stalled: heartbeat woke \\d+\\.\\d+s late$`),
+  new RegExp(`^shell ready during recovery auto-check; not opening recovery window \\(trigger=(?:${SAFE_RECOVERY_TRIGGERS})\\)$`),
 ];
 
 const CREDENTIAL_SHAPES = [

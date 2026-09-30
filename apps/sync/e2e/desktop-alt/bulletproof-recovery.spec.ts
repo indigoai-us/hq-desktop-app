@@ -34,6 +34,12 @@ describe('bulletproof recovery wiring', () => {
     expect(recovery).toContain('WatchdogEvent::DismissRecovery');
     expect(recovery).toContain('closing recovery window');
     expect(recovery).toContain('async runtime stalled');
+    // The auto-check race guard: an auto-check can outrun shell_ready, so
+    // recovery.rs must re-check the watchdog phase before building the
+    // window and skip the build when the shell is already Ready.
+    expect(watchdog).toContain('should_skip_recovery_open');
+    expect(recovery).toContain('should_skip_recovery_open');
+    expect(recovery).toContain('shell ready during recovery auto-check');
     const main = read('apps/sync/src-tauri/src/main.rs');
     expect(main).toContain('crate::recovery::spawn_runtime_stall_sentinel');
   });
