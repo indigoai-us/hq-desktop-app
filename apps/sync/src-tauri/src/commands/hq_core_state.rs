@@ -498,8 +498,15 @@ impl CoreUpdateRescueTelemetry {
         attempt_number: u32,
         probe_results: CoreUpdateToolProbeResults,
     ) -> Self {
-        let rescue_error_class = core_update_snapshot_error_class(raw)
-            .or_else(|| raw.lines().find_map(core_update_rescue_error_class))
+        let terminal_failure_marker_class = core_update_last_failure_context(raw)
+            .and_then(|context| context.lines().next())
+            .and_then(core_update_rescue_error_class);
+        let terminal_diagnostics = core_update_last_failure_context(raw)
+            .or_else(|| core_update_last_error_context(raw))
+            .unwrap_or(raw);
+        let rescue_error_class = terminal_failure_marker_class
+            .or_else(|| core_update_snapshot_error_class(raw))
+            .or_else(|| terminal_diagnostics.lines().find_map(core_update_rescue_error_class))
             .unwrap_or("unknown");
         let stage_markers = core_update_stage_markers(raw);
         // The rescue script's `==>` stream includes headings as well as stage
@@ -820,13 +827,56 @@ fn core_update_rescue_step_from_raw(raw: &str, error_class: &str) -> &'static st
     }
 }
 
+fn core_update_last_failure_context(raw: &str) -> Option<&str> {
+    let prefix = "hq_rescue_failure_kind=";
+    let mut offset = 0;
+    let mut last_marker_offset = None;
+    for line in raw.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if trimmed
+            .get(..prefix.len())
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(prefix))
+        {
+            last_marker_offset = Some(offset);
+        }
+        offset += line.len();
+    }
+    last_marker_offset.map(|start| &raw[start..])
+}
+
+fn core_update_last_error_context(raw: &str) -> Option<&str> {
+    let mut offset = 0;
+    let mut last_error_offset = None;
+    for line in raw.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if ["error:", "fatal:"].iter().any(|prefix| {
+            trimmed
+                .get(..prefix.len())
+                .is_some_and(|candidate| candidate.eq_ignore_ascii_case(prefix))
+        }) {
+            last_error_offset = Some(offset);
+        }
+        offset += line.len();
+    }
+    last_error_offset.map(|start| &raw[start..])
+}
+
 fn core_update_snapshot_error_class(raw: &str) -> Option<&'static str> {
-    let lower = raw.to_ascii_lowercase();
+    let terminal = core_update_last_failure_context(raw)
+        .or_else(|| core_update_last_error_context(raw))
+        .unwrap_or(raw);
+    let lower = terminal.to_ascii_lowercase();
     let failure_kind = lower.lines().find_map(|line| {
         line.trim_start()
             .strip_prefix("hq_rescue_failure_kind=")
             .map(str::trim)
     });
+    if failure_kind.is_some_and(|kind| {
+        !kind.starts_with("snapshot-")
+            && !matches!(kind, "disk_full" | "backup-capacity-check-failed")
+    }) {
+        return None;
+    }
     let copy_code = lower.lines().find_map(|line| {
         line.trim_start()
             .strip_prefix("hq_rescue_snapshot_copy_code=")
@@ -6967,6 +7017,38 @@ error: clone failed";
                 "HQ_RESCUE_FAILURE_KIND=snapshot-copy-failed\nerror: target resolves outside the HQ root."
             ),
             RescueFailureCategory::SnapshotExternalSymlink
+        );
+    }
+
+    #[test]
+    fn later_definitive_failure_marker_overrides_earlier_snapshot_diagnostic() {
+        let raw = concat!(
+            "error: no space left on device while allocating the safety snapshot\n",
+            "HQ_RESCUE_FAILURE_KIND=rsync-found-but-broken\r\n",
+        );
+        let error = CoreUpdateError::new(CoreUpdateErrorKind::RescueSpawn, raw);
+        let report = report_for_core_update_error(&error);
+
+        assert_eq!(report.rescue_telemetry.rescue_step, "rsync");
+        assert_eq!(report.rescue_telemetry.rescue_error_class, "rsync_failed");
+    }
+
+    #[test]
+    fn tolerated_snapshot_skip_code_does_not_classify_terminal_copy_failure() {
+        let raw = concat!(
+            "HQ_RESCUE_SKIPPED_KIND=snapshot-copy-failed\n",
+            "HQ_RESCUE_SNAPSHOT_COPY_CODE=EACCES\n",
+            "warning: snapshot skipped <path>. It was not backed up and was left untouched. The update continued.\n",
+            "HQ_RESCUE_FAILURE_KIND=snapshot-copy-failed\n",
+            "HQ_RESCUE_SNAPSHOT_COPY_CODE=EIO\n",
+            "error: safety snapshot could not write <snapshot> (EIO).\n",
+        );
+        let error = CoreUpdateError::new(CoreUpdateErrorKind::RescueSpawn, raw);
+        let report = report_for_core_update_error(&error);
+
+        assert_eq!(
+            report.rescue_telemetry.rescue_error_class,
+            "snapshot_copy_failed"
         );
     }
 
