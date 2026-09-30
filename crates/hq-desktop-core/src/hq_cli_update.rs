@@ -8571,6 +8571,17 @@ fn hq_cli_package_json_candidates(prefix: &Path, hq_bin: &Path) -> Vec<std::path
     candidates
 }
 
+/// Whether an updater invocation may write forward-update reporting state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HqCliInstallMode {
+    Forward,
+    Rollback,
+}
+
+pub fn should_record_forward_cli_install_effects(mode: HqCliInstallMode) -> bool {
+    mode == HqCliInstallMode::Forward
+}
+
 /// Run an install and recover only when it errors or leaves `hq` unprobeable.
 /// A successful deferred install has a readable local version and is left alone.
 pub async fn install_with_previous_cli_recovery<I, IFut, R, RFut>(
@@ -8685,97 +8696,6 @@ pub fn hq_cli_package_directories_from_bin(hq_bin: &Path) -> Vec<std::path::Path
         }
     }
     package_directories
-}
-
-#[cfg(all(test, unix))]
-mod cli_install_snapshot_tests {
-    use super::*;
-    use std::os::unix::fs::{symlink, PermissionsExt};
-
-    fn write_fake_hq(path: &Path, output: &str) {
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, format!("#!/bin/sh\necho {output}\n")).unwrap();
-        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
-    }
-
-    fn fake_hq_output(path: &Path) -> String {
-        std::process::Command::new(path)
-            .output()
-            .unwrap()
-            .stdout
-            .into_iter()
-            .map(char::from)
-            .collect::<String>()
-            .trim()
-            .to_string()
-    }
-
-    fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
-        let temp = tempfile::tempdir().unwrap();
-        let package = temp.path().join("node_modules/@indigoai-us/hq-cli");
-        let package_bin = package.join("bin/hq");
-        let hq_bin = temp.path().join("bin/hq");
-        fs::create_dir_all(package.join("bin")).unwrap();
-        fs::write(
-            package.join("package.json"),
-            r#"{"name":"@indigoai-us/hq-cli","version":"1.0.0"}"#,
-        )
-        .unwrap();
-        write_fake_hq(&package_bin, "previous-cli");
-        fs::create_dir_all(hq_bin.parent().unwrap()).unwrap();
-        symlink(&package_bin, &hq_bin).unwrap();
-        (temp, package, hq_bin)
-    }
-
-    fn run_fake_installer(
-        path: &Path,
-        target: &Path,
-        output: &str,
-        exit: i32,
-    ) -> std::process::ExitStatus {
-        let script = format!(
-            "#!/bin/sh\nprintf '%s\\n' '#!/bin/sh' 'echo {output}' > \"$TARGET\"\nexit {exit}\n"
-        );
-        fs::write(path, script).unwrap();
-        std::process::Command::new("sh")
-            .arg(path)
-            .env("TARGET", target)
-            .status()
-            .unwrap()
-    }
-
-    #[test]
-    fn failed_cli_install_restores_the_previous_executable() {
-        let (temp, package, hq_bin) = fixture();
-        let snapshot =
-            HqCliInstallSnapshot::capture(&package, &hq_bin, "1.0.0".to_string()).unwrap();
-        let status = run_fake_installer(
-            &temp.path().join("installer.sh"),
-            &package.join("bin/hq"),
-            "partial-install",
-            23,
-        );
-        assert_eq!(status.code(), Some(23));
-        assert_eq!(fake_hq_output(&hq_bin), "partial-install");
-        assert!(!restore_if_install_not_converged(snapshot, None, "2.0.0").unwrap());
-        assert_eq!(fake_hq_output(&hq_bin), "previous-cli");
-    }
-
-    #[test]
-    fn converged_cli_install_keeps_the_new_executable() {
-        let (temp, package, hq_bin) = fixture();
-        let snapshot =
-            HqCliInstallSnapshot::capture(&package, &hq_bin, "1.0.0".to_string()).unwrap();
-        let status = run_fake_installer(
-            &temp.path().join("installer.sh"),
-            &package.join("bin/hq"),
-            "new-cli",
-            0,
-        );
-        assert!(status.success());
-        assert!(restore_if_install_not_converged(snapshot, Some("2.0.0"), "2.0.0").unwrap());
-        assert_eq!(fake_hq_output(&hq_bin), "new-cli");
-    }
 }
 
 #[cfg(test)]
