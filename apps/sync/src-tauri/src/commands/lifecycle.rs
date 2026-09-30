@@ -477,6 +477,9 @@ pub struct SetupStatus {
     /// machine set up before the welcome flow existed, or once the guided run
     /// finished. See `hq_desktop_core::lifecycle::welcome_setup_owed`.
     pub welcome_setup_owed: bool,
+    /// The desktop window's first-run guided tour was already shown here.
+    /// See `hq_desktop_core::lifecycle::welcome_tour_shown`.
+    pub welcome_tour_shown: bool,
 }
 
 #[tauri::command]
@@ -513,6 +516,7 @@ pub fn get_setup_status() -> SetupStatus {
         // the unavailable state that made launch conservative.
         welcome_setup_owed: !settings_unavailable
             && hq_desktop_core::lifecycle::welcome_setup_owed(&menubar, root_valid),
+        welcome_tour_shown: hq_desktop_core::lifecycle::welcome_tour_shown(&menubar),
     }
 }
 
@@ -531,6 +535,21 @@ pub fn mark_welcome_setup_complete() -> Result<(), String> {
                 Value::String(Utc::now().to_rfc3339()),
             ),
         ],
+    )
+}
+
+/// The desktop window's first-run guided tour started showing. Recorded as
+/// soon as it appears (not when it finishes) so a crash or quit mid-tour does
+/// not replay it on every launch. The command palette can still replay it.
+#[tauri::command]
+pub fn mark_welcome_tour_shown() -> Result<(), String> {
+    let path = paths::menubar_json_path()?;
+    hq_desktop_core::first_run::merge_menubar_flags(
+        &path,
+        &[(
+            hq_desktop_core::lifecycle::WELCOME_TOUR_SHOWN_KEY,
+            Value::Bool(true),
+        )],
     )
 }
 
@@ -584,6 +603,7 @@ pub fn report_unexpected_startup_surface(
     probe_attempts: u32,
     authenticated: bool,
     token_presence: String,
+    first_read_result: Option<String>,
     prior_surface: String,
 ) {
     // Read token file metadata without reading its contents.
@@ -616,21 +636,32 @@ pub fn report_unexpected_startup_surface(
     let (auth_session_status, refresh_failure_class) =
         crate::commands::auth::startup_auth_diagnostic_tags();
     let diagnostic_tags =
-        hq_desktop_core::unexpected_surface::startup_diagnostic_tags_with_auth_session(
-            authenticated,
+        hq_desktop_core::unexpected_surface::apply_startup_token_store_diagnostics(
+            hq_desktop_core::unexpected_surface::startup_diagnostic_tags_with_auth_session(
+                authenticated,
+                &token_presence,
+                elapsed_since_start.map(|elapsed| elapsed.as_millis()),
+                &prior_surface,
+                hq_desktop_core::unexpected_surface::StartupLifecycleInputs {
+                    inputs: *inputs,
+                    hq_root_probe: state.hq_root_probe,
+                    hq_program_kind: state.hq_program_kind,
+                    node_program_kind: state.node_program_kind,
+                    require_local_toolchain_demoted: state.require_local_toolchain_demoted,
+                },
+                auth_session_status,
+                refresh_failure_class,
+            ),
+            &surface,
             &token_presence,
-            elapsed_since_start.map(|elapsed| elapsed.as_millis()),
-            &prior_surface,
-            hq_desktop_core::unexpected_surface::StartupLifecycleInputs {
-                inputs: *inputs,
-                hq_root_probe: state.hq_root_probe,
-                hq_program_kind: state.hq_program_kind,
-                node_program_kind: state.node_program_kind,
-                require_local_toolchain_demoted: state.require_local_toolchain_demoted,
-            },
-            auth_session_status,
-            refresh_failure_class,
+            first_read_result.as_deref(),
         );
+    let (last_auth_transition, last_auth_transition_age_seconds) =
+        if surface == "sign-in" && token_presence == "present" {
+            crate::commands::auth::last_auth_transition_diagnostic()
+        } else {
+            ("none", 0)
+        };
 
     let prior_setup = inputs.evidence_unreadable
         || hq_desktop_core::unexpected_surface::prior_setup_detected(
@@ -654,7 +685,7 @@ pub fn report_unexpected_startup_surface(
 
     // Always write the log line so diagnostics can find it.
     let log_line = format!(
-        "unexpected_startup_surface surface={} lifecycle_state={} install_completed={} first_run_completed={} config_valid={} hq_root_valid={} has_auth={} tools_present={} bundled_cli_ready={} consent_answered={} evidence_unreadable={} token_file_exists={} token_file_age_minutes={} auth_check_failed={} probe_attempts={} session_restore_state={} token_present={} keychain_status={} ms_since_launch={} prior_surface={} from_updater_restart={} app_version={}",
+        "unexpected_startup_surface surface={} lifecycle_state={} install_completed={} first_run_completed={} config_valid={} hq_root_valid={} has_auth={} tools_present={} bundled_cli_ready={} consent_answered={} evidence_unreadable={} token_file_exists={} token_file_age_minutes={} auth_check_failed={} probe_attempts={} session_restore_state={} token_present={} keychain_status={} ms_since_launch={} prior_surface={} from_updater_restart={} app_version={} invalidation_marker_present={} first_read_result={} recheck_read_result={} last_auth_transition={} last_auth_transition_age_seconds={}",
         surface,
         lc_state_str,
         inputs.install_completed,
@@ -677,6 +708,11 @@ pub fn report_unexpected_startup_surface(
         diagnostic_tags.prior_surface,
         std::env::args().any(|a| a == hq_platform::launchagent::LAUNCH_AGENT_RELAUNCH_ARG),
         crate::app_version::current(),
+        diagnostic_tags.invalidation_marker_present,
+        diagnostic_tags.first_read_result,
+        diagnostic_tags.recheck_read_result,
+        last_auth_transition,
+        last_auth_transition_age_seconds,
     );
 
     if !should_report {
@@ -724,6 +760,11 @@ pub fn report_unexpected_startup_surface(
             for (key, value) in diagnostic_tags.as_pairs() {
                 scope.set_tag(key, value);
             }
+            scope.set_tag("last_auth_transition", last_auth_transition);
+            scope.set_extra(
+                "last_auth_transition_age_seconds",
+                serde_json::json!(last_auth_transition_age_seconds).into(),
+            );
             scope.set_extra("install_completed", serde_json::json!(payload.install_completed).into());
             scope.set_extra("first_run_completed", serde_json::json!(payload.first_run_completed).into());
             scope.set_extra("config_valid", serde_json::json!(payload.config_valid).into());

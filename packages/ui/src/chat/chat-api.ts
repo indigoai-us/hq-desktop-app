@@ -232,6 +232,16 @@ export interface ConversationMessageWire {
     displayName: string;
     agent?: boolean;
   }> | null;
+  /**
+   * Audience classifier used by the `desktop.human-only-conversations` flag.
+   * `null` / `undefined` / `"human"` / `"both"` = human; `"bot"` / `"mesh"`
+   * / other = not human. See `@hq/platform` `isHumanMessage`.
+   */
+  audience?: string | null;
+  /** Server-issued system-event marker (wins over audience). */
+  isSystemEvent?: boolean | null;
+  /** Server-issued work-mesh-event marker (wins over audience). */
+  isMeshEvent?: boolean | null;
 }
 
 /** Channel detail + newest-first message page (desktop `fetch_channel`). */

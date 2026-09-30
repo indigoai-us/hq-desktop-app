@@ -29,7 +29,7 @@
   import ReactionBar from "./ReactionBar.svelte";
   import EmojiPicker from "./EmojiPicker.svelte";
   import MentionPicker from "./MentionPicker.svelte";
-  import type { LocalBotRow } from "@hq/platform";
+  import { isHumanMessage, type LocalBotRow } from "@hq/platform";
   import ArtifactCard from "./ArtifactCard.svelte";
   import type { ChatArtifact } from "./artifact-model.js";
   import type { ImagePreviewCache } from "./image-preview-cache";
@@ -94,6 +94,7 @@
   import { takeNewestWindow, TIMELINE_WINDOW } from "./timeline-window";
   import { coalesceScroll } from "./scroll-coalesce";
   import { formatComposerSendError } from "./composer-send-error";
+  import { uploadErrorUpgradeUrl } from "./upload-chat-attachments";
   import {
     clearDraft,
     loadDraft,
@@ -274,6 +275,13 @@
     restoreScroll?: NavigationScrollState | null;
     /** The user's local bots — tells the Cloud / Local chip which is which. */
     localBots?: ReadonlyArray<LocalBotRow> | null;
+    /**
+     * When true (the `desktop.human-only-conversations` flag is on), work-mesh
+     * activity rows, server system-events, and non-human-audience messages are
+     * hidden from the timeline. See `@hq/platform` `isHumanMessage` for the
+     * exact rule. Default off preserves the legacy view.
+     */
+    humanOnly?: boolean;
   }
 
   let {
@@ -320,6 +328,7 @@
     headerOnly = false,
     restoreScroll = null,
     localBots = null,
+    humanOnly = false,
   }: Props = $props();
 
   /** Presence-store online flag for an actor in this conversation's company. */
@@ -489,11 +498,39 @@
     });
   });
   const rootMessages = $derived(messages.filter((msg) => !isReplyMessage(msg)));
+  /**
+   * Rows the reader is entitled to see in this pane. When `humanOnly` is on,
+   * mesh/system/non-human-audience rows are removed here so that windowing,
+   * the "Show N earlier" count, and the empty-state check all operate on the
+   * VISIBLE row set. Before this filter ran pre-window, the newest local page
+   * being all mesh rows produced an empty pane with a large "Show N earlier"
+   * count that only decreased by 20 per click (owner report, v0.10.362).
+   */
+  const visibleRootMessages = $derived.by(() => {
+    if (!humanOnly) return rootMessages;
+    return rootMessages.filter((msg) => !hiddenInHumanOnly(msg));
+  });
   const windowed = $derived(
-    takeNewestWindow(rootMessages, { extra: extraOlder }),
+    takeNewestWindow(visibleRootMessages, { extra: extraOlder }),
   );
   /** First eventId wins so the keyed each never receives duplicate keys
    *  (host page + optimistic localSends race). */
+  /**
+   * Human-only rule for this timeline. Hidden: work-mesh bodies, system
+   * lines and cards, rows flagged isSystemEvent / isMeshEvent, and any
+   * explicit non-human audience ("bot", "mesh"). Kept: lifecycle cards
+   * (they ask the person to act, e.g. create a company) and agent messages
+   * with no audience tag (bot DM replies, the Setup bot), since the wire
+   * cannot tell those apart from autonomous posts.
+   */
+  function hiddenInHumanOnly(msg: ConversationMessageWire): boolean {
+    const model = systemModelForMessage(msg);
+    if (model?.kind === "lifecycle_card") return false;
+    if (model !== null) return true;
+    if (parseWorkSessionEvent(msg.body ?? "") !== null) return true;
+    return !isHumanMessage(msg, { inferFromUid: false });
+  }
+
   const timeline = $derived.by(() => {
     const seen = new Set<string>();
     const out: ConversationMessageWire[] = [];
@@ -504,6 +541,13 @@
       // entirely — rendering nothing for them would still paint an empty
       // bubble with an avatar and a timestamp.
       if (isHiddenTimelineMessage(msg)) continue;
+      // desktop.human-only-conversations: hide mesh/system rows and any
+      // non-human-audience message. A mesh row that parses as a work-session
+      // event is dropped downstream via `parseWorkSessionEvent` below.
+      // Filtering happens here (not only in renderRows) so a channel whose
+      // only messages are non-human reaches the empty state instead of a
+      // blank pane.
+      if (humanOnly && hiddenInHumanOnly(msg)) continue;
       seen.add(id);
       out.push(msg);
     }
@@ -535,6 +579,9 @@
   let attachInputEl = $state<HTMLInputElement | null>(null);
   let pendingFiles = $state.raw<File[]>([]);
   let attachError = $state<string | null>(null);
+  // Upgrade link for a plan-limit upload refusal; only shown beside the
+  // attach error it came with (hard-stop US-018).
+  let attachUpgradeUrl = $state<string | null>(null);
   let trayOpen = $state(false);
   let traySelectedId = $state<string | null>(null);
   let composerEmojiOpen = $state(false);
@@ -651,6 +698,15 @@
     scrollToBottom();
   }
 
+  /**
+   * Human-only auto-fetch bound. When the local window has 0 visible rows but
+   * the server has more history, fetch older pages until the window fills or
+   * the bound is hit - so opening a channel whose newest N rows are all mesh
+   * activity does not require the reader to click "Show earlier" repeatedly.
+   * Bounded to protect the wire and the empty-history case.
+   */
+  const AUTO_FETCH_MAX_PAGES = 5;
+  let autoFetchPages = $state(0);
   /** "Show N earlier" prepends rows; anchor the height so the view holds still. */
   let earlierError = $state(false);
   async function showEarlier(): Promise<void> {
@@ -672,6 +728,28 @@
       loadingEarlier = false;
     }
   }
+
+  /**
+   * Auto-fetch older pages when the visible window is empty but the server has
+   * more history. Runs only in humanOnly mode: with the flag off, an empty
+   * local pane already means an empty channel, and the existing scroll-to-top
+   * loader handles ordinary paging. Bounded per mount; the component is
+   * remounted on channel switch, so the counter resets naturally.
+   */
+  $effect(() => {
+    if (!humanOnly) return;
+    if (!hasEarlier) return;
+    if (loadingEarlier) return;
+    if (earlierError) return;
+    if (autoFetchPages >= AUTO_FETCH_MAX_PAGES) return;
+    // Only auto-fetch when the visible pane is EMPTY. Any visible human row
+    // means the reader has something to read on open; further paging stays
+    // click-driven so an ordinary channel does not silently chew server pages.
+    if (visibleRootMessages.length > 0) return;
+    autoFetchPages += 1;
+    void showEarlier();
+  });
+
   let selectedMentions = $state<MentionTarget[]>([]);
   let mentionHighlight = $state(0);
 
@@ -1060,10 +1138,15 @@
       const startsNewDay = prev === undefined || day !== prevDay;
       const systemModel = systemModelForMessage(msg);
       const special = systemModel !== null;
+      const workActivity = parseWorkSessionEvent(msg.body ?? "");
+      // desktop.human-only-conversations: a message whose body parses as a
+      // work-mesh activity event is a mesh row and MUST NOT render, even if
+      // the classifier missed it on the wire fields.
+      if (humanOnly && hiddenInHumanOnly(msg)) continue;
       out.push({
         msg,
         systemModel,
-        workActivity: parseWorkSessionEvent(msg.body ?? ""),
+        workActivity,
         groupStart:
           prev === undefined ||
           !messagesShareGroup(prev, msg, prevSpecial, special),
@@ -1124,11 +1207,13 @@
     }
     pendingFiles = next;
     attachError = errors[0] ?? null;
+    attachUpgradeUrl = null;
   }
 
   function removePendingFile(index: number): void {
     pendingFiles = pendingFiles.filter((_, i) => i !== index);
     attachError = null;
+    attachUpgradeUrl = null;
   }
 
   function namePastedFile(file: File): File {
@@ -1245,6 +1330,7 @@
     mentionHighlight = 0;
     pendingFiles = [];
     attachError = null;
+    attachUpgradeUrl = null;
     discardDraft();
     try {
       // Hosts that can name the persisted event return its id; that makes the
@@ -1265,6 +1351,7 @@
         files.length > 0,
         mentions.map((mention) => mention.displayName),
       );
+      attachUpgradeUrl = uploadErrorUpgradeUrl(err);
       restoreDraftAfterFailedSend(body);
     }
   }
@@ -1446,7 +1533,7 @@
         {#if headerOnly}
           <!-- header-only pane: nothing below the header -->
         {:else}
-        {#if timeline.length === 0 && !loading}
+        {#if timeline.length === 0 && !loading && !loadingEarlier && !hasEarlier}
           <div
             class="dm-thread-empty"
             data-testid="conversation-empty"
@@ -1920,6 +2007,8 @@
         <ComposerPendingAttachments
           files={pendingFiles}
           error={attachError}
+          upgradeUrl={attachUpgradeUrl}
+          onupgrade={onopenurl}
           onremove={removePendingFile}
         />
       {/if}

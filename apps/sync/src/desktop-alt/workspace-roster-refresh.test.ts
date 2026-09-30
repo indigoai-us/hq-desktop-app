@@ -227,12 +227,44 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
     const exposures = telemetryEvents.filter(
       (event) => event.eventName === 'plan_limit_prompt_exposed',
     );
-    expect(exposures).toHaveLength(2);
-    expect((exposures[1].properties as Record<string, unknown>).exposureId).not.toBe(
-      (exposures[0].properties as Record<string, unknown>).exposureId,
-    );
+    expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeNull();
+    expect(exposures).toHaveLength(1);
     expect(telemetryEvents.filter((event) => event.eventName === 'plan_limit_prompt_engaged'))
       .toHaveLength(1);
+  });
+
+  it('waits for both a resolved roster identity and a visible desktop window', async () => {
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    let resolveRoster!: (value: unknown) => void;
+    const roster = new Promise<unknown>((resolve) => {
+      resolveRoster = resolve;
+    });
+    const { invokeFn, telemetryEvents } = mockInvoke([() => roster], true);
+    component = mount(HqWorkWorkShell, { target: host, props: { invokeFn } });
+    await flush();
+
+    const limitEvent = {
+      company: 'Acme',
+      upgradeUrl: 'https://hq.computer/companies/acme/billing?upgrade=team',
+    };
+    emit('sync:plan-limit', limitEvent);
+    await flush();
+    expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeTruthy();
+    expect(telemetryEvents).toEqual([]);
+
+    resolveRoster({ workspaces: [ACME] });
+    await flush();
+    expect(telemetryEvents).toEqual([]);
+
+    visibility.mockReturnValue('visible');
+    document.dispatchEvent(new Event('visibilitychange'));
+    await flush();
+    expect(telemetryEvents.map((event) => event.eventName)).toEqual([
+      'plan_limit_prompt_exposed',
+    ]);
+    expect(telemetryEvents[0]).toMatchObject({ companyUid: 'cmp_acme' });
   });
 
   it('clears a company plan notice when the authenticated account changes', async () => {

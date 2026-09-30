@@ -82,7 +82,13 @@ describe('honest onboarding stage reporting', () => {
     expect(wizard).toContain('let finishInProgress = false;');
     expect(wizard).toContain('if (finishing || finishInProgress) return false;');
     expect(wizard).toContain('disabled={finishing ||');
-    expect(wizard).toMatch(/data-testid="onboarding-install-\{slot\.kind\}"\n\s+disabled=\{finishing\}/);
+    // A recorded setup failure never disables the ready screen's tool
+    // buttons. (Product decision 2026-09-27: the ready screen has no install
+    // links any more, only buttons for installed tools.)
+    expect(wizard).not.toContain('data-testid="onboarding-install-');
+    expect(wizard).toMatch(
+      /data-testid="onboarding-launch-\{slot\.kind\}"\n\s+disabled=\{finishing \|\| launching !== null \|\| finishBlocked\}/,
+    );
   });
 
   it('shows a live sub-status and an elapsed cue under the active band', () => {
@@ -125,8 +131,14 @@ describe('honest onboarding stage reporting', () => {
       'fs::create_dir_all(&settings)\n        .map_err(|_| "Could not prepare personal settings.".to_string())?',
     );
     expect(personalization).not.toContain('return Ok(())');
+    // Kill switch off: the sequential first-push, awaited.
     expect(initialSync).toContain(
-      'ensure_personal_bucket_and_first_push(&app, &vault, &hq_root)',
+      'ensure_personal_bucket_and_first_push(&app, &vault, &hq_root)\n            .await',
+    );
+    // Default: provision, then hand off to the running sync daemon or upload
+    // with bounded concurrency — still awaited, never detached.
+    expect(initialSync).toContain(
+      'ensure_personal_vault_for_install(&app, &vault, &hq_root)\n        .await',
     );
     expect(initialSync).toContain(
       'initial_cloud_sync_failure_message(Some(&error))',

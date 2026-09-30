@@ -63,6 +63,54 @@ function sliceBetween(source: string, startAnchor: string, endAnchor: string, la
 }
 
 describe('watcher memory-ceiling attribution — source contracts', () => {
+  it('answers which sync phase is active when memory pre-emption fires', () => {
+    const watcherSlice = sliceBetween(
+      appDaemonSource,
+      'fn watch_watcher_footprint_slice(',
+      '/// Spend one supervisor tick',
+      'watch_watcher_footprint_slice',
+    );
+    const captureSlice = sliceBetween(
+      appDaemonSource,
+      'fn record_supervisor_memory_preempt(',
+      '/// Cap on footprint watch slices',
+      'record_supervisor_memory_preempt',
+    );
+    const spawnPhaseSlice = sliceBetween(
+      appDaemonSource,
+      'let watcher_phase = Arc::new(Mutex::new(WatcherPhaseContext::default()));',
+      'let hq_folder = hq_folder_path.clone();',
+      'watcher phase publication',
+    );
+    const phaseSnapshot = sliceBetween(
+      appDaemonSource,
+      'fn supervisor_preempt_phase_context()',
+      'fn observe_watcher_phase_from_event',
+      'supervisor pre-emption phase snapshot',
+    );
+
+    expect(spawnPhaseSlice).toContain('set_watcher_phase_context(watcher_phase.clone())');
+    expect(phaseSnapshot).toContain('.watcher_phase_context');
+    expect(phaseSnapshot).toContain('context.phase.to_string()');
+    expect(phaseSnapshot).toContain(
+      'runner_phase_elapsed_bucket(context.observed_at.elapsed())',
+    );
+    expect(watcherSlice).toContain(
+      'let (runner_phase, runner_phase_elapsed_bucket) = supervisor_preempt_phase_context();',
+    );
+    expect(captureSlice).toContain('if let Some(phase) = evidence.runner_phase.as_ref()');
+    expect(captureSlice).toContain('tags.push(("runner_phase", phase.clone()))');
+    expect(captureSlice).toContain(
+      'if let Some(bucket) = evidence.runner_phase_elapsed_bucket.as_ref()',
+    );
+    expect(captureSlice).toContain(
+      'extras.push((\n            "runner_phase_elapsed_bucket",\n            sentry::protocol::Value::String(bucket.clone()),',
+    );
+    expect(captureSlice).not.toContain(
+      'tags.push(("runner_phase_elapsed_bucket", bucket.clone()))',
+    );
+  });
+
   it('declares a runner heap ceiling in build_watch_runner_args on BOTH spawn paths', () => {
     const fn = sliceBetween(
       coreDaemonSource,

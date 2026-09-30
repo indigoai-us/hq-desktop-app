@@ -304,3 +304,4 @@ export {
   type RoomTaskFetcher,
 } from "./chat/tasks/task-feed-controller.svelte";
 export * from "./chat/tasks/visible-tasks";
+export { TOUR_SEEN_STORAGE_KEY } from "./tour/guided-tour.js";
