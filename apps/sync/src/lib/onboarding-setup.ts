@@ -494,6 +494,51 @@ export function friendlySetupBands(overallPercent: number): FriendlySetupBand[] 
   });
 }
 
+/**
+ * Shorter band names for compact surfaces, such as the welcome flow's corner
+ * install card, which has to hold one width through every step. Same order and
+ * meaning as {@link FRIENDLY_SETUP_BAND_LABELS}; only the third is trimmed.
+ */
+export const COMPACT_SETUP_BAND_LABELS = [
+  'Laying the groundwork',
+  'Building your workspace',
+  'Bringing in your AI workers',
+  'Making it yours',
+  'Syncing across your devices',
+] as const;
+
+export interface SetupStepSummary {
+  /** 1-based band the install is on; equals `total` once everything is done. */
+  step: number;
+  total: number;
+  /** The friendly band label for `step`. */
+  label: string;
+  /** The compact band label for `step`. */
+  compactLabel: string;
+  /** True once every band is done. */
+  done: boolean;
+}
+
+/**
+ * "Step N of 5" for the band the install is on, read from the same
+ * `overallPercent` the band checklist uses, so a one-line surface and the full
+ * checklist can never disagree about where setup is.
+ */
+export function setupStepSummary(overallPercent: number): SetupStepSummary {
+  const bands = friendlySetupBands(overallPercent);
+  const total = bands.length;
+  const index = bands.findIndex((band) => band.status !== 'done');
+  const done = index === -1;
+  const at = done ? total - 1 : index;
+  return {
+    step: at + 1,
+    total,
+    label: FRIENDLY_SETUP_BAND_LABELS[at],
+    compactLabel: COMPACT_SETUP_BAND_LABELS[at],
+    done,
+  };
+}
+
 // ─── Monotonic progress ──────────────────────────────────────────────
 //
 // `setupProgressPercent` is a pure function of the stage list, so anything

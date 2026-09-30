@@ -5,9 +5,14 @@
  */
 
 import { open as tauriOpen } from '@tauri-apps/plugin-shell';
+import { PLAN_UPGRADE_HOSTS } from '@hq/platform';
 
 const EXACT_HOSTS = new Set([
   'hq.computer',
+  // Plan-limit upgrade links (hard-stop-readiness US-019): exactly the hosts
+  // hq-pro returns in `upgradeUrl`, owned by `@hq/platform` so this list and
+  // the refusal parser cannot drift apart.
+  ...PLAN_UPGRADE_HOSTS,
   'calendar.google.com',
   'accounts.google.com',
   'meet.google.com',

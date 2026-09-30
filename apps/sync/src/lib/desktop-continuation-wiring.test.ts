@@ -122,30 +122,61 @@ describe('a manual sign-in invalidates anything continuation is holding', () => 
     expect(prepare).toContain('() => !manualSignInStarted');
   });
 
-  it('starts explicit OAuth without waiting for continuation preparation in either sign-in surface', () => {
-    for (const source of [signInPrompt, onboardingWizard]) {
-      const start = source.indexOf('async function handleSignIn');
-      const handle = source.slice(start, source.indexOf('\n  async function ', start + 1));
-      expect(handle).toContain('manualSignInStarted = true;');
-      expect(handle).not.toContain('await continuationPreparation');
-      expect(handle.indexOf('loadingProvider = provider;')).toBeLessThan(
-        handle.indexOf("'start_oauth_login'"),
-      );
+  it('starts explicit OAuth without waiting for continuation preparation on the returning-user surface', () => {
+    const start = signInPrompt.indexOf('async function handleSignIn');
+    const handle = signInPrompt.slice(start, signInPrompt.indexOf('\n  async function ', start + 1));
+    expect(handle).toContain('manualSignInStarted = true;');
+    expect(handle).not.toContain('await continuationPreparation');
+    expect(handle.indexOf('loadingProvider = provider;')).toBeLessThan(
+      handle.indexOf("'start_oauth_login'"),
+    );
+  });
+
+  it('starts explicit OAuth in the first-run wizard with no continuation to wait on or cancel', () => {
+    const start = onboardingWizard.indexOf('async function handleSignIn');
+    const handle = onboardingWizard.slice(
+      start,
+      onboardingWizard.indexOf('\n  async function ', start + 1),
+    );
+    for (const name of [
+      'manualSignInStarted',
+      'continuationPreparation',
+      'stopAutomaticContinuationAttempt',
+      'bridge.cancel',
+    ]) {
+      expect(handle).not.toContain(name);
     }
+    expect(handle.indexOf('loadingProvider = provider;')).toBeLessThan(
+      handle.indexOf("'start_oauth_login'"),
+    );
   });
 });
 
-describe('the first-launch denominator is recorded before rollout evaluation', () => {
-  it('uses the existing durable first-launch gate to enqueue one launch receipt', () => {
-    const prepare = onboardingWizard.slice(
-      onboardingWizard.indexOf('async function prepareContinuation'),
-      onboardingWizard.indexOf('async function handleContinuationConfirm'),
+describe('the first-run wizard never opens the browser on its own', () => {
+  it('imports none of the continuation attempt functions', () => {
+    // The first-run wizard opened the browser on the raw Cognito provider
+    // list before the welcome animation had played. Sign-in there starts only
+    // from a provider click.
+    for (const name of [
+      'beginContinuation',
+      'confirmContinuation',
+      'cancelContinuation',
+      'resolveRollout',
+      'prepareContinuation',
+      'bridge.start',
+    ]) {
+      expect(onboardingWizard).not.toContain(name);
+    }
+  });
+
+  it('still enqueues one launch receipt through the durable first-launch gate', () => {
+    const record = onboardingWizard.slice(
+      onboardingWizard.indexOf('async function recordLaunch'),
+      onboardingWizard.indexOf('async function completeAuthenticatedSignIn'),
     );
-    expect(prepare).toContain('onboardingTelemetry.recordFirstLaunch()');
-    expect(prepare).toContain('recordReceipt(deps, launchReceipt(deps))');
-    expect(prepare.indexOf('recordReceipt(deps, launchReceipt(deps))')).toBeLessThan(
-      prepare.indexOf('resolveRollout(deps)'),
-    );
+    expect(record).toContain('onboardingTelemetry.recordFirstLaunch()');
+    expect(record).toContain('recordReceipt(deps, launchReceipt(deps))');
+    expect(record).toContain('flushReceipts(deps)');
   });
 });
 

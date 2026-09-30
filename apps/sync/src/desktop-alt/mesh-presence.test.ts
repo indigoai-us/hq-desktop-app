@@ -1,18 +1,20 @@
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-
-import { PresenceStore } from '@hq/core';
-import { createChatWakeBus } from '@hq/ui';
 import { describe, expect, it, vi } from 'vitest';
 
-describe('startDesktopMeshPresence', () => {
+import { createChatWakeBus, requestLiveRefresh } from '@hq/ui';
+import { startDesktopMeshPresence } from './mesh-presence';
 
-  it('binds Atlas open live refresh to MeshClient.refreshLive (US-016)', () => {
-    const src = readFileSync(
-      fileURLToPath(new URL('./mesh-presence.ts', import.meta.url)),
-      'utf8',
-    );
-    expect(src).toContain('bindLiveRefresh');
-    expect(src).toContain('client.refreshLive');
+describe('startDesktopMeshPresence', () => {
+  it('refreshes the owning MeshClient for Atlas requests and unbinds on stop', () => {
+    const wakes = createChatWakeBus();
+    const fetchImpl = vi.fn(async () => new Response('', { status: 503 }));
+    const handle = startDesktopMeshPresence({ wakes, fetchImpl });
+    const refreshLive = vi.spyOn(handle.client, 'refreshLive');
+
+    requestLiveRefresh('cmp_indigo');
+    expect(refreshLive).toHaveBeenCalledWith('cmp_indigo');
+
+    handle.stop();
+    requestLiveRefresh('cmp_after_stop');
+    expect(refreshLive).toHaveBeenCalledTimes(1);
   });
 });

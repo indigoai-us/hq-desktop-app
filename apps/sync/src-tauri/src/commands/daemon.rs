@@ -351,7 +351,10 @@ pub(crate) fn handle_watch_stdout_line<R: tauri::Runtime>(
     if let SyncEvent::Conflict(payload) = &event {
         let _ = app.emit(EVENT_SYNC_CONFLICT, payload.clone());
     }
+    // hard-stop-readiness US-019: the registry behind the status header and
+    // the menu bar records the notice before the desktop window hears it.
     if let SyncEvent::PlanLimit(payload) = &event {
+        crate::commands::uploads_paused::record_plan_limit(app, hq_folder, payload);
         if let Err(error) = app.emit_to(
             crate::commands::desktop_alt::WINDOW_LABEL,
             EVENT_SYNC_PLAN_LIMIT,
@@ -361,12 +364,16 @@ pub(crate) fn handle_watch_stdout_line<R: tauri::Runtime>(
         }
     }
     if let SyncEvent::AllComplete(payload) = &event {
-        let conflicts = {
+        let (conflicts, uploads_pass) = {
             let t = totals.lock().unwrap_or_else(|e| e.into_inner());
-            t.conflicts
+            (t.conflicts, t.uploads_pass.clone())
         };
         let now_iso = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-        let journal = journal_for_daemon_sync_complete(&now_iso, conflicts);
+        let mut journal = journal_for_daemon_sync_complete(&now_iso, conflicts);
+        // A pass whose uploads a plan limit refused is not a clean sync:
+        // persist which companies are paused (US-019).
+        journal.uploads_paused =
+            crate::commands::uploads_paused::settle_pass(app, hq_folder, &uploads_pass);
         if let Err(e) = write_journal(hq_folder, &journal) {
             log("daemon", &format!("failed to write journal: {e}"));
         }
@@ -460,6 +467,34 @@ fn current_lifecycle_state() -> WatchDaemonState {
     *lifecycle_state_lock()
         .lock()
         .unwrap_or_else(|p| p.into_inner())
+}
+
+/// Watch-daemon state as the install stage's personal-vault handoff gate
+/// (`personal::DaemonHandoffProbe`) sees it. The gate lets the running sync
+/// daemon upload the personal vault instead of the install walking and
+/// uploading the same files, so it needs a live process, not just a label.
+///
+/// The recorded lifecycle only moves `Starting` → `Running` on the
+/// supervisor's next tick (up to `SUPERVISOR_INTERVAL`), so a runner spawned a
+/// few seconds ago still reads `Starting`. This combines the recorded state
+/// with the same liveness check the supervisor uses to promote it
+/// (`observe_daemon_liveness`). See `handoff_lifecycle` for the mapping.
+pub(crate) fn watch_daemon_handoff_lifecycle() -> WatchDaemonState {
+    let (_, _, alive, _) = observe_daemon_liveness();
+    handoff_lifecycle(current_lifecycle_state(), alive)
+}
+
+/// - `Starting`/`Running` with a live runner process → `Running`.
+/// - `Starting` with no live process yet (preflight still running) → `Starting`.
+/// - `Running` whose process is gone (crash not yet noticed) → `Backoff`.
+/// - `Backoff`/`Stopped` → unchanged.
+fn handoff_lifecycle(recorded: WatchDaemonState, process_alive: bool) -> WatchDaemonState {
+    match (recorded, process_alive) {
+        (WatchDaemonState::Running | WatchDaemonState::Starting, true) => WatchDaemonState::Running,
+        (WatchDaemonState::Starting, false) => WatchDaemonState::Starting,
+        (WatchDaemonState::Running, false) => WatchDaemonState::Backoff,
+        (other, _) => other,
+    }
 }
 
 /// The reason for the most recent lifecycle transition, RETAINED so a stopped
@@ -7131,6 +7166,117 @@ mod tests {
         assert_eq!(seen[0]["path"], "knowledge/readme.md");
     }
 
+    /// hard-stop-readiness US-019 e2e: given a company over storage, when the
+    /// desktop app finishes an auto-sync pass, the desktop window hears the
+    /// notice and the paused set, the menu bar is handed the paused set with
+    /// the upgrade link, and the journal persists it instead of recording a
+    /// clean sync.
+    #[test]
+    fn a_pass_with_plan_limit_skips_reports_uploads_paused_everywhere() {
+        use std::sync::Arc;
+        use tauri::Listener;
+
+        static TRAY_SNAPSHOTS: Mutex<Vec<Vec<hq_desktop_core::uploads_paused::UploadsPaused>>> =
+            Mutex::new(Vec::new());
+
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = TempDir::new().unwrap();
+        std::fs::create_dir_all(home.path().join(".hq")).unwrap();
+        let _home = scoped_home(home.path());
+        // Stands in for the tray module, which registers at setup.
+        crate::commands::uploads_paused::set_tray_sink(|companies| {
+            TRAY_SNAPSHOTS.lock().unwrap().push(companies);
+        });
+
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let hq_folder = TempDir::new().unwrap();
+        let folder = hq_folder.path().to_str().unwrap();
+        let totals = Mutex::new(RunTotals::default());
+        let phase = Mutex::new(WatcherPhaseContext::default());
+        let company = "Acme US-019 daemon";
+        let upgrade_url = "https://hq.computer/companies/acme/billing?upgrade=1";
+
+        let plan_limit = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let plan_limit_w = plan_limit.clone();
+        handle.listen_any(EVENT_SYNC_PLAN_LIMIT, move |event| {
+            plan_limit_w
+                .lock()
+                .unwrap()
+                .push(serde_json::from_str(event.payload()).unwrap());
+        });
+        let paused = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let paused_w = paused.clone();
+        handle.listen_any(
+            crate::commands::uploads_paused::EVENT_SYNC_UPLOADS_PAUSED,
+            move |event| {
+                paused_w
+                    .lock()
+                    .unwrap()
+                    .push(serde_json::from_str(event.payload()).unwrap());
+            },
+        );
+
+        let lines = [
+            format!(r#"{{"type":"plan-limit","company":"{company}","upgradeUrl":"{upgrade_url}"}}"#),
+            format!(
+                r#"{{"type":"complete","company":"{company}","filesDownloaded":0,"bytesDownloaded":0,"filesSkipped":4,"conflicts":0,"aborted":false}}"#
+            ),
+            r#"{"type":"all-complete","companiesAttempted":1,"filesDownloaded":0,"bytesDownloaded":0,"errors":[]}"#
+                .to_string(),
+        ];
+        for line in &lines {
+            assert!(handle_watch_stdout_line(
+                &handle, folder, &totals, &phase, line
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        // The desktop window hears the notice.
+        let plan_limit = plan_limit.lock().unwrap();
+        assert_eq!(plan_limit.len(), 1);
+        assert_eq!(plan_limit[0]["company"], company);
+        assert_eq!(plan_limit[0]["upgradeUrl"], upgrade_url);
+
+        // The menu bar is handed the paused set, with the link.
+        assert!(TRAY_SNAPSHOTS
+            .lock()
+            .unwrap()
+            .iter()
+            .any(
+                |snapshot| snapshot.iter().any(|entry| entry.company == company
+                    && entry.upgrade_url.as_deref() == Some(upgrade_url))
+            ));
+
+        // The desktop window hears the paused set, with the link.
+        let paused = paused.lock().unwrap();
+        let last = paused.last().expect("uploads-paused was announced");
+        let row = last["companies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["company"] == company)
+            .expect("the over-storage company is paused");
+        assert_eq!(row["upgradeUrl"], upgrade_url);
+        assert!(crate::commands::uploads_paused::snapshot(Some(folder))
+            .iter()
+            .any(|entry| entry.company == company));
+        assert_eq!(
+            crate::commands::uploads_paused::upgrade_url_for(company).as_deref(),
+            Some(upgrade_url)
+        );
+
+        // The journal records the pause, so status reads say "paused", not synced.
+        let journal =
+            std::fs::read_to_string(hq_folder.path().join(".hq-sync-journal.json")).unwrap();
+        let journal: serde_json::Value = serde_json::from_str(&journal).unwrap();
+        assert!(journal["uploadsPaused"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["company"] == company && row["upgradeUrl"] == upgrade_url));
+    }
+
     // ── Double-start prevention ──────────────────────────────────────────
 
     #[test]
@@ -7216,6 +7362,21 @@ mod tests {
 
         // Clear the process-global sample so adjacent tests cannot observe it.
         note_watcher_spawned();
+    }
+
+    #[test]
+    fn handoff_lifecycle_requires_a_live_runner_process() {
+        use WatchDaemonState::*;
+        // Spawned and alive, even before the supervisor promotes the label.
+        assert_eq!(handoff_lifecycle(Starting, true), Running);
+        assert_eq!(handoff_lifecycle(Running, true), Running);
+        // Preflight still running: nothing to hand off to yet.
+        assert_eq!(handoff_lifecycle(Starting, false), Starting);
+        // Recorded as running but the process is gone.
+        assert_eq!(handoff_lifecycle(Running, false), Backoff);
+        assert_eq!(handoff_lifecycle(Backoff, true), Backoff);
+        assert_eq!(handoff_lifecycle(Stopped, true), Stopped);
+        assert_eq!(handoff_lifecycle(Stopped, false), Stopped);
     }
 
     #[test]

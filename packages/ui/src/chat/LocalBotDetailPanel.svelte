@@ -26,6 +26,7 @@
     LOCAL_BOT_SETTINGS,
     effortLabel,
     modelChoicesFor,
+    modelUpdateHint,
     thinksWithLine,
   } from "./local-bot-settings.js";
   import "./tokens.css";
@@ -124,6 +125,7 @@
   const effortValue = $derived(draftEffort ?? savedEffort);
   const settingsDirty = $derived(modelValue !== savedModel || effortValue !== savedEffort);
   const modelChoices = $derived(modelChoicesFor(bot));
+  const modelHint = $derived(modelUpdateHint(bot.runtime, modelValue));
   const effortChoices = $derived(LOCAL_BOT_SETTINGS[bot.runtime].efforts);
 
   async function saveSettings(): Promise<void> {
@@ -330,6 +332,9 @@
             {/each}
           </select>
         </label>
+        {#if modelHint}
+          <p class="ad-muted" data-testid="local-bot-detail-model-hint">{modelHint}</p>
+        {/if}
         <label class="ad-field">
           <span>Thinking</span>
           <select

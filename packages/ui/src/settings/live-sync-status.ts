@@ -3,8 +3,23 @@
  * Desktop observes the on-disk contract. Web never reads a machine journal.
  */
 
-import type { AdapterResult, PlatformAdapter, SyncStatus } from "@hq/platform";
+import {
+  approvedPlanUpgradeUrl,
+  type AdapterResult,
+  type PlatformAdapter,
+  type SyncStatus,
+} from "@hq/platform";
 import type { SyncState } from "../common/sync-model.js";
+
+/**
+ * A company whose new files are not uploading because it is over a plan
+ * limit (hard-stop-readiness US-019). Written by the native sync journal.
+ */
+export interface UploadsPausedCompany {
+  company: string;
+  /** Approved hq-pro upgrade link, or null when none came with the notice. */
+  upgradeUrl: string | null;
+}
 
 export interface LiveSyncStatus {
   lastSyncAt: string | null;
@@ -13,6 +28,8 @@ export interface LiveSyncStatus {
   daemonRunning: boolean;
   source: string;
   hqFolderPath: string | null;
+  /** Companies whose uploads are paused by a plan limit. Absent = none. */
+  uploadsPaused?: UploadsPausedCompany[];
 }
 
 export const EMPTY_LIVE_SYNC: LiveSyncStatus = {
@@ -22,7 +39,24 @@ export const EMPTY_LIVE_SYNC: LiveSyncStatus = {
   daemonRunning: false,
   source: "none",
   hqFolderPath: null,
+  uploadsPaused: [],
 };
+
+/** Parse the journal's `uploadsPaused` list; drops malformed rows. */
+export function parseUploadsPaused(raw: unknown): UploadsPausedCompany[] {
+  if (!Array.isArray(raw)) return [];
+  const rows: UploadsPausedCompany[] = [];
+  const seen = new Set<string>();
+  for (const entry of raw) {
+    const rec = asRecord(entry);
+    const company =
+      rec && typeof rec.company === "string" ? rec.company.trim() : "";
+    if (!company || seen.has(company)) continue;
+    seen.add(company);
+    rows.push({ company, upgradeUrl: approvedPlanUpgradeUrl(rec?.upgradeUrl) });
+  }
+  return rows;
+}
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -32,7 +66,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 export function parseLiveSyncStatus(raw: unknown): LiveSyncStatus {
   const rec = asRecord(raw);
-  if (!rec) return { ...EMPTY_LIVE_SYNC };
+  if (!rec) return { ...EMPTY_LIVE_SYNC, uploadsPaused: [] };
   const last =
     typeof rec.lastSyncAt === "string" && rec.lastSyncAt.trim()
       ? rec.lastSyncAt.trim()
@@ -63,6 +97,7 @@ export function parseLiveSyncStatus(raw: unknown): LiveSyncStatus {
     daemonRunning: daemon,
     source,
     hqFolderPath: folder,
+    uploadsPaused: parseUploadsPaused(rec.uploadsPaused),
   };
 }
 
@@ -92,8 +127,10 @@ export function lastSyncLabelFromLive(
 export async function readLiveSyncStatus(
   adapter: PlatformAdapter | null | undefined,
 ): Promise<LiveSyncStatus> {
-  if (!adapter?.isAvailable("canSync")) return { ...EMPTY_LIVE_SYNC };
+  if (!adapter?.isAvailable("canSync")) {
+    return { ...EMPTY_LIVE_SYNC, uploadsPaused: [] };
+  }
   const result: AdapterResult<SyncStatus> = await adapter.sync.getSyncStatus();
   if (result.ok) return parseLiveSyncStatus(result.value);
-  return { ...EMPTY_LIVE_SYNC };
+  return { ...EMPTY_LIVE_SYNC, uploadsPaused: [] };
 }

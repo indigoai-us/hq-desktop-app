@@ -62,7 +62,7 @@ use crate::commands::run_cli_provision::{CliProvisionError, CliProvisionResult};
 use crate::commands::sync::{
     repair_managed_node, resolve_jwt, resolve_vault_api_url, ToolchainRepair,
 };
-use crate::commands::vault_client::{EntityInfo, MembershipInfo, VaultClient};
+use crate::commands::vault_client::{EntityInfo, MembershipInfo, VaultClient, VaultClientError};
 use crate::util::logfile::log;
 
 #[allow(unused_imports)]
@@ -921,6 +921,34 @@ pub struct ClaimPendingInviteResult {
     pub ok: bool,
     pub claimed_slugs: Vec<String>,
     pub message: String,
+    /// Approved upgrade link when hq-pro refused the claim because the company
+    /// is at a plan limit (`ok: false`). Absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upgrade_url: Option<String>,
+}
+
+/// Map an HTTP failure from `POST /membership/claim-by-email` to what the
+/// person sees. A plan-limit refusal is an answer, not an error: it resolves
+/// `ok: false` with hq-pro's sentence and upgrade link. Any other failure is a
+/// readable `Err` — never the raw JSON body (hard-stop-readiness US-018).
+pub(crate) fn claim_http_failure(
+    status: u16,
+    body: &str,
+) -> Result<ClaimPendingInviteResult, String> {
+    if let Some(refusal) = hq_desktop_core::plan_limit::parse_plan_limit_body(body) {
+        return Ok(ClaimPendingInviteResult {
+            ok: false,
+            claimed_slugs: Vec::new(),
+            message: refusal.message,
+            upgrade_url: refusal.upgrade_url,
+        });
+    }
+    Err(
+        match hq_desktop_core::plan_limit::readable_error_body(body) {
+            Some(reason) => format!("Could not accept the invite: {reason}"),
+            None => format!("Could not accept the invite (HTTP {status}). Try again or run Sync."),
+        },
+    )
 }
 
 /// Accept pending company invite(s) via `POST /membership/claim-by-email`
@@ -969,13 +997,28 @@ pub async fn claim_pending_company_invite(
             message: format!(
                 "No email-keyed pending invite{slug_hint}. If you still see an invite, run Sync — or use the invite email link for a legacy token invite."
             ),
+            upgrade_url: None,
         });
     }
 
-    let claim = vault
+    let claim = match vault
         .claim_pending_invites_by_email(Some(&person.uid))
         .await
-        .map_err(|e| format!("claim invite failed: {e}"))?;
+    {
+        Ok(claim) => claim,
+        Err(VaultClientError::Http { status, body }) => {
+            let outcome = claim_http_failure(status, &body);
+            log(
+                "workspaces",
+                &format!(
+                    "claim_pending_company_invite refused status={status} plan_limit={}",
+                    matches!(&outcome, Ok(result) if !result.ok)
+                ),
+            );
+            return outcome;
+        }
+        Err(e) => return Err(format!("claim invite failed: {e}")),
+    };
 
     let mut claimed_slugs: Vec<String> = Vec::new();
     for mem in &claim.claimed {
@@ -1033,6 +1076,7 @@ pub async fn claim_pending_company_invite(
         ok: true,
         claimed_slugs,
         message,
+        upgrade_url: None,
     })
 }
 
@@ -1551,6 +1595,66 @@ mod node_self_repair_tests {
 
 #[cfg(test)]
 mod tests {
+    // ── hard-stop-readiness US-018: refused invite claim is readable ───────
+
+    #[test]
+    fn claim_plan_limit_refusal_is_a_readable_answer_with_the_link() {
+        let body = r#"{"error":"plan_limit_reached","code":"PLAN_LIMIT_EXCEEDED","status":402,"blocked":"members.create","resources":[{"resource":"users","used":5,"limit":5}],"message":"New members cannot be added while Acme is over its Starter limits.","fixOptions":{"users":5},"upgradeUrl":"https://hq.computer/companies/acme/billing?upgrade=1"}"#;
+        let result = super::claim_http_failure(402, body).expect("a refusal is an answer");
+        assert!(!result.ok);
+        assert!(result.claimed_slugs.is_empty());
+        assert_eq!(
+            result.message,
+            "New members cannot be added while Acme is over its Starter limits. Members: 5 of 5 used."
+        );
+        assert_eq!(
+            result.upgrade_url.as_deref(),
+            Some("https://hq.computer/companies/acme/billing?upgrade=1")
+        );
+        let wire = serde_json::to_value(&result).unwrap();
+        assert_eq!(
+            wire["upgradeUrl"],
+            "https://hq.computer/companies/acme/billing?upgrade=1"
+        );
+        assert!(!result.message.contains('{'));
+    }
+
+    #[test]
+    fn claim_legacy_membership_block_is_readable() {
+        let body = r#"{"code":"PLAN_LIMIT_EXCEEDED","resource":"users","used":5,"limit":5,"requiredPlan":"team","upgradeUrl":"https://hq.computer/billing"}"#;
+        let result = super::claim_http_failure(402, body).unwrap();
+        assert!(!result.ok);
+        assert_eq!(
+            result.message,
+            "Your plan limit is reached. Members: 5 of 5 used."
+        );
+    }
+
+    #[test]
+    fn claim_other_http_failures_never_show_raw_json() {
+        let err =
+            super::claim_http_failure(409, r#"{"error":"Invite already claimed"}"#).unwrap_err();
+        assert_eq!(err, "Could not accept the invite: Invite already claimed");
+        let err = super::claim_http_failure(500, r#"{"ok":false}"#).unwrap_err();
+        assert_eq!(
+            err,
+            "Could not accept the invite (HTTP 500). Try again or run Sync."
+        );
+        assert!(!err.contains('{'));
+    }
+
+    #[test]
+    fn claim_success_result_omits_upgrade_url_on_the_wire() {
+        let result = super::ClaimPendingInviteResult {
+            ok: true,
+            claimed_slugs: vec!["acme".into()],
+            message: "Joined acme.".into(),
+            upgrade_url: None,
+        };
+        let wire = serde_json::to_value(&result).unwrap();
+        assert!(wire.get("upgradeUrl").is_none());
+    }
+
     fn tokens_with_claims(
         sub: &str,
         email_verified: Option<bool>,

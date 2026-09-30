@@ -1045,3 +1045,33 @@ describe('auto-retry sub-status', () => {
     ).toBe('Checking everything arrived…');
   });
 });
+
+describe('setup step summary', () => {
+  it('names the band the install is on as Step N of 5', async () => {
+    const { setupStepSummary, friendlySetupBands } = await import('./onboarding-setup');
+    expect(setupStepSummary(0)).toMatchObject({ step: 1, total: 5, done: false });
+    expect(setupStepSummary(41)).toMatchObject({
+      step: 3,
+      label: 'Bringing in your AI workers and workflows',
+      compactLabel: 'Bringing in your AI workers',
+      done: false,
+    });
+    // It agrees with the band checklist at every percent.
+    for (let percent = 0; percent <= 100; percent += 1) {
+      const summary = setupStepSummary(percent);
+      const bands = friendlySetupBands(percent);
+      if (summary.done) {
+        expect(bands.every((band) => band.status === 'done')).toBe(true);
+      } else {
+        expect(bands[summary.step - 1]?.status).not.toBe('done');
+        expect(bands.slice(0, summary.step - 1).every((band) => band.status === 'done')).toBe(true);
+      }
+    }
+  });
+
+  it('reports done only once every band is done', async () => {
+    const { setupStepSummary } = await import('./onboarding-setup');
+    expect(setupStepSummary(99).done).toBe(false);
+    expect(setupStepSummary(100)).toMatchObject({ step: 5, total: 5, done: true });
+  });
+});
