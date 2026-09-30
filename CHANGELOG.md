@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.361] — 2026-09-30
+
 - When a company is over a Starter plan limit, a refused action now says why
   in plain words and offers an "Upgrade plan" link. A chat attachment that
   goes over the storage limit reads, for example, "Could not upload
