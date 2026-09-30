@@ -148,8 +148,6 @@ const SAFE_BOOT_LOG_MESSAGES = new Set([
   "desktop-alt window created",
   "desktop-alt closed by user",
   "desktop-alt webview gone before shell_ready",
-  "shell ready — watchdog cancelled",
-  "watchdog timeout — desktop shell did not report ready",
   "recovery auto-check: no update/rollback available",
   "shell_ready from UI",
   "reset local UI state",
@@ -166,6 +164,12 @@ const SAFE_BOOT_LOG_PATTERNS = [
   new RegExp(`^auto-checking for updates before recovery window \\(trigger=(?:${SAFE_RECOVERY_TRIGGERS})\\)$`),
   new RegExp(`^recovery window opened \\(trigger=(?:${SAFE_RECOVERY_TRIGGERS}), version=v${SAFE_VERSION}\\)$`),
   new RegExp(`^recovery auto-check found v${SAFE_VERSION} — offering as primary action$`),
+  new RegExp(`^shell ready(?: after \\d+\\.\\d+s)? — watchdog cancelled$`),
+  new RegExp(`^shell ready(?: after \\d+\\.\\d+s)? — after watchdog timeout; closing recovery window$`),
+  new RegExp(`^watchdog timeout(?: after \\d+\\.\\d+s)? — desktop shell did not report ready$`),
+  new RegExp(`^watchdog timer woke \\d+\\.\\d+s late — async runtime stalled; granting \\d+s grace before recovery$`),
+  new RegExp(`^async runtime stalled: heartbeat woke \\d+\\.\\d+s late$`),
+  new RegExp(`^shell ready during recovery auto-check; not opening recovery window \\(trigger=(?:${SAFE_RECOVERY_TRIGGERS})\\)$`),
 ];
 
 const CREDENTIAL_SHAPES = [

@@ -150,7 +150,7 @@ pub(crate) fn clear_onboarding_failure_detail(
     };
     onboarding_failure_details()
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .remove(&onboarding_failure_detail_key(stage, failure_scope));
 }
 
@@ -208,7 +208,9 @@ pub(crate) fn record_onboarding_failure_detail_with_diagnostics(
             "unknown".to_string()
         }
     });
-    let mut details = onboarding_failure_details().lock().unwrap();
+    let mut details = onboarding_failure_details()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if details.len() == 32 {
         details.clear();
     }
@@ -262,15 +264,18 @@ pub fn take_onboarding_failure_detail(
     flow: String,
     frontend_session_id: String,
 ) -> Option<OnboardingFailureDetail> {
-    onboarding_failure_details().lock().unwrap().remove(&OnboardingFailureDetailKey {
-        stage,
-        scope: OnboardingFailureScope {
-            setup_run_id,
-            attempt_count,
-            flow,
-            frontend_session_id,
-        },
-    })
+    onboarding_failure_details()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(&OnboardingFailureDetailKey {
+            stage,
+            scope: OnboardingFailureScope {
+                setup_run_id,
+                attempt_count,
+                flow,
+                frontend_session_id,
+            },
+        })
 }
 
 #[derive(Debug)]
@@ -1329,6 +1334,66 @@ mod tests {
                 error_code: None,
             })
         );
+    }
+
+    #[test]
+    fn failure_detail_cache_recovers_a_poisoned_mutex() {
+        let scope = OnboardingFailureScope {
+            setup_run_id: "66666666-6666-4666-8666-666666666666".to_string(),
+            attempt_count: 1,
+            flow: "first_install".to_string(),
+            frontend_session_id: "ffffffff-ffff-4fff-8fff-ffffffffffff".to_string(),
+        };
+        let poison_target = onboarding_failure_details();
+        let poison = std::thread::spawn(move || {
+            let _guard = poison_target.lock().unwrap();
+            panic!("poison onboarding failure detail cache");
+        })
+        .join();
+        assert!(poison.is_err());
+
+        record_onboarding_failure_detail(
+            "poisoned-cache",
+            Some(&scope),
+            Some("git"),
+            OnboardingErrorCategory::Network,
+        );
+        assert_eq!(
+            take_onboarding_failure_detail(
+                "poisoned-cache".to_string(),
+                scope.setup_run_id.clone(),
+                scope.attempt_count,
+                scope.flow.clone(),
+                scope.frontend_session_id.clone(),
+            ),
+            Some(OnboardingFailureDetail {
+                failed_dependency: Some("git".to_string()),
+                error_category: "network".to_string(),
+                error_kind: None,
+                error_operation: None,
+                error_io_kind: None,
+                error_code: None,
+            })
+        );
+
+        record_onboarding_failure_detail(
+            "poisoned-cache",
+            Some(&scope),
+            Some("qmd"),
+            OnboardingErrorCategory::Timeout,
+        );
+        clear_onboarding_failure_detail("poisoned-cache", Some(&scope));
+        assert_eq!(
+            take_onboarding_failure_detail(
+                "poisoned-cache".to_string(),
+                scope.setup_run_id,
+                scope.attempt_count,
+                scope.flow,
+                scope.frontend_session_id,
+            ),
+            None
+        );
+        onboarding_failure_details().clear_poison();
     }
 
     #[test]
