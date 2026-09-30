@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Core Drift ignores the desktop-generated `env.PATH` in `.claude/settings.json` and the company skill-wrapper marker, while continuing to report other settings edits.
 - Channels and conversations now show only messages from people. Work-mesh activity (noted, started, and done lines), session cards, system events, and bot-only messages are hidden. A bot's reply in a conversation a person started still shows. A channel with only hidden activity shows "No messages yet".
 
 ## [0.10.361] — 2026-09-30
