@@ -124,6 +124,116 @@ describe("ChannelConversation human-only mode", () => {
     expect(host.querySelector(".work-mesh-row")).toBeNull();
   });
 
+  it("default-on: hides person-attributed activity rows (isMeshEvent:true + wm: prefix) even when actor is a named human", async () => {
+    // Regression: before the fix, activityTimelineMessages() did not stamp isMeshEvent:true.
+    // A row like "Stefan Johnson noted - persona=marketer …" carried a real person uid and
+    // a display name, so isHumanMessage fell through uid-prefix heuristics and kept it.
+    const activityBody = JSON.stringify({
+      kind: "work-session-event",
+      threadId: "work-desktop-dogfood:T-010",
+      eventId: "ev-note-abc",
+      event: {
+        kind: "note",
+        by: "Stefan Johnson",
+        byUid: "prs_01KRKKKZYQM2SS0TWMG7NRKY0Y",
+        actorType: "human",
+        at: "2026-09-04T10:00:00.000Z",
+        summary: "persona=marketer outcome=finished_by_session minutes=49.5 stuck=session",
+      },
+      payload: { storyId: "T-010", storyTitle: "hq-onboarding-experience" },
+    });
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(ChannelConversation, {
+      target: host,
+      props: {
+        humanOnly: true,
+        messages: [
+          // Activity row: person uid, display name "Stefan Johnson", isMeshEvent:true, wm: prefix
+          {
+            eventId: "wm:ev-note-abc",
+            direction: "in" as const,
+            fromPersonUid: "prs_01KRKKKZYQM2SS0TWMG7NRKY0Y",
+            fromDisplayName: "Stefan Johnson",
+            body: activityBody,
+            createdAt: "2026-09-04T10:00:00.000Z",
+            isMeshEvent: true,
+          },
+          // Real typed message by the same person - must survive
+          {
+            eventId: "msg-stefan-typed",
+            direction: "in" as const,
+            fromPersonUid: "prs_01KRKKKZYQM2SS0TWMG7NRKY0Y",
+            fromDisplayName: "Stefan Johnson",
+            body: "stefan-typed-real-message-xyz",
+            createdAt: "2026-09-04T10:01:00.000Z",
+          },
+        ],
+      },
+    });
+    await tick();
+    const text = host.textContent ?? "";
+    expect(host.querySelector(".work-mesh-row")).toBeNull();
+    expect(text).not.toContain("persona=marketer");
+    expect(text).toContain("stefan-typed-real-message-xyz");
+  });
+
+  it("default-on: hides the four screenshot row shapes attributed to Stefan Johnson", async () => {
+    // Wire shapes from the Indigo owner's screenshot (scrubbed).
+    const personUid = "prs_01KRKKKZYQM2SS0TWMG7NRKY0Y";
+    const makeActivityRow = (
+      eventId: string,
+      kind: string,
+      summary: string,
+      storyTitle: string,
+      index: number,
+    ) => ({
+      eventId: `wm:${eventId}`,
+      direction: "in" as const,
+      fromPersonUid: personUid,
+      fromDisplayName: "Stefan Johnson",
+      isMeshEvent: true as const,
+      createdAt: `2026-09-04T10:0${index}:00.000Z`,
+      body: JSON.stringify({
+        kind: "work-session-event",
+        threadId: `work-desktop-dogfood:T-0${index + 10}`,
+        eventId,
+        event: { kind, by: "Stefan Johnson", byUid: personUid, actorType: "human", at: `2026-09-04T10:0${index}:00.000Z`, summary },
+        payload: { storyTitle },
+      }),
+    });
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(ChannelConversation, {
+      target: host,
+      props: {
+        humanOnly: true,
+        messages: [
+          makeActivityRow("ev-a", "note", "persona=marketer outcome=finished_by_session minutes=49.5 stuck=session", "hq-onboarding-experience", 0),
+          makeActivityRow("ev-b", "progress", "All three wizards parse. (3 turns)", "hq-onboarding-experience", 1),
+          makeActivityRow("ev-c", "progress", "worked on hq-onboarding-experience (1 turn)", "hq-onboarding-experience", 2),
+          makeActivityRow("ev-d", "done", "completed", "New bot wizard crashes on Windows with a Svelte each_key_duplicate error", 3),
+          // One real human message — must survive
+          {
+            eventId: "msg-human-real",
+            direction: "in" as const,
+            fromPersonUid: personUid,
+            fromDisplayName: "Stefan Johnson",
+            body: "stefan-real-typed-xyz",
+            createdAt: "2026-09-04T10:05:00.000Z",
+          },
+        ],
+      },
+    });
+    await tick();
+    const text = host.textContent ?? "";
+    expect(host.querySelectorAll(".work-mesh-row")).toHaveLength(0);
+    expect(text).not.toContain("persona=marketer");
+    expect(text).not.toContain("All three wizards parse");
+    expect(text).not.toContain("worked on hq-onboarding-experience");
+    expect(text).toContain("stefan-real-typed-xyz");
+  });
+
   it("default-on: keeps untagged agent replies and actionable lifecycle cards", async () => {
     host = document.createElement("div");
     document.body.appendChild(host);
