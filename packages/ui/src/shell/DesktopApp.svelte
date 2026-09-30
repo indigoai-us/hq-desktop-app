@@ -894,6 +894,11 @@
     onassistedinstall?: (
       tool: import("../install-choice/install-choice.js").CodingTool,
     ) => Promise<import("../install-choice/install-choice.js").InstallOutcome>;
+    /**
+     * Ask the host to (re-)probe `detect_ai_tools`. Called lazily by the
+     * New bot wizard on mount so the probe is not paid on every app open.
+     */
+    onrequestaitools?: () => void;
   }
 
   let {
@@ -960,6 +965,7 @@
     aiTools = null,
     onopenassistant,
     onassistedinstall,
+    onrequestaitools,
   }: Props = $props();
 
   const derivedChrome = $derived(accountChromeFromSelf(self));
@@ -8823,6 +8829,7 @@
           hqFolderPath={hqFolderPath ?? ""}
           {onopenassistant}
           {onassistedinstall}
+          {onrequestaitools}
           botWorkers={localBotWorkers}
           {existingBotNames}
           {botSignIn}

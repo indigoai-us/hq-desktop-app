@@ -172,6 +172,8 @@
     onassistedinstall?: (
       tool: import("../install-choice/install-choice.js").CodingTool,
     ) => Promise<import("../install-choice/install-choice.js").InstallOutcome>;
+    /** Ask the host to (re-)probe `detect_ai_tools` lazily when the wizard opens. */
+    onrequestaitools?: () => void;
     /** Workers a bot can be created from (the flow offers company workers only; none → blank bot only). */
     botWorkers?: readonly LocalBotWorkerOption[] | null;
     /** Names the user's local bots already use (availability check). */
@@ -225,6 +227,7 @@
     hqFolderPath = "",
     onopenassistant,
     onassistedinstall,
+    onrequestaitools,
     botWorkers = null,
     existingBotNames = null,
     botCompanies = null,
@@ -2538,6 +2541,7 @@
         {hqFolderPath}
         {onopenassistant}
         {onassistedinstall}
+        {onrequestaitools}
         {botWorkers}
         existingNames={existingBotNames}
         {botCompanies}
