@@ -126,11 +126,9 @@ describe("resolveCallTarget", () => {
 
   it("does not authorize a call target from URL query data", async () => {
     const bench = harness({ targetWaitMs: 1 });
-    vi.stubGlobal("window", {
-      location: {
-        search: `?target=${encodeURIComponent(JSON.stringify(target()))}`,
-      },
-    });
+    const search = `?target=${encodeURIComponent(JSON.stringify(target()))}`;
+    vi.stubGlobal("location", { search });
+    vi.stubGlobal("window", { location: { search } });
 
     try {
       expect(await resolveCallTarget(bench.deps)).toBeNull();
