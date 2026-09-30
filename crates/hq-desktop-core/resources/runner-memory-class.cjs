@@ -12,7 +12,14 @@ if (typeof reportDirectory === "string" && reportDirectory.length > 0) {
 
       const destination = path.join(reportDirectory, "runner-memory-class.json");
       const temporary = destination + ".tmp";
-      fs.writeFileSync(temporary, JSON.stringify({ arrayBuffers }), {
+      let prior = {};
+      try {
+        const parsed = JSON.parse(fs.readFileSync(destination, "utf8"));
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) prior = parsed;
+      } catch (_) {
+        // The signal may be the first writer or race an incomplete first sample.
+      }
+      fs.writeFileSync(temporary, JSON.stringify({ ...prior, arrayBuffers }), {
         encoding: "utf8",
         mode: 0o600,
       });

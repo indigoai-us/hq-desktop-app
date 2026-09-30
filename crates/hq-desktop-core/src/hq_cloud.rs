@@ -715,7 +715,7 @@
 /// the 6.18 minor line, so `RESCUE_CONTRACT_FLOOR` stays 6.18.0. Raising the
 /// lower bound moves npm's cache key so installed copies refresh their cached
 /// runner.
-pub const HQ_CLOUD_VERSION: &str = "~6.18.17";
+pub const HQ_CLOUD_VERSION: &str = "~6.18.20";
 
 /// First `@indigoai-us/hq-cloud` version that ships the post-sync
 /// manifest-upload pass (US-004, sync-reconciliation-audit).

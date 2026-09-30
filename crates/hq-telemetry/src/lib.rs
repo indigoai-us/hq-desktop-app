@@ -2005,6 +2005,27 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         | "watcher_js_array_buffers_mb"
         | "watcher_inferred_non_heap_mb"
         | "watcher_libuv_active_handles" => Some(value.is_empty() || value.parse::<u64>().is_ok()),
+        "watcher_scan_files_visited_bucket"
+        | "watcher_scan_directories_visited_bucket"
+        | "watcher_scan_collected_entries_bucket"
+        | "watcher_scan_plan_items_bucket"
+        | "watcher_scan_journal_rows_bucket"
+        | "watcher_current_body_size_bucket"
+        | "watcher_in_flight_body_bytes_bucket"
+        | "watcher_upload_byte_budget_bucket" => Some(matches!(
+            value,
+            "" | "0"
+                | "1-999"
+                | "1k-9k"
+                | "10k-99k"
+                | "100k-999k"
+                | "1m-plus"
+                | "under-1m"
+                | "1m-64m"
+                | "64m-256m"
+                | "256m-1g"
+                | "1g-plus"
+        )),
         // Why the memory-class decomposition is or is not present, so an absent report
         // degrades honestly to a queryable token instead of a guess (mirrors
         // `WatcherMemoryClassSource::as_str`). The POSIX report path yields
@@ -5761,6 +5782,8 @@ mod tests {
             ("watcher_memory_class_source", "report_unsupported_platform"),
             ("watcher_memory_class_source", "supervisor_sample"),
             ("watcher_memory_report_source", "report_read"),
+            ("watcher_scan_files_visited_bucket", "10k-99k"),
+            ("watcher_current_body_size_bucket", "64m-256m"),
             ("watcher_memory_report_source", "report_absent"),
             ("watcher_memory_report_source", "report_unreadable"),
             ("watcher_memory_report_source", "report_never_completed"),
@@ -5806,6 +5829,8 @@ mod tests {
                 "supervisor_sample /Users/Ada",
             ),
             ("watcher_memory_report_source", "report_read /Users/Ada"),
+            ("watcher_scan_files_visited_bucket", "/Users/Ada"),
+            ("watcher_current_body_size_bucket", "8000000000"),
             ("watcher_memory_report_source", "supervisor_sample"),
             ("memory_class", "heap /Users/Ada"),
             ("memory_class", "heap_growth"),

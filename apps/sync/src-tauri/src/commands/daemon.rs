@@ -5702,8 +5702,8 @@ struct SupervisorPreemptEvidence {
     /// report just before this pre-empt (HQ-DESKTOP-60), naming the memory class the
     /// tree total alone could not. Empty (all `None`) when no report was readable.
     report_memory: hq_desktop_core::runner_diagnostic_report::RunnerReportMemoryClass,
-    /// Outcome of the Node diagnostic report itself, kept distinct from the source
-    /// used to classify a supervisor-sampled child when the report is unavailable.
+    /// Outcome of the fresh Node diagnostic report or bounded runner sidecar, kept
+    /// distinct from the source used to classify a supervisor-sampled child.
     runner_report_source: hq_desktop_core::daemon::WatcherMemoryClassSource,
     /// Dominant measured class from the Node report or the process-tree sample.
     memory_class: hq_desktop_core::daemon::WatcherMemoryClass,
@@ -5749,6 +5749,7 @@ fn read_fresh_memory_class_within(
         parse_runner_report_memory_class, runner_report_is_complete, RunnerReportMemoryClass,
     };
     let mut report_memory = RunnerReportMemoryClass::default();
+    let mut sidecar_memory = RunnerReportMemoryClass::default();
     let mut array_buffers_mb = None;
     let mut saw_fresh_report = false;
     let mut report_done = false;
@@ -5780,6 +5781,7 @@ fn read_fresh_memory_class_within(
                     if let Some(value) = parsed.array_buffers_mb {
                         array_buffers_mb = Some(value);
                         array_buffers_done = true;
+                        sidecar_memory = parsed;
                     } else if runner_report_is_complete(&bytes) {
                         array_buffers_done = true;
                     }
@@ -5802,6 +5804,48 @@ fn read_fresh_memory_class_within(
     }
     if report_memory.array_buffers_mb.is_none() {
         report_memory.array_buffers_mb = array_buffers_mb;
+    }
+    report_memory.js_heap_total_mb = report_memory
+        .js_heap_total_mb
+        .or(sidecar_memory.js_heap_total_mb);
+    report_memory.js_heap_used_mb = report_memory
+        .js_heap_used_mb
+        .or(sidecar_memory.js_heap_used_mb);
+    report_memory.external_memory_mb = report_memory
+        .external_memory_mb
+        .or(sidecar_memory.external_memory_mb);
+    report_memory.array_buffers_mb = report_memory
+        .array_buffers_mb
+        .or(sidecar_memory.array_buffers_mb);
+    report_memory.libuv_active_handles = report_memory
+        .libuv_active_handles
+        .or(sidecar_memory.libuv_active_handles);
+    report_memory.scan_files_visited_bucket = report_memory
+        .scan_files_visited_bucket
+        .or(sidecar_memory.scan_files_visited_bucket);
+    report_memory.scan_directories_visited_bucket = report_memory
+        .scan_directories_visited_bucket
+        .or(sidecar_memory.scan_directories_visited_bucket);
+    report_memory.scan_collected_entries_bucket = report_memory
+        .scan_collected_entries_bucket
+        .or(sidecar_memory.scan_collected_entries_bucket);
+    report_memory.scan_plan_items_bucket = report_memory
+        .scan_plan_items_bucket
+        .or(sidecar_memory.scan_plan_items_bucket);
+    report_memory.scan_journal_rows_bucket = report_memory
+        .scan_journal_rows_bucket
+        .or(sidecar_memory.scan_journal_rows_bucket);
+    report_memory.current_body_size_bucket = report_memory
+        .current_body_size_bucket
+        .or(sidecar_memory.current_body_size_bucket);
+    report_memory.in_flight_body_bytes_bucket = report_memory
+        .in_flight_body_bytes_bucket
+        .or(sidecar_memory.in_flight_body_bytes_bucket);
+    report_memory.upload_byte_budget_bucket = report_memory
+        .upload_byte_budget_bucket
+        .or(sidecar_memory.upload_byte_budget_bucket);
+    if sidecar_memory.is_present() {
+        report_source = Src::ReportRead;
     }
     let data_source = if report_memory.is_present() {
         Src::ReportRead
@@ -14015,6 +14059,37 @@ mod tests {
             "process.memoryUsage().arrayBuffers should include the retained Buffer"
         );
         assert!(report_path.is_file(), "Node's signal report still gets written");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runner_memory_sidecar_carries_bounded_runner_diagnostics_without_node_report() {
+        use hq_desktop_core::daemon::WatcherMemoryClassSource as Src;
+        use hq_desktop_core::runner_diagnostic_report::RUNNER_MEMORY_CLASS_FILENAME;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let missing_report = dir.path().join("missing-report.json");
+        let sidecar = dir.path().join(RUNNER_MEMORY_CLASS_FILENAME);
+        std::fs::write(
+            &sidecar,
+            br#"{"arrayBuffers":1048576,"heapTotal":2097152,"heapUsed":1048576,"external":4194304,"scanFilesVisitedBucket":"10k-99k","currentBodySizeBucket":"64m-256m"}"#,
+        )
+        .unwrap();
+        let (report, data_source, report_source) = read_fresh_memory_class_within(
+            &missing_report,
+            None,
+            Some(&sidecar),
+            None,
+            Instant::now() + Duration::from_secs(1),
+        );
+        assert_eq!(data_source, Src::ReportRead);
+        assert_eq!(report_source, Src::ReportRead);
+        let debug = format!("{report:?}");
+        assert!(debug.contains("js_heap_total_mb: Some(2)"));
+        assert!(debug.contains("external_memory_mb: Some(4)"));
+        assert!(debug.contains("scan_files_visited_bucket: Some(\"10k-99k\")"));
+        assert!(debug.contains("current_body_size_bucket: Some(\"64m-256m\")"));
     }
 
     #[cfg(unix)]

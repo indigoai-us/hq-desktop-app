@@ -280,7 +280,7 @@ const RUNNER_REPORT_LIBUV_CAP: usize = 65_536;
 /// file watcher). Every field is a bounded integer — MB or a count — never a path,
 /// argv, env value, or handle address, so it is egress-safe by construction. `None`
 /// on any field the report did not carry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RunnerReportMemoryClass {
     /// Reported V8 JS heap total memory, in MB (`javascriptHeap.totalMemory`).
     pub js_heap_total_mb: Option<u64>,
@@ -292,6 +292,14 @@ pub struct RunnerReportMemoryClass {
     pub array_buffers_mb: Option<u64>,
     /// Count of libuv handles reported as active (`libuv[].is_active == true`).
     pub libuv_active_handles: Option<u64>,
+    pub scan_files_visited_bucket: Option<String>,
+    pub scan_directories_visited_bucket: Option<String>,
+    pub scan_collected_entries_bucket: Option<String>,
+    pub scan_plan_items_bucket: Option<String>,
+    pub scan_journal_rows_bucket: Option<String>,
+    pub current_body_size_bucket: Option<String>,
+    pub in_flight_body_bytes_bucket: Option<String>,
+    pub upload_byte_budget_bucket: Option<String>,
 }
 
 impl RunnerReportMemoryClass {
@@ -303,6 +311,14 @@ impl RunnerReportMemoryClass {
             || self.external_memory_mb.is_some()
             || self.array_buffers_mb.is_some()
             || self.libuv_active_handles.is_some()
+            || self.scan_files_visited_bucket.is_some()
+            || self.scan_directories_visited_bucket.is_some()
+            || self.scan_collected_entries_bucket.is_some()
+            || self.scan_plan_items_bucket.is_some()
+            || self.scan_journal_rows_bucket.is_some()
+            || self.current_body_size_bucket.is_some()
+            || self.in_flight_body_bytes_bucket.is_some()
+            || self.upload_byte_budget_bucket.is_some()
     }
 }
 
@@ -337,12 +353,41 @@ pub fn parse_runner_report_memory_class(bytes: &[u8]) -> RunnerReportMemoryClass
             .filter(|h| h.get("is_active").and_then(Value::as_bool).unwrap_or(false))
             .count() as u64
     });
+    let bucket = |key: &str| -> Option<String> {
+        value
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|v| {
+                matches!(
+                    *v,
+                    "0" | "1-999"
+                        | "1k-9k"
+                        | "10k-99k"
+                        | "100k-999k"
+                        | "1m-plus"
+                        | "under-1m"
+                        | "1m-64m"
+                        | "64m-256m"
+                        | "256m-1g"
+                        | "1g-plus"
+                )
+            })
+            .map(str::to_owned)
+    };
     RunnerReportMemoryClass {
         js_heap_total_mb,
         js_heap_used_mb,
         external_memory_mb,
         array_buffers_mb,
         libuv_active_handles,
+        scan_files_visited_bucket: bucket("scanFilesVisitedBucket"),
+        scan_directories_visited_bucket: bucket("scanDirectoriesVisitedBucket"),
+        scan_collected_entries_bucket: bucket("scanCollectedEntriesBucket"),
+        scan_plan_items_bucket: bucket("scanPlanItemsBucket"),
+        scan_journal_rows_bucket: bucket("scanJournalRowsBucket"),
+        current_body_size_bucket: bucket("currentBodySizeBucket"),
+        in_flight_body_bytes_bucket: bucket("inFlightBodyBytesBucket"),
+        upload_byte_budget_bucket: bucket("uploadByteBudgetBucket"),
     }
 }
 
@@ -624,6 +669,26 @@ mod tests {
         // Three handles reported is_active:true (two fs_event + one check).
         assert_eq!(m.libuv_active_handles, Some(3));
         assert!(m.is_present());
+    }
+
+    #[test]
+    fn parses_content_free_runner_scan_and_upload_buckets() {
+        let parsed = parse_runner_report_memory_class(
+            br#"{"arrayBuffers":1,"scanFilesVisitedBucket":"10k-99k","scanDirectoriesVisitedBucket":"1k-9k","scanCollectedEntriesBucket":"100k-999k","scanPlanItemsBucket":"1m-plus","scanJournalRowsBucket":"0","currentBodySizeBucket":"64m-256m","inFlightBodyBytesBucket":"256m-1g","uploadByteBudgetBucket":"1g-plus"}"#,
+        );
+        let debug = format!("{parsed:?}");
+        assert!(debug.contains("scan_files_visited_bucket: Some(\"10k-99k\")"));
+        assert!(debug.contains("scan_directories_visited_bucket: Some(\"1k-9k\")"));
+        assert!(debug.contains("scan_collected_entries_bucket: Some(\"100k-999k\")"));
+        assert!(debug.contains("scan_plan_items_bucket: Some(\"1m-plus\")"));
+        assert!(debug.contains("scan_journal_rows_bucket: Some(\"0\")"));
+        assert!(debug.contains("current_body_size_bucket: Some(\"64m-256m\")"));
+        assert!(debug.contains("in_flight_body_bytes_bucket: Some(\"256m-1g\")"));
+        assert!(debug.contains("upload_byte_budget_bucket: Some(\"1g-plus\")"));
+        let poisoned = parse_runner_report_memory_class(
+            br#"{"arrayBuffers":1,"scanFilesVisitedBucket":"/private/name"}"#,
+        );
+        assert!(format!("{poisoned:?}").contains("scan_files_visited_bucket: None"));
     }
 
     #[test]
