@@ -20,6 +20,11 @@ vi.mock('@tauri-apps/api/event', () => ({ listen: tauri.listen }));
 
 import { flushSync, mount, unmount } from 'svelte';
 import BannerNotification from '../../src/components/BannerNotification.svelte';
+import {
+  BannerActionRouter,
+  type BannerActionEvent,
+} from '../../src/lib/bannerActionRouter';
+import { surfaceNativeNotificationRetry } from '../../src/lib/nativeNotificationRecovery';
 
 interface BannerPayload {
   kind: string;
@@ -250,14 +255,6 @@ describe('notification action acknowledgement contract', () => {
     'utf8',
   );
   const app = readFileSync(resolve(process.cwd(), 'src/App.svelte'), 'utf8');
-  const router = readFileSync(
-    resolve(process.cwd(), 'src/lib/bannerActionRouter.ts'),
-    'utf8',
-  );
-  const nativeRecovery = readFileSync(
-    resolve(process.cwd(), 'src/lib/nativeNotificationRecovery.ts'),
-    'utf8',
-  );
 
   it('waits on a bounded one-shot and never dismisses inside banner_action', () => {
     const start = rust.indexOf('pub async fn banner_action(');
@@ -272,22 +269,66 @@ describe('notification action acknowledgement contract', () => {
     expect(actionSource).not.toContain('dismiss_banner_inner');
   });
 
-  it('reports the real App result using the same request id', () => {
-    expect(router).toContain('requestId: string;');
-    expect(router).toContain("await this.invoke('banner_action_result', {");
-    expect(router).toContain('requestId: payload.requestId');
+  it('reports the executed App action with the same request id', async () => {
+    let receive!: (event: { payload: BannerActionEvent }) => void | Promise<void>;
+    const unlisten = vi.fn();
+    const invoke = vi.fn(async () => undefined);
+    const execute = vi.fn(async () => undefined);
+    const router = new BannerActionRouter({
+      listen: async (_event, handler) => {
+        receive = handler;
+        return unlisten;
+      },
+      invoke,
+      execute,
+    });
+
+    await router.start();
+    const action: BannerActionEvent = {
+      requestId: 'req-42',
+      kind: 'dm',
+      action: 'open-message',
+      data: { eventId: 'evt-42' },
+    };
+    await receive({ payload: action });
+
+    expect(execute).toHaveBeenCalledWith(action);
+    expect(invoke).toHaveBeenCalledWith('banner_action_result', {
+      requestId: 'req-42',
+      success: true,
+    });
     expect(app).toContain('executeNotificationAction(kind, action, data)');
     expect(app).toContain('await handleInstallUpdate(true);');
     expect(app).toContain('await handleStartRecording(windowId, true);');
+    await router.dispose();
+    expect(unlisten).toHaveBeenCalledOnce();
   });
 
-  it('turns failed native DM/share actions into a visible retry banner', () => {
+  it('turns failed native DM/share actions into a visible retry banner', async () => {
+    const action = {
+      kind: 'share' as const,
+      action: 'open-share',
+      data: { id: 'share-1' },
+    };
+    const showRetryBanner = vi.fn(async () => {
+      throw new Error('surface unavailable');
+    });
+    const showMainWindow = vi.fn(async () => undefined);
+    const recovery = await surfaceNativeNotificationRetry(action, {
+      showRetryBanner,
+      showMainWindow,
+    });
+
+    expect(showRetryBanner).toHaveBeenCalledWith(action);
+    expect(showMainWindow).toHaveBeenCalledOnce();
+    expect(recovery).toEqual({
+      ...action,
+      message: 'Couldn’t finish the shared-item action. Retry it here.',
+    });
     expect(app).toContain(
       "invoke('show_action_retry_banner', { kind, action, data })",
     );
     expect(app).toContain('notificationActionRecovery = recovery');
-    expect(nativeRecovery).toContain('await ports.showRetryBanner(action)');
-    expect(nativeRecovery).toContain('await ports.showMainWindow()');
     expect(rust).toContain('pub async fn show_action_retry_banner(');
     expect(rust).toContain('action_label: Some("Retry".to_string())');
   });
