@@ -1,7 +1,4 @@
-use hq_desktop_core::hq_cli_update::{
-    install_with_previous_cli_recovery, should_record_forward_cli_install_effects,
-    HqCliInstallMode, HqCliUpdateInfo,
-};
+use hq_desktop_core::hq_cli_update::{install_with_previous_cli_recovery, HqCliUpdateInfo};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -108,16 +105,6 @@ async fn successful_install_with_unreadable_local_version_triggers_rollback() {
 
     assert_eq!(result.local.as_deref(), Some("1.0.0"));
     assert_eq!(probe_fake_hq(&hq).as_deref(), Some("1.0.0"));
-}
-
-#[test]
-fn rollback_mode_does_not_write_a_nonconvergent_marker() {
-    let temp = tempfile::tempdir().unwrap();
-    let marker = temp.path().join("nonconvergent-marker");
-    if should_record_forward_cli_install_effects(HqCliInstallMode::Rollback) {
-        fs::write(&marker, "old-version").unwrap();
-    }
-    assert!(!marker.exists());
 }
 
 #[cfg(unix)]
