@@ -1660,40 +1660,46 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                         }
                         let last_stderr = stderr_tail.last().map(String::as_str);
                         let report_dir_disposition = if let Some(plan) = watch_owner_exit.as_ref() {
-                            sentry::with_scope(|scope| {
-                                scope.set_tag("watch_owner", &plan.owner_label);
-                                scope.set_tag("watch_owner_action", plan.classification);
-                                scope.set_extra(
-                                    "watch_owner_exit_code",
-                                    code.map(|value| sentry::protocol::Value::Number(value.into()))
+                            sentry::with_scope(
+                                |scope| {
+                                    scope.set_tag("watch_owner", &plan.owner_label);
+                                    scope.set_tag("watch_owner_action", plan.classification);
+                                    scope.set_extra(
+                                        "watch_owner_exit_code",
+                                        code.map(|value| {
+                                            sentry::protocol::Value::Number(value.into())
+                                        })
                                         .unwrap_or(sentry::protocol::Value::Null),
-                                );
-                                if plan.record_failure {
-                                    handle_watcher_exit(
-                                        code,
-                                        signal,
-                                        success,
-                                        cancelled,
-                                        &watcher_command,
-                                        last_stderr,
-                                        &exit_context,
-                                    )
-                                } else {
-                                    if plan.defer_to_daemon
-                                        || plan.classification == "live_owner_deferral"
-                                    {
-                                        set_lifecycle_state(
-                                            WatchDaemonState::Running,
-                                            DaemonFailureCategory::None,
-                                        );
-                                    }
-                                    sentry::capture_message(
-                                        "auto-sync watcher exited with a live watch-owner lease",
-                                        sentry::Level::Warning,
                                     );
-                                    RunnerReportDirDisposition::DeleteOnExitPath
-                                }
-                            })
+                                },
+                                || {
+                                    if plan.record_failure {
+                                        handle_watcher_exit(
+                                            code,
+                                            signal,
+                                            success,
+                                            cancelled,
+                                            &watcher_command,
+                                            last_stderr,
+                                            &exit_context,
+                                        )
+                                    } else {
+                                        if plan.defer_to_daemon
+                                            || plan.classification == "live_owner_deferral"
+                                        {
+                                            set_lifecycle_state(
+                                                WatchDaemonState::Running,
+                                                DaemonFailureCategory::None,
+                                            );
+                                        }
+                                        sentry::capture_message(
+                                            "auto-sync watcher exited with a live watch-owner lease",
+                                            sentry::Level::Warning,
+                                        );
+                                        RunnerReportDirDisposition::DeleteOnExitPath
+                                    }
+                                },
+                            )
                         } else {
                             handle_watcher_exit(
                                 code,
