@@ -119,7 +119,7 @@ pub fn forget_window_backdrop_visibility(label: &str) {
 
 #[cfg(test)]
 mod backdrop_tests {
-    use super::backdrop_visible_for;
+    use super::{backdrop_visible_for, BackdropVisibilityByWindow};
 
     #[test]
     fn solid_endpoint_hides_backdrop_and_every_other_level_keeps_it() {
