@@ -110,26 +110,27 @@ pub use hq_desktop_core::hq_cli_update::{
     report_install_failure_with_final_attempt, report_non_convergent_install,
     report_non_convergent_marker_unpersisted, report_npm_cache_setup_failure,
     report_registry_serving_lag_marker_unpersisted, report_unreadable_version, resolved_hq_version,
-    should_auto_install, should_report_unreadable_version,
+    restore_if_install_not_converged, should_auto_install, should_report_unreadable_version,
     should_retry_windows_busy_install_target, suppress_for_dismissal,
     unattributed_install_stderr_origin, user_prefix_aim_decision, version_from_hq_binary,
     version_if_hq_cli, windows_busy_cli_version_unchanged, windows_busy_deferral_decision,
     windows_busy_install_target_retry_delay_for_recovery, windows_busy_install_target_retry_rung,
     AsyncSingleFlight, DeliveredPrefixShim, ExecutedCopyAim, ExecutedCopyReaim,
-    ExecutedCopyReaimGate, HqCliUpdateInfo, InstallEnvironment, InstallExecutor,
-    InstallFailureEpisode, InstallFailureKind, InterpreterRecovery, LaunchCliCheck,
-    LocalVersionProbeDiagnostics, LocalVersionProbeResult, ManagedRepairDisposition,
-    ManagedRetryOutcome, ManagedRetryStart, ManagedShadowRepairAction, ManagedShadowRepairOutcome,
-    MissingTargetState, NonConvergenceKind, NonConvergentReport, NpmLatest, NpmLockHolderClass,
-    NpmLockHolderDiagnostic, NpmLockHolderQueryOutcome, NpmToolchainSource, PnpmGlobalEnv,
-    PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext,
-    PostInstallCoreEffects, PostInstallOutcome, RequestedSpecKind, RestartManagerHolderObservation,
-    SettingsPathTelemetry, UserPrefixAim, VersionProbeOutcome, WindowsBusyDeferralDecision,
-    WindowsBusyDeferralMarker, WindowsBusyDeferralOutcome, WindowsBusyRetryOutcome,
-    DISMISSED_VERSION_KEY, HQ_CLI_MIN_VERSION, HQ_CLI_PACKAGE, NON_CONVERGENT_CONTRACT_KEY,
-    NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY, NPM_INSTALL_CHILD_ENV,
-    PINNED_MARKER_CONTRACT, REGISTRY_SERVING_LAG_RECURRENCE_GAP_MINUTES, STDERR_ORIGIN_NON_NPM,
-    WINDOWS_BUSY_INSTALL_TARGET_MAX_DEFERRALS, WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES,
+    ExecutedCopyReaimGate, HqCliInstallSnapshot, HqCliUpdateInfo, InstallEnvironment,
+    InstallExecutor, InstallFailureEpisode, InstallFailureKind, InterpreterRecovery,
+    LaunchCliCheck, LocalVersionProbeDiagnostics, LocalVersionProbeResult,
+    ManagedRepairDisposition, ManagedRetryOutcome, ManagedRetryStart, ManagedShadowRepairAction,
+    ManagedShadowRepairOutcome, MissingTargetState, NonConvergenceKind, NonConvergentReport,
+    NpmLatest, NpmLockHolderClass, NpmLockHolderDiagnostic, NpmLockHolderQueryOutcome,
+    NpmToolchainSource, PnpmGlobalEnv, PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily,
+    PostInstallContext, PostInstallCoreEffects, PostInstallOutcome, RequestedSpecKind,
+    RestartManagerHolderObservation, SettingsPathTelemetry, UserPrefixAim, VersionProbeOutcome,
+    WindowsBusyDeferralDecision, WindowsBusyDeferralMarker, WindowsBusyDeferralOutcome,
+    WindowsBusyRetryOutcome, DISMISSED_VERSION_KEY, HQ_CLI_MIN_VERSION, HQ_CLI_PACKAGE,
+    NON_CONVERGENT_CONTRACT_KEY, NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY,
+    NPM_INSTALL_CHILD_ENV, PINNED_MARKER_CONTRACT, REGISTRY_SERVING_LAG_RECURRENCE_GAP_MINUTES,
+    STDERR_ORIGIN_NON_NPM, WINDOWS_BUSY_INSTALL_TARGET_MAX_DEFERRALS,
+    WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES,
 };
 
 // The settings-PATH repair (HQ-DESKTOP-46) runs only on unix — Windows PATH is
@@ -2349,6 +2350,78 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
     // and the managed-toolchain retry) mutates the same global CLI layout, so
     // the guard must outlive them all. Drop (including panic unwind) releases.
     let _install_lock = acquire_cli_install_lock(&app, "hq-desktop-app-cli-update")?;
+    let original_hq = paths::resolve_bin_with_kind("hq").path;
+    let snapshot = capture_working_cli_snapshot(&original_hq).await?;
+    let result = install_hq_cli_update_locked(app).await;
+    let Some(snapshot) = snapshot else {
+        return result;
+    };
+    match result {
+        Ok(mut info) => {
+            let original_version = snapshot.original_version.clone();
+            let converged = install_converged(info.local.as_deref(), &info.latest);
+            restore_if_install_not_converged(snapshot, info.local.as_deref(), &info.latest)
+                .map_err(|restore_error| {
+                    format!(
+                        "The HQ CLI update did not converge, and restoring the previous HQ CLI failed: {restore_error}"
+                    )
+                })?;
+            if !converged {
+                info.local = Some(original_version);
+            }
+            Ok(info)
+        }
+        Err(install_error) => {
+            restore_if_install_not_converged(snapshot, None, "").map_err(|restore_error| {
+                format!(
+                    "{install_error}; restoring the previous HQ CLI also failed: {restore_error}"
+                )
+            })?;
+            Err(install_error)
+        }
+    }
+}
+
+async fn capture_working_cli_snapshot(hq: &str) -> Result<Option<HqCliInstallSnapshot>, String> {
+    if install_executor_for_hq_bin(Path::new(hq)).is_none() {
+        return Ok(None);
+    }
+    let hq_for_version = hq.to_owned();
+    let original_version =
+        tauri::async_runtime::spawn_blocking(move || resolved_hq_version(&hq_for_version))
+            .await
+            .map_err(|error| format!("could not inspect the existing HQ CLI: {error}"))?;
+    let Some(original_version) = original_version else {
+        // A recognised but already-unusable executable is not a previous
+        // working install that can be promised as a rollback target.
+        return Ok(None);
+    };
+
+    let package_candidates = hq_cli_package_directories_from_bin(Path::new(hq));
+    let executable = Path::new(hq)
+        .canonicalize()
+        .unwrap_or_else(|_| PathBuf::from(hq));
+    let package = package_candidates
+        .iter()
+        .find(|candidate| {
+            let package = candidate
+                .canonicalize()
+                .unwrap_or_else(|_| (*candidate).clone());
+            executable.starts_with(package)
+        })
+        .or_else(|| {
+            package_candidates.iter().find(|candidate| {
+                version_if_hq_cli(&candidate.join("package.json")).as_deref()
+                    == Some(original_version.as_str())
+            })
+        })
+        .cloned()
+        .ok_or_else(|| format!("could not locate the installed HQ CLI package for {hq}"))?;
+    let snapshot = HqCliInstallSnapshot::capture(&package, Path::new(hq), original_version)?;
+    Ok(Some(snapshot))
+}
+
+async fn install_hq_cli_update_locked(app: AppHandle) -> Result<HqCliUpdateInfo, String> {
     let npm = paths::resolve_bin("npm");
     let path = paths::child_path();
     let hq_resolved = paths::resolve_bin_with_kind("hq");

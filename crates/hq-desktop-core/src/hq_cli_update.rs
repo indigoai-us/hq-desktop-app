@@ -9,6 +9,7 @@ use std::process::{Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use std::{fs, io};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -8571,6 +8572,200 @@ fn hq_cli_package_json_candidates(prefix: &Path, hq_bin: &Path) -> Vec<std::path
     candidates
 }
 
+/// A private copy of the currently executed CLI package and its exact PATH
+/// entry. It remains available until the existing version-convergence check
+/// confirms the replacement, then Drop removes the staged copy.
+pub struct HqCliInstallSnapshot {
+    root: PathBuf,
+    entries: Vec<(PathBuf, PathBuf)>,
+    pub original_version: String,
+    keep_for_recovery: bool,
+}
+
+impl HqCliInstallSnapshot {
+    /// Copy the installed package and exact executable path to a private temp directory.
+    pub fn capture(
+        package: &Path,
+        hq_bin: &Path,
+        original_version: String,
+    ) -> Result<Self, String> {
+        let nonce = uuid::Uuid::new_v4();
+        let root = std::env::temp_dir().join(format!("hq-cli-update-backup-{nonce}"));
+        fs::create_dir(&root)
+            .map_err(|error| format!("could not stage the existing HQ CLI: {error}"))?;
+        #[cfg(unix)]
+        if let Err(error) =
+            fs::set_permissions(&root, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+        {
+            let _ = fs::remove_dir_all(&root);
+            return Err(format!("could not secure the HQ CLI backup: {error}"));
+        }
+
+        let mut entries = Vec::new();
+        for (index, source) in [package, hq_bin].into_iter().enumerate() {
+            if entries.iter().any(|(existing, _)| existing == source) {
+                continue;
+            }
+            let backup = root.join(index.to_string());
+            if let Err(error) = copy_entry(source, &backup) {
+                let _ = fs::remove_dir_all(&root);
+                return Err(format!("could not stage the existing HQ CLI: {error}"));
+            }
+            entries.push((source.to_path_buf(), backup));
+        }
+        Ok(Self {
+            root,
+            entries,
+            original_version,
+            keep_for_recovery: false,
+        })
+    }
+
+    fn restore(mut self) -> Result<(), String> {
+        for (original, backup) in &self.entries {
+            let unchanged = match same_entry(original, backup) {
+                Ok(unchanged) => unchanged,
+                Err(error) => {
+                    self.keep_for_recovery = true;
+                    return Err(format!(
+                        "could not compare the HQ CLI backup with {original:?}: {error}; backup retained at {:?}",
+                        self.root
+                    ));
+                }
+            };
+            if unchanged {
+                continue;
+            }
+            if let Err(error) = remove_entry(original) {
+                self.keep_for_recovery = true;
+                return Err(format!(
+                    "could not remove the partial HQ CLI at {original:?}: {error}; backup retained at {:?}",
+                    self.root
+                ));
+            }
+            if let Err(error) = copy_entry(backup, original) {
+                self.keep_for_recovery = true;
+                return Err(format!(
+                    "could not restore the previous HQ CLI at {original:?}: {error}; backup retained at {:?}",
+                    self.root
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Keep the staged replacement only when the existing version check converged.
+pub fn restore_if_install_not_converged(
+    snapshot: HqCliInstallSnapshot,
+    after_version: Option<&str>,
+    latest: &str,
+) -> Result<bool, String> {
+    if install_converged(after_version, latest) {
+        drop(snapshot);
+        return Ok(true);
+    }
+    snapshot.restore()?;
+    Ok(false)
+}
+
+impl Drop for HqCliInstallSnapshot {
+    fn drop(&mut self) {
+        if !self.keep_for_recovery {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+}
+
+fn copy_entry(source: &Path, destination: &Path) -> io::Result<()> {
+    let metadata = fs::symlink_metadata(source)?;
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    if metadata.file_type().is_symlink() {
+        let target = fs::read_link(source)?;
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, destination)?;
+        #[cfg(windows)]
+        if fs::metadata(source).is_ok_and(|target_metadata| target_metadata.is_dir()) {
+            std::os::windows::fs::symlink_dir(target, destination)?;
+        } else {
+            std::os::windows::fs::symlink_file(target, destination)?;
+        }
+    } else if metadata.is_dir() {
+        fs::create_dir(destination)?;
+        for child in fs::read_dir(source)? {
+            let child = child?;
+            copy_entry(&child.path(), &destination.join(child.file_name()))?;
+        }
+        fs::set_permissions(destination, metadata.permissions())?;
+    } else if metadata.is_file() {
+        fs::copy(source, destination)?;
+    } else {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "unsupported filesystem entry in HQ CLI package",
+        ));
+    }
+    Ok(())
+}
+
+fn remove_entry(path: &Path) -> io::Result<()> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if metadata.is_dir() && !metadata.file_type().is_symlink() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    }
+}
+
+fn same_entry(left: &Path, right: &Path) -> io::Result<bool> {
+    let left_meta = match fs::symlink_metadata(left) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    let right_meta = match fs::symlink_metadata(right) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    if left_meta.file_type().is_symlink() || right_meta.file_type().is_symlink() {
+        return Ok(left_meta.file_type().is_symlink()
+            && right_meta.file_type().is_symlink()
+            && fs::read_link(left)? == fs::read_link(right)?);
+    }
+    if left_meta.is_file() || right_meta.is_file() {
+        return if left_meta.is_file() && right_meta.is_file() {
+            Ok(fs::read(left)? == fs::read(right)?)
+        } else {
+            Ok(false)
+        };
+    }
+    if !left_meta.is_dir() || !right_meta.is_dir() {
+        return Ok(false);
+    }
+    let left_children = fs::read_dir(left)?
+        .map(|entry| entry.map(|entry| entry.file_name()))
+        .collect::<io::Result<std::collections::BTreeSet<_>>>()?;
+    let right_children = fs::read_dir(right)?
+        .map(|entry| entry.map(|entry| entry.file_name()))
+        .collect::<io::Result<std::collections::BTreeSet<_>>>()?;
+    if left_children != right_children {
+        return Ok(false);
+    }
+    for child in left_children {
+        if !same_entry(&left.join(&child), &right.join(&child))? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 /// Resolve package directories that can contain the installed `hq` binary.
 ///
 /// Restart Manager needs files from the package directory, while the resolved
@@ -8634,6 +8829,97 @@ pub fn hq_cli_package_directories_from_bin(hq_bin: &Path) -> Vec<std::path::Path
         }
     }
     package_directories
+}
+
+#[cfg(all(test, unix))]
+mod cli_install_snapshot_tests {
+    use super::*;
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    fn write_fake_hq(path: &Path, output: &str) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, format!("#!/bin/sh\necho {output}\n")).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn fake_hq_output(path: &Path) -> String {
+        std::process::Command::new(path)
+            .output()
+            .unwrap()
+            .stdout
+            .into_iter()
+            .map(char::from)
+            .collect::<String>()
+            .trim()
+            .to_string()
+    }
+
+    fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let temp = tempfile::tempdir().unwrap();
+        let package = temp.path().join("node_modules/@indigoai-us/hq-cli");
+        let package_bin = package.join("bin/hq");
+        let hq_bin = temp.path().join("bin/hq");
+        fs::create_dir_all(package.join("bin")).unwrap();
+        fs::write(
+            package.join("package.json"),
+            r#"{"name":"@indigoai-us/hq-cli","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        write_fake_hq(&package_bin, "previous-cli");
+        fs::create_dir_all(hq_bin.parent().unwrap()).unwrap();
+        symlink(&package_bin, &hq_bin).unwrap();
+        (temp, package, hq_bin)
+    }
+
+    fn run_fake_installer(
+        path: &Path,
+        target: &Path,
+        output: &str,
+        exit: i32,
+    ) -> std::process::ExitStatus {
+        let script = format!(
+            "#!/bin/sh\nprintf '%s\\n' '#!/bin/sh' 'echo {output}' > \"$TARGET\"\nexit {exit}\n"
+        );
+        fs::write(path, script).unwrap();
+        std::process::Command::new("sh")
+            .arg(path)
+            .env("TARGET", target)
+            .status()
+            .unwrap()
+    }
+
+    #[test]
+    fn failed_cli_install_restores_the_previous_executable() {
+        let (temp, package, hq_bin) = fixture();
+        let snapshot =
+            HqCliInstallSnapshot::capture(&package, &hq_bin, "1.0.0".to_string()).unwrap();
+        let status = run_fake_installer(
+            &temp.path().join("installer.sh"),
+            &package.join("bin/hq"),
+            "partial-install",
+            23,
+        );
+        assert_eq!(status.code(), Some(23));
+        assert_eq!(fake_hq_output(&hq_bin), "partial-install");
+        assert!(!restore_if_install_not_converged(snapshot, None, "2.0.0").unwrap());
+        assert_eq!(fake_hq_output(&hq_bin), "previous-cli");
+    }
+
+    #[test]
+    fn converged_cli_install_keeps_the_new_executable() {
+        let (temp, package, hq_bin) = fixture();
+        let snapshot =
+            HqCliInstallSnapshot::capture(&package, &hq_bin, "1.0.0".to_string()).unwrap();
+        let status = run_fake_installer(
+            &temp.path().join("installer.sh"),
+            &package.join("bin/hq"),
+            "new-cli",
+            0,
+        );
+        assert!(status.success());
+        assert!(restore_if_install_not_converged(snapshot, Some("2.0.0"), "2.0.0").unwrap());
+        assert_eq!(fake_hq_output(&hq_bin), "new-cli");
+    }
 }
 
 #[cfg(test)]
