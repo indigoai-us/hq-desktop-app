@@ -25,6 +25,7 @@
    */
   import {
     CLAUDE_PROVIDER_FLAG,
+    HUMAN_ONLY_CONVERSATIONS_FLAG,
     failure,
     hostComputerNoun,
     startJitteredPoll,
@@ -223,6 +224,23 @@
     type NotifyLevel,
   } from "../chat/notify-level";
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
+  import GuidedTour from "../tour/GuidedTour.svelte";
+  import {
+    TOUR_AUTO_START_DELAY_MS,
+    TOUR_IDLE,
+    backTourState,
+    isTourHomeRow,
+    nextTourState,
+    readTourSeenLocally,
+    shouldAutoStartTour,
+    skipTourState,
+    startTourState,
+    tourSteps,
+    writeTourSeenLocally,
+    type TourEnterAction,
+    type TourState,
+  } from "../tour/guided-tour.js";
+  import { vaultsFor } from "../files/explorer/vault-model.js";
   import MemberProfilePanel from "../chat/MemberProfilePanel.svelte";
   import AgentDetailPanel from "../chat/AgentDetailPanel.svelte";
   import LocalBotDetailPanel from "../chat/LocalBotDetailPanel.svelte";
@@ -876,6 +894,11 @@
     onassistedinstall?: (
       tool: import("../install-choice/install-choice.js").CodingTool,
     ) => Promise<import("../install-choice/install-choice.js").InstallOutcome>;
+    /**
+     * Ask the host to (re-)probe `detect_ai_tools`. Called lazily by the
+     * New bot wizard on mount so the probe is not paid on every app open.
+     */
+    onrequestaitools?: () => void;
   }
 
   let {
@@ -942,6 +965,7 @@
     aiTools = null,
     onopenassistant,
     onassistedinstall,
+    onrequestaitools,
   }: Props = $props();
 
   const derivedChrome = $derived(accountChromeFromSelf(self));
@@ -1330,6 +1354,17 @@
         conflictFiles = [];
       }),
     );
+    // hard-stop US-019: the native registry announces every change to the
+    // plan-limit upload pause; re-read the journal-backed status so the Core
+    // header stops saying "All synced" without waiting for the 30s poll.
+    track(
+      host.listen("sync:uploads-paused", () => {
+        if (!adapter.isAvailable("canSync")) return;
+        void readLiveSyncStatus(adapter).then((next) => {
+          if (!disposed) liveSync = next;
+        });
+      }),
+    );
 
     return () => {
       disposed = true;
@@ -1667,6 +1702,44 @@
   /** Sidebar entry points for app-wide shortcuts; null while unmounted. */
   let sidebarActions = $state<ChatSidebarActions | null>(null);
   let cheatSheetOpen = $state(false);
+
+  /**
+   * desktop.human-only-conversations: on by default. The desktop adapters
+   * pin the flag to `HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT` (true), so
+   * the initial state is `true` to avoid a first-paint flash of mesh rows.
+   * An adapter that answers `ok(false)` (or fails) still turns it off; the
+   * web adapter keeps the registry read. Callers hide mesh / non-human messages in
+   * conversation views and reorder the sidebar by last human message when
+   * this is true. See `packages/platform/src/humanMessage.ts` for the rule.
+   */
+  let humanOnlyConversations = $state(true);
+  $effect(() => {
+    const identity = adapter?.identity;
+    if (!identity || typeof identity.hasFeature !== "function") return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const initial = await identity.hasFeature(
+          HUMAN_ONLY_CONVERSATIONS_FLAG,
+        );
+        if (cancelled) return;
+        humanOnlyConversations = initial.ok && initial.value === true;
+      } catch {
+        // Registry outage / partial mock — stay dark.
+      }
+    })();
+    const unsubscribe =
+      typeof identity.subscribeFeature === "function"
+        ? identity.subscribeFeature(HUMAN_ONLY_CONVERSATIONS_FLAG, (result) => {
+            if (cancelled) return;
+            humanOnlyConversations = result.ok && result.value === true;
+          })
+        : undefined;
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  });
 
   // ── Personal local bots (local-bots US-009) ────────────────────────────────
   // The host's bots API shells to `hq bot list --json`; rows carry the server's
@@ -3229,6 +3302,15 @@
           void navigate({ kind: "explorer" });
         },
       });
+      nav.push({
+        id: "command-take-tour",
+        label: "Take the tour",
+        detail: "An eight-step walk through HQ Desktop",
+        // Start after the palette has closed so it cannot take focus back.
+        action: () => {
+          window.setTimeout(startGuidedTour, 0);
+        },
+      });
     }
     nav.push({
       id: "command-go-library",
@@ -4664,15 +4746,40 @@
   }
 
   async function removeMember(row: StatusPersonRow): Promise<void> {
-    const channelId = selectedRow?.channelId?.trim() ?? "";
+    const activeRow = selectedRow;
+    const channelId = activeRow?.channelId?.trim() ?? "";
     if (!channelId.startsWith("chn_") || removingMemberUid) return;
+    const isSelfLeave = isSelf(row.personUid, self);
     removingMemberUid = row.personUid;
+    channelActionError = null;
     try {
       const res = await adapter.messaging.removeChannelMember(
         channelId,
         row.personUid,
       );
       if (res.ok) {
+        if (isSelfLeave) {
+          // The caller just left the channel: close the popover, drop the
+          // rail row optimistically (same wake delete_channel uses), and
+          // clear the selection so the empty state renders instead of a
+          // dead conversation.
+          membersOpen = false;
+          wakes?.emit?.("channel:removed", { channelId });
+          timelineCache.delete(activeRow?.id ?? "");
+          if (activeRow && selectedRow?.channelId === channelId) {
+            selectedRow = null;
+            liveTimeline = [];
+            liveTimelineId = null;
+            timelineHydrating = false;
+            openReplyRootId = null;
+            openProfileMember = null;
+            openAgentMember = null;
+            attachTray = null;
+            replyPreviewByRoot = {};
+            projectAboutOpen = false;
+          }
+          return;
+        }
         await loadChannelRoster(channelId);
         if (openProfileMember?.personUid === row.personUid) {
           openProfileMember = null;
@@ -4680,7 +4787,15 @@
         if (openAgentMember?.personUid === row.personUid) {
           openAgentMember = null;
         }
+      } else {
+        channelActionError =
+          res.message?.trim() ||
+          (isSelfLeave
+            ? `Couldn't leave #${activeRow?.title ?? "channel"}.`
+            : `Couldn't remove ${row.displayName || "member"}.`);
       }
+    } catch (err) {
+      channelActionError = err instanceof Error ? err.message : String(err);
     } finally {
       removingMemberUid = null;
     }
@@ -5367,7 +5482,16 @@
     void (async () => {
       try {
         const res = await adapter.settings.getSetupStatus();
-        const owed = res.ok ? (res.value as { welcomeSetupOwed?: unknown } | null)?.welcomeSetupOwed : undefined;
+        const status = res.ok
+          ? (res.value as { welcomeSetupOwed?: unknown; welcomeTourShown?: unknown } | null)
+          : null;
+        const owed = status?.welcomeSetupOwed;
+        if (status) {
+          tourHostStatus = {
+            owed: owed === true,
+            shown: status.welcomeTourShown === true,
+          };
+        }
         // Only an explicit "not owed" skips the welcome; anything else keeps today's behaviour.
         resolve(owed !== false);
       } catch {
@@ -5376,6 +5500,132 @@
     })();
     return () => clearTimeout(timer);
   });
+
+  /*
+   * FIRST-RUN GUIDED TOUR. An eight-step spotlight (setup bot, Files button,
+   * new-bot "+" button, invite, meetings, web console, Launch menu, command
+   * palette) that starts by itself once on a fresh install, after the shell
+   * is up and #welcome or the setup bot's DM is on screen, and can be
+   * replayed from the command palette. Model and geometry live in
+   * `tour/guided-tour.ts`; this block holds the titlebar Launch menu open,
+   * opens (and closes) the command palette and persists "seen" the moment it
+   * starts showing. It never navigates: starting, Done and Skip leave the
+   * route and the selected conversation exactly as they are.
+   */
+  /** The host's explicit setup-status answer; null until (or unless) it answers. */
+  let tourHostStatus = $state<{ owed: boolean; shown: boolean } | null>(null);
+  let tourShellReady = $state(false);
+  let tourState = $state<TourState>(TOUR_IDLE);
+  let tourStartedThisSession = false;
+  let tourAutoTimer = 0;
+  const tourSetupBotUid = $derived(existingSetupBot?.agentUid ?? null);
+  const tourVaults = $derived(vaultsFor(companies));
+  const tourStepList = $derived(
+    tourSteps({
+      setupBotDmOpen: Boolean(
+        tourSetupBotUid && view === "conversation" && selectedRow?.id === `dm:${tourSetupBotUid}`,
+      ),
+      setupBotUid: tourSetupBotUid,
+      hasCompanyVault: tourVaults.some((vault) => vault.kind === "company"),
+      hasCompany: (companies ?? []).some((company) => company.kind === "company"),
+    }),
+  );
+  const tourIndex = $derived(tourState.status === "active" ? tourState.index : -1);
+  const tourStep = $derived(tourIndex >= 0 ? (tourStepList[tourIndex] ?? null) : null);
+  const tourLaunchOpen = $derived(tourStep?.onEnter === "open-launch-menu");
+  const tourWelcomeOnScreen = $derived(
+    view === "conversation" && isTourHomeRow(selectedRow?.id, tourSetupBotUid),
+  );
+
+  function tourLocalStorage(): Storage | null {
+    try {
+      return typeof localStorage === "undefined" ? null : localStorage;
+    } catch {
+      return null;
+    }
+  }
+
+  function markTourSeen(): void {
+    writeTourSeenLocally(tourLocalStorage());
+    const mark = adapter.settings.markWelcomeTourShown;
+    if (!mark) return;
+    void Promise.resolve()
+      .then(() => mark.call(adapter.settings))
+      .catch((err) => console.warn("[hq-desktop] could not record the guided tour:", err));
+  }
+
+  function startGuidedTour(): void {
+    if (adapter.kind === "web" || tourState.status === "active") return;
+    tourStartedThisSession = true;
+    tourState = startTourState();
+    markTourSeen();
+  }
+
+  /** The command palette was opened by this tour, so it closes it. */
+  let tourOpenedPalette = false;
+
+  function closeTourSurfaces(keep: TourEnterAction | null): void {
+    if (keep !== "open-palette" && tourOpenedPalette) {
+      tourOpenedPalette = false;
+      paletteOpen = false;
+    }
+  }
+
+  /** Done or Skip: close the layer and what the tour opened; stay put. */
+  function endGuidedTour(): void {
+    tourState = TOUR_IDLE;
+    closeTourSurfaces(null);
+  }
+
+  function tourNext(): void {
+    const next = nextTourState(tourState, tourStepList.length);
+    if (next.status === "active") tourState = next;
+    else endGuidedTour();
+  }
+
+  function tourBack(): void {
+    tourState = backTourState(tourState);
+  }
+
+  function tourSkip(): void {
+    if (skipTourState(tourState).status === "skipped") endGuidedTour();
+  }
+
+  // Auto-start: fresh install, not seen (host flag or local fallback), shell
+  // up, the setup conversation on screen; then a short settle delay.
+  $effect(() => {
+    const ready = shouldAutoStartTour({
+      welcomeSetupOwed: tourHostStatus ? tourHostStatus.owed : null,
+      tourSeen: Boolean(tourHostStatus?.shown) || readTourSeenLocally(tourLocalStorage()),
+      shellReady: tourShellReady,
+      welcomeOnScreen: tourWelcomeOnScreen,
+      startedThisSession: tourStartedThisSession,
+    });
+    if (!ready || adapter.kind === "web") return;
+    tourAutoTimer = window.setTimeout(() => {
+      if (!tourStartedThisSession) startGuidedTour();
+    }, TOUR_AUTO_START_DELAY_MS);
+    return () => clearTimeout(tourAutoTimer);
+  });
+
+  // Entering a step (keyed on the index, so a re-derived step list does not
+  // re-run it): close what the previous step opened, then do this step's
+  // action.
+  $effect(() => {
+    const index = tourIndex;
+    if (index < 0) return;
+    untrack(() => {
+      const step = tourStepList[index];
+      if (!step) return;
+      closeTourSurfaces(step.onEnter);
+      if (step.onEnter === "open-palette" && !paletteOpen) {
+        cheatSheetOpen = false;
+        paletteOpen = true;
+        tourOpenedPalette = true;
+      }
+    });
+  });
+
   /**
    * An explicit conversation deep link (`?channel=` / `?person=`) is a
    * stronger intent than first landing: it must never be swallowed by the
@@ -8306,6 +8556,7 @@
     syncState={liveSyncState}
     {lastSyncLabel}
     conflictCount={liveSync.conflicts}
+    uploadsPaused={liveSync.uploadsPaused ?? []}
     conflicts={conflictFiles}
     onresolveconflict={(path, strategy) => resolveConflictFile(path, strategy)}
     onopenconflict={(path) => openConflictInEditor(path)}
@@ -8344,6 +8595,7 @@
     forwardLabel={navigationForwardLabel}
     onback={() => void goBack()}
     onforward={() => void goForward()}
+    launchMenuForcedOpen={tourLaunchOpen}
   />
 
   {#if recommendBanner}
@@ -8567,6 +8819,7 @@
           companyCreate={companyCreateSeam}
           oncreateagent={canCreateCloudBots ? createCloudBotEntry : null}
           loadClaudeProviderFlag={() => adapter.identity.hasFeature(CLAUDE_PROVIDER_FLAG)}
+          humanOnly={humanOnlyConversations}
           loadCloudProvisionOptions={(companyUid) => adapter.agents.getProvisionOptions(companyUid)}
           oncreatebot={adapter.bots ? createBotEntry : null}
           botRuntimeReady={localBotRuntimeReady}
@@ -8576,6 +8829,7 @@
           hqFolderPath={hqFolderPath ?? ""}
           {onopenassistant}
           {onassistedinstall}
+          {onrequestaitools}
           botWorkers={localBotWorkers}
           {existingBotNames}
           {botSignIn}
@@ -8592,7 +8846,10 @@
           onactions={(actions) => (sidebarActions = actions)}
           {bootTimeoutMs}
           welcomeFirst={welcomeSetupRun || hasBootDeepLink || initialRow ? false : welcomeSetupOwed === null ? "pending" : welcomeSetupOwed}
-          {onShellReady}
+          onShellReady={() => {
+            tourShellReady = true;
+            onShellReady?.();
+          }}
           projectHasPresence={rowHasProjectPresence}
           dmPresence={(row) => localBotPresence(localBots, row)}
           {rowExtrasLoading}
@@ -9442,6 +9699,7 @@
                 <ChannelConversation
                   restoreScroll={pendingRestoreScroll}
                   {localBots}
+                  humanOnly={humanOnlyConversations}
                   messages={timelineWithActivity}
                   onseen={async () => {
                     const row = selectedRow;
@@ -9703,6 +9961,17 @@
     <CommandPalette
       commands={paletteCommands}
       onclose={() => (paletteOpen = false)}
+    />
+  {/if}
+
+  {#if tourStep}
+    <GuidedTour
+      step={tourStep}
+      index={tourIndex}
+      count={tourStepList.length}
+      onnext={tourNext}
+      onback={tourBack}
+      onskip={tourSkip}
     />
   {/if}
 

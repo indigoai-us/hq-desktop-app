@@ -22,6 +22,7 @@
     CORE_POPOVER_FIXTURE_CONFLICTS,
     type CorePopoverConflict,
     type CorePopoverPack,
+    type CoreUploadsPausedInput,
   } from "./core-popover-model.js";
   import { packDisplayName } from "./pack-display-name.js";
   import { type AdapterResult } from "../settings/update-orchestration.js";
@@ -106,6 +107,13 @@
     onopendrift?: () => void | Promise<void>;
     onopenLibrary?: () => void;
     onopenMarketplace?: () => void;
+    /**
+     * Companies whose uploads are paused by a plan limit (hard-stop US-019),
+     * from the sync journal. Each renders a row with its upgrade link.
+     */
+    uploadsPaused?: readonly CoreUploadsPausedInput[] | null;
+    /** Open an external link (the plan upgrade page). */
+    onopenurl?: (url: string) => void;
   }
 
   interface CoreStateWire {
@@ -142,6 +150,8 @@
     onopendrift,
     onopenLibrary,
     onopenMarketplace,
+    uploadsPaused = null,
+    onopenurl,
   }: Props = $props();
 
   let packsExpanded = $state(true);
@@ -264,6 +274,7 @@
       syncState,
       lastSyncLabel,
       syncCaption,
+      uploadsPaused: uploadsPaused ?? [],
       notices: {
         conflictCount: effectiveConflictCount,
         conflictCompany,
@@ -505,6 +516,32 @@
       </div>
     </div>
   {/if}
+
+  {#each model.uploadsPaused as row (row.company)}
+    <div
+      class="core-paused"
+      data-testid="core-popover-uploads-paused"
+      data-kind="uploads-paused"
+      role="status"
+    >
+      <span class="core-paused-title">{row.title}</span>
+      <span class="core-paused-body">{row.body}</span>
+      {#if row.upgradeUrl && onopenurl}
+        <div class="core-uploads-paused-actions">
+          <button
+            type="button"
+            class="core-btn primary"
+            data-testid="core-popover-uploads-paused-upgrade"
+            onclick={() => {
+              if (row.upgradeUrl) onopenurl?.(row.upgradeUrl);
+            }}
+          >
+            Upgrade plan
+          </button>
+        </div>
+      {/if}
+    </div>
+  {/each}
 
   {#if model.cloudPaused && model.pausedNotice}
     <div
@@ -979,6 +1016,11 @@
     font-size: 11px;
     color: var(--t2);
     line-height: 1.35;
+  }
+
+  .core-uploads-paused-actions {
+    display: flex;
+    margin-top: 6px;
   }
 
   .core-pack-new {

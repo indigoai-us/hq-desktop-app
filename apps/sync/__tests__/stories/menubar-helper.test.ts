@@ -191,6 +191,34 @@ describe('macOS menu-bar helper process (HQ status item)', () => {
     expect(desktop).toMatch(/get_webview_window\("main"\)[\s\S]*?\.hide\(\)/);
   });
 
+  it('shows paused uploads with an upgrade row and opens only the app-held link (hard-stop US-019)', () => {
+    const swift = read('src-tauri/helper/hq-tray-helper.swift');
+    // The helper reads the app's snapshot and mirrors it into its menu.
+    expect(swift).toContain('.hq/.tray-status');
+    expect(swift).toContain('controller.refreshStatus()');
+    expect(swift).toContain('"Uploads paused for \\(row.company)"');
+    expect(swift).toContain('"Upgrade plan for \\(row.company)…"');
+    expect(swift).toContain('"upgrade \\(row.company)"');
+    const helper = read('src-tauri/src/tray_helper.rs');
+    // The status file carries names only; the link stays in the app, which
+    // validates it against hq-pro's hosts before opening.
+    expect(helper).toContain('.tray-status');
+    expect(helper).toContain('"canUpgrade": entry.upgrade_url.is_some()');
+    expect(helper).toContain('upgrade_command_company(cmd)');
+    expect(helper).toContain('open_upgrade_for_company(&app, company)');
+    const links = read('src-tauri/src/util/external_links.rs');
+    expect(links).toContain('approved_plan_upgrade_url(raw)');
+    // The registry hands every change to the tray directly (no broadcast);
+    // non-macOS trays render the same rows and tooltip from it.
+    const tray = read('src-tauri/src/tray.rs');
+    expect(tray).toMatch(
+      /uploads_paused::set_tray_sink\(move \|companies\| \{\s*set_uploads_paused\(&app5, companies\)/,
+    );
+    expect(tray).toContain('crate::tray_helper::publish_uploads_paused(&companies);');
+    expect(tray).toContain('fn uploads_paused_menu_rows(');
+    expect(tray).toContain('compose_tray_tooltip_with_pause(');
+  });
+
   it('marshals the menu-bar click toggle onto the main thread (no poll-thread deadlock)', () => {
     const helper = read('src-tauri/src/tray_helper.rs');
     // The poll thread must NOT call window ops directly — it marshals them.

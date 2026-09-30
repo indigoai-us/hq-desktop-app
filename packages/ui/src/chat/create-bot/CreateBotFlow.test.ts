@@ -553,8 +553,40 @@ describe("CreateBotFlow", () => {
     click('[data-testid="create-bot-next"]');
     await settle();
     expect(q('[data-testid="cloud-bot-runtime-claude"]')).toBeTruthy();
-    expect(q('[data-testid="cloud-bot-size-basic"]')?.parentElement?.textContent).toContain("$42.00/month");
+    expect(q('[data-testid="cloud-bot-size-basic-price"]')?.textContent).toBe("$50.00/month");
+    expect(q('[data-testid="cloud-bot-size-basic-company-price"]')?.textContent).toBe("Your company pays $42.00/month");
     expect(q('[data-testid="cloud-bot-size-dev"]')?.hasAttribute("disabled")).toBe(true);
+  });
+
+  it("shows each size's own list price, and the company price only when it differs", async () => {
+    const quote: AgentProvisionOptionsView = {
+      ...CLOUD_QUOTE,
+      options: [
+        { ...CLOUD_QUOTE.options[0], listCents: 10000, netMonthlyCents: 10000, deltaCents: 10000 },
+        { ...CLOUD_QUOTE.options[1], listCents: 25000, netMonthlyCents: 10000, deltaCents: 10000 },
+        { ...CLOUD_QUOTE.options[2], listCents: 50000, netMonthlyCents: 0, deltaCents: 0, notBilled: true },
+      ],
+    };
+    render({
+      oncreate: vi.fn(),
+      onCloudCreate: vi.fn(),
+      agentTargets: COMPANIES,
+      loadCloudProvisionOptions: async () => ok(quote),
+    });
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    click('[data-testid="chat-bot-where-cloud"]');
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+
+    expect(q('[data-testid="cloud-bot-size-basic-price"]')?.textContent).toBe("$100.00/month");
+    expect(q('[data-testid="cloud-bot-size-power-price"]')?.textContent).toBe("$250.00/month");
+    expect(q('[data-testid="cloud-bot-size-dev-price"]')?.textContent).toBe("$500.00/month");
+    expect(q('[data-testid="cloud-bot-size-basic-company-price"]')).toBeNull();
+    expect(q('[data-testid="cloud-bot-size-power-company-price"]')?.textContent).toBe("Your company pays $100.00/month");
+    expect(q('[data-testid="cloud-bot-size-dev-company-price"]')?.textContent).toBe("Included for your company");
   });
 
   it("loads the tenant quote once per company, not for each Cloud draft edit", async () => {
@@ -590,7 +622,7 @@ describe("CreateBotFlow", () => {
     await settle();
 
     expect(loadCloudProvisionOptions).toHaveBeenCalledTimes(1);
-    expect(q('[data-testid="cloud-bot-size-power"]')?.parentElement?.textContent).toContain("$100.00/month");
+    expect(q('[data-testid="cloud-bot-size-power-price"]')?.textContent).toBe("$120.00/month");
 
     click('[data-testid="create-bot-back"]');
     await settle();
@@ -727,7 +759,7 @@ describe("CreateBotFlow", () => {
     await settle();
     expect(loadCloudProvisionOptions).toHaveBeenCalledTimes(2);
     expect(q('[data-testid="cloud-bot-quote-error"]')).toBeNull();
-    expect(q('[data-testid="cloud-bot-size-basic"]')?.parentElement?.textContent).toContain("$42.00/month");
+    expect(q('[data-testid="cloud-bot-size-basic-company-price"]')?.textContent).toBe("Your company pays $42.00/month");
   });
 
   it("a Cloud title over 60 characters blocks the create", async () => {

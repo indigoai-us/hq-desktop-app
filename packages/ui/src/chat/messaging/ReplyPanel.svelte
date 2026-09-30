@@ -61,6 +61,7 @@
     formatComposerSendError,
     isTerminalSendError,
   } from "./composer-send-error";
+  import { uploadErrorUpgradeUrl } from "./upload-chat-attachments";
   import AgentTaskStrip from "../tasks/AgentTaskStrip.svelte";
   import type { AgentTask } from "../tasks/agent-tasks";
   import {
@@ -294,6 +295,9 @@
   let localReactions = $state<ReactionMap>({});
   let pendingFiles = $state.raw<File[]>([]);
   let attachError = $state<string | null>(null);
+  // Upgrade link for a plan-limit upload refusal; only shown beside the
+  // attach error it came with (hard-stop US-018).
+  let attachUpgradeUrl = $state<string | null>(null);
   let pasteCounter = 0;
   let composerEl = $state<HTMLTextAreaElement | null>(null);
   let selectedMentions = $state<MentionTarget[]>([]);
@@ -607,11 +611,13 @@
     }
     pendingFiles = next;
     attachError = errors[0] ?? null;
+    attachUpgradeUrl = null;
   }
 
   function removePendingFile(index: number): void {
     pendingFiles = pendingFiles.filter((_, i) => i !== index);
     attachError = null;
+    attachUpgradeUrl = null;
   }
 
   function namePastedFile(file: File): File {
@@ -679,6 +685,7 @@
       } catch (err) {
         const raw = err instanceof Error ? err.message.trim() : "";
         attachError = formatComposerSendError(raw, true);
+        attachUpgradeUrl = uploadErrorUpgradeUrl(err);
         sending = false;
         return;
       }
@@ -705,6 +712,7 @@
     mentionHighlight = 0;
     pendingFiles = [];
     attachError = null;
+    attachUpgradeUrl = null;
     try {
       await deliver(text, attachments, mentions);
       replies = replies.map((row) =>
@@ -1265,6 +1273,8 @@
         <ComposerPendingAttachments
           files={pendingFiles}
           error={attachError}
+          upgradeUrl={attachUpgradeUrl}
+          onupgrade={onopenurl}
           testid="reply-panel-pending"
           onremove={removePendingFile}
         />
