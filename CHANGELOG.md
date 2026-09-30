@@ -18,6 +18,7 @@ The release moves it under the version it ships in.
 
 - Startup reporting now treats pending first-run consent and confirmed
   missing-root recovery as expected.
+- Desktop setup continues to report installation failures after an internal error interrupts its diagnostic cache.
 
 - The existing sync plan-limit notice can report gated exposure and Upgrade-click measurements.
 
