@@ -305,6 +305,8 @@
     onassistedinstall?: (
       tool: import("../install-choice/install-choice.js").CodingTool,
     ) => Promise<import("../install-choice/install-choice.js").InstallOutcome>;
+    /** Ask the host to (re-)probe `detect_ai_tools` lazily when CreateModal opens. */
+    onrequestaitools?: () => void;
     botWorkers?: readonly LocalBotWorkerOption[] | null;
     /** New bot flow extras (see CreateModal): taken names, sign-in, avatars. */
     existingBotNames?: readonly string[] | null;
@@ -445,6 +447,7 @@
     hqFolderPath = "",
     onopenassistant,
     onassistedinstall,
+    onrequestaitools,
     botWorkers = null,
     existingBotNames = null,
     botSignIn = null,
@@ -3720,6 +3723,7 @@
       {hqFolderPath}
       {onopenassistant}
       {onassistedinstall}
+      {onrequestaitools}
       {botWorkers}
       {existingBotNames}
       {botCompanies}
