@@ -8,6 +8,10 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- On macOS, HQ Sync restarts after an abnormal exit and waits at least 30
+  seconds between crash restarts. Existing enabled LaunchAgents are refreshed
+  on app startup, and the updater handoff avoids a duplicate restart.
+
 - Internal desktop regression tests now exercise runtime behavior instead of reading implementation source text.
 - Core update failures caused by low snapshot space now report a dedicated
   diagnostic class and coarse required/available space buckets.
