@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Opening a conversation no longer shows an empty pane when recent activity was hidden; older messages from people load automatically.
+- The existing sync plan-limit notice can report gated exposure and Upgrade-click measurements.
 
 ## [0.10.362] — 2026-09-30
 
@@ -131,7 +132,6 @@ The release moves it under the version it ships in.
 ## [0.10.357] — 2026-09-29
 
 - Core updates now report distinct clone failure causes and retry network or unsupported Git filtering failures once.
-- The existing sync plan-limit notice can report gated exposure and Upgrade-click measurements.
 
 ## [0.10.356] — 2026-09-29
 
