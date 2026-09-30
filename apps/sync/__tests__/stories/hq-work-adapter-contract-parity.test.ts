@@ -17,7 +17,7 @@
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   createSyncPlatformAdapter,
   type SyncInvokeFn,
@@ -141,5 +141,37 @@ describe('Sync PlatformAdapter contract parity', () => {
     if (result.ok) throw new Error('unreachable');
     expect(result.reason).toBe('unavailable');
     expect(result.code).toBe('host-owned');
+  });
+});
+
+function makeBehaviorAdapter(invoke: SyncInvokeFn) {
+  return createSyncPlatformAdapter({
+    invoke,
+    fetch: () => {
+      throw new Error('adapter must not use window.fetch');
+    },
+  });
+}
+
+describe('Sync PlatformAdapter behavior', () => {
+  it('gets the company board through the existing Sync invoke command', async () => {
+    const invoke = vi.fn(async () => ({ stories: [{ id: 'story-1' }] }));
+    const adapter = makeBehaviorAdapter(invoke);
+
+    await expect(adapter.company.getBoard('indigo')).resolves.toEqual({
+      ok: true,
+      value: { stories: [{ id: 'story-1' }] },
+    });
+    expect(invoke).toHaveBeenCalledWith('get_company_board', { slug: 'indigo' });
+  });
+
+  it('maps an invoke rejection to an adapter error', async () => {
+    const adapter = makeBehaviorAdapter(async () => {
+      throw new Error('host unavailable');
+    });
+
+    const result = await adapter.company.getBoard('indigo');
+    expect(result).toMatchObject({ ok: false, reason: 'error', code: 'invoke' });
+    if (!result.ok) expect(result.message).toContain('host unavailable');
   });
 });

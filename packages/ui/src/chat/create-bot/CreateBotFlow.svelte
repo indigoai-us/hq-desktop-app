@@ -131,6 +131,8 @@
     onassistedinstall?: (
       tool: import("../../install-choice/install-choice.js").CodingTool,
     ) => Promise<import("../../install-choice/install-choice.js").InstallOutcome>;
+    /** Ask the host to (re-)probe `detect_ai_tools` lazily on wizard open. */
+    onrequestaitools?: () => void;
     avatarPacks?: AvatarPack[] | null;
     loadAvatarPacks?: (() => Promise<AvatarPack[]>) | null;
     /** Sign-in poll interval; tests shorten it. */
@@ -165,6 +167,7 @@
     hqFolderPath = "",
     onopenassistant,
     onassistedinstall,
+    onrequestaitools,
   }: Props = $props();
 
   const templates = $derived<readonly LocalBotWorkerOption[]>(companyTemplates(botWorkers ?? []));
@@ -509,6 +512,7 @@
           {hqFolderPath}
           {onopenassistant}
           {onassistedinstall}
+          {onrequestaitools}
         />
       {:else if draft.home === "cloud"}
         <CloudDetailsStep
