@@ -252,13 +252,9 @@ jobs:
         working-directory: apps/sync/src-tauri
         run: cargo test --manifest-path ../../../crates/hq-telemetry/Cargo.toml --test index_lock_episode_capture_e2e
 
-      # The bulk-delete refusal gate persists its per-root cooldown anchor with
-      # `fs::write` of a temp file plus `fs::rename` over an existing
-      # destination inside the `.git` directory. Rename-over-existing is the one
-      # genuinely platform-sensitive operation in this module, and `cargo check`
-      # never builds `#[cfg(test)]` code — so without this step the persistence
-      # path ships to the Windows fleet (which produced the tightest observed
-      # refusal flood) having never been executed on the msvc target.
+      # Run the mirror's filesystem safety cases on Windows too: deletions from
+      # readable roots commit in the first pass, while missing roots remain errors
+      # and verified scope-quarantine moves stay out of the deletion set.
       - name: Git mirror tests
         working-directory: apps/sync/src-tauri
         run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml git_mirror::tests

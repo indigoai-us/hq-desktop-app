@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- The git mirror commits deletions from readable roots in the same sync pass; verified scope-quarantine moves remain preserved.
+
 - On macOS, HQ Sync restarts after an abnormal exit and waits at least 30
   seconds between crash restarts. Existing enabled LaunchAgents are refreshed
   on app startup, and the updater handoff avoids a duplicate restart.
