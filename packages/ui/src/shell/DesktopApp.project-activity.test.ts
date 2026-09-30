@@ -155,7 +155,8 @@ describe("DesktopApp project activity", () => {
   });
 
   it("keeps the project empty state hidden while loading and labels an empty result as activity", async () => {
-    const threads = deferred<Awaited<ReturnType<typeof ok>>>();
+    type ProjectThreadsResponse = { threads: typeof THREAD[]; nextCursor: null };
+    const threads = deferred<Awaited<ReturnType<typeof ok<ProjectThreadsResponse>>>>();
     const listProjectThreads = vi.fn(() => threads.promise);
     await mountProject(adapter(listProjectThreads));
     await vi.waitFor(() => expect(listProjectThreads).toHaveBeenCalledTimes(1));
