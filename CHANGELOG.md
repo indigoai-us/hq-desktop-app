@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Startup diagnostics now distinguish unreadable saved credentials from an empty token store.
 - The existing sync plan-limit notice can report gated exposure and Upgrade-click measurements.
 
 ## [0.10.363] — 2026-09-30
