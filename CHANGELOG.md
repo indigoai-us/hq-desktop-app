@@ -10,6 +10,8 @@ The release moves it under the version it ships in.
 
 - Successful sign-ins can wait for their local receipt queue write behind a default-off flag before returning to the setup flow.
 
+## [0.10.363] — 2026-09-30
+
 - Opening a conversation no longer shows an empty pane when recent activity was hidden; older messages from people load automatically.
 
 ## [0.10.362] — 2026-09-30
