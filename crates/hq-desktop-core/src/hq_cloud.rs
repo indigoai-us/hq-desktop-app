@@ -715,6 +715,10 @@
 /// the 6.18 minor line, so `RESCUE_CONTRACT_FLOOR` stays 6.18.0. Raising the
 /// lower bound moves npm's cache key so installed copies refresh their cached
 /// runner.
+///
+/// The `~6.18.17` -> `~6.18.20` bump adds bounded sync-runner memory sidecar
+/// measurements and scan/upload buckets. It adds no runner error identities or
+/// event types; the source-version tripwire and vocabulary remain aligned.
 pub const HQ_CLOUD_VERSION: &str = "~6.18.20";
 
 /// First `@indigoai-us/hq-cloud` version that ships the post-sync
@@ -843,7 +847,7 @@ mod tests {
     /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
     fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.18.17");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.18.20");
     }
 
     /// Root-`bin/` exclusion floor (hq-cloud#501). Below this floor a personal

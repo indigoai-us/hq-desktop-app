@@ -5802,6 +5802,7 @@ fn read_fresh_memory_class_within(
             Src::ReportAbsent
         };
     }
+    let sidecar_report_read = sidecar_memory.is_present();
     if report_memory.array_buffers_mb.is_none() {
         report_memory.array_buffers_mb = array_buffers_mb;
     }
@@ -5844,7 +5845,7 @@ fn read_fresh_memory_class_within(
     report_memory.upload_byte_budget_bucket = report_memory
         .upload_byte_budget_bucket
         .or(sidecar_memory.upload_byte_budget_bucket);
-    if sidecar_memory.is_present() {
+    if sidecar_report_read {
         report_source = Src::ReportRead;
     }
     let data_source = if report_memory.is_present() {
@@ -6198,6 +6199,42 @@ fn record_supervisor_memory_preempt(evidence: SupervisorPreemptEvidence) {
             evidence.projection_arm_reason.as_str().to_string(),
         ),
     ];
+    for (key, value) in [
+        (
+            "watcher_scan_files_visited_bucket",
+            mc.scan_files_visited_bucket.as_deref(),
+        ),
+        (
+            "watcher_scan_directories_visited_bucket",
+            mc.scan_directories_visited_bucket.as_deref(),
+        ),
+        (
+            "watcher_scan_collected_entries_bucket",
+            mc.scan_collected_entries_bucket.as_deref(),
+        ),
+        (
+            "watcher_scan_plan_items_bucket",
+            mc.scan_plan_items_bucket.as_deref(),
+        ),
+        (
+            "watcher_scan_journal_rows_bucket",
+            mc.scan_journal_rows_bucket.as_deref(),
+        ),
+        (
+            "watcher_current_body_size_bucket",
+            mc.current_body_size_bucket.as_deref(),
+        ),
+        (
+            "watcher_in_flight_body_bytes_bucket",
+            mc.in_flight_body_bytes_bucket.as_deref(),
+        ),
+        (
+            "watcher_upload_byte_budget_bucket",
+            mc.upload_byte_budget_bucket.as_deref(),
+        ),
+    ] {
+        tags.push((key, value.unwrap_or("").to_string()));
+    }
     if let Some(phase) = evidence.runner_phase.as_ref() {
         tags.push(("runner_phase", phase.clone()));
     }
@@ -14090,6 +14127,23 @@ mod tests {
         assert!(debug.contains("external_memory_mb: Some(4)"));
         assert!(debug.contains("scan_files_visited_bucket: Some(\"10k-99k\")"));
         assert!(debug.contains("current_body_size_bucket: Some(\"64m-256m\")"));
+    }
+
+    #[test]
+    fn footprint_event_has_closed_sidecar_bucket_tags() {
+        let source = include_str!("daemon.rs");
+        for tag in [
+            "watcher_scan_files_visited_bucket",
+            "watcher_scan_directories_visited_bucket",
+            "watcher_scan_collected_entries_bucket",
+            "watcher_scan_plan_items_bucket",
+            "watcher_scan_journal_rows_bucket",
+            "watcher_current_body_size_bucket",
+            "watcher_in_flight_body_bytes_bucket",
+            "watcher_upload_byte_budget_bucket",
+        ] {
+            assert!(source.contains(tag), "missing footprint telemetry tag {tag}");
+        }
     }
 
     #[cfg(unix)]
