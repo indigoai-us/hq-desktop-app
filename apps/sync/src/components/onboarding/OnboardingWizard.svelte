@@ -416,8 +416,16 @@
 
   let aiTools = $state<AiTools | null>(null);
   let detectionFailed = $state(false);
-  let probeInFlight = false;
+  let probeInFlight = $state(false);
+  let probeTimedOut = $state(false);
   let detectorMounted = false;
+  // How long a probe may run before we surface the "Check again" fallback in
+  // the ready scene. The probe itself is not cancelled — a late result still
+  // fills in the launch buttons.
+  const AI_TOOLS_PROBE_TIMEOUT_MS = 10_000;
+  let probeTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  // Resolvers a caller can await on when they clicked an action mid-probe.
+  const probeWaiters: Array<() => void> = [];
   let launching = $state<
     'claude' | 'codex' | 'grok' | null
   >(null);
@@ -2279,10 +2287,17 @@
   async function probeAiTools() {
     if (probeInFlight) return;
     probeInFlight = true;
+    probeTimedOut = false;
+    detectionFailed = false;
+    if (probeTimeoutHandle) clearTimeout(probeTimeoutHandle);
+    probeTimeoutHandle = setTimeout(() => {
+      if (probeInFlight && detectorMounted) probeTimedOut = true;
+    }, AI_TOOLS_PROBE_TIMEOUT_MS);
     try {
       const tools = await invoke<AiTools>('detect_ai_tools');
       if (detectorMounted) {
         detectionFailed = false;
+        probeTimedOut = false;
         aiTools = tools;
       }
     } catch {
@@ -2291,13 +2306,43 @@
         aiTools = NO_AI_TOOLS;
       }
     } finally {
+      if (probeTimeoutHandle) {
+        clearTimeout(probeTimeoutHandle);
+        probeTimeoutHandle = null;
+      }
       probeInFlight = false;
+      // Wake anyone who clicked a launch button while we were probing.
+      const waiters = probeWaiters.splice(0, probeWaiters.length);
+      for (const wake of waiters) wake();
     }
+  }
+
+  /**
+   * Await an in-flight probe (up to a cap) so a launch button clicked mid-probe
+   * proceeds when the result arrives instead of hanging or silently falling
+   * back to the not-installed path.
+   */
+  function awaitPendingProbe(capMs = AI_TOOLS_PROBE_TIMEOUT_MS + 2_000): Promise<void> {
+    if (!probeInFlight) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        resolve();
+      };
+      probeWaiters.push(finish);
+      setTimeout(finish, capMs);
+    });
   }
 
   async function ensureAiTools(): Promise<AiTools> {
     if (aiTools) return aiTools;
-    await probeAiTools();
+    if (probeInFlight) {
+      await awaitPendingProbe();
+    } else {
+      await probeAiTools();
+    }
     return aiTools ?? NO_AI_TOOLS;
   }
 
@@ -3493,7 +3538,35 @@
             <span class="tc-line">{openDesktop.label === 'Open HQ Desktop' ? 'Use HQ’s own app' : openDesktop.label}</span>
           </span>
         </button>
-        {#if installedToolSlots.length > 0}
+        {#if probeInFlight && !probeTimedOut && !detectionFailed && installedToolSlots.length === 0}
+          <div
+            class="tool-pills tool-pills-status"
+            data-testid="onboarding-ai-tools-checking"
+            role="status"
+            aria-live="polite"
+          >
+            <span class="ai-tools-checking">
+              <span class="ai-tools-spinner" aria-hidden="true"></span>
+              <span>Checking for AI tools on this Mac…</span>
+            </span>
+          </div>
+        {:else if (probeTimedOut || detectionFailed) && installedToolSlots.length === 0}
+          <div
+            class="tool-pills tool-pills-status"
+            data-testid="onboarding-ai-tools-recheck"
+            role="status"
+          >
+            <span class="ai-tools-checking failed">We couldn’t check for AI tools on this Mac.</span>
+            <button
+              class="tool-pill"
+              type="button"
+              data-testid="onboarding-ai-tools-recheck-button"
+              onclick={() => void probeAiTools()}
+            >
+              <span class="tp-name">Check again</span>
+            </button>
+          </div>
+        {:else if installedToolSlots.length > 0}
           <div class="tool-pills">
             {#each installedToolSlots as slot (slot.kind)}
               <button
@@ -3501,12 +3574,20 @@
                 type="button"
                 data-testid="onboarding-launch-{slot.kind}"
                 disabled={finishing || launching !== null || finishBlocked}
-                aria-busy={finishing || launching === slot.kind}
+                aria-busy={finishing || launching === slot.kind || (launching === slot.kind && probeInFlight)}
                 aria-label={slot.label}
                 onclick={() => void handleLaunch(slot.kind)}
               >
                 <span class="tp-icon" aria-hidden="true">{@render ToolIcon(slot.kind)}</span>
-                <span class="tp-name">{launching === slot.kind ? 'Opening…' : toolName(slot.kind)}</span>
+                <span class="tp-name">
+                  {#if launching === slot.kind && probeInFlight}
+                    Checking…
+                  {:else if launching === slot.kind}
+                    Opening…
+                  {:else}
+                    {toolName(slot.kind)}
+                  {/if}
+                </span>
               </button>
             {/each}
           </div>

@@ -10,14 +10,29 @@ The release moves it under the version it ships in.
 
 - Fresh installs now open fully opaque until Window opacity is changed; saved
   opacity values remain in effect.
+
+- Opening the desktop window no longer freezes the whole app for seconds
+  while it checks which AI tools are installed. That check (shell probes plus
+  a scan of the Claude, Codex, and Grok config folders) ran on the app's main
+  thread, so under disk load it stalled every window, every other request, and
+  the boot watchdog, which then showed the Recovery dialog. It now runs in the
+  background. The "HQ Work installed" probe moves off the main thread for the
+  same reason.
+
+- The Recovery dialog no longer stays open when the desktop window was only
+  slow to load. If the window finishes loading after the dialog appeared, the
+  dialog closes by itself, including when it finishes while Recovery is still
+  checking for updates. When the app notices its own timers running late
+  (the machine or the app was stalled), it waits an extra ten seconds before
+  showing Recovery instead of alarming right away. The log now records how long
+  each window took to load and when the app's background runtime stalls, so a
+  slow open can be told apart from a broken one.
+
 - On Windows, template installs now use safe file-copy and junction fallbacks when symlink creation is unavailable.
 
-
-
-
-
-
 - Added desktop regression tests for adapter results and call-window URL target rejection.
+
+- First-time setup shows when it is checking for AI tools instead of waiting silently.
 
 ## [0.10.364] — 2026-09-30
 
