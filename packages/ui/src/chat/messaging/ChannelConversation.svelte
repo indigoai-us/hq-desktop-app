@@ -503,6 +503,22 @@
   );
   /** First eventId wins so the keyed each never receives duplicate keys
    *  (host page + optimistic localSends race). */
+  /**
+   * Human-only rule for this timeline. Hidden: work-mesh bodies, system
+   * lines and cards, rows flagged isSystemEvent / isMeshEvent, and any
+   * explicit non-human audience ("bot", "mesh"). Kept: lifecycle cards
+   * (they ask the person to act, e.g. create a company) and agent messages
+   * with no audience tag (bot DM replies, the Setup bot), since the wire
+   * cannot tell those apart from autonomous posts.
+   */
+  function hiddenInHumanOnly(msg: ConversationMessageWire): boolean {
+    const model = systemModelForMessage(msg);
+    if (model?.kind === "lifecycle_card") return false;
+    if (model !== null) return true;
+    if (parseWorkSessionEvent(msg.body ?? "") !== null) return true;
+    return !isHumanMessage(msg, { inferFromUid: false });
+  }
+
   const timeline = $derived.by(() => {
     const seen = new Set<string>();
     const out: ConversationMessageWire[] = [];
@@ -516,7 +532,10 @@
       // desktop.human-only-conversations: hide mesh/system rows and any
       // non-human-audience message. A mesh row that parses as a work-session
       // event is dropped downstream via `parseWorkSessionEvent` below.
-      if (humanOnly && !isHumanMessage(msg)) continue;
+      // Filtering happens here (not only in renderRows) so a channel whose
+      // only messages are non-human reaches the empty state instead of a
+      // blank pane.
+      if (humanOnly && hiddenInHumanOnly(msg)) continue;
       seen.add(id);
       out.push(msg);
     }
@@ -1080,7 +1099,7 @@
       // desktop.human-only-conversations: a message whose body parses as a
       // work-mesh activity event is a mesh row and MUST NOT render, even if
       // the classifier missed it on the wire fields.
-      if (humanOnly && (workActivity !== null || special)) continue;
+      if (humanOnly && hiddenInHumanOnly(msg)) continue;
       out.push({
         msg,
         systemModel,
