@@ -93,30 +93,30 @@ pub use hq_desktop_core::hq_cli_update::{
     hq_cli_version_under_pnpm_root, hq_version_string, install_argv, install_converged,
     install_executor_for_first_install, install_executor_for_hq_bin, install_failure_detail,
     install_failure_detail_with_environment, install_failure_detail_with_final_attempt,
-    install_failure_report, installed_hq_cli_version_in_bun_global,
-    installed_hq_cli_version_in_pnpm_store, installed_hq_cli_version_in_prefix,
-    is_cli_update_dismissed, is_missing_global_install_target, is_npm_bin_collision,
-    is_pnpm_global_shim, is_prefix_permission_failure, is_windows_locked_binary_failure,
-    is_windows_locked_install_target_failure, launch_cli_check, launch_cli_check_with_floor,
-    legacy_marker_needs_recovery, managed_retry_start_decision, managed_retry_user_copy_detail,
-    managed_retry_user_prefix_aim, non_convergent_cli_contract, non_convergent_cli_version,
-    non_convergent_detail, non_convergent_episode_blocked, non_convergent_episode_key,
-    non_convergent_episode_record, non_convergent_episode_reported, npm_install_attempt_summary,
-    npm_lifecycle_cause, npm_prefix_from_hq_bin, parse_windows_busy_deferral_marker,
-    partial_install_scope_from_npm_path, path_contains_dir, pnpm_child_path, pnpm_global_env,
-    pnpm_global_ls_hq_cli_version, pnpm_install_argv, pnpm_store_family, read_installed_version,
-    redact_home, redact_home_in, repair_managed_shadow, report_install_failure,
-    report_install_failure_episode, report_install_failure_with_environment,
-    report_install_failure_with_final_attempt, report_non_convergent_install,
-    report_non_convergent_marker_unpersisted, report_npm_cache_setup_failure,
-    report_registry_serving_lag_marker_unpersisted, report_unreadable_version, resolved_hq_version,
-    restore_if_install_not_converged, should_auto_install, should_report_unreadable_version,
-    should_retry_windows_busy_install_target, suppress_for_dismissal,
-    unattributed_install_stderr_origin, user_prefix_aim_decision, version_from_hq_binary,
-    version_if_hq_cli, windows_busy_cli_version_unchanged, windows_busy_deferral_decision,
-    windows_busy_install_target_retry_delay_for_recovery, windows_busy_install_target_retry_rung,
-    AsyncSingleFlight, DeliveredPrefixShim, ExecutedCopyAim, ExecutedCopyReaim,
-    ExecutedCopyReaimGate, HqCliInstallSnapshot, HqCliUpdateInfo, InstallEnvironment,
+    install_failure_report, install_with_previous_cli_recovery,
+    installed_hq_cli_version_in_bun_global, installed_hq_cli_version_in_pnpm_store,
+    installed_hq_cli_version_in_prefix, is_cli_update_dismissed, is_missing_global_install_target,
+    is_npm_bin_collision, is_pnpm_global_shim, is_prefix_permission_failure,
+    is_windows_locked_binary_failure, is_windows_locked_install_target_failure, launch_cli_check,
+    launch_cli_check_with_floor, legacy_marker_needs_recovery, managed_retry_start_decision,
+    managed_retry_user_copy_detail, managed_retry_user_prefix_aim, non_convergent_cli_contract,
+    non_convergent_cli_version, non_convergent_detail, non_convergent_episode_blocked,
+    non_convergent_episode_key, non_convergent_episode_record, non_convergent_episode_reported,
+    npm_install_attempt_summary, npm_lifecycle_cause, npm_prefix_from_hq_bin,
+    parse_windows_busy_deferral_marker, partial_install_scope_from_npm_path, path_contains_dir,
+    pnpm_child_path, pnpm_global_env, pnpm_global_ls_hq_cli_version, pnpm_install_argv,
+    pnpm_store_family, read_installed_version, redact_home, redact_home_in, repair_managed_shadow,
+    report_install_failure, report_install_failure_episode,
+    report_install_failure_with_environment, report_install_failure_with_final_attempt,
+    report_non_convergent_install, report_non_convergent_marker_unpersisted,
+    report_npm_cache_setup_failure, report_registry_serving_lag_marker_unpersisted,
+    report_unreadable_version, resolved_hq_version, should_auto_install,
+    should_report_unreadable_version, should_retry_windows_busy_install_target,
+    suppress_for_dismissal, unattributed_install_stderr_origin, user_prefix_aim_decision,
+    version_from_hq_binary, version_if_hq_cli, windows_busy_cli_version_unchanged,
+    windows_busy_deferral_decision, windows_busy_install_target_retry_delay_for_recovery,
+    windows_busy_install_target_retry_rung, AsyncSingleFlight, DeliveredPrefixShim,
+    ExecutedCopyAim, ExecutedCopyReaim, ExecutedCopyReaimGate, HqCliUpdateInfo, InstallEnvironment,
     InstallExecutor, InstallFailureEpisode, InstallFailureKind, InterpreterRecovery,
     LaunchCliCheck, LocalVersionProbeDiagnostics, LocalVersionProbeResult,
     ManagedRepairDisposition, ManagedRetryOutcome, ManagedRetryStart, ManagedShadowRepairAction,
@@ -2351,77 +2351,55 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
     // the guard must outlive them all. Drop (including panic unwind) releases.
     let _install_lock = acquire_cli_install_lock(&app, "hq-desktop-app-cli-update")?;
     let original_hq = paths::resolve_bin_with_kind("hq").path;
-    let snapshot = capture_working_cli_snapshot(&original_hq).await?;
-    let result = install_hq_cli_update_locked(app).await;
-    let Some(snapshot) = snapshot else {
-        return result;
-    };
-    match result {
-        Ok(mut info) => {
-            let original_version = snapshot.original_version.clone();
-            let converged = install_converged(info.local.as_deref(), &info.latest);
-            restore_if_install_not_converged(snapshot, info.local.as_deref(), &info.latest)
-                .map_err(|restore_error| {
-                    format!(
-                        "The HQ CLI update did not converge, and restoring the previous HQ CLI failed: {restore_error}"
-                    )
-                })?;
-            if !converged {
-                info.local = Some(original_version);
+    let original_version = probe_working_cli_version(&original_hq).await;
+    let original_executor = install_executor_for_hq_bin(Path::new(&original_hq));
+    let rollback_hq = original_hq.clone();
+
+    install_with_previous_cli_recovery(
+        original_version,
+        || install_hq_cli_update_locked(app.clone(), None, None),
+        move |version| async move {
+            match install_hq_cli_update_locked(app, Some(version.clone()), original_executor).await
+            {
+                Ok(_) => {}
+                Err(error) => log(
+                    "hq-cli-update",
+                    &format!("reinstalling prior CLI version failed: {error}"),
+                ),
             }
-            Ok(info)
+            probe_working_cli_version(&rollback_hq)
+                .await
+                .ok_or_else(|| {
+                    "the previous HQ CLI version could not be read after reinstall".to_string()
+                })
+        },
+    )
+    .await
+}
+
+async fn probe_working_cli_version(hq: &str) -> Option<String> {
+    let hq = hq.to_owned();
+    match tauri::async_runtime::spawn_blocking(move || resolved_hq_version(&hq)).await {
+        Ok(Some(version)) => Some(version),
+        Ok(None) => {
+            log(
+                "hq-cli-update",
+                "could not read the current HQ CLI version; update will proceed without rollback",
+            );
+            None
         }
-        Err(install_error) => {
-            restore_if_install_not_converged(snapshot, None, "").map_err(|restore_error| {
-                format!(
-                    "{install_error}; restoring the previous HQ CLI also failed: {restore_error}"
-                )
-            })?;
-            Err(install_error)
+        Err(error) => {
+            log("hq-cli-update", &format!("could not probe the current HQ CLI; update will proceed without rollback: {error}"));
+            None
         }
     }
 }
 
-async fn capture_working_cli_snapshot(hq: &str) -> Result<Option<HqCliInstallSnapshot>, String> {
-    if install_executor_for_hq_bin(Path::new(hq)).is_none() {
-        return Ok(None);
-    }
-    let hq_for_version = hq.to_owned();
-    let original_version =
-        tauri::async_runtime::spawn_blocking(move || resolved_hq_version(&hq_for_version))
-            .await
-            .map_err(|error| format!("could not inspect the existing HQ CLI: {error}"))?;
-    let Some(original_version) = original_version else {
-        // A recognised but already-unusable executable is not a previous
-        // working install that can be promised as a rollback target.
-        return Ok(None);
-    };
-
-    let package_candidates = hq_cli_package_directories_from_bin(Path::new(hq));
-    let executable = Path::new(hq)
-        .canonicalize()
-        .unwrap_or_else(|_| PathBuf::from(hq));
-    let package = package_candidates
-        .iter()
-        .find(|candidate| {
-            let package = candidate
-                .canonicalize()
-                .unwrap_or_else(|_| (*candidate).clone());
-            executable.starts_with(package)
-        })
-        .or_else(|| {
-            package_candidates.iter().find(|candidate| {
-                version_if_hq_cli(&candidate.join("package.json")).as_deref()
-                    == Some(original_version.as_str())
-            })
-        })
-        .cloned()
-        .ok_or_else(|| format!("could not locate the installed HQ CLI package for {hq}"))?;
-    let snapshot = HqCliInstallSnapshot::capture(&package, Path::new(hq), original_version)?;
-    Ok(Some(snapshot))
-}
-
-async fn install_hq_cli_update_locked(app: AppHandle) -> Result<HqCliUpdateInfo, String> {
+async fn install_hq_cli_update_locked(
+    app: AppHandle,
+    requested_version: Option<String>,
+    rollback_executor: Option<InstallExecutor>,
+) -> Result<HqCliUpdateInfo, String> {
     let npm = paths::resolve_bin("npm");
     let path = paths::child_path();
     let hq_resolved = paths::resolve_bin_with_kind("hq");
@@ -2437,7 +2415,10 @@ async fn install_hq_cli_update_locked(app: AppHandle) -> Result<HqCliUpdateInfo,
                 "hq-cli-update",
                 "CLI update deferred before choosing a package manager because a terminal-started HQ CLI holds the package",
             );
-            let latest = fetch_latest().await?;
+            let latest = match requested_version.as_deref() {
+                Some(version) => version.to_string(),
+                None => fetch_latest().await?,
+            };
             let hq_for_version = hq.clone();
             let local =
                 tauri::async_runtime::spawn_blocking(move || resolved_hq_version(&hq_for_version))
@@ -2455,22 +2436,29 @@ async fn install_hq_cli_update_locked(app: AppHandle) -> Result<HqCliUpdateInfo,
         }
     }
     let mut first_install = false;
-    let executor = match install_executor_for_hq_bin(Path::new(&hq)) {
-        Some(executor) => executor,
-        // Nothing identifiable at the resolved path. When nothing resolved AT
-        // ALL there is no file to overwrite, so this is a first install rather
-        // than the unrelated-command case the refusal guards; anything else
-        // still refuses. See `install_executor_for_first_install`.
-        None => {
-            let executor =
-                install_executor_for_first_install(hq_resolved.kind).ok_or_else(|| {
-                    format!(
-                        "The resolved `hq` at {hq} is not the @indigoai-us/hq-cli package. \
-                         Refusing to overwrite an unrelated command."
-                    )
-                })?;
-            first_install = true;
-            executor
+    let executor = if let Some(executor) = rollback_executor {
+        // Ownership was verified against this exact executable before the
+        // failed update. Reuse that manager if the partial install damaged the
+        // manifest needed by the usual provenance probe.
+        executor
+    } else {
+        match install_executor_for_hq_bin(Path::new(&hq)) {
+            Some(executor) => executor,
+            // Nothing identifiable at the resolved path. When nothing resolved AT
+            // ALL there is no file to overwrite, so this is a first install rather
+            // than the unrelated-command case the refusal guards; anything else
+            // still refuses. See `install_executor_for_first_install`.
+            None => {
+                let executor =
+                    install_executor_for_first_install(hq_resolved.kind).ok_or_else(|| {
+                        format!(
+                            "The resolved `hq` at {hq} is not the @indigoai-us/hq-cli package. \
+                             Refusing to overwrite an unrelated command."
+                        )
+                    })?;
+                first_install = true;
+                executor
+            }
         }
     };
     // This must be sampled before the install, for either executor. An
@@ -2479,9 +2467,12 @@ async fn install_hq_cli_update_locked(app: AppHandle) -> Result<HqCliUpdateInfo,
     let non_convergent_version = non_convergent_cli_version();
     if executor != InstallExecutor::Npm {
         // Pin the target before spawning, same as the npm path below.
-        let latest = fetch_latest().await?;
-        let already_blocked =
-            non_convergent_episode_blocked(non_convergent_version.as_deref(), &latest);
+        let latest = match requested_version.as_deref() {
+            Some(version) => version.to_string(),
+            None => fetch_latest().await?,
+        };
+        let already_blocked = requested_version.is_none()
+            && non_convergent_episode_blocked(non_convergent_version.as_deref(), &latest);
         #[cfg(target_os = "windows")]
         let _cli_process_quiescence = crate::commands::process::wait_for_cli_install_quiescence(
             CLI_INSTALL_PROCESS_QUIESCE_TIMEOUT,
@@ -2601,9 +2592,12 @@ async fn install_hq_cli_update_locked(app: AppHandle) -> Result<HqCliUpdateInfo,
     // a marker that permanently wedges auto-install of a version nothing ever
     // attempted. Resolving once and pinning it makes the version the app compares
     // against and the version it asks npm to install the same string.
-    let latest = fetch_latest().await?;
-    let already_blocked =
-        non_convergent_episode_blocked(non_convergent_version.as_deref(), &latest);
+    let latest = match requested_version.as_deref() {
+        Some(version) => version.to_string(),
+        None => fetch_latest().await?,
+    };
+    let already_blocked = requested_version.is_none()
+        && non_convergent_episode_blocked(non_convergent_version.as_deref(), &latest);
     let base_args = install_argv(prefix.as_deref(), Some(latest.as_str()));
     let npm_cache = app_npm_cache(&app).map_err(|(category, error)| {
         report_npm_cache_setup_failure(category);
