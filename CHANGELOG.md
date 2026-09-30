@@ -10,6 +10,8 @@ The release moves it under the version it ships in.
 
 - The git mirror commits deletions from readable roots in the same sync pass; verified scope-quarantine moves remain preserved.
 
+- The desktop app no longer checks which AI tools are installed every time it opens; it checks when you create a bot or run setup.
+
 - On macOS, HQ Sync restarts after an abnormal exit and waits at least 30
   seconds between crash restarts. Existing enabled LaunchAgents are refreshed
   on app startup, and the updater handoff avoids a duplicate restart.
