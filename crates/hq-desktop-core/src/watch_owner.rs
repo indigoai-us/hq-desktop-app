@@ -59,8 +59,12 @@ pub fn append_desktop_owner_argument(args: &mut Vec<String>, runner_version: &st
 pub fn classify_busy_owner(owner: &str, pid_is_child_of_app: bool) -> BusyOwnerDisposition {
     match owner {
         "hq-daemon" => BusyOwnerDisposition::Daemon,
-        "hq-desktop" | "unknown" if pid_is_child_of_app => BusyOwnerDisposition::DesktopChild,
-        "hq-desktop" | "unknown" => BusyOwnerDisposition::DesktopOrphan,
+        "hq-desktop" if pid_is_child_of_app => BusyOwnerDisposition::DesktopChild,
+        "hq-desktop" => BusyOwnerDisposition::DesktopOrphan,
+        // Older runners did not receive --owner. A live unknown runner may be
+        // a manual invocation or another client, so its ancestry alone cannot
+        // prove that a previous desktop session owns it.
+        "unknown" => BusyOwnerDisposition::Other,
         _ => BusyOwnerDisposition::Other,
     }
 }
@@ -116,6 +120,77 @@ pub fn plan_busy_watch_exit(
     }
 }
 
+/// The one-shot orphan recovery uses the same settings and cloud-pause gates
+/// as an ordinary supervisor respawn.
+pub fn takeover_respawn_should_run(
+    auto_sync_enabled: bool,
+    autostart_enabled: bool,
+    daemon_alive: bool,
+    cloud_paused: bool,
+) -> bool {
+    crate::daemon::should_respawn_daemon_gated(
+        auto_sync_enabled,
+        autostart_enabled,
+        daemon_alive,
+        cloud_paused,
+    )
+}
+
+/// A live lease owner the exit planner will not replace must suppress regular
+/// supervisor respawns until the next bounded lease recheck.
+pub fn supervisor_should_defer_for_live_owner(
+    plan: &WatchOwnerExitPlan,
+    holder_is_live_runner: bool,
+) -> bool {
+    holder_is_live_runner && !plan.take_over_orphan
+}
+
+/// Return whether a process command names the same canonical HQ root as the
+/// lease lookup. This accepts symlink aliases while rejecting unrelated roots.
+pub fn command_matches_hq_root(command: &str, hq_root: &Path) -> bool {
+    let Some(root_argument) = hq_root_argument(command) else {
+        return false;
+    };
+    let (Ok(expected), Ok(actual)) = (
+        std::fs::canonicalize(hq_root),
+        std::fs::canonicalize(root_argument),
+    ) else {
+        return false;
+    };
+    #[cfg(target_os = "windows")]
+    {
+        expected
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&actual.to_string_lossy())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        expected == actual
+    }
+}
+
+fn hq_root_argument(command: &str) -> Option<&str> {
+    let (flag_start, _) = command.match_indices("--hq-root").find(|(start, flag)| {
+        let after_flag = command
+            .get(start + flag.len()..)
+            .and_then(|rest| rest.chars().next());
+        after_flag.is_some_and(|character| character.is_whitespace() || character == '=')
+    })?;
+    let start = flag_start + "--hq-root".len();
+    let mut rest = command.get(start..)?.trim_start();
+    if let Some(value) = rest.strip_prefix('=') {
+        rest = value.trim_start();
+    }
+    let first = rest.chars().next()?;
+    if first == '"' || first == '\'' {
+        let value = &rest[first.len_utf8()..];
+        let end = value.find(first)?;
+        Some(&value[..end])
+    } else {
+        rest.split_whitespace().next()
+    }
+}
+
 /// Match hq-cloud's `watchOwnerStatusPathFor`: `<stateDir>/locks/watch-owner-<sha1>.json`.
 pub fn watch_owner_status_path(hq_root: &Path, state_dir: &Path) -> PathBuf {
     let canonical_root = std::fs::canonicalize(hq_root).unwrap_or_else(|_| hq_root.to_path_buf());
@@ -162,7 +237,7 @@ mod tests {
         );
         assert_eq!(
             classify_busy_owner("unknown", false),
-            BusyOwnerDisposition::DesktopOrphan
+            BusyOwnerDisposition::Other
         );
         assert_eq!(
             classify_busy_owner("hq-desktop", true),
@@ -221,10 +296,19 @@ mod tests {
 
     #[test]
     fn exit_20_orphan_takes_over_without_recording_failure_and_respawns_once() {
-        let plan = plan_busy_watch_exit(Some(20), Some(&status("unknown")), true, false);
+        let plan = plan_busy_watch_exit(Some(20), Some(&status("hq-desktop")), true, false);
         assert_eq!(plan.classification, "orphan_takeover");
         assert!(plan.take_over_orphan);
         assert!(plan.respawn_once);
+        assert!(!plan.record_failure);
+    }
+
+    #[test]
+    fn exit_20_unknown_nonchild_without_desktop_evidence_is_deferred() {
+        let plan = plan_busy_watch_exit(Some(20), Some(&status("unknown")), true, false);
+        assert_eq!(plan.classification, "live_owner_deferral");
+        assert!(!plan.take_over_orphan);
+        assert!(!plan.respawn_once);
         assert!(!plan.record_failure);
     }
 
@@ -252,5 +336,51 @@ mod tests {
         assert!(!plan.record_failure);
         assert!(!plan.take_over_orphan);
         assert!(!plan.respawn_once);
+    }
+
+    #[test]
+    fn orphan_takeover_respawn_obeys_the_normal_supervisor_gates() {
+        assert!(!takeover_respawn_should_run(false, false, false, false));
+        assert!(!takeover_respawn_should_run(true, true, false, true));
+        assert!(!takeover_respawn_should_run(true, false, true, false));
+        assert!(takeover_respawn_should_run(true, true, false, false));
+    }
+
+    #[test]
+    fn supervisor_defers_for_live_owners_the_exit_planner_does_not_replace() {
+        let unknown = status("unknown");
+        let other_plan = plan_busy_watch_exit(Some(20), Some(&unknown), true, false);
+        assert!(supervisor_should_defer_for_live_owner(&other_plan, true));
+
+        let daemon = status("hq-daemon");
+        let daemon_plan = plan_busy_watch_exit(Some(20), Some(&daemon), true, false);
+        assert!(supervisor_should_defer_for_live_owner(&daemon_plan, true));
+
+        let desktop = status("hq-desktop");
+        let orphan_plan = plan_busy_watch_exit(Some(20), Some(&desktop), true, false);
+        assert!(!supervisor_should_defer_for_live_owner(&orphan_plan, true));
+        assert!(!supervisor_should_defer_for_live_owner(&other_plan, false));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_root_validation_accepts_a_symlink_alias_of_the_canonical_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let canonical = dir.path().join("real-hq");
+        let alias = dir.path().join("hq-link");
+        std::fs::create_dir(&canonical).unwrap();
+        std::os::unix::fs::symlink(&canonical, &alias).unwrap();
+
+        let command = format!("node sync-runner.js --hq-root {} --watch", alias.display());
+        assert!(command_matches_hq_root(&command, &canonical));
+        assert!(command_matches_hq_root(&command, &alias));
+        assert!(!command_matches_hq_root(
+            &command.replace("--hq-root", "--hq-root-other"),
+            &canonical
+        ));
+        assert!(!command_matches_hq_root(
+            &command,
+            &dir.path().join("other")
+        ));
     }
 }

@@ -6965,14 +6965,10 @@ fn process_snapshot() -> Result<HashMap<u32, (u32, String)>, String> {
 
 fn is_sync_runner_command(command: &str, hq_root: &str) -> bool {
     let lower = command.to_ascii_lowercase();
-    let root = hq_root.to_ascii_lowercase();
-    let root_argument = lower.contains(&format!("--hq-root {root}"))
-        || lower.contains(&format!("--hq-root \"{root}\""))
-        || lower.contains(&format!("hq_root={root}"));
-    root_argument
-        && (lower.contains("sync-runner.js")
-            || lower.contains("hq-sync-runner")
-            || lower.contains("hq-sync-runner.cmd"))
+    (lower.contains("sync-runner.js")
+        || lower.contains("hq-sync-runner")
+        || lower.contains("hq-sync-runner.cmd"))
+        && hq_desktop_core::watch_owner::command_matches_hq_root(command, Path::new(hq_root))
 }
 
 fn inspect_watch_owner(hq_root: &str) -> Result<Option<InspectedWatchOwner>, String> {
@@ -7024,6 +7020,26 @@ fn hq_daemon_owns_live_watch(hq_root: &str) -> bool {
             );
             false
         }
+    }
+}
+
+fn live_watch_owner_defers_supervisor(hq_root: &str) -> Result<Option<String>, String> {
+    let Some(owner) = inspect_watch_owner(hq_root)? else {
+        return Ok(None);
+    };
+    let plan = hq_desktop_core::watch_owner::plan_busy_watch_exit(
+        Some(20),
+        Some(&owner.status),
+        owner.is_live_runner,
+        owner.is_child_of_app,
+    );
+    if hq_desktop_core::watch_owner::supervisor_should_defer_for_live_owner(
+        &plan,
+        owner.is_live_runner,
+    ) {
+        Ok(Some(owner.status.owner))
+    } else {
+        Ok(None)
     }
 }
 
@@ -7133,32 +7149,57 @@ pub fn setup_daemon_supervisor(app: &AppHandle) {
                 thread::sleep(SUPERVISOR_INTERVAL);
                 continue;
             }
-            if resolve_hq_folder_path()
-                .ok()
-                .is_some_and(|hq_root| hq_daemon_owns_live_watch(&hq_root))
-            {
-                set_lifecycle_state(WatchDaemonState::Running, DaemonFailureCategory::None);
-                log(
-                    "daemon.supervisor",
-                    "hq-daemon owns the live watch lease; not respawning desktop watcher",
-                );
-                thread::sleep(SUPERVISOR_INTERVAL);
-                continue;
+            if let Ok(hq_root) = resolve_hq_folder_path() {
+                match live_watch_owner_defers_supervisor(&hq_root) {
+                    Ok(Some(owner_label)) => {
+                        set_lifecycle_state(
+                            WatchDaemonState::Running,
+                            DaemonFailureCategory::None,
+                        );
+                        log(
+                            "daemon.supervisor",
+                            &format!(
+                                "live watch owner {owner_label} retains the lease; rechecking in {} seconds",
+                                SUPERVISOR_INTERVAL.as_secs()
+                            ),
+                        );
+                        thread::sleep(SUPERVISOR_INTERVAL);
+                        continue;
+                    }
+                    Ok(None) => {}
+                    Err(error) => log(
+                        "daemon.supervisor",
+                        &format!("watch-owner preflight unavailable: {error}"),
+                    ),
+                }
             }
             let (app_owned, registered_child_alive, daemon_alive, sample_pid) =
                 observe_daemon_liveness();
             if ORPHAN_TAKEOVER_PENDING.swap(false, Ordering::AcqRel) {
-                log(
-                    "daemon.supervisor",
-                    "performing the single respawn after watch-owner orphan takeover",
+                let should_respawn = hq_desktop_core::watch_owner::takeover_respawn_should_run(
+                    is_realtime_sync_enabled(),
+                    is_autostart_enabled(),
+                    daemon_alive,
+                    hq_desktop_core::daemon::is_cloud_paused(),
                 );
-                SUPERVISOR_RESPAWN_IN_FLIGHT.store(true, Ordering::Release);
-                let respawn = start_daemon_for_supervisor_respawn(handle.clone());
-                SUPERVISOR_RESPAWN_IN_FLIGHT.store(false, Ordering::Release);
-                if let Err(error) = respawn {
+                if should_respawn {
                     log(
                         "daemon.supervisor",
-                        &format!("orphan-takeover respawn failed: {error}"),
+                        "performing the single respawn after watch-owner orphan takeover",
+                    );
+                    SUPERVISOR_RESPAWN_IN_FLIGHT.store(true, Ordering::Release);
+                    let respawn = start_daemon_for_supervisor_respawn(handle.clone());
+                    SUPERVISOR_RESPAWN_IN_FLIGHT.store(false, Ordering::Release);
+                    if let Err(error) = respawn {
+                        log(
+                            "daemon.supervisor",
+                            &format!("orphan-takeover respawn failed: {error}"),
+                        );
+                    }
+                } else {
+                    log(
+                        "daemon.supervisor",
+                        "orphan takeover complete; auto-sync gates suppress the replacement watcher",
                     );
                 }
                 thread::sleep(SUPERVISOR_INTERVAL);
