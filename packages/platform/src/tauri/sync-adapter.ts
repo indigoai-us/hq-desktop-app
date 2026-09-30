@@ -34,7 +34,9 @@ import {
   CLAUDE_PROVIDER_FLAG,
   FIRST_FOLDER_SYNC_STEP_FLAG,
   HUMAN_ONLY_CONVERSATIONS_FLAG,
+  HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT,
   INVITE_TEAMMATE_STEP_FLAG,
+  LOGIN_RECEIPT_DURABILITY_FLAG,
   createFeatureFlagGate,
   createHqProFlagFetch,
   MIRROR_QUARANTINE_MOVE_NOT_DELETION_FLAG,
@@ -49,6 +51,7 @@ import {
   retryThrottled,
   type RequestPolicyOptions,
 } from '../request-policy.js';
+import { hqProFailure, parseHqProErrorBody } from '../plan-limit.js';
 
 export type SyncInvokeFn = (
   cmd: string,
@@ -201,10 +204,16 @@ export function createSyncPlatformAdapter(
       // explicitly enables its hq-flags value.
       return Promise.resolve(ok(false));
     }
-    if (flag === HUMAN_ONLY_CONVERSATIONS_FLAG) {
-      // Human-only conversations is a dark canary — stays off until a
-      // manager explicitly enables the registry value.
+    if (flag === LOGIN_RECEIPT_DURABILITY_FLAG) {
+      // Sign-in receipt durability is opt-in; an absent or unreadable registry
+      // leaves the existing asynchronous queue behavior unchanged.
       return Promise.resolve(ok(false));
+    }
+    if (flag === HUMAN_ONLY_CONVERSATIONS_FLAG) {
+      // Human-only conversations is on by default in the desktop app.
+      // `identity.hasFeature` short-circuits before the registry; this
+      // branch keeps the legacy path consistent.
+      return Promise.resolve(ok(HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT));
     }
     if (flag === CLAUDE_PROVIDER_FLAG) {
       return Promise.resolve(ok(false));
@@ -359,23 +368,14 @@ export function createSyncPlatformAdapter(
       const retryAfter =
         typeof rec.retryAfter === 'string' ? rec.retryAfter : null;
       if (rec.status < 200 || rec.status >= 300) {
-        let code = `http-${rec.status}`;
-        let message = `${method} ${path} failed`;
-        try {
-          const parsed = text ? JSON.parse(text) : null;
-          const err = asRecord(parsed);
-          if (err) {
-            if (typeof err.code === 'string' && err.code.trim()) {
-              code = err.code.trim();
-            }
-            if (typeof err.error === 'string' && err.error.trim()) {
-              message = err.error.trim();
-            }
-          }
-        } catch {
-          /* keep http-status defaults */
-        }
-        return { result: failure(code, message), status: rec.status, retryAfter };
+        // A plan-limit 402 keeps the server's sentence and upgrade link; it is
+        // an expected refusal, so it is returned, never reported to Sentry.
+        const details = parseHqProErrorBody(
+          rec.status,
+          text,
+          `${method} ${path} failed`,
+        );
+        return { result: hqProFailure(details), status: rec.status, retryAfter };
       }
       if (rec.status === 204 || !text.trim()) {
         return { result: ok(undefined as T), status: rec.status };
@@ -545,9 +545,15 @@ export function createSyncPlatformAdapter(
         });
       },
       isAdmin: () => call<boolean>('desktop_alt_is_admin'),
-      hasFeature: (flag) => flags.resolve(flag, () => hasFeatureLegacy(flag)),
+      hasFeature: (flag) =>
+        flag === HUMAN_ONLY_CONVERSATIONS_FLAG
+          ? // Pinned per release; the registry cannot turn it off.
+            Promise.resolve(ok(HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT))
+          : flags.resolve(flag, () => hasFeatureLegacy(flag)),
       subscribeFeature: (flag, onChange) =>
-        flags.subscribe(flag, () => hasFeatureLegacy(flag), onChange),
+        flag === HUMAN_ONLY_CONVERSATIONS_FLAG
+          ? () => {}
+          : flags.subscribe(flag, () => hasFeatureLegacy(flag), onChange),
       listWorkspaces: async () => {
         const result = await call<unknown>('list_syncable_workspaces');
         if (!result.ok) return result;

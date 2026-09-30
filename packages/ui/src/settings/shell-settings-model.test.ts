@@ -202,15 +202,12 @@ describe("window opacity", () => {
     expect(vars.get("--hq-window-alpha-dark")).toBe("1.00");
   });
 
-  // Regression: the floor must be able to express the shipped default
-  // (DEFAULT_WINDOW_TRANSPARENCY = 65 → opacity 35). A 50 floor made the
-  // default unrepresentable, so a fresh install seeded the slider at 50 and
-  // the first drag visibly jumped the window.
-  it("clamps to a slider range that can express the shipped default", () => {
+  // Regression: retain the existing slider floor while the fresh-install
+  // default moves to full opacity.
+  it("clamps to the supported slider range independently from its default", () => {
     const { root } = fakeRoot();
-    expect(MIN_SLIDER_WINDOW_OPACITY).toBe(
-      MAX_WINDOW_OPACITY - DEFAULT_WINDOW_TRANSPARENCY,
-    );
+    expect(DEFAULT_WINDOW_TRANSPARENCY).toBe(0);
+    expect(MIN_SLIDER_WINDOW_OPACITY).toBe(35);
     expect(applyWindowOpacity(35, root, null)).toBe(35);
     expect(applyWindowOpacity(10, root, null)).toBe(MIN_SLIDER_WINDOW_OPACITY);
     expect(applyWindowOpacity(140, root, null)).toBe(100);

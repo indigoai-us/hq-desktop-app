@@ -110,6 +110,22 @@ static SHARE_BADGE_COUNT: AtomicUsize = AtomicUsize::new(0);
 /// " · N session(s) need you" suffix, composed with the share suffix.
 static SESSION_BADGE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
+/// Companies whose uploads a plan limit paused, as last handed to
+/// [`set_uploads_paused`] by the registry (hard-stop-readiness US-019). Drives
+/// the tooltip suffix and the paused rows at the top of the tray menu.
+fn uploads_paused_state() -> &'static Mutex<Vec<hq_desktop_core::uploads_paused::UploadsPaused>> {
+    static STATE: OnceLock<Mutex<Vec<hq_desktop_core::uploads_paused::UploadsPaused>>> =
+        OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn uploads_paused_snapshot() -> Vec<hq_desktop_core::uploads_paused::UploadsPaused> {
+    uploads_paused_state()
+        .lock()
+        .map(|guard| guard.clone())
+        .unwrap_or_default()
+}
+
 /// Whether at least one native modal is currently open.
 pub fn is_modal_open() -> bool {
     MODAL_DEPTH.load(Ordering::SeqCst) > 0
@@ -394,6 +410,10 @@ const MENU_REPLAY_INTRO: &str = "replay-intro";
 const MENU_SIGN_OUT: &str = "sign-out";
 const MENU_SETTINGS: &str = "settings";
 const MENU_QUIT: &str = "quit";
+/// Disabled "Uploads paused for <company>" rows (hard-stop-readiness US-019).
+const MENU_UPLOADS_PAUSED_PREFIX: &str = "uploads-paused:";
+/// "Upgrade plan for <company>…" rows; the id carries the company label.
+const MENU_UPGRADE_PREFIX: &str = "upgrade-plan:";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tray ID
@@ -405,20 +425,36 @@ const TRAY_ID: &str = "hq-sync-tray";
 // Setup
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Build a fresh tray icon (menu + icon + title + event handlers) and return it.
-///
-/// Factored out of `setup_tray` so `recreate_tray` can DROP a status item that
-/// macOS never drew and build a brand-new one. On macOS Tahoe (Darwin 25.x) the
-/// status item created during early launch frequently never renders — and the
-/// `set_visible(false→true)` toggle does NOT rescue it (verified on-device: the
-/// item is "built" + reasserted in the log yet absent from the menu bar). A
-/// status item created fresh once the app is fully up DOES draw, so the fix is
-/// to rebuild rather than re-toggle.
-///
-/// Belt-and-suspenders: the builder also sets a text `title("HQ")`. The title
-/// renders through the status button's `title` (not its `image`), so even if the
-/// template glyph is swallowed the user still sees a clickable "HQ".
-fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std::error::Error>> {
+/// The tray menu items for the plan-limit upload pause: one disabled status
+/// row per company, plus an upgrade row when an approved link was recorded.
+/// Pure (ids + titles only) so the menu contract is unit-testable.
+pub(crate) fn uploads_paused_menu_rows(
+    paused: &[hq_desktop_core::uploads_paused::UploadsPaused],
+) -> Vec<(String, String, bool)> {
+    let mut rows = Vec::new();
+    for entry in paused {
+        rows.push((
+            format!("{MENU_UPLOADS_PAUSED_PREFIX}{}", entry.company),
+            format!("Uploads paused for {}", entry.company),
+            false,
+        ));
+        if entry.upgrade_url.is_some() {
+            rows.push((
+                format!("{MENU_UPGRADE_PREFIX}{}", entry.company),
+                format!("Upgrade plan for {}…", entry.company),
+                true,
+            ));
+        }
+    }
+    rows
+}
+
+/// The tray context menu. Companies whose uploads a plan limit paused are
+/// listed first (US-019), so the rebuild in [`set_uploads_paused`] and a
+/// `recreate_tray` both show the current state.
+fn build_tray_menu(
+    app: &AppHandle,
+) -> Result<tauri::menu::Menu<tauri::Wry>, Box<dyn std::error::Error>> {
     let version = crate::app_version::current().to_string();
     let version_item = MenuItemBuilder::with_id(MENU_VERSION, format!("HQ v{}", version))
         .enabled(false)
@@ -439,7 +475,22 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
     let sign_out = MenuItemBuilder::with_id(MENU_SIGN_OUT, "Sign Out").build(app)?;
     let quit = MenuItemBuilder::with_id(MENU_QUIT, "Quit HQ").build(app)?;
 
-    let menu = MenuBuilder::new(app)
+    let paused_items = uploads_paused_menu_rows(&uploads_paused_snapshot())
+        .into_iter()
+        .map(|(id, title, enabled)| {
+            MenuItemBuilder::with_id(id, title)
+                .enabled(enabled)
+                .build(app)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut builder = MenuBuilder::new(app);
+    for item in &paused_items {
+        builder = builder.item(item);
+    }
+    if !paused_items.is_empty() {
+        builder = builder.separator();
+    }
+    let menu = builder
         .item(&version_item)
         .separator()
         .item(&sync_now)
@@ -454,6 +505,24 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
         .item(&sign_out)
         .item(&quit)
         .build()?;
+    Ok(menu)
+}
+
+/// Build a fresh tray icon (menu + icon + title + event handlers) and return it.
+///
+/// Factored out of `setup_tray` so `recreate_tray` can DROP a status item that
+/// macOS never drew and build a brand-new one. On macOS Tahoe (Darwin 25.x) the
+/// status item created during early launch frequently never renders — and the
+/// `set_visible(false→true)` toggle does NOT rescue it (verified on-device: the
+/// item is "built" + reasserted in the log yet absent from the menu bar). A
+/// status item created fresh once the app is fully up DOES draw, so the fix is
+/// to rebuild rather than re-toggle.
+///
+/// Belt-and-suspenders: the builder also sets a text `title("HQ")`. The title
+/// renders through the status button's `title` (not its `image`), so even if the
+/// template glyph is swallowed the user still sees a clickable "HQ".
+fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std::error::Error>> {
+    let menu = build_tray_menu(app)?;
 
     // The helper process owns the real macOS menu-bar item. This in-process tray
     // is skipped on macOS, but if it is ever recreated for fallback diagnostics,
@@ -506,6 +575,13 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
                     }
                     id if id == MENU_QUIT => {
                         app_handle.exit(0);
+                    }
+                    id if id.starts_with(MENU_UPGRADE_PREFIX) => {
+                        let company = &id[MENU_UPGRADE_PREFIX.len()..];
+                        crate::commands::uploads_paused::open_upgrade_for_company(
+                            &app_handle,
+                            company,
+                        );
                     }
                     _ => {}
                 }
@@ -1352,6 +1428,39 @@ fn setup_sync_listeners(app: &AppHandle) {
     app.listen(EVENT_SYNC_CONFLICT, move |_event| {
         update_tray_icon(&app4, TrayState::Conflict);
     });
+
+    // hard-stop-readiness US-019: the menu bar says when a plan limit paused a
+    // company's uploads, with an upgrade action, instead of reading "Idle".
+    // The registry calls this directly; no broadcast event is involved.
+    let app5 = app.clone();
+    crate::commands::uploads_paused::set_tray_sink(move |companies| {
+        set_uploads_paused(&app5, companies)
+    });
+}
+
+/// Apply a new plan-limit upload-pause snapshot to every menu-bar surface:
+/// the macOS helper's status file, the tao tray menu elsewhere, and the
+/// tooltip suffix.
+pub fn set_uploads_paused(
+    app: &AppHandle,
+    companies: Vec<hq_desktop_core::uploads_paused::UploadsPaused>,
+) {
+    if let Ok(mut guard) = uploads_paused_state().lock() {
+        *guard = companies.clone();
+    }
+    crate::tray_helper::publish_uploads_paused(&companies);
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        match build_tray_menu(app) {
+            Ok(menu) => {
+                let _ = tray.set_menu(Some(menu));
+            }
+            Err(error) => crate::util::logfile::log(
+                "tray",
+                &format!("could not rebuild the tray menu: {error}"),
+            ),
+        }
+    }
+    refresh_tray_tooltip(app);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1363,10 +1472,12 @@ fn setup_sync_listeners(app: &AppHandle) {
 /// `set_share_badge`, and `clear_share_badge` so the tooltip is always
 /// consistent with both the tray state and the share badge.
 fn refresh_tray_tooltip(app: &AppHandle) {
-    let tooltip = compose_tray_tooltip(
+    let paused = uploads_paused_snapshot();
+    let tooltip = compose_tray_tooltip_with_pause(
         get_current_state().tooltip(),
         SHARE_BADGE_COUNT.load(Ordering::SeqCst),
         SESSION_BADGE_COUNT.load(Ordering::SeqCst),
+        hq_desktop_core::uploads_paused::uploads_paused_summary(&paused).as_deref(),
     );
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         let _ = tray.set_tooltip(Some(tooltip.as_str()));
@@ -1389,6 +1500,22 @@ fn compose_tray_tooltip(base: &str, share_count: usize, session_count: usize) ->
             "sessions need"
         };
         tooltip.push_str(&format!(" · {session_count} {noun} you"));
+    }
+    tooltip
+}
+
+/// [`compose_tray_tooltip`] plus the plan-limit upload pause (US-019), so an
+/// idle tray reads "HQ — Idle · Uploads paused for Acme" rather than a clean
+/// idle while new files are not uploading.
+fn compose_tray_tooltip_with_pause(
+    base: &str,
+    share_count: usize,
+    session_count: usize,
+    uploads_paused: Option<&str>,
+) -> String {
+    let mut tooltip = compose_tray_tooltip(base, share_count, session_count);
+    if let Some(summary) = uploads_paused.filter(|s| !s.trim().is_empty()) {
+        tooltip.push_str(&format!(" · {summary}"));
     }
     tooltip
 }
@@ -1727,6 +1854,60 @@ mod tests {
         assert_eq!(SHARE_BADGE_COUNT.load(Ordering::SeqCst), 0);
         // Restore — best-effort in parallel test runs.
         SHARE_BADGE_COUNT.store(before, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn uploads_paused_tooltip_names_the_company() {
+        assert_eq!(
+            compose_tray_tooltip_with_pause("HQ — Idle", 0, 0, Some("Uploads paused for Acme")),
+            "HQ — Idle · Uploads paused for Acme"
+        );
+        assert_eq!(
+            compose_tray_tooltip_with_pause("HQ — Idle", 1, 0, Some("Uploads paused for Acme")),
+            "HQ — Idle · 1 new share(s) · Uploads paused for Acme"
+        );
+        assert_eq!(
+            compose_tray_tooltip_with_pause("HQ — Idle", 0, 0, None),
+            "HQ — Idle"
+        );
+    }
+
+    #[test]
+    fn uploads_paused_menu_rows_offer_the_upgrade_only_with_a_link() {
+        use hq_desktop_core::uploads_paused::UploadsPaused;
+        let rows = uploads_paused_menu_rows(&[
+            UploadsPaused {
+                company: "Acme".into(),
+                upgrade_url: Some("https://hq.computer/companies/acme/billing?upgrade=1".into()),
+                last_notice_at_ms: 1,
+            },
+            UploadsPaused {
+                company: "Beta".into(),
+                upgrade_url: None,
+                last_notice_at_ms: 1,
+            },
+        ]);
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    "uploads-paused:Acme".to_string(),
+                    "Uploads paused for Acme".to_string(),
+                    false
+                ),
+                (
+                    "upgrade-plan:Acme".to_string(),
+                    "Upgrade plan for Acme…".to_string(),
+                    true
+                ),
+                (
+                    "uploads-paused:Beta".to_string(),
+                    "Uploads paused for Beta".to_string(),
+                    false
+                ),
+            ]
+        );
+        assert!(uploads_paused_menu_rows(&[]).is_empty());
     }
 
     #[test]

@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import {
   APPEARANCE_CHANGE_EVENT,
@@ -53,10 +54,78 @@ function fakeRoot() {
 }
 
 describe('appearance preferences', () => {
+  it('applies the fresh-install opacity and native backdrop before reading material', async () => {
+    const target = fakeTarget();
+    const { root, value } = fakeRoot();
+    let materialRead = false;
+    const applyNativeTransparency = vi.fn();
+    const dispose = installAppearancePreferences({
+      target,
+      storage: memoryStorage(),
+      root,
+      applyNativeTransparency,
+      readMaterial: () => {
+        materialRead = true;
+        return Promise.resolve('glass');
+      },
+    });
+
+    expect(root.dataset.windowTransparency).toBe('0');
+    expect(value('--hq-window-transparency-factor')).toBe('0.00');
+    expect(materialRead).toBe(false);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(
+      applyNativeTransparency.mock.calls.map(([transparency]) => transparency),
+    ).toEqual([0]);
+    dispose();
+  });
+
+  it('uses a saved transparency on the first visual and native apply', async () => {
+    const target = fakeTarget();
+    const { root, value } = fakeRoot();
+    const applyNativeTransparency = vi.fn();
+    const dispose = installAppearancePreferences({
+      target,
+      storage: memoryStorage(
+        JSON.stringify({ colorTheme: 'system', windowTransparency: 24 }),
+      ),
+      root,
+      applyNativeTransparency,
+    });
+
+    expect(root.dataset.windowTransparency).toBe('24');
+    expect(value('--hq-window-transparency-factor')).toBe('0.24');
+    await Promise.resolve();
+    expect(
+      applyNativeTransparency.mock.calls.map(([transparency]) => transparency),
+    ).toEqual([24]);
+    dispose();
+  });
+
+  it('reapplies native transparency after desktop-alt inserts its backing material', () => {
+    const source = readFileSync(
+      new URL('../../src-tauri/src/commands/desktop_alt.rs', import.meta.url),
+      'utf8',
+    );
+    const revealStart = source.indexOf(
+      '#[cfg(target_os = "macos")]\nfn reveal_desktop_alt_window(window: &tauri::WebviewWindow) {',
+    );
+    const revealEnd = source.indexOf(
+      '#[cfg(not(target_os = "macos"))]',
+      revealStart,
+    );
+    const reveal = source.slice(revealStart, revealEnd);
+
+    expect(reveal.indexOf('reapply_window_backdrop_visibility')).toBeGreaterThan(
+      reveal.indexOf('apply_liquid_glass_window'),
+    );
+  });
+
   it('defaults to system, useful glass, and clamps malformed values', () => {
     expect(readAppearancePreferences(memoryStorage())).toEqual({
       colorTheme: 'system',
-      windowTransparency: 65,
+      windowTransparency: 0,
     });
     expect(
       normalizeAppearancePreferences({
@@ -76,13 +145,13 @@ describe('appearance preferences', () => {
     expect(windowTransparencyFromOpacity(0)).toBe(100);
     expect(windowTransparencyFromOpacity(500)).toBe(0);
     expect(windowTransparencyFromOpacity(-500)).toBe(100);
-    expect(windowTransparencyFromOpacity('not-a-number')).toBe(65);
+    expect(windowTransparencyFromOpacity('not-a-number')).toBe(0);
   });
 
   it('uses safe defaults when appearance storage is absent', () => {
     expect(readAppearancePreferences(null)).toEqual({
       colorTheme: 'system',
-      windowTransparency: 65,
+      windowTransparency: 0,
     });
     expect(() =>
       requestAppearancePreferenceChange(
@@ -186,7 +255,7 @@ describe('appearance preferences', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(applyNativeTransparency.mock.calls.map(([value]) => value)).toEqual([65, 0, 40]);
+    expect(applyNativeTransparency.mock.calls.map(([value]) => value)).toEqual([0, 40]);
     cleanup();
   });
 
@@ -289,7 +358,7 @@ describe('appearance preferences', () => {
       ),
     ).toEqual({
       colorTheme: 'dark',
-      windowTransparency: 65,
+      windowTransparency: 0,
     });
     expect(
       requestAppearancePreferenceChange(

@@ -894,6 +894,11 @@
     onassistedinstall?: (
       tool: import("../install-choice/install-choice.js").CodingTool,
     ) => Promise<import("../install-choice/install-choice.js").InstallOutcome>;
+    /**
+     * Ask the host to (re-)probe `detect_ai_tools`. Called lazily by the
+     * New bot wizard on mount so the probe is not paid on every app open.
+     */
+    onrequestaitools?: () => void;
   }
 
   let {
@@ -960,6 +965,7 @@
     aiTools = null,
     onopenassistant,
     onassistedinstall,
+    onrequestaitools,
   }: Props = $props();
 
   const derivedChrome = $derived(accountChromeFromSelf(self));
@@ -1348,6 +1354,17 @@
         conflictFiles = [];
       }),
     );
+    // hard-stop US-019: the native registry announces every change to the
+    // plan-limit upload pause; re-read the journal-backed status so the Core
+    // header stops saying "All synced" without waiting for the 30s poll.
+    track(
+      host.listen("sync:uploads-paused", () => {
+        if (!adapter.isAvailable("canSync")) return;
+        void readLiveSyncStatus(adapter).then((next) => {
+          if (!disposed) liveSync = next;
+        });
+      }),
+    );
 
     return () => {
       disposed = true;
@@ -1687,14 +1704,15 @@
   let cheatSheetOpen = $state(false);
 
   /**
-   * desktop.human-only-conversations — canary flag read at mount, refreshed
-   * whenever the flag registry publishes a new snapshot. A missing key,
-   * failed read, signed-out session, or offline registry all resolve to
-   * `false` (the safe default). Callers hide mesh / non-human messages in
+   * desktop.human-only-conversations: on by default. The desktop adapters
+   * pin the flag to `HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT` (true), so
+   * the initial state is `true` to avoid a first-paint flash of mesh rows.
+   * An adapter that answers `ok(false)` (or fails) still turns it off; the
+   * web adapter keeps the registry read. Callers hide mesh / non-human messages in
    * conversation views and reorder the sidebar by last human message when
    * this is true. See `packages/platform/src/humanMessage.ts` for the rule.
    */
-  let humanOnlyConversations = $state(false);
+  let humanOnlyConversations = $state(true);
   $effect(() => {
     const identity = adapter?.identity;
     if (!identity || typeof identity.hasFeature !== "function") return;
@@ -8538,6 +8556,7 @@
     syncState={liveSyncState}
     {lastSyncLabel}
     conflictCount={liveSync.conflicts}
+    uploadsPaused={liveSync.uploadsPaused ?? []}
     conflicts={conflictFiles}
     onresolveconflict={(path, strategy) => resolveConflictFile(path, strategy)}
     onopenconflict={(path) => openConflictInEditor(path)}
@@ -8810,6 +8829,7 @@
           hqFolderPath={hqFolderPath ?? ""}
           {onopenassistant}
           {onassistedinstall}
+          {onrequestaitools}
           botWorkers={localBotWorkers}
           {existingBotNames}
           {botSignIn}

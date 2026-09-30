@@ -93,6 +93,11 @@
     /** Opens wherever sync trouble is resolved. Chip is inert without it. */
     onopenSync?: () => void;
     cloudPaused?: boolean;
+    /**
+     * Companies whose uploads are paused by a plan limit (hard-stop US-019).
+     * Lights the Core pill and replaces "All synced" in the Core popover.
+     */
+    uploadsPaused?: readonly { company: string; upgradeUrl?: string | null }[] | null;
     conflicts?: HomeConflict[];
     /**
      * Inject the D-08 designed Core-popover fixtures (conflict card / packs /
@@ -176,6 +181,7 @@
     syncStatus = null,
     onopenSync,
     cloudPaused = false,
+    uploadsPaused = null,
     conflicts = [],
     coreUseFixtures = false,
     driftCount = 0,
@@ -613,6 +619,7 @@
       cloudReachable,
       driftCount,
       cloudPaused,
+      uploadsPausedCount: uploadsPaused?.length ?? 0,
     }),
   );
 
@@ -1094,6 +1101,8 @@
             appVersion={version}
             {conflicts}
             {cloudPaused}
+            {uploadsPaused}
+            {onopenurl}
             syncState={coreSyncPhase}
             {lastSyncLabel}
             syncCaption={syncCaptionText}

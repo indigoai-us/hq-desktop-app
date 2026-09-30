@@ -155,3 +155,69 @@ for state in states {
 }
 
 print("tray badge native verification passed (\(scenariosRun) scenarios)")
+
+// ── hard-stop-readiness US-019: paused-uploads menu section ────────────────
+
+private final class UpgradeTarget: NSObject {
+    var commands: [String] = []
+    @objc func upgrade(_ sender: NSMenuItem) {
+        guard let company = sender.representedObject as? String else { return }
+        commands.append(
+            TrayUploadsPausedPresentation.upgradeCommand(
+                for: .init(company: company, canUpgrade: true)))
+    }
+}
+
+var pausedScenarios = 0
+let snapshot = Data(
+    #"{"uploadsPaused":[{"company":"Acme","canUpgrade":true},{"company":"Beta","canUpgrade":false},{"company":"Acme","canUpgrade":true},{"company":"  "},{"nope":1}]}"#
+        .utf8)
+let rows = TrayUploadsPausedPresentation.rows(from: snapshot)
+require(
+    rows == [.init(company: "Acme", canUpgrade: true), .init(company: "Beta", canUpgrade: false)],
+    "paused rows: parse, dedupe, and drop blank companies"
+)
+pausedScenarios += 1
+require(TrayUploadsPausedPresentation.rows(from: nil).isEmpty, "paused rows: missing file")
+require(TrayUploadsPausedPresentation.rows(from: Data("{".utf8)).isEmpty, "paused rows: malformed")
+require(TrayUploadsPausedPresentation.rows(from: Data(#"{"uploadsPaused":[]}"#.utf8)).isEmpty, "paused rows: empty")
+pausedScenarios += 1
+
+let menu = NSMenu()
+menu.addItem(NSMenuItem(title: "Sync Now", action: nil, keyEquivalent: ""))
+private let target = UpgradeTarget()
+TrayUploadsPausedPresentation.apply(
+    rows: rows, to: menu, target: target, action: #selector(UpgradeTarget.upgrade(_:)))
+require(
+    menu.items.map(\.title) == [
+        "Uploads paused for Acme", "Upgrade plan for Acme…", "Uploads paused for Beta", "", "Sync Now",
+    ],
+    "paused menu: status + upgrade rows at the top, then a separator: \(menu.items.map(\.title))"
+)
+require(menu.items[0].isEnabled == false, "paused menu: status row is informational")
+require(menu.items[3].isSeparatorItem, "paused menu: separator before the standard items")
+pausedScenarios += 1
+
+let upgradeItem = menu.items[1]
+_ = (upgradeItem.target as? UpgradeTarget)?.perform(upgradeItem.action, with: upgradeItem)
+require(target.commands == ["upgrade Acme"], "paused menu: upgrade asks the app by company name")
+pausedScenarios += 1
+
+TrayUploadsPausedPresentation.apply(
+    rows: [], to: menu, target: target, action: #selector(UpgradeTarget.upgrade(_:)))
+require(menu.items.map(\.title) == ["Sync Now"], "paused menu: cleared when uploads resume")
+pausedScenarios += 1
+
+require(
+    TrayUploadsPausedPresentation.label(base: "HQ", rows: [rows[0]]) == "HQ · Uploads paused for Acme",
+    "paused label: one company"
+)
+require(
+    TrayUploadsPausedPresentation.label(base: "HQ, 1 item needs attention", rows: rows)
+        == "HQ, 1 item needs attention · Uploads paused for 2 companies",
+    "paused label: several companies"
+)
+require(TrayUploadsPausedPresentation.label(base: "HQ", rows: []) == "HQ", "paused label: none")
+pausedScenarios += 1
+
+print("tray uploads-paused native verification passed (\(pausedScenarios) scenarios)")

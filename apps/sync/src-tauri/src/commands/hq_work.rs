@@ -233,8 +233,7 @@ pub fn refresh_hq_work_install_cache() {
 }
 
 /// Cached install state. Missing/stale cache probes; never opens setup.
-#[tauri::command]
-pub fn hq_work_installed() -> bool {
+pub fn hq_work_installed_blocking() -> bool {
     let now = Instant::now();
     let mut cache = cache_lock();
     let (installed, did_probe) = detect_with_cache(now, *cache, INSTALL_CACHE_TTL, probe_installed);
@@ -242,6 +241,16 @@ pub fn hq_work_installed() -> bool {
         *cache = Some((installed, now));
     }
     installed
+}
+
+/// A cache miss runs `mdfind`, which can take seconds while Spotlight is
+/// busy. Keep that off the main thread (see `detect_ai_tools`).
+#[tauri::command]
+pub async fn hq_work_installed() -> bool {
+    match tokio::task::spawn_blocking(hq_work_installed_blocking).await {
+        Ok(installed) => installed,
+        Err(_) => hq_work_installed_blocking(),
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1476,7 +1485,7 @@ mod tests {
     #[cfg(not(target_os = "macos"))]
     #[test]
     fn hq_work_installed_non_macos_is_false() {
-        assert!(!hq_work_installed());
+        assert!(!hq_work_installed_blocking());
     }
 
     fn sample_feed(signature: &str) -> String {

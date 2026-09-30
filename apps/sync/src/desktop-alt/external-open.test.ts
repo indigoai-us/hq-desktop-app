@@ -29,6 +29,24 @@ describe('embedded Work external opener', () => {
     );
   });
 
+  it('opens every plan upgrade link shape hq-pro returns (hard-stop US-019)', () => {
+    for (const raw of [
+      'https://hq.computer/billing',
+      'https://hq.computer/billing/upgrade',
+      'https://hq.computer/companies/acme/billing?upgrade=1&entrySurface=desktop_limit',
+      'https://hq.computer/signin?callbackUrl=%2Fapi%2Fcompanies%2Fcmp_1%2Fbilling%2Fupgrade%3FentrySurface%3Ddesktop_limit',
+    ]) {
+      expect(approvedExternalUrl(raw)).toBe(new URL(raw).toString());
+    }
+    // The retired app host and the marketing host are not upgrade targets.
+    for (const raw of [
+      'https://app.indigo-hq.com/billing/upgrade',
+      'https://hqforwork.com/pricing',
+    ]) {
+      expect(() => approvedExternalUrl(raw)).toThrow('not approved');
+    }
+  });
+
   it('allows only the exact macOS notification-settings recovery route', () => {
     expect(approvedExternalUrl('x-apple.systempreferences:com.apple.preference.notifications')).toBe(
       'x-apple.systempreferences:com.apple.preference.notifications',
