@@ -1348,6 +1348,17 @@
         conflictFiles = [];
       }),
     );
+    // hard-stop US-019: the native registry announces every change to the
+    // plan-limit upload pause; re-read the journal-backed status so the Core
+    // header stops saying "All synced" without waiting for the 30s poll.
+    track(
+      host.listen("sync:uploads-paused", () => {
+        if (!adapter.isAvailable("canSync")) return;
+        void readLiveSyncStatus(adapter).then((next) => {
+          if (!disposed) liveSync = next;
+        });
+      }),
+    );
 
     return () => {
       disposed = true;
@@ -8539,6 +8550,7 @@
     syncState={liveSyncState}
     {lastSyncLabel}
     conflictCount={liveSync.conflicts}
+    uploadsPaused={liveSync.uploadsPaused ?? []}
     conflicts={conflictFiles}
     onresolveconflict={(path, strategy) => resolveConflictFile(path, strategy)}
     onopenconflict={(path) => openConflictInEditor(path)}

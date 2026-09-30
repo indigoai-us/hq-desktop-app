@@ -26,6 +26,7 @@ import {
 import { TAURI_CAPABILITIES, type Capability } from "../capabilities.js";
 import { WEB_PATHS } from "../web/index.js";
 import { localBotSettingsArgs } from "./local-bot-settings.js";
+import { hqProFailure, parseHqProErrorBody } from "../plan-limit.js";
 import { createCallsApi } from "../calls/api.js";
 import {
   CLAUDE_PROVIDER_FLAG,
@@ -168,23 +169,9 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     if (rec && typeof rec.status === "number") {
       const text = typeof rec.body === "string" ? rec.body : "";
       if (rec.status < 200 || rec.status >= 300) {
-        let code = `http-${rec.status}`;
-        let message = `${method} ${path} failed`;
-        try {
-          const parsed = text ? JSON.parse(text) : null;
-          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-            const err = parsed as Record<string, unknown>;
-            if (typeof err.code === "string" && err.code.trim()) {
-              code = err.code.trim();
-            }
-            if (typeof err.error === "string" && err.error.trim()) {
-              message = err.error.trim();
-            }
-          }
-        } catch {
-          /* keep http-status defaults */
-        }
-        return failure(code, message);
+        return hqProFailure(
+          parseHqProErrorBody(rec.status, text, `${method} ${path} failed`),
+        );
       }
       try {
         return ok((text ? JSON.parse(text) : undefined) as T);

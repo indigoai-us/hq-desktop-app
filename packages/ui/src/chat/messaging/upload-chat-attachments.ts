@@ -1,4 +1,11 @@
-import type { AdapterResult, Json, VaultPutIntegrity } from "@hq/platform";
+import {
+  approvedPlanUpgradeUrl,
+  hqProErrorFromRecord,
+  isPlanLimitCode,
+  type AdapterResult,
+  type Json,
+  type VaultPutIntegrity,
+} from "@hq/platform";
 import {
   attachmentKindForContentType,
   buildChatAttachmentVaultPath,
@@ -29,6 +36,65 @@ export function presignUrlFromResult(raw: unknown): {
     if (typeof value === "string") headers[key] = value;
   }
   return { url, headers };
+}
+
+/**
+ * An attachment upload the server refused. A plan-limit refusal carries the
+ * server's upgrade link so the composer can render it next to the sentence.
+ * This is an expected product state: it is shown, never reported to Sentry.
+ */
+export class ChatAttachmentUploadError extends Error {
+  readonly upgradeUrl?: string;
+  readonly planLimit: boolean;
+
+  constructor(
+    message: string,
+    options: { upgradeUrl?: string | null; planLimit?: boolean } = {},
+  ) {
+    super(message);
+    this.name = "ChatAttachmentUploadError";
+    const upgradeUrl = approvedPlanUpgradeUrl(options.upgradeUrl);
+    if (upgradeUrl) this.upgradeUrl = upgradeUrl;
+    this.planLimit = Boolean(options.planLimit);
+  }
+}
+
+/**
+ * The approved upgrade link carried by a failed upload or send, or null.
+ * Duck-typed so an error that crossed a module boundary still yields its link.
+ */
+export function uploadErrorUpgradeUrl(err: unknown): string | null {
+  if (!err || typeof err !== "object") return null;
+  return approvedPlanUpgradeUrl((err as { upgradeUrl?: unknown }).upgradeUrl);
+}
+
+/**
+ * hq-pro refuses a single key inside a 200 presign batch with
+ * `{ key, op, error, code, upgradeUrl? }` (the personal-scope plan skip, and
+ * any per-item refusal). Returns the readable refusal, or null when the first
+ * result is not a refusal.
+ */
+export function presignItemRefusal(raw: unknown): {
+  message: string;
+  upgradeUrl?: string;
+  planLimit: boolean;
+} | null {
+  const body = asRecord(raw);
+  const results = Array.isArray(body?.results) ? body.results : [];
+  const first = asRecord(results[0]);
+  if (!first || typeof first.url === "string") return null;
+  if (typeof first.error !== "string" && typeof first.code !== "string") {
+    return null;
+  }
+  const parsed = hqProErrorFromRecord(first, {
+    code: "presign-refused",
+    message: "Could not prepare the upload",
+  });
+  return {
+    message: parsed.message,
+    planLimit: parsed.planLimit,
+    ...(parsed.upgradeUrl ? { upgradeUrl: parsed.upgradeUrl } : {}),
+  };
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -132,15 +198,25 @@ export async function uploadChatAttachments(opts: {
       await fileIntegrity(file),
     );
     if (!signed.ok) {
-      throw new Error(
+      throw new ChatAttachmentUploadError(
         formatUploadServerError(
           signed.message || "Could not prepare the upload",
           file.name,
         ),
+        { upgradeUrl: signed.upgradeUrl, planLimit: isPlanLimitCode(signed.code) },
       );
     }
     const target = presignUrlFromResult(signed.value);
-    if (!target) throw new Error("Upload URL missing");
+    if (!target) {
+      const refusal = presignItemRefusal(signed.value);
+      if (refusal) {
+        throw new ChatAttachmentUploadError(
+          formatUploadServerError(refusal.message, file.name),
+          refusal,
+        );
+      }
+      throw new Error("Upload URL missing");
+    }
     let put: Response;
     try {
       put = await putObject(target.url, target.headers, file);
