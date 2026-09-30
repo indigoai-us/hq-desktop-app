@@ -53,14 +53,16 @@ function fakeRoot() {
 }
 
 describe('appearance preferences', () => {
-  it('applies the fresh-install opacity synchronously before reading native material', () => {
+  it('applies the fresh-install opacity and native backdrop before reading material', async () => {
     const target = fakeTarget();
     const { root, value } = fakeRoot();
     let materialRead = false;
+    const applyNativeTransparency = vi.fn();
     const dispose = installAppearancePreferences({
       target,
       storage: memoryStorage(),
       root,
+      applyNativeTransparency,
       readMaterial: () => {
         materialRead = true;
         return Promise.resolve('glass');
@@ -70,22 +72,33 @@ describe('appearance preferences', () => {
     expect(root.dataset.windowTransparency).toBe('0');
     expect(value('--hq-window-transparency-factor')).toBe('0.00');
     expect(materialRead).toBe(false);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(
+      applyNativeTransparency.mock.calls.map(([transparency]) => transparency),
+    ).toEqual([0]);
     dispose();
   });
 
-  it('uses a saved transparency on the first apply', () => {
+  it('uses a saved transparency on the first visual and native apply', async () => {
     const target = fakeTarget();
     const { root, value } = fakeRoot();
+    const applyNativeTransparency = vi.fn();
     const dispose = installAppearancePreferences({
       target,
       storage: memoryStorage(
         JSON.stringify({ colorTheme: 'system', windowTransparency: 24 }),
       ),
       root,
+      applyNativeTransparency,
     });
 
     expect(root.dataset.windowTransparency).toBe('24');
     expect(value('--hq-window-transparency-factor')).toBe('0.24');
+    await Promise.resolve();
+    expect(
+      applyNativeTransparency.mock.calls.map(([transparency]) => transparency),
+    ).toEqual([24]);
     dispose();
   });
 

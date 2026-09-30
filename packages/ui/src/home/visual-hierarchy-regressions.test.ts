@@ -84,4 +84,34 @@ describe("desktop visual hierarchy regressions", () => {
       "--v4-popover-strong: rgb(44 44 54 / clamp(0.90, calc(0.94 + 0.65 - var(--hq-window-transparency-factor, 0)), 1));",
     );
   });
+
+  it(
+    "uses solid window surfaces at the 100% opacity endpoint in light and dark themes",
+    () => {
+      const chatTokens = normalize(
+        readFileSync(new URL("../chat/tokens.css", import.meta.url), "utf8"),
+      );
+
+      for (const source of [tokens, chatTokens]) {
+        const lightEndpoint = source.match(
+          /:root\[data-window-transparency="0"\]\s*\{([^}]*)\}/,
+        )?.[1];
+        expect(lightEndpoint).toBeDefined();
+        expect(lightEndpoint).toContain("--v4-ground: #f2f2f2;");
+        expect(lightEndpoint).toContain("--v4-chrome: #e8e8e8;");
+        expect(lightEndpoint).toContain("--v4-sidebar: #e0e0e0;");
+        expect(lightEndpoint).toContain("--v4-secondary-sidebar: #eeeeee;");
+        expect(lightEndpoint).toContain("--v4-glass-filter: none;");
+
+        const darkEndpoint = source.match(
+          /:root\[data-window-transparency="0"\]\.dark,[^{}]*\{([^}]*)\}/,
+        )?.[1];
+        expect(darkEndpoint).toBeDefined();
+        expect(darkEndpoint).toContain("--v4-ground: #111111;");
+        expect(darkEndpoint).toContain("--v4-chrome: #1e1e1e;");
+        expect(darkEndpoint).toContain("--v4-sidebar: #181818;");
+        expect(darkEndpoint).toContain("--v4-secondary-sidebar: #1a1a1a;");
+      }
+    },
+  );
 });

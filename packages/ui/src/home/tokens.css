@@ -411,3 +411,57 @@ html[data-platform="windows"] {
 :root[data-branded="true"] .primary-btn:hover {
   background: var(--v4-cta-hover);
 }
+
+/* The explicit 100% opacity endpoint must not sample the desktop through a
+   translucent token or native material. Keep the rest of the glass scale. */
+:root[data-window-transparency="0"] {
+  --v4-ground: #f2f2f2;
+  --v4-raised: #ffffff;
+  --v4-inset: #e4e4e4;
+  --v4-chrome: #e8e8e8;
+  --v4-sidebar: #e0e0e0;
+  --v4-secondary-sidebar: #eeeeee;
+  --v4-popover: #fafafa;
+  --v4-popover-strong: #fafafa;
+  --v4-fallback-material-alpha: 1;
+  --v4-canvas-filter: none;
+  --v4-glass-filter: none;
+  --v4-glass-filter-soft: none;
+  --v4-glass-filter-popover: none;
+}
+
+:root[data-window-transparency="0"].dark,
+:root[data-window-transparency="0"][data-force-theme="dark"],
+:root[data-window-transparency="0"] .dark {
+  --v4-ground: #111111;
+  --v4-raised: #303030;
+  --v4-inset: #0d0d0d;
+  --v4-chrome: #1e1e1e;
+  --v4-sidebar: #181818;
+  --v4-secondary-sidebar: #1a1a1a;
+  --v4-popover: #2a2a2a;
+  --v4-popover-strong: #242424;
+  --v4-fallback-material-alpha: 1;
+  --v4-canvas-filter: none;
+  --v4-glass-filter: none;
+  --v4-glass-filter-soft: none;
+  --v4-glass-filter-popover: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root[data-window-transparency="0"]:not([data-force-theme="light"]) {
+    --v4-ground: #111111;
+    --v4-raised: #303030;
+    --v4-inset: #0d0d0d;
+    --v4-chrome: #1e1e1e;
+    --v4-sidebar: #181818;
+    --v4-secondary-sidebar: #1a1a1a;
+    --v4-popover: #2a2a2a;
+    --v4-popover-strong: #242424;
+    --v4-fallback-material-alpha: 1;
+    --v4-canvas-filter: none;
+    --v4-glass-filter: none;
+    --v4-glass-filter-soft: none;
+    --v4-glass-filter-popover: none;
+  }
+}
