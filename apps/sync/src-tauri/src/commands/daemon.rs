@@ -6896,12 +6896,12 @@ fn watch_owner_status_path(hq_root: &str) -> PathBuf {
     )
 }
 
-fn process_snapshot() -> Result<HashMap<u32, (u32, String)>, String> {
+fn process_info(pid: u32) -> Result<Option<(u32, String)>, String> {
     #[cfg(unix)]
     let output = Command::new("ps")
-        .args(["-ww", "-Ao", "pid=,ppid=,command="])
+        .args(["-ww", "-o", "pid=,ppid=,command=", "-p", &pid.to_string()])
         .output()
-        .map_err(|error| format!("inspect watch-owner processes: {error}"))?;
+        .map_err(|error| format!("inspect watch-owner process {pid}: {error}"))?;
 
     #[cfg(target_os = "windows")]
     let output = Command::new("powershell.exe")
@@ -6909,32 +6909,44 @@ fn process_snapshot() -> Result<HashMap<u32, (u32, String)>, String> {
             "-NoProfile",
             "-NonInteractive",
             "-Command",
-            "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress",
+            &format!(
+                "Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}' | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress"
+            ),
         ])
         .output()
-        .map_err(|error| format!("inspect watch-owner processes: {error}"))?;
+        .map_err(|error| format!("inspect watch-owner process {pid}: {error}"))?;
 
     if !output.status.success() {
         return Err(format!(
-            "inspect watch-owner processes exited with {}",
+            "inspect watch-owner process {pid} exited with {}",
             output.status
         ));
     }
-    let mut processes = HashMap::new();
     #[cfg(unix)]
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
-        let mut fields = line
-            .trim()
-            .splitn(3, char::is_whitespace)
-            .filter(|value| !value.is_empty());
-        let (Some(pid), Some(parent), Some(command)) =
-            (fields.next(), fields.next(), fields.next())
-        else {
-            continue;
+    {
+        let Some(line) = String::from_utf8_lossy(&output.stdout).lines().next() else {
+            return Ok(None);
         };
-        if let (Ok(pid), Ok(parent)) = (pid.parse::<u32>(), parent.parse::<u32>()) {
-            processes.insert(pid, (parent, command.to_string()));
+        let line = line.trim();
+        let mut fields = line.split_whitespace();
+        let (Some(found_pid), Some(parent_token)) = (fields.next(), fields.next()) else {
+            return Ok(None);
+        };
+        if found_pid.parse::<u32>().ok() != Some(pid) {
+            return Ok(None);
         }
+        let parent = parent_token
+            .parse::<u32>()
+            .map_err(|error| format!("parse parent pid for watch-owner {pid}: {error}"))?;
+        let after_pid = line
+            .strip_prefix(found_pid)
+            .unwrap_or_default()
+            .trim_start();
+        let command = after_pid
+            .strip_prefix(parent_token)
+            .unwrap_or_default()
+            .trim_start();
+        Ok(Some((parent, command.to_string())))
     }
     #[cfg(target_os = "windows")]
     {
@@ -6945,22 +6957,33 @@ fn process_snapshot() -> Result<HashMap<u32, (u32, String)>, String> {
             parent_process_id: u32,
             command_line: Option<String>,
         }
-        let rows: Vec<ProcessRow> = match serde_json::from_slice(&output.stdout) {
-            Ok(rows) => rows,
-            Err(error) => {
-                let row: ProcessRow = serde_json::from_slice(&output.stdout)
-                    .map_err(|_| format!("parse watch-owner process snapshot: {error}"))?;
-                vec![row]
-            }
-        };
-        for row in rows {
-            processes.insert(
-                row.process_id,
-                (row.parent_process_id, row.command_line.unwrap_or_default()),
-            );
+        if output.stdout.iter().all(u8::is_ascii_whitespace) {
+            return Ok(None);
         }
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout)
+            .map_err(|error| format!("parse watch-owner process {pid}: {error}"))?;
+        if value.is_null() {
+            return Ok(None);
+        }
+        let row_value = value
+            .as_array()
+            .and_then(|rows| rows.first())
+            .unwrap_or(&value);
+        let row: ProcessRow = serde_json::from_value(row_value.clone())
+            .map_err(|error| format!("parse watch-owner process {pid}: {error}"))?;
+        if row.process_id != pid {
+            return Ok(None);
+        }
+        Ok(Some((
+            row.parent_process_id,
+            row.command_line.unwrap_or_default(),
+        )))
     }
-    Ok(processes)
+    #[cfg(not(any(unix, target_os = "windows")))]
+    {
+        let _ = pid;
+        Err("unsupported process inspection platform".to_string())
+    }
 }
 
 fn is_sync_runner_command(command: &str, hq_root: &str) -> bool {
@@ -6976,29 +6999,31 @@ fn inspect_watch_owner(hq_root: &str) -> Result<Option<InspectedWatchOwner>, Str
     let Some(status) = hq_desktop_core::watch_owner::read_watch_owner_status(&path)? else {
         return Ok(None);
     };
-    let processes = process_snapshot()?;
-    let Some((_, command)) = processes.get(&status.pid) else {
+    let Some((first_parent, command)) = process_info(status.pid)? else {
         return Ok(Some(InspectedWatchOwner {
             status,
             is_live_runner: false,
             is_child_of_app: false,
         }));
     };
-    let is_live_runner = is_sync_runner_command(command, hq_root);
-    let mut current = status.pid;
+    let is_live_runner = is_sync_runner_command(&command, hq_root);
+    let mut parent = first_parent;
     let mut is_child_of_app = false;
     for _ in 0..64 {
-        let Some((parent, _)) = processes.get(&current) else {
-            break;
-        };
-        if *parent == std::process::id() {
+        if parent == std::process::id() {
             is_child_of_app = true;
             break;
         }
-        if *parent == current || *parent == 0 {
+        if parent == 0 || parent == status.pid {
             break;
         }
-        current = *parent;
+        let Some((next_parent, _)) = process_info(parent)? else {
+            break;
+        };
+        if next_parent == parent || next_parent == 0 {
+            break;
+        }
+        parent = next_parent;
     }
     Ok(Some(InspectedWatchOwner {
         status,
@@ -7081,15 +7106,11 @@ fn terminate_external_watch_runner(
     }
     let deadline = Instant::now() + WATCH_OWNER_TERMINATION_GRACE;
     while Instant::now() < deadline {
-        match process_snapshot() {
-            Ok(processes)
-                if !processes
-                    .get(&pid)
-                    .is_some_and(|(_, command)| is_sync_runner_command(command, hq_root)) =>
-            {
-                return Ok(true)
+        match process_info(pid) {
+            Ok(Some((_, command))) if is_sync_runner_command(&command, hq_root) => {
+                thread::sleep(Duration::from_millis(100))
             }
-            Ok(_) => thread::sleep(Duration::from_millis(100)),
+            Ok(_) => return Ok(true),
             Err(error) => return Err(error),
         }
     }
@@ -7111,15 +7132,11 @@ fn terminate_external_watch_runner(
     }
     let deadline = Instant::now() + Duration::from_secs(1);
     while Instant::now() < deadline {
-        match process_snapshot() {
-            Ok(processes)
-                if !processes
-                    .get(&pid)
-                    .is_some_and(|(_, command)| is_sync_runner_command(command, hq_root)) =>
-            {
-                return Ok(true)
+        match process_info(pid) {
+            Ok(Some((_, command))) if is_sync_runner_command(&command, hq_root) => {
+                thread::sleep(Duration::from_millis(100))
             }
-            Ok(_) => thread::sleep(Duration::from_millis(100)),
+            Ok(_) => return Ok(true),
             Err(error) => return Err(error),
         }
     }
@@ -7149,32 +7166,44 @@ pub fn setup_daemon_supervisor(app: &AppHandle) {
                 thread::sleep(SUPERVISOR_INTERVAL);
                 continue;
             }
-            if let Ok(hq_root) = resolve_hq_folder_path() {
-                match live_watch_owner_defers_supervisor(&hq_root) {
-                    Ok(Some(owner_label)) => {
-                        set_lifecycle_state(
-                            WatchDaemonState::Running,
-                            DaemonFailureCategory::None,
-                        );
-                        log(
-                            "daemon.supervisor",
-                            &format!(
-                                "live watch owner {owner_label} retains the lease; rechecking in {} seconds",
-                                SUPERVISOR_INTERVAL.as_secs()
-                            ),
-                        );
-                        thread::sleep(SUPERVISOR_INTERVAL);
-                        continue;
-                    }
-                    Ok(None) => {}
-                    Err(error) => log(
-                        "daemon.supervisor",
-                        &format!("watch-owner preflight unavailable: {error}"),
-                    ),
-                }
-            }
             let (app_owned, registered_child_alive, daemon_alive, sample_pid) =
                 observe_daemon_liveness();
+            let owner_preflight = hq_desktop_core::watch_owner::inspect_owner_before_respawn(
+                daemon_alive,
+                || {
+                    should_respawn_daemon_gated(
+                        is_realtime_sync_enabled(),
+                        is_autostart_enabled(),
+                        daemon_alive,
+                        hq_desktop_core::daemon::is_cloud_paused(),
+                    )
+                },
+                || {
+                    let Ok(hq_root) = resolve_hq_folder_path() else {
+                        return Ok(None);
+                    };
+                    live_watch_owner_defers_supervisor(&hq_root)
+                },
+            );
+            match owner_preflight {
+                Ok(Some(owner_label)) => {
+                    set_lifecycle_state(WatchDaemonState::Running, DaemonFailureCategory::None);
+                    log(
+                        "daemon.supervisor",
+                        &format!(
+                            "live watch owner {owner_label} retains the lease; rechecking in {} seconds",
+                            SUPERVISOR_INTERVAL.as_secs()
+                        ),
+                    );
+                    thread::sleep(SUPERVISOR_INTERVAL);
+                    continue;
+                }
+                Ok(None) => {}
+                Err(error) => log(
+                    "daemon.supervisor",
+                    &format!("watch-owner preflight unavailable: {error}"),
+                ),
+            }
             if ORPHAN_TAKEOVER_PENDING.swap(false, Ordering::AcqRel) {
                 let should_respawn = hq_desktop_core::watch_owner::takeover_respawn_should_run(
                     is_realtime_sync_enabled(),

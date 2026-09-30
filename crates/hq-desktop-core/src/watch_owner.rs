@@ -145,9 +145,60 @@ pub fn supervisor_should_defer_for_live_owner(
     holder_is_live_runner && !plan.take_over_orphan
 }
 
+/// Inspect a watch-owner lease only when the app runner is not already alive
+/// and the normal supervisor path would otherwise respawn it. The closure is
+/// deliberately lazy so a healthy registered child makes no process query.
+pub fn inspect_owner_before_respawn<T, ShouldRespawn, Inspect>(
+    daemon_alive: bool,
+    should_respawn: ShouldRespawn,
+    inspect: Inspect,
+) -> Result<Option<T>, String>
+where
+    ShouldRespawn: FnOnce() -> bool,
+    Inspect: FnOnce() -> Result<Option<T>, String>,
+{
+    if daemon_alive || !should_respawn() {
+        return Ok(None);
+    }
+    inspect()
+}
+
+#[cfg(test)]
+mod supervisor_preflight_tests {
+    use std::cell::Cell;
+
+    use super::inspect_owner_before_respawn;
+
+    #[test]
+    fn healthy_registered_runner_skips_owner_snapshot() {
+        let calls = Cell::new(0);
+        let result = inspect_owner_before_respawn(
+            true,
+            || true,
+            || {
+                calls.set(calls.get() + 1);
+                Ok::<_, String>(Some(()))
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result, None);
+        assert_eq!(calls.get(), 0);
+    }
+}
+
 /// Return whether a process command names the same canonical HQ root as the
 /// lease lookup. This accepts symlink aliases while rejecting unrelated roots.
 pub fn command_matches_hq_root(command: &str, hq_root: &Path) -> bool {
+    let expected_raw = hq_root.to_string_lossy();
+    if exact_hq_root_occurrence(command, &expected_raw) {
+        return true;
+    }
+    if let Ok(canonical) = std::fs::canonicalize(hq_root) {
+        if exact_hq_root_occurrence(command, &canonical.to_string_lossy()) {
+            return true;
+        }
+    }
     let Some(root_argument) = hq_root_argument(command) else {
         return false;
     };
@@ -167,6 +218,51 @@ pub fn command_matches_hq_root(command: &str, hq_root: &Path) -> bool {
     {
         expected == actual
     }
+}
+
+fn exact_hq_root_occurrence(command: &str, expected_root: &str) -> bool {
+    command.match_indices("--hq-root").any(|(index, flag)| {
+        let flag_is_bounded = index == 0
+            || command[..index]
+                .chars()
+                .next_back()
+                .is_some_and(char::is_whitespace);
+        if !flag_is_bounded {
+            return false;
+        }
+        let after_flag = index + flag.len();
+        let Some(first) = command[after_flag..].chars().next() else {
+            return false;
+        };
+        let value_start = if first == '=' {
+            after_flag + 1
+        } else if first.is_whitespace() {
+            after_flag + command[after_flag..].len() - command[after_flag..].trim_start().len()
+        } else {
+            return false;
+        };
+        let Some(value_end) = value_start.checked_add(expected_root.len()) else {
+            return false;
+        };
+        let Some(value) = command.get(value_start..value_end) else {
+            return false;
+        };
+        let value_matches = {
+            #[cfg(target_os = "windows")]
+            {
+                value.eq_ignore_ascii_case(expected_root)
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                value == expected_root
+            }
+        };
+        value_matches
+            && command[value_end..]
+                .chars()
+                .next()
+                .map_or(true, char::is_whitespace)
+    })
 }
 
 fn hq_root_argument(command: &str) -> Option<&str> {
@@ -382,5 +478,42 @@ mod tests {
             &command,
             &dir.path().join("other")
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_root_validation_rejects_hq_root_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("HQ");
+        let sibling = dir.path().join("HQ2");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(&sibling).unwrap();
+
+        let command = format!(
+            "node sync-runner.js --hq-root {} --watch",
+            sibling.display()
+        );
+        assert!(!command_matches_hq_root(&command, &root));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_root_validation_handles_spaces_and_rejects_prefix_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("My HQ");
+        std::fs::create_dir(&root).unwrap();
+
+        let command = format!("node sync-runner.js --hq-root {} --watch", root.display());
+        assert!(command_matches_hq_root(&command, &root));
+        let equals_command = format!("node sync-runner.js --hq-root={} --watch", root.display());
+        assert!(command_matches_hq_root(&equals_command, &root));
+
+        let sibling = dir.path().join("My HQ2");
+        std::fs::create_dir(&sibling).unwrap();
+        let sibling_command = format!(
+            "node sync-runner.js --hq-root {} --watch",
+            sibling.display()
+        );
+        assert!(!command_matches_hq_root(&sibling_command, &root));
     }
 }
