@@ -10,7 +10,7 @@ The release moves it under the version it ships in.
 
 - Footprint reports now include bounded scan and upload-size buckets from the
   coordinated hq-cloud 6.18.20 runner package when that report data is present.
-
+- Internal desktop regression tests now exercise runtime behavior instead of reading implementation source text.
 - Startup reporting now treats pending first-run consent and confirmed
   missing-root recovery as expected.
 
