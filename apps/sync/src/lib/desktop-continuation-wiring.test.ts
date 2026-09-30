@@ -260,6 +260,22 @@ describe('authenticated desktop receipts keep the install-to-company join intact
     expect(desktopAuth).toContain('authorized_account_id');
   });
 
+  it('waits for durable receipt persistence only after resolving the hq-flags gate', () => {
+    const manualOauth = rustFunction(oauth, 'oauth_exchange_code');
+    const authCompleted = manualOauth.indexOf('complete_auth_session');
+    const flagResolved = manualOauth.indexOf('feature_flag_enabled');
+    const receiptQueued = manualOauth.indexOf('record_desktop_login_completed(');
+    const durableReceipt = manualOauth.indexOf('persist_authenticated_receipt_custody');
+
+    expect(authCompleted).toBeGreaterThanOrEqual(0);
+    expect(receiptQueued).toBeGreaterThan(authCompleted);
+    expect(flagResolved).toBeGreaterThan(receiptQueued);
+    expect(durableReceipt).toBeGreaterThan(flagResolved);
+    expect(manualOauth).toContain('persist_login_receipt_before_return');
+    expect(manualOauth).toMatch(/persist_authenticated_receipt_custody\(\)\.await/);
+    expect(manualOauth).toContain('"desktop.login-receipt-durable-before-return-v1"');
+  });
+
   it('reports the company after the person explicitly connects it, without changing provisioning', () => {
     const connect = rustFunction(workspaces, 'connect_workspace_to_cloud');
     expect(connect).toContain('record_desktop_workspace_selected');

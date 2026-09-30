@@ -80,6 +80,10 @@ static CUSTODY: Mutex<Option<ContinuationCustody>> = Mutex::new(None);
 /// Serializes authenticated receipt drains so one background retry cannot race
 /// another. File mutations use a separate short-lived lock and never span HTTP.
 static AUTHENTICATED_RECEIPT_FLUSH: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// Serializes durable custody writes so an awaited caller cannot mistake a
+/// concurrent background drain for its own receipt being persisted.
+static AUTHENTICATED_RECEIPT_PERSISTENCE: tokio::sync::Mutex<()> =
+    tokio::sync::Mutex::const_new(());
 static AUTHENTICATED_RECEIPT_QUEUE_IO: Mutex<()> = Mutex::new(());
 /// Receipts enter in-memory custody synchronously, then a dedicated blocking
 /// worker performs the lock/read/fsync/rename sequence. This keeps authentication
@@ -583,7 +587,8 @@ fn enqueue_authenticated_desktop_receipts(
 /// Take receipts from process custody and write them on Tauri's blocking pool.
 /// A failed or interrupted write restores the complete batch; a duplicate after
 /// an ambiguous write is safe because the server event id is stable.
-async fn persist_authenticated_receipt_custody() {
+pub(crate) async fn persist_authenticated_receipt_custody() -> Result<(), String> {
+    let _persistence_guard = AUTHENTICATED_RECEIPT_PERSISTENCE.lock().await;
     let pending = {
         let mut custody = AUTHENTICATED_RECEIPT_CUSTODY
             .lock()
@@ -591,7 +596,7 @@ async fn persist_authenticated_receipt_custody() {
         std::mem::take(&mut *custody)
     };
     if pending.is_empty() {
-        return;
+        return Ok(());
     }
     let restore = pending.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
@@ -601,14 +606,14 @@ async fn persist_authenticated_receipt_custody() {
     .map_err(|error| format!("desktop receipt persistence task failed: {error}"))
     .and_then(|result| result);
     if let Err(error) = result {
-        eprintln!("[desktop-onboarding] receipt queue persistence failed: {error}");
         let mut custody = AUTHENTICATED_RECEIPT_CUSTODY
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         custody.splice(0..0, restore);
-        return;
+        return Err(error);
     }
     flush_pending_authenticated_desktop_receipts();
+    Ok(())
 }
 
 /// Accept a receipt immediately and schedule its durable write without making
@@ -620,7 +625,11 @@ fn schedule_authenticated_desktop_receipt(receipt: AuthenticatedDesktopReceipt) 
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         custody.push(receipt);
     }
-    tauri::async_runtime::spawn(async { persist_authenticated_receipt_custody().await });
+    tauri::async_runtime::spawn(async {
+        if let Err(error) = persist_authenticated_receipt_custody().await {
+            eprintln!("[desktop-onboarding] receipt queue persistence failed: {error}");
+        }
+    });
 }
 
 fn without_terminal_receipts(
@@ -815,6 +824,7 @@ pub(crate) fn record_desktop_login_completed<R: tauri::Runtime>(
             flow,
             variant,
             identity_provider,
+            false,
         )
         .await;
         if let Err(error) = result {
@@ -823,12 +833,33 @@ pub(crate) fn record_desktop_login_completed<R: tauri::Runtime>(
     })
 }
 
+/// Build the successful sign-in receipt and wait for its durable queue write.
+/// Network delivery remains asynchronous and never determines auth success.
+pub(crate) async fn record_desktop_login_completed_durably<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    authorized_account_id: &str,
+    flow: &str,
+    variant: &str,
+    identity_provider: Option<&str>,
+) -> Result<(), String> {
+    record_desktop_login_completed_inner(
+        app.clone(),
+        authorized_account_id.to_string(),
+        flow.to_string(),
+        variant.to_string(),
+        identity_provider.map(str::to_owned),
+        true,
+    )
+    .await
+}
+
 async fn record_desktop_login_completed_inner<R: tauri::Runtime>(
     app: AppHandle<R>,
     authorized_account_id: String,
     flow: String,
     variant: String,
     identity_provider: Option<String>,
+    persist_before_return: bool,
 ) -> Result<(), String> {
     let mut body = desktop_receipt_base_in_background(app).await?;
     let object = body
@@ -840,13 +871,24 @@ async fn record_desktop_login_completed_inner<R: tauri::Runtime>(
         "provider".to_string(),
         serde_json::json!(identity_provider.as_deref().unwrap_or("cognito")),
     );
-    schedule_authenticated_desktop_receipt(AuthenticatedDesktopReceipt {
+    let receipt = AuthenticatedDesktopReceipt {
         endpoint: AuthenticatedReceiptEndpoint::SessionActivated,
         body,
         authorized_account_id: Some(authorized_account_id),
         attempts: 0,
         next_attempt_at_ms: 0,
-    });
+    };
+    if persist_before_return {
+        {
+            let mut custody = AUTHENTICATED_RECEIPT_CUSTODY
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            custody.push(receipt);
+        }
+        persist_authenticated_receipt_custody().await?;
+    } else {
+        schedule_authenticated_desktop_receipt(receipt);
+    }
     Ok(())
 }
 
@@ -1225,7 +1267,9 @@ mod authenticated_receipt_tests {
             for handle in handles {
                 handle.await.expect("build login receipt task");
             }
-            persist_authenticated_receipt_custody().await;
+            persist_authenticated_receipt_custody()
+                .await
+                .expect("persist queued receipts");
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
             loop {
                 let receipts = read_authenticated_receipt_queue(&path).expect("read receipt queue");
@@ -1255,6 +1299,40 @@ mod authenticated_receipt_tests {
                 "missing {flow}/{variant} receipt for provider {expected_provider}"
             );
         }
+    }
+
+    #[test]
+    fn login_receipt_durability_gate_returns_only_after_the_queue_file_contains_it() {
+        let _env_guard = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = tempfile::tempdir().expect("temp home");
+        fs::create_dir_all(home.path().join(".hq")).expect("create temp HQ directory");
+        let _home = crate::util::test_support::scoped_home(home.path());
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let path = authenticated_receipt_queue_path_from_home(home.path());
+
+        tauri::async_runtime::block_on(record_desktop_login_completed_durably(
+            &handle,
+            "person-a",
+            "manual_oauth",
+            "control",
+            Some("Google"),
+        ))
+        .expect("durable receipt attempt completes without failing sign-in");
+
+        let receipts = read_authenticated_receipt_queue(&path).expect("read persisted queue");
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(
+            receipts[0].authorized_account_id.as_deref(),
+            Some("person-a")
+        );
+        assert_eq!(
+            receipts[0].endpoint,
+            AuthenticatedReceiptEndpoint::SessionActivated
+        );
+        assert_eq!(receipts[0].body["provider"], "Google");
     }
 
     #[test]
