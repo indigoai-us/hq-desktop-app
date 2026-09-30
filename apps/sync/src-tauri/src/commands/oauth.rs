@@ -653,33 +653,14 @@ pub async fn oauth_exchange_code(app: AppHandle, code: String) -> Result<AuthSta
     // continuation cohort. The flag-gated path waits for its local queue write
     // before returning to the wizard; network delivery remains asynchronous.
     if let Some(account_id) = state.account_id.as_deref() {
-        // Start receipt preparation immediately after auth, before the flag
-        // lookup can add network latency to this path.
-        let receipt_preparation = crate::commands::desktop_auth::record_desktop_login_completed(
+        crate::commands::desktop_auth::record_desktop_login_completed_gated(
             &app,
             account_id,
             "manual_oauth",
             "control",
             identity_provider.as_deref(),
-        );
-        // The hq-flags resolver needs the newly established human session. A
-        // missing value or unavailable registry keeps the existing async path.
-        let persist_login_receipt_before_return = crate::commands::hq_pro::feature_flag_enabled(
-            "desktop.login-receipt-durable-before-return-v1",
         )
         .await;
-        if persist_login_receipt_before_return {
-            if let Err(error) = receipt_preparation.await {
-                eprintln!(
-                    "[desktop-onboarding] login_completed receipt preparation failed: {error}"
-                );
-            }
-            if let Err(error) =
-                crate::commands::desktop_auth::persist_authenticated_receipt_custody().await
-            {
-                eprintln!("[desktop-onboarding] login_completed receipt queue failed: {error}");
-            }
-        }
     } else {
         eprintln!("[desktop-onboarding] login_completed receipt not queued without an authenticated account");
     }

@@ -85,6 +85,7 @@ static AUTHENTICATED_RECEIPT_FLUSH: tokio::sync::Mutex<()> = tokio::sync::Mutex:
 static AUTHENTICATED_RECEIPT_PERSISTENCE: tokio::sync::Mutex<()> =
     tokio::sync::Mutex::const_new(());
 static AUTHENTICATED_RECEIPT_QUEUE_IO: Mutex<()> = Mutex::new(());
+const LOGIN_RECEIPT_FLAG_LOOKUP_BUDGET: std::time::Duration = std::time::Duration::from_millis(100);
 /// Receipts enter in-memory custody synchronously, then a dedicated blocking
 /// worker performs the lock/read/fsync/rename sequence. This keeps authentication
 /// and workspace commands off the filesystem while retaining each receipt until
@@ -426,13 +427,14 @@ pub async fn desktop_continuation_confirm(
     // durable writer runs, so quitting after a completed write preserves its
     // original event id and timestamp for a later retry.
     if let Some(account_id) = state.account_id.as_deref() {
-        let _ = record_desktop_login_completed(
+        record_desktop_login_completed_gated(
             &app,
             account_id,
             "browser_continuation",
             "continuation",
             None,
-        );
+        )
+        .await;
     } else {
         eprintln!("[desktop-onboarding] login_completed receipt not queued without an authenticated account");
     }
@@ -831,6 +833,51 @@ pub(crate) fn record_desktop_login_completed<R: tauri::Runtime>(
             eprintln!("[desktop-onboarding] login_completed receipt queue failed: {error}");
         }
     })
+}
+
+/// Keep the opt-in receipt durability check off the long tail of sign-in.
+/// Missing, failed, or slow flag reads use the existing asynchronous queue path.
+async fn login_receipt_durability_enabled_with_fetch<Check>(check: Check) -> bool
+where
+    Check: std::future::Future<Output = bool>,
+{
+    tokio::time::timeout(LOGIN_RECEIPT_FLAG_LOOKUP_BUDGET, check)
+        .await
+        .unwrap_or(false)
+}
+
+pub(crate) async fn login_receipt_durability_enabled() -> bool {
+    login_receipt_durability_enabled_with_fetch(crate::commands::hq_pro::feature_flag_enabled(
+        "desktop.login-receipt-durable-before-return-v1",
+    ))
+    .await
+}
+
+/// Record login receipts on every native sign-in path. When the flag resolves
+/// quickly and is on, wait for local durability; otherwise preserve the
+/// existing non-blocking queue behavior.
+pub(crate) async fn record_desktop_login_completed_gated<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    authorized_account_id: &str,
+    flow: &str,
+    variant: &str,
+    identity_provider: Option<&str>,
+) {
+    let receipt_preparation = record_desktop_login_completed(
+        app,
+        authorized_account_id,
+        flow,
+        variant,
+        identity_provider,
+    );
+    if login_receipt_durability_enabled().await {
+        if let Err(error) = receipt_preparation.await {
+            eprintln!("[desktop-onboarding] login_completed receipt preparation failed: {error}");
+        }
+        if let Err(error) = persist_authenticated_receipt_custody().await {
+            eprintln!("[desktop-onboarding] login_completed receipt queue failed: {error}");
+        }
+    }
 }
 
 /// Build the successful sign-in receipt and wait for its durable queue write.
@@ -1333,6 +1380,20 @@ mod authenticated_receipt_tests {
             AuthenticatedReceiptEndpoint::SessionActivated
         );
         assert_eq!(receipts[0].body["provider"], "Google");
+    }
+
+    #[test]
+    fn slow_login_receipt_flag_fails_closed_within_the_fast_path_budget() {
+        let started = std::time::Instant::now();
+        let enabled = tauri::async_runtime::block_on(login_receipt_durability_enabled_with_fetch(
+            std::future::pending::<bool>(),
+        ));
+
+        assert!(!enabled);
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        assert!(tauri::async_runtime::block_on(
+            login_receipt_durability_enabled_with_fetch(std::future::ready(true))
+        ));
     }
 
     #[test]
