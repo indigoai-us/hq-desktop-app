@@ -9,6 +9,8 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Desktop company-creation invites identify the desktop surface in the hq-pro team invite action.
+- Startup reporting now treats pending first-run consent and confirmed
+  missing-root recovery as expected.
 
 - The existing sync plan-limit notice can report gated exposure and Upgrade-click measurements.
 
