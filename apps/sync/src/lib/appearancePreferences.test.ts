@@ -53,10 +53,46 @@ function fakeRoot() {
 }
 
 describe('appearance preferences', () => {
+  it('applies the fresh-install opacity synchronously before reading native material', () => {
+    const target = fakeTarget();
+    const { root, value } = fakeRoot();
+    let materialRead = false;
+    const dispose = installAppearancePreferences({
+      target,
+      storage: memoryStorage(),
+      root,
+      readMaterial: () => {
+        materialRead = true;
+        return Promise.resolve('glass');
+      },
+    });
+
+    expect(root.dataset.windowTransparency).toBe('0');
+    expect(value('--hq-window-transparency-factor')).toBe('0.00');
+    expect(materialRead).toBe(false);
+    dispose();
+  });
+
+  it('uses a saved transparency on the first apply', () => {
+    const target = fakeTarget();
+    const { root, value } = fakeRoot();
+    const dispose = installAppearancePreferences({
+      target,
+      storage: memoryStorage(
+        JSON.stringify({ colorTheme: 'system', windowTransparency: 24 }),
+      ),
+      root,
+    });
+
+    expect(root.dataset.windowTransparency).toBe('24');
+    expect(value('--hq-window-transparency-factor')).toBe('0.24');
+    dispose();
+  });
+
   it('defaults to system, useful glass, and clamps malformed values', () => {
     expect(readAppearancePreferences(memoryStorage())).toEqual({
       colorTheme: 'system',
-      windowTransparency: 65,
+      windowTransparency: 0,
     });
     expect(
       normalizeAppearancePreferences({
@@ -76,13 +112,13 @@ describe('appearance preferences', () => {
     expect(windowTransparencyFromOpacity(0)).toBe(100);
     expect(windowTransparencyFromOpacity(500)).toBe(0);
     expect(windowTransparencyFromOpacity(-500)).toBe(100);
-    expect(windowTransparencyFromOpacity('not-a-number')).toBe(65);
+    expect(windowTransparencyFromOpacity('not-a-number')).toBe(0);
   });
 
   it('uses safe defaults when appearance storage is absent', () => {
     expect(readAppearancePreferences(null)).toEqual({
       colorTheme: 'system',
-      windowTransparency: 65,
+      windowTransparency: 0,
     });
     expect(() =>
       requestAppearancePreferenceChange(
@@ -186,7 +222,7 @@ describe('appearance preferences', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(applyNativeTransparency.mock.calls.map(([value]) => value)).toEqual([65, 0, 40]);
+    expect(applyNativeTransparency.mock.calls.map(([value]) => value)).toEqual([0, 40]);
     cleanup();
   });
 
@@ -289,7 +325,7 @@ describe('appearance preferences', () => {
       ),
     ).toEqual({
       colorTheme: 'dark',
-      windowTransparency: 65,
+      windowTransparency: 0,
     });
     expect(
       requestAppearancePreferenceChange(

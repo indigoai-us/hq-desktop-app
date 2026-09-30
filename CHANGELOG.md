@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Fresh installs now open fully opaque until Window opacity is changed; saved
+  opacity values remain in effect.
 - On Windows, template installs now use safe file-copy and junction fallbacks when symlink creation is unavailable.
 
 
