@@ -2,6 +2,45 @@
 //! platform (the `glass` module itself is macOS-only, so the command that
 //! reports the material must live where Windows and Linux builds can see it).
 
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
+/// Retain the frontend's requested native visibility by window. Its first
+/// command can run before desktop-alt inserts the tagged backing view.
+#[derive(Default)]
+struct BackdropVisibilityByWindow(Mutex<HashMap<String, bool>>);
+
+impl BackdropVisibilityByWindow {
+    fn set(&self, label: &str, visible: bool) {
+        self.0
+            .lock()
+            .expect("window backdrop visibility lock poisoned")
+            .insert(label.to_owned(), visible);
+    }
+
+    fn get(&self, label: &str) -> bool {
+        self.0
+            .lock()
+            .expect("window backdrop visibility lock poisoned")
+            .get(label)
+            .copied()
+            .unwrap_or(false)
+    }
+
+    fn remove(&self, label: &str) {
+        self.0
+            .lock()
+            .expect("window backdrop visibility lock poisoned")
+            .remove(label);
+    }
+}
+
+static BACKDROP_VISIBILITY_BY_WINDOW: OnceLock<BackdropVisibilityByWindow> = OnceLock::new();
+
+fn backdrop_visibility_by_window() -> &'static BackdropVisibilityByWindow {
+    BACKDROP_VISIBILITY_BY_WINDOW.get_or_init(BackdropVisibilityByWindow::default)
+}
+
 /// `glass`: macOS 26+ `NSGlassEffectView`. `vibrancy`: the pre-Tahoe
 /// `NSVisualEffectView` fallback, which is far more see-through than glass
 /// and reads as a washed-out grey under the translucent CSS surfaces tuned
@@ -49,6 +88,7 @@ pub fn backdrop_visible_for(transparency: u8) -> bool {
 #[tauri::command]
 pub fn set_window_backdrop_transparency(window: tauri::WebviewWindow, transparency: u8) {
     let visible = backdrop_visible_for(transparency.min(100));
+    backdrop_visibility_by_window().set(window.label(), visible);
     #[cfg(target_os = "macos")]
     {
         let target = window.clone();
@@ -62,6 +102,21 @@ pub fn set_window_backdrop_transparency(window: tauri::WebviewWindow, transparen
     }
 }
 
+/// Reapply the requested visibility after desktop-alt inserts the native
+/// material view. The caller runs on AppKit's main thread.
+#[cfg(target_os = "macos")]
+pub fn reapply_window_backdrop_visibility(window: &tauri::WebviewWindow) {
+    crate::glass::set_liquid_glass_backing_visible(
+        window,
+        backdrop_visibility_by_window().get(window.label()),
+    );
+}
+
+/// Drop retained state when its Tauri window is destroyed.
+pub fn forget_window_backdrop_visibility(label: &str) {
+    backdrop_visibility_by_window().remove(label);
+}
+
 #[cfg(test)]
 mod backdrop_tests {
     use super::backdrop_visible_for;
@@ -72,6 +127,20 @@ mod backdrop_tests {
         assert!(backdrop_visible_for(1));
         assert!(backdrop_visible_for(65));
         assert!(backdrop_visible_for(100));
+    }
+
+    #[test]
+    fn requested_visibility_is_retained_until_native_material_is_inserted() {
+        let requested = BackdropVisibilityByWindow::default();
+        requested.set("desktop-alt", false);
+        assert!(!requested.get("desktop-alt"));
+
+        requested.set("desktop-alt", true);
+        assert!(requested.get("desktop-alt"));
+        assert!(!requested.get("another-window"));
+
+        requested.remove("desktop-alt");
+        assert!(!requested.get("desktop-alt"));
     }
 }
 

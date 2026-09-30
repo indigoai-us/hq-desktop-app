@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import {
   APPEARANCE_CHANGE_EVENT,
@@ -100,6 +101,25 @@ describe('appearance preferences', () => {
       applyNativeTransparency.mock.calls.map(([transparency]) => transparency),
     ).toEqual([24]);
     dispose();
+  });
+
+  it('reapplies native transparency after desktop-alt inserts its backing material', () => {
+    const source = readFileSync(
+      new URL('../../src-tauri/src/commands/desktop_alt.rs', import.meta.url),
+      'utf8',
+    );
+    const revealStart = source.indexOf(
+      '#[cfg(target_os = "macos")]\nfn reveal_desktop_alt_window(window: &tauri::WebviewWindow) {',
+    );
+    const revealEnd = source.indexOf(
+      '#[cfg(not(target_os = "macos"))]',
+      revealStart,
+    );
+    const reveal = source.slice(revealStart, revealEnd);
+
+    expect(reveal.indexOf('reapply_window_backdrop_visibility')).toBeGreaterThan(
+      reveal.indexOf('apply_liquid_glass_window'),
+    );
   });
 
   it('defaults to system, useful glass, and clamps malformed values', () => {
