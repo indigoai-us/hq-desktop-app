@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import {
   APPEARANCE_CHANGE_EVENT,
+  APPEARANCE_OPAQUE_RESET_KEY,
   APPEARANCE_REQUEST_EVENT,
   APPEARANCE_STORAGE_KEY,
   applyAppearancePreferences,
@@ -27,6 +28,13 @@ function memoryStorage(seed?: string): Storage {
     removeItem: (key) => values.delete(key),
     setItem: (key, value) => values.set(key, value),
   };
+}
+
+/** Storage from an install that already ran the one-time 100% opacity reset. */
+function migratedStorage(seed: string): Storage {
+  const storage = memoryStorage(seed);
+  storage.setItem(APPEARANCE_OPAQUE_RESET_KEY, '1');
+  return storage;
 }
 
 function fakeTarget(): Window {
@@ -87,7 +95,7 @@ describe('appearance preferences', () => {
     const applyNativeTransparency = vi.fn();
     const dispose = installAppearancePreferences({
       target,
-      storage: memoryStorage(
+      storage: migratedStorage(
         JSON.stringify({ colorTheme: 'system', windowTransparency: 24 }),
       ),
       root,
@@ -425,6 +433,7 @@ describe('window material without real glass', () => {
     const storage = new Map<string, string>();
     const store = { getItem: (k: string) => storage.get(k) ?? null, setItem: (k: string, v: string) => void storage.set(k, v), removeItem: (k: string) => void storage.delete(k) };
     store.setItem(APPEARANCE_STORAGE_KEY, JSON.stringify({ colorTheme: 'system', windowTransparency: 65 }));
+    store.setItem(APPEARANCE_OPAQUE_RESET_KEY, '1');
     const dispose = installAppearancePreferences({
       target: new EventTarget() as unknown as Window,
       storage: store as unknown as Storage,
@@ -439,6 +448,87 @@ describe('window material without real glass', () => {
     expect(factor.at(-1)).toBe('0.65');
     expect(root.dataset.material).toBe('vibrancy');
     expect(root.dataset.windowTransparency).toBe('65');
+    dispose();
+  });
+});
+
+describe('one-time 100% opacity reset for existing installs', () => {
+  it('resets a saved opacity to 100% once, keeps the theme, and records the reset', async () => {
+    const target = fakeTarget();
+    const { root } = fakeRoot();
+    const storage = memoryStorage(
+      JSON.stringify({ colorTheme: 'dark', windowTransparency: 65 }),
+    );
+    const applyNativeTransparency = vi.fn();
+    const dispose = installAppearancePreferences({
+      target,
+      storage,
+      root,
+      applyNativeTransparency,
+    });
+
+    expect(root.dataset.windowTransparency).toBe('0');
+    expect(root.dataset.forceTheme).toBe('dark');
+    expect(JSON.parse(storage.getItem(APPEARANCE_STORAGE_KEY) ?? 'null')).toEqual({
+      colorTheme: 'dark',
+      windowTransparency: 0,
+    });
+    expect(storage.getItem(APPEARANCE_OPAQUE_RESET_KEY)).toBe('1');
+    await Promise.resolve();
+    expect(
+      applyNativeTransparency.mock.calls.map(([transparency]) => transparency),
+    ).toEqual([0]);
+    dispose();
+  });
+
+  it('keeps an opacity the user chooses after the reset', () => {
+    const storage = memoryStorage(
+      JSON.stringify({ colorTheme: 'system', windowTransparency: 65 }),
+    );
+    installAppearancePreferences({ target: fakeTarget(), storage, root: fakeRoot().root })();
+
+    const target = fakeTarget();
+    const first = fakeRoot();
+    const disposeFirst = installAppearancePreferences({ target, storage, root: first.root });
+    requestAppearancePreferenceChange({ windowTransparency: 40 }, { target, storage });
+    disposeFirst();
+
+    const restarted = fakeRoot();
+    const dispose = installAppearancePreferences({
+      target: fakeTarget(),
+      storage,
+      root: restarted.root,
+    });
+    expect(restarted.root.dataset.windowTransparency).toBe('40');
+    dispose();
+  });
+
+  it('records the reset on a fresh install so a later choice is never reset', () => {
+    const storage = memoryStorage();
+    installAppearancePreferences({ target: fakeTarget(), storage, root: fakeRoot().root })();
+    expect(storage.getItem(APPEARANCE_OPAQUE_RESET_KEY)).toBe('1');
+
+    storage.setItem(
+      APPEARANCE_STORAGE_KEY,
+      JSON.stringify({ colorTheme: 'system', windowTransparency: 30 }),
+    );
+    const { root } = fakeRoot();
+    installAppearancePreferences({ target: fakeTarget(), storage, root })();
+    expect(root.dataset.windowTransparency).toBe('30');
+  });
+
+  it('shows 100% opacity when storage is unreadable, without throwing', () => {
+    const storage = {
+      getItem: vi.fn(() => {
+        throw new Error('storage read blocked');
+      }),
+      setItem: vi.fn(() => {
+        throw new Error('storage write blocked');
+      }),
+    };
+    const { root } = fakeRoot();
+    const dispose = installAppearancePreferences({ target: fakeTarget(), storage, root });
+    expect(root.dataset.windowTransparency).toBe('0');
     dispose();
   });
 });
