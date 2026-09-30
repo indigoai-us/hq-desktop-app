@@ -10,12 +10,9 @@ The release moves it under the version it ships in.
 
 - On Windows, template installs now use safe file-copy and junction fallbacks when symlink creation is unavailable.
 
-
-
-
-
-
 - Added desktop regression tests for adapter results and call-window URL target rejection.
+
+- First-time setup shows when it is checking for AI tools instead of waiting silently.
 
 ## [0.10.364] — 2026-09-30
 
