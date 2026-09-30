@@ -11,6 +11,8 @@ The release moves it under the version it ships in.
 - Startup reporting now treats pending first-run consent and confirmed
   missing-root recovery as expected.
 
+- The existing sync plan-limit notice can report gated exposure and Upgrade-click measurements.
+
 ## [0.10.363] — 2026-09-30
 
 - Opening a conversation no longer shows an empty pane when recent activity was hidden; older messages from people load automatically.
