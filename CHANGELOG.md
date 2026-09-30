@@ -11,9 +11,16 @@ The release moves it under the version it ships in.
 - Core update failures now report a specific snapshot failure class, such as
   insufficient space, a protected recovery snapshot, a permission error, a
   symlink, or a copy failure.
+- On macOS, HQ Sync restarts after an abnormal exit and waits at least 30
+  seconds between crash restarts. Existing enabled LaunchAgents are refreshed
+  on app startup, and the updater handoff avoids a duplicate restart.
 - Internal desktop regression tests now exercise runtime behavior instead of reading implementation source text.
+- Core update failures caused by low snapshot space now report a dedicated
+  diagnostic class and coarse required/available space buckets.
+
 - Startup reporting now treats pending first-run consent and confirmed
   missing-root recovery as expected.
+- Desktop setup continues to report installation failures after an internal error interrupts its diagnostic cache.
 
 - The existing sync plan-limit notice can report gated exposure and Upgrade-click measurements.
 
