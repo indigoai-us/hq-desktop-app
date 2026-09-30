@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- The sidebar orders DMs and channels by the latest message a person typed.
+
 - The desktop app no longer checks which AI tools are installed every time it opens; it checks when you create a bot or run setup.
 
 - On macOS, HQ Sync restarts after an abnormal exit and waits at least 30
