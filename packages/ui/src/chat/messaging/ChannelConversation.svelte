@@ -498,8 +498,20 @@
     });
   });
   const rootMessages = $derived(messages.filter((msg) => !isReplyMessage(msg)));
+  /**
+   * Rows the reader is entitled to see in this pane. When `humanOnly` is on,
+   * mesh/system/non-human-audience rows are removed here so that windowing,
+   * the "Show N earlier" count, and the empty-state check all operate on the
+   * VISIBLE row set. Before this filter ran pre-window, the newest local page
+   * being all mesh rows produced an empty pane with a large "Show N earlier"
+   * count that only decreased by 20 per click (owner report, v0.10.362).
+   */
+  const visibleRootMessages = $derived.by(() => {
+    if (!humanOnly) return rootMessages;
+    return rootMessages.filter((msg) => !hiddenInHumanOnly(msg));
+  });
   const windowed = $derived(
-    takeNewestWindow(rootMessages, { extra: extraOlder }),
+    takeNewestWindow(visibleRootMessages, { extra: extraOlder }),
   );
   /** First eventId wins so the keyed each never receives duplicate keys
    *  (host page + optimistic localSends race). */
@@ -686,6 +698,15 @@
     scrollToBottom();
   }
 
+  /**
+   * Human-only auto-fetch bound. When the local window has 0 visible rows but
+   * the server has more history, fetch older pages until the window fills or
+   * the bound is hit - so opening a channel whose newest N rows are all mesh
+   * activity does not require the reader to click "Show earlier" repeatedly.
+   * Bounded to protect the wire and the empty-history case.
+   */
+  const AUTO_FETCH_MAX_PAGES = 5;
+  let autoFetchPages = $state(0);
   /** "Show N earlier" prepends rows; anchor the height so the view holds still. */
   let earlierError = $state(false);
   async function showEarlier(): Promise<void> {
@@ -707,6 +728,28 @@
       loadingEarlier = false;
     }
   }
+
+  /**
+   * Auto-fetch older pages when the visible window is empty but the server has
+   * more history. Runs only in humanOnly mode: with the flag off, an empty
+   * local pane already means an empty channel, and the existing scroll-to-top
+   * loader handles ordinary paging. Bounded per mount; the component is
+   * remounted on channel switch, so the counter resets naturally.
+   */
+  $effect(() => {
+    if (!humanOnly) return;
+    if (!hasEarlier) return;
+    if (loadingEarlier) return;
+    if (earlierError) return;
+    if (autoFetchPages >= AUTO_FETCH_MAX_PAGES) return;
+    // Only auto-fetch when the visible pane is EMPTY. Any visible human row
+    // means the reader has something to read on open; further paging stays
+    // click-driven so an ordinary channel does not silently chew server pages.
+    if (visibleRootMessages.length > 0) return;
+    autoFetchPages += 1;
+    void showEarlier();
+  });
+
   let selectedMentions = $state<MentionTarget[]>([]);
   let mentionHighlight = $state(0);
 
@@ -1490,7 +1533,7 @@
         {#if headerOnly}
           <!-- header-only pane: nothing below the header -->
         {:else}
-        {#if timeline.length === 0 && !loading}
+        {#if timeline.length === 0 && !loading && !loadingEarlier && !hasEarlier}
           <div
             class="dm-thread-empty"
             data-testid="conversation-empty"
