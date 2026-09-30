@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Desktop company-creation invites identify the desktop surface in the hq-pro team invite action.
+
 - The existing sync plan-limit notice can report gated exposure and Upgrade-click measurements.
 
 ## [0.10.363] — 2026-09-30
