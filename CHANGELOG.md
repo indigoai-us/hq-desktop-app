@@ -11,6 +11,8 @@ The release moves it under the version it ships in.
 - First-run setup now retries a just-published npm package when the registry
   briefly returns E404 or ETARGET, while keeping setup progress active.
 
+## [0.10.367] — 2026-09-30
+
 - Auto-sync identifies its watch-runner lease owner, stops a live orphan desktop runner once, and defers to hq-daemon when it owns the root. Lease-busy exits do not count as repeated runner failures.
 - A watch runner that exits during orphan recovery now counts as stopped, so auto-sync can finish recovery instead of reporting a false runner failure.
 - Fresh installs now open fully opaque until Window opacity is changed; saved
