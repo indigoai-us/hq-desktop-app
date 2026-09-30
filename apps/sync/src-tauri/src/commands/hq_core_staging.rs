@@ -1175,6 +1175,32 @@ mod tests {
     }
 
     #[test]
+    fn redacted_disk_full_tail_remains_classifiable_from_observed_message() {
+        let temp = tempfile::tempdir().unwrap();
+        let log_path = temp.path().join("rescue.log");
+        std::fs::write(
+            &log_path,
+            "error: insufficient free space for safety snapshot (need 6442450944 bytes, have 5368709120).\nHQ_RESCUE_FAILURE_KIND=disk_full\n",
+        )
+        .unwrap();
+
+        let tail = read_rescue_diagnostic_tail(&log_path).unwrap();
+
+        assert!(tail.contains("insufficient free space for safety snapshot"));
+        assert!(!tail.contains("HQ_RESCUE_FAILURE_KIND=disk_full"));
+        assert_eq!(
+            crate::commands::hq_core_state::classify_rescue_exit_failure(
+                &tail,
+                crate::commands::hq_core_state::CoreUpdateNpxResolution {
+                    resolved: true,
+                    source: "system",
+                },
+            ),
+            crate::commands::hq_core_state::RescueFailureCategory::DiskFull
+        );
+    }
+
+    #[test]
     fn staging_index_cache_is_fresh_inside_ttl() {
         let built_at = Instant::now();
         let ttl = Duration::from_secs(10 * 60);

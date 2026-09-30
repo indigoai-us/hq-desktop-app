@@ -223,6 +223,11 @@
       tool: "claude" | "codex",
     ) => Promise<{ ok: boolean; reason?: string }>;
     /**
+     * Ask the host to (re-)probe `detect_ai_tools`. Called lazily by the
+     * New bot wizard on mount so the probe never runs at app boot (#1152).
+     */
+    onrequestaitools?: () => void;
+    /**
      * Backoff between failed company-roster fetches (tests shorten it). The
      * default is bounded; a roster that keeps failing stops retrying.
      */
@@ -266,6 +271,7 @@
     aiTools = null,
     onopenassistant,
     onassistedinstall,
+    onrequestaitools,
     rosterRetryDelaysMs,
   }: WorkShellProps = $props();
 
@@ -1012,6 +1018,7 @@
       {aiTools}
       {onopenassistant}
       {onassistedinstall}
+      {onrequestaitools}
     />
   {/key}
   {#if externalLinkError}

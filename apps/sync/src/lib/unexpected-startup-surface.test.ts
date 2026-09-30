@@ -25,6 +25,71 @@ describe('unexpectedSurfaceForState', () => {
     expect(unexpectedSurfaceForState('NeedsInstall', false, installed)).toBe('onboarding');
   });
 
+  it('does not report the consent-only first-run step after an updater restart', () => {
+    for (const installCompleted of [true, false]) {
+      const incompleteConsent = Object.assign(
+        {
+          installCompleted,
+          firstRunCompleted: false,
+          installInProgress: false,
+          manifestIncomplete: false,
+          hadMachineId: true,
+          hqRootValid: true,
+        },
+        { consentAnswered: false },
+      );
+      expect(
+        unexpectedSurfaceForState('InstalledFirstRun', true, incompleteConsent),
+      ).toBe(null);
+    }
+
+    const inconsistentAnsweredConsent = Object.assign(
+      {
+        installCompleted: true,
+        firstRunCompleted: false,
+        installInProgress: false,
+        manifestIncomplete: false,
+        hadMachineId: true,
+        hqRootValid: true,
+      },
+      { consentAnswered: true },
+    );
+    expect(
+      unexpectedSurfaceForState('InstalledFirstRun', true, inconsistentAnsweredConsent),
+    ).toBe('onboarding');
+  });
+
+  it('does not report the expected deleted-root recovery onboarding', () => {
+    const missingRootRecovery = Object.assign(
+      {
+        installCompleted: false,
+        firstRunCompleted: true,
+        installInProgress: false,
+        manifestIncomplete: false,
+        hadMachineId: true,
+        hqRootValid: false,
+      },
+      { hqRootMissing: true },
+    );
+
+    expect(unexpectedSurfaceForState('NeedsInstall', false, missingRootRecovery)).toBe(null);
+
+    const unconfirmedMissingRoot = Object.assign(
+      {
+        installCompleted: false,
+        firstRunCompleted: true,
+        installInProgress: false,
+        manifestIncomplete: false,
+        hadMachineId: true,
+        hqRootValid: false,
+      },
+      { hqRootMissing: false },
+    );
+    expect(
+      unexpectedSurfaceForState('NeedsInstall', false, unconfirmedMissingRoot),
+    ).toBe('onboarding');
+  });
+
   it('keeps InstalledFirstRun reportable when older setup markers are absent', () => {
     expect(
       unexpectedSurfaceForState('InstalledFirstRun', false, {

@@ -202,6 +202,7 @@ fn setup_startup_surfaces(
 ) -> Result<(), Box<dyn std::error::Error>> {
     tray::setup_tray(app)?;
     crate::recovery::on_startup(app);
+    crate::recovery::spawn_runtime_stall_sentinel();
 
     if first_run {
         tray::show_window_centered(app);

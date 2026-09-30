@@ -21,7 +21,7 @@ export const APPEARANCE_REQUEST_EVENT = "hq:appearance-request";
 export const APPEARANCE_CHANGE_EVENT = "hq:appearance-change";
 export const WINDOW_TRANSPARENCY_DATASET_KEY = "windowTransparency";
 
-export const DEFAULT_WINDOW_TRANSPARENCY = 65;
+export const DEFAULT_WINDOW_TRANSPARENCY = 0;
 export const MIN_WINDOW_TRANSPARENCY = 0;
 export const MAX_WINDOW_TRANSPARENCY = 100;
 export const MIN_WINDOW_OPACITY = 0;
@@ -30,13 +30,10 @@ export const MAX_WINDOW_OPACITY = 100;
 /**
  * Floor of the user-facing opacity slider.
  *
- * It MUST be able to represent the shipped default. `DEFAULT_WINDOW_TRANSPARENCY`
- * is 65, i.e. opacity 35 — a 50 floor made the default unrepresentable, so a
- * fresh install seeded the slider at 50 and the first drag jumped the window.
- * Derived from the default so the two can never drift apart again.
+ * Keep the existing minimum opacity supported by the settings host. The fresh
+ * install default is independent: it is fully opaque and lies at the top end.
  */
-export const MIN_SLIDER_WINDOW_OPACITY =
-  MAX_WINDOW_OPACITY - DEFAULT_WINDOW_TRANSPARENCY;
+export const MIN_SLIDER_WINDOW_OPACITY = 35;
 export const MAX_SLIDER_WINDOW_OPACITY = MAX_WINDOW_OPACITY;
 
 export const MIN_DESKTOP_ZOOM = 0.8;

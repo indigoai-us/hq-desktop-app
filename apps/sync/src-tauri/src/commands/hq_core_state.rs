@@ -425,6 +425,8 @@ pub(crate) struct CoreUpdateRescueTelemetry {
     pub(crate) node_source: &'static str,
     pub(crate) node_version: String,
     pub(crate) disk_free_bucket: &'static str,
+    pub(crate) snapshot_required_gib_bucket: &'static str,
+    pub(crate) snapshot_available_gib_bucket: &'static str,
     pub(crate) root_on_synced_folder: &'static str,
     pub(crate) network_probe: &'static str,
     pub(crate) attempt_number: u32,
@@ -447,6 +449,8 @@ impl Default for CoreUpdateRescueTelemetry {
             node_source: "unknown",
             node_version: "unknown".to_string(),
             disk_free_bucket: "unknown",
+            snapshot_required_gib_bucket: "unknown",
+            snapshot_available_gib_bucket: "unknown",
             root_on_synced_folder: "unknown",
             network_probe: "unknown",
             attempt_number: 1,
@@ -499,10 +503,19 @@ impl CoreUpdateRescueTelemetry {
         attempt_number: u32,
         probe_results: CoreUpdateToolProbeResults,
     ) -> Self {
-        let rescue_error_class = raw
-            .lines()
-            .find_map(core_update_rescue_error_class)
-            .unwrap_or("unknown");
+        let is_explicit_disk_full = raw.lines().any(|line| {
+            line.trim() == "HQ_RESCUE_FAILURE_KIND=disk_full"
+                || core_update_is_disk_full_diagnostic_line(line)
+        });
+        let rescue_error_class = if is_explicit_disk_full
+            && classify_rescue_stderr_failure(raw) == RescueFailureCategory::DiskFull
+        {
+            "insufficient-space"
+        } else {
+            raw.lines()
+                .find_map(core_update_rescue_error_class)
+                .unwrap_or("unknown")
+        };
         let stage_markers = core_update_stage_markers(raw);
         // The rescue script's `==>` stream includes headings as well as stage
         // markers. Keep the breadcrumb history, but choose the last recognized
@@ -520,9 +533,17 @@ impl CoreUpdateRescueTelemetry {
         };
         let rsync_diagnostic =
             hq_telemetry::classify_core_update_rsync_diagnostic(raw, rescue_step == "rsync");
-        let first_error_line = raw.lines().find_map(|line| {
-            core_update_rescue_error_class(line).map(|_| line.trim().chars().take(240).collect())
-        });
+        let first_error_line = if rescue_error_class == "insufficient-space" {
+            raw.lines()
+                .find_map(core_update_redact_snapshot_capacity_line)
+        } else {
+            raw.lines().find_map(|line| {
+                core_update_rescue_error_class(line)
+                    .map(|_| line.trim().chars().take(240).collect())
+            })
+        };
+        let (snapshot_required_gib_bucket, snapshot_available_gib_bucket) =
+            core_update_snapshot_capacity_buckets(raw);
 
         let mut telemetry = Self {
             rescue_step,
@@ -537,6 +558,8 @@ impl CoreUpdateRescueTelemetry {
             node_source: core_update_node_source(),
             node_version: core_update_tool_version(raw, "node", "node_version"),
             disk_free_bucket: core_update_disk_free_bucket(raw),
+            snapshot_required_gib_bucket,
+            snapshot_available_gib_bucket,
             root_on_synced_folder: core_update_synced_folder(raw),
             network_probe: core_update_network_probe(raw, rescue_error_class),
             attempt_number: core_update_attempt_number(raw, attempt_number),
@@ -811,6 +834,9 @@ fn core_update_rescue_step_from_raw(raw: &str, error_class: &str) -> &'static st
 }
 
 fn core_update_rescue_error_class(line: &str) -> Option<&'static str> {
+    if line.trim() == "HQ_RESCUE_FAILURE_KIND=disk_full" {
+        return Some("insufficient-space");
+    }
     let lower = line.to_ascii_lowercase();
     let trimmed = lower.trim_start();
     if let Some(class) = trimmed.strip_prefix("hq_rescue_clone_failure_class=") {
@@ -891,6 +917,116 @@ fn core_update_rescue_error_class(line: &str) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+fn core_update_is_disk_full_diagnostic_line(line: &str) -> bool {
+    line.trim_start()
+        .to_ascii_lowercase()
+        .starts_with("error: insufficient free space for safety snapshot (need ")
+}
+
+fn core_update_snapshot_capacity_buckets(raw: &str) -> (&'static str, &'static str) {
+    for line in raw.lines() {
+        if !core_update_is_disk_full_diagnostic_line(line) {
+            continue;
+        }
+        let required = core_update_snapshot_size_bucket(line, "need");
+        let available = core_update_snapshot_size_bucket(line, "have");
+        if let (Some(required), Some(available)) = (required, available) {
+            return (required, available);
+        }
+    }
+    ("unknown", "unknown")
+}
+
+fn core_update_snapshot_size_bucket(line: &str, label: &str) -> Option<&'static str> {
+    let lower = line.to_ascii_lowercase();
+    let value_start = lower.split_once(&format!("{label} "))?.1;
+    let digit_end = value_start
+        .char_indices()
+        .take_while(|(_, character)| character.is_ascii_digit() || *character == ',')
+        .map(|(index, character)| index + character.len_utf8())
+        .last()?;
+    let digits: String = value_start[..digit_end]
+        .chars()
+        .filter(|character| *character != ',')
+        .collect();
+    if digits.is_empty() {
+        return None;
+    }
+    let amount = digits.parse::<u64>().ok()?;
+    let remainder = value_start[digit_end..].trim_start();
+    if remainder.starts_with("gib") {
+        let suffix = remainder[3..].trim_start();
+        if !suffix.is_empty()
+            && !suffix
+                .chars()
+                .next()
+                .is_some_and(|character| matches!(character, '.' | ',' | ')'))
+        {
+            return None;
+        }
+        return Some(core_update_snapshot_gib_bucket(amount));
+    }
+    if label == "need" && !remainder.starts_with("bytes") {
+        return None;
+    }
+    if label == "have" && !remainder.starts_with("bytes") && !remainder.starts_with(')') {
+        return None;
+    }
+    if remainder.starts_with("bytes") {
+        let suffix = remainder[5..].trim_start();
+        if !suffix.is_empty()
+            && !suffix
+                .chars()
+                .next()
+                .is_some_and(|character| matches!(character, '.' | ',' | ')'))
+        {
+            return None;
+        }
+    }
+    let gib_bytes = 1024_u64 * 1024 * 1024;
+    let bucket = if amount < 5 * gib_bytes {
+        "<5G"
+    } else if amount < 10 * gib_bytes {
+        "5-10G"
+    } else if amount < 20 * gib_bytes {
+        "10-20G"
+    } else {
+        "20G+"
+    };
+    Some(bucket)
+}
+
+fn core_update_snapshot_gib_bucket(gib: u64) -> &'static str {
+    if gib < 5 {
+        "<5G"
+    } else if gib < 10 {
+        "5-10G"
+    } else if gib < 20 {
+        "10-20G"
+    } else {
+        "20G+"
+    }
+}
+
+fn core_update_redact_snapshot_capacity_line(line: &str) -> Option<String> {
+    if !core_update_is_disk_full_diagnostic_line(line) {
+        return None;
+    }
+    let (required, available) = core_update_snapshot_capacity_buckets(line);
+    Some(format!(
+        "error: insufficient free space for safety snapshot (need {required}, have {available})."
+    ))
+}
+
+fn core_update_redact_snapshot_capacity_values(raw: &str) -> String {
+    raw.lines()
+        .map(|line| {
+            core_update_redact_snapshot_capacity_line(line).unwrap_or_else(|| line.to_string())
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn core_update_disk_free_bucket(raw: &str) -> &'static str {
@@ -1256,6 +1392,12 @@ const SPAWN_ERROR_PATTERNS: &[RescueStderrPattern] = &[
 ];
 
 fn classify_rescue_stderr_failure(stderr: &str) -> RescueFailureCategory {
+    if stderr
+        .lines()
+        .any(|line| line.trim() == "HQ_RESCUE_FAILURE_KIND=disk_full")
+    {
+        return RescueFailureCategory::DiskFull;
+    }
     let stderr = stderr.to_ascii_lowercase();
     if let Some(category) = stderr.lines().find_map(|line| {
         match line.strip_prefix("hq_rescue_failure_kind=").map(str::trim) {
@@ -1298,6 +1440,10 @@ fn classify_rescue_stderr_failure(stderr: &str) -> RescueFailureCategory {
 
     if stderr.contains("rsync error:") && stderr.contains("were not transferred") {
         return RescueFailureCategory::RsyncPartialTransfer;
+    }
+
+    if stderr.lines().any(core_update_is_disk_full_diagnostic_line) {
+        return RescueFailureCategory::DiskFull;
     }
 
     RESCUE_STDERR_PATTERNS
@@ -2408,6 +2554,14 @@ fn send_core_update_failure_report(
                 sentry_scope.set_tag("node_version", report.rescue_telemetry.node_version.clone());
                 sentry_scope.set_tag("disk_free_bucket", report.rescue_telemetry.disk_free_bucket);
                 sentry_scope.set_tag(
+                    "snapshot_required_gib_bucket",
+                    report.rescue_telemetry.snapshot_required_gib_bucket,
+                );
+                sentry_scope.set_tag(
+                    "snapshot_available_gib_bucket",
+                    report.rescue_telemetry.snapshot_available_gib_bucket,
+                );
+                sentry_scope.set_tag(
                     "root_on_synced_folder",
                     report.rescue_telemetry.root_on_synced_folder,
                 );
@@ -2512,6 +2666,7 @@ fn core_update_rescue_error_class_for_category(category: RescueFailureCategory) 
         RescueFailureCategory::CloneFailed => "clone_failed",
         RescueFailureCategory::NpxResolveFailed => "npx_resolve_failed",
         RescueFailureCategory::RestoreSymlinkRace => "restore_symlink_race",
+        RescueFailureCategory::DiskFull => "insufficient-space",
         _ => "unknown",
     }
 }
@@ -2532,7 +2687,18 @@ fn core_update_sentry_failure_report(
     let category_step = if details.pre_rescue_materialization {
         "npm-cache"
     } else if details.rescue_telemetry.is_some() || details.rescue_stderr_tail.is_some() {
-        core_update_rescue_step_for_category(details.rescue_failure_category)
+        if details.rescue_failure_category == RescueFailureCategory::DiskFull {
+            if details
+                .rescue_stderr_tail
+                .is_some_and(|tail| tail.lines().any(core_update_is_disk_full_diagnostic_line))
+            {
+                "snapshot"
+            } else {
+                "unknown"
+            }
+        } else {
+            core_update_rescue_step_for_category(details.rescue_failure_category)
+        }
     } else {
         "unknown"
     };
@@ -2552,9 +2718,10 @@ fn core_update_sentry_failure_report(
         exit_code,
         error_kind: core_update_sentry_error_kind(error_kind),
         error_category: details.rescue_failure_category,
-        rescue_stderr_tail: details
-            .rescue_stderr_tail
-            .map(hq_telemetry::redact_core_update_diagnostic_tail),
+        rescue_stderr_tail: details.rescue_stderr_tail.map(|tail| {
+            let redacted = hq_telemetry::redact_core_update_diagnostic_tail(tail);
+            core_update_redact_snapshot_capacity_values(&redacted)
+        }),
         rescue_telemetry,
         npx_resolution: details.npx_resolution,
         managed_git_retry: details.managed_git_retry,
@@ -6467,6 +6634,131 @@ mod tests {
             crate::commands::version_gate::DESKTOP_PLATFORM_VALUES.contains(&platform),
             "platform must remain in the closed desktop vocabulary"
         );
+    }
+
+    #[test]
+    fn disk_full_rescue_marker_maps_to_explicit_snapshot_class() {
+        let stderr = concat!(
+            "error: insufficient free space for safety snapshot (need 6442450944 bytes, have 5368709120).\n",
+            "HQ_RESCUE_FAILURE_KIND=disk_full\n",
+        );
+
+        let category = classify_rescue_stderr_failure(stderr);
+        assert_eq!(category, RescueFailureCategory::DiskFull);
+        assert_eq!(core_update_rescue_step_for_category(category), "unknown");
+        assert_eq!(
+            core_update_rescue_error_class_for_category(category),
+            "insufficient-space"
+        );
+
+        let telemetry = CoreUpdateRescueTelemetry::from_raw(stderr, 1);
+        assert_eq!(telemetry.rescue_error_class, "insufficient-space");
+        assert_eq!(telemetry.snapshot_required_gib_bucket, "5-10G");
+        assert_eq!(telemetry.snapshot_available_gib_bucket, "5-10G");
+        assert_eq!(
+            core_update_snapshot_capacity_buckets(
+                "error: insufficient free space for safety snapshot (need 5368709120 bytes, have 4294967296)."
+            ),
+            ("5-10G", "<5G")
+        );
+        assert_eq!(
+            classify_rescue_stderr_failure("HQ_RESCUE_FAILURE_KIND=unrecognized_future_marker"),
+            RescueFailureCategory::Unknown
+        );
+        assert_eq!(
+            classify_rescue_stderr_failure(
+                "warning: unrelated setup failed after echoing 'error: insufficient free space for safety snapshot (need 2 bytes, have 1)'"
+            ),
+            RescueFailureCategory::Unknown
+        );
+    }
+
+    #[test]
+    fn snapshot_capacity_buckets_accept_gib_and_byte_diagnostics() {
+        assert_eq!(
+            core_update_snapshot_capacity_buckets(
+                "error: insufficient free space for safety snapshot (need 32 GiB, have 3 GiB)."
+            ),
+            ("20G+", "<5G")
+        );
+        assert_eq!(
+            core_update_snapshot_capacity_buckets(
+                "error: insufficient free space for safety snapshot (need 6442450944 bytes, have 5368709120)."
+            ),
+            ("5-10G", "5-10G")
+        );
+    }
+
+    #[test]
+    fn generic_disk_full_failure_keeps_clone_rescue_step() {
+        let stderr = "==> Cloning HQ root ...\nerror: no space left on device\nHQ_RESCUE_FAILURE_KIND=disk_full\n";
+        let telemetry = CoreUpdateRescueTelemetry::from_raw(stderr, 1);
+        let report = core_update_sentry_failure_report(
+            "manual",
+            Channel::Release,
+            Some(1),
+            "rescue_exit",
+            CoreUpdateFailureDetails {
+                rescue_stderr_tail: Some(stderr),
+                rescue_telemetry: Some(&telemetry),
+                rescue_failure_category: RescueFailureCategory::DiskFull,
+                pre_rescue_materialization: false,
+                npx_resolution: None,
+                managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
+            },
+        );
+        assert_eq!(report.rescue_telemetry.rescue_step, "clone");
+    }
+
+    #[test]
+    fn disk_full_sentry_event_uses_only_bounded_capacity_buckets() {
+        let _test_lock = CORE_UPDATE_SENTRY_TEST_LOCK.lock().unwrap();
+        reset_core_update_sentry_signatures_for_test();
+        let stderr = concat!(
+            "error: insufficient free space for safety snapshot (need 6442450944 bytes, have 5368709120).\n",
+            "HQ_RESCUE_FAILURE_KIND=disk_full\n",
+        );
+        let telemetry = CoreUpdateRescueTelemetry::from_raw(stderr, 1);
+        let report = core_update_sentry_failure_report(
+            "manual",
+            Channel::Release,
+            Some(1),
+            "rescue_exit",
+            CoreUpdateFailureDetails {
+                rescue_stderr_tail: Some(stderr),
+                rescue_telemetry: Some(&telemetry),
+                rescue_failure_category: RescueFailureCategory::DiskFull,
+                pre_rescue_materialization: false,
+                npx_resolution: None,
+                managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
+            },
+        );
+        let events =
+            captured_dispatched_core_update_events(&["Desktop Core update failed"], || {
+                send_core_update_failure_report(report, 0);
+            });
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].tags["errorCategory"], "disk-full");
+        assert_eq!(events[0].tags["rescue_step"], "snapshot");
+        assert_eq!(events[0].tags["rescue_error_class"], "insufficient-space");
+        assert_eq!(events[0].tags["snapshot_required_gib_bucket"], "5-10G");
+        assert_eq!(events[0].tags["snapshot_available_gib_bucket"], "5-10G");
+        let tail = events[0].extra["rescueStderrTail"].as_str().unwrap();
+        assert!(tail.contains("need 5-10G, have 5-10G"));
+        assert!(!tail.contains("6442450944"));
+        assert!(!tail.contains("5368709120"));
+        let reason = events[0].extra["rescueErrorReason"].as_str().unwrap();
+        assert!(reason.contains("need 5-10G, have 5-10G"));
+        assert!(!reason.contains("6442450944"));
+        assert!(!reason.contains("5368709120"));
+
+        let malformed = core_update_redact_snapshot_capacity_line(
+            "error: insufficient free space for safety snapshot (need 123456789 bytes, have unknown).",
+        )
+        .unwrap();
+        assert!(malformed.contains("need unknown, have unknown"));
+        assert!(!malformed.contains("123456789"));
     }
 
     #[test]
