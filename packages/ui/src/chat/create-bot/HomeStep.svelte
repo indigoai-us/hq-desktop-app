@@ -84,6 +84,15 @@
      * commands the setup assistant uses.
      */
     onassistedinstall?: (tool: CodingTool) => Promise<InstallOutcome>;
+    /**
+     * Ask the host to (re-)probe `detect_ai_tools`. Called on mount so the
+     * check is lazy — it runs when the wizard actually needs it, not on
+     * every app open. The parent updates `aiTools` when the probe lands;
+     * `null` while it is in flight leaves InstallChoice's neutral
+     * "Checking…" line on screen with the retry ("Check again") still
+     * clickable, so the wizard is never blocked.
+     */
+    onrequestaitools?: () => void;
   }
 
   let {
@@ -104,7 +113,15 @@
     hqFolderPath = "",
     onopenassistant,
     onassistedinstall,
+    onrequestaitools,
   }: Props = $props();
+
+  // Lazy probe: only the wizard's own mount triggers `detect_ai_tools`,
+  // never the app's boot. Fires exactly once per open — the parent's
+  // `onrecheck` handles subsequent retries.
+  onMount(() => {
+    if (aiTools == null) onrequestaitools?.();
+  });
 
   /** Runtime whose inline sign-in is open. */
   let signingIn = $state<BotRuntime | null>(null);
@@ -282,7 +299,10 @@
           disabled={disabled}
           onopenassistant={onopenassistant}
           oninstall={(tool) => onassistedinstall(tool)}
-          onrecheck={async () => void (await onrecheck())}
+          onrecheck={async () => {
+            onrequestaitools?.();
+            await onrecheck();
+          }}
         />
       {:else if draftStatus}
         <p

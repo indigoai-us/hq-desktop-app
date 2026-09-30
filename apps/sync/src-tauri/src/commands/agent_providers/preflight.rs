@@ -85,7 +85,7 @@ pub async fn agent_session_preflight() -> Result<Preflight, String> {
         || {
             let hq_root = resolve_hq_folder_path()?;
             let setup = probe_hq_setup(&hq_root);
-            let tools = crate::commands::ai_tools::detect_ai_tools();
+            let tools = crate::commands::ai_tools::detect_ai_tools_blocking();
             let (entries, _) = discover_local_companies(&hq_root);
             Ok::<_, String>((hq_root, setup, tools, entries))
         },

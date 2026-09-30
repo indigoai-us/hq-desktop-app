@@ -8,14 +8,51 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
-- Internal desktop regression tests now exercise runtime behavior instead of reading implementation source text.
-- Startup reporting now treats pending first-run consent and confirmed
-  missing-root recovery as expected.
-
-- The existing sync plan-limit notice can report gated exposure and Upgrade-click measurements.
-
 - Auto-sync identifies its watch-runner lease owner, stops a live orphan desktop runner once, and defers to hq-daemon when it owns the root. Lease-busy exits do not count as repeated runner failures.
 - A watch runner that exits during orphan recovery now counts as stopped, so auto-sync can finish recovery instead of reporting a false runner failure.
+
+## [0.10.365] — 2026-09-30
+
+- Opening the desktop window no longer freezes the whole app for seconds
+  while it checks which AI tools are installed. That check (shell probes plus
+  a scan of the Claude, Codex, and Grok config folders) ran on the app's main
+  thread, so under disk load it stalled every window, every other request, and
+  the boot watchdog, which then showed the Recovery dialog. It now runs in the
+  background. The "HQ Work installed" probe moves off the main thread for the
+  same reason.
+
+- The Recovery dialog no longer stays open when the desktop window was only
+  slow to load. If the window finishes loading after the dialog appeared, the
+  dialog closes by itself, including when it finishes while Recovery is still
+  checking for updates. When the app notices its own timers running late
+  (the machine or the app was stalled), it waits an extra ten seconds before
+  showing Recovery instead of alarming right away. The log now records how long
+  each window took to load and when the app's background runtime stalls, so a
+  slow open can be told apart from a broken one.
+
+- On Windows, template installs now use safe file-copy and junction fallbacks when symlink creation is unavailable.
+
+- Added desktop regression tests for adapter results and call-window URL target rejection.
+
+- First-time setup shows when it is checking for AI tools instead of waiting silently.
+
+## [0.10.364] — 2026-09-30
+
+- The desktop app no longer checks which AI tools are installed every time it opens; it checks when you create a bot or run setup.
+
+- On macOS, HQ Sync restarts after an abnormal exit and waits at least 30
+  seconds between crash restarts. Existing enabled LaunchAgents are refreshed
+  on app startup, and the updater handoff avoids a duplicate restart.
+
+- Internal desktop regression tests now exercise runtime behavior instead of reading implementation source text.
+- Core update failures caused by low snapshot space now report a dedicated
+  diagnostic class and coarse required/available space buckets.
+
+- Startup reporting now treats pending first-run consent and confirmed
+  missing-root recovery as expected.
+- Desktop setup continues to report installation failures after an internal error interrupts its diagnostic cache.
+
+- The existing sync plan-limit notice can report gated exposure and Upgrade-click measurements.
 
 ## [0.10.363] — 2026-09-30
 
