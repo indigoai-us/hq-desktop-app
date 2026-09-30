@@ -941,34 +941,72 @@ fn core_update_snapshot_capacity_buckets(raw: &str) -> (&'static str, &'static s
 fn core_update_snapshot_size_bucket(line: &str, label: &str) -> Option<&'static str> {
     let lower = line.to_ascii_lowercase();
     let value_start = lower.split_once(&format!("{label} "))?.1;
-    let digits: String = value_start
+    let digit_end = value_start
+        .char_indices()
+        .take_while(|(_, character)| character.is_ascii_digit() || *character == ',')
+        .map(|(index, character)| index + character.len_utf8())
+        .last()?;
+    let digits: String = value_start[..digit_end]
         .chars()
-        .take_while(|character| character.is_ascii_digit() || *character == ',')
         .filter(|character| *character != ',')
         .collect();
     if digits.is_empty() {
         return None;
     }
-    let bytes = digits.parse::<u64>().ok()?;
-    let remainder = value_start
-        .trim_start_matches(|character: char| character.is_ascii_digit() || character == ',');
-    let remainder = remainder.trim_start();
+    let amount = digits.parse::<u64>().ok()?;
+    let remainder = value_start[digit_end..].trim_start();
+    if remainder.starts_with("gib") {
+        let suffix = remainder[3..].trim_start();
+        if !suffix.is_empty()
+            && !suffix
+                .chars()
+                .next()
+                .is_some_and(|character| matches!(character, '.' | ',' | ')'))
+        {
+            return None;
+        }
+        return Some(core_update_snapshot_gib_bucket(amount));
+    }
     if label == "need" && !remainder.starts_with("bytes") {
         return None;
     }
     if label == "have" && !remainder.starts_with("bytes") && !remainder.starts_with(')') {
         return None;
     }
-    let gib = bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-    Some(if gib < 5.0 {
+    if remainder.starts_with("bytes") {
+        let suffix = remainder[5..].trim_start();
+        if !suffix.is_empty()
+            && !suffix
+                .chars()
+                .next()
+                .is_some_and(|character| matches!(character, '.' | ',' | ')'))
+        {
+            return None;
+        }
+    }
+    let gib_bytes = 1024_u64 * 1024 * 1024;
+    let bucket = if amount < 5 * gib_bytes {
         "<5G"
-    } else if gib < 10.0 {
+    } else if amount < 10 * gib_bytes {
         "5-10G"
-    } else if gib < 20.0 {
+    } else if amount < 20 * gib_bytes {
         "10-20G"
     } else {
         "20G+"
-    })
+    };
+    Some(bucket)
+}
+
+fn core_update_snapshot_gib_bucket(gib: u64) -> &'static str {
+    if gib < 5 {
+        "<5G"
+    } else if gib < 10 {
+        "5-10G"
+    } else if gib < 20 {
+        "10-20G"
+    } else {
+        "20G+"
+    }
 }
 
 fn core_update_redact_snapshot_capacity_line(line: &str) -> Option<String> {
@@ -2602,8 +2640,7 @@ fn core_update_rescue_step_for_category(category: RescueFailureCategory) -> &'st
         RescueFailureCategory::SnapshotUnreadable
         | RescueFailureCategory::SnapshotExternalSymlink
         | RescueFailureCategory::SnapshotFailed
-        | RescueFailureCategory::SnapshotRecoveryRequired
-        | RescueFailureCategory::DiskFull => "snapshot",
+        | RescueFailureCategory::SnapshotRecoveryRequired => "snapshot",
         RescueFailureCategory::Auth
         | RescueFailureCategory::Network
         | RescueFailureCategory::Dns
@@ -2649,7 +2686,18 @@ fn core_update_sentry_failure_report(
     let category_step = if details.pre_rescue_materialization {
         "npm-cache"
     } else if details.rescue_telemetry.is_some() || details.rescue_stderr_tail.is_some() {
-        core_update_rescue_step_for_category(details.rescue_failure_category)
+        if details.rescue_failure_category == RescueFailureCategory::DiskFull {
+            if details
+                .rescue_stderr_tail
+                .is_some_and(|tail| tail.lines().any(core_update_is_disk_full_diagnostic_line))
+            {
+                "snapshot"
+            } else {
+                "unknown"
+            }
+        } else {
+            core_update_rescue_step_for_category(details.rescue_failure_category)
+        }
     } else {
         "unknown"
     };
@@ -6499,7 +6547,7 @@ mod tests {
 
         let category = classify_rescue_stderr_failure(stderr);
         assert_eq!(category, RescueFailureCategory::DiskFull);
-        assert_eq!(core_update_rescue_step_for_category(category), "snapshot");
+        assert_eq!(core_update_rescue_step_for_category(category), "unknown");
         assert_eq!(
             core_update_rescue_error_class_for_category(category),
             "insufficient-space"
@@ -6525,6 +6573,43 @@ mod tests {
             ),
             RescueFailureCategory::Unknown
         );
+    }
+
+    #[test]
+    fn snapshot_capacity_buckets_accept_gib_and_byte_diagnostics() {
+        assert_eq!(
+            core_update_snapshot_capacity_buckets(
+                "error: insufficient free space for safety snapshot (need 32 GiB, have 3 GiB)."
+            ),
+            ("20G+", "<5G")
+        );
+        assert_eq!(
+            core_update_snapshot_capacity_buckets(
+                "error: insufficient free space for safety snapshot (need 6442450944 bytes, have 5368709120)."
+            ),
+            ("5-10G", "5-10G")
+        );
+    }
+
+    #[test]
+    fn generic_disk_full_failure_keeps_clone_rescue_step() {
+        let stderr = "==> Cloning HQ root ...\nerror: no space left on device\nHQ_RESCUE_FAILURE_KIND=disk_full\n";
+        let telemetry = CoreUpdateRescueTelemetry::from_raw(stderr, 1);
+        let report = core_update_sentry_failure_report(
+            "manual",
+            Channel::Release,
+            Some(1),
+            "rescue_exit",
+            CoreUpdateFailureDetails {
+                rescue_stderr_tail: Some(stderr),
+                rescue_telemetry: Some(&telemetry),
+                rescue_failure_category: RescueFailureCategory::DiskFull,
+                pre_rescue_materialization: false,
+                npx_resolution: None,
+                managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
+            },
+        );
+        assert_eq!(report.rescue_telemetry.rescue_step, "clone");
     }
 
     #[test]
