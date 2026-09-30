@@ -72,7 +72,9 @@ describe("bundled service evidence lifetime", () => {
   });
 
   it("provides the bundled receipt and 90-day lifetime to the native host", () => {
-    const host = createNativeCallsHost(async () => undefined);
+    const host = createNativeCallsHost(async () => {
+      throw new Error("unexpected native invocation");
+    });
     expect(host.serviceEvidence).toBe(SERVICE_EVIDENCE);
     expect(host.evidenceMaxAgeMs).toBe(BUNDLED_EVIDENCE_MAX_AGE_MS);
     expect(host.evidenceMaxAgeMs).toBe(90 * 24 * 60 * 60 * 1000);
