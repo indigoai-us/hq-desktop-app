@@ -14130,11 +14130,10 @@ mod tests {
         );
         assert_eq!(data_source, Src::ReportRead);
         assert_eq!(report_source, Src::ReportRead);
-        let debug = format!("{report:?}");
-        assert!(debug.contains("js_heap_total_mb: Some(2)"));
-        assert!(debug.contains("external_memory_mb: Some(4)"));
-        assert!(debug.contains("scan_files_visited_bucket: Some(\"10k-99k\")"));
-        assert!(debug.contains("current_body_size_bucket: Some(\"64m-256m\")"));
+        assert_eq!(report.js_heap_total_mb, Some(2.0));
+        assert_eq!(report.external_memory_mb, Some(4.0));
+        assert_eq!(report.scan_files_visited_bucket.as_deref(), Some("10k-99k"));
+        assert_eq!(report.current_body_size_bucket.as_deref(), Some("64m-256m"));
     }
 
     #[test]
