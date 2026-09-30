@@ -30,6 +30,8 @@ import { hqProFailure, parseHqProErrorBody } from "../plan-limit.js";
 import { createCallsApi } from "../calls/api.js";
 import {
   CLAUDE_PROVIDER_FLAG,
+  HUMAN_ONLY_CONVERSATIONS_FLAG,
+  HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT,
   createFeatureFlagGate,
   createHqProFlagFetch,
   type FeatureFlagGate,
@@ -198,20 +200,25 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     whoami: () => this.hqProJson("GET", "/v1/identity/whoami"),
     isAdmin: () => this.call("is_admin"),
     hasFeature: (flag) =>
-      this.flags.resolve(flag, () =>
-        flag === CLAUDE_PROVIDER_FLAG
-          ? Promise.resolve(ok(false))
-          : this.call("has_feature", { flag }),
-      ),
+      flag === HUMAN_ONLY_CONVERSATIONS_FLAG
+        ? // Pinned per release; the registry cannot turn it off.
+          Promise.resolve(ok(HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT))
+        : this.flags.resolve(flag, () =>
+            flag === CLAUDE_PROVIDER_FLAG
+              ? Promise.resolve(ok(false))
+              : this.call("has_feature", { flag }),
+          ),
     subscribeFeature: (flag, onChange) =>
-      this.flags.subscribe(
-        flag,
-        () =>
-          flag === CLAUDE_PROVIDER_FLAG
-            ? Promise.resolve(ok(false))
-            : this.call("has_feature", { flag }),
-        onChange,
-      ),
+      flag === HUMAN_ONLY_CONVERSATIONS_FLAG
+        ? () => {}
+        : this.flags.subscribe(
+            flag,
+            () =>
+              flag === CLAUDE_PROVIDER_FLAG
+                ? Promise.resolve(ok(false))
+                : this.call("has_feature", { flag }),
+            onChange,
+          ),
     listWorkspaces: async () => {
       const result = await this.hqProJson<Json>("GET", "/membership/me");
       if (!result.ok) return result;

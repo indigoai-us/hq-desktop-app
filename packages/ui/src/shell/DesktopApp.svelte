@@ -1698,14 +1698,15 @@
   let cheatSheetOpen = $state(false);
 
   /**
-   * desktop.human-only-conversations — canary flag read at mount, refreshed
-   * whenever the flag registry publishes a new snapshot. A missing key,
-   * failed read, signed-out session, or offline registry all resolve to
-   * `false` (the safe default). Callers hide mesh / non-human messages in
+   * desktop.human-only-conversations: on by default. The desktop adapters
+   * pin the flag to `HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT` (true), so
+   * the initial state is `true` to avoid a first-paint flash of mesh rows.
+   * An adapter that answers `ok(false)` (or fails) still turns it off; the
+   * web adapter keeps the registry read. Callers hide mesh / non-human messages in
    * conversation views and reorder the sidebar by last human message when
    * this is true. See `packages/platform/src/humanMessage.ts` for the rule.
    */
-  let humanOnlyConversations = $state(false);
+  let humanOnlyConversations = $state(true);
   $effect(() => {
     const identity = adapter?.identity;
     if (!identity || typeof identity.hasFeature !== "function") return;

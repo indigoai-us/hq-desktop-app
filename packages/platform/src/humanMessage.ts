@@ -13,6 +13,11 @@
  *      is unspecified. A bot's reply to a DM/thread a human started with
  *      that bot (audience "both") is KEPT.
  *
+ * Callers can pass `{ inferFromUid: false }` to skip rule 3. The desktop
+ * timeline does this: an agent message with no audience tag is usually a
+ * reply to a person (bot DMs, the Setup channel), so only explicit signals
+ * hide it there.
+ *
  * Work-mesh rows detected by the conversation view via
  * `parseWorkSessionEvent` are always non-human — the view hides those
  * separately when the flag is on.
@@ -29,12 +34,20 @@ export interface HumanClassifiable {
 }
 
 /** True when this message renders for a human-only viewer. */
-export function isHumanMessage(msg: HumanClassifiable): boolean {
+export interface HumanClassifyOptions {
+  /** Apply rule 3 (uid-prefix fallback). Default true. */
+  inferFromUid?: boolean;
+}
+
+export function isHumanMessage(
+  msg: HumanClassifiable,
+  options: HumanClassifyOptions = {},
+): boolean {
   if (msg.isSystemEvent === true) return false;
   if (msg.isMeshEvent === true) return false;
   const audience = msg.audience ?? null;
   if (audience !== null && !HUMAN_AUDIENCES.has(audience)) return false;
-  if (audience === null) {
+  if (audience === null && options.inferFromUid !== false) {
     const uid = (msg.fromPersonUid ?? "").toLowerCase();
     if (uid && NON_HUMAN_UID_PREFIXES.some((p) => uid.startsWith(p))) {
       return false;

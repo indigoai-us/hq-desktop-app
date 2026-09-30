@@ -18,11 +18,35 @@ The release moves it under the version it ships in.
 
 - The Recovery dialog no longer stays open when the desktop window was only
   slow to load. If the window finishes loading after the dialog appeared, the
-  dialog closes by itself. When the app notices its own timers running late
+  dialog closes by itself, including when it finishes while Recovery is still
+  checking for updates. When the app notices its own timers running late
   (the machine or the app was stalled), it waits an extra ten seconds before
   showing Recovery instead of alarming right away. The log now records how long
   each window took to load and when the app's background runtime stalls, so a
   slow open can be told apart from a broken one.
+
+- On macOS, HQ Sync restarts after an abnormal exit and waits at least 30
+  seconds between crash restarts. Existing enabled LaunchAgents are refreshed
+  on app startup, and the updater handoff avoids a duplicate restart.
+
+- Internal desktop regression tests now exercise runtime behavior instead of reading implementation source text.
+- Core update failures caused by low snapshot space now report a dedicated
+  diagnostic class and coarse required/available space buckets.
+
+- Startup reporting now treats pending first-run consent and confirmed
+  missing-root recovery as expected.
+- Desktop setup continues to report installation failures after an internal error interrupts its diagnostic cache.
+
+- The existing sync plan-limit notice can report gated exposure and Upgrade-click measurements.
+
+## [0.10.363] — 2026-09-30
+
+- Opening a conversation no longer shows an empty pane when recent activity was hidden; older messages from people load automatically.
+
+## [0.10.362] — 2026-09-30
+
+- Conversations now hide work-mesh activity even when it is posted under a person's name, and the sidebar orders by messages people typed.
+- Channels and conversations now show only messages from people. Work-mesh activity (noted, started, and done lines), session cards, system events, and bot-only messages are hidden. A bot's reply in a conversation a person started still shows. A channel with only hidden activity shows "No messages yet".
 
 ## [0.10.361] — 2026-09-30
 
