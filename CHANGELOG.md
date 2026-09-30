@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - A stalled attachment upload or download in the Work app now ends with the usual upload or download error instead of staying open indefinitely.
+- Window opacity is reset to 100% once for existing installs, including anyone who had chosen a lower value. The theme is unchanged, and an opacity chosen after the update is kept.
 
 ## [0.10.367] — 2026-09-30
 
