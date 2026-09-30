@@ -77,6 +77,18 @@ describe("Work external URL handoffs", () => {
     vi.restoreAllMocks();
   });
 
+  it("opens every plan upgrade link shape hq-pro returns (hard-stop US-019)", () => {
+    // This general handoff has no host allowlist, so the upgrade host needs no
+    // entry here; the refusal parser in @hq/platform owns the hq-pro host list.
+    for (const raw of [
+      "https://hq.computer/billing",
+      "https://hq.computer/companies/acme/billing?upgrade=1",
+      "https://hq.computer/signin?callbackUrl=%2Fapi%2Fcompanies%2Fcmp_1%2Fbilling%2Fupgrade",
+    ]) {
+      expect(approvedWorkExternalUrl(raw)).toBe(new URL(raw).toString());
+    }
+  });
+
   it("refuses unsafe, malformed, non-HTTPS, and credentialed URLs before they can reach an opener", () => {
     const windowOpen = vi
       .spyOn(window, "open")

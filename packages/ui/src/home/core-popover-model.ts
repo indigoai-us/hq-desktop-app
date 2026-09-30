@@ -72,6 +72,17 @@ export interface BuildCorePopoverInput {
   syncCaption?: string | null;
   /** Sync trouble inputs for the notice rows (PL-02). */
   notices?: BuildCoreNoticeRowsInput;
+  /**
+   * Companies whose uploads are paused by a plan limit (hard-stop-readiness
+   * US-019), from the sync journal. Non-empty turns an otherwise healthy
+   * "All synced" header into "Uploads paused".
+   */
+  uploadsPaused?: readonly CoreUploadsPausedInput[];
+}
+
+export interface CoreUploadsPausedInput {
+  company: string;
+  upgradeUrl?: string | null;
 }
 
 // ── Outputs ──────────────────────────────────────────────────────────────────
@@ -118,6 +129,36 @@ export interface CorePopoverViewModel {
   syncHeader: CorePopoverSyncHeader;
   /** Sync trouble rows, in tray-popover order (PL-02). */
   notices: CoreNoticeRow[];
+  /** One row per company whose uploads are paused by a plan limit. */
+  uploadsPaused: CoreUploadsPausedRow[];
+}
+
+export interface CoreUploadsPausedRow {
+  company: string;
+  title: string;
+  body: string;
+  /** Upgrade link to open; null → no upgrade action. */
+  upgradeUrl: string | null;
+}
+
+/** Rows for the plan-limit upload pause, in the order the journal lists them. */
+export function buildUploadsPausedRows(
+  input: readonly CoreUploadsPausedInput[] | null | undefined,
+): CoreUploadsPausedRow[] {
+  const rows: CoreUploadsPausedRow[] = [];
+  const seen = new Set<string>();
+  for (const entry of input ?? []) {
+    const company = (entry.company ?? "").trim();
+    if (!company || seen.has(company)) continue;
+    seen.add(company);
+    rows.push({
+      company,
+      title: `Uploads paused for ${company}`,
+      body: "New files are not uploading because this company is over its plan limit. Downloads and edits to synced files still work.",
+      upgradeUrl: entry.upgradeUrl?.trim() || null,
+    });
+  }
+  return rows;
 }
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
@@ -206,6 +247,8 @@ export function corePillDotTone(input: {
   /** PL-01: manifest / cloud trouble also lights the pill. */
   manifestError?: string | null;
   cloudReachable?: boolean;
+  /** Companies whose uploads are paused by a plan limit (US-019). */
+  uploadsPausedCount?: number;
 }): "ok" | "warn" | "active" {
   if ((input.conflictCount ?? 0) > 0) return "warn";
   const s = (input.syncState ?? "").toLowerCase();
@@ -214,6 +257,7 @@ export function corePillDotTone(input: {
   if (input.cloudPaused) return "warn";
   if ((input.manifestError ?? "").trim()) return "warn";
   if (input.cloudReachable === false) return "warn";
+  if ((input.uploadsPausedCount ?? 0) > 0 && s !== "syncing") return "warn";
   // A healthy run in flight is not trouble — it gets its own quiet tone so the
   // pill reads as "something is happening", never as "something is wrong".
   if (s === "syncing") return "active";
@@ -351,6 +395,7 @@ export function buildCorePopoverViewModel(
   const packs = [...(input.packs ?? [])];
   const packsLoading = Boolean(input.packsLoading) && packs.length === 0;
   const cloudPaused = Boolean(input.cloudPaused);
+  const uploadsPaused = buildUploadsPausedRows(input.uploadsPaused);
 
   return {
     conflictRows,
@@ -383,7 +428,9 @@ export function buildCorePopoverViewModel(
         conflictCount,
         input.notices?.conflictCount ?? 0,
       ),
+      uploadsPausedCount: uploadsPaused.length,
     }),
+    uploadsPaused,
     notices: buildCoreNoticeRows({
       syncState: input.syncState,
       conflictCount,
@@ -449,7 +496,8 @@ export type CoreSyncPhase =
   | "conflict"
   | "error"
   | "auth-error"
-  | "setup-needed";
+  | "setup-needed"
+  | "uploads-paused";
 
 /** Header tone. `active` is the in-flight blue; `warn` is the amber already
  *  used by the drift pill and conflict card. No new colours. */
@@ -470,6 +518,8 @@ export function syncStateWord(phase: string | null | undefined): string {
       return "Sync paused";
     case "error":
       return "Needs attention";
+    case "uploads-paused":
+      return "Uploads paused";
     default:
       return "All synced";
   }
@@ -482,6 +532,7 @@ export function syncStateTone(phase: string | null | undefined): CoreSyncTone {
     case "auth-error":
     case "conflict":
     case "error":
+    case "uploads-paused":
       return "warn";
     default:
       return "ok";
@@ -521,6 +572,11 @@ export interface BuildCoreSyncHeaderInput {
    *  a journal that reports conflicts is not "All synced", whatever the
    *  event-stream phase says. A run in flight still wins — it is more recent. */
   conflictCount?: number;
+  /** Companies whose uploads are paused by a plan limit. > 0 turns an
+   *  otherwise idle read into "Uploads paused" (hard-stop US-019): a pass that
+   *  skipped refused files is not "All synced". A run in flight, an error, or
+   *  a conflict still wins — each is more urgent. */
+  uploadsPausedCount?: number;
 }
 
 export function buildCoreSyncHeader(
@@ -528,12 +584,15 @@ export function buildCoreSyncHeader(
 ): CorePopoverSyncHeader {
   const raw = (input.syncState ?? "idle").toLowerCase();
   const conflicts = Math.max(0, Math.floor(input.conflictCount ?? 0));
+  const paused = Math.max(0, Math.floor(input.uploadsPausedCount ?? 0));
   const phase =
     raw === "syncing" || raw === "auth-error" || raw === "error"
       ? raw
       : conflicts > 0
         ? "conflict"
-        : raw;
+        : paused > 0 && raw !== "conflict"
+          ? "uploads-paused"
+          : raw;
   const syncing = phase === "syncing";
   const caption = (input.syncCaption ?? "").trim();
   return {
