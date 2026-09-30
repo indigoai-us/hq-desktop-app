@@ -14,6 +14,9 @@
   interface Props {
     files: File[];
     error?: string | null;
+    /** Approved upgrade link for a plan-limit refusal (hard-stop US-018). */
+    upgradeUrl?: string | null;
+    onupgrade?: (url: string) => void;
     onremove: (index: number) => void;
     testid?: string;
   }
@@ -21,6 +24,8 @@
   let {
     files,
     error = null,
+    upgradeUrl = null,
+    onupgrade,
     onremove,
     testid = "composer-pending",
   }: Props = $props();
@@ -115,6 +120,16 @@
   {/each}
   {#if error}
     <span class="composer-attach-error">{error}</span>
+    {#if upgradeUrl && onupgrade}
+      <button
+        type="button"
+        class="composer-attach-upgrade"
+        data-testid="composer-attach-upgrade"
+        onclick={() => onupgrade?.(upgradeUrl)}
+      >
+        Upgrade plan
+      </button>
+    {/if}
   {/if}
 </div>
 
@@ -230,5 +245,16 @@
   .composer-attach-error {
     color: var(--t2, rgba(255, 255, 255, 0.56));
     font-size: 12px;
+  }
+
+  .composer-attach-upgrade {
+    border: 0;
+    background: none;
+    padding: 0;
+    color: var(--accent, #7aa2ff);
+    font: inherit;
+    font-size: 12px;
+    text-decoration: underline;
+    cursor: pointer;
   }
 </style>

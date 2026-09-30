@@ -56,10 +56,12 @@ pub struct LifecycleInputsHandle {
 pub struct StartupSetupEvidence {
     install_completed: bool,
     first_run_completed: bool,
+    consent_answered: bool,
     install_in_progress: bool,
     manifest_incomplete: bool,
     had_machine_id: bool,
     hq_root_valid: bool,
+    hq_root_missing: bool,
 }
 
 /// Setup evidence used by the frontend's unexpected-surface reporting boundary.
@@ -76,10 +78,12 @@ pub fn get_startup_setup_evidence(
     Some(StartupSetupEvidence {
         install_completed: inputs.install_completed,
         first_run_completed: inputs.first_run_completed,
+        consent_answered: inputs.consent_answered,
         install_in_progress: inputs.install_in_progress,
         manifest_incomplete: state.manifest_incomplete,
         had_machine_id: inputs.had_machine_id,
         hq_root_valid: inputs.hq_root_valid,
+        hq_root_missing: state.hq_root_probe == Some(HqRootProbe::Missing),
     })
 }
 
@@ -477,6 +481,9 @@ pub struct SetupStatus {
     /// machine set up before the welcome flow existed, or once the guided run
     /// finished. See `hq_desktop_core::lifecycle::welcome_setup_owed`.
     pub welcome_setup_owed: bool,
+    /// The desktop window's first-run guided tour was already shown here.
+    /// See `hq_desktop_core::lifecycle::welcome_tour_shown`.
+    pub welcome_tour_shown: bool,
 }
 
 #[tauri::command]
@@ -513,6 +520,7 @@ pub fn get_setup_status() -> SetupStatus {
         // the unavailable state that made launch conservative.
         welcome_setup_owed: !settings_unavailable
             && hq_desktop_core::lifecycle::welcome_setup_owed(&menubar, root_valid),
+        welcome_tour_shown: hq_desktop_core::lifecycle::welcome_tour_shown(&menubar),
     }
 }
 
@@ -531,6 +539,21 @@ pub fn mark_welcome_setup_complete() -> Result<(), String> {
                 Value::String(Utc::now().to_rfc3339()),
             ),
         ],
+    )
+}
+
+/// The desktop window's first-run guided tour started showing. Recorded as
+/// soon as it appears (not when it finishes) so a crash or quit mid-tour does
+/// not replay it on every launch. The command palette can still replay it.
+#[tauri::command]
+pub fn mark_welcome_tour_shown() -> Result<(), String> {
+    let path = paths::menubar_json_path()?;
+    hq_desktop_core::first_run::merge_menubar_flags(
+        &path,
+        &[(
+            hq_desktop_core::lifecycle::WELCOME_TOUR_SHOWN_KEY,
+            Value::Bool(true),
+        )],
     )
 }
 
@@ -828,15 +851,19 @@ mod tests {
         let evidence = StartupSetupEvidence {
             install_completed: false,
             first_run_completed: false,
+            consent_answered: false,
             install_in_progress: false,
             manifest_incomplete: true,
             had_machine_id: true,
             hq_root_valid: true,
+            hq_root_missing: false,
         };
         let value = serde_json::to_value(evidence).unwrap();
 
         assert_eq!(value["manifestIncomplete"], true);
         assert_eq!(value["installInProgress"], false);
+        assert_eq!(value["consentAnswered"], false);
+        assert_eq!(value["hqRootMissing"], false);
     }
 
 }

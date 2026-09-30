@@ -2,12 +2,14 @@
 //
 // US-002 — The consent write cannot silently fail.
 //
-// US-001 moved consent to its own blocking step (index 4) AFTER setup. US-002
-// makes the remote write a FOREGROUND operation whose failure is visible:
+// Product decision (2026-09-27): first-run onboarding asks the usage-data
+// question as a checkbox on the final (ready) screen and records the answer
+// when the person finishes from there. The write guarantees are unchanged and
+// now hold for that finish:
 //
 //   - AC1: the caller's person entity is guaranteed to exist before the POST
-//          (the step awaits `ensure_person_entity`), so the write cannot 404.
-//   - AC2/AC3: a failed remote write does NOT advance to `ready`; it surfaces a
+//          (the finish awaits `ensure_person_entity`), so the write cannot 404.
+//   - AC2/AC3: a failed remote write does NOT finish setup; it surfaces a
 //          retry affordance instead of being swallowed to the console.
 //   - AC4: an offline person can still finish setup — the answer is cached with
 //          provenance and reconciled later — without that being reported as a
@@ -15,8 +17,8 @@
 //
 // The local cache write still happens FIRST and still happens even when the
 // upload fails (the deliberate ordering that makes AC4 work). These tests mount
-// the real OnboardingWizard and drive it through the DOM, mirroring the US-001
-// story test idiom.
+// the real OnboardingWizard on the ready screen and drive it through the DOM,
+// mirroring the US-001 story test idiom.
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -44,13 +46,14 @@ vi.mock('@tauri-apps/plugin-http', () => ({
 import { flushSync, mount, tick, unmount } from 'svelte';
 import OnboardingWizard from '../../src/components/onboarding/OnboardingWizard.svelte';
 import {
-  CONSENT_STEP_INDEX,
   __resetWizardRouterCompletionForTests,
+  READY_STEP_INDEX,
 } from '../../src/lib/onboarding-wizard';
 import { TELEMETRY_CONSENT_VERSION } from '../../src/lib/consent-version';
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
+let onfinish: ReturnType<typeof vi.fn>;
 
 async function flush() {
   flushSync();
@@ -59,10 +62,12 @@ async function flush() {
   flushSync();
 }
 
-/** Flush several async boundaries — submitConsent awaits ensure_person_entity
+/** Flush several async boundaries — the finish awaits ensure_person_entity
  * then postOptIn, so the observable state settles a few microtasks later. */
 async function settle() {
   for (let i = 0; i < 6; i += 1) await flush();
+  await new Promise((r) => setTimeout(r, 20));
+  for (let i = 0; i < 4; i += 1) await flush();
 }
 
 /**
@@ -105,45 +110,37 @@ function stubInvoke() {
   });
 }
 
-async function mountAt(initialStep: number) {
+async function mountReady() {
+  onfinish = vi.fn();
   component = mount(OnboardingWizard, {
     target: host,
-    props: { initialStep, onfinish: () => {} },
+    props: { initialStep: READY_STEP_INDEX, onfinish },
   });
   await flush();
 }
 
-function consentPanel(): HTMLElement {
-  const panel = host.querySelector<HTMLElement>('[data-testid="onboarding-consent"]');
-  if (!panel) throw new Error('consent panel not found');
+function readyScreen(): HTMLElement {
+  const panel = host.querySelector<HTMLElement>('[data-testid="onboarding-summary"]');
+  if (!panel) throw new Error('ready screen not found');
   return panel;
 }
 
+/** Share is the default on the ready screen's checkbox; keep it on. */
 function chooseShare() {
-  const radios = Array.from(
-    consentPanel().querySelectorAll<HTMLInputElement>('input[type="radio"]'),
-  );
-  const share = radios[0];
-  share.checked = true;
-  share.dispatchEvent(new Event('change', { bubbles: true }));
+  const box = readyScreen().querySelector<HTMLInputElement>('[data-testid="ready-consent-share"]')!;
+  box.checked = true;
+  box.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
-function primaryContinue(): HTMLButtonElement {
-  const btn = consentPanel().querySelector<HTMLButtonElement>('button.btn-primary');
-  if (!btn) throw new Error('consent primary button not found');
+/** Finish from the ready screen: Open HQ Desktop. */
+function openDesktop(): HTMLButtonElement {
+  const btn = readyScreen().querySelector<HTMLButtonElement>('[data-testid="onboarding-open-desktop"]');
+  if (!btn) throw new Error('Open HQ Desktop not found');
   return btn;
 }
 
-function readyIsActive(): boolean {
-  const ready = host.querySelector<HTMLElement>('[data-testid="onboarding-summary"]');
-  return Boolean(ready && ready.classList.contains('on'));
-}
-
-function connectorImportIsActive(): boolean {
-  const connectorImport = host.querySelector<HTMLElement>(
-    '[data-testid="onboarding-connector-import"]',
-  );
-  return Boolean(connectorImport && connectorImport.classList.contains('on'));
+function finished(): boolean {
+  return onfinish.mock.calls.length > 0;
 }
 
 function postCalls() {
@@ -184,81 +181,81 @@ afterEach(() => {
 });
 
 describe('US-002 a failed remote write is visible and blocks advance', () => {
-  it('opt-in 500 shows a retry affordance and does NOT advance as successful (e2e)', async () => {
+  it('opt-in 500 shows a retry affordance and does NOT finish as successful (e2e)', async () => {
     postResult = { mode: 'reject', error: 'HTTP 500: internal server error' };
-    await mountAt(CONSENT_STEP_INDEX);
+    await mountReady();
     chooseShare();
     await flush();
 
-    primaryContinue().click();
+    openDesktop().click();
     await settle();
     // Give the cross-fade timer a chance too, so a false "advance" would show.
     await new Promise((r) => setTimeout(r, 400));
     await flush();
 
-    // Did NOT advance to ready.
-    expect(readyIsActive()).toBe(false);
+    // Did NOT finish.
+    expect(finished()).toBe(false);
     // A retry affordance is shown.
-    const retry = consentPanel().querySelector<HTMLButtonElement>(
+    const retry = readyScreen().querySelector<HTMLButtonElement>(
       '[data-testid="consent-retry"]',
     );
     expect(retry).not.toBeNull();
     expect(retry!.textContent).toMatch(/retry/i);
     // The error is surfaced to the user, not just logged.
     expect(
-      consentPanel().querySelector('[data-testid="consent-error"]'),
+      readyScreen().querySelector('[data-testid="consent-error"]'),
     ).not.toBeNull();
   });
 
-  it('retry after a failure re-attempts the upload and, on success, advances', async () => {
+  it('retry after a failure re-attempts the upload and, on success, finishes', async () => {
     postResult = { mode: 'reject', error: 'HTTP 503: service unavailable' };
-    await mountAt(CONSENT_STEP_INDEX);
+    await mountReady();
     chooseShare();
     await flush();
 
-    primaryContinue().click();
+    openDesktop().click();
     await settle();
-    expect(readyIsActive()).toBe(false);
+    expect(finished()).toBe(false);
     const firstAttempts = postCalls().length;
     expect(firstAttempts).toBeGreaterThanOrEqual(1);
 
     // The server recovers; the retry re-attempts using the cached answer.
     postResult = { mode: 'ok' };
-    const retry = consentPanel().querySelector<HTMLButtonElement>(
+    const retry = readyScreen().querySelector<HTMLButtonElement>(
       '[data-testid="consent-retry"]',
     )!;
     retry.click();
     await settle();
-    // A positive assertion: wait for the advance instead of sleeping past the
-    // cross-fade. Same outcome, returns as soon as it lands.
-    await vi.waitFor(() => expect(readyIsActive()).toBe(true), { timeout: 2000, interval: 10 });
+    // A positive assertion: wait for the finish instead of sleeping past it.
+    await vi.waitFor(() => expect(finished()).toBe(true), { timeout: 2000, interval: 10 });
     await flush();
 
     expect(postCalls().length).toBeGreaterThan(firstAttempts);
-    expect(readyIsActive()).toBe(true);
+    expect(onfinish).toHaveBeenCalledOnce();
   });
 
   it('surfaces the remote result rather than swallowing it', async () => {
-    // On a clean success the step advances (the result said uploaded:true).
-    await mountAt(CONSENT_STEP_INDEX);
+    // On a clean success setup finishes (the result said uploaded:true).
+    await mountReady();
     chooseShare();
     await flush();
-    primaryContinue().click();
+    openDesktop().click();
     await settle();
-    // Positive assertion — wait for the advance rather than sleeping past it.
-    await vi.waitFor(() => expect(readyIsActive()).toBe(true), { timeout: 2000, interval: 10 });
+    // Positive assertion — wait for the finish rather than sleeping past it.
+    await vi.waitFor(() => expect(finished()).toBe(true), { timeout: 2000, interval: 10 });
     await flush();
-    expect(readyIsActive()).toBe(true);
+    expect(onfinish).toHaveBeenCalledOnce();
+    expect(readyScreen().querySelector('[data-testid="consent-error"]')).toBeNull();
   });
 });
 
 describe('US-002 deliberate cache-before-upload ordering (regression)', () => {
   it('caches locally BEFORE the remote POST, even when the POST fails', async () => {
     postResult = { mode: 'reject', error: 'HTTP 500' };
-    await mountAt(CONSENT_STEP_INDEX);
+    await mountReady();
     chooseShare();
     await flush();
-    primaryContinue().click();
+    openDesktop().click();
     await settle();
 
     const order = calls
@@ -274,10 +271,10 @@ describe('US-002 deliberate cache-before-upload ordering (regression)', () => {
 
 describe('US-002 AC1 — person entity exists before the POST', () => {
   it('ensures the person entity before firing the consent POST', async () => {
-    await mountAt(CONSENT_STEP_INDEX);
+    await mountReady();
     chooseShare();
     await flush();
-    primaryContinue().click();
+    openDesktop().click();
     await settle();
 
     const ensureIdx = calls.findIndex((c) => c.command === 'ensure_person_entity');
@@ -295,24 +292,24 @@ describe('US-002 AC4 — offline does not trap the user', () => {
       mode: 'reject',
       error: 'error sending request: connection refused (offline)',
     };
-    // A locally configured connector keeps the optional panel visible instead
-    // of auto-skipping to ready, so this proves the offline route itself.
-    detectedConnectorCount = 1;
-    await mountAt(CONSENT_STEP_INDEX);
+    await mountReady();
     chooseShare();
     await flush();
 
-    primaryContinue().click();
+    openDesktop().click();
     await settle();
 
-    // Not advanced yet, and NOT reported as a successful upload.
-    expect(readyIsActive()).toBe(false);
+    // Not finished yet, and NOT reported as a successful upload.
+    expect(finished()).toBe(false);
     expect(
-      consentPanel().querySelector('[data-testid="consent-error"]'),
+      readyScreen().querySelector('[data-testid="consent-error"]'),
     ).not.toBeNull();
+    expect(readyScreen().querySelector('[data-testid="consent-error"]')!.textContent).toContain(
+      'saved on this machine',
+    );
 
     // An honest way forward is offered: finish now, send later.
-    const finishOffline = consentPanel().querySelector<HTMLButtonElement>(
+    const finishOffline = readyScreen().querySelector<HTMLButtonElement>(
       '[data-testid="consent-finish-offline"]',
     );
     expect(finishOffline).not.toBeNull();
@@ -320,17 +317,10 @@ describe('US-002 AC4 — offline does not trap the user', () => {
     const postsBefore = postCalls().length;
     finishOffline!.click();
     await settle();
-    // Positive assertion — wait for the connector-import step to come up.
-    await vi.waitFor(() => expect(connectorImportIsActive()).toBe(true), {
-      timeout: 2000,
-      interval: 10,
-    });
+    await vi.waitFor(() => expect(finished()).toBe(true), { timeout: 2000, interval: 10 });
     await flush();
 
-    // The offline path reaches the same connector-import step as an uploaded
-    // answer; it must not bypass the locally available import offer.
-    expect(connectorImportIsActive()).toBe(true);
-    expect(readyIsActive()).toBe(false);
+    expect(onfinish).toHaveBeenCalledOnce();
     // …WITHOUT another opt-in POST being claimed as successful — finishing
     // offline does not re-post nor pretend the server confirmed the write. The
     // cached answer is reconciled later by the consent repair.
@@ -347,14 +337,14 @@ describe('US-002 finding #5 — no "finish offline" when the cache write also fa
       error: 'error sending request: connection refused (offline)',
     };
     cacheWriteFails = false;
-    await mountAt(CONSENT_STEP_INDEX);
+    await mountReady();
     chooseShare();
     await flush();
-    primaryContinue().click();
+    openDesktop().click();
     await settle();
 
     expect(
-      consentPanel().querySelector('[data-testid="consent-finish-offline"]'),
+      readyScreen().querySelector('[data-testid="consent-finish-offline"]'),
     ).not.toBeNull();
   });
 
@@ -367,31 +357,31 @@ describe('US-002 finding #5 — no "finish offline" when the cache write also fa
       error: 'error sending request: connection refused (offline)',
     };
     cacheWriteFails = true;
-    await mountAt(CONSENT_STEP_INDEX);
+    await mountReady();
     chooseShare();
     await flush();
-    primaryContinue().click();
+    openDesktop().click();
     await settle();
     await new Promise((r) => setTimeout(r, 400));
     await flush();
 
-    // Did NOT advance, no offline-finish escape hatch, retry is the only way.
-    expect(readyIsActive()).toBe(false);
+    // Did NOT finish, no offline-finish escape hatch, retry is the only way.
+    expect(finished()).toBe(false);
     expect(
-      consentPanel().querySelector('[data-testid="consent-finish-offline"]'),
+      readyScreen().querySelector('[data-testid="consent-finish-offline"]'),
     ).toBeNull();
     expect(
-      consentPanel().querySelector('[data-testid="consent-retry"]'),
+      readyScreen().querySelector('[data-testid="consent-retry"]'),
     ).not.toBeNull();
   });
 });
 
 describe('US-002 provenance travels with the write', () => {
   it('sends surface=onboarding and the consent version', async () => {
-    await mountAt(CONSENT_STEP_INDEX);
+    await mountReady();
     chooseShare();
     await flush();
-    primaryContinue().click();
+    openDesktop().click();
     await settle();
 
     const post = postCalls().at(-1);

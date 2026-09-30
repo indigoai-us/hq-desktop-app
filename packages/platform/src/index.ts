@@ -4,13 +4,27 @@ export * from "./capabilities.js";
 export * from "./host-platform.js";
 export * from "./host-computer-noun.js";
 export * from "./library-shelf.js";
+// Plan-limit refusal parsing + upgrade-link allowlist (hard-stop-readiness).
+export * from "./plan-limit.js";
 export {
   CLAUDE_PROVIDER_FLAG,
   FIRST_FOLDER_SYNC_STEP_FLAG,
+  HUMAN_ONLY_CONVERSATIONS_FLAG,
+  HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT,
   INVITE_TEAMMATE_STEP_FLAG,
   SETUP_STAGE_TIMEOUT_FIX_FLAG,
   SETUP_DIRECTORY_PARENT_FALLBACK_FLAG,
 } from "./flags.js";
+export {
+  filterHumanMessages,
+  humanRecencyKey,
+  isHumanMessage,
+  orderChannelsForViewer,
+} from "./humanMessage.js";
+export type {
+  HumanClassifiable,
+  HumanRecencyChannel,
+} from "./humanMessage.js";
 
 // Shared 429 / Retry-After policy and the jittered background pollers (R2).
 export {

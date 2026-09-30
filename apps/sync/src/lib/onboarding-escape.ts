@@ -56,7 +56,7 @@ export function escapeForLaunch(
     return {
       kind: 'folder_not_ready',
       title: 'Open the folder and run /setup',
-      body: 'The HQ folder is there, but setup still needs a pass inside your AI tool. Reveal it or copy the command below.',
+      body: 'The HQ folder is there, but setup still needs a pass inside your AI tool. Open the folder there and run /setup, or use HQ Desktop.',
     };
   }
 
@@ -64,15 +64,15 @@ export function escapeForLaunch(
     const name = toolLabel(tool);
     return {
       kind: 'tool_missing',
-      title: `Install ${name}, or open the folder yourself`,
-      body: `HQ couldn’t find ${name}. Download it, or copy the path and open this folder from another tool.`,
+      title: `Install ${name}, or use HQ Desktop`,
+      body: `HQ couldn’t find ${name}. Install it and try again, or open HQ Desktop.`,
     };
   }
 
   return {
     kind: 'open_failed',
     title: 'Open the folder yourself',
-    body: `${toolLabel(tool)} didn’t launch from here. Reveal the folder, then run /setup.`,
+    body: `${toolLabel(tool)} didn’t launch from here. Open the HQ folder in it and run /setup, or use HQ Desktop.`,
   };
 }
 

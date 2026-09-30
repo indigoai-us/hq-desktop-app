@@ -64,10 +64,21 @@
     }
   }
 
+  function monthly(cents: number): string {
+    return `${new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100)}/month`;
+  }
+
+  // The size's own catalog price. The company quote can differ from it (Team
+  // credits, custom or free overrides), so it is shown separately below.
   function priceLabel(option: AgentProvisionOptionsView["options"][number]): string {
-    if (option.notBilled) return "Included";
+    return monthly(option.listCents);
+  }
+
+  function companyPriceLabel(option: AgentProvisionOptionsView["options"][number]): string | null {
+    if (option.notBilled) return "Included for your company";
     if (option.netMonthlyCents === null) return "Price unavailable";
-    return `${new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(option.netMonthlyCents / 100)}/month`;
+    if (option.netMonthlyCents === option.listCents) return null;
+    return `Your company pays ${monthly(option.netMonthlyCents)}`;
   }
 
   function unavailableLabel(option: AgentProvisionOptionsView["options"][number]): string {
@@ -191,7 +202,7 @@
 
   <div class="cb-field">
     <fieldset class="cloud-size-options" disabled={disabled || cloudQuoteStatus !== "ready"} data-testid="cloud-bot-size-choice">
-      <legend class="cb-label">Size and company price</legend>
+      <legend class="cb-label">Size and price</legend>
       {#if cloudQuoteStatus === "loading"}
         <p class="cb-help" role="status" data-testid="cloud-bot-quote-loading">Loading your company’s price quote…</p>
       {:else if cloudQuoteStatus === "error"}
@@ -211,7 +222,10 @@
             />
             <span class="cloud-size-copy">
               <strong>{option.productName}</strong>
-              <span>{priceLabel(option)}</span>
+              <span data-testid={`cloud-bot-size-${option.key}-price`}>{priceLabel(option)}</span>
+              {#if companyPriceLabel(option)}
+                <small data-testid={`cloud-bot-size-${option.key}-company-price`}>{companyPriceLabel(option)}</small>
+              {/if}
               {#if !option.selectable || option.netMonthlyCents === null}
                 <small>{unavailableLabel(option)}</small>
               {/if}

@@ -232,6 +232,7 @@ export function activityTimelineMessages(
     body: activityBody(activity),
     createdAt: activity.at ?? new Date(0).toISOString(),
     direction: "in" as const,
+    isMeshEvent: true as const,
   }));
 }
 
