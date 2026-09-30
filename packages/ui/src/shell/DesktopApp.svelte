@@ -25,6 +25,7 @@
    */
   import {
     CLAUDE_PROVIDER_FLAG,
+    HUMAN_ONLY_CONVERSATIONS_FLAG,
     failure,
     hostComputerNoun,
     startJitteredPoll,
@@ -893,6 +894,11 @@
     onassistedinstall?: (
       tool: import("../install-choice/install-choice.js").CodingTool,
     ) => Promise<import("../install-choice/install-choice.js").InstallOutcome>;
+    /**
+     * Ask the host to (re-)probe `detect_ai_tools`. Called lazily by the
+     * New bot wizard on mount so the probe is not paid on every app open.
+     */
+    onrequestaitools?: () => void;
   }
 
   let {
@@ -959,6 +965,7 @@
     aiTools = null,
     onopenassistant,
     onassistedinstall,
+    onrequestaitools,
   }: Props = $props();
 
   const derivedChrome = $derived(accountChromeFromSelf(self));
@@ -1347,6 +1354,17 @@
         conflictFiles = [];
       }),
     );
+    // hard-stop US-019: the native registry announces every change to the
+    // plan-limit upload pause; re-read the journal-backed status so the Core
+    // header stops saying "All synced" without waiting for the 30s poll.
+    track(
+      host.listen("sync:uploads-paused", () => {
+        if (!adapter.isAvailable("canSync")) return;
+        void readLiveSyncStatus(adapter).then((next) => {
+          if (!disposed) liveSync = next;
+        });
+      }),
+    );
 
     return () => {
       disposed = true;
@@ -1684,6 +1702,44 @@
   /** Sidebar entry points for app-wide shortcuts; null while unmounted. */
   let sidebarActions = $state<ChatSidebarActions | null>(null);
   let cheatSheetOpen = $state(false);
+
+  /**
+   * desktop.human-only-conversations: on by default. The desktop adapters
+   * pin the flag to `HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT` (true), so
+   * the initial state is `true` to avoid a first-paint flash of mesh rows.
+   * An adapter that answers `ok(false)` (or fails) still turns it off; the
+   * web adapter keeps the registry read. Callers hide mesh / non-human messages in
+   * conversation views and reorder the sidebar by last human message when
+   * this is true. See `packages/platform/src/humanMessage.ts` for the rule.
+   */
+  let humanOnlyConversations = $state(true);
+  $effect(() => {
+    const identity = adapter?.identity;
+    if (!identity || typeof identity.hasFeature !== "function") return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const initial = await identity.hasFeature(
+          HUMAN_ONLY_CONVERSATIONS_FLAG,
+        );
+        if (cancelled) return;
+        humanOnlyConversations = initial.ok && initial.value === true;
+      } catch {
+        // Registry outage / partial mock — stay dark.
+      }
+    })();
+    const unsubscribe =
+      typeof identity.subscribeFeature === "function"
+        ? identity.subscribeFeature(HUMAN_ONLY_CONVERSATIONS_FLAG, (result) => {
+            if (cancelled) return;
+            humanOnlyConversations = result.ok && result.value === true;
+          })
+        : undefined;
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  });
 
   // ── Personal local bots (local-bots US-009) ────────────────────────────────
   // The host's bots API shells to `hq bot list --json`; rows carry the server's
@@ -4690,15 +4746,40 @@
   }
 
   async function removeMember(row: StatusPersonRow): Promise<void> {
-    const channelId = selectedRow?.channelId?.trim() ?? "";
+    const activeRow = selectedRow;
+    const channelId = activeRow?.channelId?.trim() ?? "";
     if (!channelId.startsWith("chn_") || removingMemberUid) return;
+    const isSelfLeave = isSelf(row.personUid, self);
     removingMemberUid = row.personUid;
+    channelActionError = null;
     try {
       const res = await adapter.messaging.removeChannelMember(
         channelId,
         row.personUid,
       );
       if (res.ok) {
+        if (isSelfLeave) {
+          // The caller just left the channel: close the popover, drop the
+          // rail row optimistically (same wake delete_channel uses), and
+          // clear the selection so the empty state renders instead of a
+          // dead conversation.
+          membersOpen = false;
+          wakes?.emit?.("channel:removed", { channelId });
+          timelineCache.delete(activeRow?.id ?? "");
+          if (activeRow && selectedRow?.channelId === channelId) {
+            selectedRow = null;
+            liveTimeline = [];
+            liveTimelineId = null;
+            timelineHydrating = false;
+            openReplyRootId = null;
+            openProfileMember = null;
+            openAgentMember = null;
+            attachTray = null;
+            replyPreviewByRoot = {};
+            projectAboutOpen = false;
+          }
+          return;
+        }
         await loadChannelRoster(channelId);
         if (openProfileMember?.personUid === row.personUid) {
           openProfileMember = null;
@@ -4706,7 +4787,15 @@
         if (openAgentMember?.personUid === row.personUid) {
           openAgentMember = null;
         }
+      } else {
+        channelActionError =
+          res.message?.trim() ||
+          (isSelfLeave
+            ? `Couldn't leave #${activeRow?.title ?? "channel"}.`
+            : `Couldn't remove ${row.displayName || "member"}.`);
       }
+    } catch (err) {
+      channelActionError = err instanceof Error ? err.message : String(err);
     } finally {
       removingMemberUid = null;
     }
@@ -8467,6 +8556,7 @@
     syncState={liveSyncState}
     {lastSyncLabel}
     conflictCount={liveSync.conflicts}
+    uploadsPaused={liveSync.uploadsPaused ?? []}
     conflicts={conflictFiles}
     onresolveconflict={(path, strategy) => resolveConflictFile(path, strategy)}
     onopenconflict={(path) => openConflictInEditor(path)}
@@ -8729,6 +8819,7 @@
           companyCreate={companyCreateSeam}
           oncreateagent={canCreateCloudBots ? createCloudBotEntry : null}
           loadClaudeProviderFlag={() => adapter.identity.hasFeature(CLAUDE_PROVIDER_FLAG)}
+          humanOnly={humanOnlyConversations}
           loadCloudProvisionOptions={(companyUid) => adapter.agents.getProvisionOptions(companyUid)}
           oncreatebot={adapter.bots ? createBotEntry : null}
           botRuntimeReady={localBotRuntimeReady}
@@ -8738,6 +8829,7 @@
           hqFolderPath={hqFolderPath ?? ""}
           {onopenassistant}
           {onassistedinstall}
+          {onrequestaitools}
           botWorkers={localBotWorkers}
           {existingBotNames}
           {botSignIn}
@@ -9607,6 +9699,7 @@
                 <ChannelConversation
                   restoreScroll={pendingRestoreScroll}
                   {localBots}
+                  humanOnly={humanOnlyConversations}
                   messages={timelineWithActivity}
                   onseen={async () => {
                     const row = selectedRow;

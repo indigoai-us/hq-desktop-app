@@ -1,4 +1,5 @@
 import { isOnboardingState } from './lifecycle';
+import { isMissingRootRecovery } from './onboarding-wizard';
 
 export interface StartupSetupEvidence {
   installCompleted: boolean;
@@ -7,6 +8,10 @@ export interface StartupSetupEvidence {
   manifestIncomplete: boolean;
   hadMachineId: boolean;
   hqRootValid: boolean;
+  /** True only when the backend confirmed the root is missing, not unreadable. */
+  hqRootMissing?: boolean;
+  /** Persisted marker for the blocking first-run consent question. */
+  consentAnswered?: boolean;
 }
 
 function hasPriorSetup(evidence: StartupSetupEvidence): boolean {
@@ -31,6 +36,23 @@ export function unexpectedSurfaceForState(
   authenticated: boolean,
   setupEvidence?: StartupSetupEvidence | null,
 ): 'sign-in' | 'onboarding' | null {
+  const expectedConsentStep =
+    lifecycleState === 'InstalledFirstRun' &&
+    setupEvidence != null &&
+    setupEvidence.consentAnswered === false &&
+    !setupEvidence.firstRunCompleted &&
+    !setupEvidence.installInProgress &&
+    !setupEvidence.manifestIncomplete &&
+    setupEvidence.hqRootValid;
+  if (expectedConsentStep) return null;
+
+  if (
+    setupEvidence?.hqRootMissing === true &&
+    isMissingRootRecovery(lifecycleState ?? '', setupEvidence)
+  ) {
+    return null;
+  }
+
   if (isOnboardingState(lifecycleState)) {
     // Suppress expected onboarding only for fresh or incomplete installs.
     // InstalledFirstRun remains reportable even if older marker fields are absent.

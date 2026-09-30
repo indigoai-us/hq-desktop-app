@@ -45,6 +45,7 @@ import {
   retryThrottled,
   type RequestPolicyOptions,
 } from "../request-policy.js";
+import { hqProFailure, parseHqProErrorBody } from "../plan-limit.js";
 
 /** One HTTP attempt: the caller-facing result plus what the policy reads. */
 interface WebAttempt<T> {
@@ -539,24 +540,15 @@ export class WebPlatformAdapter implements PlatformAdapter {
           this.onUnauthorized();
         }
         const text = await res.text();
-        let code = `http-${res.status}`;
-        let message = `${method} ${path} failed`;
-        try {
-          const parsed = text ? JSON.parse(text) : null;
-          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-            const rec = parsed as Record<string, unknown>;
-            if (typeof rec.code === "string" && rec.code.trim()) {
-              code = rec.code.trim();
-            }
-            if (typeof rec.error === "string" && rec.error.trim()) {
-              message = rec.error.trim();
-            }
-          }
-        } catch {
-          /* keep http-status defaults */
-        }
+        // A plan-limit 402 keeps the server's sentence and upgrade link; it is
+        // an expected refusal, so it is returned, never reported to Sentry.
+        const details = parseHqProErrorBody(
+          res.status,
+          text,
+          `${method} ${path} failed`,
+        );
         return {
-          result: failure(code, message),
+          result: hqProFailure(details),
           status: res.status,
           retryAfter: readRetryAfter(res),
         };
@@ -607,6 +599,14 @@ export class WebPlatformAdapter implements PlatformAdapter {
       WEB_REGISTRY_EXCLUDED_FLAGS.has(flag)
         ? this.legacyHasFeature(flag)
         : this.flags.resolve(flag, () => this.legacyHasFeature(flag)),
+    subscribeFeature: (flag, onChange) =>
+      WEB_REGISTRY_EXCLUDED_FLAGS.has(flag)
+        ? () => {}
+        : this.flags.subscribe(
+            flag,
+            () => this.legacyHasFeature(flag),
+            onChange,
+          ),
     listWorkspaces: async () => {
       const result = await this.get<Json>(WEB_PATHS.workspaces);
       if (!result.ok) return result;

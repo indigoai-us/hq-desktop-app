@@ -1516,11 +1516,17 @@ fn handle_sync_line<R: tauri::Runtime>(
         // older runner that doesn't emit Plan, this branch is simply never
         // taken — the existing TOTALS-based denominator stays authoritative.
         SyncEvent::Plan(payload) => app.emit(EVENT_SYNC_PLAN, payload.clone()),
-        SyncEvent::PlanLimit(payload) => app.emit_to(
-            crate::commands::desktop_alt::WINDOW_LABEL,
-            EVENT_SYNC_PLAN_LIMIT,
-            payload.clone(),
-        ),
+        // hard-stop-readiness US-019: the registry behind the status header
+        // and the menu bar records the notice before the desktop window hears
+        // it, so a window opened later still shows the pause.
+        SyncEvent::PlanLimit(payload) => {
+            crate::commands::uploads_paused::record_plan_limit(app, hq_folder, payload);
+            app.emit_to(
+                crate::commands::desktop_alt::WINDOW_LABEL,
+                EVENT_SYNC_PLAN_LIMIT,
+                payload.clone(),
+            )
+        }
         SyncEvent::Progress(payload) => {
             // Record into the session activity log (uploaded/downloaded with a
             // timestamp) and live-append to the Recent Changes window if open.
@@ -1588,9 +1594,16 @@ fn handle_sync_line<R: tauri::Runtime>(
         SyncEvent::AllComplete(payload) => {
             // Persist summary journal before emitting — the frontend's
             // SyncStats refresh reads this file on popover mount.
-            let conflicts = totals.lock().unwrap_or_else(|e| e.into_inner()).conflicts;
+            let (conflicts, uploads_pass) = {
+                let t = totals.lock().unwrap_or_else(|e| e.into_inner());
+                (t.conflicts, t.uploads_pass.clone())
+            };
             let now_iso = chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
-            let journal = journal_for_sync_complete(&now_iso, conflicts);
+            let mut journal = journal_for_sync_complete(&now_iso, conflicts);
+            // A pass whose uploads a plan limit refused is not a clean sync:
+            // persist which companies are paused (US-019).
+            journal.uploads_paused =
+                crate::commands::uploads_paused::settle_pass(app, hq_folder, &uploads_pass);
             if let Err(_e) = write_journal(hq_folder, &journal) {
                 log("sync", &format!("failed to write journal: {_e}"));
                 #[cfg(debug_assertions)]
@@ -3539,6 +3552,62 @@ mod tests {
         assert_eq!(seen[0]["path"], "knowledge/readme.md");
         assert_eq!(seen[0]["company"], "indigo");
         assert_eq!(seen[0]["canAutoResolve"], false);
+    }
+
+    /// hard-stop-readiness US-019: a manual "Sync Now" plan-limit notice is
+    /// recorded for the status header and the menu bar, not only shown to the
+    /// desktop window, and stays a targeted emit (no new broadcast).
+    #[test]
+    fn handle_sync_line_records_the_plan_limit_pause() {
+        use std::sync::Arc;
+        use tauri::Listener;
+
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let hq_folder = TempDir::new().unwrap();
+        let totals = Mutex::new(RunTotals::default());
+        let phase = Mutex::new(RunnerPhaseContext::default());
+        let company = "Acme US-019 manual";
+
+        let seen = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let seen_w = seen.clone();
+        handle.listen_any(EVENT_SYNC_PLAN_LIMIT, move |event| {
+            seen_w
+                .lock()
+                .unwrap()
+                .push(serde_json::from_str(event.payload()).unwrap());
+        });
+        // An app-level listener hears only broadcasts.
+        let broadcasts = Arc::new(Mutex::new(0usize));
+        let broadcasts_w = broadcasts.clone();
+        handle.listen(EVENT_SYNC_PLAN_LIMIT, move |_| {
+            *broadcasts_w.lock().unwrap() += 1;
+        });
+
+        let folder = hq_folder.path().to_str().unwrap();
+        let line = format!(
+            r#"{{"type":"plan-limit","company":"{company}","upgradeUrl":"https://hq.computer/billing"}}"#
+        );
+        assert!(handle_sync_line(
+            &handle, folder, &totals, &phase, "jwt", &line
+        ));
+        std::thread::sleep(Duration::from_millis(30));
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0]["company"], company);
+        assert_eq!(
+            *broadcasts.lock().unwrap(),
+            0,
+            "the notice is not broadcast"
+        );
+        assert_eq!(
+            crate::commands::uploads_paused::upgrade_url_for(company).as_deref(),
+            Some("https://hq.computer/billing")
+        );
+        let t = totals.lock().unwrap();
+        assert!(t.uploads_pass.plan_limited.contains_key(company));
+        assert!(!t.saw_error, "a plan-limit notice is not a sync error");
     }
 
     #[test]

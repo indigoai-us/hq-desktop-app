@@ -89,6 +89,7 @@ pub mod notify_authz;
 pub mod notify_prefs;
 pub mod oauth;
 pub mod paths;
+pub mod plan_limit;
 pub mod prewarm;
 pub mod process_stdio;
 pub mod process_types;
@@ -116,12 +117,14 @@ pub mod sync_outcome;
 pub mod sync_progress;
 pub mod toolchain;
 pub mod ui_hot;
+pub mod uploads_paused;
 pub mod unexpected_surface;
 pub mod vault_index;
 pub mod watcher_fault;
 pub mod win32_path;
 pub mod update_gate;
 pub mod workspaces;
+pub mod watch_owner;
 
 #[cfg(test)]
 pub(crate) mod test_support;

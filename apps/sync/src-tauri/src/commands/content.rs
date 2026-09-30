@@ -47,7 +47,7 @@ use tauri::{AppHandle, Emitter};
 #[cfg(windows)]
 use super::windows_symlink_fallback::{
     choose_windows_symlink_fallback, should_reuse_existing_symlink, SymlinkTargetKind,
-    WindowsSymlinkFallback, WINDOWS_CONTENT_SYMLINK_FALLBACK_FLAG, WINDOWS_ERROR_ALREADY_EXISTS,
+    WindowsSymlinkFallback, WINDOWS_ERROR_ALREADY_EXISTS,
 };
 #[cfg(all(test, not(windows)))]
 use super::windows_symlink_fallback::{
@@ -1112,7 +1112,6 @@ fn create_symlink_with_failure(
     target: &Path,
     link_path: &Path,
     _cancel: Option<&AtomicBool>,
-    _extended_fallback_enabled: bool,
 ) -> Result<(), ContentOperationFailure> {
     if let Some(parent) = link_path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| {
@@ -1376,9 +1375,8 @@ fn create_symlink_with_failure(
     target: &Path,
     link_path: &Path,
     cancel: Option<&AtomicBool>,
-    extended_fallback_enabled: bool,
 ) -> Result<(), ContentOperationFailure> {
-    create_windows_symlink_with_failure(target, link_path, cancel, extended_fallback_enabled)
+    create_windows_symlink_with_failure(target, link_path, cancel)
 }
 
 #[cfg(windows)]
@@ -1386,7 +1384,6 @@ fn create_windows_symlink_with_failure(
     target: &Path,
     link_path: &Path,
     cancel: Option<&AtomicBool>,
-    extended_fallback_enabled: bool,
 ) -> Result<(), ContentOperationFailure> {
     if let Some(parent) = link_path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| {
@@ -1442,7 +1439,6 @@ fn create_windows_symlink_with_failure(
                             if let Ok(existing_target) = std::fs::read_link(link_path) {
                                 if should_reuse_existing_symlink(
                                     error_code,
-                                    extended_fallback_enabled,
                                     &existing_target,
                                     &win_target,
                                 ) {
@@ -1471,11 +1467,7 @@ fn create_windows_symlink_with_failure(
                 }
             }
 
-            match choose_windows_symlink_fallback(
-                error_code,
-                target_kind,
-                extended_fallback_enabled,
-            ) {
+            match choose_windows_symlink_fallback(error_code, target_kind) {
                 Some(WindowsSymlinkFallback::CopyFile) => {
                     copy_file_fallback(&resolved_target, link_path, cancel).map_err(
                         |fallback_error| {
@@ -1503,7 +1495,7 @@ fn create_windows_symlink_with_failure(
 /// Compatibility wrapper used by the legacy symlink command. The template
 /// extractor uses the typed failure so it can record bounded diagnostics.
 pub(crate) fn create_symlink_impl(target: &Path, link_path: &Path) -> Result<(), String> {
-    create_symlink_with_failure(target, link_path, None, false).map_err(|failure| failure.message)
+    create_symlink_with_failure(target, link_path, None).map_err(|failure| failure.message)
 }
 
 // ---------------------------------------------------------------------------
@@ -1523,7 +1515,7 @@ fn set_entry_mode(_path: &Path, _mode: u32) -> Result<(), io::Error> {
 
 #[cfg(test)]
 fn extract_tarball(compressed: &[u8], target_dir: &Path) -> Result<(), String> {
-    extract_tarball_with_progress(compressed, target_dir, None, None, None, false)
+    extract_tarball_with_progress(compressed, target_dir, None, None, None)
 }
 
 fn archive_extract_total_bytes(
@@ -1565,7 +1557,6 @@ fn extract_tarball_with_progress(
     progress: Option<&ContentProgressEmitter>,
     cancel: Option<&AtomicBool>,
     failure_scope: Option<&OnboardingFailureScope>,
-    extended_fallback_enabled: bool,
 ) -> Result<(), String> {
     std::fs::create_dir_all(target_dir).map_err(|e| {
         record_content_io_failure(failure_scope, &e);
@@ -1704,7 +1695,6 @@ fn extract_tarball_with_progress(
                     Path::new(&link_target),
                     &dest,
                     cancel,
-                    extended_fallback_enabled,
                 )
                 .map_err(|failure| {
                     if failure.kind == ContentErrorKind::Cancelled {
@@ -1896,19 +1886,12 @@ pub(crate) async fn install_template_into(
         failure_scope.as_ref(),
     )
     .await?;
-    #[cfg(windows)]
-    let extended_fallback_enabled =
-        crate::commands::hq_pro::feature_flag_enabled(WINDOWS_CONTENT_SYMLINK_FALLBACK_FLAG).await;
-    #[cfg(not(windows))]
-    let extended_fallback_enabled = false;
-
     extract_tarball_with_progress(
         &compressed,
         Path::new(&hq_root),
         Some(&progress),
         Some(cancel_flag.as_ref()),
         failure_scope.as_ref(),
-        extended_fallback_enabled,
     )?;
 
     // Refresh core/core.yaml checksums right after the template lands, so the
@@ -2024,7 +2007,6 @@ mod tests {
             None,
             None,
             Some(&scope),
-            false,
         );
 
         assert!(result.is_err());
@@ -2452,7 +2434,6 @@ mod windows_symlink_fallback_selection_tests {
             choose_windows_symlink_fallback(
                 Some(WINDOWS_ERROR_PRIVILEGE_NOT_HELD),
                 SymlinkTargetKind::File,
-                false,
             ),
             Some(WindowsSymlinkFallback::CopyFile)
         );
@@ -2460,7 +2441,6 @@ mod windows_symlink_fallback_selection_tests {
             choose_windows_symlink_fallback(
                 Some(WINDOWS_ERROR_PRIVILEGE_NOT_HELD),
                 SymlinkTargetKind::Directory,
-                false,
             ),
             Some(WindowsSymlinkFallback::Junction)
         );
@@ -2468,35 +2448,31 @@ mod windows_symlink_fallback_selection_tests {
             choose_windows_symlink_fallback(
                 Some(WINDOWS_ERROR_PRIVILEGE_NOT_HELD),
                 SymlinkTargetKind::Missing,
-                false,
             ),
             Some(WindowsSymlinkFallback::Junction)
         );
     }
 
     #[test]
-    fn non_privilege_errors_do_not_trigger_file_or_junction_fallbacks() {
+    fn invalid_function_uses_file_and_directory_fallbacks_without_privilege() {
         assert_eq!(
             choose_windows_symlink_fallback(
                 Some(WINDOWS_ERROR_INVALID_FUNCTION),
                 SymlinkTargetKind::File,
-                false,
             ),
-            None
+            Some(WindowsSymlinkFallback::CopyFile)
         );
         assert_eq!(
             choose_windows_symlink_fallback(
                 Some(WINDOWS_ERROR_INVALID_FUNCTION),
                 SymlinkTargetKind::Directory,
-                false,
             ),
-            None
+            Some(WindowsSymlinkFallback::Junction)
         );
         assert_eq!(
             choose_windows_symlink_fallback(
                 Some(WINDOWS_ERROR_INVALID_FUNCTION),
                 SymlinkTargetKind::Missing,
-                false,
             ),
             None
         );

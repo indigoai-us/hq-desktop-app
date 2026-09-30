@@ -1,10 +1,27 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  emitPlanLimitPromptTelemetry,
   emitDesktopOperationalTelemetry,
   emitDesktopOperationalTelemetryStrict,
   emitDesktopTelemetry,
   emitDesktopTelemetryStrict,
 } from './desktop-telemetry';
+
+function promptFetch(flagValue: boolean) {
+  const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
+  const fetchFn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ input, init });
+    const url = typeof input === 'string' ? input : input.toString();
+    if (url === '/v1/flags/resolve') {
+      return new Response(
+        JSON.stringify({ version: 1, flags: { 'billing.limit-at-action-prompt': flagValue } }),
+        { status: 200 },
+      );
+    }
+    return new Response('{}', { status: 202 });
+  }) as typeof fetch;
+  return { calls, fetchFn };
+}
 
 describe('emitDesktopTelemetry', () => {
   it('invokes the consent-gated desktop telemetry command', async () => {
@@ -87,5 +104,80 @@ describe('emitDesktopTelemetry', () => {
         invokeCommand,
       }),
     ).rejects.toThrow('no token');
+  });
+});
+
+describe('emitPlanLimitPromptTelemetry', () => {
+  it('sends bounded authenticated v2 exposure and engagement events only when the HQ flag is on', async () => {
+    const { calls, fetchFn } = promptFetch(true);
+
+    await emitPlanLimitPromptTelemetry({
+      fetch: fetchFn,
+      eventName: 'plan_limit_prompt_exposed',
+      companyUid: 'cmp_acme',
+      exposureId: 'exposure:3d50d3ab-4266-4d29-8fda-f9132d0a6c7a',
+      occurredAt: '2026-09-29T12:00:00.000Z',
+    });
+    await emitPlanLimitPromptTelemetry({
+      fetch: fetchFn,
+      eventName: 'plan_limit_prompt_engaged',
+      companyUid: 'cmp_acme',
+      exposureId: 'exposure:3d50d3ab-4266-4d29-8fda-f9132d0a6c7a',
+      action: 'upgrade_clicked',
+      occurredAt: '2026-09-29T12:00:01.000Z',
+    });
+
+    const posts = calls.filter(({ input }) => input === '/v1/telemetry/events');
+    expect(posts).toHaveLength(2);
+    const exposure = JSON.parse(String(posts[0].init?.body)).events[0];
+    expect(exposure).toMatchObject({
+      eventName: 'plan_limit_prompt_exposed',
+      companyUid: 'cmp_acme',
+      schemaVersion: 2,
+      consentBasis: 'no-consent',
+      occurredAt: '2026-09-29T12:00:00.000Z',
+      properties: {
+        surface: 'desktop_sync_limit_notice',
+        resourceKind: 'storageBytes',
+        presentationKind: 'advisory',
+        exposureId: 'exposure:3d50d3ab-4266-4d29-8fda-f9132d0a6c7a',
+      },
+    });
+    expect(exposure.idempotencyKey).toContain('exposure:3d50d3ab-4266-4d29-8fda-f9132d0a6c7a');
+    const engagement = JSON.parse(String(posts[1].init?.body)).events[0];
+    expect(engagement).toMatchObject({
+      eventName: 'plan_limit_prompt_engaged',
+      companyUid: 'cmp_acme',
+      properties: {
+        surface: 'desktop_sync_limit_notice',
+        resourceKind: 'storageBytes',
+        presentationKind: 'advisory',
+        exposureId: 'exposure:3d50d3ab-4266-4d29-8fda-f9132d0a6c7a',
+        action: 'upgrade_clicked',
+      },
+    });
+  });
+
+  it('does not post exposure or engagement while the HQ flag is off', async () => {
+    const { calls, fetchFn } = promptFetch(false);
+
+    await emitPlanLimitPromptTelemetry({
+      fetch: fetchFn,
+      eventName: 'plan_limit_prompt_exposed',
+      companyUid: 'cmp_acme',
+      exposureId: 'exposure:3d50d3ab-4266-4d29-8fda-f9132d0a6c7a',
+    });
+    await emitPlanLimitPromptTelemetry({
+      fetch: fetchFn,
+      eventName: 'plan_limit_prompt_engaged',
+      companyUid: 'cmp_acme',
+      exposureId: 'exposure:3d50d3ab-4266-4d29-8fda-f9132d0a6c7a',
+      action: 'upgrade_clicked',
+    });
+
+    expect(calls.map(({ input }) => input)).toEqual([
+      '/v1/flags/resolve',
+      '/v1/flags/resolve',
+    ]);
   });
 });

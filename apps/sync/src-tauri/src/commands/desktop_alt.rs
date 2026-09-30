@@ -973,10 +973,14 @@ pub async fn open_desktop_alt_window_inner(
     // factor; re-clamp so the next reveal is not the first thing to notice.
     {
         let tracked = _window.clone();
-        _window.on_window_event(move |event| {
-            if matches!(event, tauri::WindowEvent::ScaleFactorChanged { .. }) {
+        _window.on_window_event(move |event| match event {
+            tauri::WindowEvent::ScaleFactorChanged { .. } => {
                 enforce_desktop_alt_frame(&tracked);
             }
+            tauri::WindowEvent::Destroyed => {
+                super::window_material::forget_window_backdrop_visibility(tracked.label());
+            }
+            _ => {}
         });
     }
 
@@ -1143,6 +1147,9 @@ fn reveal_desktop_alt_window(window: &tauri::WebviewWindow) {
     let dispatcher = window.clone();
     let _ = dispatcher.run_on_main_thread(move || {
         crate::glass::apply_liquid_glass_window(&window);
+        // The frontend's first transparency command can arrive before the
+        // tagged backing view exists. Restore it before revealing the window.
+        super::window_material::reapply_window_backdrop_visibility(&window);
         crate::glass::refresh_liquid_glass_window(&window);
         if let Err(e) = window.show() {
             eprintln!("[desktop-alt] reveal: show failed: {e}");

@@ -56,8 +56,11 @@ pub struct ConnectorImportResult {
     pub error_category: &'static str,
 }
 
-#[tauri::command]
-pub fn detect_ai_tools() -> AiTools {
+/// Probe the installed AI tools. Blocking: launches up to three shell
+/// probes (each bounded by `CLI_PROBE_TIMEOUT`) and stats up to
+/// `RECENCY_MAX_ENTRIES` config entries per tool. Never call this on the
+/// main thread — see `detect_ai_tools` for the command wrapper.
+pub fn detect_ai_tools_blocking() -> AiTools {
     let mut tools = detect_ai_tools_in(
         claude_desktop_installed(),
         codex_desktop_installed(),
@@ -86,6 +89,26 @@ pub fn detect_ai_tools() -> AiTools {
         tools.grok_last_used_ms = last_used_ms_in(&cli_config_dir_in(&home, "grok"));
     }
     tools
+}
+
+/// The desktop shell calls this while it boots. A synchronous Tauri command
+/// runs inline on the main thread inside WebKit's IPC handler, so the shell
+/// probes and the config-tree stats above froze every window, every other
+/// command, and the boot watchdog's own `shell_ready` for as long as the disk
+/// took — seconds to tens of seconds under sync load. Run it on the blocking
+/// pool instead.
+#[tauri::command]
+pub async fn detect_ai_tools() -> AiTools {
+    match tokio::task::spawn_blocking(detect_ai_tools_blocking).await {
+        Ok(tools) => tools,
+        Err(error) => {
+            crate::util::logfile::log(
+                "ai-tools",
+                &format!("detect_ai_tools blocking task failed ({error}); probing inline"),
+            );
+            detect_ai_tools_blocking()
+        }
+    }
 }
 
 /// Claude Code, Codex, and Grok CLIs keep their user config in dot-directories
@@ -927,7 +950,7 @@ mod codex_desktop_tests {
 
 #[cfg(all(test, not(windows)))]
 mod real_machine_probe {
-    use super::detect_ai_tools;
+    use super::detect_ai_tools_blocking;
 
     /// Diagnostic, not a gate. Runs the production detector against the real
     /// machine and prints what the Ready screen would render, so "why is there
@@ -935,11 +958,25 @@ mod real_machine_probe {
     /// rather than from the browser harness, whose answers are fixtures.
     ///
     /// `#[ignore]` because the result depends on what is installed. Run with:
+    #[test]
+    fn detect_ai_tools_command_is_async_so_probes_stay_off_the_main_thread() {
+        let src = include_str!("ai_tools.rs");
+        let production = src.split("mod tests").next().expect("production source");
+        assert!(
+            production.contains("pub async fn detect_ai_tools() -> AiTools"),
+            "detect_ai_tools must be an async command: a sync command runs on the main thread"
+        );
+        assert!(
+            production.contains("spawn_blocking(detect_ai_tools_blocking)"),
+            "detect_ai_tools must run the blocking probe on the blocking pool"
+        );
+    }
+
     ///   cargo test real_machine_probe -- --ignored --nocapture
     #[test]
     #[ignore]
     fn report_what_the_ready_screen_would_show() {
-        let tools = detect_ai_tools();
+        let tools = detect_ai_tools_blocking();
 
         let slot = |installed: bool, name: &str| {
             if installed {
