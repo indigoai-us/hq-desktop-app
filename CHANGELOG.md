@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Auto-sync now identifies its watch-runner lease owner, stops a live orphan desktop runner once, and leaves sync to hq-daemon when it owns the root. Lease-busy exits no longer appear as repeated runner failures.
 - Internal desktop regression tests now exercise runtime behavior instead of reading implementation source text.
 - Startup reporting now treats pending first-run consent and confirmed
   missing-root recovery as expected.
