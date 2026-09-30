@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Usage telemetry now backs off after unaccepted batches and does not resend rows the server explicitly skipped.
 - Internal desktop regression tests now exercise runtime behavior instead of reading implementation source text.
 - Startup reporting now treats pending first-run consent and confirmed
   missing-root recovery as expected.
