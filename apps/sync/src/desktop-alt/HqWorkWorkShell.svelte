@@ -195,12 +195,12 @@
       const company = typeof rec.company === 'string' ? rec.company.trim() : '';
       if (!company || seen.has(company)) continue;
       seen.add(company);
-       next.push({
-         company,
-         companyUid: resolvePlanLimitCompanyUid(company),
-         exposureId: `exposure:${crypto.randomUUID()}`,
-         upgradeUrl: planLimitUpgradeLink(rec.upgradeUrl),
-       });
+      next.push({
+        company,
+        companyUid: resolvePlanLimitCompanyUid(company),
+        exposureId: `exposure:${crypto.randomUUID()}`,
+        upgradeUrl: planLimitUpgradeLink(rec.upgradeUrl),
+      });
     }
     const live = new Set(next.map(planLimitKey));
     for (const key of [...dismissedPlanLimitKeys]) {
