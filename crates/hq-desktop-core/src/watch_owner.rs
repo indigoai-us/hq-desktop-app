@@ -13,7 +13,7 @@ pub const OWNER_ARGUMENT_MIN_VERSION: &str = "6.18.13";
 /// First hq-cloud release that accepts `sync-runner --exit-with-parent`.
 pub const EXIT_WITH_PARENT_ARGUMENT_MIN_VERSION: &str = "6.18.24";
 #[cfg(unix)]
-const NPX_PARENT_EXIT_GUARD_SCRIPT: &str = "parent=$PPID; \"$@\" & child=$!; while kill -0 \"$parent\" 2>/dev/null; do sleep 1; done; kill -TERM \"$child\" 2>/dev/null || true; wait \"$child\"";
+const NPX_PARENT_EXIT_GUARD_SCRIPT: &str = "parent=$PPID; \"$@\" & child=$!; while kill -0 \"$parent\" 2>/dev/null && kill -0 \"$child\" 2>/dev/null; do sleep 1; done; if kill -0 \"$parent\" 2>/dev/null; then wait \"$child\"; exit $?; fi; kill -TERM \"$child\" 2>/dev/null || true; wait \"$child\"";
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -557,6 +557,31 @@ mod tests {
                 "--exit-with-parent",
             ]
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn npx_parent_guard_exits_when_the_child_exits_first() {
+        let args = wrap_npx_for_parent_exit("/bin/sh", &["-c".to_string(), "exit 23".to_string()]);
+        let mut guard = Command::new("/bin/sh")
+            .args(args)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("start npx parent guard");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Some(status) = guard.try_wait().expect("poll npx parent guard") {
+                assert_eq!(status.code(), Some(23));
+                break;
+            }
+            if Instant::now() >= deadline {
+                guard.kill().expect("stop a stuck npx parent guard");
+                let _ = guard.wait();
+                panic!("parent guard did not exit when its child exited");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[test]
