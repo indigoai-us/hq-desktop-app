@@ -11,6 +11,11 @@ The release moves it under the version it ships in.
 - Core update failures now report a specific snapshot failure class, such as
   insufficient space, a protected recovery snapshot, a permission error, a
   symlink, or a copy failure.
+- Internal desktop regression tests now exercise runtime behavior instead of reading implementation source text.
+- Startup reporting now treats pending first-run consent and confirmed
+  missing-root recovery as expected.
+
+- The existing sync plan-limit notice can report gated exposure and Upgrade-click measurements.
 
 ## [0.10.363] — 2026-09-30
 
