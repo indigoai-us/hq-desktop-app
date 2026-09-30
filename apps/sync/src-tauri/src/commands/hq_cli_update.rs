@@ -620,6 +620,7 @@ struct NpmInstallRun {
     windows_busy_retry_attempts: Option<u8>,
     windows_busy_retry_outcome: WindowsBusyRetryOutcome,
     lock_holder_diagnostic: Option<NpmLockHolderDiagnostic>,
+    previous_install_restored: bool,
 }
 
 async fn read_hq_cli_package_holders(prefix: Option<&str>) -> RestartManagerHolderObservation {
@@ -1177,6 +1178,226 @@ async fn run_npm_install_local_recovery_ladder(
     Ok(output)
 }
 
+struct HqCliInstallBackup {
+    targets: Vec<PathBuf>,
+    moved: Vec<(PathBuf, PathBuf)>,
+    active: bool,
+}
+
+fn hq_cli_install_targets(prefix: &str) -> Vec<PathBuf> {
+    let root = Path::new(prefix);
+    let package = npm_global_package_scope_dir_for(
+        prefix,
+        cfg!(target_os = "windows"),
+        "@indigoai-us/hq-cli",
+    )
+    .join("hq-cli");
+    let bin = if cfg!(target_os = "windows") {
+        root.to_path_buf()
+    } else {
+        root.join("bin")
+    };
+    let mut targets = vec![package];
+    for shim in [
+        "hq",
+        "hq.cmd",
+        "hq.ps1",
+        "hq-auth-refresh",
+        "hq-auth-refresh.cmd",
+        "hq-auth-refresh.ps1",
+    ] {
+        targets.push(bin.join(shim));
+    }
+    targets
+}
+
+fn path_entry_exists(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok()
+}
+
+fn remove_install_path(path: &Path) -> Result<(), String> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("inspect {}: {error}", path.display())),
+    };
+    if metadata.file_type().is_dir() {
+        std::fs::remove_dir_all(path).map_err(|error| format!("remove {}: {error}", path.display()))
+    } else {
+        std::fs::remove_file(path).map_err(|error| format!("remove {}: {error}", path.display()))
+    }
+}
+
+fn copy_install_path(source: &Path, destination: &Path) -> Result<(), String> {
+    let metadata = std::fs::symlink_metadata(source)
+        .map_err(|error| format!("inspect {}: {error}", source.display()))?;
+    if metadata.file_type().is_symlink() {
+        let target = std::fs::read_link(source)
+            .map_err(|error| format!("read link {}: {error}", source.display()))?;
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, destination)
+            .map_err(|error| format!("copy link {}: {error}", source.display()))?;
+        #[cfg(windows)]
+        {
+            let is_dir = std::fs::metadata(source)
+                .map(|target| target.is_dir())
+                .unwrap_or(false);
+            if is_dir {
+                std::os::windows::fs::symlink_dir(target, destination)
+                    .map_err(|error| format!("copy link {}: {error}", source.display()))?;
+            } else {
+                std::os::windows::fs::symlink_file(target, destination)
+                    .map_err(|error| format!("copy link {}: {error}", source.display()))?;
+            }
+        }
+        #[cfg(not(any(unix, windows)))]
+        return Err(format!(
+            "cannot preserve link {} on this platform",
+            source.display()
+        ));
+        return Ok(());
+    }
+    if metadata.is_dir() {
+        std::fs::create_dir(destination)
+            .map_err(|error| format!("create backup {}: {error}", destination.display()))?;
+        for entry in std::fs::read_dir(source)
+            .map_err(|error| format!("list install directory {}: {error}", source.display()))?
+        {
+            let entry = entry
+                .map_err(|error| format!("list install directory {}: {error}", source.display()))?;
+            copy_install_path(&entry.path(), &destination.join(entry.file_name()))?;
+        }
+        std::fs::set_permissions(destination, metadata.permissions()).map_err(|error| {
+            format!("set backup permissions {}: {error}", destination.display())
+        })?;
+        return Ok(());
+    }
+    std::fs::copy(source, destination)
+        .map(|_| ())
+        .map_err(|error| format!("copy install file {}: {error}", source.display()))
+}
+
+fn preserve_hq_cli_install(prefix: &str) -> Result<HqCliInstallBackup, String> {
+    let targets = hq_cli_install_targets(prefix);
+    let mut moved = Vec::new();
+    for target in &targets {
+        match std::fs::symlink_metadata(target) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!(
+                    "inspect existing install {}: {error}",
+                    target.display()
+                ))
+            }
+        }
+        let parent = target
+            .parent()
+            .ok_or_else(|| format!("install path has no parent: {}", target.display()))?;
+        let backup = parent.join(format!("hq-cli-install-backup-{}", ulid::Ulid::new()));
+        if let Err(error) = copy_install_path(target, &backup) {
+            let _ = remove_install_path(&backup);
+            for (_, saved) in moved.iter().rev() {
+                let _ = remove_install_path(saved);
+            }
+            return Err(format!(
+                "preserve existing install {}: {error}",
+                target.display()
+            ));
+        }
+        moved.push((target.clone(), backup));
+    }
+    Ok(HqCliInstallBackup {
+        targets,
+        moved,
+        active: true,
+    })
+}
+
+impl HqCliInstallBackup {
+    fn finish(&mut self, install_succeeded: bool) -> Result<bool, String> {
+        let had_previous_install = self
+            .moved
+            .iter()
+            .any(|(target, _)| target.ends_with(Path::new("hq-cli")));
+        if !install_succeeded {
+            self.restore()?;
+            return Ok(had_previous_install);
+        }
+
+        for (target, saved) in &self.moved {
+            if !path_entry_exists(target) {
+                // npm can exit 0 without recreating a shim/package in a reachable target.
+                // Keep the old artifact so the caller's convergence check can still use it.
+                if let Err(error) = std::fs::rename(saved, target) {
+                    log(
+                        "hq-cli-update",
+                        &format!(
+                            "could not restore {} after incomplete install: {error}",
+                            target.display()
+                        ),
+                    );
+                }
+            } else if let Err(error) = remove_install_path(saved) {
+                log(
+                    "hq-cli-update",
+                    &format!("could not remove install backup: {error}"),
+                );
+            }
+        }
+        self.active = false;
+        Ok(false)
+    }
+
+    fn restore(&mut self) -> Result<(), String> {
+        for target in &self.targets {
+            remove_install_path(target)?;
+        }
+        for (target, saved) in &self.moved {
+            if path_entry_exists(saved) {
+                std::fs::rename(saved, target).map_err(|error| {
+                    format!("restore previous install {}: {error}", target.display())
+                })?;
+            }
+        }
+        self.active = false;
+        Ok(())
+    }
+}
+
+impl Drop for HqCliInstallBackup {
+    fn drop(&mut self) {
+        if self.active {
+            if let Err(error) = self.restore() {
+                log(
+                    "hq-cli-update",
+                    &format!("failed to restore previous hq-cli install: {error}"),
+                );
+            }
+        }
+    }
+}
+
+fn npm_install_failure_message(
+    raw_detail: &str,
+    user_detail: &str,
+    previous_install_restored: bool,
+) -> String {
+    let cause = npm_lifecycle_cause(raw_detail);
+    let step = match cause {
+        "toolchain-missing" | "prebuild-unavailable" => "native module build",
+        "postinstall-script" => "package lifecycle script",
+        _ if raw_detail.to_ascii_lowercase().contains("gyp err!") => "native module build",
+        _ => "npm install",
+    };
+    let restored = if previous_install_restored {
+        " The previous working hq-cli was restored."
+    } else {
+        ""
+    };
+    format!("HQ CLI {step} failed.{restored} {user_detail}")
+}
+
 async fn run_npm_install_with_retries(
     npm: &str,
     path: &str,
@@ -1184,6 +1405,7 @@ async fn run_npm_install_with_retries(
     prefix: Option<&str>,
     base_args: Vec<String>,
 ) -> Result<NpmInstallRun, String> {
+    let mut backup = prefix.map(preserve_hq_cli_install).transpose()?;
     let mut ledger = Vec::with_capacity(MAX_NPM_INSTALL_ATTEMPTS);
     let mut missing_target_state = MissingTargetState::Unknown;
     let mut windows_busy_retry_attempts = None;
@@ -1287,6 +1509,10 @@ async fn run_npm_install_with_retries(
         break;
     }
 
+    let previous_install_restored = match backup.as_mut() {
+        Some(backup) => backup.finish(output.status.success())?,
+        None => false,
+    };
     log_npm_install_attempt_ledger(&ledger);
     let final_attempt_forced = ledger.last().is_some_and(|attempt| attempt.forced);
     let rungs = ledger.iter().map(|attempt| attempt.rung).collect();
@@ -1298,6 +1524,7 @@ async fn run_npm_install_with_retries(
         windows_busy_retry_attempts,
         windows_busy_retry_outcome,
         lock_holder_diagnostic,
+        previous_install_restored,
     })
 }
 
@@ -2775,6 +3002,11 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
             prefix.as_deref(),
             install_run.final_attempt_forced,
             &install_env,
+        );
+        let detail = npm_install_failure_message(
+            &raw_detail,
+            &detail,
+            install_run.previous_install_restored,
         );
         log(
             "hq-cli-update",
