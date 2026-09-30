@@ -5238,6 +5238,74 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn failed_npm_install_restores_the_previous_cli_package_and_shim() {
+        use std::fs;
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let temp = tempfile::tempdir().unwrap();
+        let prefix = temp.path().join("npm prefix with spaces");
+        let package = prefix.join("lib/node_modules/@indigoai-us/hq-cli");
+        let bin = prefix.join("bin");
+        fs::create_dir_all(&package).unwrap();
+        fs::create_dir_all(&bin).unwrap();
+        fs::write(
+            package.join("package.json"),
+            r#"{"name":"@indigoai-us/hq-cli","version":"5.77.8"}"#,
+        )
+        .unwrap();
+        fs::write(package.join("working.js"), "previous package").unwrap();
+        let shim_target = package.join("working.js");
+        symlink(&shim_target, bin.join("hq")).unwrap();
+
+        let npm = temp.path().join("fake-npm");
+        let script = format!(
+            r#"#!/bin/sh
+prefix="{}"
+package="$prefix/lib/node_modules/@indigoai-us/hq-cli"
+rm -rf "$package"
+mkdir -p "$package/dist"
+printf '%s' 'partial package' > "$package/dist/index.js"
+rm -f "$prefix/bin/hq"
+ln -s "$package/missing.js" "$prefix/bin/hq"
+printf '%s\n' 'gyp ERR! build error' >&2
+exit 1
+"#,
+            prefix.display(),
+        );
+        fs::write(&npm, script).unwrap();
+        let mut permissions = fs::metadata(&npm).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&npm, permissions).unwrap();
+        let npm_cache = temp.path().join("app-cache/npm");
+        fs::create_dir_all(&npm_cache).unwrap();
+
+        let run = run_npm_install_with_retries(
+            npm.to_str().unwrap(),
+            &std::env::var("PATH").unwrap(),
+            &npm_cache,
+            Some(prefix.to_str().unwrap()),
+            install_argv(Some(prefix.to_str().unwrap()), Some("5.101.0")),
+        )
+        .await
+        .unwrap();
+
+        assert!(!run.output.status.success(), "fake npm must fail");
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(package.join("package.json")).unwrap()).unwrap();
+        assert_eq!(manifest["version"], "5.77.8");
+        assert_eq!(
+            fs::read_to_string(package.join("working.js")).unwrap(),
+            "previous package"
+        );
+        assert_eq!(fs::read_link(bin.join("hq")).unwrap(), shim_target);
+        assert!(
+            !package.join("dist/index.js").exists(),
+            "partial package was removed"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn app_owned_cache_reaches_every_install_retry_attempt() {
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
