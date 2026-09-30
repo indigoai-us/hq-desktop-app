@@ -3,6 +3,12 @@ import { DEFAULT_WINDOW_TRANSPARENCY } from '@hq/ui/settings/appearance-seam';
 export { DEFAULT_WINDOW_TRANSPARENCY } from '@hq/ui/settings/appearance-seam';
 
 export const APPEARANCE_STORAGE_KEY = 'hq-sync.appearance.v1';
+/**
+ * Set once the one-time 100% opacity reset has run for this install. Earlier
+ * releases defaulted to 35% opacity; the reset moves every existing install to
+ * the new solid default once, and a choice made after it is kept.
+ */
+export const APPEARANCE_OPAQUE_RESET_KEY = 'hq-sync.appearance.opaque-reset.v1';
 export const APPEARANCE_CHANGE_EVENT = 'hq:appearance-change';
 export const APPEARANCE_REQUEST_EVENT = 'hq:appearance-request';
 
@@ -123,6 +129,27 @@ export function readAppearancePreferences(
   }
 }
 
+/**
+ * Run the one-time 100% opacity reset. A saved opacity is replaced with the
+ * solid default (the theme is kept), then the reset is recorded so it never
+ * runs again. Storage failures are ignored: the window still renders solid.
+ */
+export function resetWindowOpacityOnce(storage: AppearanceStorage | null): void {
+  if (!storage) return;
+  try {
+    if (storage.getItem(APPEARANCE_OPAQUE_RESET_KEY) !== null) return;
+    if (storage.getItem(APPEARANCE_STORAGE_KEY) !== null) {
+      writeAppearancePreferences(storage, {
+        ...readAppearancePreferences(storage),
+        windowTransparency: DEFAULT_WINDOW_TRANSPARENCY,
+      });
+    }
+    storage.setItem(APPEARANCE_OPAQUE_RESET_KEY, '1');
+  } catch {
+    // Blocked storage has no saved opacity to reset.
+  }
+}
+
 export function readBrowserAppearancePreferences(): AppearancePreferences {
   return readAppearancePreferences(browserStorage());
 }
@@ -219,6 +246,7 @@ export function installAppearancePreferences(
     ((error: unknown) => {
       console.warn('appearance preference failed:', error);
     });
+  resetWindowOpacityOnce(storage);
   let current = readAppearancePreferences(storage);
   let desiredNativeTheme: NativeTheme =
     current.colorTheme === 'system' ? null : current.colorTheme;
