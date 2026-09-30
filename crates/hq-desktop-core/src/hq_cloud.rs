@@ -716,10 +716,10 @@
 /// lower bound moves npm's cache key so installed copies refresh their cached
 /// runner.
 ///
-/// The `~6.18.17` -> `~6.18.22` bump adds bounded sync-runner memory sidecar
+/// The `~6.18.17` -> `~6.18.23` bump adds bounded sync-runner memory sidecar
 /// measurements and scan/upload buckets. It adds no runner error identities or
 /// event types; the source-version tripwire and vocabulary remain aligned.
-pub const HQ_CLOUD_VERSION: &str = "~6.18.22";
+pub const HQ_CLOUD_VERSION: &str = "~6.18.23";
 
 /// First `@indigoai-us/hq-cloud` version that ships the post-sync
 /// manifest-upload pass (US-004, sync-reconciliation-audit).

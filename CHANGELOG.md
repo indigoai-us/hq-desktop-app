@@ -9,7 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Footprint reports now include bounded scan and upload-size buckets from the
-  coordinated hq-cloud 6.18.22 runner package when that report data is present.
+  coordinated hq-cloud 6.18.23 runner package when that report data is present.
 
 - On macOS, HQ Sync restarts after an abnormal exit and waits at least 30
   seconds between crash restarts. Existing enabled LaunchAgents are refreshed
