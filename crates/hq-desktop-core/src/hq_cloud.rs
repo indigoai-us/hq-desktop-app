@@ -716,10 +716,10 @@
 /// lower bound moves npm's cache key so installed copies refresh their cached
 /// runner.
 ///
-/// The `~6.18.17` -> `~6.18.20` bump adds bounded sync-runner memory sidecar
+/// The `~6.18.17` -> `~6.18.22` bump adds bounded sync-runner memory sidecar
 /// measurements and scan/upload buckets. It adds no runner error identities or
 /// event types; the source-version tripwire and vocabulary remain aligned.
-pub const HQ_CLOUD_VERSION: &str = "~6.18.20";
+pub const HQ_CLOUD_VERSION: &str = "~6.18.22";
 
 /// First `@indigoai-us/hq-cloud` version that ships the post-sync
 /// manifest-upload pass (US-004, sync-reconciliation-audit).
@@ -843,11 +843,10 @@ mod tests {
         assert!(HQ_CLOUD_VERSION.starts_with('~'));
     }
 
-    /// Exact-pin tripwire: forces a deliberate assertion + doc-block update on
-    /// every pin bump (the name tracks the newest guarantee the pin floors at).
+    /// The runner vocabulary marker must stay aligned with the package pin.
     #[test]
-    fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.18.20");
+    fn version_pin_matches_runner_vocabulary_source() {
+        assert_eq!(HQ_CLOUD_VERSION, crate::runner_error_shape::CAUSE_VOCABULARY_SOURCE_VERSION);
     }
 
     /// Root-`bin/` exclusion floor (hq-cloud#501). Below this floor a personal
