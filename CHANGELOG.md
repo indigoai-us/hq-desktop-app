@@ -55,6 +55,7 @@ The release moves it under the version it ships in.
 - Desktop setup continues to report installation failures after an internal error interrupts its diagnostic cache.
 
 - The existing sync plan-limit notice can report gated exposure and Upgrade-click measurements.
+- Successful sign-ins can wait for their local receipt queue write behind a default-off flag before returning to the setup flow.
 
 ## [0.10.363] — 2026-09-30
 
