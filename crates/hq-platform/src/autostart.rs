@@ -19,6 +19,19 @@ use crate::launchagent::{
 #[cfg(any(target_os = "macos", test))]
 const FALLBACK_APP_PATH: &str = CURRENT_BUNDLE_EXECUTABLE;
 
+/// Minimum interval between launchd restarts after repeated abnormal exits.
+#[cfg(any(target_os = "macos", test))]
+const LAUNCH_AGENT_THROTTLE_INTERVAL_SECONDS: u32 = 30;
+
+#[cfg(any(target_os = "macos", test))]
+const KEEP_ALIVE_FAILURE_POLICY: &str = concat!(
+    "    <key>KeepAlive</key>\n",
+    "    <dict>\n",
+    "        <key>SuccessfulExit</key>\n",
+    "        <false/>\n",
+    "    </dict>\n",
+);
+
 #[cfg(target_os = "windows")]
 use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE};
 #[cfg(target_os = "windows")]
@@ -84,11 +97,31 @@ fn generate_plist(app_path: &str) -> String {
     </array>
     <key>RunAtLoad</key>
     <true/>
+{}
+    <key>ThrottleInterval</key>
+    <integer>{}</integer>
 </dict>
 </plist>
 "#,
-        LAUNCH_AGENT_LABEL, app_path, LAUNCH_AGENT_RELAUNCH_ARG
+        LAUNCH_AGENT_LABEL,
+        app_path,
+        LAUNCH_AGENT_RELAUNCH_ARG,
+        KEEP_ALIVE_FAILURE_POLICY,
+        LAUNCH_AGENT_THROTTLE_INTERVAL_SECONDS,
     )
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn has_current_restart_policy(plist: &str) -> bool {
+    let throttle = format!(
+        "    <key>ThrottleInterval</key>\n    <integer>{LAUNCH_AGENT_THROTTLE_INTERVAL_SECONDS}</integer>"
+    );
+    plist.contains(KEEP_ALIVE_FAILURE_POLICY) && plist.contains(&throttle)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn registration_is_current(plist: &str, current_exe: &str) -> bool {
+    extract_program_path(plist).as_deref() == Some(current_exe) && has_current_restart_policy(plist)
 }
 
 /// Resolve the installed `HQ Sync.exe` path for the HKCU Run value.
@@ -116,12 +149,11 @@ fn format_run_value(app_path: &str) -> String {
 /// What launch-time autostart reconciliation should do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReconcileAction {
-    /// Already in the desired state with a current path — do nothing.
+    /// Already in the desired state with a current registration — do nothing.
     None,
     /// Register autostart (was off, should be on).
     Enable,
-    /// Rewrite an existing registration that points at a stale executable path
-    /// (the renamed-binary upgrade case that left autosync exiting EX_CONFIG).
+    /// Rewrite an existing registration with a stale executable path or policy.
     Refresh,
     /// Remove autostart (was on, explicit opt-out).
     Disable,
@@ -129,37 +161,69 @@ pub enum ReconcileAction {
 
 /// Pure decision for `ensure_autostart_on_launch`: given the desired state,
 /// whether autostart is currently registered, and whether that registration
-/// points at the current executable path, decide what to do. Both `Enable` and
-/// `Refresh` are satisfied by writing a fresh registration (`set_enabled(true)`);
-/// `Disable` by removing it. `path_is_current` is only meaningful when
+/// matches the current executable and required policy, decide what to do. Both
+/// `Enable` writes a registration, while `Refresh` also reloads the existing
+/// agent after writing. `Disable` removes the registration.
+/// `registration_is_current` is only meaningful when
 /// `currently_enabled` is true (callers pass `true` otherwise).
 pub fn reconcile_action(
     want_enabled: bool,
     currently_enabled: bool,
-    path_is_current: bool,
+    registration_is_current: bool,
 ) -> ReconcileAction {
     match (want_enabled, currently_enabled) {
         (true, false) => ReconcileAction::Enable,
-        (true, true) if !path_is_current => ReconcileAction::Refresh,
+        (true, true) if !registration_is_current => ReconcileAction::Refresh,
         (true, true) => ReconcileAction::None,
         (false, true) => ReconcileAction::Disable,
         (false, false) => ReconcileAction::None,
     }
 }
 
-/// Whether an existing autostart registration points at the current executable.
+/// Apply a launch-time autostart decision. Refresh writes the new registration
+/// first. A process launched by its LaunchAgent leaves the updated definition
+/// for the next login instead of booting out its own running job; other
+/// processes may reload the registration in place.
+pub fn apply_reconcile_action<W, P, R, D>(
+    action: ReconcileAction,
+    set_enabled: W,
+    is_current_launch_agent_process: P,
+    reload: R,
+    defer_until_next_login: D,
+) -> Result<(), String>
+where
+    W: FnOnce(bool) -> Result<(), String>,
+    P: FnOnce() -> bool,
+    R: FnOnce() -> Result<(), String>,
+    D: FnOnce(),
+{
+    match action {
+        ReconcileAction::None => Ok(()),
+        ReconcileAction::Enable => set_enabled(true),
+        ReconcileAction::Refresh => {
+            set_enabled(true)?;
+            if is_current_launch_agent_process() {
+                defer_until_next_login();
+                Ok(())
+            } else {
+                reload()
+            }
+        }
+        ReconcileAction::Disable => set_enabled(false),
+    }
+}
+
+/// Whether an existing autostart registration matches the current executable
+/// and required abnormal-exit restart policy.
 ///
 /// Returns `Ok(false)` when autostart is not registered at all, or when it is
-/// registered but points at a stale/renamed binary path — the exact upgrade
-/// condition (`.../MacOS/HQ`) that this fix rewrites. `Ok(true)` only when the
-/// registered path already matches the freshly-resolved executable path.
+/// registered but points at a stale/renamed binary path, or lacks the current
+/// restart policy. `ensure_autostart_on_launch` rewrites either stale form.
 #[cfg(target_os = "macos")]
 pub fn is_current() -> Result<bool, String> {
     let path = plist_path()?;
     match std::fs::read_to_string(&path) {
-        Ok(content) => {
-            Ok(extract_program_path(&content).as_deref() == Some(resolve_app_path().as_str()))
-        }
+        Ok(content) => Ok(registration_is_current(&content, &resolve_app_path())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(e) => Err(format!("read LaunchAgent plist: {e}")),
     }
@@ -397,6 +461,140 @@ mod pure_tests {
     }
 
     #[test]
+    fn generated_plist_restarts_after_abnormal_exit_with_throttle() {
+        let plist = generate_plist(REAL_EXE);
+        assert!(plist.contains(
+            "<key>KeepAlive</key>\n    <dict>\n        <key>SuccessfulExit</key>\n        <false/>\n    </dict>"
+        ));
+        assert!(plist.contains("<key>ThrottleInterval</key>\n    <integer>30</integer>"));
+        assert!(plist.contains("<key>RunAtLoad</key>\n    <true/>"));
+    }
+
+    #[test]
+    fn refresh_does_not_reload_when_writing_the_new_plist_fails() {
+        use std::cell::Cell;
+
+        let reloaded = Cell::new(false);
+        let result = apply_reconcile_action(
+            ReconcileAction::Refresh,
+            |_| Err("write failed".to_string()),
+            || false,
+            || {
+                reloaded.set(true);
+                Ok(())
+            },
+            || {},
+        );
+
+        assert_eq!(result, Err("write failed".to_string()));
+        assert!(!reloaded.get());
+    }
+
+    #[test]
+    fn refresh_defers_reload_when_this_process_is_the_launch_agent() {
+        use std::cell::RefCell;
+
+        let calls = RefCell::new(Vec::new());
+        apply_reconcile_action(
+            ReconcileAction::Refresh,
+            |enabled| {
+                calls.borrow_mut().push(format!("write:{enabled}"));
+                Ok(())
+            },
+            || true,
+            || {
+                calls.borrow_mut().push("reload".to_string());
+                Ok(())
+            },
+            || {
+                calls
+                    .borrow_mut()
+                    .push("defer-until-next-login".to_string())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            *calls.borrow(),
+            vec!["write:true", "defer-until-next-login"]
+        );
+    }
+
+    #[test]
+    fn refresh_reloads_after_write_when_this_is_not_the_launch_agent() {
+        use std::cell::RefCell;
+
+        let calls = RefCell::new(Vec::new());
+        apply_reconcile_action(
+            ReconcileAction::Refresh,
+            |enabled| {
+                calls.borrow_mut().push(format!("write:{enabled}"));
+                Ok(())
+            },
+            || false,
+            || {
+                calls.borrow_mut().push("reload".to_string());
+                Ok(())
+            },
+            || {
+                calls
+                    .borrow_mut()
+                    .push("defer-until-next-login".to_string())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(*calls.borrow(), vec!["write:true", "reload"]);
+    }
+
+    #[test]
+    fn refresh_write_failure_does_not_probe_or_reload() {
+        use std::cell::Cell;
+
+        let probed = Cell::new(false);
+        let reloaded = Cell::new(false);
+        let deferred = Cell::new(false);
+        let result = apply_reconcile_action(
+            ReconcileAction::Refresh,
+            |_| Err("write failed".to_string()),
+            || {
+                probed.set(true);
+                false
+            },
+            || {
+                reloaded.set(true);
+                Ok(())
+            },
+            || deferred.set(true),
+        );
+
+        assert_eq!(result, Err("write failed".to_string()));
+        assert!(!probed.get());
+        assert!(!reloaded.get());
+        assert!(!deferred.get());
+    }
+
+    #[test]
+    fn old_registration_is_stale_until_restart_policy_is_present() {
+        let current = generate_plist(REAL_EXE);
+        assert!(registration_is_current(&current, REAL_EXE));
+
+        let old = current
+            .replace(KEEP_ALIVE_FAILURE_POLICY, "")
+            .replace(
+                &format!(
+                    "    <key>ThrottleInterval</key>\n    <integer>{LAUNCH_AGENT_THROTTLE_INTERVAL_SECONDS}</integer>\n"
+                ),
+                "",
+            );
+        assert!(!registration_is_current(&old, REAL_EXE));
+        assert_eq!(
+            reconcile_action(true, true, false),
+            ReconcileAction::Refresh
+        );
+    }
+
+    #[test]
     fn extract_program_path_reads_stale_hq_path() {
         // A plist written by an older build points at the bad `.../HQ` path;
         // is_current compares this against the real binary and finds them
@@ -446,5 +644,28 @@ mod pure_tests {
     #[test]
     fn reconcile_noop_when_off_and_unwanted() {
         assert_eq!(reconcile_action(false, false, true), ReconcileAction::None);
+    }
+
+    #[test]
+    fn refresh_writes_updated_plist_before_reloading_launchagent() {
+        use std::cell::RefCell;
+
+        let calls = RefCell::new(Vec::new());
+        apply_reconcile_action(
+            ReconcileAction::Refresh,
+            |enabled| {
+                calls.borrow_mut().push(format!("write:{enabled}"));
+                Ok(())
+            },
+            || false,
+            || {
+                calls.borrow_mut().push("reload".to_string());
+                Ok(())
+            },
+            || {},
+        )
+        .unwrap();
+
+        assert_eq!(*calls.borrow(), vec!["write:true", "reload"]);
     }
 }
