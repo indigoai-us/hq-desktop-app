@@ -6924,7 +6924,8 @@ fn process_info(pid: u32) -> Result<Option<(u32, String)>, String> {
     }
     #[cfg(unix)]
     {
-        let Some(line) = String::from_utf8_lossy(&output.stdout).lines().next() else {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let Some(line) = stdout.lines().next() else {
             return Ok(None);
         };
         let line = line.trim();
