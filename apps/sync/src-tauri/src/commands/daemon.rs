@@ -13722,6 +13722,7 @@ mod tests {
                     external_memory_mb: Some(100),
                     array_buffers_mb: Some(20),
                     libuv_active_handles: Some(12),
+                    ..Report::default()
                 }
             ),
             Class::Heap
@@ -13735,6 +13736,7 @@ mod tests {
                     external_memory_mb: Some(700),
                     array_buffers_mb: Some(200),
                     libuv_active_handles: None,
+                    ..Report::default()
                 }
             ),
             Class::External
@@ -13748,6 +13750,7 @@ mod tests {
                     external_memory_mb: Some(900),
                     array_buffers_mb: Some(800),
                     libuv_active_handles: None,
+                    ..Report::default()
                 }
             ),
             Class::ArrayBuffers
@@ -13761,6 +13764,7 @@ mod tests {
                     external_memory_mb: Some(200),
                     array_buffers_mb: Some(50),
                     libuv_active_handles: None,
+                    ..Report::default()
                 }
             ),
             Class::Native
@@ -13786,6 +13790,7 @@ mod tests {
                     external_memory_mb: Some(100),
                     array_buffers_mb: None,
                     libuv_active_handles: None,
+                    ..Report::default()
                 }
             ),
             Class::ChildRss
@@ -13814,6 +13819,7 @@ mod tests {
             external_memory_mb: Some(100),
             array_buffers_mb: Some(25),
             libuv_active_handles: None,
+            ..Report::default()
         };
 
         assert_eq!(
@@ -13844,6 +13850,7 @@ mod tests {
             external_memory_mb: None,
             array_buffers_mb: None,
             libuv_active_handles: None,
+            ..Report::default()
         };
 
         assert_eq!(
@@ -13874,6 +13881,7 @@ mod tests {
             external_memory_mb: Some(0),
             array_buffers_mb: Some(0),
             libuv_active_handles: None,
+            ..Report::default()
         };
 
         assert_eq!(
