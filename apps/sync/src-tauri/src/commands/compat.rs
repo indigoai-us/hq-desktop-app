@@ -59,8 +59,8 @@ fn run_open_command(program: &str, args: &[&str]) -> Result<(), String> {
 
 /// Legacy installer alias for the unified AI-tool probe.
 #[tauri::command]
-pub fn check_ai_tools() -> ai_tools::AiTools {
-    ai_tools::detect_ai_tools()
+pub async fn check_ai_tools() -> ai_tools::AiTools {
+    ai_tools::detect_ai_tools().await
 }
 
 /// Legacy telemetry device id. The unified app uses the persisted machineId.
@@ -321,8 +321,8 @@ pub fn launch_codex_desktop() -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn claude_desktop_installed() -> bool {
-    ai_tools::detect_ai_tools().claude_desktop
+pub async fn claude_desktop_installed() -> bool {
+    ai_tools::detect_ai_tools().await.claude_desktop
 }
 
 #[cfg(windows)]

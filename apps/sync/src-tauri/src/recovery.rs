@@ -3,15 +3,17 @@
 //! tray/app menu.
 
 use std::borrow::Cow;
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 use url::Url;
 
 use crate::boot_watchdog::{
-    consume_safe_mode_flag, force_recovery_from_env, safe_mode_requested, ui_state_reset_script,
-    RecoveryTrigger, WatchdogEvent, WatchdogRuntime, WATCHDOG_TIMEOUT_ENV,
+    consume_safe_mode_flag, force_recovery_from_env, late_timer_decision, safe_mode_requested,
+    should_skip_recovery_open, ui_state_reset_script, LateTimerDecision, RecoveryTrigger,
+    WatchdogEvent, WatchdogRuntime, WATCHDOG_TIMEOUT_ENV,
 };
 use crate::updater::{self, UpdateInfo};
 use crate::util::logfile::log;
@@ -69,6 +71,44 @@ pub fn register_protocol(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
 fn boot_log(message: &str) {
     log("boot", message);
     eprintln!("[boot] {message}");
+}
+
+/// When the desktop window was created, so `shell_ready` can log the boot
+/// duration. Support reads that number to tell a slow boot from a broken one.
+static ARMED_AT: Mutex<Option<Instant>> = Mutex::new(None);
+
+fn note_armed() {
+    *ARMED_AT.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+}
+
+fn boot_elapsed_label() -> String {
+    match *ARMED_AT.lock().unwrap_or_else(|e| e.into_inner()) {
+        Some(at) => format!(" after {:.1}s", at.elapsed().as_secs_f64()),
+        None => String::new(),
+    }
+}
+
+/// Once per second, measure how late a 1s sleep on the async runtime wakes.
+/// A wake that is seconds late means every queued task — including the UI's
+/// `shell_ready` invoke and outbound HTTP — sat still for that long. The log
+/// line is the evidence support needs when a boot looks stuck.
+const HEARTBEAT: Duration = Duration::from_secs(1);
+const HEARTBEAT_STALL_TOLERANCE: Duration = Duration::from_secs(2);
+
+pub fn spawn_runtime_stall_sentinel() {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let started = Instant::now();
+            tokio::time::sleep(HEARTBEAT).await;
+            let late = started.elapsed().saturating_sub(HEARTBEAT);
+            if late >= HEARTBEAT_STALL_TOLERANCE {
+                boot_log(&format!(
+                    "async runtime stalled: heartbeat woke {:.1}s late",
+                    late.as_secs_f64()
+                ));
+            }
+        }
+    });
 }
 
 /// Tests construct `tauri::test::mock_app()` without installing
@@ -131,7 +171,21 @@ fn handle_event(app: &AppHandle, event: WatchdogEvent) {
             spawn_timer(app, timeout);
         }
         WatchdogEvent::CancelTimer => {
-            boot_log("shell ready — watchdog cancelled");
+            boot_log(&format!(
+                "shell ready{} — watchdog cancelled",
+                boot_elapsed_label()
+            ));
+        }
+        WatchdogEvent::DismissRecovery => {
+            boot_log(&format!(
+                "shell ready{} — after watchdog timeout; closing recovery window",
+                boot_elapsed_label()
+            ));
+            if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+                if let Err(error) = window.close() {
+                    boot_log(&format!("closing recovery window failed: {error}"));
+                }
+            }
         }
         WatchdogEvent::OpenRecovery { trigger } => {
             let app = app.clone();
@@ -150,16 +204,45 @@ fn spawn_timer(app: &AppHandle, timeout: Duration) {
     };
     let generation = runtime.generation();
     drop(runtime);
+    note_armed();
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(timeout).await;
+        let mut wait = timeout;
+        let mut grace_used = false;
+        loop {
+            let started = Instant::now();
+            tokio::time::sleep(wait).await;
+            let Some(runtime) = handle.try_state::<WatchdogRuntime>() else {
+                return;
+            };
+            if runtime.generation() != generation {
+                return;
+            }
+            match late_timer_decision(wait, started.elapsed(), grace_used) {
+                LateTimerDecision::Grace { late, grace } => {
+                    boot_log(&format!(
+                        "watchdog timer woke {:.1}s late — async runtime stalled; granting {}s grace before recovery",
+                        late.as_secs_f64(),
+                        grace.as_secs()
+                    ));
+                    grace_used = true;
+                    wait = grace;
+                    continue;
+                }
+                LateTimerDecision::Fire => {}
+            }
+            break;
+        }
         let Some(runtime) = handle.try_state::<WatchdogRuntime>() else {
             return;
         };
         if runtime.generation() != generation {
             return;
         }
-        boot_log("watchdog timeout — desktop shell did not report ready");
+        boot_log(&format!(
+            "watchdog timeout{} — desktop shell did not report ready",
+            boot_elapsed_label()
+        ));
         let event = runtime.apply(|dog| dog.on_timeout());
         drop(runtime);
         handle_event(&handle, event);
@@ -208,6 +291,22 @@ pub async fn open_recovery_window(
             Err(error) => {
                 boot_log(&format!("recovery auto-check failed: {error}"));
             }
+        }
+    }
+
+    // Race guard: an auto-check can spend seconds on the network. If the
+    // desktop shell reported ready during that gap, the DismissRecovery
+    // event fired against a window that did not exist yet — so opening it
+    // now would put a Recovery dialog over a healthy shell. Bail out and
+    // clear the pending flag before we build.
+    if let Some(runtime) = app.try_state::<WatchdogRuntime>() {
+        if should_skip_recovery_open(runtime.phase(), trigger) {
+            runtime.mark_recovery_open(false);
+            boot_log(&format!(
+                "shell ready during recovery auto-check; not opening recovery window (trigger={})",
+                trigger.as_str()
+            ));
+            return Ok(());
         }
     }
 
