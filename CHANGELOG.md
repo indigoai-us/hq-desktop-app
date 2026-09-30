@@ -8,6 +8,9 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Startup reporting now treats pending first-run consent and confirmed
+  missing-root recovery as expected.
+
 - The existing sync plan-limit notice can report gated exposure and Upgrade-click measurements.
 
 ## [0.10.363] — 2026-09-30
