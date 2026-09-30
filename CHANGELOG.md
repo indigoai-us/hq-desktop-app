@@ -9,6 +9,10 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Internal: unused exports in the shared UI package are now module-private. No behaviour change.
+- When an HQ CLI update fails partway through installing, the desktop app now
+  puts the previous HQ CLI back instead of leaving a broken or missing `hq`
+  command. Before this, a failed update could leave sync unable to run until
+  the CLI was reinstalled by hand.
 
 - Internal: unused exports in the work shell and installer are now module-private. No behaviour change.
 

@@ -1279,7 +1279,7 @@ fn copy_install_path(source: &Path, destination: &Path) -> Result<(), String> {
 
 fn preserve_hq_cli_install(prefix: &str) -> Result<HqCliInstallBackup, String> {
     let targets = hq_cli_install_targets(prefix);
-    let mut moved = Vec::new();
+    let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
     for target in &targets {
         match std::fs::symlink_metadata(target) {
             Ok(_) => {}
@@ -1511,7 +1511,7 @@ async fn run_npm_install_with_retries(
 
     let previous_install_restored = match backup.as_mut() {
         Some(backup) => backup.finish(output.status.success())?,
-        None => false,
+        _ => false,
     };
     log_npm_install_attempt_ledger(&ledger);
     let final_attempt_forced = ledger.last().is_some_and(|attempt| attempt.forced);
