@@ -15,6 +15,7 @@ The release moves it under the version it ships in.
 - The existing sync plan-limit notice can report gated exposure and Upgrade-click measurements.
 
 - Auto-sync identifies its watch-runner lease owner, stops a live orphan desktop runner once, and defers to hq-daemon when it owns the root. Lease-busy exits do not count as repeated runner failures.
+- A watch runner that exits during orphan recovery now counts as stopped, so auto-sync can finish recovery instead of reporting a false runner failure.
 
 ## [0.10.363] — 2026-09-30
 
