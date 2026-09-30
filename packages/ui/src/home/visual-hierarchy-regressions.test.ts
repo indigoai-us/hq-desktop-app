@@ -86,6 +86,43 @@ describe("desktop visual hierarchy regressions", () => {
   });
 
   it(
+    "paints solid window surfaces before the opacity preference is available",
+    () => {
+      // Stylesheets load before installAppearancePreferences can hydrate the
+      // persisted setting and set data-window-transparency on :root. A fresh
+      // install must therefore start from the same opaque endpoint as 100%.
+      const chatTokens = normalize(
+        readFileSync(new URL("../chat/tokens.css", import.meta.url), "utf8"),
+      );
+
+      for (const source of [tokens, chatTokens]) {
+        const lightDefault = source.match(
+          /:root\[data-window-transparency="0"\], :root:not\(\[data-window-transparency\]\)\s*\{([^}]*)\}/,
+        )?.[1];
+        expect(lightDefault).toBeDefined();
+        expect(lightDefault).toContain("--v4-ground: #f2f2f2;");
+        expect(lightDefault).toContain("--v4-chrome: #e8e8e8;");
+        expect(lightDefault).toContain("--v4-sidebar: #e0e0e0;");
+        expect(lightDefault).toContain("--v4-secondary-sidebar: #eeeeee;");
+        expect(lightDefault).toContain("--v4-glass-filter: none;");
+
+        const darkDefault = source.match(
+          /:root\[data-window-transparency="0"\]\.dark,[^{}]*:root:not\(\[data-window-transparency\]\)\.dark,[^{}]*\{([^}]*)\}/,
+        )?.[1];
+        expect(darkDefault).toBeDefined();
+        expect(darkDefault).toContain("--v4-ground: #111111;");
+        expect(darkDefault).toContain("--v4-chrome: #1e1e1e;");
+        expect(darkDefault).toContain("--v4-sidebar: #181818;");
+        expect(darkDefault).toContain("--v4-secondary-sidebar: #1a1a1a;");
+
+        expect(source).toContain(
+          ':root:not([data-window-transparency]):not([data-force-theme="light"])',
+        );
+      }
+    },
+  );
+
+  it(
     "uses solid window surfaces at the 100% opacity endpoint in light and dark themes",
     () => {
       const chatTokens = normalize(
@@ -94,7 +131,7 @@ describe("desktop visual hierarchy regressions", () => {
 
       for (const source of [tokens, chatTokens]) {
         const lightEndpoint = source.match(
-          /:root\[data-window-transparency="0"\]\s*\{([^}]*)\}/,
+          /:root\[data-window-transparency="0"\], :root:not\(\[data-window-transparency\]\)\s*\{([^}]*)\}/,
         )?.[1];
         expect(lightEndpoint).toBeDefined();
         expect(lightEndpoint).toContain("--v4-ground: #f2f2f2;");

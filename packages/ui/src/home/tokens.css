@@ -414,7 +414,8 @@ html[data-platform="windows"] {
 
 /* The explicit 100% opacity endpoint must not sample the desktop through a
    translucent token or native material. Keep the rest of the glass scale. */
-:root[data-window-transparency="0"] {
+:root[data-window-transparency="0"],
+:root:not([data-window-transparency]) {
   --v4-ground: #f2f2f2;
   --v4-raised: #ffffff;
   --v4-inset: #e4e4e4;
@@ -432,7 +433,10 @@ html[data-platform="windows"] {
 
 :root[data-window-transparency="0"].dark,
 :root[data-window-transparency="0"][data-force-theme="dark"],
-:root[data-window-transparency="0"] .dark {
+:root[data-window-transparency="0"] .dark,
+:root:not([data-window-transparency]).dark,
+:root:not([data-window-transparency])[data-force-theme="dark"],
+:root:not([data-window-transparency]) .dark {
   --v4-ground: #111111;
   --v4-raised: #303030;
   --v4-inset: #0d0d0d;
@@ -449,7 +453,8 @@ html[data-platform="windows"] {
 }
 
 @media (prefers-color-scheme: dark) {
-  :root[data-window-transparency="0"]:not([data-force-theme="light"]) {
+  :root[data-window-transparency="0"]:not([data-force-theme="light"]),
+  :root:not([data-window-transparency]):not([data-force-theme="light"]) {
     --v4-ground: #111111;
     --v4-raised: #303030;
     --v4-inset: #0d0d0d;
