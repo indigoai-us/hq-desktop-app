@@ -72,6 +72,18 @@ impl UpdateHolds {
         }
     }
 
+    /// Set a probe-owned hold idempotently. Event-owned holds continue to use
+    /// acquire/release so nested lifetimes retain their reference counts; a
+    /// repeatedly-polled external signal must never accumulate counts.
+    pub fn set(&self, reason: HoldReason, active: bool) {
+        let mut counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
+        if active {
+            counts.insert(reason, 1);
+        } else {
+            counts.remove(&reason);
+        }
+    }
+
     /// Returns all reasons whose count is >= 1.
     pub fn active(&self) -> Vec<HoldReason> {
         let counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
@@ -277,6 +289,16 @@ mod tests {
         let h = UpdateHolds::new();
         h.release(HoldReason::UploadInFlight); // never acquired
         assert_eq!(h.active().len(), 0);
+    }
+
+    #[test]
+    fn setting_a_probe_hold_repeatedly_does_not_leak_a_reference_count() {
+        let h = UpdateHolds::new();
+        h.set(HoldReason::UploadInFlight, true);
+        h.set(HoldReason::UploadInFlight, true);
+        assert_eq!(h.active(), vec![HoldReason::UploadInFlight]);
+        h.set(HoldReason::UploadInFlight, false);
+        assert!(h.active().is_empty());
     }
 
     #[test]

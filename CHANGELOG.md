@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- HQ no longer restarts for an update, or at support's request, while a meeting
+  is being recorded; it waits until the recording finishes.
 - Auto-sync identifies its watch-runner lease owner, stops a live orphan desktop runner once, and defers to hq-daemon when it owns the root. Lease-busy exits do not count as repeated runner failures.
 - A watch runner that exits during orphan recovery now counts as stopped, so auto-sync can finish recovery instead of reporting a false runner failure.
 - Fresh installs now open fully opaque until Window opacity is changed; saved
