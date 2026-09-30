@@ -2858,14 +2858,13 @@ fn core_update_rescue_error_class_for_category(category: RescueFailureCategory) 
         RescueFailureCategory::SnapshotExternalSymlink => "snapshot_symlink_invalid",
         RescueFailureCategory::SnapshotFailed => "snapshot_copy_failed",
         RescueFailureCategory::SnapshotRecoveryRequired => "snapshot_recovery_required",
-        RescueFailureCategory::DiskFull => "disk_full",
+        RescueFailureCategory::DiskFull => "insufficient-space",
         RescueFailureCategory::RsyncBroken => "rsync_failed",
         RescueFailureCategory::RsyncPartialTransfer => "rsync_partial",
         RescueFailureCategory::UpdateDeferredHqChange => "update_deferred_hq_change",
         RescueFailureCategory::CloneFailed => "clone_failed",
         RescueFailureCategory::NpxResolveFailed => "npx_resolve_failed",
         RescueFailureCategory::RestoreSymlinkRace => "restore_symlink_race",
-        RescueFailureCategory::DiskFull => "insufficient-space",
         _ => "unknown",
     }
 }
