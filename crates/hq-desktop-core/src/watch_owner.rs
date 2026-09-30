@@ -1,6 +1,9 @@
 //! Read-only helpers for hq-cloud's per-root watch-owner lease.
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use sha1::{Digest, Sha1};
@@ -143,6 +146,122 @@ pub fn supervisor_should_defer_for_live_owner(
     holder_is_live_runner: bool,
 ) -> bool {
     holder_is_live_runner && !plan.take_over_orphan
+}
+
+/// Read the parent PID and command line for one process.
+pub fn process_info(pid: u32) -> Result<Option<(u32, String)>, String> {
+    #[cfg(unix)]
+    let output = Command::new("ps")
+        .args(["-ww", "-o", "pid=,ppid=,command=", "-p", &pid.to_string()])
+        .output()
+        .map_err(|error| format!("inspect watch-owner process {pid}: {error}"))?;
+
+    #[cfg(target_os = "windows")]
+    let output = Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            &format!(
+                "Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}' | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress"
+            ),
+        ])
+        .output()
+        .map_err(|error| format!("inspect watch-owner process {pid}: {error}"))?;
+
+    if !output.status.success() {
+        #[cfg(unix)]
+        if output.stdout.iter().all(u8::is_ascii_whitespace) {
+            return Ok(None);
+        }
+        return Err(format!(
+            "inspect watch-owner process {pid} exited with {}",
+            output.status
+        ));
+    }
+    #[cfg(unix)]
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let Some(line) = stdout.lines().next() else {
+            return Ok(None);
+        };
+        let line = line.trim();
+        let mut fields = line.split_whitespace();
+        let (Some(found_pid), Some(parent_token)) = (fields.next(), fields.next()) else {
+            return Ok(None);
+        };
+        if found_pid.parse::<u32>().ok() != Some(pid) {
+            return Ok(None);
+        }
+        let parent = parent_token
+            .parse::<u32>()
+            .map_err(|error| format!("parse parent pid for watch-owner {pid}: {error}"))?;
+        let after_pid = line
+            .strip_prefix(found_pid)
+            .unwrap_or_default()
+            .trim_start();
+        let command = after_pid
+            .strip_prefix(parent_token)
+            .unwrap_or_default()
+            .trim_start();
+        Ok(Some((parent, command.to_string())))
+    }
+    #[cfg(target_os = "windows")]
+    {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "PascalCase")]
+        struct ProcessRow {
+            process_id: u32,
+            parent_process_id: u32,
+            command_line: Option<String>,
+        }
+        if output.stdout.iter().all(u8::is_ascii_whitespace) {
+            return Ok(None);
+        }
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout)
+            .map_err(|error| format!("parse watch-owner process {pid}: {error}"))?;
+        if value.is_null() {
+            return Ok(None);
+        }
+        let row_value = value
+            .as_array()
+            .and_then(|rows| rows.first())
+            .unwrap_or(&value);
+        let row: ProcessRow = serde_json::from_value(row_value.clone())
+            .map_err(|error| format!("parse watch-owner process {pid}: {error}"))?;
+        if row.process_id != pid {
+            return Ok(None);
+        }
+        Ok(Some((
+            row.parent_process_id,
+            row.command_line.unwrap_or_default(),
+        )))
+    }
+    #[cfg(not(any(unix, target_os = "windows")))]
+    {
+        let _ = pid;
+        Err("unsupported process inspection platform".to_string())
+    }
+}
+
+/// Wait until the inspected process exits or stops matching the target.
+pub fn wait_for_process_to_exit<F>(
+    pid: u32,
+    timeout: Duration,
+    mut is_still_target: F,
+) -> Result<bool, String>
+where
+    F: FnMut(&str) -> bool,
+{
+    let deadline = Instant::now() + timeout;
+    loop {
+        match process_info(pid)? {
+            None => return Ok(true),
+            Some((_, command)) if !is_still_target(&command) => return Ok(true),
+            Some(_) if Instant::now() >= deadline => return Ok(false),
+            Some(_) => thread::sleep(Duration::from_millis(100)),
+        }
+    }
 }
 
 /// Inspect a watch-owner lease only when the app runner is not already alive
@@ -311,6 +430,26 @@ pub fn read_watch_owner_status(path: &Path) -> Result<Option<WatchOwnerStatus>, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn process_info_returns_none_for_a_real_exited_child() {
+        let mut child = Command::new("true").spawn().unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+
+        assert_eq!(process_info(pid), Ok(None));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wait_loop_reports_a_real_exited_child_as_gone() {
+        let mut child = Command::new("true").spawn().unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+
+        assert!(wait_for_process_to_exit(pid, Duration::from_secs(1), |_| true).unwrap());
+    }
 
     #[test]
     fn owner_argument_is_gated_at_first_released_runner_version() {

@@ -6897,94 +6897,7 @@ fn watch_owner_status_path(hq_root: &str) -> PathBuf {
 }
 
 fn process_info(pid: u32) -> Result<Option<(u32, String)>, String> {
-    #[cfg(unix)]
-    let output = Command::new("ps")
-        .args(["-ww", "-o", "pid=,ppid=,command=", "-p", &pid.to_string()])
-        .output()
-        .map_err(|error| format!("inspect watch-owner process {pid}: {error}"))?;
-
-    #[cfg(target_os = "windows")]
-    let output = Command::new("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            &format!(
-                "Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}' | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress"
-            ),
-        ])
-        .output()
-        .map_err(|error| format!("inspect watch-owner process {pid}: {error}"))?;
-
-    if !output.status.success() {
-        return Err(format!(
-            "inspect watch-owner process {pid} exited with {}",
-            output.status
-        ));
-    }
-    #[cfg(unix)]
-    {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let Some(line) = stdout.lines().next() else {
-            return Ok(None);
-        };
-        let line = line.trim();
-        let mut fields = line.split_whitespace();
-        let (Some(found_pid), Some(parent_token)) = (fields.next(), fields.next()) else {
-            return Ok(None);
-        };
-        if found_pid.parse::<u32>().ok() != Some(pid) {
-            return Ok(None);
-        }
-        let parent = parent_token
-            .parse::<u32>()
-            .map_err(|error| format!("parse parent pid for watch-owner {pid}: {error}"))?;
-        let after_pid = line
-            .strip_prefix(found_pid)
-            .unwrap_or_default()
-            .trim_start();
-        let command = after_pid
-            .strip_prefix(parent_token)
-            .unwrap_or_default()
-            .trim_start();
-        Ok(Some((parent, command.to_string())))
-    }
-    #[cfg(target_os = "windows")]
-    {
-        #[derive(serde::Deserialize)]
-        #[serde(rename_all = "PascalCase")]
-        struct ProcessRow {
-            process_id: u32,
-            parent_process_id: u32,
-            command_line: Option<String>,
-        }
-        if output.stdout.iter().all(u8::is_ascii_whitespace) {
-            return Ok(None);
-        }
-        let value: serde_json::Value = serde_json::from_slice(&output.stdout)
-            .map_err(|error| format!("parse watch-owner process {pid}: {error}"))?;
-        if value.is_null() {
-            return Ok(None);
-        }
-        let row_value = value
-            .as_array()
-            .and_then(|rows| rows.first())
-            .unwrap_or(&value);
-        let row: ProcessRow = serde_json::from_value(row_value.clone())
-            .map_err(|error| format!("parse watch-owner process {pid}: {error}"))?;
-        if row.process_id != pid {
-            return Ok(None);
-        }
-        Ok(Some((
-            row.parent_process_id,
-            row.command_line.unwrap_or_default(),
-        )))
-    }
-    #[cfg(not(any(unix, target_os = "windows")))]
-    {
-        let _ = pid;
-        Err("unsupported process inspection platform".to_string())
-    }
+    hq_desktop_core::watch_owner::process_info(pid)
 }
 
 fn is_sync_runner_command(command: &str, hq_root: &str) -> bool {
@@ -7105,15 +7018,12 @@ fn terminate_external_watch_runner(
             &format!("graceful stop for orphan watch runner {pid} failed: {error}"),
         );
     }
-    let deadline = Instant::now() + WATCH_OWNER_TERMINATION_GRACE;
-    while Instant::now() < deadline {
-        match process_info(pid) {
-            Ok(Some((_, command))) if is_sync_runner_command(&command, hq_root) => {
-                thread::sleep(Duration::from_millis(100))
-            }
-            Ok(_) => return Ok(true),
-            Err(error) => return Err(error),
-        }
+    if hq_desktop_core::watch_owner::wait_for_process_to_exit(
+        pid,
+        WATCH_OWNER_TERMINATION_GRACE,
+        |command| is_sync_runner_command(command, hq_root),
+    )? {
+        return Ok(true);
     }
 
     #[cfg(unix)]
@@ -7131,17 +7041,11 @@ fn terminate_external_watch_runner(
     if let Err(error) = forced {
         return Err(error);
     }
-    let deadline = Instant::now() + Duration::from_secs(1);
-    while Instant::now() < deadline {
-        match process_info(pid) {
-            Ok(Some((_, command))) if is_sync_runner_command(&command, hq_root) => {
-                thread::sleep(Duration::from_millis(100))
-            }
-            Ok(_) => return Ok(true),
-            Err(error) => return Err(error),
-        }
-    }
-    Ok(false)
+    hq_desktop_core::watch_owner::wait_for_process_to_exit(
+        pid,
+        Duration::from_secs(1),
+        |command| is_sync_runner_command(command, hq_root),
+    )
 }
 
 /// Background supervisor: every `SUPERVISOR_INTERVAL`, ensure the watch daemon
