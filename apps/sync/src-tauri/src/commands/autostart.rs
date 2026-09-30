@@ -135,12 +135,11 @@ pub fn take_launch_agent_repoint_notice() -> Option<String> {
 /// the effective `startAtLogin` preference so a fresh install autostarts by
 /// default without the user having to open Settings — while still honouring
 /// an explicit `"startAtLogin": false` opt-out (in which case a stale plist
-/// is removed). It ALSO self-heals an existing registration that points at a
-/// stale executable path: an older build wrote `.../HQ.app/Contents/MacOS/HQ`,
-/// but the bundled binary is `hq-sync-menubar`, so launchd exited EX_CONFIG
-/// and autosync never ran. On upgrade we detect the mismatch and rewrite the
-/// plist to the current executable path. Best-effort: every IO error is logged
-/// and swallowed so a failure here can never abort app launch.
+/// is removed). It also self-heals an existing registration with a stale
+/// executable path or missing restart policy. On upgrade, a stale LaunchAgent
+/// plist is rewritten and reloaded so launchd uses the current definition.
+/// Best-effort: every IO error is logged and swallowed so a failure here can
+/// never abort app launch.
 pub fn ensure_autostart_on_launch() {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
@@ -169,15 +168,16 @@ pub fn ensure_autostart_on_launch() {
             }
         };
 
-        // Path currency only matters while a registration exists. On a probe
-        // error, assume current so a transient failure never rewrites the plist.
-        let path_is_current = if currently_enabled {
+        // Registration currency only matters while a registration exists. On
+        // a probe error, assume current so a transient failure never rewrites
+        // the plist.
+        let registration_is_current = if currently_enabled {
             match hq_platform::autostart::is_current() {
                 Ok(v) => v,
                 Err(e) => {
                     log(
                         "autostart",
-                        &format!("ensure: cannot read autostart path state: {e}"),
+                        &format!("ensure: cannot read LaunchAgent registration state: {e}"),
                     );
                     true
                 }
@@ -189,31 +189,54 @@ pub fn ensure_autostart_on_launch() {
         match hq_platform::autostart::reconcile_action(
             want_enabled,
             currently_enabled,
-            path_is_current,
+            registration_is_current,
         ) {
             ReconcileAction::None => {}
             action @ (ReconcileAction::Enable | ReconcileAction::Refresh) => {
-                match hq_platform::autostart::set_enabled(true) {
-                    Ok(()) => {
-                        let created = if action == ReconcileAction::Refresh {
-                            "rewrote stale LaunchAgent path"
-                        } else {
-                            "created LaunchAgent plist (default-on)"
-                        };
+                let mut deferred_until_next_login = false;
+                let result = hq_platform::autostart::apply_reconcile_action(
+                    action,
+                    hq_platform::autostart::set_enabled,
+                    || {
                         #[cfg(target_os = "macos")]
-                        log("autostart", &format!("ensure: {created}"));
-                        #[cfg(target_os = "windows")]
+                        {
+                            let argv: Vec<String> = std::env::args().collect();
+                            hq_platform::launchagent::argv_is_launch_agent_relaunch(&argv)
+                        }
+                        #[cfg(not(target_os = "macos"))]
+                        {
+                            false
+                        }
+                    },
+                    || {
+                        #[cfg(target_os = "macos")]
+                        {
+                            hq_platform::launchagent::reload_installed_launch_agent()
+                        }
+                        #[cfg(not(target_os = "macos"))]
+                        {
+                            Ok(())
+                        }
+                    },
+                    || {
+                        deferred_until_next_login = true;
                         log(
                             "autostart",
-                            &format!(
-                                "ensure: {}",
-                                created
-                                    .replace("LaunchAgent plist", "Run value")
-                                    .replace("LaunchAgent", "Run value")
-                            ),
+                            "ensure: LaunchAgent plist refreshed; the current agent process will keep running and the new policy takes effect at the next login",
                         );
+                    },
+                );
+                match result {
+                    Ok(()) if !deferred_until_next_login => {
+                        let outcome = if action == ReconcileAction::Refresh {
+                            "refreshed stale autostart registration"
+                        } else {
+                            "created autostart registration (default-on)"
+                        };
+                        log("autostart", &format!("ensure: {outcome}"));
                     }
-                    Err(e) => log("autostart", &format!("ensure: set autostart failed: {e}")),
+                    Ok(()) => {}
+                    Err(e) => log("autostart", &format!("ensure: reconciliation failed: {e}")),
                 }
             }
             ReconcileAction::Disable => match hq_platform::autostart::set_enabled(false) {

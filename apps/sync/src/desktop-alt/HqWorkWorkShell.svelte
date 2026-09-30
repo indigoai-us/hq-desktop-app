@@ -94,17 +94,22 @@
   });
   /**
    * Live AiTools state for the shared InstallChoice panel used by BOTH the
-   * setup assistant and the New bot wizard. Hydrated on mount and refreshed
-   * on every runtime re-check, so the wizard's "not installed" state
-   * renders assistant buttons the moment `detect_ai_tools` sees the
-   * Claude Desktop or ChatGPT app on disk. Kept null while the probe
-   * runs the first time — the panel renders a neutral "Checking…" line
-   * rather than making a false claim either way.
+   * setup assistant and the New bot wizard. Populated LAZILY: the probe is
+   * expensive (shell probes for claude/codex/grok plus stats of thousands
+   * of files under ~/.claude / ~/.codex / ~/.grok) and running it on every
+   * app launch froze boot (#1152). The wizard/setup surfaces ask for it
+   * on demand via `requestInstallChoiceAiTools` (wired to the shell as
+   * `onrequestaitools`). Kept null until then; InstallChoice renders a
+   * neutral "Checking…" line and stays interactive with a "Check again"
+   * retry, so a slow or failing probe never blocks the UI.
    */
   let installChoiceAiTools = $state<
     import('@hq/ui').AiTools | null
   >(null);
+  let installChoiceAiToolsProbing = $state(false);
   async function refreshInstallChoiceAiTools(): Promise<void> {
+    if (installChoiceAiToolsProbing) return;
+    installChoiceAiToolsProbing = true;
     try {
       const res = await adapter.shell.detectAiTools();
       installChoiceAiTools = res.ok
@@ -112,9 +117,18 @@
         : null;
     } catch {
       installChoiceAiTools = null;
+    } finally {
+      installChoiceAiToolsProbing = false;
     }
   }
-  void refreshInstallChoiceAiTools();
+  /**
+   * Called by shell consumers (New bot wizard's HomeStep on mount, the
+   * setup assistant's install guide) when they actually need the probe.
+   * Idempotent — running twice while a probe is in flight is a no-op.
+   */
+  function requestInstallChoiceAiTools(): void {
+    void refreshInstallChoiceAiTools();
+  }
   onDestroy(() => {
     void adapter.dispose?.();
   });
@@ -1135,6 +1149,7 @@
         {extraPages}
         {setupInstallGuide}
         aiTools={installChoiceAiTools}
+        onrequestaitools={requestInstallChoiceAiTools}
         onopenassistant={setupInstallGuide.onopenassistant}
         onassistedinstall={async (tool) => {
           const outcome = await setupInstallGuide.oninstall(tool);
