@@ -502,6 +502,7 @@ impl CoreUpdateRescueTelemetry {
             .and_then(|context| context.lines().next())
             .and_then(core_update_rescue_error_class);
         let terminal_diagnostics = core_update_last_failure_context(raw)
+            .or_else(|| core_update_last_clone_failure_context(raw))
             .or_else(|| core_update_last_error_context(raw))
             .unwrap_or(raw);
         let rescue_error_class = terminal_failure_marker_class
@@ -829,6 +830,23 @@ fn core_update_rescue_step_from_raw(raw: &str, error_class: &str) -> &'static st
 
 fn core_update_last_failure_context(raw: &str) -> Option<&str> {
     let prefix = "hq_rescue_failure_kind=";
+    let mut offset = 0;
+    let mut last_marker_offset = None;
+    for line in raw.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if trimmed
+            .get(..prefix.len())
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(prefix))
+        {
+            last_marker_offset = Some(offset);
+        }
+        offset += line.len();
+    }
+    last_marker_offset.map(|start| &raw[start..])
+}
+
+fn core_update_last_clone_failure_context(raw: &str) -> Option<&str> {
+    let prefix = "hq_rescue_clone_failure_class=";
     let mut offset = 0;
     let mut last_marker_offset = None;
     for line in raw.split_inclusive('\n') {
