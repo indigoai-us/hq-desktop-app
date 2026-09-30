@@ -11,6 +11,7 @@ The release moves it under the version it ships in.
 - Internal desktop regression tests now exercise runtime behavior instead of reading implementation source text.
 - Startup reporting now treats pending first-run consent and confirmed
   missing-root recovery as expected.
+- Desktop setup continues to report installation failures after an internal error interrupts its diagnostic cache.
 
 - The existing sync plan-limit notice can report gated exposure and Upgrade-click measurements.
 
