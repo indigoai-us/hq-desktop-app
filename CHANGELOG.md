@@ -10,6 +10,15 @@ The release moves it under the version it ships in.
 
 - On Windows, template installs now use safe file-copy and junction fallbacks when symlink creation is unavailable.
 
+
+
+
+
+
+- Added desktop regression tests for adapter results and call-window URL target rejection.
+
+## [0.10.364] — 2026-09-30
+
 - The desktop app no longer checks which AI tools are installed every time it opens; it checks when you create a bot or run setup.
 
 - On macOS, HQ Sync restarts after an abnormal exit and waits at least 30
@@ -25,8 +34,6 @@ The release moves it under the version it ships in.
 - Desktop setup continues to report installation failures after an internal error interrupts its diagnostic cache.
 
 - The existing sync plan-limit notice can report gated exposure and Upgrade-click measurements.
-
-- Added desktop regression tests for adapter results and call-window URL target rejection.
 
 ## [0.10.363] — 2026-09-30
 
