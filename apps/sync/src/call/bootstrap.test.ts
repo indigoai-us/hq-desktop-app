@@ -124,6 +124,22 @@ describe("resolveCallTarget", () => {
     expect(await resolveCallTarget(bench.deps)).toBeNull();
   });
 
+  it("never reads a target from the URL or query string", async () => {
+    const bench = harness({ targetWaitMs: 5 });
+    const source = await import("node:fs/promises").then((fs) =>
+      fs.readFile(new URL("./bootstrap.ts", import.meta.url), "utf8"),
+    );
+    for (const forbidden of [
+      "location.search",
+      "URLSearchParams",
+      "window.location",
+      "localStorage",
+    ]) {
+      expect(source).not.toContain(forbidden);
+    }
+    expect(await resolveCallTarget(bench.deps)).toBeNull();
+  });
+
   it("does not authorize a call target from URL query data", async () => {
     const bench = harness({ targetWaitMs: 1 });
     const search = `?target=${encodeURIComponent(JSON.stringify(target()))}`;

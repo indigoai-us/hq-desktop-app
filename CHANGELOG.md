@@ -22,7 +22,7 @@ The release moves it under the version it ships in.
 
 - The existing sync plan-limit notice can report gated exposure and Upgrade-click measurements.
 
-- Desktop regression tests now verify adapter results and that call windows ignore URL-supplied targets.
+- Added desktop regression tests for adapter results and call-window URL target rejection.
 
 ## [0.10.363] — 2026-09-30
 
