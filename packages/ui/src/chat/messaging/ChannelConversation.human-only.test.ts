@@ -270,7 +270,7 @@ describe("ChannelConversation human-only mode", () => {
   it("default-on: 'Show N earlier' count is the visible count, not the raw count", async () => {
     // 25 visible human rows total; window is 20 (TIMELINE_WINDOW) so 5 are
     // hidden. Interleaved mesh rows must NOT be added into the count.
-    const rows: Array<Record<string, unknown>> = [];
+    const rows: unknown[] = [];
     for (let i = 0; i < 25; i += 1) {
       rows.push({
         eventId: `h_${i}`,
@@ -292,7 +292,7 @@ describe("ChannelConversation human-only mode", () => {
     document.body.appendChild(host);
     component = mount(ChannelConversation, {
       target: host,
-      props: { humanOnly: true, messages: rows },
+      props: { humanOnly: true, messages: rows as never },
     });
     await tick();
     const btn = host.querySelector('[data-testid="conversation-load-earlier"]');
