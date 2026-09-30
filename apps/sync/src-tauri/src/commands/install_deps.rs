@@ -2908,11 +2908,15 @@ pub fn managed_node_reported_version(node_bin: &std::path::Path) -> Option<Strin
 /// too old for the system npm that happens to be on PATH.
 #[cfg(not(windows))]
 fn managed_node_toolchain_is_usable(home: &std::path::Path) -> bool {
+    let Some(expected_arch) = node_dist_arch_for(std::env::consts::ARCH) else {
+        return false;
+    };
     let node = managed_node_bin_in(home).join("node");
     let npm = managed_node_bin_in(home).join("npm");
     if !node.is_file()
         || !managed_node_reported_version(&node)
             .is_some_and(|version| version.trim() == MANAGED_NODE_VERSION)
+        || !hq_desktop_core::toolchain::node_binary_has_arch(&node, expected_arch)
         || !npm.is_file()
     {
         return false;
