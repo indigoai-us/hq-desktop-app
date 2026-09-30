@@ -9,6 +9,9 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Internal desktop regression tests now exercise runtime behavior instead of reading implementation source text.
+- Core update failures caused by low snapshot space now report a dedicated
+  diagnostic class and coarse required/available space buckets.
+
 - Startup reporting now treats pending first-run consent and confirmed
   missing-root recovery as expected.
 
