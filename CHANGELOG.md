@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Conversations now hide work-mesh activity even when it is posted under a person's name, and the sidebar orders by messages people typed.
 - Channels and conversations now show only messages from people. Work-mesh activity (noted, started, and done lines), session cards, system events, and bot-only messages are hidden. A bot's reply in a conversation a person started still shows. A channel with only hidden activity shows "No messages yet".
 
 ## [0.10.361] — 2026-09-30
