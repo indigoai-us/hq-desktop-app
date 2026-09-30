@@ -1,8 +1,11 @@
+import { DEFAULT_WINDOW_TRANSPARENCY } from '@hq/ui/settings/appearance-seam';
+
+export { DEFAULT_WINDOW_TRANSPARENCY } from '@hq/ui/settings/appearance-seam';
+
 export const APPEARANCE_STORAGE_KEY = 'hq-sync.appearance.v1';
 export const APPEARANCE_CHANGE_EVENT = 'hq:appearance-change';
 export const APPEARANCE_REQUEST_EVENT = 'hq:appearance-request';
 
-export const DEFAULT_WINDOW_TRANSPARENCY = 65;
 export const MIN_WINDOW_TRANSPARENCY = 0;
 export const MAX_WINDOW_TRANSPARENCY = 100;
 export const MIN_WINDOW_OPACITY = 0;

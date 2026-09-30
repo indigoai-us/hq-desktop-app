@@ -8,6 +8,9 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Fresh installs now open fully opaque until Window opacity is changed; saved
+  opacity values remain in effect.
+
 ## [0.10.365] — 2026-09-30
 
 - Opening the desktop window no longer freezes the whole app for seconds
