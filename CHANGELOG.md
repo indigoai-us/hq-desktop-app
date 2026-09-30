@@ -8,6 +8,10 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Core update failures now report a specific snapshot failure class, such as
+  insufficient space, a protected recovery snapshot, a permission error, a
+  symlink, or a copy failure.
+
 ## [0.10.363] — 2026-09-30
 
 - Opening a conversation no longer shows an empty pane when recent activity was hidden; older messages from people load automatically.
