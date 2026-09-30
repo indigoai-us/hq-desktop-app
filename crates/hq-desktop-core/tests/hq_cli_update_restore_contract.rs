@@ -15,7 +15,10 @@ fn write_fake_hq(path: &Path, version: &str) {
 }
 
 fn probe_fake_hq(path: &Path) -> Option<String> {
-    let output = Command::new(path).output().expect("spawn fake hq");
+    let output = Command::new("sh")
+        .arg(path)
+        .output()
+        .expect("spawn fake hq");
     output
         .status
         .success()
