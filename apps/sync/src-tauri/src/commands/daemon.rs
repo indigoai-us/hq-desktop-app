@@ -1415,36 +1415,46 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                         // (HQ-DESKTOP-3J / HQ-DESKTOP-4D).
                         let cancelled =
                             is_cancelled_for_generation(DAEMON_HANDLE, daemon_generation);
-                        let watch_owner_inspection = if signal.is_none()
-                            && matches!(code, Some(20 | 21))
-                        {
-                            match inspect_watch_owner(&hq_folder) {
-                                Ok(inspection) => inspection,
-                                Err(error) => {
-                                    log("daemon", &format!("watch-owner inspection failed: {error}"));
-                                    None
+                        let watch_owner_inspection =
+                            if signal.is_none() && matches!(code, Some(20 | 21)) {
+                                match inspect_watch_owner(&hq_folder) {
+                                    Ok(inspection) => inspection,
+                                    Err(error) => {
+                                        log(
+                                            "daemon",
+                                            &format!("watch-owner inspection failed: {error}"),
+                                        );
+                                        None
+                                    }
                                 }
-                            }
-                        } else {
-                            None
-                        };
-                        let mut watch_owner_exit = if signal.is_none()
-                            && matches!(code, Some(20 | 21))
-                        {
-                            Some(hq_desktop_core::watch_owner::plan_busy_watch_exit(
-                                code,
-                                watch_owner_inspection.as_ref().map(|inspection| &inspection.status),
-                                watch_owner_inspection.as_ref().is_some_and(|inspection| inspection.is_live_runner),
-                                watch_owner_inspection.as_ref().is_some_and(|inspection| inspection.is_child_of_app),
-                            ))
-                        } else {
-                            None
-                        };
+                            } else {
+                                None
+                            };
+                        let mut watch_owner_exit =
+                            if signal.is_none() && matches!(code, Some(20 | 21)) {
+                                Some(hq_desktop_core::watch_owner::plan_busy_watch_exit(
+                                    code,
+                                    watch_owner_inspection
+                                        .as_ref()
+                                        .map(|inspection| &inspection.status),
+                                    watch_owner_inspection
+                                        .as_ref()
+                                        .is_some_and(|inspection| inspection.is_live_runner),
+                                    watch_owner_inspection
+                                        .as_ref()
+                                        .is_some_and(|inspection| inspection.is_child_of_app),
+                                ))
+                            } else {
+                                None
+                            };
                         if let (Some(plan), Some(inspection)) =
                             (watch_owner_exit.as_mut(), watch_owner_inspection.as_ref())
                         {
                             if plan.take_over_orphan {
-                                match terminate_external_watch_runner(&hq_folder, &inspection.status) {
+                                match terminate_external_watch_runner(
+                                    &hq_folder,
+                                    &inspection.status,
+                                ) {
                                     Ok(true) => {
                                         ORPHAN_TAKEOVER_PENDING.store(true, Ordering::Release);
                                         log("daemon", "watch-owner orphan stopped; requesting one watcher respawn");
@@ -6913,8 +6923,13 @@ fn process_snapshot() -> Result<HashMap<u32, (u32, String)>, String> {
     let mut processes = HashMap::new();
     #[cfg(unix)]
     for line in String::from_utf8_lossy(&output.stdout).lines() {
-        let mut fields = line.trim().splitn(3, char::is_whitespace).filter(|v| !v.is_empty());
-        let (Some(pid), Some(parent), Some(command)) = (fields.next(), fields.next(), fields.next()) else {
+        let mut fields = line
+            .trim()
+            .splitn(3, char::is_whitespace)
+            .filter(|value| !value.is_empty());
+        let (Some(pid), Some(parent), Some(command)) =
+            (fields.next(), fields.next(), fields.next())
+        else {
             continue;
         };
         if let (Ok(pid), Ok(parent)) = (pid.parse::<u32>(), parent.parse::<u32>()) {
@@ -6956,8 +6971,8 @@ fn is_sync_runner_command(command: &str, hq_root: &str) -> bool {
         || lower.contains(&format!("hq_root={root}"));
     root_argument
         && (lower.contains("sync-runner.js")
-        || lower.contains("hq-sync-runner")
-        || lower.contains("hq-sync-runner.cmd"))
+            || lower.contains("hq-sync-runner")
+            || lower.contains("hq-sync-runner.cmd"))
 }
 
 fn inspect_watch_owner(hq_root: &str) -> Result<Option<InspectedWatchOwner>, String> {
@@ -7003,7 +7018,10 @@ fn hq_daemon_owns_live_watch(hq_root: &str) -> bool {
         }
         Ok(None) => false,
         Err(error) => {
-            log("daemon", &format!("watch-owner preflight unavailable: {error}"));
+            log(
+                "daemon",
+                &format!("watch-owner preflight unavailable: {error}"),
+            );
             false
         }
     }
@@ -7026,7 +7044,10 @@ fn terminate_external_watch_runner(
         return Ok(false);
     }
     #[cfg(unix)]
-    let graceful = nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), nix::sys::signal::Signal::SIGTERM);
+    let graceful = nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(pid as i32),
+        nix::sys::signal::Signal::SIGTERM,
+    );
     #[cfg(target_os = "windows")]
     let graceful = Command::new("taskkill")
         .args(["/PID", &pid.to_string(), "/T"])
@@ -7037,12 +7058,21 @@ fn terminate_external_watch_runner(
     let graceful: Result<(), nix::errno::Errno> = Err(nix::errno::Errno::ENOSYS);
 
     if let Err(error) = graceful {
-        log("daemon", &format!("graceful stop for orphan watch runner {pid} failed: {error}"));
+        log(
+            "daemon",
+            &format!("graceful stop for orphan watch runner {pid} failed: {error}"),
+        );
     }
     let deadline = Instant::now() + WATCH_OWNER_TERMINATION_GRACE;
     while Instant::now() < deadline {
         match process_snapshot() {
-            Ok(processes) if !processes.get(&pid).is_some_and(|(_, command)| is_sync_runner_command(command, hq_root)) => return Ok(true),
+            Ok(processes)
+                if !processes
+                    .get(&pid)
+                    .is_some_and(|(_, command)| is_sync_runner_command(command, hq_root)) =>
+            {
+                return Ok(true)
+            }
             Ok(_) => thread::sleep(Duration::from_millis(100)),
             Err(error) => return Err(error),
         }
@@ -7066,7 +7096,13 @@ fn terminate_external_watch_runner(
     let deadline = Instant::now() + Duration::from_secs(1);
     while Instant::now() < deadline {
         match process_snapshot() {
-            Ok(processes) if !processes.get(&pid).is_some_and(|(_, command)| is_sync_runner_command(command, hq_root)) => return Ok(true),
+            Ok(processes)
+                if !processes
+                    .get(&pid)
+                    .is_some_and(|(_, command)| is_sync_runner_command(command, hq_root)) =>
+            {
+                return Ok(true)
+            }
             Ok(_) => thread::sleep(Duration::from_millis(100)),
             Err(error) => return Err(error),
         }
@@ -7102,19 +7138,28 @@ pub fn setup_daemon_supervisor(app: &AppHandle) {
                 .is_some_and(|hq_root| hq_daemon_owns_live_watch(&hq_root))
             {
                 set_lifecycle_state(WatchDaemonState::Running, DaemonFailureCategory::None);
-                log("daemon.supervisor", "hq-daemon owns the live watch lease; not respawning desktop watcher");
+                log(
+                    "daemon.supervisor",
+                    "hq-daemon owns the live watch lease; not respawning desktop watcher",
+                );
                 thread::sleep(SUPERVISOR_INTERVAL);
                 continue;
             }
             let (app_owned, registered_child_alive, daemon_alive, sample_pid) =
                 observe_daemon_liveness();
             if ORPHAN_TAKEOVER_PENDING.swap(false, Ordering::AcqRel) {
-                log("daemon.supervisor", "performing the single respawn after watch-owner orphan takeover");
+                log(
+                    "daemon.supervisor",
+                    "performing the single respawn after watch-owner orphan takeover",
+                );
                 SUPERVISOR_RESPAWN_IN_FLIGHT.store(true, Ordering::Release);
                 let respawn = start_daemon_for_supervisor_respawn(handle.clone());
                 SUPERVISOR_RESPAWN_IN_FLIGHT.store(false, Ordering::Release);
                 if let Err(error) = respawn {
-                    log("daemon.supervisor", &format!("orphan-takeover respawn failed: {error}"));
+                    log(
+                        "daemon.supervisor",
+                        &format!("orphan-takeover respawn failed: {error}"),
+                    );
                 }
                 thread::sleep(SUPERVISOR_INTERVAL);
                 continue;
