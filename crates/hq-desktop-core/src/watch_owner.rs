@@ -10,6 +10,10 @@ use sha1::{Digest, Sha1};
 
 /// First hq-cloud release that accepts the `sync-runner --owner` option (#685).
 pub const OWNER_ARGUMENT_MIN_VERSION: &str = "6.18.13";
+/// First hq-cloud release that accepts `sync-runner --exit-with-parent`.
+pub const EXIT_WITH_PARENT_ARGUMENT_MIN_VERSION: &str = "6.18.24";
+#[cfg(unix)]
+const NPX_PARENT_EXIT_GUARD_SCRIPT: &str = "parent=$PPID; \"$@\" & child=$!; while kill -0 \"$parent\" 2>/dev/null; do sleep 1; done; kill -TERM \"$child\" 2>/dev/null || true; wait \"$child\"";
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -57,6 +61,47 @@ pub fn append_desktop_owner_argument(args: &mut Vec<String>, runner_version: &st
     }
     args.extend(["--owner".to_string(), "hq-desktop".to_string()]);
     true
+}
+
+pub fn append_desktop_exit_with_parent_argument(
+    args: &mut Vec<String>,
+    runner_version: &str,
+) -> bool {
+    if !args.iter().any(|arg| arg == "--watch")
+        || !runner_supports_exit_with_parent_argument(runner_version)
+    {
+        return false;
+    }
+    args.push("--exit-with-parent".to_string());
+    true
+}
+
+pub fn runner_supports_exit_with_parent_argument(version: &str) -> bool {
+    let version = version.strip_prefix('v').unwrap_or(version);
+    let (Ok(version), Ok(minimum)) = (
+        semver::Version::parse(version),
+        semver::Version::parse(EXIT_WITH_PARENT_ARGUMENT_MIN_VERSION),
+    ) else {
+        return false;
+    };
+    version >= minimum
+}
+
+/// Put an npx invocation under a small shell supervisor. The desktop starts
+/// children in their own process group, which only the app can clean up during
+/// an orderly exit. After an app crash, this shell notices that its original
+/// parent PID disappeared and stops npx; the runner then observes its own
+/// parent exit and releases its watch-owner lease through the normal shutdown.
+#[cfg(unix)]
+pub fn wrap_npx_for_parent_exit(command: &str, args: &[String]) -> Vec<String> {
+    let mut wrapped = vec![
+        "-c".to_string(),
+        NPX_PARENT_EXIT_GUARD_SCRIPT.to_string(),
+        "hq-watch-parent-guard".to_string(),
+        command.to_string(),
+    ];
+    wrapped.extend(args.iter().cloned());
+    wrapped
 }
 
 pub fn classify_busy_owner(owner: &str, pid_is_child_of_app: bool) -> BusyOwnerDisposition {
@@ -462,6 +507,56 @@ mod tests {
         assert_eq!(supported, ["--watch", "--owner", "hq-desktop"]);
         assert!(runner_supports_owner_argument("6.18.21"));
         assert!(!runner_supports_owner_argument("unknown"));
+    }
+
+    #[test]
+    fn exit_with_parent_argument_is_watch_only_and_version_gated() {
+        let mut old_watch = vec!["--watch".to_string()];
+        assert!(!append_desktop_exit_with_parent_argument(
+            &mut old_watch,
+            "6.18.23"
+        ));
+        assert_eq!(old_watch, ["--watch"]);
+
+        let mut supported_watch = vec!["--watch".to_string()];
+        assert!(append_desktop_exit_with_parent_argument(
+            &mut supported_watch,
+            "6.18.24"
+        ));
+        assert_eq!(supported_watch, ["--watch", "--exit-with-parent"]);
+
+        let mut one_shot = vec!["--companies".to_string()];
+        assert!(!append_desktop_exit_with_parent_argument(
+            &mut one_shot,
+            "6.18.24"
+        ));
+        assert_eq!(one_shot, ["--companies"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn npx_parent_guard_preserves_the_command_and_arguments() {
+        let args = vec![
+            "-y".to_string(),
+            "@indigoai-us/hq-cloud@~6.18.17".to_string(),
+            "hq-sync-runner".to_string(),
+            "--watch".to_string(),
+            "--exit-with-parent".to_string(),
+        ];
+        assert_eq!(
+            wrap_npx_for_parent_exit("/usr/local/bin/npx", &args),
+            [
+                "-c",
+                NPX_PARENT_EXIT_GUARD_SCRIPT,
+                "hq-watch-parent-guard",
+                "/usr/local/bin/npx",
+                "-y",
+                "@indigoai-us/hq-cloud@~6.18.17",
+                "hq-sync-runner",
+                "--watch",
+                "--exit-with-parent",
+            ]
+        );
     }
 
     #[test]
