@@ -59,8 +59,8 @@ use tauri::{AppHandle, Emitter, Listener, Manager};
 use crate::commands::config::{read_hq_config_lenient, MenubarPrefs};
 use crate::commands::hq_core_drift::{
     drift_blob_sha_for_path, excluded_scope_paths_for, git_blob_sha, is_conflict_artifact,
-    path_in_excluded_scope, path_in_locked_scope, read_locked_paths, walk_local_under_scope,
-    BaselineStatus, DriftEntry, DriftReport,
+    normalized_or_raw_drift_sha, path_in_excluded_scope, path_in_locked_scope, read_locked_paths,
+    walk_local_under_scope, BaselineStatus, DriftEntry, DriftReport,
 };
 use crate::commands::hq_core_staging;
 use crate::commands::hq_core_update::get_local_version;
@@ -3861,15 +3861,18 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
             .await
             .map_err(|error| CoreUpdateError::new(CoreUpdateErrorKind::Network, error))?;
         if let Some((raw_sha, _)) = target_tree.get(GENERATED_SETTINGS_PATH).cloned() {
-            let normalized_sha =
+            let normalized =
                 fetch_normalized_settings_sha(&client, &target_repo, &target_ref, Some(&raw_sha))
-                    .await
-                    .map_err(|error| {
-                        CoreUpdateError::new(
-                            CoreUpdateErrorKind::Network,
-                            format!("normalize target settings for Core Drift: {error}"),
-                        )
-                    })?;
+                    .await;
+            let (normalized_sha, error) = normalized_or_raw_drift_sha(&raw_sha, normalized);
+            if let Some(error) = error {
+                log(
+                    "hq-core-state",
+                    &format!(
+                        "could not normalize target {GENERATED_SETTINGS_PATH} at {target_repo}@{target_ref}; retaining raw tree SHA ({error})"
+                    ),
+                );
+            }
             if let Some((sha, _)) = target_tree.get_mut(GENERATED_SETTINGS_PATH) {
                 *sha = normalized_sha;
             }
@@ -3881,18 +3884,19 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
                 )
                 .map(|baseline| baseline.normalized_blobs);
                 if let Some(mut local) = local {
-                    if local.contains_key(GENERATED_SETTINGS_PATH) {
-                        let normalized_sha =
-                            fetch_normalized_settings_sha(&client, source, commit, None)
-                                .await
-                                .map_err(|error| {
-                                    CoreUpdateError::new(
-                                        CoreUpdateErrorKind::Network,
-                                        format!(
-                                            "normalize installed settings for Core Drift: {error}"
-                                        ),
-                                    )
-                                })?;
+                    if let Some(raw_sha) = local.get(GENERATED_SETTINGS_PATH).cloned() {
+                        let normalized =
+                            fetch_normalized_settings_sha(&client, source, commit, None).await;
+                        let (normalized_sha, error) =
+                            normalized_or_raw_drift_sha(&raw_sha, normalized);
+                        if let Some(error) = error {
+                            log(
+                                "hq-core-state",
+                                &format!(
+                                    "could not normalize installed {GENERATED_SETTINGS_PATH} at {source}@{commit}; retaining raw baseline SHA ({error})"
+                                ),
+                            );
+                        }
                         local.insert(GENERATED_SETTINGS_PATH.to_string(), normalized_sha);
                     }
                     Some(local)
@@ -3900,21 +3904,23 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
                     match fetch_tree(&client, source, commit, request_scope).await {
                         Ok(mut tree) => {
                             if let Some((raw_sha, _)) = tree.get(GENERATED_SETTINGS_PATH).cloned() {
-                                let normalized_sha = fetch_normalized_settings_sha(
+                                let normalized = fetch_normalized_settings_sha(
                                     &client,
                                     source,
                                     commit,
                                     Some(&raw_sha),
                                 )
-                                .await
-                                .map_err(|error| {
-                                    CoreUpdateError::new(
-                                        CoreUpdateErrorKind::Network,
-                                        format!(
-                                            "normalize baseline settings for Core Drift: {error}"
+                                .await;
+                                let (normalized_sha, error) =
+                                    normalized_or_raw_drift_sha(&raw_sha, normalized);
+                                if let Some(error) = error {
+                                    log(
+                                        "hq-core-state",
+                                        &format!(
+                                            "could not normalize baseline {GENERATED_SETTINGS_PATH} at {source}@{commit}; retaining raw tree SHA ({error})"
                                         ),
-                                    )
-                                })?;
+                                    );
+                                }
                                 if let Some((sha, _)) = tree.get_mut(GENERATED_SETTINGS_PATH) {
                                     *sha = normalized_sha;
                                 }

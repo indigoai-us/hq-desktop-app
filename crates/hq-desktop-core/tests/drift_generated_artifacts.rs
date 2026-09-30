@@ -1,7 +1,8 @@
 use std::fs;
 
 use hq_desktop_core::drift_scope::{
-    drift_blob_sha, excluded_scope_paths_for, path_in_excluded_scope, walk_local_under_scope,
+    drift_blob_sha, drift_blob_sha_for_path, excluded_scope_paths_for, normalized_or_raw_drift_sha,
+    path_in_excluded_scope, walk_local_under_scope,
 };
 
 fn without_generated_path(settings: &str) -> Vec<u8> {
@@ -72,4 +73,30 @@ fn company_skill_wrapper_marker_is_excluded_without_excluding_neighboring_skills
     let local = walk_local_under_scope(root, &[".claude/skills/".to_string()]);
     assert!(!local.contains_key(marker));
     assert!(local.contains_key(".claude/skills/company/user-skill.md"));
+}
+
+#[test]
+fn failed_settings_normalization_keeps_raw_sha_and_returns_the_error_for_logging() {
+    let raw_sha = "raw-tree-sha";
+    let (chosen_sha, error) = normalized_or_raw_drift_sha(raw_sha, Err("HTTP 403".to_string()));
+    assert_eq!(chosen_sha, raw_sha);
+    assert_eq!(error.as_deref(), Some("HTTP 403"));
+
+    let (chosen_sha, error) =
+        normalized_or_raw_drift_sha(raw_sha, Ok("normalized-sha".to_string()));
+    assert_eq!(chosen_sha, "normalized-sha");
+    assert_eq!(error, None);
+}
+
+#[test]
+fn settings_normalization_canonicalizes_json_formatting() {
+    let compact = br#"{"permissions":{"allow":["Read"]}}"#;
+    let reordered_and_pretty = br#"{
+      "env": { "PATH": "/generated/bin" },
+      "permissions": { "allow": [ "Read" ] }
+    }"#;
+    assert_eq!(
+        drift_blob_sha_for_path(".claude/settings.json", compact),
+        drift_blob_sha_for_path(".claude/settings.json", reordered_and_pretty)
+    );
 }

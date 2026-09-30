@@ -554,6 +554,18 @@ pub fn drift_blob_sha_for_path(path: &str, bytes: &[u8]) -> String {
     drift_blob_sha(&normalized)
 }
 
+/// Use the normalized settings hash when available; retain the tree's raw
+/// hash on fetch/parse failure and return the error so the caller can log it.
+pub fn normalized_or_raw_drift_sha(
+    raw_sha: &str,
+    normalized: Result<String, String>,
+) -> (String, Option<String>) {
+    match normalized {
+        Ok(sha) => (sha, None),
+        Err(error) => (raw_sha.to_string(), Some(error)),
+    }
+}
+
 /// True iff the path falls under one of the excluded-path entries.
 /// Always does prefix matching (regardless of trailing slash): `core/packages`
 /// and `core/packages/` both exclude files under that directory tree.

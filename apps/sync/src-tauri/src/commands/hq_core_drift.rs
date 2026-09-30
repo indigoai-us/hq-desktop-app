@@ -41,7 +41,8 @@ use std::time::Duration;
 
 pub use hq_desktop_core::drift_scope::{
     drift_blob_sha_for_path, excluded_scope_paths_for, git_blob_sha, is_conflict_artifact,
-    path_in_excluded_scope, path_in_locked_scope, read_locked_paths, walk_local_under_scope,
+    normalized_or_raw_drift_sha, path_in_excluded_scope, path_in_locked_scope, read_locked_paths,
+    walk_local_under_scope,
 };
 use serde::{Deserialize, Serialize};
 
