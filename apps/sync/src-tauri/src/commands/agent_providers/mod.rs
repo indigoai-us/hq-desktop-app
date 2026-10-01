@@ -89,7 +89,11 @@ async fn lookup(tool: SessionTool) -> Result<programs::ProgramLookup, String> {
     .map_err(|_| "Provider lookup timed out. Please retry.".to_owned())?
     .map_err(|_| "Provider lookup failed. Please retry.".to_owned())
 }
-async fn command(program: &str, args: &[&str]) -> Result<tokio::process::Command, ()> {
+async fn command(
+    tool: SessionTool,
+    program: &str,
+    args: &[&str],
+) -> Result<tokio::process::Command, ()> {
     let program = program.to_owned();
     let args: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
     tokio::time::timeout(
@@ -323,7 +327,7 @@ async fn probe_detail(tool: SessionTool, program: &str) -> Result<bool, ProbeErr
         SessionTool::Codex => &["login", "status"],
         SessionTool::Grok => &["models"],
     };
-    let mut child = command(program, args)
+    let mut child = command(tool, program, args)
         .await
         .map_err(|()| ProbeError::failed("the lookup timed out"))?
         .stdout(Stdio::piped())
@@ -415,14 +419,14 @@ async fn run_login(
         return;
     }
     if force && tool == SessionTool::Claude {
-        if let Ok(mut logout) = command(&program, &["auth", "logout"]).await {
+        if let Ok(mut logout) = command(tool, &program, &["auth", "logout"]).await {
             if let Ok(mut child) = logout.stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
                 let _ = tokio::time::timeout(Duration::from_secs(8), child.wait()).await;
                 let _ = child.kill().await;
             }
         }
     }
-    let mut login = match command(&program, args).await {
+    let mut login = match command(tool, &program, args).await {
         Ok(login) => login,
         Err(()) => {
             *status
