@@ -8,8 +8,15 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
-- Startup diagnostics now distinguish unreadable saved credentials from an empty token store.
 - Desktop sync now recovers legacy watcher processes left behind by an app update when their process path and ancestry prove they belong to the desktop. Other active sync owners continue to be left alone.
+- Home now lists projects from your Personal workspace, and Personal board and summary requests resolve with your Personal identity.
+- Usage telemetry now backs off after unaccepted batches and does not resend rows the server explicitly skipped.
+
+## [0.10.370] — 2026-10-01
+
+- First-run setup now retries a just-published npm package when the registry
+  briefly returns E404 or ETARGET, while keeping setup progress active.
+- Startup diagnostics now distinguish unreadable saved credentials from an empty token store.
 
 - With a compatible hq-cloud runner, auto-sync watches the desktop process directly and releases its lease when the app exits, including after a crash or force-quit.
 - A stalled attachment upload or download in the Work app now ends with the usual upload or download error instead of staying open indefinitely.

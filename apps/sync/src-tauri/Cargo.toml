@@ -1,6 +1,6 @@
 [package]
 name = "hq-sync-menubar"
-version = "0.10.368"
+version = "0.10.370"
 edition = "2021"
 
 [build-dependencies]
@@ -251,6 +251,7 @@ path = "examples/emit-sample-journal.rs"
 required-features = ["journal-cli"]
 
 [dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
 hq-desktop-core = { path = "../../../crates/hq-desktop-core", features = ["test-support"] }
 sentry = { version = "^0.35", features = ["test"] }
 tempfile = "3"

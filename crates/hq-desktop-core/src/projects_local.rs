@@ -77,7 +77,7 @@ pub struct LocalProject {
     pub title: String,
     #[serde(default)]
     pub description: String,
-    /// Company slug the project belongs to (the `companies/<slug>/` dir).
+    /// Workspace slug the project belongs to (`companies/<slug>/` or `personal/`).
     pub company: String,
     #[serde(default)]
     pub status: String,
@@ -1236,8 +1236,8 @@ pub fn scan_local_projects(hq_root: &Path) -> Vec<LocalProject> {
     scan_local_projects_scoped(hq_root, None)
 }
 
-/// Scan only the explicitly authorized canonical company slugs.
-///
+/// Scan only explicitly authorized workspace slugs. The reserved `personal`
+/// slug reads the user's personal root; other slugs resolve under companies/.
 /// Filtering happens before board/PRD content is opened, so an unauthorized
 /// local folder is never parsed and a symlinked company alias cannot borrow a
 /// different tenant's canonical identity.
@@ -1248,26 +1248,190 @@ pub fn scan_local_projects_for_companies(
     scan_local_projects_scoped(hq_root, Some(authorized_companies))
 }
 
+fn real_directory(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|metadata| metadata.file_type().is_dir() && !metadata.file_type().is_symlink())
+        .unwrap_or(false)
+}
+
+/// Accept only board PRDs physically contained in the user's personal projects
+/// root. A Personal board can never redirect the scanner into a company tree.
+fn validated_personal_board_prd_path(hq_root: &Path, raw_path: &str) -> Option<String> {
+    let normalized = validate_hq_relative_path(raw_path, false).ok()?;
+    let project_relative = normalized.strip_prefix("personal/projects/")?;
+    if project_relative == "prd.json" || !project_relative.ends_with("/prd.json") {
+        return None;
+    }
+    if Path::new(&normalized)
+        .file_name()
+        .and_then(|name| name.to_str())
+        != Some("prd.json")
+    {
+        return None;
+    }
+    let target = resolve_project_path(hq_root, &normalized, "prd.json").ok()?;
+    (target.company_slug.is_none()
+        && target.relative_path.starts_with("personal/projects/")
+        && target.relative_path.ends_with("/prd.json"))
+    .then_some(target.relative_path)
+}
+
+/// Scan the current user's Personal workspace without opening any company
+/// path. Callers reach this only when the Personal workspace is authorized.
+fn scan_personal_projects(hq_root: &Path) -> Vec<LocalProject> {
+    let personal_root = hq_root.join("personal");
+    let projects_dir = personal_root.join("projects");
+    if !real_directory(&personal_root) || !real_directory(&projects_dir) {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    let mut linked_prds = std::collections::HashSet::new();
+    let board_rel = "personal/board.json";
+    let board = resolve_project_path(hq_root, board_rel, "board.json")
+        .ok()
+        .filter(|target| target.company_slug.is_none() && target.relative_path == board_rel)
+        .and_then(|target| read_project_target_json::<BoardFile>(&target));
+    if let Some(board) = board {
+        for project in board.projects {
+            let BoardProject {
+                id,
+                title,
+                description,
+                status,
+                prd_path,
+                created_at,
+                updated_at,
+                attribution,
+                provenance,
+            } = project;
+            let Some(prd_path) = prd_path
+                .as_deref()
+                .and_then(|path| validated_personal_board_prd_path(hq_root, path))
+            else {
+                continue;
+            };
+            let details = resolve_project_path(hq_root, &prd_path, "prd.json")
+                .ok()
+                .filter(|target| {
+                    target.company_slug.is_none()
+                        && target.relative_path.starts_with("personal/projects/")
+                })
+                .and_then(|target| {
+                    read_project_target_json::<PrdFile>(&target).map(|prd| {
+                        let (story_count, stories_complete) = story_counts(&prd);
+                        (
+                            story_count,
+                            stories_complete,
+                            prd_created_at(&prd),
+                            prd_updated_at(&prd),
+                            prd_provenance(&prd),
+                        )
+                    })
+                });
+            linked_prds.insert(prd_path.clone());
+            let (story_count, stories_complete, prd_created, prd_updated, prd_provenance) =
+                details.unwrap_or((0, 0, None, None, WorkProvenance::default()));
+            let board_provenance = normalize_work_provenance(&[(&attribution, &provenance)]);
+            let id = if id.trim().is_empty() {
+                title.clone()
+            } else {
+                id
+            };
+            out.push(LocalProject {
+                id,
+                title: if title.trim().is_empty() {
+                    prd_path.clone()
+                } else {
+                    title
+                },
+                description,
+                company: "personal".to_string(),
+                status,
+                prd_path: Some(prd_path),
+                created_at: created_at.or(prd_created),
+                updated_at: updated_at.or(prd_updated),
+                story_count,
+                stories_complete,
+                provenance: with_origin_fallback(
+                    merge_work_provenance(board_provenance, prd_provenance),
+                    board_rel,
+                ),
+                creator_fallback: None,
+            });
+        }
+    }
+
+    for prd_path in find_prd_files(&projects_dir) {
+        let Ok(rel) = prd_path.strip_prefix(hq_root) else {
+            continue;
+        };
+        let rel = rel.to_string_lossy().replace('\\', "/");
+        if linked_prds.contains(&normalize_rel(&rel)) {
+            continue;
+        }
+        let Ok(target) = resolve_project_path(hq_root, &rel, "prd.json") else {
+            continue;
+        };
+        if target.company_slug.is_some()
+            || !target.relative_path.starts_with("personal/projects/")
+            || !target.relative_path.ends_with("/prd.json")
+        {
+            continue;
+        }
+        let Some(prd) = read_project_target_json::<PrdFile>(&target) else {
+            continue;
+        };
+        let (story_count, stories_complete) = story_counts(&prd);
+        let id = prd_path
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .unwrap_or("project")
+            .to_string();
+        let title = if prd.name.trim().is_empty() {
+            id.clone()
+        } else {
+            prd.name.clone()
+        };
+        let created_at = prd_created_at(&prd);
+        let updated_at = prd_updated_at(&prd);
+        let provenance = with_origin_fallback(prd_provenance(&prd), &target.relative_path);
+        out.push(LocalProject {
+            id,
+            title,
+            description: prd.description,
+            company: "personal".to_string(),
+            status: String::new(),
+            prd_path: Some(target.relative_path.clone()),
+            created_at,
+            updated_at,
+            story_count,
+            stories_complete,
+            provenance,
+            creator_fallback: None,
+        });
+    }
+    out
+}
+
 fn scan_local_projects_scoped(
     hq_root: &Path,
     authorized_companies: Option<&HashSet<String>>,
 ) -> Vec<LocalProject> {
     let companies_dir = hq_root.join("companies");
-    let entries = match std::fs::read_dir(&companies_dir) {
-        Ok(e) => e,
-        // No companies dir (HQ folder unresolved or empty) → empty local list.
-        Err(_) => return Vec::new(),
-    };
-
+    let entries = std::fs::read_dir(&companies_dir).ok();
     let mut out: Vec<LocalProject> = Vec::new();
 
-    for entry in entries.flatten() {
+    for entry in entries.into_iter().flatten().flatten() {
         let company_path = entry.path();
         let slug = match company_path.file_name().and_then(|n| n.to_str()) {
             Some(s) if !s.starts_with('.') => s.to_string(),
             _ => continue,
         };
-        if authorized_companies.is_some_and(|allowed| !allowed.contains(&slug)) {
+        if slug == "personal"
+            || authorized_companies.is_some_and(|allowed| !allowed.contains(&slug))
+        {
             continue;
         }
         let Ok(file_type) = entry.file_type() else {
@@ -1412,6 +1576,10 @@ fn scan_local_projects_scoped(
                 creator_fallback: None,
             });
         }
+    }
+
+    if authorized_companies.is_some_and(|allowed| allowed.contains("personal")) {
+        out.extend(scan_personal_projects(hq_root));
     }
 
     apply_git_creator_fallbacks(hq_root, &mut out);
@@ -2640,6 +2808,71 @@ mod tests {
     }
 
     #[test]
+    fn authorized_personal_scanner_reads_only_the_personal_projects_root() {
+        let root = make_fixture_tree();
+        let personal_project = root.join("personal/projects/my-project");
+        let personal_prd = r#"{
+            "name":"Personal project",
+            "userStories":[{"id":"P-001","passes":false}]
+        }"#;
+        fs::create_dir_all(&personal_project).unwrap();
+        fs::write(personal_project.join("prd.json"), personal_prd).unwrap();
+        let company_prd_path = ["companies", "acme", "projects", "widget", "prd.json"].join("/");
+        let personal_board = serde_json::json!({
+            "projects": [
+                {"id":"personal-board-row", "title":"Personal board project", "prd_path":"personal/projects/my-project/prd.json"},
+                {"id":"company-leak", "title":"Company leak", "prd_path":company_prd_path}
+            ]
+        });
+        fs::write(root.join("personal/board.json"), personal_board.to_string()).unwrap();
+
+        // A company directory named "personal" must not be treated as the
+        // user's Personal workspace or read for its project list.
+        let company_decoy = root.join("companies/personal/projects/decoy");
+        fs::create_dir_all(&company_decoy).unwrap();
+        fs::write(
+            company_decoy.join("prd.json"),
+            r#"{"name":"Company decoy"}"#,
+        )
+        .unwrap();
+
+        let allowed = HashSet::from(["personal".to_string(), "acme".to_string()]);
+        let projects = scan_local_projects_for_companies(&root, &allowed);
+        let personal = projects
+            .iter()
+            .find(|project| {
+                project.prd_path.as_deref() == Some("personal/projects/my-project/prd.json")
+            })
+            .expect("authorized Personal projects are listed from personal/projects");
+        assert_eq!(personal.company, "personal");
+        assert_eq!(personal.title, "Personal board project");
+        assert_eq!(
+            projects
+                .iter()
+                .filter(|project| project.prd_path.as_deref() == Some("personal/projects/my-project/prd.json"))
+                .count(),
+            1,
+            "board-linked Personal PRDs are not duplicated",
+        );
+        assert!(projects.iter().any(|project| project.company == "acme"));
+        assert!(projects.iter().all(|project| project.id != "company-leak"));
+        assert!(
+            projects
+                .iter()
+                .all(|project| project.title != "Company decoy"),
+            "Personal authorization must never read companies/personal",
+        );
+        let company_only = HashSet::from(["acme".to_string()]);
+        let without_personal_authorization =
+            scan_local_projects_for_companies(&root, &company_only);
+        assert!(without_personal_authorization
+            .iter()
+            .all(|project| project.company != "personal"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn scan_drops_cross_company_board_prd_identity_before_it_reaches_the_ui() {
         let root = std::env::temp_dir().join(format!(
             "hq-projects-cross-company-board-path-{}-{}",
@@ -3471,14 +3704,20 @@ mod tests {
         let objective = &goals.objectives[0];
         assert_eq!(objective.id, "sample-obj-001");
         assert_eq!(objective.title, "Improve onboarding outcomes");
-        assert_eq!(objective.description, "Increase successful first-week activation");
+        assert_eq!(
+            objective.description,
+            "Increase successful first-week activation"
+        );
         assert_eq!(objective.timeframe, "2026-Q4");
         assert_eq!(objective.owner.as_deref(), Some("sample-owner"));
         assert_eq!(objective.key_results.len(), 1);
 
         let key_result = &objective.key_results[0];
         assert_eq!(key_result.id.as_deref(), Some("sample-obj-001-kr-1"));
-        assert_eq!(key_result.title.as_deref(), Some("Increase activated teams"));
+        assert_eq!(
+            key_result.title.as_deref(),
+            Some("Increase activated teams")
+        );
         assert_eq!(key_result.metric.as_deref(), Some("activated_teams"));
         assert_eq!(key_result.target, Some(serde_json::json!(10)));
         assert_eq!(key_result.current, Some(serde_json::json!(5)));
