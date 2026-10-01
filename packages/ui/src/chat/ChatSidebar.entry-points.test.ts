@@ -189,6 +189,53 @@ describe("ChatSidebar lifecycle entry points", () => {
     expect(oncreateagent).not.toHaveBeenCalled();
   });
 
+  it("reopens the current waking progress when its sidebar bot is clicked after close", async () => {
+    const oncreateagent = vi.fn(async (): Promise<EntryPointResult> => ({
+      ok: true,
+      target: {
+        channelId: "chn_nova",
+        cardId: null,
+        cardKind: null,
+        agentUid: "agt_nova",
+      },
+    }));
+    mountSidebar({
+      companies: [INDIGO],
+      oncreateagent,
+      loadAgentStatus: async () => ({
+        ok: true,
+        value: { setupState: { phase: "creating" } },
+      }),
+    });
+    await settle();
+    await openModal();
+    click('[data-testid="chat-create-new-bot"]');
+    await settle();
+
+    const name = q<HTMLInputElement>('[data-testid="new-bot-name"]')!;
+    name.value = "Nova";
+    name.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    click('[data-testid="new-bot-create-submit"]');
+    await settle();
+
+    const beforeClose = q<HTMLElement>('[data-testid="new-bot-waking-ring"]');
+    expect(beforeClose?.getAttribute("aria-valuenow")).toBe("8");
+    click('[data-testid="new-bot-waking-close"]');
+    await settle();
+    expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
+
+    const sidebarBot = q<HTMLButtonElement>('[data-conversation-id="ch:chn_nova"]');
+    const sidebarRing = q<HTMLElement>('[data-testid="chat-waking-bot-ring"]');
+    expect(sidebarBot?.textContent).toContain("Nova");
+    expect(sidebarRing?.style.getPropertyValue("--chat-waking-progress")).toBe("8%");
+    sidebarBot!.click();
+    await settle();
+
+    expect(q('[data-testid="new-bot-waking-screen"]')?.textContent).toContain("Waking up Nova");
+    expect(q('[data-testid="new-bot-waking-ring"]')?.getAttribute("aria-valuenow")).toBe("8");
+  });
+
   it("Cancel returns to the prior create surface", async () => {
     mountSidebar({ companies: [INDIGO], oncreateagent: async () => okTarget });
     await settle();
