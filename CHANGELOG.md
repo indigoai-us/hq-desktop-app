@@ -10,6 +10,8 @@ The release moves it under the version it ships in.
 
 - Usage telemetry now backs off after unaccepted batches and does not resend rows the server explicitly skipped.
 
+- When a saved access token is rejected, HQ Desktop tries its stored refresh token before asking you to sign in. After Cognito rejects that refresh, HQ Desktop stops retrying the same token and keeps sign-in available.
+
 - Window opacity is reset to 100% once for existing installs, including anyone who had chosen a lower value. The theme is unchanged, and an opacity chosen after the update is kept.
 
 ## [0.10.367] — 2026-09-30
