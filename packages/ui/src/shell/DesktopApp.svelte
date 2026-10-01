@@ -4788,19 +4788,22 @@
           openAgentMember = null;
         }
       } else {
-        channelActionError = isOwnerCannotLeave(res.code, res.message)
-          ? OWNER_CANNOT_LEAVE_MESSAGE
-          : isSelfLeave
-            ? "Couldn't leave this channel. Refresh and try again."
-            : "Couldn't remove this member. Refresh and try again.";
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      channelActionError = isOwnerCannotLeave(undefined, message)
-        ? OWNER_CANNOT_LEAVE_MESSAGE
-        : isSelfLeave
+        const fallbackMessage = isSelfLeave
           ? "Couldn't leave this channel. Refresh and try again."
           : "Couldn't remove this member. Refresh and try again.";
+        const serverMessage = res.message?.trim();
+        channelActionError = isOwnerCannotLeave(res.code, res.message)
+          ? OWNER_CANNOT_LEAVE_MESSAGE
+          : serverMessage || fallbackMessage;
+      }
+    } catch (err) {
+      const message = (err instanceof Error ? err.message : String(err)).trim();
+      const fallbackMessage = isSelfLeave
+        ? "Couldn't leave this channel. Refresh and try again."
+        : "Couldn't remove this member. Refresh and try again.";
+      channelActionError = isOwnerCannotLeave(undefined, message)
+        ? OWNER_CANNOT_LEAVE_MESSAGE
+        : message || fallbackMessage;
     } finally {
       removingMemberUid = null;
     }

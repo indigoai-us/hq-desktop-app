@@ -191,9 +191,9 @@ describe("DesktopApp leave channel (self-remove)", () => {
     expect(host.querySelector('[data-testid="channel-action-error"]')).toBeNull();
   });
 
-  it("failure: shows a safe retry message and keeps the rail row + selection", async () => {
+  it("failure: preserves a trimmed server message and keeps the rail row + selection", async () => {
     const removeChannelMember = vi.fn(async () =>
-      failure("http-403", "You can't leave this channel."),
+      failure("http-403", "  You can't leave this channel.  "),
     );
     const wakes = await mountApp({ removeChannelMember });
     const removed: string[] = [];
@@ -211,14 +211,48 @@ describe("DesktopApp leave channel (self-remove)", () => {
     expect(removed).toEqual([]);
     const alert = host.querySelector('[data-testid="channel-action-error"]');
     expect(alert, "error surfaces near the header").toBeTruthy();
-    expect(alert?.textContent).toContain(
-      "Couldn't leave this channel. Refresh and try again.",
-    );
+    expect(alert?.textContent).toContain("You can't leave this channel.");
     // Selection preserved — header still shows #launch.
     expect(host.querySelector('[data-testid="channel-header"]')).toBeTruthy();
     expect(
       host.querySelector('[data-testid="channel-name"]')?.textContent,
     ).toBe("launch");
+  });
+
+  it("failure without a server message uses the safe retry fallback", async () => {
+    const removeChannelMember = vi.fn(async () => failure("http-403", "  "));
+    await mountApp({ removeChannelMember });
+
+    await openPopover();
+    host
+      .querySelector<HTMLButtonElement>(
+        '[data-testid="status-member-remove"]',
+      )!
+      .click();
+    await settle();
+
+    expect(
+      host.querySelector('[data-testid="channel-action-error"]')?.textContent,
+    ).toContain("Couldn't leave this channel. Refresh and try again.");
+  });
+
+  it("failure from a rejected adapter preserves its trimmed error message", async () => {
+    const removeChannelMember = vi.fn(async () => {
+      throw new Error("  Channel service is temporarily unavailable.  ");
+    });
+    await mountApp({ removeChannelMember });
+
+    await openPopover();
+    host
+      .querySelector<HTMLButtonElement>(
+        '[data-testid="status-member-remove"]',
+      )!
+      .click();
+    await settle();
+
+    expect(
+      host.querySelector('[data-testid="channel-action-error"]')?.textContent,
+    ).toContain("Channel service is temporarily unavailable.");
   });
 
   it("handles a stale owner-role 409 with a clear message and no raw error", async () => {
