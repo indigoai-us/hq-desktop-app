@@ -164,7 +164,9 @@ export async function readLiveSyncStatus(
   if (!daemonResult.value) return live;
   const daemon = daemonResult.value;
   const errors = [...live.daemonErrors];
-  if (daemon.reason) errors.push(daemon.reason);
+  const reasonIsFailure = daemon.unitStatus === "failed" && !daemon.paused;
+  const reasonIsCapabilityNotice = daemon.reason?.startsWith("Instant Sync is off,") === true;
+  if (daemon.reason && (reasonIsFailure || reasonIsCapabilityNotice)) errors.push(daemon.reason);
   if ((daemon.lastPassResult?.errors ?? 0) > 0 && errors.length === 0) {
     errors.push("The last daemon sync reported errors. See the daemon log for details.");
   }

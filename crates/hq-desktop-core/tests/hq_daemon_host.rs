@@ -9,10 +9,10 @@ use std::path::Path;
 use std::time::Duration;
 
 use hq_desktop_core::hq_daemon::{
-    after_daemon_exit, choose_sync_host, daemon_paths, daemon_run_args, last_pass_path,
-    read_daemon_state, read_last_pass, running_daemon_pid, sync_state_dir, write_control_request,
-    ControlRequest, HostAction, LastPassTracker, LegacyReason, SyncHostMode, HQ_DAEMON_FLAG,
-    HQ_DAEMON_HOST_MIN_CLI,
+    after_daemon_exit, choose_sync_host, cli_supports_daemon_instant_sync, daemon_paths,
+    daemon_run_args, last_pass_path, read_daemon_state, read_last_pass, running_daemon_pid,
+    sync_state_dir, write_control_request, ControlRequest, HostAction, LastPassTracker,
+    LegacyReason, SyncHostMode, HQ_DAEMON_FLAG, HQ_DAEMON_HOST_MIN_CLI,
 };
 use tempfile::TempDir;
 
@@ -63,6 +63,13 @@ fn flag_on_with_a_new_enough_installed_cli_uses_the_daemon() {
         choose_sync_host(true, true, Some("99.0.0")),
         SyncHostMode::Daemon
     );
+}
+
+#[test]
+fn instant_sync_capability_gate_is_separate_from_daemon_host_gate() {
+    assert_eq!(HQ_DAEMON_HOST_MIN_CLI, "5.310.0");
+    assert!(!cli_supports_daemon_instant_sync(Some("5.310.9")));
+    assert!(cli_supports_daemon_instant_sync(Some("5.311.0")));
 }
 
 // ── starting and relaunching ─────────────────────────────────────────────

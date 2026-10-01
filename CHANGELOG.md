@@ -7,6 +7,7 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+- Daemon sync controls now explain paused, disabled, and stopped states directly. Resuming also re-enables sync for machines migrated from the older daemon setting, and Instant Sync settings require a compatible HQ CLI.
 - Core Drift ignores setup PATH changes and generated wrapper markers while retaining raw-hash fallback when settings JSON cannot be parsed.
 - Core Drift ignores the desktop-generated `env.PATH` in `.claude/settings.json` and the company skill-wrapper marker, while continuing to report other settings edits.
 
