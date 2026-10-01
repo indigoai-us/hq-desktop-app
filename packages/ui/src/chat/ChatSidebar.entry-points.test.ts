@@ -239,43 +239,51 @@ describe("ChatSidebar lifecycle entry points", () => {
     expect(q('[data-testid="new-bot-waking-ring"]')?.getAttribute("aria-valuenow")).toBe("8");
   });
 
-  it("opens a ready bot chat when no real directory row exists yet", async () => {
-    const oncreateagent = vi.fn(async (): Promise<EntryPointResult> => ({
-      ok: true,
-      target: {
-        channelId: "chn_nova",
-        cardId: null,
-        cardKind: null,
-        agentUid: "agt_nova",
-      },
-    }));
-    mountSidebar({
-      companies: [INDIGO],
-      seedDirectory: [],
-      oncreateagent,
-      loadAgentStatus: async () => ({
+  it("opens a ready bot chat after the live handoff when no real directory row exists yet", async () => {
+    vi.useFakeTimers();
+    try {
+      const oncreateagent = vi.fn(async (): Promise<EntryPointResult> => ({
         ok: true,
-        value: { setupState: { phase: "ready" } },
-      }),
-    });
-    await settle();
-    await openModal();
-    click('[data-testid="chat-create-new-bot"]');
-    await settle();
+        target: {
+          channelId: "chn_nova",
+          cardId: null,
+          cardKind: null,
+          agentUid: "agt_nova",
+        },
+      }));
+      mountSidebar({
+        companies: [INDIGO],
+        seedDirectory: [],
+        oncreateagent,
+        loadAgentStatus: async () => ({
+          ok: true,
+          value: { setupState: { phase: "ready" } },
+        }),
+      });
+      await settle();
+      await openModal();
+      click('[data-testid="chat-create-new-bot"]');
+      await settle();
 
-    const name = q<HTMLInputElement>('[data-testid="new-bot-name"]')!;
-    name.value = "Nova";
-    name.dispatchEvent(new Event("input", { bubbles: true }));
-    await settle();
-    click('[data-testid="new-bot-create-submit"]');
-    await settle(10);
+      const name = q<HTMLInputElement>('[data-testid="new-bot-name"]')!;
+      name.value = "Nova";
+      name.dispatchEvent(new Event("input", { bubbles: true }));
+      await settle();
+      click('[data-testid="new-bot-create-submit"]');
+      await settle(10);
 
-    expect(takePendingChannelOpen()).toMatchObject({
-      channelId: "chn_nova",
-      title: "Nova",
-      companyUid: "cmp_indigo",
-    });
-    expect(q('[data-testid="new-bot-waking-screen"]')).toBeNull();
+      await vi.advanceTimersByTimeAsync(350);
+      await settle();
+
+      expect(takePendingChannelOpen()).toMatchObject({
+        channelId: "chn_nova",
+        title: "Nova",
+        companyUid: "cmp_indigo",
+      });
+      expect(q('[data-testid="new-bot-waking-screen"]')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("Cancel returns to the prior create surface", async () => {
