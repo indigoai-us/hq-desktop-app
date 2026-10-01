@@ -11,7 +11,10 @@ The release moves it under the version it ships in.
 - First-run setup now retries a just-published npm package when the registry
   briefly returns E404 or ETARGET, while keeping setup progress active.
 
+- A stalled attachment upload or download in the Work app now ends with the usual upload or download error instead of staying open indefinitely.
 - When a saved access token is rejected, HQ Desktop tries its stored refresh token before asking you to sign in. After Cognito rejects that refresh, HQ Desktop stops retrying the same token and keeps sign-in available.
+
+## [0.10.368] — 2026-10-01
 
 - Window opacity is reset to 100% once for existing installs, including anyone who had chosen a lower value. The theme is unchanged, and an opacity chosen after the update is kept.
 
