@@ -7,6 +7,9 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+
+## [0.10.373] — 2026-10-01
+
 - Setting up a coding tool after onboarding is smoother. You can choose
   Claude Code or Codex, and one button ("Install Claude" or "Install Codex")
   installs it and opens its sign-in page, with no second Sign in click.
