@@ -11,6 +11,7 @@ The release moves it under the version it ships in.
 - First-run setup now retries a just-published npm package when the registry
   briefly returns E404 or ETARGET, while keeping setup progress active.
 
+- With a compatible hq-cloud runner, auto-sync watches the desktop process directly and releases its lease when the app exits, including after a crash or force-quit.
 - A stalled attachment upload or download in the Work app now ends with the usual upload or download error instead of staying open indefinitely.
 - When a saved access token is rejected, HQ Desktop tries its stored refresh token before asking you to sign in. After Cognito rejects that refresh, HQ Desktop stops retrying the same token and keeps sign-in available.
 
