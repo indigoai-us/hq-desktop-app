@@ -69,6 +69,21 @@ describe("parseLiveSyncStatus", () => {
 });
 
 describe("readLiveSyncStatus daemon projection", () => {
+  it("keeps working with a legacy adapter that has no daemon status method", async () => {
+    const adapter = {
+      isAvailable: () => true,
+      sync: {
+        getSyncStatus: async () => ok({ daemonRunning: false, source: "journal" }),
+      },
+    } as unknown as PlatformAdapter;
+
+    await expect(readLiveSyncStatus(adapter)).resolves.toMatchObject({
+      daemonRunning: false,
+      source: "journal",
+      daemonErrors: [],
+    });
+  });
+
   it("uses CLI ownership, health, last pass, errors, and log path in daemon mode", async () => {
     const adapter = {
       isAvailable: () => true,

@@ -140,12 +140,15 @@ export async function readLiveSyncStatus(
   if (!adapter?.isAvailable("canSync")) {
     return { ...EMPTY_LIVE_SYNC, uploadsPaused: [] };
   }
+  const daemonStatusPromise = adapter.sync.daemonSyncStatus
+    ? adapter.sync.daemonSyncStatus()
+    : Promise.resolve({ ok: true as const, value: null });
   const [result, daemonResult]: [
     AdapterResult<SyncStatus>,
     AdapterResult<DaemonSyncStatus | null>,
   ] = await Promise.all([
     adapter.sync.getSyncStatus(),
-    adapter.sync.daemonSyncStatus(),
+    daemonStatusPromise,
   ]);
   const live = result.ok
     ? parseLiveSyncStatus(result.value)
