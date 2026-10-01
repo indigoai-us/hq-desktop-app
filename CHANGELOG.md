@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Home now lists projects from your Personal workspace, and Personal board and summary requests resolve with your Personal identity.
+
 - Startup diagnostics now distinguish unreadable saved credentials from an empty token store.
 
 - With a compatible hq-cloud runner, auto-sync watches the desktop process directly and releases its lease when the app exits, including after a crash or force-quit.
