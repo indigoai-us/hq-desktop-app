@@ -218,6 +218,7 @@ function invokeFor(options: Options = {}): SyncInvokeFn {
           workspaces: [
             {
               slug: 'indigo',
+              displayName: 'Indigo',
               cloudUid: 'cmp_indigo',
               role: 'owner',
               membershipStatus: 'active',

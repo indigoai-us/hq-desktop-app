@@ -3571,11 +3571,9 @@
   const activeTab = $derived(isProjectChannel ? tab : "chat");
 
   const headerTitle = $derived(
-    resolveConversationTitle(
-      selectedRow,
-      railRows,
-      selectedHomeCompany?.displayName || selectedHomeCompany?.slug || null,
-    ),
+    selectedHomeCompany?.displayName?.trim() ||
+      selectedHomeCompany?.slug?.trim() ||
+      resolveConversationTitle(selectedRow, railRows),
   );
 
   /** Company hero and home-channel title use the company display name. */
