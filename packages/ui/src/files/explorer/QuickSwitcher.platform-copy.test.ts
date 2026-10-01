@@ -31,6 +31,5 @@ it("renders Windows shortcut labels in the file switcher", async () => {
   });
   flushSync();
   await tick();
-  expect(host.textContent).toContain("Ctrl+O");
   expect(host.textContent).toContain("Ctrl+↵ new tab");
 });

@@ -173,6 +173,7 @@ describe("VaultExplorer", () => {
   it("uses Windows file-manager labels in the explorer and preview", async () => {
     Object.defineProperty(navigator, "userAgent", { configurable: true, value: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" });
     const { host } = await render({ path: "companies/acme/knowledge/pricing.md" }, true);
+    expect(host.querySelector('[data-testid="vault-search"] kbd')?.textContent).toBe("Ctrl+O");
     expect(host.querySelector(".vx-actions button:last-of-type")?.textContent).toContain("Show in file manager");
     host.querySelector<HTMLButtonElement>(".vx-actions button:last-of-type")!.click();
     await settle();
@@ -182,6 +183,7 @@ describe("VaultExplorer", () => {
   it("keeps Finder labels on macOS", async () => {
     Object.defineProperty(navigator, "userAgent", { configurable: true, value: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)" });
     const { host } = await render({ path: "companies/acme/knowledge/pricing.md" });
+    expect(host.querySelector('[data-testid="vault-search"] kbd')?.textContent).toBe("⌘O");
     expect(host.querySelector(".vx-actions button:last-of-type")?.textContent).toContain("Show in Finder");
   });
 
