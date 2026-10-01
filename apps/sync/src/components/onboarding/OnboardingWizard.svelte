@@ -330,6 +330,8 @@
   let consentFailure = $state<ConsentFailure | null>(null);
   let loadingProvider = $state<SignInProvider | null>(null);
   let signInError = $state('');
+  let microsoftEmail = $state('');
+  let microsoftEmailPrompt = $state(false);
   let currentSignInCall = 0;
   let mounted = true;
 
@@ -848,6 +850,12 @@
   }
 
   async function handleSignIn(provider: SignInProvider, stateRecoveryAttempt = false) {
+    if (provider === 'Microsoft' && microsoftEmail.trim() === '') {
+      microsoftEmailPrompt = true;
+      signInError = '';
+      return;
+    }
+
     const call = ++currentSignInCall;
     loadingProvider = provider;
     signInError = '';
@@ -858,7 +866,10 @@
       const { authorizeUrl, state } = await invokeCommand<{
         authorizeUrl: string;
         state: string;
-      }>('start_oauth_login', { provider });
+      }>('start_oauth_login', {
+        provider,
+        ...(provider === 'Microsoft' ? { email: microsoftEmail.trim() } : {}),
+      });
       if (!isCurrentSignInCall(call)) return;
 
       if (typeof openExternal !== 'function') {
@@ -3005,6 +3016,34 @@
                   onclick={() => handleSignIn('Microsoft')}
                 >{@render MicrosoftMark()}Continue with Microsoft</button>
               </div>
+              {#if microsoftEmailPrompt}
+                <form
+                  class="microsoft-email"
+                  data-testid="microsoft-email-form"
+                  onsubmit={(event) => {
+                    event.preventDefault();
+                    void handleSignIn('Microsoft');
+                  }}
+                >
+                  <label for="onboarding-microsoft-email">Enter the Microsoft email you use with HQ</label>
+                  <input
+                    id="onboarding-microsoft-email"
+                    data-testid="microsoft-email"
+                    type="email"
+                    autocomplete="username"
+                    autocapitalize="none"
+                    spellcheck="false"
+                    bind:value={microsoftEmail}
+                    disabled={loadingProvider !== null}
+                  />
+                  <button
+                    class="btn btn-secondary"
+                    type="submit"
+                    data-testid="microsoft-email-continue"
+                    disabled={loadingProvider !== null || microsoftEmail.trim() === ''}
+                  >Continue</button>
+                </form>
+              {/if}
             {/if}
           </div>
           {#if signInError}
