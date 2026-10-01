@@ -104,6 +104,7 @@ layout in `apps/sync/scripts/dmg/`.
 | `dmg/background.html` | Source artwork, implementing Figma "Installer" node `3133:57` |
 | `dmg/background.tiff` | The committed render, `@1x` + `@2x` in one file |
 | `dmg/render-background.sh` | Re-renders the TIFF from the HTML |
+| `dmg/verify_ds_store.py` | Mounts-and-checks step: fails the build if the finished image's background would not show |
 
 Change the artwork by editing `background.html`, then:
 
@@ -122,6 +123,19 @@ CI. dmgbuild writes the `.DS_Store` directly and never talks to Finder.
 `tell application "Finder"` reappears in the packaging path, if the layout
 drifts from the coordinates the artwork was drawn for, or if the background
 loses either representation.
+
+**Keep dmgbuild at 1.6.7 or newer.** Up to 1.6.6, dmgbuild wrote a `pBBk`
+background bookmark into the volume's `.DS_Store`. From macOS 26.2, Finder
+shows a blank window when that record is present: the icons sit in the right
+places on plain white and the artwork never appears
+([dmgbuild#273](https://github.com/dmgbuild/dmgbuild/issues/273)). HQ shipped
+that way while the script pinned 1.6.5. The script now always runs the pinned
+version from its own virtualenv (never a `dmgbuild` from `PATH`, and a reused
+venv on any other version is rebuilt), needs Python 3.10+ for it, and mounts
+every finished image to run `verify_ds_store.py`, which fails the build if a
+`pBBk` record is present or the background alias does not point at a file on
+the volume. The contract test fails if the pin drops below 1.6.7 or the check
+is removed.
 
 ## Cut a Release
 
