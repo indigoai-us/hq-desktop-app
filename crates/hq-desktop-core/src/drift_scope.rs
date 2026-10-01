@@ -649,32 +649,6 @@ pub fn drift_hash_matches_with_raw_fallback(
     }
 }
 
-/// Drift hash for settings JSON, ignoring only the setup-owned PATH.
-pub fn drift_blob_sha_for_path(path: &str, content: &[u8]) -> String {
-    if path != ".claude/settings.json" {
-        return drift_blob_sha(content);
-    }
-    let canonical = serde_json::from_slice::<serde_json::Value>(content)
-        .ok()
-        .map(|mut value| {
-            if let Some(object) = value.as_object_mut() {
-                let empty = object
-                    .get_mut("env")
-                    .and_then(serde_json::Value::as_object_mut)
-                    .map(|vars| {
-                        vars.remove("PATH");
-                        vars.is_empty()
-                    })
-                    .unwrap_or(false);
-                if empty {
-                    object.remove("env");
-                }
-            }
-            serde_json::to_vec(&value).expect("JSON value serializes")
-        });
-    drift_blob_sha(canonical.as_deref().unwrap_or(content))
-}
-
 /// Normalize newlines for drift hashing only.
 ///
 /// - Leaves binary-looking buffers unchanged (NUL in the sample → binary).
@@ -830,7 +804,10 @@ mod tests {
             drift_blob_sha_for_path(".claude/settings.json", after),
         );
         assert_eq!(
-            drift_blob_sha_for_path(".claude/settings.json", br#"{"env":{"PATH":"/custom/bin"}}"#),
+            drift_blob_sha_for_path(
+                ".claude/settings.json",
+                br#"{"env":{"PATH":"/custom/bin"}}"#
+            ),
             drift_blob_sha_for_path(".claude/settings.json", b"{}"),
         );
     }
@@ -848,19 +825,34 @@ mod tests {
 
     #[test]
     fn settings_comparison_falls_back_to_raw_shas_when_semantic_hash_is_missing() {
-        assert!(drift_hash_matches_with_raw_fallback("same", "same", Some("left"), None));
-        assert!(!drift_hash_matches_with_raw_fallback("local", "upstream", Some("same"), None));
+        assert!(drift_hash_matches_with_raw_fallback(
+            "same",
+            "same",
+            Some("left"),
+            None
+        ));
+        assert!(!drift_hash_matches_with_raw_fallback(
+            "local",
+            "upstream",
+            Some("same"),
+            None
+        ));
     }
 
     #[test]
-    fn local_settings_walk_keeps_the_real_git_blob_hash() {
+    fn local_settings_walk_uses_the_semantic_settings_hash() {
         let root = tempfile::tempdir().unwrap();
         let settings = br#"{"env":{"PATH":"/custom/bin"},"permissions":{"allow":["Read"]}}"#;
         test_write(root.path(), ".claude/settings.json", settings);
 
         let blobs = walk_local_under_scope(root.path(), &[".claude/settings.json".into()]);
 
-        assert_eq!(blobs[".claude/settings.json"].0, drift_blob_sha(settings),);
+        let sha = &blobs[".claude/settings.json"].0;
+        assert_eq!(
+            sha,
+            &drift_blob_sha_for_path(".claude/settings.json", settings),
+        );
+        assert_ne!(sha, &drift_blob_sha(settings));
     }
 
     #[test]
