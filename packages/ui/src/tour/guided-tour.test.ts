@@ -101,6 +101,12 @@ describe("tourSteps", () => {
     expect(steps[7].title).toBe("Find anything with Ctrl+K");
   });
 
+  it("keeps the macOS shortcut and computer noun on macOS", () => {
+    const steps = tourSteps({ hasCompanyVault: true }, true);
+    expect(steps[1].body).toContain("synced to this Mac");
+    expect(steps[7].title).toBe("Find anything with ⌘K");
+  });
+
   it("centers the invite step with no target until a company exists", () => {
     const invite = tourSteps({ hasCompany: false })[3];
     expect(invite.targets).toEqual([]);
