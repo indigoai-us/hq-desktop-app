@@ -198,6 +198,8 @@ The release moves it under the version it ships in.
 
 - Internal: unused exports in the work shell and installer are now module-private. No behaviour change.
 
+- Workspace refresh no longer clears a company cloud link when an entity lookup is missing; only a confirmed deletion removes it.
+
 - With the Personal workspace board rollout enabled, HQ Desktop shows the
   cloud-backed board alongside company workspaces.
 
