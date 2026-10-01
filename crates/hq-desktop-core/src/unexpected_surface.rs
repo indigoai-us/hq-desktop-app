@@ -421,6 +421,36 @@ pub fn build_payload(
 mod tests {
     use super::*;
 
+    // These contract checks intentionally read the producer, not their own
+    // assertions, so a test-only first push compiles on main and fails by
+    // assertion until the lifecycle report exposes each bounded field.
+    const LIFECYCLE_REPORT_SOURCE: &str =
+        include_str!("../../../apps/sync/src-tauri/src/commands/lifecycle.rs");
+
+    #[test]
+    fn lifecycle_report_exposes_bounded_hq_candidate_count_bucket() {
+        assert!(LIFECYCLE_REPORT_SOURCE.contains("hq_candidate_count_bucket"));
+        for bucket in ["0", "1", "2_plus"] {
+            assert!(LIFECYCLE_REPORT_SOURCE.contains(bucket));
+        }
+    }
+
+    #[test]
+    fn lifecycle_report_exposes_bounded_managed_package_state() {
+        assert!(LIFECYCLE_REPORT_SOURCE.contains("managed_hq_package_state"));
+        for state in ["present", "missing", "invalid", "unreadable", "unknown"] {
+            assert!(LIFECYCLE_REPORT_SOURCE.contains(state));
+        }
+    }
+
+    #[test]
+    fn lifecycle_report_exposes_bounded_bundled_cli_mode() {
+        assert!(LIFECYCLE_REPORT_SOURCE.contains("bundled_cli_mode"));
+        for mode in ["resource", "registry_fallback", "unknown"] {
+            assert!(LIFECYCLE_REPORT_SOURCE.contains(mode));
+        }
+    }
+
     #[test]
     fn prior_setup_detected_install_completed() {
         assert!(prior_setup_detected(
