@@ -320,6 +320,17 @@ describe("auth session envelope parsing", () => {
     });
   });
 
+  it("preserves a token-store read failure as a distinct auth status", () => {
+    expect(
+      parseAuthSessionEnvelope({
+        accountId: null,
+        generation: 2,
+        status: "credentials_read_error",
+        reason: "HQ Work could not read saved credentials.",
+      }),
+    ).toMatchObject({ status: "credentials_read_error" });
+  });
+
   it("refuses malformed payloads rather than trusting them", () => {
     for (const bad of [
       null,
