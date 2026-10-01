@@ -634,6 +634,28 @@ describe("ChannelStatusPopover — email, profile-open, and remove", () => {
     const selfRow = removeBtns[0].closest('[data-testid="status-member"]');
     expect(selfRow?.textContent).toContain("Marcus Chen");
   });
+
+  it("does not offer self-leave until the caller's channel role is known", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    const m = model();
+    // The roster is still hydrating. The server may already know this caller
+    // is the owner, so an unknown role must not be treated as member.
+    m.members[0]!.role = null;
+    component = mount(ChannelStatusPopover, {
+      target: host,
+      props: {
+        model: m,
+        self: { uid: "prs_me" },
+        onremovemember: () => {},
+      },
+    });
+    await tick();
+
+    expect(
+      host.querySelector('[data-testid="status-member-remove"]'),
+    ).toBeNull();
+  });
 });
 
 describe("ChannelStatusPopover — delete channel (owner-only trash)", () => {
