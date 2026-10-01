@@ -649,32 +649,6 @@ pub fn drift_hash_matches_with_raw_fallback(
     }
 }
 
-/// Drift hash for settings JSON, ignoring only the setup-owned PATH.
-pub fn drift_blob_sha_for_path(path: &str, content: &[u8]) -> String {
-    if path != ".claude/settings.json" {
-        return drift_blob_sha(content);
-    }
-    let canonical = serde_json::from_slice::<serde_json::Value>(content)
-        .ok()
-        .map(|mut value| {
-            if let Some(object) = value.as_object_mut() {
-                let empty = object
-                    .get_mut("env")
-                    .and_then(serde_json::Value::as_object_mut)
-                    .map(|vars| {
-                        vars.remove("PATH");
-                        vars.is_empty()
-                    })
-                    .unwrap_or(false);
-                if empty {
-                    object.remove("env");
-                }
-            }
-            serde_json::to_vec(&value).expect("JSON value serializes")
-        });
-    drift_blob_sha(canonical.as_deref().unwrap_or(content))
-}
-
 /// Normalize newlines for drift hashing only.
 ///
 /// - Leaves binary-looking buffers unchanged (NUL in the sample → binary).
@@ -772,7 +746,7 @@ pub fn walk_local_under_scope(
                 };
                 let size = content.len() as u64;
                 let rel_str = rel_path.to_string_lossy().replace('\\', "/");
-                let sha = drift_blob_sha_for_path(&rel_str, &content);
+                let sha = drift_blob_sha(&content);
                 out.insert(rel_str, (sha, size));
             }
         } else {
@@ -795,7 +769,7 @@ pub fn walk_local_under_scope(
             }
             if let Ok(content) = std::fs::read(&abs) {
                 let size = content.len() as u64;
-                let sha = drift_blob_sha_for_path(&rel, &content);
+                let sha = drift_blob_sha(&content);
                 out.insert(rel.clone(), (sha, size));
             }
         }

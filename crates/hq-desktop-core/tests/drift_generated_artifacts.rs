@@ -33,9 +33,15 @@ fn generated_path_is_ignored_but_other_settings_edits_remain_visible() {
 
     let locked = vec![".claude/settings.json".to_string()];
     let local = walk_local_under_scope(root, &locked);
-    let stripped_upstream = without_generated_path(upstream);
+    // The walk keeps the real Git blob SHA so restore-from-upstream can verify
+    // it; the semantic comparison uses drift_blob_sha_for_path on the bytes.
     assert_eq!(
         local.get(".claude/settings.json").unwrap().0,
+        drift_blob_sha(generated.as_bytes()),
+    );
+    let stripped_upstream = without_generated_path(upstream);
+    assert_eq!(
+        drift_blob_sha_for_path(".claude/settings.json", &fs::read(&settings).unwrap()),
         drift_blob_sha(&stripped_upstream),
         "an HQ-generated env.PATH must not appear as user drift"
     );
@@ -43,9 +49,8 @@ fn generated_path_is_ignored_but_other_settings_edits_remain_visible() {
     let edited =
         r#"{"permissions":{"allow":["Read","Write"]},"env":{"PATH":"/managed/bin:/usr/bin"}}"#;
     fs::write(&settings, edited).unwrap();
-    let local = walk_local_under_scope(root, &locked);
     assert_ne!(
-        local.get(".claude/settings.json").unwrap().0,
+        drift_blob_sha_for_path(".claude/settings.json", &fs::read(&settings).unwrap()),
         drift_blob_sha(&stripped_upstream),
         "a user edit outside env.PATH must remain visible as drift"
     );
