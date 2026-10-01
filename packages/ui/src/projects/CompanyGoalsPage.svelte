@@ -705,10 +705,7 @@
     {:else if objectives.length === 0}
       <div class="empty-state" data-testid="empty-goals-state">
         <span>No goals yet</span>
-        <p>
-          Company goals will appear here after goals sync into the local
-          workspace.
-        </p>
+        <p>No goals are set on this company's board yet.</p>
       </div>
     {:else}
       <!-- DESKTOP-007: scan-friendly list + stable selected-goal detail (no card grid, no modal). -->
