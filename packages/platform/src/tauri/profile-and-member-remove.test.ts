@@ -33,6 +33,38 @@ describe("TauriPlatformAdapter member removal", () => {
       },
     });
   });
+
+  it("routes removeChannelMember for an agt_* bot uid on the same DELETE route", async () => {
+    const { adapter, calls } = makeAdapter({ removed: "agt_scout" });
+    const res = await adapter.messaging.removeChannelMember(
+      "chn_1",
+      "agt_scout",
+    );
+    expect(res.ok).toBe(true);
+    expect(calls[0]).toEqual({
+      cmd: "hq_pro_fetch",
+      args: {
+        url: "/v1/notify/channels/chn_1/members/agt_scout",
+        method: "DELETE",
+        body: null,
+      },
+    });
+  });
+
+  it("surfaces a server failure with its error message on removeChannelMember", async () => {
+    const { adapter } = makeAdapter(
+      { error: "Only the owner can remove members", code: "CHANNEL_NOT_OWNER" },
+      403,
+    );
+    const res = await adapter.messaging.removeChannelMember(
+      "chn_1",
+      "prs_bob",
+    );
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.message).toBe("Only the owner can remove members");
+    }
+  });
 });
 
 describe("TauriPlatformAdapter channel delete", () => {

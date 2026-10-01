@@ -46,6 +46,35 @@ describe("WebPlatformAdapter member removal", () => {
       body: undefined,
     });
   });
+
+  it("DELETEs the same per-member path for an agt_* bot uid", async () => {
+    const { adapter, calls } = makeAdapter({ removed: "agt_scout" });
+    const res = await adapter.messaging.removeChannelMember(
+      "chn_1",
+      "agt_scout",
+    );
+    expect(res.ok).toBe(true);
+    expect(calls[0]).toEqual({
+      method: "DELETE",
+      path: "/v1/notify/channels/chn_1/members/agt_scout",
+      body: undefined,
+    });
+  });
+
+  it("surfaces a server failure with its error message on removeChannelMember", async () => {
+    const { adapter } = makeAdapter(
+      { error: "Only the owner can remove members", code: "CHANNEL_NOT_OWNER" },
+      403,
+    );
+    const res = await adapter.messaging.removeChannelMember(
+      "chn_1",
+      "prs_bob",
+    );
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.message).toBe("Only the owner can remove members");
+    }
+  });
 });
 
 describe("WebPlatformAdapter channel delete", () => {

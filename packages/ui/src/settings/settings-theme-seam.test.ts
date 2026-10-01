@@ -9,8 +9,10 @@ import {
 import { createShellAppearanceSeam } from "./settings-theme-seam.js";
 import { SETTINGS_PREFS_KEY } from "./settings-prefs.js";
 
-function memoryStorage(): Pick<Storage, "getItem" | "setItem"> {
-  const map = new Map<string, string>();
+function memoryStorage(
+  seed: Record<string, string> = {},
+): Pick<Storage, "getItem" | "setItem"> {
+  const map = new Map(Object.entries(seed));
   return {
     getItem: (k) => map.get(k) ?? null,
     setItem: (k, v) => void map.set(k, v),
@@ -24,6 +26,25 @@ afterEach(() => {
 });
 
 describe("createShellAppearanceSeam window transparency", () => {
+  it("defaults a fresh install to full opacity and preserves a saved value", () => {
+    const root = document.documentElement;
+    const fresh = createShellAppearanceSeam({
+      root,
+      target: new EventTarget(),
+      storage: memoryStorage(),
+    });
+    expect(fresh.read().windowTransparency).toBe(0);
+
+    const saved = createShellAppearanceSeam({
+      root,
+      target: new EventTarget(),
+      storage: memoryStorage({
+        [SETTINGS_PREFS_KEY]: JSON.stringify({ windowOpacity: 72 }),
+      }),
+    });
+    expect(saved.read().windowTransparency).toBe(28);
+  });
+
   it("round-trips a requested transparency instead of snapping back to 65", () => {
     const storage = memoryStorage();
     const target = new EventTarget();

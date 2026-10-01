@@ -305,6 +305,8 @@
     onassistedinstall?: (
       tool: import("../install-choice/install-choice.js").CodingTool,
     ) => Promise<import("../install-choice/install-choice.js").InstallOutcome>;
+    /** Ask the host to (re-)probe `detect_ai_tools` lazily when CreateModal opens. */
+    onrequestaitools?: () => void;
     botWorkers?: readonly LocalBotWorkerOption[] | null;
     /** New bot flow extras (see CreateModal): taken names, sign-in, avatars. */
     existingBotNames?: readonly string[] | null;
@@ -398,6 +400,14 @@
     bottomContent?: Snippet;
     /** Fires when the user clicks the bot-message toggle in the sidebar header. */
     onshowbotmessageschange?: (value: boolean) => void;
+    /**
+     * When true (the `desktop.human-only-conversations` flag is on), rows are
+     * ordered by `lastHumanMessageAt` — a channel whose only newer activity
+     * is work-mesh / bot chatter stays anchored to the last real human
+     * message. Falls back to `lastActivityAt` per-row when the server has
+     * not sent the human timestamp. Default off preserves legacy ordering.
+     */
+    humanOnly?: boolean;
   }
 
   let {
@@ -437,6 +447,7 @@
     hqFolderPath = "",
     onopenassistant,
     onassistedinstall,
+    onrequestaitools,
     botWorkers = null,
     existingBotNames = null,
     botSignIn = null,
@@ -462,6 +473,7 @@
     showBotMessages = false,
     bottomContent,
     onshowbotmessageschange,
+    humanOnly = false,
   }: Props = $props();
   // Host still reports load failures; the sidebar no longer paints them.
   void rowExtrasError;
@@ -1217,6 +1229,7 @@
         show: showFilter,
         sort: sortMode,
         personUid: personFilter,
+        humanOnly,
       },
     ),
   );
@@ -3710,6 +3723,7 @@
       {hqFolderPath}
       {onopenassistant}
       {onassistedinstall}
+      {onrequestaitools}
       {botWorkers}
       {existingBotNames}
       {botCompanies}

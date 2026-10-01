@@ -10,6 +10,7 @@ use crate::runner_error_shape::{
     RunnerErrorPathRootRollup, RunnerErrorResidualSignatureRollup, RunnerErrorShapeRollup,
     RunnerErrorSite, RunnerErrorSiteRollup, RunnerErrorUnknownProfileRollup,
 };
+use crate::uploads_paused::UploadsPassObservation;
 use sha2::{Digest, Sha256};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -35,6 +36,12 @@ pub struct RunTotals {
     /// channel. Auth-required is intentionally exit 0, but must never be
     /// overwritten by the manual exit handler's synthetic AllComplete.
     pub saw_auth_error: bool,
+    /// What this pass said about uploads per company: plan-limit notices,
+    /// per-company completions, and companies that uploaded a file. Settles
+    /// the "uploads paused" state at `AllComplete` (hard-stop-readiness
+    /// US-019). Before this, a pass whose uploads a plan limit refused counted
+    /// as a clean sync.
+    pub uploads_pass: UploadsPassObservation,
     /// Set true when the runner emitted at least one error event of ANY level
     /// (company-level `path == "(company)"` OR per-file). Both drive the
     /// runner's exit-2 path — `hq-cloud`'s `executeCompanyFanout` pushes EVERY
@@ -231,6 +238,20 @@ impl RunTotals {
         match event {
             SyncEvent::Complete(c) => {
                 self.conflicts = self.conflicts.saturating_add(c.conflicts);
+                self.uploads_pass.completed.insert(c.company.clone());
+            }
+            SyncEvent::PlanLimit(notice) => {
+                // Only a link on a host hq-pro returns is kept; the notice
+                // itself counts either way.
+                self.uploads_pass.plan_limited.insert(
+                    notice.company.clone(),
+                    crate::plan_limit::approved_plan_upgrade_url(&notice.upgrade_url),
+                );
+            }
+            SyncEvent::Progress(p)
+                if p.direction.as_deref() == Some("up") && p.deleted != Some(true) =>
+            {
+                self.uploads_pass.uploaded.insert(p.company.clone());
             }
             SyncEvent::AllComplete(_) => {
                 self.all_complete_seen = true;
@@ -3532,6 +3553,12 @@ pub fn is_fatal_runner_signature(line: &str) -> bool {
 ///   - expected per-file ACL-scope skips (`is_expected_acl_scope_skip`): a
 ///     `403 SCOPE_EXCEEDS_PARENT` the user resolves by granting the path, not a
 ///     server fault — the dominant HQ-SYNC-WEB-6 noise source.
+///   - plan-limit refusals (`plan_limit::is_plan_limit_refusal_message`): a 402
+///     `plan_limit_reached` / `PLAN_LIMIT_EXCEEDED` from hq-pro's hard stop is
+///     the product telling a Starter company it is over a limit. The user fixes
+///     it by upgrading or trimming, so it is shown, never reported to Sentry
+///     (hard-stop-readiness US-018). Runners before hq-cloud US-012 surface the
+///     refusal as an error event; this keeps those out of the alert path too.
 ///
 /// Everything else (EISDIR, other 403/404 auth, 5xx-after-retries,
 /// `UnknownError`, anything unrecognised) is treated as a real defect and keeps
@@ -3539,7 +3566,8 @@ pub fn is_fatal_runner_signature(line: &str) -> bool {
 pub fn is_alertable_error(err: &SyncErrorEvent) -> bool {
     !(is_entity_not_yet_provisioned(err)
         || is_transient_network_error(&err.message)
-        || is_expected_acl_scope_skip(&err.message))
+        || is_expected_acl_scope_skip(&err.message)
+        || crate::plan_limit::is_plan_limit_refusal_message(&err.message))
 }
 
 /// Pure policy: how should a *non-zero* runner exit finish?
@@ -9402,6 +9430,104 @@ mod tests {
         // A conventional small exit code is Ordinary, not a fault → suppressible.
         assert!(!is_windows_fault_exit(Some(2)));
         assert!(runner_exit_is_file_lock(Some(2), None, false, &ebusy));
+    }
+
+    #[test]
+    fn a_pass_with_plan_limit_skips_is_recorded_for_the_uploads_pause() {
+        use crate::events::{SyncPlanLimitEvent, SyncProgressEvent};
+        let mut totals = RunTotals::default();
+        totals.accumulate(&SyncEvent::PlanLimit(SyncPlanLimitEvent {
+            company: "Acme".to_string(),
+            upgrade_url: "https://hq.computer/companies/acme/billing?upgrade=1".to_string(),
+        }));
+        totals.accumulate(&SyncEvent::PlanLimit(SyncPlanLimitEvent {
+            company: "Beta".to_string(),
+            upgrade_url: "https://app.indigo-hq.com/billing/upgrade".to_string(),
+        }));
+        let progress = |company: &str, direction: &str, deleted: Option<bool>| {
+            SyncEvent::Progress(SyncProgressEvent {
+                company: company.to_string(),
+                path: "a.md".to_string(),
+                bytes: 1,
+                message: None,
+                direction: Some(direction.to_string()),
+                deleted,
+                author: None,
+            })
+        };
+        totals.accumulate(&progress("Gamma", "up", None));
+        totals.accumulate(&progress("Delta", "down", None));
+        totals.accumulate(&progress("Epsilon", "up", Some(true)));
+        for company in ["Acme", "Gamma"] {
+            totals.accumulate(&SyncEvent::Complete(SyncCompleteEvent {
+                company: company.to_string(),
+                files_downloaded: 0,
+                bytes_downloaded: 0,
+                files_skipped: 3,
+                conflicts: 0,
+                aborted: false,
+                files_tombstoned: None,
+                files_refused_stale: None,
+            }));
+        }
+
+        let pass = &totals.uploads_pass;
+        assert_eq!(
+            pass.plan_limited.get("Acme").cloned().flatten().as_deref(),
+            Some("https://hq.computer/companies/acme/billing?upgrade=1")
+        );
+        assert_eq!(pass.plan_limited.get("Beta"), Some(&None));
+        assert_eq!(
+            pass.uploaded.iter().map(String::as_str).collect::<Vec<_>>(),
+            vec!["Gamma"]
+        );
+        assert_eq!(
+            pass.completed
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["Acme", "Gamma"]
+        );
+        // A plan-limit notice is not an error: the pass stays clean.
+        assert!(!totals.saw_error);
+        assert!(!totals.saw_alertable_error);
+    }
+
+    #[test]
+    fn plan_limit_refusals_are_not_alertable() {
+        // hard-stop-readiness US-018: hq-cloud `describeError` output for a
+        // hard-stop 402, before and after US-004 adds `code` to the body.
+        for message in [
+            "VaultClientError code=PLAN_LIMIT_EXCEEDED http=402 New files are paused while Acme is over its Starter limits.",
+            "VaultClientError http=402 New files are paused while Acme is over its Starter limits.",
+            "VaultClientError code=PLAN_LIMIT_REACHED New files are paused while your personal HQ is over its limits.",
+        ] {
+            for path in ["(company)", "knowledge/notes.md"] {
+                let err = SyncErrorEvent {
+                    company: Some("acme".to_string()),
+                    path: path.to_string(),
+                    message: message.to_string(),
+                };
+                assert!(!is_alertable_error(&err), "{path}: {message}");
+            }
+        }
+        // A plain 403 is still a defect.
+        let forbidden = SyncErrorEvent {
+            company: Some("acme".to_string()),
+            path: "(company)".to_string(),
+            message: "VaultClientError http=403 Forbidden".to_string(),
+        };
+        assert!(is_alertable_error(&forbidden));
+
+        // A run whose only errors were plan-limit refusals never alerts.
+        let mut totals = RunTotals::default();
+        totals.record_error(&SyncErrorEvent {
+            company: Some("acme".to_string()),
+            path: "knowledge/notes.md".to_string(),
+            message: "VaultClientError code=PLAN_LIMIT_EXCEEDED http=402 New files are paused while Acme is over its Starter limits.".to_string(),
+        });
+        assert!(totals.saw_error);
+        assert!(!totals.saw_alertable_error);
     }
 
     #[test]

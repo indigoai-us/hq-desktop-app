@@ -66,6 +66,7 @@ fn auth_session_status_tag(status: &AuthSessionStatus) -> &'static str {
     match status {
         AuthSessionStatus::Active => "active",
         AuthSessionStatus::CredentialsAbsent => "credentials_absent",
+        AuthSessionStatus::CredentialsReadError => "credentials_read_error",
         AuthSessionStatus::CredentialsInvalid => "credentials_invalid",
         AuthSessionStatus::RefreshTemporarilyUnavailable => "refresh_temporarily_unavailable",
         AuthSessionStatus::NonHumanPrincipal => "non_human_principal",
@@ -425,6 +426,12 @@ fn startup_auth_state_result(
 /// fail-closed signed-out state.
 async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, AuthSessionEnvelope) {
     let (first_token_read, first_token_read_result) = cognito::get_tokens_with_read_result().await;
+    let first_token_read_failed = first_token_read.is_err();
+    if first_token_read_failed {
+        eprintln!(
+            "[auth] startup token-store read failed; auth_session_status=credentials_read_error"
+        );
+    }
     let before = first_token_read.ok().flatten();
     let outcome =
         crate::commands::dm_notify::resolve_notification_credentials_classified(app).await;
@@ -474,13 +481,21 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
                 }
             }
         }
-        Err(error) if before.is_none() => (
-            signed_out_state(),
-            AuthSessionStatus::CredentialsAbsent,
-            None,
-            Some("No HQ Work credentials are saved on this device."),
-            error.refresh_failure_class,
-        ),
+        Err(error) if before.is_none() => {
+            let status = cognito::startup_token_store_status(first_token_read_failed);
+            let reason = if first_token_read_failed {
+                "HQ Work could not read saved credentials."
+            } else {
+                "No HQ Work credentials are saved on this device."
+            };
+            (
+                signed_out_state(),
+                status,
+                None,
+                Some(reason),
+                error.refresh_failure_class,
+            )
+        }
         Err(error) => {
             if error.requires_reauth {
                 record_last_auth_transition("refresh_rejected_requires_reauth");
@@ -583,6 +598,8 @@ pub async fn sign_out(app: AppHandle) -> Result<(), String> {
     crate::commands::dm_notify::clear_notification_credentials(&app).await?;
     crate::commands::dm_mqtt::reset_dm_push_for_auth_session_change();
     clear_sentry_user();
+    // The next account must not inherit this one's plan-limit upload pause.
+    crate::commands::uploads_paused::clear(&app);
     publish_auth_session(
         &app,
         AuthSessionEnvelope {
@@ -646,6 +663,14 @@ mod tests {
                 .expect("definitively invalid credentials should allow sign-in");
 
         assert!(!result.authenticated);
+    }
+
+    #[test]
+    fn token_store_read_error_uses_a_distinct_diagnostic_tag() {
+        assert_eq!(
+            auth_session_status_tag(&AuthSessionStatus::CredentialsReadError),
+            "credentials_read_error"
+        );
     }
 
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};

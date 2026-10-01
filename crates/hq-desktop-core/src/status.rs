@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::uploads_paused::UploadsPaused;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
@@ -18,6 +20,10 @@ pub struct SyncStatus {
     pub conflicts: u32,
     pub daemon_running: bool,
     pub source: String, // "cli", "journal", or "none"
+    /// Companies whose uploads a plan limit paused (hard-stop-readiness
+    /// US-019). Always present on the wire; empty when nothing is paused.
+    #[serde(default)]
+    pub uploads_paused: Vec<UploadsPaused>,
 }
 
 /// Journal file structure at {HQ_FOLDER}/.hq-sync-journal.json.
@@ -28,6 +34,10 @@ pub struct SyncJournal {
     pub pending_files: Option<u32>,
     pub conflicts: Option<u32>,
     pub daemon_running: Option<bool>,
+    /// Plan-limit upload pause, persisted so it survives a restart
+    /// (hard-stop-readiness US-019). Omitted when nothing is paused.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uploads_paused: Vec<UploadsPaused>,
 }
 
 /// Parse CLI JSON output into SyncStatus.
@@ -50,6 +60,14 @@ pub fn try_journal_status(hq_folder_path: &str) -> Result<SyncStatus, String> {
     parse_journal(&contents)
 }
 
+/// The persisted plan-limit upload pause (hard-stop-readiness US-019). A
+/// missing or unreadable journal means nothing is known to be paused.
+pub fn try_journal_uploads_paused(hq_folder_path: &str) -> Vec<UploadsPaused> {
+    try_journal_status(hq_folder_path)
+        .map(|status| status.uploads_paused)
+        .unwrap_or_default()
+}
+
 /// Parse journal JSON content into SyncStatus.
 pub fn parse_journal(contents: &str) -> Result<SyncStatus, String> {
     let journal: SyncJournal = serde_json::from_str(contents.trim())
@@ -65,6 +83,7 @@ fn journal_to_status(journal: SyncJournal) -> SyncStatus {
         conflicts: journal.conflicts.unwrap_or(0),
         daemon_running: journal.daemon_running.unwrap_or(false),
         source: "journal".to_string(),
+        uploads_paused: journal.uploads_paused,
     }
 }
 
@@ -207,6 +226,7 @@ pub fn default_status() -> SyncStatus {
         conflicts: 0,
         daemon_running: false,
         source: "none".to_string(),
+        uploads_paused: Vec::new(),
     }
 }
 
@@ -240,6 +260,7 @@ fn journal_for_completed_sync(now_iso: &str, conflicts: u32, daemon_running: boo
         pending_files: Some(conflicts),
         conflicts: Some(conflicts),
         daemon_running: Some(daemon_running),
+        uploads_paused: Vec::new(),
     }
 }
 
@@ -274,6 +295,7 @@ mod tests {
             conflicts: 1,
             daemon_running: true,
             source: "cli".to_string(),
+            uploads_paused: Vec::new(),
         };
         let json = serde_json::to_string(&status).unwrap();
         assert!(json.contains("\"lastSyncAt\""));
@@ -292,6 +314,7 @@ mod tests {
             conflicts: 2,
             daemon_running: true,
             source: "cli".to_string(),
+            uploads_paused: Vec::new(),
         };
         let json = serde_json::to_string(&status).unwrap();
         let parsed: SyncStatus = serde_json::from_str(&json).unwrap();
@@ -306,6 +329,7 @@ mod tests {
             conflicts: 0,
             daemon_running: false,
             source: "none".to_string(),
+            uploads_paused: Vec::new(),
         };
         let json = serde_json::to_string(&status).unwrap();
         assert!(json.contains("\"lastSyncAt\":null"));
@@ -363,6 +387,7 @@ mod tests {
             pending_files: Some(3),
             conflicts: Some(1),
             daemon_running: Some(true),
+            uploads_paused: Vec::new(),
         };
         let status = journal_to_status(journal);
         assert_eq!(
@@ -382,6 +407,7 @@ mod tests {
             pending_files: None,
             conflicts: None,
             daemon_running: None,
+            uploads_paused: Vec::new(),
         };
         let status = journal_to_status(journal);
         assert_eq!(status.last_sync_at, None);
@@ -523,6 +549,7 @@ mod tests {
             pending_files: Some(3),
             conflicts: Some(1),
             daemon_running: Some(true),
+            uploads_paused: Vec::new(),
         };
         write_journal(hq_folder, &journal).unwrap();
         let contents = std::fs::read_to_string(tmp.path().join(".hq-sync-journal.json")).unwrap();
@@ -544,6 +571,7 @@ mod tests {
             pending_files: Some(3),
             conflicts: Some(1),
             daemon_running: Some(true),
+            uploads_paused: Vec::new(),
         };
         write_journal(hq_folder, &journal).unwrap();
         let status = try_journal_status(hq_folder).unwrap();
@@ -563,6 +591,7 @@ mod tests {
             pending_files: Some(5),
             conflicts: Some(0),
             daemon_running: Some(false),
+            uploads_paused: Vec::new(),
         };
         write_journal(hq_folder, &first).unwrap();
         let second = SyncJournal {
@@ -570,6 +599,7 @@ mod tests {
             pending_files: Some(0),
             conflicts: Some(0),
             daemon_running: Some(false),
+            uploads_paused: Vec::new(),
         };
         write_journal(hq_folder, &second).unwrap();
         let status = try_journal_status(hq_folder).unwrap();
@@ -694,6 +724,7 @@ mod tests {
             conflicts: 1,
             daemon_running: true,
             source: "journal".to_string(),
+            uploads_paused: Vec::new(),
         };
         let merged = merge_engine_sync_at(status.clone(), Some("2026-07-30T18:04:11Z".to_string()));
         assert_eq!(merged, status, "an older engine stamp must not win");
@@ -707,6 +738,7 @@ mod tests {
             conflicts: 3,
             daemon_running: true,
             source: "journal".to_string(),
+            uploads_paused: Vec::new(),
         };
         let merged = merge_engine_sync_at(status, Some("2026-07-30T18:04:11Z".to_string()));
         assert_eq!(
@@ -729,6 +761,45 @@ mod tests {
         assert!(is_newer("2026-07-30T18:04:11Z", "2026-07-29T09:00:00Z"));
         assert!(!is_newer("2026-07-29T09:00:00Z", "2026-07-30T18:04:11Z"));
         assert!(is_newer("2026-07-30 18:04", "2026-07-29 09:00"));
+    }
+
+    // ── Plan-limit upload pause (hard-stop-readiness US-019) ─────────────
+
+    #[test]
+    fn test_uploads_paused_round_trips_through_the_journal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let hq_folder = tmp.path().to_str().unwrap();
+        let paused = vec![UploadsPaused {
+            company: "Acme".to_string(),
+            upgrade_url: Some("https://hq.computer/companies/acme/billing?upgrade=1".to_string()),
+            last_notice_at_ms: 42,
+        }];
+        let mut journal = journal_for_daemon_sync_complete("2026-09-28T12:00:00.000Z", 0);
+        journal.uploads_paused = paused.clone();
+        write_journal(hq_folder, &journal).unwrap();
+
+        let contents = std::fs::read_to_string(tmp.path().join(".hq-sync-journal.json")).unwrap();
+        assert!(contents.contains("\"uploadsPaused\""));
+        assert_eq!(
+            try_journal_status(hq_folder).unwrap().uploads_paused,
+            paused
+        );
+        assert_eq!(try_journal_uploads_paused(hq_folder), paused);
+    }
+
+    #[test]
+    fn test_journal_omits_an_empty_pause_and_status_always_carries_it() {
+        let journal = journal_for_sync_complete("2026-09-28T12:00:00.000Z", 0);
+        let wire = serde_json::to_string(&journal).unwrap();
+        assert!(!wire.contains("uploadsPaused"));
+        let status = parse_journal(&wire).unwrap();
+        assert!(status.uploads_paused.is_empty());
+        let status_wire = serde_json::to_value(&status).unwrap();
+        assert_eq!(status_wire["uploadsPaused"], serde_json::json!([]));
+        // An old journal written before this field existed still parses.
+        let legacy = r#"{"lastSyncAt":"2026-01-01T00:00:00Z","conflicts":0}"#;
+        assert!(parse_journal(legacy).unwrap().uploads_paused.is_empty());
+        assert!(try_journal_uploads_paused("/nonexistent/hq").is_empty());
     }
 
     #[test]

@@ -33,7 +33,7 @@ const desktopAltCapability = read('src-tauri/capabilities/desktop-alt.json');
 
 /** The body of a `fn`/`async fn` named `name`, up to its closing brace. */
 function rustFunction(source: string, name: string): string {
-  const start = source.indexOf(`fn ${name}(`);
+  const start = source.search(new RegExp(`fn ${name}(?:<[^\\n]*>)?\\(`));
   expect(start, `fn ${name} is not declared`).toBeGreaterThan(-1);
   const end = source.indexOf('\n}\n', start);
   expect(end, `fn ${name} has no closing brace`).toBeGreaterThan(start);
@@ -258,6 +258,30 @@ describe('authenticated desktop receipts keep the install-to-company join intact
     expect(desktopAuth).toContain('.bearer_auth(jwt)');
     expect(desktopAuth).toContain('schedule_authenticated_desktop_receipt');
     expect(desktopAuth).toContain('authorized_account_id');
+  });
+
+  it('waits for durable receipt persistence only after resolving the hq-flags gate', () => {
+    const gatedReceipt = rustFunction(desktopAuth, 'record_desktop_login_completed_gated');
+    const receiptQueued = gatedReceipt.indexOf('record_desktop_login_completed(');
+    const flagResolved = gatedReceipt.indexOf('login_receipt_durability_enabled().await');
+    const durableReceipt = gatedReceipt.indexOf('persist_authenticated_receipt_custody().await');
+
+    expect(receiptQueued).toBeGreaterThanOrEqual(0);
+    expect(flagResolved).toBeGreaterThan(receiptQueued);
+    expect(durableReceipt).toBeGreaterThan(flagResolved);
+  });
+
+  it('uses a bounded default-off gate for both manual and continuation sign-ins', () => {
+    const boundedGate = rustFunction(desktopAuth, 'login_receipt_durability_enabled_with_fetch');
+    const manualOauth = rustFunction(oauth, 'oauth_exchange_code');
+    const continuation = rustFunction(desktopAuth, 'desktop_continuation_confirm');
+
+    expect(boundedGate).toContain('tokio::time::timeout');
+    expect(boundedGate).toContain('LOGIN_RECEIPT_FLAG_LOOKUP_BUDGET');
+    expect(desktopAuth).toContain('Duration::from_millis(100)');
+    expect(manualOauth).toContain('record_desktop_login_completed_gated');
+    expect(continuation).toContain('record_desktop_login_completed_gated');
+    expect(desktopAuth).toContain('"desktop.login-receipt-durable-before-return-v1"');
   });
 
   it('reports the company after the person explicitly connects it, without changing provisioning', () => {

@@ -5,6 +5,7 @@ import {
   CLAUDE_PROVIDER_FLAG,
   FLAG_REFRESH_INTERVAL_MS,
   INVITE_TEAMMATE_STEP_FLAG,
+  LOGIN_RECEIPT_DURABILITY_FLAG,
   MEETINGS_LEGACY_FLAG,
   MEETINGS_REGISTRY_KEY,
   PERSONAL_WORKSPACE_BOARD_FLAG,
@@ -84,6 +85,28 @@ describe("registry key mapping", () => {
     expect(registryKeyFor(SETUP_STAGE_TIMEOUT_FIX_FLAG)).toBe(
       SETUP_STAGE_TIMEOUT_FIX_FLAG,
     );
+  });
+
+  it("maps receipt durability through the hq-flags registry", () => {
+    expect(LOGIN_RECEIPT_DURABILITY_FLAG).toBe(
+      "desktop.login-receipt-durable-before-return-v1",
+    );
+    expect(registryKeyFor(LOGIN_RECEIPT_DURABILITY_FLAG)).toBe(
+      LOGIN_RECEIPT_DURABILITY_FLAG,
+    );
+  });
+
+  it("keeps login receipt durability off when the registry is unavailable", async () => {
+    const isEnabled = vi.fn(() => true);
+    const adapter = createSyncPlatformAdapter({
+      invoke: vi.fn(async () => undefined),
+      createFlagClient: () =>
+        fakeClient({ ready: async () => {}, snapshot: () => null, isEnabled }),
+    });
+    await expect(
+      adapter.identity.hasFeature(LOGIN_RECEIPT_DURABILITY_FLAG),
+    ).resolves.toEqual(ok(false));
+    expect(isEnabled).not.toHaveBeenCalled();
   });
 });
 

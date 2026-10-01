@@ -63,7 +63,7 @@ describe("desktop visual hierarchy regressions", () => {
       readFileSync(new URL("../chat/tokens.css", import.meta.url), "utf8"),
     );
     const darkGround =
-      "--v4-ground: rgb(17 17 17 / clamp(0.6, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.615385), 1));";
+      "--v4-ground: rgb(17 17 17 / clamp(0.6, calc(1 - var(--hq-window-transparency-factor, 0) * 0.615385), 1));";
     for (const source of [tokens, chatTokens]) {
       // Both the system-dark and forced-dark blocks.
       expect(source.split(darkGround).length - 1).toBe(2);
@@ -78,10 +78,77 @@ describe("desktop visual hierarchy regressions", () => {
       "--v4-glass-filter-popover: blur(40px) saturate(124%) contrast(104%);",
     );
     expect(tokens).toContain(
-      "--v4-popover-strong: rgb(252 252 253 / clamp(0.90, calc(0.96 + 0.65 - var(--hq-window-transparency-factor, 0.65)), 1));",
+      "--v4-popover-strong: rgb(252 252 253 / clamp(0.90, calc(0.96 + 0.65 - var(--hq-window-transparency-factor, 0)), 1));",
     );
     expect(tokens).toContain(
-      "--v4-popover-strong: rgb(44 44 54 / clamp(0.90, calc(0.94 + 0.65 - var(--hq-window-transparency-factor, 0.65)), 1));",
+      "--v4-popover-strong: rgb(44 44 54 / clamp(0.90, calc(0.94 + 0.65 - var(--hq-window-transparency-factor, 0)), 1));",
     );
   });
+
+  it(
+    "paints solid window surfaces before the opacity preference is available",
+    () => {
+      // Stylesheets load before installAppearancePreferences can hydrate the
+      // persisted setting and set data-window-transparency on :root. A fresh
+      // install must therefore start from the same opaque endpoint as 100%.
+      const chatTokens = normalize(
+        readFileSync(new URL("../chat/tokens.css", import.meta.url), "utf8"),
+      );
+
+      for (const source of [tokens, chatTokens]) {
+        const lightDefault = source.match(
+          /:root\[data-window-transparency="0"\], :root:not\(\[data-window-transparency\]\)\s*\{([^}]*)\}/,
+        )?.[1];
+        expect(lightDefault).toBeDefined();
+        expect(lightDefault).toContain("--v4-ground: #f2f2f2;");
+        expect(lightDefault).toContain("--v4-chrome: #e8e8e8;");
+        expect(lightDefault).toContain("--v4-sidebar: #e0e0e0;");
+        expect(lightDefault).toContain("--v4-secondary-sidebar: #eeeeee;");
+        expect(lightDefault).toContain("--v4-glass-filter: none;");
+
+        const darkDefault = source.match(
+          /:root\[data-window-transparency="0"\]\.dark,[^{}]*:root:not\(\[data-window-transparency\]\)\.dark,[^{}]*\{([^}]*)\}/,
+        )?.[1];
+        expect(darkDefault).toBeDefined();
+        expect(darkDefault).toContain("--v4-ground: #111111;");
+        expect(darkDefault).toContain("--v4-chrome: #1e1e1e;");
+        expect(darkDefault).toContain("--v4-sidebar: #181818;");
+        expect(darkDefault).toContain("--v4-secondary-sidebar: #1a1a1a;");
+
+        expect(source).toContain(
+          ':root:not([data-window-transparency]):not([data-force-theme="light"])',
+        );
+      }
+    },
+  );
+
+  it(
+    "uses solid window surfaces at the 100% opacity endpoint in light and dark themes",
+    () => {
+      const chatTokens = normalize(
+        readFileSync(new URL("../chat/tokens.css", import.meta.url), "utf8"),
+      );
+
+      for (const source of [tokens, chatTokens]) {
+        const lightEndpoint = source.match(
+          /:root\[data-window-transparency="0"\], :root:not\(\[data-window-transparency\]\)\s*\{([^}]*)\}/,
+        )?.[1];
+        expect(lightEndpoint).toBeDefined();
+        expect(lightEndpoint).toContain("--v4-ground: #f2f2f2;");
+        expect(lightEndpoint).toContain("--v4-chrome: #e8e8e8;");
+        expect(lightEndpoint).toContain("--v4-sidebar: #e0e0e0;");
+        expect(lightEndpoint).toContain("--v4-secondary-sidebar: #eeeeee;");
+        expect(lightEndpoint).toContain("--v4-glass-filter: none;");
+
+        const darkEndpoint = source.match(
+          /:root\[data-window-transparency="0"\]\.dark,[^{}]*\{([^}]*)\}/,
+        )?.[1];
+        expect(darkEndpoint).toBeDefined();
+        expect(darkEndpoint).toContain("--v4-ground: #111111;");
+        expect(darkEndpoint).toContain("--v4-chrome: #1e1e1e;");
+        expect(darkEndpoint).toContain("--v4-sidebar: #181818;");
+        expect(darkEndpoint).toContain("--v4-secondary-sidebar: #1a1a1a;");
+      }
+    },
+  );
 });

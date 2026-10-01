@@ -7,6 +7,8 @@
  */
 
 import {
+  DEFAULT_WINDOW_TRANSPARENCY,
+  MAX_WINDOW_OPACITY,
   MAX_SLIDER_WINDOW_OPACITY,
   MIN_SLIDER_WINDOW_OPACITY,
 } from "./appearance-seam.js";
@@ -25,7 +27,7 @@ export const SETTINGS_PREFS_KEY = "hq-work-settings-prefs";
 
 export const DEFAULT_SETTINGS_PREFS: ShellSettingsPrefs = {
   showInDock: true,
-  windowOpacity: 80,
+  windowOpacity: MAX_WINDOW_OPACITY - DEFAULT_WINDOW_TRANSPARENCY,
   uiSize: "default",
   showSidebarScopeLabels: true,
 };
@@ -44,8 +46,7 @@ function parseOpacity(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return DEFAULT_SETTINGS_PREFS.windowOpacity;
   }
-  // Floor must admit the shipped default (transparency 65 → opacity 35); a 50
-  // floor made the default unrepresentable and jumped the window on first drag.
+  // Preserve the existing supported opacity range while defaulting to solid.
   return Math.min(
     MAX_SLIDER_WINDOW_OPACITY,
     Math.max(MIN_SLIDER_WINDOW_OPACITY, Math.round(value)),

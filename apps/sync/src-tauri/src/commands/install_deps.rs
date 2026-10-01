@@ -530,7 +530,7 @@ struct InstallCancellationRegistration {
 }
 
 impl InstallCancellationRegistration {
-    fn new(app: &AppHandle) -> Self {
+    fn new<R: tauri::Runtime>(app: &AppHandle<R>) -> Self {
         let handle = Uuid::new_v4().to_string();
         register_cancel_handle(handle.clone());
         emit_install_handle_started(app, &handle);
@@ -553,7 +553,7 @@ impl InstallCancellationRegistration {
         Ok(())
     }
 
-    fn finish(&self, app: &AppHandle, error: Option<&str>) {
+    fn finish<R: tauri::Runtime>(&self, app: &AppHandle<R>, error: Option<&str>) {
         deregister_handle(&self.handle);
         let _ = app.emit(
             "install:progress",
@@ -3643,14 +3643,93 @@ pub(crate) fn npm_args_with_public_registry(args: &[String]) -> Vec<String> {
     retry
 }
 
-/// Run one setup-path npm install and apply each setup-specific recovery at
-/// most once. The runner and side effects are injected so the exact retry
-/// ladder can be tested without a Tauri runtime or a real npm registry.
-async fn run_setup_npm_install_with_retries<Run, RunFuture, Cleanup, Preflight, Clear>(
+const NPM_PACKAGE_LOOKUP_RETRY_BACKOFF_SECONDS: [u64; 3] = [30, 45, 75];
+const NPM_RETRY_CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+async fn sleep_for_npm_retry_or_cancelled<CheckCancelled>(
+    delay: Duration,
+    check_cancelled: &mut CheckCancelled,
+) -> Result<(), String>
+where
+    CheckCancelled: FnMut() -> Result<(), String>,
+{
+    let deadline = tokio::time::Instant::now() + delay;
+    loop {
+        check_cancelled()?;
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Ok(());
+        }
+        tokio::time::sleep(remaining.min(NPM_RETRY_CANCELLATION_POLL_INTERVAL)).await;
+    }
+}
+
+/// Read npm's machine-stable resolution code from its output. The package name
+/// is checked separately so a missing transitive or unrelated package cannot
+/// arm retries for the requested global install.
+fn npm_package_lookup_error_code(detail: &str) -> Option<&'static str> {
+    detail.lines().find_map(|line| {
+        let line = line.to_ascii_lowercase();
+        let tokens = line.split_whitespace().collect::<Vec<_>>();
+        let code = tokens
+            .windows(2)
+            .find_map(|pair| match pair {
+                ["code", "e404"] => Some("E404"),
+                ["code", "etarget"] => Some("ETARGET"),
+                _ => None,
+            });
+        code.or_else(|| {
+            let npm_error_line = line.contains("npm error ") || line.contains("npm err! ");
+            let http_not_found = tokens
+                .windows(2)
+                .any(|pair| pair[0] == "404" && pair[1] == "not");
+            (npm_error_line && http_not_found).then_some("E404")
+        })
+    })
+}
+
+fn npm_error_mentions_package(detail: &str, package_name: &str) -> bool {
+    let normalized = detail
+        .to_ascii_lowercase()
+        .replace("%2f", "/")
+        .replace("%40", "@");
+    let package_name = package_name.to_ascii_lowercase();
+    normalized.match_indices(&package_name).any(|(start, matched)| {
+        let before_is_boundary = normalized[..start]
+            .chars()
+            .next_back()
+            .map(|character| !character.is_ascii_alphanumeric() && !matches!(character, '-' | '_' | '.'))
+            .unwrap_or(true);
+        let after_is_boundary = normalized[start + matched.len()..]
+            .chars()
+            .next()
+            .map(|character| !character.is_ascii_alphanumeric() && !matches!(character, '-' | '_' | '.'))
+            .unwrap_or(true);
+        before_is_boundary && after_is_boundary
+    })
+}
+
+fn is_package_lookup_failure(detail: &str, package_name: &str) -> bool {
+    npm_package_lookup_error_code(detail).is_some()
+        && npm_error_mentions_package(detail, package_name)
+}
+
+/// Run one setup-path npm install and apply its narrowly classified recovery
+/// policy. The runner and side effects are injected so retries can be tested
+/// without a Tauri runtime or a real npm registry.
+async fn run_setup_npm_install_with_retries<
+    Run,
+    RunFuture,
+    Cleanup,
+    Preflight,
+    Clear,
+    CheckCancelled,
+>(
     run: &mut Run,
     cleanup: &mut Cleanup,
     preflight: &mut Preflight,
     clear_failure: &mut Clear,
+    check_cancelled: &mut CheckCancelled,
     prefix: &str,
     windows_layout: bool,
     spec: &str,
@@ -3665,7 +3744,9 @@ where
     Cleanup: FnMut(&Path, &str),
     Preflight: FnMut(String),
     Clear: FnMut(),
+    CheckCancelled: FnMut() -> Result<(), String>,
 {
+    check_cancelled()?;
     let first_error = match run(base_args.clone()).await {
         Ok(output) => return Ok(output),
         Err(error) => error,
@@ -3690,32 +3771,70 @@ where
         });
     }
 
-    if crate::commands::hq_cli_update::is_etarget_failure(&first_error) {
-        preflight(format!(
-            "[{tag}] npm reported ETARGET/notarget; retrying once with --prefer-online to refresh registry metadata"
-        ));
-        clear_failure();
-        let retry = npm_args_with_option(&base_args, spec, "--prefer-online");
-        let second_error = match run(retry).await {
-            Ok(output) => return Ok(output),
-            Err(error) => error,
-        };
-
-        if let Some(public_registry_args) = public_registry_args {
-            preflight(format!(
-                "[{tag}] install via the configured npm registry failed; retrying with the public registry https://registry.npmjs.org/"
-            ));
-            clear_failure();
-            return run(public_registry_args).await.map_err(|third_error| {
-                format!(
-                    "{first_error}\n[{tag}] --prefer-online retry also failed: {second_error}\n[{tag}] retry with the public registry also failed: {third_error}"
+    if let Some(code) = npm_package_lookup_error_code(&first_error) {
+        if npm_error_mentions_package(&first_error, package_name) {
+            let mut attempt_errors = vec![first_error.clone()];
+            for (retry_index, delay_seconds) in
+                NPM_PACKAGE_LOOKUP_RETRY_BACKOFF_SECONDS.iter().enumerate()
+            {
+                preflight(format!(
+                    "[{tag}] npm reported {code} while resolving {package_name}; continuing dependency setup and retrying in {delay_seconds}s ({}/{})",
+                    retry_index + 1,
+                    NPM_PACKAGE_LOOKUP_RETRY_BACKOFF_SECONDS.len()
+                ));
+                sleep_for_npm_retry_or_cancelled(
+                    Duration::from_secs(*delay_seconds),
+                    check_cancelled,
                 )
-            });
-        }
+                .await?;
+                check_cancelled()?;
+                clear_failure();
 
-        return Err(format!(
-            "{first_error}\n[{tag}] --prefer-online retry also failed: {second_error}"
-        ));
+                let retry_args = if retry_index == 0 && code == "ETARGET" {
+                    npm_args_with_option(&base_args, spec, "--prefer-online")
+                } else {
+                    base_args.clone()
+                };
+                match run(retry_args).await {
+                    Ok(output) => return Ok(output),
+                    Err(error) => {
+                        if !is_package_lookup_failure(&error, package_name) {
+                            if let Some(public_registry_args) = public_registry_args.clone() {
+                                attempt_errors.push(error);
+                                preflight(format!(
+                                    "[{tag}] npm install retry failed; trying the public registry https://registry.npmjs.org/ once"
+                                ));
+                                clear_failure();
+                                return run(public_registry_args).await.map_err(|fallback_error| {
+                                    format!(
+                                        "{}\n[{tag}] retry with the public registry also failed: {fallback_error}",
+                                        attempt_errors.join("\n")
+                                    )
+                                });
+                            }
+                            return Err(error);
+                        }
+                        attempt_errors.push(error);
+                    }
+                }
+            }
+
+            if let Some(public_registry_args) = public_registry_args.clone() {
+                preflight(format!(
+                    "[{tag}] npm package lookup retries were exhausted; trying the public registry https://registry.npmjs.org/ once"
+                ));
+                clear_failure();
+                return run(public_registry_args).await.map_err(|fallback_error| {
+                    attempt_errors.push(fallback_error.clone());
+                    format!(
+                        "{}\n[{tag}] final public-registry attempt also failed: {fallback_error}",
+                        attempt_errors.join("\n")
+                    )
+                });
+            }
+
+            return Err(attempt_errors.join("\n"));
+        }
     }
 
     if let Some(public_registry_args) = public_registry_args {
@@ -3736,7 +3855,7 @@ where
 }
 
 /// `npm install -g --prefix <managed> <spec>` honouring the user's npm config
-/// first, then retrying with the public registry forced if that fails.
+/// first, then using the existing public-registry fallback when appropriate.
 ///
 /// A `~/.npmrc` pointing at a corporate mirror that does not carry HQ's
 /// packages (or is unreachable off-VPN) made qmd/hq installs die with npm's
@@ -3771,6 +3890,34 @@ async fn run_managed_npm_install<R: tauri::Runtime>(
     extra_args: &[&str],
     retry_public_registry: bool,
 ) -> Result<String, String> {
+    let cancellation = InstallCancellationRegistration::new(app);
+    let result = run_managed_npm_install_with_cancellation(
+        app,
+        npm,
+        prefix,
+        spec,
+        package_name,
+        tag,
+        extra_args,
+        retry_public_registry,
+        &cancellation,
+    )
+    .await;
+    cancellation.finish(app, result.as_ref().err().map(String::as_str));
+    result
+}
+
+async fn run_managed_npm_install_with_cancellation<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    npm: &str,
+    prefix: &str,
+    spec: &str,
+    package_name: &str,
+    tag: &str,
+    extra_args: &[&str],
+    retry_public_registry: bool,
+    cancellation: &InstallCancellationRegistration,
+) -> Result<String, String> {
     let npm_cache = crate::commands::hq_cli_update::app_npm_cache(app).map_err(|(_, error)| {
         emit_install_line(
             app,
@@ -3791,12 +3938,14 @@ async fn run_managed_npm_install<R: tauri::Runtime>(
     };
     let mut preflight = |line: String| emit_install_line(app, &line);
     let mut clear_failure = || clear_recovered_setup_command_failure();
+    let mut check_cancelled = || cancellation.reject_if_cancelled();
 
     run_setup_npm_install_with_retries(
         &mut run,
         &mut cleanup,
         &mut preflight,
         &mut clear_failure,
+        &mut check_cancelled,
         prefix,
         cfg!(target_os = "windows"),
         spec,
@@ -3977,13 +4126,16 @@ async fn install_hq_cli_macos(app: AppHandle) -> Result<String, String> {
                 if install_spec != HQ_CLI_REGISTRY_SPEC {
                     emit_preflight_line(&app, "[hq] installing the CLI bundled with this HQ app");
                 }
-                npm_install_global_managed(
+                run_managed_npm_install_with_cancellation(
                     &app,
                     npm.to_str().unwrap_or("npm"),
                     &prefix,
                     &install_spec,
                     "@indigoai-us/hq-cli",
                     "hq",
+                    &[],
+                    true,
+                    &cancellation,
                 )
                 .await
             },
@@ -6628,7 +6780,7 @@ async fn install_hq_cli_windows(app: AppHandle) -> Result<String, String> {
                 emit_progress(&app, "Installing @indigoai-us/hq-cli from npmjs.org...");
                 let prefix = managed_npm_prefix();
                 let prefix = prefix.to_string_lossy().into_owned();
-                let result_inner = run_managed_npm_install(
+                let result_inner = run_managed_npm_install_with_cancellation(
                     &app,
                     "npm",
                     &prefix,
@@ -6640,6 +6792,7 @@ async fn install_hq_cli_windows(app: AppHandle) -> Result<String, String> {
                         "--registry=https://registry.npmjs.org/",
                     ],
                     false,
+                    &cancellation,
                 )
                 .await?;
                 append_user_path(&managed_npm_bin())?;
@@ -10977,6 +11130,28 @@ mod npm_setup_recovery_tests {
         outcomes: Vec<Result<String, String>>,
         public_registry_args: Option<Vec<String>>,
     ) -> FakeNpmRun {
+        run_fake_npm_with_cancellation_check(
+            prefix,
+            windows_layout,
+            spec,
+            outcomes,
+            public_registry_args,
+            || Ok(()),
+        )
+        .await
+    }
+
+    async fn run_fake_npm_with_cancellation_check<CheckCancelled>(
+        prefix: &str,
+        windows_layout: bool,
+        spec: &str,
+        outcomes: Vec<Result<String, String>>,
+        public_registry_args: Option<Vec<String>>,
+        mut check_cancelled: CheckCancelled,
+    ) -> FakeNpmRun
+    where
+        CheckCancelled: FnMut() -> Result<(), String>,
+    {
         let attempts = Rc::new(RefCell::new(Vec::new()));
         let cleanup_scopes = Rc::new(RefCell::new(Vec::new()));
         let preflight = Rc::new(RefCell::new(Vec::new()));
@@ -11023,6 +11198,7 @@ mod npm_setup_recovery_tests {
             &mut cleanup,
             &mut emit_preflight,
             &mut clear_failure,
+            &mut check_cancelled,
             prefix,
             windows_layout,
             spec,
@@ -11122,14 +11298,18 @@ mod npm_setup_recovery_tests {
         assert!(run.preflight[0].contains("ENOTEMPTY"));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn etarget_retries_once_with_prefer_online() {
+        let started = tokio::time::Instant::now();
         let run = run_fake_npm(
             "/tmp/setup-prefix",
             false,
             "@tobilu/qmd@2.5.3",
             vec![
-                Err("npm error code ETARGET\nnpm error notarget".into()),
+                Err(
+                    "npm error code ETARGET\nnpm error notarget No matching version found for @tobilu/qmd@2.5.3"
+                        .into(),
+                ),
                 Ok("recovered".into()),
             ],
             None,
@@ -11143,10 +11323,270 @@ mod npm_setup_recovery_tests {
         assert!(run.cleanup_scopes.is_empty());
         assert_eq!(run.cleared_failures, 1);
         assert_eq!(run.preflight.len(), 1);
-        assert!(run.preflight[0].contains("prefer-online"));
+        assert!(run.preflight[0].contains("retrying in 30s"));
+        assert_eq!(
+            tokio::time::Instant::now() - started,
+            std::time::Duration::from_secs(30)
+        );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
+    async fn setup_npm_package_resolution_404_twice_then_success() {
+        let started = tokio::time::Instant::now();
+        let missing_tarball = "npm error 404 Not Found - GET https://registry.npmjs.org/@indigoai-us%2fhq-cli/-/hq-cli-5.290.0.tgz";
+        let run = run_fake_npm(
+            "/tmp/setup-prefix",
+            false,
+            "@indigoai-us/hq-cli",
+            vec![
+                Err(missing_tarball.into()),
+                Err(missing_tarball.into()),
+                Ok("installed after propagation".into()),
+            ],
+            None,
+        )
+        .await;
+
+        assert_eq!(run.result, Ok("installed after propagation".into()));
+        assert_eq!(
+            run.attempts.len(),
+            3,
+            "two 404s must be retried before success"
+        );
+        assert_eq!(run.attempts[0], run.attempts[1]);
+        assert_eq!(run.attempts[1], run.attempts[2]);
+        assert_eq!(
+            run.preflight.len(),
+            2,
+            "each retry keeps dependency-stage progress visible"
+        );
+        assert!(run
+            .preflight
+            .iter()
+            .all(|line| line.contains("continuing dependency setup")));
+        assert_eq!(
+            tokio::time::Instant::now() - started,
+            std::time::Duration::from_secs(75),
+            "the two retries must respect the first two backoff intervals"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn setup_npm_package_resolution_404_survives_stderr_tail_formatting() {
+        let lines = vec![
+            "npm error code E404".to_string(),
+            "npm stack preamble".to_string(),
+            "npm stack detail".to_string(),
+            "npm error 404 Not Found - GET https://registry.npmjs.org/@indigoai-us%2fhq-cli/-/hq-cli-5.290.0.tgz".to_string(),
+            "npm error registry response detail".to_string(),
+            "npm error troubleshooting detail".to_string(),
+            "npm error end of report".to_string(),
+        ];
+        let formatted = format_install_error(1, &lines);
+        assert!(!formatted.contains("code E404"), "the formatter must discard the early machine-code line");
+        assert!(formatted.contains("npm error 404 Not Found"));
+
+        let run = run_fake_npm(
+            "/tmp/setup-prefix",
+            false,
+            "@indigoai-us/hq-cli",
+            vec![
+                Err(formatted.clone()),
+                Err(formatted.clone()),
+                Ok("installed after propagation".into()),
+            ],
+            None,
+        )
+        .await;
+
+        assert_eq!(run.result, Ok("installed after propagation".into()));
+        assert_eq!(
+            run.attempts.len(),
+            3,
+            "formatted package 404 output must still enter the retry ladder"
+        );
+        assert_eq!(run.preflight.len(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn setup_npm_package_resolution_cancellation_during_backoff_stops_retry() {
+        let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+        let cancel_after_five_seconds = std::sync::Arc::clone(&cancelled);
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            cancel_after_five_seconds.store(true, Ordering::SeqCst);
+        });
+
+        let check_cancelled = {
+            let cancelled = std::sync::Arc::clone(&cancelled);
+            move || {
+                if cancelled.load(Ordering::SeqCst) {
+                    Err(InstallCancellation::UserCancelled.user_message())
+                } else {
+                    Ok(())
+                }
+            }
+        };
+        let started = tokio::time::Instant::now();
+        let missing = "npm error 404 Not Found - GET https://registry.npmjs.org/@indigoai-us%2fhq-cli/-/hq-cli-5.290.0.tgz";
+        let run = run_fake_npm_with_cancellation_check(
+            "/tmp/setup-prefix",
+            false,
+            "@indigoai-us/hq-cli",
+            vec![Err(missing.into()), Ok("must not run after cancellation".into())],
+            None,
+            check_cancelled,
+        )
+        .await;
+
+        assert_eq!(run.result, Err(InstallCancellation::UserCancelled.user_message()));
+        assert_eq!(
+            run.attempts.len(),
+            1,
+            "cancellation during backoff must prevent another npm process"
+        );
+        assert_eq!(
+            run.cleared_failures, 0,
+            "cancellation must not clear or replace the failure before returning"
+        );
+        assert!(tokio::time::Instant::now() - started < std::time::Duration::from_secs(30));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn transitive_package_404_falls_back_to_public_registry_without_backoff() {
+        let prefix = "/tmp/setup-prefix";
+        let spec = "@indigoai-us/hq-cli";
+        let transitive_missing = "npm error 404 Not Found - GET https://registry.npmjs.org/@another-team%2fother-cli/-/other-cli-1.0.0.tgz";
+        let public_registry_args = npm_public_registry_args(prefix, spec, &[]);
+        let run = run_fake_npm(
+            prefix,
+            false,
+            spec,
+            vec![Err(transitive_missing.into()), Ok("installed via public registry".into())],
+            Some(public_registry_args.clone()),
+        )
+        .await;
+
+        assert_eq!(
+            run.result,
+            Ok("installed via public registry".into()),
+            "an unrelated package lookup failure must retain the existing public-registry fallback"
+        );
+        assert_eq!(run.attempts.len(), 2, "skip backoff and try public registry once");
+        assert_eq!(run.attempts[1], public_registry_args);
+        assert_eq!(run.preflight.len(), 1);
+        assert_eq!(run.cleared_failures, 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn package_lookup_retry_non_lookup_failure_falls_back_to_public_registry() {
+        let prefix = "/tmp/setup-prefix";
+        let spec = "@indigoai-us/hq-cli";
+        let requested_package_missing = "npm error 404 Not Found - GET https://registry.npmjs.org/@indigoai-us%2fhq-cli/-/hq-cli-5.290.0.tgz";
+        let retry_failure = "npm error code EACCES\nnpm error syscall mkdir";
+        let public_registry_args = npm_public_registry_args(prefix, spec, &[]);
+        let run = run_fake_npm(
+            prefix,
+            false,
+            spec,
+            vec![
+                Err(requested_package_missing.into()),
+                Err(retry_failure.into()),
+                Ok("installed via public registry".into()),
+            ],
+            Some(public_registry_args.clone()),
+        )
+        .await;
+
+        assert_eq!(run.result, Ok("installed via public registry".into()));
+        assert_eq!(run.attempts.len(), 3, "a terminal retry error must go to the public registry once");
+        assert_eq!(run.attempts[2], public_registry_args);
+        assert_eq!(run.preflight.len(), 2);
+        assert_eq!(run.cleared_failures, 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn setup_npm_package_resolution_unrelated_etarget_fails_fast() {
+        let unrelated = "npm error code ETARGET\nnpm error notarget No matching version found for @another-team/other-cli@latest";
+        let run = run_fake_npm(
+            "/tmp/setup-prefix",
+            false,
+            "@indigoai-us/hq-cli",
+            vec![Err(unrelated.into()), Ok("must not retry".into())],
+            None,
+        )
+        .await;
+
+        assert_eq!(run.result, Err(unrelated.into()));
+        assert_eq!(
+            run.attempts.len(),
+            1,
+            "an ETARGET for a different package is not transient evidence for this install"
+        );
+        assert_eq!(run.cleared_failures, 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn setup_npm_package_resolution_404_exhaustion_keeps_exit_category() {
+        let prefix = "/tmp/setup-prefix";
+        let spec = "@indigoai-us/hq-cli";
+        let started = tokio::time::Instant::now();
+        let missing_tarball = "npm error 404 Not Found - GET https://registry.npmjs.org/@indigoai-us%2fhq-cli/-/hq-cli-5.290.0.tgz";
+        let public_registry_args = npm_public_registry_args(prefix, spec, &[]);
+        let run = run_fake_npm(
+            prefix,
+            false,
+            spec,
+            vec![Err(missing_tarball.into()); 5],
+            Some(public_registry_args),
+        )
+        .await;
+
+        let error = run
+            .result
+            .expect_err("all package-resolution attempts must fail");
+        assert!(error.contains("npm error 404 Not Found"));
+        assert_eq!(
+            run.attempts.len(),
+            5,
+            "three retries are followed by the existing public-registry fallback"
+        );
+        assert_eq!(
+            run.attempts[4],
+            npm_public_registry_args(prefix, spec, &[]),
+            "the final attempt preserves the existing public-registry fallback"
+        );
+        assert_eq!(
+            tokio::time::Instant::now() - started,
+            std::time::Duration::from_secs(150),
+            "only the three bounded retries add backoff"
+        );
+        let dependency = dependency_defs()
+            .into_iter()
+            .find(|dependency| dependency.id == "hq-cli")
+            .expect("hq-cli dependency is registered");
+        let result = DepInstallResult {
+            id: dependency.id,
+            label: dependency.label,
+            optional: dependency.optional,
+            status: DepInstallStatus::Failed,
+            error: Some(error.clone()),
+        };
+        let diagnostic = SetupCommandDiagnostic {
+            command: "npm install -g @indigoai-us/hq-cli".into(),
+            exit_code: Some(1),
+            stdout: String::new(),
+            stderr: error.clone(),
+            error,
+        };
+        assert_eq!(
+            setup_error_category(&result, Some(&diagnostic)).as_str(),
+            "exit-nonzero",
+            "exhausted 404 retries retain the existing setup failure category"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn etarget_falls_through_to_public_registry_after_prefer_online_fails() {
         let prefix = "/tmp/setup-prefix";
         let spec = "@tobilu/qmd@2.5.3";
@@ -11163,8 +11603,10 @@ mod npm_setup_recovery_tests {
             false,
             spec,
             vec![
-                Err("first ETARGET".into()),
-                Err("prefer-online ETARGET".into()),
+                Err("npm error code ETARGET first for @tobilu/qmd@2.5.3".into()),
+                Err("npm error code ETARGET second for @tobilu/qmd@2.5.3".into()),
+                Err("npm error code ETARGET third for @tobilu/qmd@2.5.3".into()),
+                Err("npm error code ETARGET fourth for @tobilu/qmd@2.5.3".into()),
                 Ok("public registry recovered".into()),
             ],
             Some(public_registry_args.clone()),
@@ -11190,17 +11632,31 @@ mod npm_setup_recovery_tests {
                     "--prefer-online".to_string(),
                     spec.to_string(),
                 ],
+                vec![
+                    "install".to_string(),
+                    "-g".to_string(),
+                    "--prefix".to_string(),
+                    prefix.to_string(),
+                    spec.to_string(),
+                ],
+                vec![
+                    "install".to_string(),
+                    "-g".to_string(),
+                    "--prefix".to_string(),
+                    prefix.to_string(),
+                    spec.to_string(),
+                ],
                 public_registry_args,
             ]
         );
         assert!(run.cleanup_scopes.is_empty());
-        assert_eq!(run.cleared_failures, 2);
-        assert_eq!(run.preflight.len(), 2);
-        assert!(run.preflight[0].contains("prefer-online"));
-        assert!(run.preflight[1].contains("public registry"));
+        assert_eq!(run.cleared_failures, 4);
+        assert_eq!(run.preflight.len(), 4);
+        assert!(run.preflight[0].contains("retrying in 30s"));
+        assert!(run.preflight[3].contains("public registry"));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn etarget_public_registry_failure_preserves_all_attempt_errors() {
         let prefix = "/tmp/setup-prefix";
         let spec = "@tobilu/qmd@2.5.3";
@@ -11217,26 +11673,30 @@ mod npm_setup_recovery_tests {
             false,
             spec,
             vec![
-                Err("first ETARGET".into()),
-                Err("prefer-online ETARGET".into()),
-                Err("public registry ETARGET".into()),
+                Err("npm error code ETARGET first for @tobilu/qmd@2.5.3".into()),
+                Err("npm error code ETARGET second for @tobilu/qmd@2.5.3".into()),
+                Err("npm error code ETARGET third for @tobilu/qmd@2.5.3".into()),
+                Err("npm error code ETARGET fourth for @tobilu/qmd@2.5.3".into()),
+                Err("npm error code ETARGET public registry for @tobilu/qmd@2.5.3".into()),
             ],
             Some(public_registry_args.clone()),
         )
         .await;
 
         let error = run.result.expect_err("all three attempts should fail");
-        assert!(error.contains("first ETARGET"));
-        assert!(error.contains("prefer-online ETARGET"));
-        assert!(error.contains("public registry ETARGET"));
-        assert_eq!(run.attempts.len(), 3);
-        assert_eq!(run.attempts[2], public_registry_args);
+        assert!(error.contains("ETARGET first"));
+        assert!(error.contains("ETARGET second"));
+        assert!(error.contains("ETARGET third"));
+        assert!(error.contains("ETARGET fourth"));
+        assert!(error.contains("ETARGET public registry"));
+        assert_eq!(run.attempts.len(), 5);
+        assert_eq!(run.attempts[4], public_registry_args);
         assert!(run.attempts[1].contains(&"--prefer-online".to_string()));
         assert!(run.cleanup_scopes.is_empty());
-        assert_eq!(run.cleared_failures, 2);
-        assert_eq!(run.preflight.len(), 2);
-        assert!(run.preflight[0].contains("prefer-online"));
-        assert!(run.preflight[1].contains("public registry"));
+        assert_eq!(run.cleared_failures, 4);
+        assert_eq!(run.preflight.len(), 4);
+        assert!(run.preflight[0].contains("retrying in 30s"));
+        assert!(run.preflight[3].contains("public registry"));
     }
 
     #[tokio::test]

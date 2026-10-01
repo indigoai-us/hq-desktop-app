@@ -202,6 +202,7 @@ fn setup_startup_surfaces(
 ) -> Result<(), Box<dyn std::error::Error>> {
     tray::setup_tray(app)?;
     crate::recovery::on_startup(app);
+    crate::recovery::spawn_runtime_stall_sentinel();
 
     if first_run {
         tray::show_window_centered(app);
@@ -212,6 +213,10 @@ fn setup_startup_surfaces(
     // (tao parks an in-process status item off-screen on Tahoe).
     #[cfg(target_os = "macos")]
     tray_helper::spawn_and_poll(app);
+
+    // hard-stop-readiness US-019: a plan-limit upload pause recorded in the
+    // journal by the previous run reaches the menu bar before the next pass.
+    commands::uploads_paused::publish_current(app);
 
     register_global_shortcuts(app);
     Ok(())
