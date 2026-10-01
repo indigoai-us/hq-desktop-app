@@ -5314,6 +5314,22 @@ mod tests {
             .unwrap_or_else(|p| p.into_inner())
     }
 
+    #[test]
+    fn mirror_git_processes_are_not_stopped_while_they_can_hold_index_lock() {
+        let source = include_str!("git_mirror.rs");
+        let git_output = source
+            .split("fn git_output(")
+            .nth(1)
+            .expect("git_output definition is present")
+            .split("\nfn ")
+            .next()
+            .expect("git_output body is present");
+        assert!(
+            !git_output.contains("CpuThrottle::attach"),
+            "git_output must not attach mirror Git to CpuThrottle: Git can retain .git/index.lock while SIGSTOP'd"
+        );
+    }
+
     fn set_probe_override(value: Option<(bool, bool)>) {
         *PROBE_OVERRIDE.lock().unwrap_or_else(|e| e.into_inner()) = value;
     }
