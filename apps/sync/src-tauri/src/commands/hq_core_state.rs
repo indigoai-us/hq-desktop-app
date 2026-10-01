@@ -4247,11 +4247,21 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
                 //     locally-authored under a locked scope. USER-ONLY,
                 //     same as before.
                 let floor_sha_at_path = floor_in_scope.get(*path);
-                match floor_sha_at_path {
-                    Some(fsha) if sha_local == fsha => {
+                let floor_matches_local = floor_sha_at_path.map(|floor_sha| {
+                    if *path == settings_path {
+                        match (local_settings_sha.as_ref(), floor_settings_sha.as_ref()) {
+                            (Some(local_sha), Some(floor_settings)) => local_sha == floor_settings,
+                            _ => sha_local == floor_sha,
+                        }
+                    } else {
+                        sha_local == floor_sha
+                    }
+                });
+                match (floor_sha_at_path, floor_matches_local) {
+                    (Some(_), Some(true)) => {
                         unchanged_count += 1;
                     }
-                    Some(_) => {
+                    (Some(_), _) => {
                         user_edit.push(DriftEntry {
                             path: (*path).clone(),
                             size: *size_local,
