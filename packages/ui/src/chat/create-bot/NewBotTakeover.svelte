@@ -8,7 +8,7 @@
   import type { CloudBotDraft, EntryPointResult } from "../lifecycle-entry-points.js";
   import NewBotCreateScreen, { type NewBotCreated } from "./NewBotCreateScreen.svelte";
   import NewBotWakingScreen from "./NewBotWakingScreen.svelte";
-  import { beginWakingSession, type WakingBotSession } from "./waking-model.js";
+  import { beginWakingSession, resumeWakingSession, type WakingBotSession } from "./waking-model.js";
   import "./new-bot-takeover.css";
 
   interface Props {
@@ -21,6 +21,7 @@
     loadProvisionOptions?: ((companyUid: string) => AdapterPromise<AgentProvisionOptionsView>) | null;
     oncreate?: ((companyUid: string, draft: CloudBotDraft) => Promise<EntryPointResult>) | null;
     getStatus?: ((agentUid: string) => Promise<unknown>) | null;
+    retryAgent?: ((agentUid: string) => Promise<unknown>) | null;
     wakingSession?: WakingBotSession | null;
     onwaking?: ((session: WakingBotSession) => void) | null;
     onwakingchange?: ((session: WakingBotSession | null) => void) | null;
@@ -40,6 +41,7 @@
     loadProvisionOptions = null,
     oncreate = null,
     getStatus = null,
+    retryAgent = null,
     wakingSession = null,
     onwaking = null,
     onwakingchange = null,
@@ -53,7 +55,10 @@
 
   let dialogEl = $state<HTMLDivElement | null>(null);
   let localWakingSession = $state<WakingBotSession | null>(null);
-  const activeWakingSession = $derived(localWakingSession ?? wakingSession);
+  let ignoreExternalWakingSession = $state(false);
+  const activeWakingSession = $derived(
+    localWakingSession ?? (ignoreExternalWakingSession ? null : wakingSession),
+  );
 
   const focusableSelector =
     'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])';
@@ -92,11 +97,20 @@
       companyUid: created.companyUid,
       name: created.name,
     });
+    ignoreExternalWakingSession = false;
     localWakingSession = session;
     onwaking?.(session);
   }
 
   function updateWaking(session: WakingBotSession): void {
+    if (session.phase === "ready") {
+      localWakingSession = null;
+      ignoreExternalWakingSession = true;
+      onwakingchange?.(null);
+      onopenchat?.(session);
+      onclosewaking?.();
+      return;
+    }
     localWakingSession = session;
     onwakingchange?.(session);
   }
@@ -106,9 +120,13 @@
     onclosewaking?.();
   }
 
-  function retryWaking(): void {
-    localWakingSession = null;
-    onwakingchange?.(null);
+  async function retryWaking(): Promise<void> {
+    if (!activeWakingSession || !retryAgent) return;
+    const result = await retryAgent(activeWakingSession.agentUid).catch(() => null);
+    if (!(result as { ok?: unknown } | null)?.ok) return;
+    const session = resumeWakingSession(activeWakingSession);
+    localWakingSession = session;
+    onwakingchange?.(session);
   }
 
   function openWakingChat(): void {
@@ -148,14 +166,17 @@
   <main class="new-bot-takeover-stage">
     <div class="new-bot-takeover-card">
       {#if activeWakingSession}
+        {#key activeWakingSession.phase}
         <NewBotWakingScreen
           session={activeWakingSession}
           {getStatus}
+          {retryAgent}
           onupdate={updateWaking}
           onclose={closeWaking}
           onretry={retryWaking}
           onopenchat={openWakingChat}
         />
+        {/key}
       {:else if oncreate && loadProvisionOptions && companies.length}
         <NewBotCreateScreen
           {companies}

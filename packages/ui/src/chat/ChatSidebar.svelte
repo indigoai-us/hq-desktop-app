@@ -286,6 +286,7 @@
       | null;
     /** Polls a just-created cloud bot while its waking screen is open. */
     loadAgentStatus?: ((agentUid: string) => Promise<unknown>) | null;
+    retryAgent?: ((agentUid: string) => Promise<unknown>) | null;
     loadClaudeProviderFlag?: (() => AdapterPromise<boolean>) | null;
     loadCloudProvisionOptions?: ((companyUid: string) => AdapterPromise<AgentProvisionOptionsView>) | null;
     /** Personal local bot (local-bots): desktop hosts only; see CreateModal. */
@@ -443,6 +444,7 @@
     companyCreate = null,
     oncreateagent = null,
     loadAgentStatus = null,
+    retryAgent = null,
     loadClaudeProviderFlag = null,
     loadCloudProvisionOptions = null,
     oncreatebot = null,
@@ -3795,6 +3797,7 @@
       loadProvisionOptions={loadCloudProvisionOptions}
       oncreate={oncreateagent}
       getStatus={loadAgentStatus}
+      {retryAgent}
       wakingSession={wakingBot}
       onwaking={beginWakingBot}
       onwakingchange={updateWakingBot}

@@ -12,13 +12,14 @@
   interface Props {
     session: WakingBotSession;
     getStatus: ((agentUid: string) => Promise<unknown>) | null;
+    retryAgent?: ((agentUid: string) => Promise<unknown>) | null;
     onupdate: (session: WakingBotSession) => void;
     onclose: () => void;
     onretry: () => void;
     onopenchat: () => void;
   }
 
-  let { session, getStatus, onupdate, onclose, onretry, onopenchat }: Props = $props();
+  let { session, getStatus, retryAgent = null, onupdate, onclose, onretry, onopenchat }: Props = $props();
 
   const initials = $derived(
     session.name
@@ -35,23 +36,24 @@
     let timer: ReturnType<typeof setTimeout> | null = null;
 
     async function check(): Promise<void> {
-      if (stopped || session.phase !== "waking") return;
-      if (!getStatus || !session.agentUid) {
+      const checkedSession = session;
+      if (stopped || !checkedSession || checkedSession.phase !== "waking") return;
+      if (!getStatus || !checkedSession.agentUid) {
         timer = setTimeout(() => void check(), WAKING_POLL_MS);
         return;
       }
       try {
-        const result = await getStatus(session.agentUid);
+        const result = await getStatus(checkedSession.agentUid);
         if (stopped) return;
         const response = result as { ok?: unknown; value?: unknown };
         const next = response && response.ok === true
-          ? applyWakingStatus(session, response.value)
-          : recordWakingCheckFailure(session);
+          ? applyWakingStatus(checkedSession, response.value)
+          : recordWakingCheckFailure(checkedSession);
         onupdate(next);
       } catch {
-        if (!stopped) onupdate(recordWakingCheckFailure(session));
+        if (!stopped) onupdate(recordWakingCheckFailure(checkedSession));
       }
-      if (!stopped && session.phase === "waking") timer = setTimeout(() => void check(), WAKING_POLL_MS);
+      if (!stopped && checkedSession.phase === "waking") timer = setTimeout(() => void check(), WAKING_POLL_MS);
     }
 
     void check();
@@ -85,7 +87,7 @@
   >{statusLine}</p>
 
   {#if session.phase === "failed"}
-    <button type="button" class="new-bot-waking-action" data-testid="new-bot-waking-retry" use:focusOnMount onclick={onretry}>Try again</button>
+    <button type="button" class="new-bot-waking-action" data-testid="new-bot-waking-retry" disabled={!retryAgent} use:focusOnMount onclick={onretry}>Try again</button>
   {:else}
     <button type="button" class="new-bot-waking-link" data-testid="new-bot-waking-open-chat" use:focusOnMount onclick={onopenchat}>Open chat now</button>
   {/if}

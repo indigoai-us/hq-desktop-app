@@ -4,6 +4,8 @@ import {
   applyWakingStatus,
   beginWakingSession,
   recordWakingCheckFailure,
+  resumeWakingSession,
+  US001_MEDIAN_WAKING_ESTIMATE_MS,
   WAKING_ESTIMATE_MS,
   wakingStatusLine,
 } from "./waking-model";
@@ -21,6 +23,13 @@ function session() {
 }
 
 describe("waking model", () => {
+  it("uses US-001's recorded median by default while fixtures can set an estimate", () => {
+    expect(US001_MEDIAN_WAKING_ESTIMATE_MS).toBe(1_244_000);
+    const fixture = beginWakingSession({ agentUid: "agt_nova", channelId: "chn_nova", companyUid: "cmp_acme", name: "Nova", now: STARTED, estimateMs: 10_000 });
+    expect(wakingStatusLine(fixture, STARTED + 9_999)).not.toMatch(/taking longer/i);
+    expect(wakingStatusLine(fixture, STARTED + 10_001)).toMatch(/taking longer/i);
+  });
+
   it("keeps server setup labels out of the person-facing estimate", () => {
     const next = applyWakingStatus(session(), { setupState: { phase: "runtime" } }, STARTED + 10_000);
     expect(wakingStatusLine(next, STARTED + 10_000)).toMatch(/about/i);
@@ -46,5 +55,10 @@ describe("waking model", () => {
     const ready = applyWakingStatus(waiting, { setupState: { phase: "ready" } }, STARTED + 30_000);
     expect(waiting.progress).toBeLessThan(100);
     expect(ready.progress).toBe(100);
+  });
+
+  it("resumes the exact same bot after retrying", () => {
+    const retried = resumeWakingSession({ ...session(), phase: "failed" }, STARTED + 10_000);
+    expect(retried).toMatchObject({ agentUid: "agt_nova", channelId: "chn_nova", phase: "waking", consecutiveCheckFailures: 0 });
   });
 });

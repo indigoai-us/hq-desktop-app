@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import NewBotTakeover from "./NewBotTakeover.svelte";
+import { beginWakingSession } from "./waking-model.js";
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -117,5 +118,41 @@ describe("NewBotTakeover", () => {
 
     expect(document.querySelector('[data-testid="new-bot-waking-screen"]')?.textContent).toContain("Waking up Nova");
     expect(onwaking).toHaveBeenCalledWith(expect.objectContaining({ agentUid: "agt_nova", channelId: "chn_nova" }));
+  });
+
+  it("removes waking state and opens chat once the status says ready", async () => {
+    const onopenchat = vi.fn();
+    const onclosewaking = vi.fn();
+    const onwakingchange = vi.fn();
+    render({
+      wakingSession: beginWakingSession({ agentUid: "agt_nova", channelId: "chn_nova", companyUid: "cmp_acme", name: "Nova" }),
+      getStatus: async () => ({ ok: true, value: { setupState: { phase: "ready" } } }),
+      onopenchat,
+      onclosewaking,
+      onwakingchange,
+    });
+    await settle();
+
+    expect(onwakingchange).toHaveBeenCalledWith(null);
+    expect(onopenchat).toHaveBeenCalledWith(expect.objectContaining({ agentUid: "agt_nova", phase: "ready" }));
+    expect(onclosewaking).toHaveBeenCalledOnce();
+    expect(document.querySelector('[data-testid="new-bot-waking-screen"]')).toBeNull();
+  });
+
+  it("retries the same failed agent instead of returning to creation", async () => {
+    const retryAgent = vi.fn(async () => ({ ok: true }));
+    const onwakingchange = vi.fn();
+    render({
+      wakingSession: { ...beginWakingSession({ agentUid: "agt_nova", channelId: "chn_nova", companyUid: "cmp_acme", name: "Nova" }), phase: "failed" as const },
+      retryAgent,
+      onwakingchange,
+    });
+    await settle();
+    document.querySelector<HTMLButtonElement>('[data-testid="new-bot-waking-retry"]')!.click();
+    await settle();
+
+    expect(retryAgent).toHaveBeenCalledWith("agt_nova");
+    expect(onwakingchange).toHaveBeenLastCalledWith(expect.objectContaining({ agentUid: "agt_nova", channelId: "chn_nova", phase: "waking" }));
+    expect(document.querySelector('[data-testid="new-bot-create-screen"]')).toBeNull();
   });
 });

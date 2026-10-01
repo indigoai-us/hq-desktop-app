@@ -8833,6 +8833,7 @@
           companyCreate={companyCreateSeam}
           oncreateagent={canCreateCloudBots ? createCloudBotEntry : null}
           loadAgentStatus={(agentUid) => adapter.agents.getStatus(agentUid)}
+          retryAgent={(agentUid) => adapter.agents.start(agentUid)}
           loadClaudeProviderFlag={() => adapter.identity.hasFeature(CLAUDE_PROVIDER_FLAG)}
           humanOnly={humanOnlyConversations}
           loadCloudProvisionOptions={(companyUid) => adapter.agents.getProvisionOptions(companyUid)}

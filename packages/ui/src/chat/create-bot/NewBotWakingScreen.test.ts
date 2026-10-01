@@ -21,19 +21,21 @@ function render(session = beginWakingSession({ agentUid: "agt_nova", channelId: 
   const onupdate = vi.fn();
   const onclose = vi.fn();
   const onretry = vi.fn();
+  const retryAgent = vi.fn(async () => ({ ok: true }));
   const onopenchat = vi.fn();
   component = mount(NewBotWakingScreen, {
     target: host,
     props: {
       session,
       getStatus: async () => ({ ok: true, value: { setupState: { phase: "creating" } } }),
+      retryAgent,
       onupdate,
       onclose,
       onretry,
       onopenchat,
     },
   });
-  return { onupdate, onclose, onretry, onopenchat };
+  return { onupdate, onclose, onretry, onopenchat, retryAgent };
 }
 
 afterEach(async () => {
