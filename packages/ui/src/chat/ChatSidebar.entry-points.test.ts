@@ -181,6 +181,8 @@ describe("ChatSidebar lifecycle entry points", () => {
     expect(q('[data-testid="chat-create-modal"]')).toBeNull();
     const takeover = q('[data-testid="new-bot-takeover"]');
     expect(takeover?.getAttribute("role")).toBe("dialog");
+    expect(takeover?.getAttribute("aria-modal")).toBe("true");
+    expect(takeover?.style.getPropertyValue("--new-bot-wallpaper")).toContain("url(");
     expect(takeover?.textContent).toContain("Meet your");
     expect(takeover?.querySelectorAll(".new-bot-takeover-card").length).toBe(1);
     expect(oncreateagent).not.toHaveBeenCalled();
@@ -196,6 +198,7 @@ describe("ChatSidebar lifecycle entry points", () => {
     await settle();
     expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
     expect(q('[data-testid="chat-create-modal"]')).toBeTruthy();
+    expect(document.activeElement?.getAttribute("data-testid")).toBe("chat-create-query");
   });
 
   it("links to the unchanged local creation flow from the takeover", async () => {

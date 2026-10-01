@@ -18,7 +18,7 @@
    * persisted cursor survives restarts. Cursor catch-up on MQTT connect/focus
    * heals gaps; the 3-minute safety poll runs only while MQTT is down.
    */
-  import { onMount, untrack } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import type { Snippet } from "svelte";
   import type { RuntimeStatus } from "./create-bot/runtime-status.js";
   import {
@@ -1624,10 +1624,12 @@
     newBotOpen = true;
   }
 
-  function cancelNewBotTakeover(): void {
+  async function cancelNewBotTakeover(): Promise<void> {
     newBotOpen = false;
     createStep = "find";
     createOpen = true;
+    await tick();
+    document.querySelector<HTMLInputElement>('[data-testid="chat-create-query"]')?.focus();
   }
 
   function openLocalBotFromTakeover(): void {
