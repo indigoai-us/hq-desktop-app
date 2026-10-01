@@ -97,6 +97,19 @@ describe("NewBotWakingScreen", () => {
     expect(document.querySelector('[data-testid="new-bot-approval-waiting"]')?.textContent).toContain("Waiting for Grok");
   });
 
+  it("polls the selected brain so the server returns the current pairing", async () => {
+    const getStatus = vi.fn(async () => ({ ok: true, value: { setupState: { phase: "creating" } } }));
+    render(beginWakingSession({
+      agentUid: "agt_nova",
+      channelId: "chn_nova",
+      companyUid: "cmp_acme",
+      name: "Nova",
+      brain: "grok",
+    }), { getStatus });
+    await settle();
+    expect(getStatus).toHaveBeenCalledWith("agt_nova", "grok");
+  });
+
   it("copies and displays the Codex code before opening its device page", async () => {
     const writeText = vi.fn(async () => undefined);
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });

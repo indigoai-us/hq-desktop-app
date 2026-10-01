@@ -7,7 +7,7 @@
  * labels through to the UI.
  */
 
-import { brainApprovalFromStatus, type BrainApproval } from "./bot-brain-approval.js";
+import { brainApprovalFromStatus, type BrainApproval, type BrainProvider } from "./bot-brain-approval.js";
 
 /** US-001 recorded median create-to-audit time, measured 2026-10-01. */
 export const US001_MEDIAN_WAKING_ESTIMATE_MS = 1_244_000;
@@ -23,6 +23,8 @@ export interface WakingBotSession {
   channelId: string;
   companyUid: string;
   name: string;
+  /** The brain selected at creation, used to request its current pairing only. */
+  brain: BrainProvider | null;
   startedAt: number;
   estimateMs: number;
   phase: WakingPhase;
@@ -67,6 +69,7 @@ export function beginWakingSession(input: {
   channelId: string;
   companyUid: string;
   name: string;
+  brain?: BrainProvider | null;
   now?: number;
   estimateMs?: number;
 }): WakingBotSession {
@@ -77,6 +80,7 @@ export function beginWakingSession(input: {
     channelId: input.channelId.trim(),
     companyUid: input.companyUid.trim(),
     name: input.name.trim() || "Your bot",
+    brain: input.brain ?? null,
     startedAt,
     estimateMs,
     phase: "waking",

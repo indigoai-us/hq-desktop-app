@@ -8832,7 +8832,7 @@
           oncreatecompany={canRunEntryPoints ? createCompanyEntry : null}
           companyCreate={companyCreateSeam}
           oncreateagent={canCreateCloudBots ? createCloudBotEntry : null}
-          loadAgentStatus={(agentUid) => adapter.agents.getStatus(agentUid)}
+          loadAgentStatus={(agentUid, brain) => adapter.agents.getStatus(agentUid, brain)}
           retryAgent={(agentUid) => adapter.agents.retryProvisioning(agentUid)}
           restartBrainApproval={(agentUid, brain) => adapter.agents.restartBrainApproval?.(agentUid, brain) ?? Promise.resolve({ ok: false })}
           submitClaudeLoginCode={(agentUid, code) => adapter.agents.submitClaudeLoginCode?.(agentUid, code) ?? Promise.resolve({ ok: false })}

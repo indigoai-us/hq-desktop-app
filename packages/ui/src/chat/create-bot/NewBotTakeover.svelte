@@ -21,7 +21,7 @@
     runtimeReady?: Record<string, boolean> | null;
     loadProvisionOptions?: ((companyUid: string) => AdapterPromise<AgentProvisionOptionsView>) | null;
     oncreate?: ((companyUid: string, draft: CloudBotDraft) => Promise<EntryPointResult>) | null;
-    getStatus?: ((agentUid: string) => Promise<unknown>) | null;
+    getStatus?: ((agentUid: string, brain?: BrainProvider) => Promise<unknown>) | null;
     retryAgent?: ((agentUid: string) => Promise<unknown>) | null;
     restartBrainApproval?: ((agentUid: string, brain: BrainProvider) => Promise<unknown>) | null;
     submitClaudeLoginCode?: ((agentUid: string, code: string) => Promise<unknown>) | null;
@@ -103,6 +103,7 @@
       channelId: created.target.channelId,
       companyUid: created.companyUid,
       name: created.name,
+      brain: created.brain,
     });
     ignoreExternalWakingSession = false;
     localWakingSession = session;

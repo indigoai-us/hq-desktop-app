@@ -285,7 +285,7 @@
         ) => Promise<EntryPointResult>)
       | null;
     /** Polls a just-created cloud bot while its waking screen is open. */
-    loadAgentStatus?: ((agentUid: string) => Promise<unknown>) | null;
+    loadAgentStatus?: ((agentUid: string, brain?: "grok" | "codex" | "claude") => Promise<unknown>) | null;
     retryAgent?: ((agentUid: string) => Promise<unknown>) | null;
     restartBrainApproval?: ((agentUid: string, brain: "grok" | "codex" | "claude") => Promise<unknown>) | null;
     submitClaudeLoginCode?: ((agentUid: string, code: string) => Promise<unknown>) | null;

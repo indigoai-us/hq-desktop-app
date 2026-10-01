@@ -15,6 +15,7 @@
   export interface NewBotCreated {
     name: string;
     companyUid: string;
+    brain: BotRuntime;
     target: EntryPointTarget;
   }
 
@@ -128,7 +129,7 @@
     }));
     busy = false;
     if (result.ok) {
-      oncomplete({ name: name.trim(), companyUid, target: result.target });
+      oncomplete({ name: name.trim(), companyUid, brain: runtime, target: result.target });
       return;
     }
     const message = result.reason.trim() || "We couldn't create this bot. Try again in a moment.";

@@ -76,7 +76,9 @@ export function brainApprovalLabel(brain: BrainProvider): string {
 export function approvalOpenUrl(approval: BrainApproval): string {
   if (approval.provider !== "grok" || !approval.code) return approval.url;
   const url = new URL(approval.url);
-  if (!url.searchParams.has("user_code")) url.searchParams.set("user_code", approval.code);
+  // The current pairing code is authoritative. Do not preserve a stale code
+  // from a previously issued pairing URL.
+  url.searchParams.set("user_code", approval.code);
   return url.toString();
 }
 

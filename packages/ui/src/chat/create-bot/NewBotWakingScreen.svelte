@@ -17,7 +17,7 @@
 
   interface Props {
     session: WakingBotSession;
-    getStatus: ((agentUid: string) => Promise<unknown>) | null;
+    getStatus: ((agentUid: string, brain?: BrainProvider) => Promise<unknown>) | null;
     retryAgent?: ((agentUid: string) => Promise<unknown>) | null;
     restartBrainApproval?: ((agentUid: string, brain: BrainProvider) => Promise<unknown>) | null;
     submitClaudeLoginCode?: ((agentUid: string, code: string) => Promise<unknown>) | null;
@@ -136,7 +136,7 @@
         return;
       }
       try {
-        const result = await getStatus(checkedSession.agentUid);
+        const result = await getStatus(checkedSession.agentUid, checkedSession.brain ?? undefined);
         if (stopped) return;
         const response = result as { ok?: unknown; value?: unknown };
         const next = response && response.ok === true
