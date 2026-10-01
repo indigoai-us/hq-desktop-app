@@ -127,6 +127,7 @@
     </ul>
     <footer class="qs-foot">
       <span><kbd>↑</kbd><kbd>↓</kbd> move</span>
+      <span><kbd>{formatShortcut("Mod+O")}</kbd> open switcher</span>
       <span><kbd>↵</kbd> open</span>
       <span><kbd>{formatShortcut("Mod+Enter")}</kbd> new tab</span>
       <span><kbd>esc</kbd> close</span>
