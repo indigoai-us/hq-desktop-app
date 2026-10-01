@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Desktop no longer shows your personal space in the Companies list, where clicking it looped between Setting up and Tap to retry.
+
 - Internal: unused exports in the shared UI package are now module-private. No behaviour change.
 
 - Internal: unused exports in the work shell and installer are now module-private. No behaviour change.
