@@ -63,6 +63,7 @@
   let dialogEl = $state<HTMLDivElement | null>(null);
   let localWakingSession = $state<WakingBotSession | null>(null);
   let ignoreExternalWakingSession = $state(false);
+  let readyHandoffTimer: ReturnType<typeof setTimeout> | null = null;
   const activeWakingSession = $derived(
     localWakingSession ?? (ignoreExternalWakingSession ? null : wakingSession),
   );
@@ -112,11 +113,18 @@
 
   function updateWaking(session: WakingBotSession): void {
     if (session.phase === "ready") {
-      localWakingSession = null;
-      ignoreExternalWakingSession = true;
-      onwakingchange?.(null);
-      onopenchat?.(session);
-      onclosewaking?.();
+      localWakingSession = session;
+      onwakingchange?.(session);
+      if (readyHandoffTimer) clearTimeout(readyHandoffTimer);
+      const handoffDelay = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? 0 : 350;
+      readyHandoffTimer = setTimeout(() => {
+        readyHandoffTimer = null;
+        localWakingSession = null;
+        ignoreExternalWakingSession = true;
+        onwakingchange?.(null);
+        onopenchat?.(session);
+        onclosewaking?.();
+      }, handoffDelay);
       return;
     }
     localWakingSession = session;
@@ -124,6 +132,10 @@
   }
 
   function closeWaking(): void {
+    if (readyHandoffTimer) {
+      clearTimeout(readyHandoffTimer);
+      readyHandoffTimer = null;
+    }
     if (activeWakingSession) onwakingchange?.(activeWakingSession);
     onclosewaking?.();
   }

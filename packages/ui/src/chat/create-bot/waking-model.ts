@@ -121,6 +121,7 @@ export function wakingStatusLine(
   now: number = Date.now(),
 ): string {
   if (session.phase === "failed") return "We couldn't start this bot.";
+  if (session.phase === "ready") return `${session.name} is live. Opening chat…`;
   if (session.approval) return "One thing from you.";
   if (session.consecutiveCheckFailures >= WAKING_RECONNECT_AFTER_FAILURES) {
     return "Reconnecting. Your bot is still waking up.";

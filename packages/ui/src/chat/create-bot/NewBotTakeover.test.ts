@@ -120,7 +120,8 @@ describe("NewBotTakeover", () => {
     expect(onwaking).toHaveBeenCalledWith(expect.objectContaining({ agentUid: "agt_nova", channelId: "chn_nova" }));
   });
 
-  it("removes waking state and opens chat once the status says ready", async () => {
+  it("shows that the bot is live before opening chat once the status says ready", async () => {
+    vi.useFakeTimers();
     const onopenchat = vi.fn();
     const onclosewaking = vi.fn();
     const onwakingchange = vi.fn();
@@ -133,10 +134,14 @@ describe("NewBotTakeover", () => {
     });
     await settle();
 
+    expect(document.querySelector('[data-testid="new-bot-waking-status"]')?.textContent).toContain("Nova is live");
+    expect(onopenchat).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(350);
     expect(onwakingchange).toHaveBeenCalledWith(null);
     expect(onopenchat).toHaveBeenCalledWith(expect.objectContaining({ agentUid: "agt_nova", phase: "ready" }));
     expect(onclosewaking).toHaveBeenCalledOnce();
     expect(document.querySelector('[data-testid="new-bot-waking-screen"]')).toBeNull();
+    vi.useRealTimers();
   });
 
   it("retries the same failed agent instead of returning to creation", async () => {

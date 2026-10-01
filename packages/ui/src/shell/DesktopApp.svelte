@@ -604,6 +604,7 @@
     companyIconUrl,
   } from "../company/company-display-map.js";
   import CompanyIcon from "../company/CompanyIcon.svelte";
+  import { SETUP_HERO_ART } from "../chat/setup-welcome-art.js";
   import { formatReadonlyTimestamp } from "../chat/messaging/channelMessageModels.js";
   import {
     accountChromeFromSelf,
@@ -3572,6 +3573,7 @@
   const headerTitle = $derived(
     resolveConversationTitle(selectedRow, railRows, selectedHomeCompany?.slug ?? null),
   );
+  const agentChannelWallpaper = $derived(SETUP_HERO_ART.dark);
 
   /**
    * Company hero shows the company's display name ("Ramen Bae"), not the
@@ -3708,6 +3710,29 @@
       provisioning.agentUid ??
       null,
   );
+  const agentChannelFirstOpenAt = new Map<string, number>();
+  let agentChannelFallbackVisible = $state(false);
+  const agentHasPosted = $derived(
+    Boolean(agentChannelUid && liveTimeline.some((message) => message.fromPersonUid === agentChannelUid)),
+  );
+
+  $effect(() => {
+    const channelId = selectedRow?.channelId ?? null;
+    const agentUid = agentChannelUid;
+    if (!isAgentChannel || !channelId || !agentUid || agentHasPosted) {
+      agentChannelFallbackVisible = false;
+      return;
+    }
+    const openedAt = agentChannelFirstOpenAt.get(channelId) ?? Date.now();
+    agentChannelFirstOpenAt.set(channelId, openedAt);
+    agentChannelFallbackVisible = false;
+    const timer = setTimeout(() => {
+      if (selectedRow?.channelId === channelId && !agentHasPosted) {
+        agentChannelFallbackVisible = true;
+      }
+    }, Math.max(0, 30_000 - (Date.now() - openedAt)));
+    return () => clearTimeout(timer);
+  });
 
   $effect(() => {
     selectedRow?.id;
@@ -8985,6 +9010,14 @@
               ? "true"
               : "false"}
           >
+            {#if isAgentChannel}
+              <div
+                class="agent-channel-wallpaper"
+                data-testid="agent-channel-wallpaper"
+                style:background-image={`url(${agentChannelWallpaper})`}
+                aria-hidden="true"
+              ></div>
+            {/if}
             <div class="channel-title-block">
               <div class="channel-title">
                 {#if selectedIsCompanyChannel}
@@ -9409,6 +9442,11 @@
                   <!-- Inside the conversation scroller (typing-indicator
                        position) — a chat-stage sibling would become a second
                        flex-row column floating top-right. -->
+                  {#if agentChannelFallbackVisible}
+                    <div class="agent-channel-fallback" data-testid="agent-channel-live-fallback" role="status">
+                      {headerTitle} is live and can be messaged.
+                    </div>
+                  {/if}
                   {#if setupFinaleVisible}
                     <SetupBotFinale
                       hasClaude={localCodingToolsInstalled.claude === true}
@@ -10361,6 +10399,29 @@
     padding: 0 var(--conv-inset, 20px);
     overflow: visible;
     border-bottom: 1px solid var(--line);
+  }
+
+  .agent-channel-wallpaper {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    height: 6px;
+    background-position: center;
+    background-size: cover;
+    opacity: 0.82;
+    pointer-events: none;
+  }
+
+  .agent-channel-fallback {
+    margin: 8px var(--conv-inset, 20px);
+    color: var(--t2);
+    font-size: 13px;
+  }
+
+  .channel-header > :not(.agent-channel-wallpaper) {
+    position: relative;
+    z-index: 1;
   }
 
   .channel-title-block {
