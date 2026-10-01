@@ -254,6 +254,26 @@ describe("DesktopApp update-available card", () => {
     expect(errorEl?.textContent).toContain("A recording is in progress");
   });
 
+  it("keeps the sidebar card in a recording-deferred state", async () => {
+    const events = createSyncEventHost();
+    await mountApp(events.host);
+    events.emit("update-gate://deferred", gatePayload(VERSION_A));
+    await settle();
+
+    installPendingUpdate.mockResolvedValueOnce(
+      failure("hold-active", "HQ will restart to update after your recording finishes"),
+    );
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="update-install"]')!
+      .click();
+    await settle();
+
+    expect(host.textContent).toContain("HQ will restart after your recording finishes");
+    const button = host.querySelector<HTMLButtonElement>('[data-testid="update-install"]');
+    expect(button?.textContent).toContain("Will restart after recording");
+    expect(button?.disabled).toBe(true);
+  });
+
   it("re-enables the install button after an install error", async () => {
     const events = createSyncEventHost();
     await mountApp(events.host);

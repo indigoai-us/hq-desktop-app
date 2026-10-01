@@ -11,6 +11,11 @@ The release moves it under the version it ships in.
 - Windows-visible copy now uses PC controls, the system tray, and file manager labels where older screens assumed a Mac, menu bar, or Finder.
 - Platform wording and keyboard hints now follow the visitor's or desktop's OS instead of assuming macOS.
 
+- The sidebar orders DMs and channels by the latest message a person typed.
+
+- HQ no longer restarts for an update, or at support's request, while a meeting
+  is being recorded; it waits until the recording finishes.
+
 - Internal: removed two unused packages/ui helpers and made three module-only helpers private (TD-60, #1198). No user-visible change.
 
 - Internal: unused exports in the shared UI package are now module-private. No behaviour change.

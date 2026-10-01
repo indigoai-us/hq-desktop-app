@@ -2382,10 +2382,10 @@ describe("sortConversations(humanOnly)", () => {
 
   it("flag on: quiet-human (newer human message) beats noisy-bot", () => {
     const rows = [noisyBot, quietHuman, noHuman];
-    // no-human falls back to lastActivityAt (10) and slots between the two.
+    // A row without a typed timestamp sorts below every known typed message.
     expect(
       sortConversations(rows, "recent", true).map((r) => r.id),
-    ).toEqual(["ch:no-human", "ch:quiet-human", "ch:noisy-bot"]);
+    ).toEqual(["ch:quiet-human", "ch:noisy-bot", "ch:no-human"]);
   });
 
   it("ties break deterministically (title/id) in both modes", () => {
@@ -2399,12 +2399,12 @@ describe("sortConversations(humanOnly)", () => {
     ).toEqual(["ch:a", "ch:b"]);
   });
 
-  it("no human messages: humanOnly falls back to lastActivityAt", () => {
+  it("no human messages: humanOnly keeps the deterministic zero-recency order", () => {
     const later = ch("ch:later", 30);
     const earlier = ch("ch:earlier", 10);
     expect(
       sortConversations([earlier, later], "recent", true).map((r) => r.id),
-    ).toEqual(["ch:later", "ch:earlier"]);
+    ).toEqual(["ch:earlier", "ch:later"]);
   });
 
   it("applySidebarFilters threads humanOnly through", () => {
