@@ -36,8 +36,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # The merge commit plus both parents: HEAD^1 is the base as this PR
-          # would merge into it, so the diff is exactly what the PR adds.
+          # Include the merge commit and parents so the declared PR base SHA
+          # is available even when the head branch itself merges main.
           fetch-depth: 2
 
       - uses: actions/setup-node@v4
@@ -56,11 +56,17 @@ jobs:
       # Quoted: an unquoted ` #` would start a YAML comment and cut the name.
       - name: "PR adds release notes under ## [Unreleased]"
         if: ${{ !contains(github.event.pull_request.labels.*.name, 'no-changelog') }}
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
           if [ "$(git rev-list --parents -n 1 HEAD | wc -w)" -ne 3 ]; then
             echo "::error::Expected the pull request merge commit at HEAD; got $(git rev-list --parents -n 1 HEAD)."
             exit 1
           fi
-          git show HEAD^1:CHANGELOG.md > "$RUNNER_TEMP/base-CHANGELOG.md" 2>/dev/null || : > "$RUNNER_TEMP/base-CHANGELOG.md"
+          if ! [[ "$PR_BASE_SHA" =~ ^[[:xdigit:]]{40}$ ]]; then
+            echo "::error::Expected the pull request base SHA; got '$PR_BASE_SHA'."
+            exit 1
+          fi
+          git show "${PR_BASE_SHA}:CHANGELOG.md" > "$RUNNER_TEMP/base-CHANGELOG.md" 2>/dev/null || : > "$RUNNER_TEMP/base-CHANGELOG.md"
           node .github/scripts/check-changelog.mjs pr --base "$RUNNER_TEMP/base-CHANGELOG.md" --head CHANGELOG.md
