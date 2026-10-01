@@ -50,7 +50,7 @@
 //! the full repair surface.
 
 use futures_util::{stream, FutureExt, StreamExt, TryStreamExt};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -80,8 +80,9 @@ pub use hq_desktop_core::workspaces::{
 /// so the workspace becomes LocalOnly instead of Broken.
 ///
 /// Only triggers when:
-///   - cloud is reachable (otherwise we can't tell the entity is gone), AND
-///   - no `EntityInfo` in `company_entities` has a matching slug.
+///   - cloud is reachable, AND
+///   - the exact linked UID was explicitly reported as tombstoned, AND
+///   - no live company entity now owns the same slug.
 ///
 /// The disagree-on-UID case (cloud has slug but a different UID) is left as
 /// Broken so Connect can repoint the manifest in a single step.
@@ -96,6 +97,7 @@ pub(crate) fn prune_dangling_cloud_uids(
     hq_root: &Path,
     local_companies: &mut [LocalCompanyEntry],
     company_entities: &BTreeMap<String, EntityInfo>,
+    tombstoned_company_uids: &BTreeSet<String>,
     cloud_reachable: bool,
 ) -> usize {
     if !cloud_reachable {
@@ -112,7 +114,11 @@ pub(crate) fn prune_dangling_cloud_uids(
             continue;
         }
         let slug_in_cloud = company_entities.values().any(|e| e.slug == entry.slug);
-        if slug_in_cloud {
+        let linked_uid_was_tombstoned = entry
+            .cloud_uid
+            .as_ref()
+            .map_or(false, |uid| tombstoned_company_uids.contains(uid));
+        if slug_in_cloud || !linked_uid_was_tombstoned {
             continue;
         }
         match strip_manifest_cloud_info(&manifest_path, &entry.slug) {
@@ -505,8 +511,9 @@ where
 
 // ── Tauri command: list_syncable_workspaces ───────────────────────────────────
 
-/// The three things `list_syncable_workspaces` fetches from vault in parallel:
-/// `(self_person, memberships, company_entities_by_uid)`. Wrapped in `Result`
+/// The cloud data `list_syncable_workspaces` fetches from vault in parallel:
+/// `(self_person, memberships, live_company_entities_by_uid, tombstoned_company_uids)`.
+/// Wrapped in `Result`
 /// so a partial vault outage degrades gracefully (the local-disk view still
 /// renders) — see the `Err(_)` branch below.
 type CloudOutcome = Result<
@@ -514,6 +521,7 @@ type CloudOutcome = Result<
         Option<EntityInfo>,
         Vec<MembershipInfo>,
         BTreeMap<String, EntityInfo>,
+        BTreeSet<String>,
         bool,
     ),
     String,
@@ -542,6 +550,7 @@ pub(crate) async fn fetch_cloud_roster(
         Option<EntityInfo>,
         Vec<MembershipInfo>,
         BTreeMap<String, EntityInfo>,
+        BTreeSet<String>,
     ),
     String,
 > {
@@ -626,13 +635,12 @@ pub(crate) async fn fetch_cloud_roster(
     })
     .await?;
     let mut entities: BTreeMap<String, EntityInfo> = BTreeMap::new();
+    let mut tombstoned_company_uids = BTreeSet::new();
     for (uid, entity) in fetched {
         if let Some(e) = entity {
-            // Tombstoned (DELETE /entity/{uid} via hq-console) — the
-            // vault still returns the row but the company is "gone"
-            // from the user's perspective. Drop it so downstream
-            // assembly + the prune-dangling-cloud-uids pass treat
-            // this slug as missing-from-cloud and surface LocalOnly.
+            // A confirmed tombstone is distinct from a 404/missing entity.
+            // Preserve the manifest link on a miss; only an explicit deleted
+            // marker is sufficient evidence to strip it.
             if e.deleted {
                 log(
                     "workspaces",
@@ -641,6 +649,7 @@ pub(crate) async fn fetch_cloud_roster(
                         e.uid, e.slug
                     ),
                 );
+                tombstoned_company_uids.insert(uid);
                 continue;
             }
             entities.insert(uid, e);
@@ -655,7 +664,7 @@ pub(crate) async fn fetch_cloud_roster(
         .filter(|m| entities.contains_key(&m.company_uid))
         .collect();
 
-    Ok((person, memberships, entities))
+    Ok((person, memberships, entities, tombstoned_company_uids))
 }
 
 const EMAIL_VERIFICATION_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
@@ -739,53 +748,72 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
         )
         .await?;
         let vault = VaultClient::new(&vault_url, &tokens.access_token);
-        let (person, memberships, entities) =
+        let (person, memberships, entities, tombstoned_company_uids) =
             fetch_cloud_roster(&vault, token_email_verified(&tokens)).await?;
-        Ok((person, memberships, entities, email_verification_required))
+        Ok((
+            person,
+            memberships,
+            entities,
+            tombstoned_company_uids,
+            email_verification_required,
+        ))
     }
     .await;
 
-    let (cloud_reachable, error, person, memberships, entities, email_verification_required) =
-        match cloud_outcome {
-            Ok((p, m, e, email_verification_required)) => {
-                // Answer "did the app see my company" from the support log.
-                let slugs: Vec<String> = e.values().map(|entity| entity.slug.clone()).collect();
-                log(
-                    "workspaces",
-                    &format!(
-                        "cloud roster: person={} memberships={} companies={:?}",
-                        p.as_ref()
-                            .map(|person| person.uid.as_str())
-                            .unwrap_or("none"),
-                        m.len(),
-                        slugs
-                    ),
-                );
-                (true, None, p, m, e, email_verification_required)
-            }
-            Err(e) => {
-                // Surface cloud errors to the persistent log alongside the UI
-                // tooltip — the menubar's "Cloud unreachable" notice gives the
-                // user a hover-tooltip with the message, but the log is the
-                // canonical place to grep when reproducing or debugging without
-                // a popover open. Pre-v0.1.25 schema mismatches (missing
-                // membership uid) propagated as silent failures here.
-                log("workspaces", &format!("cloud branch failed: {e}"));
-                (
-                    false,
-                    Some(e),
-                    None,
-                    Vec::new(),
-                    BTreeMap::new(),
-                    initial_email_verification_required,
-                )
-            }
-        };
+    let (
+        cloud_reachable,
+        error,
+        person,
+        memberships,
+        entities,
+        tombstoned_company_uids,
+        email_verification_required,
+    ) = match cloud_outcome {
+        Ok((p, m, e, tombstoned, email_verification_required)) => {
+            // Answer "did the app see my company" from the support log.
+            let slugs: Vec<String> = e.values().map(|entity| entity.slug.clone()).collect();
+            log(
+                "workspaces",
+                &format!(
+                    "cloud roster: person={} memberships={} companies={:?}",
+                    p.as_ref()
+                        .map(|person| person.uid.as_str())
+                        .unwrap_or("none"),
+                    m.len(),
+                    slugs
+                ),
+            );
+            (true, None, p, m, e, tombstoned, email_verification_required)
+        }
+        Err(e) => {
+            // Surface cloud errors to the persistent log alongside the UI
+            // tooltip — the menubar's "Cloud unreachable" notice gives the
+            // user a hover-tooltip with the message, but the log is the
+            // canonical place to grep when reproducing or debugging without
+            // a popover open. Pre-v0.1.25 schema mismatches (missing
+            // membership uid) propagated as silent failures here.
+            log("workspaces", &format!("cloud branch failed: {e}"));
+            (
+                false,
+                Some(e),
+                None,
+                Vec::new(),
+                BTreeMap::new(),
+                BTreeSet::new(),
+                initial_email_verification_required,
+            )
+        }
+    };
 
-    // Auto-clean manifest entries whose cloud_uid points at a cloud entity
-    // that's no longer there (deleted via hq-console). Stripping the manifest
-    // pointers lets the entry render as LocalOnly instead of Broken.
-    prune_dangling_cloud_uids(&hq_root, &mut local_companies, &entities, cloud_reachable);
+    // Auto-clean only links whose exact cloud entity was explicitly tombstoned.
+    // A missing entity response alone is not enough evidence to mutate the manifest.
+    prune_dangling_cloud_uids(
+        &hq_root,
+        &mut local_companies,
+        &entities,
+        &tombstoned_company_uids,
+        cloud_reachable,
+    );
 
     let company_sync_enabled = read_workspace_sync_enabled_map();
     let personal_sync_enabled = crate::commands::settings::get_settings()
@@ -2093,7 +2121,8 @@ mod tests {
             .await;
 
         let vault = VaultClient::new(&server.uri(), "test-token");
-        let (person, memberships, entities) = fetch_cloud_roster(&vault, Some(true)).await.unwrap();
+        let (person, memberships, entities, tombstoned) =
+            fetch_cloud_roster(&vault, Some(true)).await.unwrap();
 
         // Personal row still keys off the oldest person.
         assert_eq!(person.as_ref().map(|p| p.uid.as_str()), Some("prs_oldest"));
@@ -2101,6 +2130,7 @@ mod tests {
         assert_eq!(memberships[0].company_uid, "cmp_acme");
         assert_eq!(memberships[0].person_uid, "prs_newer");
         assert!(entities.contains_key("cmp_acme"));
+        assert!(tombstoned.is_empty());
 
         let tmp = TempDir::new().unwrap();
         let rows = assemble_workspaces(
@@ -2144,12 +2174,13 @@ mod tests {
             .await;
 
         let vault = VaultClient::new(&server.uri(), "test-token");
-        let (person, memberships, entities) =
+        let (person, memberships, entities, tombstoned) =
             fetch_cloud_roster(&vault, Some(false)).await.unwrap();
 
         assert!(person.is_none());
         assert!(memberships.is_empty());
         assert!(entities.is_empty());
+        assert!(tombstoned.is_empty());
         server.verify().await;
     }
 
@@ -2178,11 +2209,13 @@ mod tests {
             .await;
 
         let vault = VaultClient::new(&server.uri(), "test-token");
-        let (person, memberships, entities) = fetch_cloud_roster(&vault, None).await.unwrap();
+        let (person, memberships, entities, tombstoned) =
+            fetch_cloud_roster(&vault, None).await.unwrap();
 
         assert!(person.is_none());
         assert!(memberships.is_empty());
         assert!(entities.is_empty());
+        assert!(tombstoned.is_empty());
         server.verify().await;
     }
 
@@ -2633,7 +2666,7 @@ mod tests {
     // ── prune_dangling_cloud_uids ───────────────────────────────────────
 
     #[test]
-    fn prune_strips_when_cloud_has_no_entity_for_slug() {
+    fn prune_preserves_link_when_cloud_lookup_has_no_entity_for_slug() {
         let tmp = TempDir::new().unwrap();
         write_manifest(
             tmp.path(),
@@ -2655,14 +2688,49 @@ companies:
             Some("hq-vault-cmp-gone"),
         )];
 
-        let pruned = prune_dangling_cloud_uids(tmp.path(), &mut entries, &BTreeMap::new(), true);
-        assert_eq!(pruned, 1);
-        assert!(entries[0].cloud_uid.is_none());
-        assert!(entries[0].bucket_name.is_none());
+        let pruned = prune_dangling_cloud_uids(
+            tmp.path(),
+            &mut entries,
+            &BTreeMap::new(),
+            &BTreeSet::new(),
+            true,
+        );
+        assert_eq!(pruned, 0, "an absent entity is not proof of a tombstone");
+        assert_eq!(entries[0].cloud_uid.as_deref(), Some("cmp_GONE"));
+        assert_eq!(entries[0].bucket_name.as_deref(), Some("hq-vault-cmp-gone"));
 
         let (reread, _) = discover_local_companies(tmp.path());
         let alpha = reread.iter().find(|e| e.slug == "alpha").unwrap();
-        assert!(alpha.cloud_uid.is_none());
+        assert_eq!(alpha.cloud_uid.as_deref(), Some("cmp_GONE"));
+        assert_eq!(alpha.bucket_name.as_deref(), Some("hq-vault-cmp-gone"));
+    }
+
+    #[test]
+    fn prune_strips_only_when_linked_entity_is_explicitly_tombstoned() {
+        let tmp = TempDir::new().unwrap();
+        write_manifest(
+            tmp.path(),
+            "companies:\n  alpha:\n    name: Alpha\n    path: companies/alpha\n    cloud_uid: cmp_GONE\n    bucket_name: hq-vault-cmp-gone\n",
+        );
+        let mut entries = vec![local_full(
+            "alpha",
+            tmp.path(),
+            true,
+            Some("Alpha"),
+            Some("cmp_GONE"),
+            Some("hq-vault-cmp-gone"),
+        )];
+
+        let pruned = prune_dangling_cloud_uids(
+            tmp.path(),
+            &mut entries,
+            &BTreeMap::new(),
+            &["cmp_GONE".to_string()].into_iter().collect(),
+            true,
+        );
+        assert_eq!(pruned, 1);
+        assert!(entries[0].cloud_uid.is_none());
+        assert!(entries[0].bucket_name.is_none());
     }
 
     #[test]
@@ -2687,7 +2755,13 @@ companies:
             Some("cmp_GONE"),
             Some("hq-vault-cmp-gone"),
         )];
-        let pruned = prune_dangling_cloud_uids(tmp.path(), &mut entries, &BTreeMap::new(), false);
+        let pruned = prune_dangling_cloud_uids(
+            tmp.path(),
+            &mut entries,
+            &BTreeMap::new(),
+            &BTreeSet::new(),
+            false,
+        );
         assert_eq!(pruned, 0);
         assert_eq!(entries[0].cloud_uid.as_deref(), Some("cmp_GONE"));
     }
@@ -2720,7 +2794,13 @@ companies:
             Some("hq-vault-cmp-old"),
         )];
 
-        let pruned = prune_dangling_cloud_uids(tmp.path(), &mut entries, &entities, true);
+        let pruned = prune_dangling_cloud_uids(
+            tmp.path(),
+            &mut entries,
+            &entities,
+            &["cmp_OLD".to_string()].into_iter().collect(),
+            true,
+        );
         assert_eq!(pruned, 0);
         assert_eq!(entries[0].cloud_uid.as_deref(), Some("cmp_OLD"));
     }
