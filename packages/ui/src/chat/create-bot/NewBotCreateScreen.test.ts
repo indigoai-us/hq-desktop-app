@@ -90,8 +90,8 @@ describe("NewBotCreateScreen", () => {
   });
 
   it("sends one subscription-only create request when clicked twice", async () => {
-    let resolveCreate: ((value: { ok: true; target: { channelId: string; cardId: null; cardKind: null } }) => void) | null = null;
-    const oncreate = vi.fn(() => new Promise<{ ok: true; target: { channelId: string; cardId: null; cardKind: null } }>((resolve) => { resolveCreate = resolve; }));
+    const pending: { resolve: ((value: { ok: true; target: { channelId: string; cardId: null; cardKind: null } }) => void) | null } = { resolve: null };
+    const oncreate = vi.fn(() => new Promise<{ ok: true; target: { channelId: string; cardId: null; cardKind: null } }>((resolve) => { pending.resolve = resolve; }));
     const { oncomplete } = render({ oncreate });
     await settle();
 
@@ -111,7 +111,7 @@ describe("NewBotCreateScreen", () => {
       size: "basic",
       authMode: "subscription",
     }));
-    resolveCreate?.({ ok: true, target: { channelId: "chn_bot", cardId: null, cardKind: null } });
+    pending.resolve?.({ ok: true, target: { channelId: "chn_bot", cardId: null, cardKind: null } });
     await settle();
     expect(oncomplete).toHaveBeenCalledOnce();
   });
