@@ -1043,6 +1043,8 @@ export function createSyncPlatformAdapter(
         hqProJson('PATCH', AGENT_PATHS.profile(agentUid), patch),
       stop: (agentUid) => hqProJson('POST', AGENT_PATHS.stop(agentUid)),
       start: (agentUid) => hqProJson('POST', AGENT_PATHS.start(agentUid)),
+      retryProvisioning: (agentUid) =>
+        hqProJson('POST', AGENT_PATHS.retryProvisioning(agentUid)),
       deprovision: (agentUid) =>
         hqProJson('DELETE', AGENT_PATHS.deprovision(agentUid)),
       listOwners: (companyUid, agentUid) =>

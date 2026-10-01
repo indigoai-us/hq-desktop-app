@@ -54,7 +54,7 @@ describe("WebPlatformAdapter agents", () => {
     ]);
   });
 
-  it("POSTs pause/stop/start and PATCHes profile", async () => {
+  it("POSTs pause/stop/start/retry and PATCHes profile", async () => {
     const { adapter, calls } = makeAdapter();
     await adapter.agents.pauseJob("agt_1", "job_9");
     await adapter.agents.updateProfile("agt_1", {
@@ -63,6 +63,7 @@ describe("WebPlatformAdapter agents", () => {
     });
     await adapter.agents.stop("agt_1");
     await adapter.agents.start("agt_1");
+    await adapter.agents.retryProvisioning("agt_1");
     await adapter.agents.deprovision("agt_1");
     expect(calls).toEqual([
       {
@@ -77,6 +78,7 @@ describe("WebPlatformAdapter agents", () => {
       },
       { method: "POST", path: AGENT_PATHS.stop("agt_1"), body: undefined },
       { method: "POST", path: AGENT_PATHS.start("agt_1"), body: undefined },
+      { method: "POST", path: "/v1/agents/agt_1/retry", body: undefined },
       {
         method: "DELETE",
         path: AGENT_PATHS.deprovision("agt_1"),

@@ -1647,7 +1647,14 @@
 
   function openWakingBotChat(session: WakingBotSession): void {
     const row = allRows.find((candidate) => candidate.channelId === session.channelId);
-    if (row) void openRow(row);
+    if (row) {
+      void openRow(row);
+      return;
+    }
+    requestChannelOpen(session.channelId, {
+      title: session.name,
+      companyUid: session.companyUid,
+    });
   }
 
   async function cancelNewBotTakeover(): Promise<void> {

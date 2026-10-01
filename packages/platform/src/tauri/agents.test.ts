@@ -27,6 +27,7 @@ describe("TauriPlatformAdapter agents", () => {
     await adapter.agents.getStatus("agt_1");
     await adapter.agents.updateProfile("agt_1", { displayName: "Izzy" });
     await adapter.agents.pauseJob("agt_1", "job_9");
+    await adapter.agents.retryProvisioning("agt_1");
     expect(calls).toEqual([
       {
         cmd: "hq_pro_fetch",
@@ -56,6 +57,14 @@ describe("TauriPlatformAdapter agents", () => {
           body: null,
         },
       },
+      {
+        cmd: "hq_pro_fetch",
+        args: {
+          url: AGENT_PATHS.retryProvisioning("agt_1"),
+          method: "POST",
+          body: null,
+        },
+      },
     ]);
   });
 });
@@ -71,6 +80,7 @@ describe("createSyncPlatformAdapter agents", () => {
     });
     await adapter.agents.getProvisionOptions("cmp_1");
     await adapter.agents.listJobs("agt_1");
+    await adapter.agents.retryProvisioning("agt_1");
     await adapter.agents.deprovision("agt_1");
     expect(calls).toEqual([
       {
@@ -84,6 +94,10 @@ describe("createSyncPlatformAdapter agents", () => {
       {
         cmd: "hq_pro_fetch",
         args: { url: AGENT_PATHS.jobs("agt_1"), method: "GET", body: null },
+      },
+      {
+        cmd: "hq_pro_fetch",
+        args: { url: AGENT_PATHS.retryProvisioning("agt_1"), method: "POST", body: null },
       },
       {
         cmd: "hq_pro_fetch",

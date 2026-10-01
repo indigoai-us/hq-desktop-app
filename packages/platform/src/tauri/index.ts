@@ -492,6 +492,8 @@ export class TauriPlatformAdapter implements PlatformAdapter {
       this.hqProJson("PATCH", AGENT_PATHS.profile(agentUid), patch),
     stop: (agentUid) => this.hqProJson("POST", AGENT_PATHS.stop(agentUid)),
     start: (agentUid) => this.hqProJson("POST", AGENT_PATHS.start(agentUid)),
+    retryProvisioning: (agentUid) =>
+      this.hqProJson("POST", AGENT_PATHS.retryProvisioning(agentUid)),
     deprovision: (agentUid) =>
       this.hqProJson("DELETE", AGENT_PATHS.deprovision(agentUid)),
     listOwners: (companyUid, agentUid) =>

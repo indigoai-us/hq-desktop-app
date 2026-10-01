@@ -229,6 +229,7 @@ export const WEB_PATHS = {
   agentPauseJob: AGENT_PATHS.pauseJob,
   agentStop: AGENT_PATHS.stop,
   agentStart: AGENT_PATHS.start,
+  agentRetryProvisioning: AGENT_PATHS.retryProvisioning,
   agentDeprovision: AGENT_PATHS.deprovision,
   agentMobileRoster: AGENT_PATHS.mobileRoster,
   agentOwners: AGENT_PATHS.owners,
@@ -968,6 +969,8 @@ export class WebPlatformAdapter implements PlatformAdapter {
       this.request("PATCH", WEB_PATHS.agentProfile(agentUid), patch),
     stop: (agentUid) => this.post(WEB_PATHS.agentStop(agentUid)),
     start: (agentUid) => this.post(WEB_PATHS.agentStart(agentUid)),
+    retryProvisioning: (agentUid) =>
+      this.post(WEB_PATHS.agentRetryProvisioning(agentUid)),
     deprovision: (agentUid) =>
       this.request("DELETE", WEB_PATHS.agentDeprovision(agentUid)),
     listOwners: (companyUid, agentUid) =>

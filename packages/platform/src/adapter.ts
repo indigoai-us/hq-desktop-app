@@ -1085,6 +1085,8 @@ export const AGENT_PATHS = {
     `/v1/agents/${encodeURIComponent(agentUid)}/stop`,
   start: (agentUid: string) =>
     `/v1/agents/${encodeURIComponent(agentUid)}/start`,
+  retryProvisioning: (agentUid: string) =>
+    `/v1/agents/${encodeURIComponent(agentUid)}/retry`,
   deprovision: (agentUid: string) =>
     `/v1/agents/${encodeURIComponent(agentUid)}`,
   mobileRoster: (companyUid?: string | null) => {
@@ -1142,6 +1144,8 @@ export interface AgentsApi {
   stop(agentUid: string): AdapterPromise<Json>;
   /** POST /v1/agents/{uid}/start — resume a stopped box. */
   start(agentUid: string): AdapterPromise<Json>;
+  /** POST /v1/agents/{uid}/retry — resume a failed provisioning attempt. */
+  retryProvisioning(agentUid: string): AdapterPromise<Json>;
   /** DELETE /v1/agents/{uid} — reverse deprovision / remove. */
   deprovision(agentUid: string): AdapterPromise<Json>;
   /** GET /v1/fleet/{companyUid}/agents/{uid}/owners. */
