@@ -22,7 +22,7 @@ vi.mock("./navigation-history.js", async (importOriginal) => {
   return {
     ...actual,
     createNavigationHistory(
-      ...args: Parameters<typeof actual.createNavigationHistory>,
+      ...args: Parameters<typeof actual.createNavigationHistory>
     ) {
       const history = actual.createNavigationHistory(...args);
       if (seededLibraryHistory.enabled) {
