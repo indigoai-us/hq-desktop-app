@@ -10,7 +10,10 @@ The release moves it under the version it ships in.
 
 - Startup diagnostics now distinguish unreadable saved credentials from an empty token store.
 
+- A stalled attachment upload or download in the Work app now ends with the usual upload or download error instead of staying open indefinitely.
 - When a saved access token is rejected, HQ Desktop tries its stored refresh token before asking you to sign in. After Cognito rejects that refresh, HQ Desktop stops retrying the same token and keeps sign-in available.
+
+## [0.10.368] — 2026-10-01
 
 - Window opacity is reset to 100% once for existing installs, including anyone who had chosen a lower value. The theme is unchanged, and an opacity chosen after the update is kept.
 
