@@ -1836,10 +1836,99 @@ pub enum ExecutedCopyAim {
 }
 
 impl ExecutedCopyAim {
+    /// Closed path-free token used by the install-non-convergent event.
+    pub fn telemetry_value(self) -> &'static str {
+        match self {
+            Self::Aimed => "aimed",
+            Self::Undrivable => "undrivable",
+            Self::NotYetAimed => "not_yet_aimed",
+        }
+    }
+
     /// Whether a ForeignManaged verdict under this aim may write the durable
     /// marker. Only [`Self::NotYetAimed`] must stay non-blocking.
     pub fn foreign_verdict_may_block(self) -> bool {
         !matches!(self, Self::NotYetAimed)
+    }
+}
+
+/// Closed classification of the prefix containing the `hq` binary that the
+/// desktop resolves after an install. This is diagnostic only; it never changes
+/// resolution or the installer target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ResolvedPrefixClass {
+    ManagedToolchain,
+    User,
+    System,
+    Other,
+    #[default]
+    Unresolved,
+}
+
+impl ResolvedPrefixClass {
+    pub fn telemetry_value(self) -> &'static str {
+        match self {
+            Self::ManagedToolchain => "managed_toolchain",
+            Self::User => "user",
+            Self::System => "system",
+            Self::Other => "other",
+            Self::Unresolved => "unresolved",
+        }
+    }
+}
+
+/// Safe, path-free facts about the resolved CLI prefix. Raw paths are consumed
+/// only while deriving these values and are never retained in the report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ResolvedPrefixTelemetry {
+    pub class: ResolvedPrefixClass,
+    pub under_home: bool,
+    pub colocated_npm: bool,
+    pub matches_installer_prefix: bool,
+}
+
+pub fn resolved_prefix_telemetry(
+    hq_bin: &str,
+    installer_prefix: Option<&str>,
+    managed_roots: &[PathBuf],
+    home: Option<&Path>,
+    source: paths::ResolutionSource,
+) -> ResolvedPrefixTelemetry {
+    let Some(prefix) = npm_prefix_from_hq_bin(hq_bin) else {
+        return ResolvedPrefixTelemetry::default();
+    };
+    let path = PathBuf::from(&prefix);
+    let path = std::fs::canonicalize(&path).unwrap_or(path);
+    let canonical_roots: Vec<PathBuf> = managed_roots
+        .iter()
+        .map(|root| std::fs::canonicalize(root).unwrap_or_else(|_| root.clone()))
+        .collect();
+    let canonical_home =
+        home.map(|home| std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf()));
+    let class = if canonical_roots
+        .iter()
+        .any(|root| paths::path_is_within(&path, root))
+    {
+        ResolvedPrefixClass::ManagedToolchain
+    } else if paths::is_user_owned_prefix(&path, managed_roots, canonical_home.as_deref()) {
+        ResolvedPrefixClass::User
+    } else if source == paths::ResolutionSource::SystemPrefix {
+        ResolvedPrefixClass::System
+    } else {
+        ResolvedPrefixClass::Other
+    };
+    let matches_installer_prefix = installer_prefix.is_some_and(|installer| {
+        let installer = PathBuf::from(installer);
+        let installer = std::fs::canonicalize(&installer).unwrap_or(installer);
+        paths::path_is_within(&path, &installer) && paths::path_is_within(&installer, &path)
+    });
+    ResolvedPrefixTelemetry {
+        class,
+        under_home: canonical_home
+            .as_deref()
+            .is_some_and(|home| paths::path_is_within(&path, home)),
+        colocated_npm: colocated_npm_path(&path).exists(),
+        matches_installer_prefix,
     }
 }
 
@@ -2044,6 +2133,8 @@ pub struct SettingsPathTelemetry {
     pub repair: SettingsPathRepair,
     pub file: paths::SettingsPathFile,
     pub managed_bin: ManagedBinInSettingsPath,
+    pub executed_copy_aim: ExecutedCopyAim,
+    pub resolved_prefix: ResolvedPrefixTelemetry,
 }
 
 /// Whether HQ should attempt the settings-PATH repair, or the closed reason it
@@ -3229,22 +3320,49 @@ pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
             None,
         )
     };
-    let report = should_capture.then(|| NonConvergentReport {
-        executor,
-        kind,
-        latest: latest.to_string(),
-        local: after_version.map(str::to_owned),
-        hq_bin: hq_display.to_string(),
-        npm_prefix: npm_prefix_passed.map(str::to_owned),
-        installer_bin: installer_bin.to_string(),
-        hq_bin_changed: before_bin != after_bin,
-        delivered_version: delivered_version.map(str::to_owned),
-        pnpm: pnpm.clone(),
-        managed_shadow_repair,
-        hq_bin_lane,
-        delivered_prefix_shim,
-        settings_path,
-        executed_copy_reaim: ExecutedCopyReaim::NotAttempted,
+    let report = should_capture.then(|| {
+        let mut settings_path = settings_path;
+        settings_path.executed_copy_aim = executed_copy_aim;
+        settings_path.resolved_prefix = resolved_prefix_telemetry(
+            hq_display,
+            npm_prefix_passed,
+            managed_roots,
+            paths::home_dir().as_deref(),
+            hq_bin_lane,
+        );
+        if settings_path.file == paths::SettingsPathFile::None
+            && settings_path.managed_bin == ManagedBinInSettingsPath::Unknown
+        {
+            let hq_root = paths::resolved_hq_folder();
+            let settings_file = paths::winning_settings_path_file(&hq_root);
+            let managed_bin = managed_roots
+                .first()
+                .map(|root| paths::managed_npm_bin_in(root))
+                .unwrap_or_default();
+            settings_path.file = settings_file;
+            settings_path.managed_bin = managed_bin_in_settings_path(
+                settings_file,
+                &paths::settings_path_dirs_in(&hq_root),
+                &managed_bin,
+            );
+        }
+        NonConvergentReport {
+            executor,
+            kind,
+            latest: latest.to_string(),
+            local: after_version.map(str::to_owned),
+            hq_bin: hq_display.to_string(),
+            npm_prefix: npm_prefix_passed.map(str::to_owned),
+            installer_bin: installer_bin.to_string(),
+            hq_bin_changed: before_bin != after_bin,
+            delivered_version: delivered_version.map(str::to_owned),
+            pnpm: pnpm.clone(),
+            managed_shadow_repair,
+            hq_bin_lane,
+            delivered_prefix_shim,
+            settings_path,
+            executed_copy_reaim: ExecutedCopyReaim::NotAttempted,
+        }
     });
 
     PostInstallOutcome {
@@ -3563,6 +3681,31 @@ pub fn report_non_convergent_install(report: &NonConvergentReport) {
             scope.set_tag(
                 "executed_copy_reaim",
                 report.executed_copy_reaim.telemetry_value(),
+            );
+            scope.set_tag(
+                "executed_copy_aim",
+                report.settings_path.executed_copy_aim.telemetry_value(),
+            );
+            scope.set_tag(
+                "resolved_prefix_class",
+                report.settings_path.resolved_prefix.class.telemetry_value(),
+            );
+            scope.set_tag(
+                "resolved_under_home",
+                bool_tag(report.settings_path.resolved_prefix.under_home),
+            );
+            scope.set_tag(
+                "resolved_colocated_npm",
+                bool_tag(report.settings_path.resolved_prefix.colocated_npm),
+            );
+            scope.set_tag(
+                "resolved_matches_installer_prefix",
+                bool_tag(
+                    report
+                        .settings_path
+                        .resolved_prefix
+                        .matches_installer_prefix,
+                ),
             );
             // The class is the existing closed `non_convergence_kind` tag, so a
             // foreign-managed shadow has one stable group independent of paths,
@@ -9272,7 +9415,6 @@ mod tests {
         assert!(!safe_event_fields.contains(r"C:\Users\sc-desktop-8a-privacy-fixture"));
     }
 
-
     #[test]
     fn version_command_timeout_kills_and_reaps_the_child() {
         #[cfg(unix)]
@@ -10652,6 +10794,7 @@ mod tests {
             repair,
             file: paths::SettingsPathFile::Local,
             managed_bin: ManagedBinInSettingsPath::Absent,
+            ..SettingsPathTelemetry::default()
         })
     }
 
@@ -10832,6 +10975,7 @@ mod tests {
             repair: SettingsPathRepair::Rewritten,
             file: paths::SettingsPathFile::Local,
             managed_bin: ManagedBinInSettingsPath::Present,
+            ..SettingsPathTelemetry::default()
         });
         let outcome = decide_post_install(&converged);
         assert!(matches!(
