@@ -9094,6 +9094,185 @@ mod tests {
     use super::*;
     use std::cmp::Ordering;
 
+    fn captured_non_convergent_event(
+        hq_bin: &str,
+        installer_prefix: Option<&str>,
+        aim: ExecutedCopyAim,
+        lane: paths::ResolutionSource,
+    ) -> serde_json::Value {
+        let managed_roots = paths::managed_toolchain_roots();
+        let context = PostInstallContext::npm(
+            hq_bin,
+            hq_bin,
+            Some("4.0.0"),
+            Some("4.0.0"),
+            "5.0.0",
+            installer_prefix,
+            "npm",
+            false,
+            Some("5.0.0"),
+        )
+        .with_managed_roots(&managed_roots)
+        .with_executed_copy_aim(aim)
+        .with_resolution_telemetry(lane, DeliveredPrefixShim::Present);
+        let report = decide_post_install(&context)
+            .capture
+            .expect("fixture must produce a non-convergent report");
+        let event = sentry::test::with_captured_events(|| report_non_convergent_install(&report))
+            .into_iter()
+            .next()
+            .expect("report must capture an event");
+        serde_json::json!({"tags": event.tags, "contexts": event.contexts})
+    }
+
+    fn fixture_prefix() -> (tempfile::TempDir, String, String) {
+        let home = paths::home_dir().expect("test home is available");
+        let temp = tempfile::Builder::new()
+            .prefix("sc-desktop-8a-")
+            .tempdir_in(home)
+            .expect("create private path fixture");
+        let prefix = temp.path().join("npm-global");
+        let bin = prefix.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let npm = bin.join("npm");
+        std::fs::write(&npm, "fixture").unwrap();
+        let hq = bin.join("hq").to_string_lossy().into_owned();
+        (temp, prefix.to_string_lossy().into_owned(), hq)
+    }
+
+    #[test]
+    fn non_convergence_report_tags_the_executed_copy_aim() {
+        let (_temp, prefix, hq) = fixture_prefix();
+        let event = captured_non_convergent_event(
+            &hq,
+            Some(&prefix),
+            ExecutedCopyAim::NotYetAimed,
+            paths::ResolutionSource::UserPrefix,
+        );
+        assert_eq!(
+            event["tags"]["executed_copy_aim"].as_str(),
+            Some("not_yet_aimed")
+        );
+    }
+
+    #[test]
+    fn non_convergence_report_classifies_resolved_prefix() {
+        let (_temp, prefix, hq) = fixture_prefix();
+        let event = captured_non_convergent_event(
+            &hq,
+            Some("/installer/prefix"),
+            ExecutedCopyAim::NotYetAimed,
+            paths::ResolutionSource::UserPrefix,
+        );
+        assert_eq!(
+            event["tags"]["resolved_prefix_class"].as_str(),
+            Some("user")
+        );
+        assert_eq!(
+            prefix,
+            Path::new(&hq)
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn non_convergence_report_marks_resolved_prefix_under_home() {
+        let (_temp, prefix, hq) = fixture_prefix();
+        let event = captured_non_convergent_event(
+            &hq,
+            Some(&prefix),
+            ExecutedCopyAim::NotYetAimed,
+            paths::ResolutionSource::UserPrefix,
+        );
+        assert_eq!(event["tags"]["resolved_under_home"].as_str(), Some("true"));
+    }
+
+    #[test]
+    fn non_convergence_report_marks_colocated_npm() {
+        let (_temp, prefix, hq) = fixture_prefix();
+        let event = captured_non_convergent_event(
+            &hq,
+            Some(&prefix),
+            ExecutedCopyAim::NotYetAimed,
+            paths::ResolutionSource::UserPrefix,
+        );
+        assert_eq!(
+            event["tags"]["resolved_colocated_npm"].as_str(),
+            Some("true")
+        );
+    }
+
+    #[test]
+    fn non_convergence_report_compares_installer_and_resolved_prefixes() {
+        let (_temp, prefix, hq) = fixture_prefix();
+        let event = captured_non_convergent_event(
+            &hq,
+            Some(&prefix),
+            ExecutedCopyAim::NotYetAimed,
+            paths::ResolutionSource::UserPrefix,
+        );
+        assert_eq!(
+            event["tags"]["resolved_matches_installer_prefix"].as_str(),
+            Some("true")
+        );
+    }
+
+    #[test]
+    fn non_convergence_report_reads_the_winning_settings_path_file() {
+        let event = captured_non_convergent_event(
+            "hq",
+            None,
+            ExecutedCopyAim::Undrivable,
+            paths::ResolutionSource::NotResolved,
+        );
+        let expected = paths::winning_settings_path_file(&paths::resolved_hq_folder());
+        assert_eq!(
+            event["tags"]["settings_path_file"].as_str(),
+            Some(expected.telemetry_value())
+        );
+    }
+
+    #[test]
+    fn non_convergence_report_measures_managed_bin_in_settings_path() {
+        let event = captured_non_convergent_event(
+            "hq",
+            None,
+            ExecutedCopyAim::Undrivable,
+            paths::ResolutionSource::NotResolved,
+        );
+        let root = paths::resolved_hq_folder();
+        let file = paths::winning_settings_path_file(&root);
+        let roots = paths::managed_toolchain_roots();
+        let managed = roots
+            .first()
+            .map(|root| paths::managed_npm_bin_in(root))
+            .unwrap_or_default();
+        let expected =
+            managed_bin_in_settings_path(file, &paths::settings_path_dirs_in(&root), &managed);
+        assert_eq!(
+            event["tags"]["managed_bin_in_settings_path"].as_str(),
+            Some(expected.telemetry_value())
+        );
+    }
+
+    #[test]
+    fn windows_profile_path_never_enters_non_convergence_tags_or_contexts() {
+        let windows_hq = r"C:\Users\sc-desktop-8a-privacy-fixture\AppData\Roaming\npm\hq.cmd";
+        let event = captured_non_convergent_event(
+            windows_hq,
+            Some(r"C:\Users\sc-desktop-8a-privacy-fixture\AppData\Roaming\npm"),
+            ExecutedCopyAim::Undrivable,
+            paths::ResolutionSource::SettingsPath,
+        );
+        let safe_event_fields = event.to_string();
+        assert!(!safe_event_fields.contains(r"C:\Users\sc-desktop-8a-privacy-fixture"));
+    }
+
+
     #[test]
     fn version_command_timeout_kills_and_reaps_the_child() {
         #[cfg(unix)]
