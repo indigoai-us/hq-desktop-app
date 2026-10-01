@@ -295,6 +295,7 @@ mod tests {
         assert!(!nowhere.found);
     }
 
+    #[cfg(windows)]
     #[test]
     fn claude_lookup_finds_the_windows_user_local_bin_installer() {
         let temp = tempfile::tempdir().expect("temporary home");
@@ -318,6 +319,7 @@ mod tests {
         assert_eq!(resolved.path, executable.to_string_lossy());
     }
 
+    #[cfg(windows)]
     #[test]
     fn claude_lookup_uses_the_refreshed_user_path_on_retry() {
         let temp = tempfile::tempdir().expect("temporary home");
