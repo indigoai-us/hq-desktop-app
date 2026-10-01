@@ -329,7 +329,7 @@ export async function sendCompanyInvites(
         tab: "team",
         cardId: TEAM_INVITE_CARD_ID,
         actionId: TEAM_INVITE_ACTION_ID,
-        values: { email, role: invite.role.trim() || "member" },
+        values: { email, role: invite.role.trim() || "member", inviteSurface: "desktop" },
       });
       if (answer.state === "blocked") {
         failures.push({ email, reason: trimmed(answer.reason) || "The server refused the invite." });
