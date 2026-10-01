@@ -1412,6 +1412,11 @@ fn spawn_auto_install_waiter(app: AppHandle) {
 }
 
 static DEFERRED_RESTART_ACTIVE: AtomicBool = AtomicBool::new(false);
+static DEFERRED_INSTALL_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn deferred_restart_is_safe(held: bool, focused: bool) -> bool {
+    !held && !focused
+}
 
 /// A support-requested restart has no staged installer for the standard waiter
 /// to consume. Wait on the same poll cadence, then require the normal
@@ -1429,9 +1434,42 @@ pub(crate) fn defer_restart_until_safe(app: AppHandle) {
             let focused = app
                 .try_state::<AppFocusState>()
                 .is_some_and(|focus| focus.is_focused());
-            if !held && !focused {
+            if deferred_restart_is_safe(held, focused) {
                 log("updater", "deferred restart is now safe; restarting");
                 crate::commands::autostart::restart_preferring_launch_agent(&app);
+            }
+            tokio::time::sleep(IDLE_POLL_INTERVAL).await;
+        }
+    });
+}
+
+/// A support-requested desktop update can arrive during a recording before an
+/// installer is staged. Preserve the command's safety boundary, then perform
+/// the normal updater flow once the same restart predicate is satisfied.
+pub(crate) fn defer_install_until_safe(app: AppHandle) {
+    if DEFERRED_INSTALL_ACTIVE
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let held = restart_is_held(&app).is_some();
+            let focused = app
+                .try_state::<AppFocusState>()
+                .is_some_and(|focus| focus.is_focused());
+            if deferred_restart_is_safe(held, focused) {
+                DEFERRED_INSTALL_ACTIVE.store(false, Ordering::Release);
+                if let Err(error) = install_update(app.clone()).await {
+                    // A recording can begin in the narrow interval between the
+                    // waiter probe and install_update's final hold gate.
+                    // Re-arm instead of dropping the support-requested update.
+                    if error.starts_with("update held:") {
+                        defer_install_until_safe(app.clone());
+                    }
+                }
+                return;
             }
             tokio::time::sleep(IDLE_POLL_INTERVAL).await;
         }
@@ -2128,6 +2166,13 @@ pub async fn update_install_pending(app: AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deferred_restart_waits_for_both_the_hold_and_focus_to_clear() {
+        assert!(!deferred_restart_is_safe(true, false));
+        assert!(!deferred_restart_is_safe(false, true));
+        assert!(deferred_restart_is_safe(false, false));
+    }
 
     /// The "is newer" check runs against the runtime-resolved version. A
     /// cached shell compiled at 0.10.328 but assembled as 0.10.400 must not
