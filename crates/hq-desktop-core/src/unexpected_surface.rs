@@ -468,9 +468,9 @@ mod tests {
     use super::*;
 
     fn resolver_diagnostic_pairs(
-        candidate_count_bucket: &str,
-        managed_package_state: &str,
-        bundled_cli_mode: &str,
+        candidate_count_bucket: &'static str,
+        managed_package_state: &'static str,
+        bundled_cli_mode: &'static str,
     ) -> Vec<(&'static str, &'static str)> {
         startup_diagnostic_tags_with_auth_session(
             false,
