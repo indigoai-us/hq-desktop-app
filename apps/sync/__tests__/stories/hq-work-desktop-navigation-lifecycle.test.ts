@@ -675,9 +675,9 @@ describe('embedded Work navigation and lifecycle', () => {
     warmRoute('company:indigo');
     await vi.waitFor(() => {
       expect(host.querySelector('[data-testid="channel-header"]')).toBeTruthy();
-      expect(host.querySelector('[data-testid="channel-name"]')?.textContent).toMatch(
-        /engineering/i,
-      );
+      // Company-home headers use the company's display name, not the
+      // backing channel name ("engineering").
+      expect(host.querySelector('[data-testid="channel-name"]')?.textContent).toBe('Indigo');
     });
     expect(host.querySelector('[data-testid="shared-files-overlay"]')).toBeNull();
     expect(host.querySelector('[data-testid="embedded-navigation-error"]')).toBeNull();
