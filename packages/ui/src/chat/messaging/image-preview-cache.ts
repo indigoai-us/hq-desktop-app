@@ -5,7 +5,7 @@ type Prepared = { blob: Blob; width: number; height: number };
 type Entry = ImagePreview & { cost: number; refs: number };
 
 /** Keep a 2x raster thumbnail; clicking a preview still loads the original. */
-export async function prepareImagePreview(blob: Blob): Promise<Prepared> {
+async function prepareImagePreview(blob: Blob): Promise<Prepared> {
   if (blob.size > 25 * 1024 * 1024) throw new Error("Image exceeds preview size limit");
   // Do not let SVG introduce external resources into cached previews.
   if (!/^image\/(png|jpeg|jpg|gif|webp|avif)$/i.test(blob.type)) throw new Error("Unsupported image preview type");
