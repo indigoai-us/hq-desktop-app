@@ -2440,6 +2440,16 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
     // Now, sync-on-launch, and notification retries — at the single Rust choke
     // point so no surface can start a sync while the titlebar says Cloud Off.
     start_sync_cloud_gate()?;
+    match crate::commands::hq_daemon_host::current_phase() {
+        crate::commands::hq_daemon_host::HostPhase::Daemon => {
+            crate::commands::hq_daemon_host::request_daemon_sync_now()?;
+            return Ok("hq-daemon-sync".to_string());
+        }
+        crate::commands::hq_daemon_host::HostPhase::Pending => {
+            return Err("HQ daemon is still starting. Try again in a moment.".to_string());
+        }
+        crate::commands::hq_daemon_host::HostPhase::Legacy => {}
+    }
     let scope = parse_sync_scope(company_slug)?;
     log("sync", &format!("scope={scope:?}"));
     log("sync", "start_sync invoked");
@@ -3313,6 +3323,11 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
 /// Returns `true` if a sync was running and cancellation was initiated.
 #[tauri::command]
 pub fn cancel_sync() -> bool {
+    if crate::commands::hq_daemon_host::current_phase()
+        != crate::commands::hq_daemon_host::HostPhase::Legacy
+    {
+        return false;
+    }
     generation_for_handle(SYNC_HANDLE)
         .map(|generation| {
             cancel_process_for_generation(

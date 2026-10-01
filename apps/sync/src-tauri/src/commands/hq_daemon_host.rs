@@ -20,8 +20,9 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use hq_desktop_core::daemon::{
-    compose_runner_spawn_flags, effective_runner_heap_ceiling, is_autostart_enabled, is_pid_alive,
-    is_realtime_sync_enabled, resolve_hq_folder_path, sync_child_env, DaemonStatus,
+    compose_runner_spawn_flags, effective_runner_heap_ceiling, is_autostart_enabled,
+    is_instant_sync_enabled, is_pid_alive, is_realtime_sync_enabled, resolve_hq_folder_path,
+    sync_child_env, DaemonStatus,
 };
 use hq_desktop_core::hq_daemon::{
     after_daemon_exit, choose_sync_host, daemon_run_args, default_daemon_paths, read_daemon_state,
@@ -38,6 +39,7 @@ use crate::commands::sync::RunTotals;
 use crate::util::logfile::log;
 
 const LOG_TAG: &str = "hq-daemon-host";
+const HQ_CLI_MISSING_MESSAGE: &str = "HQ CLI is unavailable. Install or update it, then retry.";
 /// Process-registry handle, so app exit terminates the daemon and its services.
 const HQ_DAEMON_HANDLE: &str = "hq-daemon";
 /// How often the host re-reads sync settings that reach the daemon as env.
@@ -93,10 +95,169 @@ pub fn daemon_mode_active() -> bool {
     current_phase() == HostPhase::Daemon
 }
 
-/// `hq` arguments that turn the daemon's sync service on or off. Saved in the
-/// daemon's config, so the choice survives daemon restarts.
-pub fn sync_toggle_args(enable: bool) -> Vec<&'static str> {
-    vec!["daemon", if enable { "enable" } else { "disable" }, "sync"]
+pub fn daemon_sync_now_args() -> Vec<&'static str> {
+    vec!["daemon", "sync", "now", "--json"]
+}
+
+pub fn daemon_sync_pause_args(pause: bool) -> Vec<&'static str> {
+    vec![
+        "daemon",
+        "sync",
+        if pause { "pause" } else { "resume" },
+        "--json",
+    ]
+}
+
+pub fn daemon_sync_mode_args<'a>(company: &'a str, mode: Option<&'a str>) -> Vec<&'a str> {
+    match mode {
+        Some(mode) => vec!["daemon", "sync", "mode", "set", company, mode, "--json"],
+        None => vec!["daemon", "sync", "mode", "get", company, "--json"],
+    }
+}
+
+fn daemon_sync_command_error(detail: &str) -> &'static str {
+    let lower = detail.to_ascii_lowercase();
+    if lower.contains("daemon")
+        && (lower.contains("not running") || lower.contains("not installed"))
+    {
+        "HQ daemon is not running. Start it, then retry."
+    } else {
+        "HQ daemon could not complete that action. Tap to retry."
+    }
+}
+
+/// Run one daemon control and keep transport details in the local log.
+pub fn run_daemon_sync_command(args: &[&str]) -> Result<String, String> {
+    let hq = local_hq().ok_or_else(|| HQ_CLI_MISSING_MESSAGE.to_string())?;
+    let output = hq_desktop_core::paths::spawn_command(&hq, args)
+        .env("PATH", hq_desktop_core::paths::child_path())
+        .env("HQ_NO_UPDATE_CHECK", "1")
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| {
+            log(
+                LOG_TAG,
+                &format!("could not run daemon sync control: {error}"),
+            );
+            "HQ CLI could not complete that action. Tap to retry.".to_string()
+        })?;
+    if output.status.success() {
+        return String::from_utf8(output.stdout)
+            .map(|value| value.trim().to_string())
+            .map_err(|error| {
+                log(
+                    LOG_TAG,
+                    &format!("daemon sync control returned invalid UTF-8: {error}"),
+                );
+                "HQ daemon returned an unreadable response. Tap to retry.".to_string()
+            });
+    }
+    let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    log(LOG_TAG, &format!("daemon sync control failed: {detail}"));
+    Err(daemon_sync_command_error(&detail).to_string())
+}
+
+pub fn parse_daemon_sync_mode(
+    output: &str,
+) -> Result<crate::commands::vault_client::MembershipSyncConfig, String> {
+    let value: serde_json::Value = serde_json::from_str(output).map_err(|error| {
+        log(
+            LOG_TAG,
+            &format!("could not parse daemon sync mode response: {error}"),
+        );
+        "HQ daemon returned an unreadable sync mode. Tap to retry.".to_string()
+    })?;
+    let membership_id = value.get("membershipId").and_then(|v| v.as_str());
+    let mode = value.get("mode").and_then(|v| v.as_str());
+    let is_default = value.get("isDefault").and_then(|v| v.as_bool());
+    match (membership_id, mode, is_default) {
+        (Some(membership_id), Some(sync_mode), Some(is_default)) => {
+            Ok(crate::commands::vault_client::MembershipSyncConfig {
+                membership_id: membership_id.to_string(),
+                sync_mode: sync_mode.to_string(),
+                is_default,
+                custom_paths: None,
+                updated_by: None,
+            })
+        }
+        _ => Err("HQ daemon returned an incomplete sync mode. Tap to retry.".to_string()),
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DaemonSyncStatusDetails {
+    pub running: bool,
+    pub paused: bool,
+    pub sync_owner: String,
+    pub owner: Option<String>,
+    pub last_heartbeat: Option<String>,
+    pub last_pass_result: Option<serde_json::Value>,
+    pub unit_status: String,
+    pub reason: Option<String>,
+    pub log_path: String,
+}
+
+pub fn parse_daemon_sync_status(output: &str) -> Result<DaemonSyncStatusDetails, String> {
+    let value: serde_json::Value = serde_json::from_str(output).map_err(|error| {
+        log(
+            LOG_TAG,
+            &format!("could not parse daemon sync status: {error}"),
+        );
+        "HQ daemon returned an unreadable sync status. Tap to retry.".to_string()
+    })?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| "HQ daemon returned an incomplete sync status. Tap to retry.".to_string())?;
+    let paused = object
+        .get("paused")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let last_pass_result = object
+        .get("lastPassResult")
+        .filter(|value| value.is_object())
+        .cloned();
+    let reason = object.get("reason").and_then(|v| v.as_str()).map(|_| {
+        "The last daemon sync reported an error. See the daemon log for details.".to_string()
+    });
+    let log_path = object
+        .get("logPath")
+        .and_then(|v| v.as_str())
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| "HQ daemon returned an incomplete sync status. Tap to retry.".to_string())?;
+    Ok(DaemonSyncStatusDetails {
+        running: object
+            .get("running")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        paused,
+        sync_owner: object
+            .get("syncOwner")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string(),
+        owner: object
+            .get("owner")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        last_heartbeat: object
+            .get("lastHeartbeat")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        last_pass_result,
+        unit_status: object
+            .get("unitStatus")
+            .and_then(|v| v.as_str())
+            .unwrap_or(if paused { "paused" } else { "unknown" })
+            .to_string(),
+        reason,
+        log_path: log_path.to_string(),
+    })
+}
+
+pub fn hosted_daemon_sync_status() -> Result<DaemonSyncStatusDetails, String> {
+    let output = run_daemon_sync_command(&["daemon", "sync", "status", "--json"])?;
+    parse_daemon_sync_status(&output)
 }
 
 /// `daemon_status` in daemon mode: the daemon's sync service.
@@ -233,6 +394,10 @@ fn enter_daemon_mode(handle: AppHandle) {
 fn daemon_env() -> HashMap<String, String> {
     let hq_folder = resolve_hq_folder_path().unwrap_or_default();
     let mut env = sync_child_env(&hq_folder);
+    env.insert(
+        "HQ_DAEMON_INSTANT_SYNC".to_string(),
+        if is_instant_sync_enabled() { "1" } else { "0" }.to_string(),
+    );
     if hq_folder.is_empty() {
         // The daemon falls back to the HQ folder in its own config.
         env.remove("HQ_ROOT");
@@ -256,20 +421,13 @@ fn local_hq() -> Option<String> {
     }
 }
 
-/// Run `hq daemon enable|disable sync`.
+/// Run the daemon's persisted pause/resume control.
 pub fn set_daemon_sync(enable: bool) -> Result<(), String> {
-    let hq = local_hq().ok_or("hq is not installed locally")?;
-    let output = hq_desktop_core::paths::spawn_command(&hq, &sync_toggle_args(enable))
-        .env("PATH", hq_desktop_core::paths::child_path())
-        .env("HQ_NO_UPDATE_CHECK", "1")
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|e| format!("run hq daemon: {e}"))?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
-    }
+    run_daemon_sync_command(&daemon_sync_pause_args(!enable)).map(|_| ())
+}
+
+pub fn request_daemon_sync_now() -> Result<(), String> {
+    run_daemon_sync_command(&daemon_sync_now_args()).map(|_| ())
 }
 
 /// `start_daemon` / `stop_daemon` in daemon mode.
@@ -462,11 +620,117 @@ mod tests {
     // ── settings toggles change the daemon's saved config ────────────────
 
     #[test]
-    fn turning_auto_sync_on_or_off_enables_or_disables_the_daemons_sync_service() {
-        // Saved in ~/.hq/daemon/config.json, so a paused sync stays paused when
-        // the daemon restarts (a stop request would not survive a CLI update).
-        assert_eq!(sync_toggle_args(true), vec!["daemon", "enable", "sync"]);
-        assert_eq!(sync_toggle_args(false), vec!["daemon", "disable", "sync"]);
+    fn desktop_sync_controls_use_daemon_sync_commands() {
+        assert_eq!(
+            daemon_sync_now_args(),
+            vec!["daemon", "sync", "now", "--json"]
+        );
+        assert_eq!(
+            daemon_sync_pause_args(true),
+            vec!["daemon", "sync", "pause", "--json"]
+        );
+        assert_eq!(
+            daemon_sync_pause_args(false),
+            vec!["daemon", "sync", "resume", "--json"]
+        );
+        assert_eq!(
+            daemon_sync_mode_args("acme", Some("shared")),
+            vec!["daemon", "sync", "mode", "set", "acme", "shared", "--json"]
+        );
+        assert_eq!(
+            daemon_sync_mode_args("acme", None),
+            vec!["daemon", "sync", "mode", "get", "acme", "--json"]
+        );
+    }
+
+    #[test]
+    fn daemon_control_failures_use_recoverable_user_messages() {
+        assert_eq!(
+            daemon_sync_command_error("hq daemon is not running"),
+            "HQ daemon is not running. Start it, then retry."
+        );
+        assert_eq!(
+            daemon_sync_command_error("request failed with a transport detail"),
+            "HQ daemon could not complete that action. Tap to retry."
+        );
+        assert_eq!(
+            HQ_CLI_MISSING_MESSAGE,
+            "HQ CLI is unavailable. Install or update it, then retry."
+        );
+    }
+
+    #[test]
+    fn daemon_sync_status_parser_reads_owner_health_last_pass_and_errors() {
+        let status = parse_daemon_sync_status(r#"{"running":true,"paused":false,"syncOwner":"daemon","owner":"hq-daemon","lastHeartbeat":"2026-10-01T12:01:00Z","lastPassResult":{"status":"ok","completedAt":"2026-10-01T12:00:00Z","errors":1},"unitStatus":"running","reason":null,"logPath":"/tmp/hq-sync.log"}"#).unwrap();
+        assert!(status.running);
+        assert_eq!(status.sync_owner, "daemon");
+        assert_eq!(status.owner.as_deref(), Some("hq-daemon"));
+        assert_eq!(status.unit_status, "running");
+        assert_eq!(
+            status.last_heartbeat.as_deref(),
+            Some("2026-10-01T12:01:00Z")
+        );
+        assert_eq!(
+            status.last_pass_result.as_ref().unwrap()["completedAt"],
+            "2026-10-01T12:00:00Z"
+        );
+        assert!(status.reason.is_none());
+        assert_eq!(status.log_path, "/tmp/hq-sync.log");
+    }
+
+    #[test]
+    fn daemon_sync_status_parser_rejects_invalid_json() {
+        assert!(parse_daemon_sync_status("not json").is_err());
+    }
+
+    #[test]
+    fn daemon_sync_mode_parser_maps_cli_fields_to_the_existing_ui_contract() {
+        let mode = parse_daemon_sync_mode(r#"{"companySlug":"acme","membershipId":"prs_x#cmp_a","mode":"shared","isDefault":false}"#).unwrap();
+        assert_eq!(mode.membership_id, "prs_x#cmp_a");
+        assert_eq!(mode.sync_mode, "shared");
+        assert!(!mode.is_default);
+    }
+
+    #[test]
+    fn daemon_sync_mode_parser_rejects_missing_fields() {
+        assert!(parse_daemon_sync_mode(r#"{"mode":"shared"}"#).is_err());
+    }
+
+    #[test]
+    fn daemon_mode_sync_controls_return_before_local_runner_helpers() {
+        let source = include_str!("sync.rs");
+        let start = source.split("pub async fn start_sync").nth(1).unwrap();
+        let start = start.split("/// Cancel a running sync.").next().unwrap();
+        let daemon_gate = start.find("current_phase()").expect("daemon mode guard");
+        let runner_registration = start
+            .find("try_register_handle_gen(SYNC_HANDLE)")
+            .expect("legacy runner registration");
+        assert!(daemon_gate < runner_registration);
+        assert!(start[..runner_registration].contains("request_daemon_sync_now()"));
+
+        let cancel = source.split("pub fn cancel_sync()").nth(1).unwrap();
+        let daemon_gate = cancel.find("current_phase()").expect("daemon mode guard");
+        let runner_cancel = cancel
+            .find("cancel_process_for_generation(")
+            .expect("legacy runner cancellation");
+        assert!(daemon_gate < runner_cancel);
+        assert!(cancel[..runner_cancel].contains("return false"));
+
+        let daemon = include_str!("daemon.rs");
+        let start = daemon.split("fn start_daemon_with_origin").nth(1).unwrap();
+        let start = start
+            .split("// Spawn preflight for all three watch-daemon origins")
+            .next()
+            .unwrap();
+        assert!(start.contains("HostPhase::Pending"));
+        assert!(start.contains("HostPhase::Daemon"));
+        let stop = daemon.split("pub fn stop_daemon()").nth(1).unwrap();
+        let stop = stop
+            .split("/// Stop the app's own watch runner")
+            .next()
+            .unwrap();
+        assert!(stop.contains("HostPhase::Pending"));
+        assert!(stop.contains("HostPhase::Daemon"));
     }
 
     // ── status ───────────────────────────────────────────────────────────

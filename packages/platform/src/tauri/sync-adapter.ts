@@ -1207,6 +1207,7 @@ export function createSyncPlatformAdapter(
       },
       stopDaemon: () => call('stop_daemon'),
       daemonStatus: () => call('daemon_status'),
+      daemonSyncStatus: () => call('daemon_sync_status'),
       startSync: async (slug) => {
         const configured = await updateMirrorQuarantineFlag();
         if (!configured.ok) return configured;

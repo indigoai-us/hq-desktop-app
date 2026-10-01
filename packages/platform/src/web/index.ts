@@ -1106,6 +1106,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
     startDaemon: async () => DESKTOP_ONLY,
     stopDaemon: async () => DESKTOP_ONLY,
     daemonStatus: async () => DESKTOP_ONLY,
+    daemonSyncStatus: async () => DESKTOP_ONLY,
     startSync: async () => DESKTOP_ONLY,
     cancelSync: async () => DESKTOP_ONLY,
     getSyncStatus: async () => DESKTOP_ONLY,

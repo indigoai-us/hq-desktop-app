@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 pub const HQ_DAEMON_FLAG: &str = "desktop.hq-daemon";
 
 /// First hq-cli release with `hq daemon run --host desktop`.
-pub const HQ_DAEMON_HOST_MIN_CLI: &str = "5.266.0";
+pub const HQ_DAEMON_HOST_MIN_CLI: &str = "5.310.0";
 
 /// Exit code the daemon uses to ask its parent to start it again (after a CLI update).
 pub const DAEMON_RESTART_EXIT_CODE: i32 = 75;

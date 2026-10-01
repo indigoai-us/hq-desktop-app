@@ -7255,8 +7255,14 @@ pub fn setup_daemon_supervisor(app: &AppHandle) {
 /// pid-file lifecycle; we don't shell out to a separate stop CLI here.
 #[tauri::command]
 pub fn stop_daemon() -> Result<bool, String> {
-    if crate::commands::hq_daemon_host::daemon_mode_active() {
-        return crate::commands::hq_daemon_host::set_sync_enabled(false);
+    match crate::commands::hq_daemon_host::current_phase() {
+        crate::commands::hq_daemon_host::HostPhase::Daemon => {
+            return crate::commands::hq_daemon_host::set_sync_enabled(false);
+        }
+        crate::commands::hq_daemon_host::HostPhase::Pending => {
+            return Err("Background sync is still starting. Tap to retry.".to_string());
+        }
+        crate::commands::hq_daemon_host::HostPhase::Legacy => {}
     }
     stop_watch_runner()
 }
@@ -7357,6 +7363,25 @@ pub fn daemon_status() -> Result<DaemonStatus, String> {
         source: "none".to_string(),
         failure_category,
     })
+}
+
+/// Read daemon ownership, health, last pass, and the associated log path.
+#[tauri::command]
+pub async fn daemon_sync_status(
+) -> Result<Option<crate::commands::hq_daemon_host::DaemonSyncStatusDetails>, String> {
+    if !crate::commands::hq_daemon_host::daemon_mode_active() {
+        return Ok(None);
+    }
+    tokio::task::spawn_blocking(crate::commands::hq_daemon_host::hosted_daemon_sync_status)
+        .await
+        .map_err(|error| {
+            log(
+                "hq-daemon-host",
+                &format!("daemon sync status task failed: {error}"),
+            );
+            "HQ daemon status could not be read. Tap to retry.".to_string()
+        })?
+        .map(Some)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -3,8 +3,10 @@ import { describe, expect, it } from "vitest";
 import {
   lastSyncLabelFromLive,
   parseLiveSyncStatus,
+  readLiveSyncStatus,
   syncStateFromLive,
 } from "./live-sync-status.js";
+import { ok, type PlatformAdapter } from "@hq/platform";
 
 describe("parseLiveSyncStatus", () => {
   it("reads the v1 journal camelCase shape", () => {
@@ -25,6 +27,10 @@ describe("parseLiveSyncStatus", () => {
       source: "journal",
       hqFolderPath: "/Users/me/hq",
       uploadsPaused: [],
+      daemonOwner: null,
+      daemonHealth: null,
+      daemonErrors: [],
+      daemonLogPath: null,
     });
   });
 
@@ -62,6 +68,52 @@ describe("parseLiveSyncStatus", () => {
   });
 });
 
+describe("readLiveSyncStatus daemon projection", () => {
+  it("uses CLI ownership, health, last pass, errors, and log path in daemon mode", async () => {
+    const adapter = {
+      isAvailable: () => true,
+      sync: {
+        getSyncStatus: async () => ok({ daemonRunning: false, source: "legacy" }),
+        daemonSyncStatus: async () => ok({
+          running: true,
+          paused: false,
+          syncOwner: "daemon",
+          owner: "hq-daemon",
+          lastHeartbeat: "2026-10-01T12:01:00Z",
+          lastPassResult: { status: "ok", completedAt: "2026-10-01T12:00:00Z", errors: 1 },
+          unitStatus: "running",
+          reason: null,
+          logPath: "/tmp/hq-sync.log",
+        }),
+      },
+    } as unknown as PlatformAdapter;
+
+    await expect(readLiveSyncStatus(adapter)).resolves.toMatchObject({
+      daemonRunning: true,
+      source: "hq-daemon",
+      lastSyncAt: "2026-10-01T12:00:00Z",
+      daemonOwner: "hq-daemon",
+      daemonHealth: "running",
+      daemonErrors: ["The last daemon sync reported errors. See the daemon log for details."],
+      daemonLogPath: "/tmp/hq-sync.log",
+    });
+  });
+
+  it("keeps daemon command failures visible as actionable status", async () => {
+    const adapter = {
+      isAvailable: () => true,
+      sync: {
+        getSyncStatus: async () => ok({}),
+        daemonSyncStatus: async () => ({ ok: false, message: "HQ CLI is unavailable. Install or update it, then retry." }),
+      },
+    } as unknown as PlatformAdapter;
+
+    await expect(readLiveSyncStatus(adapter)).resolves.toMatchObject({
+      daemonErrors: ["HQ CLI is unavailable. Install or update it, then retry."],
+    });
+  });
+});
+
 describe("syncStateFromLive", () => {
   it("surfaces conflicts and otherwise stays idle", () => {
     expect(
@@ -72,6 +124,10 @@ describe("syncStateFromLive", () => {
         daemonRunning: true,
         source: "journal",
         hqFolderPath: null,
+        daemonOwner: null,
+        daemonHealth: null,
+        daemonErrors: [],
+        daemonLogPath: null,
       }),
     ).toBe("conflict");
     expect(
@@ -82,6 +138,10 @@ describe("syncStateFromLive", () => {
         daemonRunning: true,
         source: "journal",
         hqFolderPath: null,
+        daemonOwner: null,
+        daemonHealth: null,
+        daemonErrors: [],
+        daemonLogPath: null,
       }),
     ).toBe("idle");
   });
@@ -99,9 +159,13 @@ describe("lastSyncLabelFromLive", () => {
           daemonRunning: false,
           source: "journal",
           hqFolderPath: null,
+          daemonOwner: null,
+          daemonHealth: null,
+          daemonErrors: [],
+          daemonLogPath: null,
         },
         now,
       ),
-    ).toBe("50m ago");
+      ).toBe("50m ago");
   });
 });

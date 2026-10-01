@@ -6,6 +6,7 @@
 import {
   approvedPlanUpgradeUrl,
   type AdapterResult,
+  type DaemonSyncStatus,
   type PlatformAdapter,
   type SyncStatus,
 } from "@hq/platform";
@@ -30,6 +31,10 @@ export interface LiveSyncStatus {
   hqFolderPath: string | null;
   /** Companies whose uploads are paused by a plan limit. Absent = none. */
   uploadsPaused?: UploadsPausedCompany[];
+  daemonOwner: string | null;
+  daemonHealth: string | null;
+  daemonErrors: string[];
+  daemonLogPath: string | null;
 }
 
 export const EMPTY_LIVE_SYNC: LiveSyncStatus = {
@@ -40,6 +45,10 @@ export const EMPTY_LIVE_SYNC: LiveSyncStatus = {
   source: "none",
   hqFolderPath: null,
   uploadsPaused: [],
+  daemonOwner: null,
+  daemonHealth: null,
+  daemonErrors: [],
+  daemonLogPath: null,
 };
 
 /** Parse the journal's `uploadsPaused` list; drops malformed rows. */
@@ -91,6 +100,7 @@ export function parseLiveSyncStatus(raw: unknown): LiveSyncStatus {
         ? rec.watchPath.trim()
         : null;
   return {
+    ...EMPTY_LIVE_SYNC,
     lastSyncAt: last,
     pendingFiles: pending,
     conflicts,
@@ -130,7 +140,39 @@ export async function readLiveSyncStatus(
   if (!adapter?.isAvailable("canSync")) {
     return { ...EMPTY_LIVE_SYNC, uploadsPaused: [] };
   }
-  const result: AdapterResult<SyncStatus> = await adapter.sync.getSyncStatus();
-  if (result.ok) return parseLiveSyncStatus(result.value);
-  return { ...EMPTY_LIVE_SYNC, uploadsPaused: [] };
+  const [result, daemonResult]: [
+    AdapterResult<SyncStatus>,
+    AdapterResult<DaemonSyncStatus | null>,
+  ] = await Promise.all([
+    adapter.sync.getSyncStatus(),
+    adapter.sync.daemonSyncStatus(),
+  ]);
+  const live = result.ok
+    ? parseLiveSyncStatus(result.value)
+    : { ...EMPTY_LIVE_SYNC, uploadsPaused: [] };
+  if (!daemonResult.ok) {
+    return {
+      ...live,
+      daemonErrors: [
+        daemonResult.message ?? "HQ daemon status could not be read. Tap to retry.",
+      ],
+    };
+  }
+  if (!daemonResult.value) return live;
+  const daemon = daemonResult.value;
+  const errors = [...live.daemonErrors];
+  if (daemon.reason) errors.push(daemon.reason);
+  if ((daemon.lastPassResult?.errors ?? 0) > 0 && errors.length === 0) {
+    errors.push("The last daemon sync reported errors. See the daemon log for details.");
+  }
+  return {
+    ...live,
+    daemonRunning: daemon.running,
+    lastSyncAt: daemon.lastPassResult?.completedAt ?? live.lastSyncAt,
+    source: "hq-daemon",
+    daemonOwner: daemon.owner ?? daemon.syncOwner,
+    daemonHealth: daemon.paused ? "paused" : daemon.unitStatus,
+    daemonErrors: errors,
+    daemonLogPath: daemon.logPath,
+  };
 }

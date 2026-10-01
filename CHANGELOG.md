@@ -13,6 +13,8 @@ The release moves it under the version it ships in.
 - HQ no longer restarts for an update, or at support's request, while a meeting
   is being recorded; it waits until the recording finishes.
 
+- When HQ daemon owns sync, Sync Now, pause/resume, and company sync modes go through the daemon. Instant Sync follows its setting, and sync help points to the daemon log while preserving the old log for history.
+
 - Internal: removed two unused packages/ui helpers and made three module-only helpers private (TD-60, #1198). No user-visible change.
 
 - Internal: unused exports in the shared UI package are now module-private. No behaviour change.
