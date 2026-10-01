@@ -77,7 +77,7 @@ pub struct LocalProject {
     pub title: String,
     #[serde(default)]
     pub description: String,
-    /// Company slug the project belongs to (the `companies/<slug>/` dir).
+    /// Workspace slug the project belongs to (`companies/<slug>/` or `personal/`).
     pub company: String,
     #[serde(default)]
     pub status: String,
@@ -1236,8 +1236,8 @@ pub fn scan_local_projects(hq_root: &Path) -> Vec<LocalProject> {
     scan_local_projects_scoped(hq_root, None)
 }
 
-/// Scan only the explicitly authorized canonical company slugs.
-///
+/// Scan only explicitly authorized workspace slugs. The reserved `personal`
+/// slug reads the user's personal root; other slugs resolve under companies/.
 /// Filtering happens before board/PRD content is opened, so an unauthorized
 /// local folder is never parsed and a symlinked company alias cannot borrow a
 /// different tenant's canonical identity.
@@ -1429,8 +1429,8 @@ fn scan_local_projects_scoped(
             Some(s) if !s.starts_with('.') => s.to_string(),
             _ => continue,
         };
-        if authorized_companies
-            .is_some_and(|allowed| !allowed.contains(&slug) || slug == "personal")
+        if slug == "personal"
+            || authorized_companies.is_some_and(|allowed| !allowed.contains(&slug))
         {
             continue;
         }
