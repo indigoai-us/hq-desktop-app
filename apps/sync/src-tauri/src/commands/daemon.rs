@@ -34,6 +34,7 @@ use crate::commands::windows_teardown_probe::{
 };
 use crate::events::{
     SyncEvent, EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_CONFLICT, EVENT_SYNC_PLAN_LIMIT,
+    EVENT_SYNC_REALTIME_MODE,
 };
 use crate::util::logfile::log;
 use crate::util::paths;
