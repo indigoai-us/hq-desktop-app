@@ -6752,8 +6752,11 @@
   }
 
   function leaveLibrary(): void {
-    if (libraryBackTargetIndex == null) return;
-    void navigation.backTo(libraryBackTargetIndex);
+    if (libraryBackTargetIndex != null) {
+      void navigation.backTo(libraryBackTargetIndex);
+      return;
+    }
+    void navigate({ kind: "messages" });
   }
 
   $effect(() => {
@@ -9974,7 +9977,6 @@
       {adapter}
       tab={libraryTab}
       itemId={libraryItemId}
-      backEnabled={libraryBackTargetIndex != null}
       {packagesEvents}
       onback={leaveLibrary}
       onnavigatetab={(next) => void navigate({ kind: "library", tab: next })}

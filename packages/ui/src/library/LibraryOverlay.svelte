@@ -50,7 +50,6 @@
     /** Restored library detail identity (skill/worker path). */
     itemId?: string | null;
     onback?: () => void;
-    backEnabled?: boolean;
     /** Parent navigation when left-nav tab changes. */
     onnavigatetab?: (tab: LibraryTab) => void;
     /** Parent navigation when a skill/worker detail opens or closes. */
@@ -65,7 +64,6 @@
     tab = "skills",
     itemId = null,
     onback,
-    backEnabled = true,
     onnavigatetab,
     onnavigateitem,
     packagesEvents = null,
@@ -212,7 +210,7 @@
       : "skills available to you"}
     titleTestId="library-overlay-title"
     backTestId="library-back"
-    onback={backEnabled ? () => onback?.() : undefined}
+    onback={() => onback?.()}
   />
 
   <div class="lo-body">

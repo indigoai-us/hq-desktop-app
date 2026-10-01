@@ -156,6 +156,37 @@ describe("DesktopApp title-bar back/forward", () => {
     expect(extraPage()).toBe("alpha");
   });
 
+  it("Library Back from the first app route returns to Messages after tab changes", async () => {
+    await mountShell(libraryAdapter());
+    await goToLibrary("skills");
+    host.querySelector<HTMLButtonElement>(
+      '[data-testid="library-nav-workers"]',
+    )?.click();
+    await tick();
+    await tick();
+    host.querySelector<HTMLButtonElement>(
+      '[data-testid="library-nav-skills"]',
+    )?.click();
+    await tick();
+    await tick();
+
+    expect(host.querySelector('[data-testid="library-skills-panel"]')).not.toBeNull();
+    host.querySelector<HTMLButtonElement>(
+      '[data-testid="library-back"]',
+    )?.click();
+    await tick();
+    await tick();
+
+    expect(host.querySelector('[data-testid="library-overlay"]')).toBeNull();
+    expect(
+      host.querySelector<HTMLButtonElement>('[data-testid="titlebar-back"]')
+        ?.disabled,
+    ).toBe(true);
+    expect(
+      host.querySelector('[data-testid="titlebar-forward"]')?.getAttribute("title"),
+    ).toBe("Library");
+  });
+
   it("Given history A→B, when the user clicks Back then Forward, then selection returns to A then B and button disabled states match the stack", async () => {
     await mountShell();
     await goTo("alpha");
