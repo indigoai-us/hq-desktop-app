@@ -580,6 +580,32 @@ pub fn drift_blob_sha(content: &[u8]) -> String {
     git_blob_sha(normalized.as_ref())
 }
 
+/// Drift hash for settings JSON, ignoring only the setup-owned PATH.
+pub fn drift_blob_sha_for_path(path: &str, content: &[u8]) -> String {
+    if path != ".claude/settings.json" {
+        return drift_blob_sha(content);
+    }
+    let canonical = serde_json::from_slice::<serde_json::Value>(content)
+        .ok()
+        .map(|mut value| {
+            if let Some(object) = value.as_object_mut() {
+                let empty = object
+                    .get_mut("env")
+                    .and_then(serde_json::Value::as_object_mut)
+                    .map(|vars| {
+                        vars.remove("PATH");
+                        vars.is_empty()
+                    })
+                    .unwrap_or(false);
+                if empty {
+                    object.remove("env");
+                }
+            }
+            serde_json::to_vec(&value).expect("JSON value serializes")
+        });
+    drift_blob_sha(canonical.as_deref().unwrap_or(content))
+}
+
 /// Normalize newlines for drift hashing only.
 ///
 /// - Leaves binary-looking buffers unchanged (NUL in the sample → binary).
@@ -676,8 +702,8 @@ pub fn walk_local_under_scope(
                     continue;
                 };
                 let size = content.len() as u64;
-                let sha = drift_blob_sha(&content);
                 let rel_str = rel_path.to_string_lossy().replace('\\', "/");
+                let sha = drift_blob_sha(&content);
                 out.insert(rel_str, (sha, size));
             }
         } else {
@@ -722,6 +748,45 @@ fn test_write(root: &Path, rel: &str, bytes: &[u8]) {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn settings_env_path_is_ignored_for_drift() {
+        let before =
+            br#"{"env":{"PATH":"/old/bin","EDITOR":"vim"},"permissions":{"allow":["Read"]}}"#;
+        let after =
+            br#"{"permissions":{"allow":["Read"]},"env":{"EDITOR":"vim","PATH":"/new/bin"}}"#;
+
+        assert_eq!(
+            drift_blob_sha_for_path(".claude/settings.json", before),
+            drift_blob_sha_for_path(".claude/settings.json", after),
+        );
+        assert_eq!(
+            drift_blob_sha_for_path(".claude/settings.json", br#"{"env":{"PATH":"/custom/bin"}}"#),
+            drift_blob_sha_for_path(".claude/settings.json", b"{}"),
+        );
+    }
+
+    #[test]
+    fn settings_changes_other_than_env_path_still_drift() {
+        let before = br#"{"env":{"PATH":"/old/bin"},"permissions":{"allow":["Read"]}}"#;
+        let after = br#"{"env":{"PATH":"/new/bin"},"permissions":{"allow":["Write"]}}"#;
+
+        assert_ne!(
+            drift_blob_sha_for_path(".claude/settings.json", before),
+            drift_blob_sha_for_path(".claude/settings.json", after),
+        );
+    }
+
+    #[test]
+    fn local_settings_walk_keeps_the_real_git_blob_hash() {
+        let root = tempfile::tempdir().unwrap();
+        let settings = br#"{"env":{"PATH":"/custom/bin"},"permissions":{"allow":["Read"]}}"#;
+        test_write(root.path(), ".claude/settings.json", settings);
+
+        let blobs = walk_local_under_scope(root.path(), &[".claude/settings.json".into()]);
+
+        assert_eq!(blobs[".claude/settings.json"].0, drift_blob_sha(settings),);
+    }
 
     #[test]
     fn git_blob_sha_matches_git_format() {

@@ -3119,6 +3119,50 @@ struct GhCommit {
 }
 
 #[derive(Debug, Deserialize)]
+struct GhBlobResponse {
+    sha: String,
+    encoding: String,
+    content: String,
+}
+
+async fn fetch_blob_content(
+    client: &reqwest::Client,
+    repo: &str,
+    blob_sha: &str,
+    scope: crate::commands::github_api::ApiScope,
+) -> Result<Vec<u8>, String> {
+    let url = format!("https://api.github.com/repos/{repo}/git/blobs/{blob_sha}");
+    let resp = crate::commands::github_api::get(client, &url, scope)
+        .await
+        .map_err(github_api_fetch_failure)?;
+    if !resp.status().is_success() {
+        return Err(github_http_fetch_failure(
+            resp.status(),
+            &resp.headers,
+            format!("git/blobs/{blob_sha}"),
+        ));
+    }
+    let parsed: GhBlobResponse = serde_json::from_slice(&resp.body).map_err(|error| {
+        github_fetch_failure("invalid_response", format!("parse blob JSON: {error}"))
+    })?;
+    if parsed.sha != blob_sha || parsed.encoding != "base64" {
+        return Err(github_fetch_failure(
+            "invalid_response",
+            format!("unexpected blob metadata for {blob_sha}"),
+        ));
+    }
+    use base64::Engine as _;
+    let compact = parsed
+        .content
+        .chars()
+        .filter(|ch| !ch.is_ascii_whitespace())
+        .collect::<String>();
+    base64::engine::general_purpose::STANDARD
+        .decode(compact)
+        .map_err(|error| github_fetch_failure("invalid_response", format!("decode blob: {error}")))
+}
+
+#[derive(Debug, Deserialize)]
 struct GhTreesResponse {
     #[serde(default)]
     tree: Vec<GhTreeEntry>,
@@ -4059,6 +4103,66 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
                 .filter(|(p, _)| !path_in_excluded_scope(p, &excluded))
                 .collect();
 
+            // Compare this setup-owned field semantically while retaining the
+            // real Git SHAs in the report so restore-from-upstream stays valid.
+            let settings_path = ".claude/settings.json";
+            let local_settings_sha = if local.contains_key(settings_path) {
+                match std::fs::read(hq_folder.join(settings_path)) {
+                    Ok(bytes) => Some(hq_desktop_core::drift_scope::drift_blob_sha_for_path(
+                        settings_path,
+                        &bytes,
+                    )),
+                    Err(error) => {
+                        log(
+                            "hq-core-state",
+                            &format!(
+                                "could not reread local settings for semantic drift comparison: {error}; retaining raw SHA comparison"
+                            ),
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            let target_settings_sha = match target_in_scope.get(settings_path) {
+                Some((sha, _)) => {
+                    let content = fetch_blob_content(&client, &target_repo, sha, request_scope)
+                        .await
+                        .map_err(|error| {
+                            CoreUpdateError::new(CoreUpdateErrorKind::Network, error)
+                        })?;
+                    Some(hq_desktop_core::drift_scope::drift_blob_sha_for_path(
+                        settings_path,
+                        &content,
+                    ))
+                }
+                None => None,
+            };
+            let floor_settings_sha =
+                match (floor_identity.as_ref(), floor_in_scope.get(settings_path)) {
+                    (Some((source, _)), Some(sha)) => {
+                        match fetch_blob_content(&client, source, sha, request_scope).await {
+                            Ok(content) => Some(
+                                hq_desktop_core::drift_scope::drift_blob_sha_for_path(
+                                    settings_path,
+                                    &content,
+                                ),
+                            ),
+                            Err(error) => {
+                                log(
+                                    "hq-core-state",
+                                    &format!(
+                                        "could not read settings baseline blob for semantic drift comparison: {error}; retaining raw SHA comparison"
+                                    ),
+                                );
+                                None
+                            }
+                        }
+                    }
+                    _ => None,
+                };
+
             // Three-way classify each path (USER-EDIT goes to `modified`,
             // MISSING goes to `missing`, USER-ONLY goes to `added` —
             // preserves the DriftReport shape the detail window already
@@ -4081,8 +4185,21 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
                     .get(*path)
                     .cloned()
                     .unwrap_or_else(|| sha_target.clone());
+                let (compare_local, compare_expected) = if *path == settings_path {
+                    let expected = if floor_in_scope.contains_key(settings_path) {
+                        floor_settings_sha.as_ref()
+                    } else {
+                        target_settings_sha.as_ref()
+                    };
+                    match (local_settings_sha.as_ref(), expected) {
+                        (Some(local_sha), Some(expected_sha)) => (local_sha, expected_sha),
+                        _ => (sha_local, &classification_sha),
+                    }
+                } else {
+                    (sha_local, &classification_sha)
+                };
 
-                if sha_local == &classification_sha {
+                if compare_local == compare_expected {
                     unchanged_count += 1;
                 } else {
                     user_edit.push(DriftEntry {
