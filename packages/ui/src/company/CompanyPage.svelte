@@ -1,5 +1,6 @@
 <script lang="ts">
   import {
+    PERSONAL_WORKSPACE_BOARD_FLAG,
     approvedPlanUpgradeUrl,
     isPlanLimitCode,
     type PlatformAdapter,
@@ -116,11 +117,43 @@
   let inviteBusy = $state(false);
   let inviteOpening = $state(false);
 
+  let personalWorkspaceBoardEnabled = $state(false);
+
+  // Personal workspaces do not have a membership status. Keep their remote
+  // board path behind an explicit, default-off hq-flags value and require the
+  // server-resolved personal-vault UID before querying board resources.
+  $effect(() => {
+    if (company.state !== "personal" || !company.cloudUid) {
+      personalWorkspaceBoardEnabled = false;
+      return;
+    }
+
+    let active = true;
+    void adapter.identity.hasFeature(PERSONAL_WORKSPACE_BOARD_FLAG).then(
+      (result) => {
+        if (active) {
+          personalWorkspaceBoardEnabled = result.ok && result.value;
+        }
+      },
+      (error: unknown) => {
+        console.error("Personal workspace board flag lookup failed:", error);
+        if (active) personalWorkspaceBoardEnabled = false;
+      },
+    );
+
+    return () => {
+      active = false;
+    };
+  });
+
   // Connectivity (vault/membership) — independent of the local Off toggle.
   const cloudBacked = $derived(
     company.state === "synced" ||
       (company.state === "cloud-only" &&
-        company.membershipStatus !== "pending"),
+        company.membershipStatus !== "pending") ||
+      (company.state === "personal" &&
+        Boolean(company.cloudUid) &&
+        personalWorkspaceBoardEnabled),
   );
   const connectionIssue = $derived(company.state === "broken");
   // Local runner pause — suppress resource polling without rewriting connectivity.

@@ -37,6 +37,7 @@ import {
   HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT,
   INVITE_TEAMMATE_STEP_FLAG,
   LOGIN_RECEIPT_DURABILITY_FLAG,
+  PERSONAL_WORKSPACE_BOARD_FLAG,
   createFeatureFlagGate,
   createHqProFlagFetch,
   MIRROR_QUARANTINE_MOVE_NOT_DELETION_FLAG,
@@ -202,6 +203,11 @@ export function createSyncPlatformAdapter(
     if (flag === SETUP_STAGE_TIMEOUT_FIX_FLAG) {
       // Setup timeout mitigation is opt-in and stays off until a manager
       // explicitly enables its hq-flags value.
+      return Promise.resolve(ok(false));
+    }
+    if (flag === PERSONAL_WORKSPACE_BOARD_FLAG) {
+      // Personal board reads stay disabled until the hq-flags registry
+      // explicitly enables this rollout.
       return Promise.resolve(ok(false));
     }
     if (flag === LOGIN_RECEIPT_DURABILITY_FLAG) {
