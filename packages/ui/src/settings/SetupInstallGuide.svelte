@@ -22,12 +22,19 @@
   };
 
   /**
-   * The install button's label. Product asked for "Install Claude" on this
-   * one button only; every other sentence keeps the tool's full name.
+   * The one action's label when the tool is not on this computer yet. It
+   * installs the tool and then opens its sign-in by itself. Product asked for
+   * "Install Claude" on this button; sentences keep the tool's full name.
    */
   export const INSTALL_BUTTON_LABEL: Record<CodingTool, string> = {
     claude: "Install Claude",
     codex: "Install Codex",
+  };
+
+  /** The same action's label when the tool is installed but not signed in. */
+  export const SIGN_IN_BUTTON_LABEL: Record<CodingTool, string> = {
+    claude: "Sign in to Claude",
+    codex: "Sign in to Codex",
   };
 
   /**
@@ -50,9 +57,9 @@
    *   1. one primary button that installs the tool for the user (host runs
    *      the official installer for their platform);
    *   2. plain, honest progress ("Installing Claude Code…", never a fake bar);
-   *   3. after the install lands, a "Sign in" step that opens the tool's own
-   *      sign-in window and waits for it to complete (US-005 hard rule: HQ
-   *      never asks for or handles the password);
+   *   3. as soon as the install lands, the tool's own sign-in page opens by
+   *      itself (one button, not two) and the guide waits for it to complete
+   *      (US-005 hard rule: HQ never asks for or handles the password);
    *   4. plain failure copy with the one manual step to take.
    *
    * Pure UI: every side effect goes through props (`oninstall`, `onsignin`,
@@ -146,15 +153,20 @@
     recheckMs = SIGN_IN_RECHECK_MS,
   }: Props = $props();
 
+  /**
+   * Tools this guide installed itself. Counted as installed straight away:
+   * the `tools` prop can lag a re-detect behind the install landing (a
+   * Windows PATH refresh), and a retry must sign in, not install again.
+   */
+  let installedHere = $state<Record<CodingTool, boolean>>({ claude: false, codex: false });
   const installed = $derived<Record<CodingTool, boolean>>({
-    claude: Boolean(tools?.claude_cli || tools?.claude_desktop),
-    codex: Boolean(tools?.codex_cli || tools?.codex_desktop),
+    claude: installedHere.claude || Boolean(tools?.claude_cli || tools?.claude_desktop),
+    codex: installedHere.codex || Boolean(tools?.codex_cli || tools?.codex_desktop),
   });
 
   type Phase =
     | "idle"
     | "installing"
-    | "installed-need-signin"
     | "signing-in"
     | "done"
     | "install-failed"
@@ -187,13 +199,11 @@
   const showPicker = $derived(
     phase === "idle" ||
       phase === "install-failed" ||
-      phase === "signin-failed" ||
-      phase === "installed-need-signin",
+      phase === "signin-failed",
   );
 
   const primaryLabel = $derived.by(() => {
     if (phase === "installing") return `Installing ${toolLabel}…`;
-    if (phase === "installed-need-signin") return `Sign in to ${toolLabel}`;
     if (phase === "signing-in") return "Waiting for sign-in…";
     if (phase === "done") {
       if (!oncontinue) return "You're set";
@@ -203,7 +213,7 @@
     if (phase === "signin-failed") return `Try signing in again`;
     // Not yet installed → offer install; already installed but not confirmed
     // signed-in → offer sign-in.
-    return installed[activeTool] ? `Sign in to ${toolLabel}` : INSTALL_BUTTON_LABEL[activeTool];
+    return installed[activeTool] ? SIGN_IN_BUTTON_LABEL[activeTool] : INSTALL_BUTTON_LABEL[activeTool];
   });
 
   const otherTool = $derived<CodingTool>(activeTool === "claude" ? "codex" : "claude");
@@ -211,9 +221,9 @@
   const lede = $derived.by(() => {
     if (tools === null && phase === "idle") return `Checking whether ${toolLabel} is on ${machinePhrase}…`;
     if (phase === "installing") {
-      return `HQ is downloading and installing ${toolLabel}. This usually takes a minute or two. Leave this window open.`;
+      return `HQ is installing ${toolLabel}, then opens its sign-in page. This usually takes a minute or two. Leave this window open.`;
     }
-    if (phase === "installed-need-signin" || (installed[activeTool] && phase === "idle")) {
+    if (installed[activeTool] && phase === "idle") {
       return `${toolLabel} is installed. Sign in to finish. HQ opens ${toolLabel}'s own sign-in window; your password never comes to HQ.`;
     }
     if (phase === "signing-in") {
@@ -249,17 +259,20 @@
         phase = "install-failed";
         return;
       }
+      installedHere = { ...installedHere, [tool]: true };
       await onrefresh();
+      if (destroyed) return;
       // A tool that was installed and signed in before (a reinstall) needs
       // no second sign-in.
       if (onstatus && (await safeStatus(tool))) {
-        await reachDone(tool, false);
+        await reachDone(tool, true);
         return;
       }
-      phase = "installed-need-signin";
     } finally {
       busy = false;
     }
+    // Install and sign-in are one step: the sign-in page opens by itself.
+    if (phase === "installing" && !destroyed) await runSignIn();
   }
 
   async function runSignIn(): Promise<void> {
@@ -345,17 +358,8 @@
     if (phase === "done") return void runContinue();
     // Retry states short-circuit back to the operation they failed on.
     if (phase === "install-failed") return void runInstall();
-    if (phase === "signin-failed") {
-      // The tool may have been uninstalled or never installed (picked from
-      // the failure state): install first in that case.
-      return installed[activeTool] ? void runSignIn() : void runInstall();
-    }
-    // The two-step flow: after an install lands the guide is on
-    // `installed-need-signin`, and the next click must run sign-in even if the
-    // `tools` prop hasn't re-detected the CLI on disk yet (a Windows PATH
-    // refresh can lag a poll behind the install landing).
-    if (phase === "installed-need-signin") return void runSignIn();
-    // Fresh states: install if the tool isn't here yet, otherwise sign in.
+    // Install if the tool isn't here yet (install then signs in by itself),
+    // otherwise sign in. Covers the fresh state and a failed sign-in alike.
     if (installed[activeTool]) return void runSignIn();
     return void runInstall();
   }

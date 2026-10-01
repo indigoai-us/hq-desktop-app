@@ -100,7 +100,7 @@ function lede(): string {
 }
 
 describe("SetupInstallGuide - no coding tool is installed", () => {
-  it("offers Install as the primary action, runs it, then guides sign-in", async () => {
+  it("offers one Install action that installs and then opens sign-in by itself", async () => {
     const { oninstall, onsignin, onrefresh } = await render({
       tools: { ...NO_AI_TOOLS },
     });
@@ -111,21 +111,14 @@ describe("SetupInstallGuide - no coding tool is installed", () => {
     expect(primary.textContent).toBe("Install Claude");
     expect(lede()).toContain("HQ can install");
 
-    // Install runs, guide flips to installed-need-signin, primary is now Sign in.
+    // One click: install runs, then sign-in starts with no second click.
     primary.click();
-    await vi.waitFor(() => expect(state()).toBe("installed-need-signin"));
-    expect(oninstall).toHaveBeenCalledWith("claude");
-    expect(onrefresh).toHaveBeenCalledTimes(1);
-    expect(q<HTMLButtonElement>('[data-testid="setup-install-guide-primary"]')!.textContent).toContain(
-      "Sign in to Claude Code",
-    );
-    // The sign-in copy explicitly promises the password never comes to HQ.
-    expect(lede()).toContain("password never comes to HQ");
-
-    // Second click: sign-in runs and lands on done.
-    q<HTMLButtonElement>('[data-testid="setup-install-guide-primary"]')!.click();
     await vi.waitFor(() => expect(state()).toBe("done"));
+    expect(oninstall).toHaveBeenCalledWith("claude");
+    expect(oninstall).toHaveBeenCalledTimes(1);
+    expect(onsignin).toHaveBeenCalledTimes(1);
     expect(onsignin.mock.calls[0]?.[0]).toBe("claude");
+    expect(oninstall.mock.invocationCallOrder[0]).toBeLessThan(onsignin.mock.invocationCallOrder[0]);
     expect(onrefresh).toHaveBeenCalledTimes(2);
     expect(q<HTMLButtonElement>('[data-testid="setup-install-guide-primary"]')!.disabled).toBe(true);
   });
@@ -139,8 +132,10 @@ describe("SetupInstallGuide - tool present but not signed in", () => {
     // Idle state, but primary already says Sign in (tool is installed).
     expect(state()).toBe("idle");
     const primary = q<HTMLButtonElement>('[data-testid="setup-install-guide-primary"]')!;
-    expect(primary.textContent).toContain("Sign in to Claude Code");
+    expect(primary.textContent).toBe("Sign in to Claude");
     expect(lede()).toContain("Claude Code is installed");
+    // The sign-in copy explicitly promises the password never comes to HQ.
+    expect(lede()).toContain("password never comes to HQ");
 
     primary.click();
     await vi.waitFor(() => expect(state()).toBe("done"));
@@ -288,12 +283,9 @@ describe("SetupInstallGuide - choosing Claude Code or Codex", () => {
     expect(lede()).toContain("HQ can install Codex");
 
     primary().click();
-    await vi.waitFor(() => expect(state()).toBe("installed-need-signin"));
-    expect(oninstall).toHaveBeenCalledWith("codex");
-    expect(primary().textContent).toBe("Sign in to Codex");
-
-    primary().click();
     await vi.waitFor(() => expect(state()).toBe("done"));
+    expect(oninstall).toHaveBeenCalledWith("codex");
+    expect(onsignin).toHaveBeenCalledTimes(1);
     expect(onsignin.mock.calls[0]?.[0]).toBe("codex");
   });
 
@@ -304,18 +296,58 @@ describe("SetupInstallGuide - choosing Claude Code or Codex", () => {
     expect(primary().textContent).toBe("Sign in to Codex");
   });
 
-  it("hides the picker while a step is running and once a tool is signed in", async () => {
+  it("hides the picker while installing and signing in, and shows it again after a failed sign-in", async () => {
     let finishInstall!: (outcome: InstallOutcome) => void;
+    let finishSignIn!: (outcome: InstallOutcome) => void;
     await render({
       tools: { ...NO_AI_TOOLS },
       oninstall: () => new Promise<InstallOutcome>((resolve) => (finishInstall = resolve)),
+      onsignin: () => new Promise<InstallOutcome>((resolve) => (finishSignIn = resolve)),
     });
     primary().click();
     await vi.waitFor(() => expect(state()).toBe("installing"));
     expect(q('[data-testid="setup-install-guide-picker"]')).toBeNull();
+    expect(lede()).toContain("then opens its sign-in page");
     finishInstall({ ok: true });
-    await vi.waitFor(() => expect(state()).toBe("installed-need-signin"));
+    await vi.waitFor(() => expect(state()).toBe("signing-in"));
+    expect(q('[data-testid="setup-install-guide-picker"]')).toBeNull();
+    finishSignIn({ ok: false, reason: "Sign-in did not complete." });
+    await vi.waitFor(() => expect(state()).toBe("signin-failed"));
     expect(q('[data-testid="setup-install-guide-picker"]')).not.toBeNull();
+  });
+
+  it("never shows a separate Sign in button between install and sign-in", async () => {
+    let finishInstall!: (outcome: InstallOutcome) => void;
+    const labels: string[] = [];
+    await render({
+      tools: { ...NO_AI_TOOLS },
+      oninstall: () => new Promise<InstallOutcome>((resolve) => (finishInstall = resolve)),
+      onsignin: () => new Promise<InstallOutcome>(() => undefined),
+    });
+    primary().click();
+    await vi.waitFor(() => expect(state()).toBe("installing"));
+    labels.push(primary().textContent ?? "");
+    finishInstall({ ok: true });
+    await vi.waitFor(() => expect(state()).toBe("signing-in"));
+    labels.push(primary().textContent ?? "");
+    expect(labels).toEqual(["Installing Claude Code…", "Waiting for sign-in…"]);
+    expect(primary().disabled).toBe(true);
+  });
+
+  it("a failed sign-in right after installing retries sign-in, not the install", async () => {
+    let attempts = 0;
+    const { oninstall, onsignin } = await render({
+      // The re-detect lags the install: `tools` still says nothing is installed.
+      tools: { ...NO_AI_TOOLS },
+      onsignin: async () => (++attempts === 1 ? { ok: false, reason: "Sign-in did not complete." } : { ok: true }),
+    });
+    primary().click();
+    await vi.waitFor(() => expect(state()).toBe("signin-failed"));
+    expect(primary().textContent).toBe("Try signing in again");
+    primary().click();
+    await vi.waitFor(() => expect(state()).toBe("done"));
+    expect(oninstall).toHaveBeenCalledTimes(1);
+    expect(onsignin).toHaveBeenCalledTimes(2);
   });
 });
 
