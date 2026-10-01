@@ -9,6 +9,8 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Internal: unused exports in the shared UI package are now module-private. No behaviour change.
+- Automatic sync now forwards live-update availability to the tray, so poll-only status appears without starting a manual sync.
+- When live sync updates are unavailable, the tray shows the last completed sync and polling cadence. It no longer says Syncing when no files are moving.
 
 - Internal: unused exports in the work shell and installer are now module-private. No behaviour change.
 
@@ -289,8 +291,6 @@ The release moves it under the version it ships in.
   PC to finish setup. Sign in above, then Retry." Purpose first, and no
   three-tool list right after the person installed one.
 - Windows template setup can reuse matching content links and use a gated copy or junction fallback for selected link errors.
-- Automatic sync now forwards live-update availability to the tray, so poll-only status appears without starting a manual sync.
-- When live sync updates are unavailable, the tray shows the last completed sync and polling cadence. It no longer says Syncing when no files are moving.
 
 ## [0.10.350] — 2026-09-28
 
