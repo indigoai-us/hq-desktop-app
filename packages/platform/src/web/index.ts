@@ -230,6 +230,8 @@ export const WEB_PATHS = {
   agentStop: AGENT_PATHS.stop,
   agentStart: AGENT_PATHS.start,
   agentRetryProvisioning: AGENT_PATHS.retryProvisioning,
+  agentReauth: AGENT_PATHS.reauth,
+  agentLoginCode: AGENT_PATHS.loginCode,
   agentDeprovision: AGENT_PATHS.deprovision,
   agentMobileRoster: AGENT_PATHS.mobileRoster,
   agentOwners: AGENT_PATHS.owners,
@@ -959,7 +961,11 @@ export class WebPlatformAdapter implements PlatformAdapter {
   readonly agents: PlatformAdapter["agents"] = {
     getProvisionOptions: (companyUid) =>
       this.get<AgentProvisionOptionsView>(AGENT_PATHS.provisionOptions(companyUid)),
-    getStatus: (agentUid) => this.get(WEB_PATHS.agentStatus(agentUid)),
+    getStatus: (agentUid, brain) => this.get(WEB_PATHS.agentStatus(agentUid, brain)),
+    restartBrainApproval: (agentUid, brain) =>
+      this.post(WEB_PATHS.agentReauth(agentUid), { brain }),
+    submitClaudeLoginCode: (agentUid, code) =>
+      this.post(WEB_PATHS.agentLoginCode(agentUid), { code }),
     listMobileRoster: (companyUid) =>
       this.get(WEB_PATHS.agentMobileRoster(companyUid)),
     listJobs: (agentUid) => this.get(WEB_PATHS.agentJobs(agentUid)),

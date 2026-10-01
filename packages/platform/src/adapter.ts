@@ -1073,8 +1073,10 @@ export interface AgentProfilePatch {
 export const AGENT_PATHS = {
   provisionOptions: (companyUid: string) =>
     `/v1/agents/provision-options?companyUid=${encodeURIComponent(companyUid)}`,
-  status: (agentUid: string) =>
-    `/v1/agents/${encodeURIComponent(agentUid)}/status`,
+  status: (agentUid: string, brain?: "grok" | "codex" | "claude") => {
+    const path = `/v1/agents/${encodeURIComponent(agentUid)}/status`;
+    return brain ? `${path}?brain=${encodeURIComponent(brain)}` : path;
+  },
   jobs: (agentUid: string) =>
     `/v1/agents/${encodeURIComponent(agentUid)}/jobs`,
   pauseJob: (agentUid: string, jobId: string) =>
@@ -1087,6 +1089,10 @@ export const AGENT_PATHS = {
     `/v1/agents/${encodeURIComponent(agentUid)}/start`,
   retryProvisioning: (agentUid: string) =>
     `/v1/agents/${encodeURIComponent(agentUid)}/retry`,
+  reauth: (agentUid: string) =>
+    `/v1/agents/${encodeURIComponent(agentUid)}/reauth`,
+  loginCode: (agentUid: string) =>
+    `/v1/agents/${encodeURIComponent(agentUid)}/login-code`,
   deprovision: (agentUid: string) =>
     `/v1/agents/${encodeURIComponent(agentUid)}`,
   mobileRoster: (companyUid?: string | null) => {
@@ -1128,7 +1134,11 @@ export interface AgentsApi {
     companyUid: string,
   ): AdapterPromise<AgentProvisionOptionsView>;
   /** GET /v1/agents/{uid}/status — owner/admin. */
-  getStatus(agentUid: string): AdapterPromise<Json>;
+  getStatus(agentUid: string, brain?: "grok" | "codex" | "claude"): AdapterPromise<Json>;
+  /** Start a fresh provider sign-in after a pairing link has expired. */
+  restartBrainApproval?(agentUid: string, brain: "grok" | "codex" | "claude"): AdapterPromise<Json>;
+  /** Submit Claude's browser-issued code to the waiting cloud bot. */
+  submitClaudeLoginCode?(agentUid: string, code: string): AdapterPromise<Json>;
   /** GET /v1/agents/mobile-roster — member-safe directory. */
   listMobileRoster(companyUid?: string | null): AdapterPromise<Json>;
   /** GET /v1/agents/{uid}/jobs — owner/admin operator list. */

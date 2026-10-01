@@ -64,6 +64,8 @@ describe("WebPlatformAdapter agents", () => {
     await adapter.agents.stop("agt_1");
     await adapter.agents.start("agt_1");
     await adapter.agents.retryProvisioning("agt_1");
+    await adapter.agents.restartBrainApproval("agt_1", "grok");
+    await adapter.agents.submitClaudeLoginCode("agt_1", "returned-code");
     await adapter.agents.deprovision("agt_1");
     expect(calls).toEqual([
       {
@@ -79,6 +81,8 @@ describe("WebPlatformAdapter agents", () => {
       { method: "POST", path: AGENT_PATHS.stop("agt_1"), body: undefined },
       { method: "POST", path: AGENT_PATHS.start("agt_1"), body: undefined },
       { method: "POST", path: "/v1/agents/agt_1/retry", body: undefined },
+      { method: "POST", path: "/v1/agents/agt_1/reauth", body: { brain: "grok" } },
+      { method: "POST", path: "/v1/agents/agt_1/login-code", body: { code: "returned-code" } },
       {
         method: "DELETE",
         path: AGENT_PATHS.deprovision("agt_1"),

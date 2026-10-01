@@ -9,6 +9,7 @@
   import NewBotCreateScreen, { type NewBotCreated } from "./NewBotCreateScreen.svelte";
   import NewBotWakingScreen from "./NewBotWakingScreen.svelte";
   import { beginWakingSession, resumeWakingSession, type WakingBotSession } from "./waking-model.js";
+  import type { BrainProvider } from "./bot-brain-approval.js";
   import "./new-bot-takeover.css";
 
   interface Props {
@@ -22,6 +23,9 @@
     oncreate?: ((companyUid: string, draft: CloudBotDraft) => Promise<EntryPointResult>) | null;
     getStatus?: ((agentUid: string) => Promise<unknown>) | null;
     retryAgent?: ((agentUid: string) => Promise<unknown>) | null;
+    restartBrainApproval?: ((agentUid: string, brain: BrainProvider) => Promise<unknown>) | null;
+    submitClaudeLoginCode?: ((agentUid: string, code: string) => Promise<unknown>) | null;
+    openExternal?: ((url: string) => void | Promise<void>) | null;
     wakingSession?: WakingBotSession | null;
     onwaking?: ((session: WakingBotSession) => void) | null;
     onwakingchange?: ((session: WakingBotSession | null) => void) | null;
@@ -42,6 +46,9 @@
     oncreate = null,
     getStatus = null,
     retryAgent = null,
+    restartBrainApproval = null,
+    submitClaudeLoginCode = null,
+    openExternal = (url) => { window.open(url, "_blank", "noopener,noreferrer"); },
     wakingSession = null,
     onwaking = null,
     onwakingchange = null,
@@ -171,6 +178,9 @@
           session={activeWakingSession}
           {getStatus}
           {retryAgent}
+          {restartBrainApproval}
+          {submitClaudeLoginCode}
+          {openExternal}
           onupdate={updateWaking}
           onclose={closeWaking}
           onretry={retryWaking}

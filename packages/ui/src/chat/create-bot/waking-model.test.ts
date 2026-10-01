@@ -57,6 +57,19 @@ describe("waking model", () => {
     expect(ready.progress).toBe(100);
   });
 
+  it("shows an approval only while the server returns a current pairing", () => {
+    const pending = applyWakingStatus(session(), {
+      agent: { provider: "grok" },
+      setupState: { phase: "creating" },
+      pairing: { url: "https://accounts.x.ai/device", code: "TEST-CODE", capturedAt: "2026-01-01T00:00:00.000Z" },
+    });
+    expect(wakingStatusLine(pending)).toBe("One thing from you.");
+    expect(pending.approval).toMatchObject({ provider: "grok" });
+
+    const complete = applyWakingStatus(pending, { setupState: { phase: "ready" } });
+    expect(complete.approval).toBeNull();
+  });
+
   it("resumes the exact same bot after retrying", () => {
     const retried = resumeWakingSession({ ...session(), phase: "failed" }, STARTED + 10_000);
     expect(retried).toMatchObject({ agentUid: "agt_nova", channelId: "chn_nova", phase: "waking", consecutiveCheckFailures: 0 });

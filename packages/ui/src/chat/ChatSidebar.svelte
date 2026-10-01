@@ -287,6 +287,9 @@
     /** Polls a just-created cloud bot while its waking screen is open. */
     loadAgentStatus?: ((agentUid: string) => Promise<unknown>) | null;
     retryAgent?: ((agentUid: string) => Promise<unknown>) | null;
+    restartBrainApproval?: ((agentUid: string, brain: "grok" | "codex" | "claude") => Promise<unknown>) | null;
+    submitClaudeLoginCode?: ((agentUid: string, code: string) => Promise<unknown>) | null;
+    openExternal?: ((url: string) => void | Promise<void>) | null;
     loadClaudeProviderFlag?: (() => AdapterPromise<boolean>) | null;
     loadCloudProvisionOptions?: ((companyUid: string) => AdapterPromise<AgentProvisionOptionsView>) | null;
     /** Personal local bot (local-bots): desktop hosts only; see CreateModal. */
@@ -445,6 +448,9 @@
     oncreateagent = null,
     loadAgentStatus = null,
     retryAgent = null,
+    restartBrainApproval = null,
+    submitClaudeLoginCode = null,
+    openExternal = null,
     loadClaudeProviderFlag = null,
     loadCloudProvisionOptions = null,
     oncreatebot = null,
@@ -3805,6 +3811,9 @@
       oncreate={oncreateagent}
       getStatus={loadAgentStatus}
       {retryAgent}
+      {restartBrainApproval}
+      {submitClaudeLoginCode}
+      {openExternal}
       wakingSession={wakingBot}
       onwaking={beginWakingBot}
       onwakingchange={updateWakingBot}

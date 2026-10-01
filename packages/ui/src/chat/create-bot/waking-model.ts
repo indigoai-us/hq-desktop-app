@@ -7,6 +7,8 @@
  * labels through to the UI.
  */
 
+import { brainApprovalFromStatus, type BrainApproval } from "./bot-brain-approval.js";
+
 /** US-001 recorded median create-to-audit time, measured 2026-10-01. */
 export const US001_MEDIAN_WAKING_ESTIMATE_MS = 1_244_000;
 /** Default estimate used in production; fixtures can override per session. */
@@ -26,6 +28,7 @@ export interface WakingBotSession {
   phase: WakingPhase;
   progress: number;
   consecutiveCheckFailures: number;
+  approval: BrainApproval | null;
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -79,6 +82,7 @@ export function beginWakingSession(input: {
     phase: "waking",
     progress: wakingProgress(startedAt, startedAt, estimateMs),
     consecutiveCheckFailures: 0,
+    approval: null,
   };
 }
 
@@ -93,6 +97,7 @@ export function applyWakingStatus(
     phase,
     progress: phase === "ready" ? 100 : wakingProgress(session.startedAt, now, session.estimateMs),
     consecutiveCheckFailures: 0,
+    approval: phase === "ready" ? null : brainApprovalFromStatus(payload),
   };
 }
 
@@ -112,6 +117,7 @@ export function wakingStatusLine(
   now: number = Date.now(),
 ): string {
   if (session.phase === "failed") return "We couldn't start this bot.";
+  if (session.approval) return "One thing from you.";
   if (session.consecutiveCheckFailures >= WAKING_RECONNECT_AFTER_FAILURES) {
     return "Reconnecting. Your bot is still waking up.";
   }

@@ -25,6 +25,8 @@ describe("TauriPlatformAdapter agents", () => {
     const { adapter, calls } = makeTauri();
     await adapter.agents.getProvisionOptions("cmp_1");
     await adapter.agents.getStatus("agt_1");
+    await adapter.agents.restartBrainApproval("agt_1", "codex");
+    await adapter.agents.submitClaudeLoginCode("agt_1", "returned-code");
     await adapter.agents.updateProfile("agt_1", { displayName: "Izzy" });
     await adapter.agents.pauseJob("agt_1", "job_9");
     await adapter.agents.retryProvisioning("agt_1");
@@ -40,6 +42,14 @@ describe("TauriPlatformAdapter agents", () => {
       {
         cmd: "hq_pro_fetch",
         args: { url: AGENT_PATHS.status("agt_1"), method: "GET", body: null },
+      },
+      {
+        cmd: "hq_pro_fetch",
+        args: { url: AGENT_PATHS.reauth("agt_1"), method: "POST", body: JSON.stringify({ brain: "codex" }) },
+      },
+      {
+        cmd: "hq_pro_fetch",
+        args: { url: AGENT_PATHS.loginCode("agt_1"), method: "POST", body: JSON.stringify({ code: "returned-code" }) },
       },
       {
         cmd: "hq_pro_fetch",

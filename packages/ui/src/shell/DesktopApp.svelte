@@ -8834,6 +8834,12 @@
           oncreateagent={canCreateCloudBots ? createCloudBotEntry : null}
           loadAgentStatus={(agentUid) => adapter.agents.getStatus(agentUid)}
           retryAgent={(agentUid) => adapter.agents.retryProvisioning(agentUid)}
+          restartBrainApproval={(agentUid, brain) => adapter.agents.restartBrainApproval?.(agentUid, brain) ?? Promise.resolve({ ok: false })}
+          submitClaudeLoginCode={(agentUid, code) => adapter.agents.submitClaudeLoginCode?.(agentUid, code) ?? Promise.resolve({ ok: false })}
+          openExternal={(url) => {
+            if (onopenurl) onopenurl(url);
+            else window.open(url, "_blank", "noopener,noreferrer");
+          }}
           loadClaudeProviderFlag={() => adapter.identity.hasFeature(CLAUDE_PROVIDER_FLAG)}
           humanOnly={humanOnlyConversations}
           loadCloudProvisionOptions={(companyUid) => adapter.agents.getProvisionOptions(companyUid)}

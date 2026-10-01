@@ -482,7 +482,11 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         "GET",
         AGENT_PATHS.provisionOptions(companyUid),
       ),
-    getStatus: (agentUid) => this.hqProJson("GET", AGENT_PATHS.status(agentUid)),
+    getStatus: (agentUid, brain) => this.hqProJson("GET", AGENT_PATHS.status(agentUid, brain)),
+    restartBrainApproval: (agentUid, brain) =>
+      this.hqProJson("POST", AGENT_PATHS.reauth(agentUid), { brain }),
+    submitClaudeLoginCode: (agentUid, code) =>
+      this.hqProJson("POST", AGENT_PATHS.loginCode(agentUid), { code }),
     listMobileRoster: (companyUid) =>
       this.hqProJson("GET", AGENT_PATHS.mobileRoster(companyUid)),
     listJobs: (agentUid) => this.hqProJson("GET", AGENT_PATHS.jobs(agentUid)),

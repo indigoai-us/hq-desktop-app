@@ -1032,8 +1032,12 @@ export function createSyncPlatformAdapter(
           'GET',
           AGENT_PATHS.provisionOptions(companyUid),
         ),
-      getStatus: (agentUid) =>
-        hqProJson('GET', AGENT_PATHS.status(agentUid)),
+      getStatus: (agentUid, brain) =>
+        hqProJson('GET', AGENT_PATHS.status(agentUid, brain)),
+      restartBrainApproval: (agentUid, brain) =>
+        hqProJson('POST', AGENT_PATHS.reauth(agentUid), { brain }),
+      submitClaudeLoginCode: (agentUid, code) =>
+        hqProJson('POST', AGENT_PATHS.loginCode(agentUid), { code }),
       listMobileRoster: (companyUid) =>
         hqProJson('GET', AGENT_PATHS.mobileRoster(companyUid)),
       listJobs: (agentUid) => hqProJson('GET', AGENT_PATHS.jobs(agentUid)),

@@ -15,7 +15,10 @@ async function settle(): Promise<void> {
   await tick();
 }
 
-function render(session = beginWakingSession({ agentUid: "agt_nova", channelId: "chn_nova", companyUid: "cmp_acme", name: "Nova", now: Date.now() })) {
+function render(
+  session = beginWakingSession({ agentUid: "agt_nova", channelId: "chn_nova", companyUid: "cmp_acme", name: "Nova", now: Date.now() }),
+  overrides: Record<string, unknown> = {},
+) {
   host = document.createElement("div");
   document.body.appendChild(host);
   const onupdate = vi.fn();
@@ -33,6 +36,7 @@ function render(session = beginWakingSession({ agentUid: "agt_nova", channelId: 
       onclose,
       onretry,
       onopenchat,
+      ...overrides,
     },
   });
   return { onupdate, onclose, onretry, onopenchat, retryAgent };
@@ -78,5 +82,66 @@ describe("NewBotWakingScreen", () => {
     expect(document.querySelector('[data-testid="new-bot-waking-status"]')?.textContent).toBe("We couldn't start this bot.");
     document.querySelector<HTMLButtonElement>('[data-testid="new-bot-waking-retry"]')!.click();
     expect(onretry).toHaveBeenCalledOnce();
+  });
+
+  it("opens Grok with its code in the provider link", async () => {
+    const openExternal = vi.fn();
+    render({
+      ...beginWakingSession({ agentUid: "agt_nova", channelId: "chn_nova", companyUid: "cmp_acme", name: "Nova" }),
+      approval: { provider: "grok", url: "https://accounts.x.ai/device", code: "TEST-CODE", capturedAt: new Date().toISOString() },
+    }, { openExternal });
+    await settle();
+    document.querySelector<HTMLButtonElement>('[data-testid="new-bot-approval-open"]')!.click();
+    await settle();
+    expect(openExternal).toHaveBeenCalledWith("https://accounts.x.ai/device?user_code=TEST-CODE");
+    expect(document.querySelector('[data-testid="new-bot-approval-waiting"]')?.textContent).toContain("Waiting for Grok");
+  });
+
+  it("copies and displays the Codex code before opening its device page", async () => {
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const openExternal = vi.fn();
+    render({
+      ...beginWakingSession({ agentUid: "agt_nova", channelId: "chn_nova", companyUid: "cmp_acme", name: "Nova" }),
+      approval: { provider: "codex", url: "https://auth.openai.com/codex/device", code: "TEST-CODE", capturedAt: new Date().toISOString() },
+    }, { openExternal });
+    await settle();
+    document.querySelector<HTMLButtonElement>('[data-testid="new-bot-approval-open"]')!.click();
+    await settle();
+    expect(writeText).toHaveBeenCalledWith("TEST-CODE");
+    expect(openExternal).toHaveBeenCalledWith("https://auth.openai.com/codex/device");
+    expect(document.querySelector('[data-testid="new-bot-codex-code"]')?.textContent).toBe("TEST-CODE");
+  });
+
+  it("submits the Claude browser code and enters a pending state", async () => {
+    const submitClaudeLoginCode = vi.fn(async () => ({ ok: true }));
+    const openExternal = vi.fn();
+    render({
+      ...beginWakingSession({ agentUid: "agt_nova", channelId: "chn_nova", companyUid: "cmp_acme", name: "Nova" }),
+      approval: { provider: "claude", url: "https://claude.ai/oauth/authorize", code: "", capturedAt: new Date().toISOString() },
+    }, { openExternal, submitClaudeLoginCode });
+    await settle();
+    document.querySelector<HTMLButtonElement>('[data-testid="new-bot-approval-open"]')!.click();
+    await settle();
+    const input = document.querySelector<HTMLInputElement>('[data-testid="new-bot-claude-code"]')!;
+    input.value = "returned-code";
+    input.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    document.querySelector<HTMLButtonElement>('[data-testid="new-bot-claude-submit"]')!.click();
+    await settle();
+    expect(openExternal).toHaveBeenCalledWith("https://claude.ai/oauth/authorize");
+    expect(submitClaudeLoginCode).toHaveBeenCalledWith("agt_nova", "returned-code");
+    expect(document.querySelector('[data-testid="new-bot-approval-message"]')?.textContent).toContain("Checking your sign-in");
+  });
+
+  it("offers a fresh approval after ten minutes", async () => {
+    const restartBrainApproval = vi.fn(async () => ({ ok: true, value: { agent: { provider: "grok" }, setupState: { phase: "creating" }, pairing: null } }));
+    render({
+      ...beginWakingSession({ agentUid: "agt_nova", channelId: "chn_nova", companyUid: "cmp_acme", name: "Nova" }),
+      approval: { provider: "grok", url: "https://accounts.x.ai/device", code: "TEST-CODE", capturedAt: new Date(Date.now() - 601_000).toISOString() },
+    }, { restartBrainApproval });
+    await settle();
+    document.querySelector<HTMLButtonElement>('[data-testid="new-bot-approval-restart"]')!.click();
+    await settle();
+    expect(restartBrainApproval).toHaveBeenCalledWith("agt_nova", "grok");
   });
 });
