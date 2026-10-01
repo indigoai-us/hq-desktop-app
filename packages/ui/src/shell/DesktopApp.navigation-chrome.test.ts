@@ -4,7 +4,7 @@
  * US-003 — title-bar Back/Forward + keyboard, through the shared resolver.
  */
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import { ok, type Capability, type PlatformAdapter } from "@hq/platform";
 
@@ -14,6 +14,29 @@ import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { dispatchEmbeddedNavigation } from "./embedded-navigation.js";
 import { installMemoryLocalStorage } from "../test-support/memory-local-storage.js";
+
+const seededLibraryHistory = vi.hoisted(() => ({ enabled: false }));
+
+vi.mock("./navigation-history.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./navigation-history.js")>();
+  return {
+    ...actual,
+    createNavigationHistory(
+      ...args: Parameters<typeof actual.createNavigationHistory>,
+    ) {
+      const history = actual.createNavigationHistory(...args);
+      if (seededLibraryHistory.enabled) {
+        history.push(
+          actual.createNavigationEntry(
+            { kind: "library", tab: "skills" },
+            { accountId: "prs_test", companyUid: null },
+          ),
+        );
+      }
+      return history;
+    },
+  };
+});
 
 function webAdapter(): PlatformAdapter {
   return {
@@ -184,6 +207,49 @@ describe("DesktopApp title-bar back/forward", () => {
     ).toBe(true);
     expect(
       host.querySelector('[data-testid="titlebar-forward"]')?.getAttribute("title"),
+    ).toBe("Library · Skills");
+  });
+
+  it("Library Back returns to Messages when Library is the only history route", async () => {
+    seededLibraryHistory.enabled = true;
+    try {
+      await mountShell(libraryAdapter());
+    } finally {
+      seededLibraryHistory.enabled = false;
+    }
+
+    await goToLibrary("skills");
+    host.querySelector<HTMLButtonElement>(
+      '[data-testid="library-nav-workers"]',
+    )?.click();
+    await tick();
+    await tick();
+    host.querySelector<HTMLButtonElement>(
+      '[data-testid="library-nav-skills"]',
+    )?.click();
+    await tick();
+    await tick();
+
+    expect(
+      host.querySelector('[data-testid="library-skills-panel"]'),
+    ).not.toBeNull();
+    expect(
+      host.querySelector('[data-testid="library-overlay"]'),
+    ).not.toBeNull();
+    expect(
+      host.querySelector('[data-testid="library-back"]'),
+    ).not.toBeNull();
+    host.querySelector<HTMLButtonElement>(
+      '[data-testid="library-back"]',
+    )?.click();
+    await tick();
+    await tick();
+
+    expect(host.querySelector('[data-testid="library-overlay"]')).toBeNull();
+    expect(
+      host
+        .querySelector('[data-testid="titlebar-back"]')
+        ?.getAttribute("title"),
     ).toBe("Library · Skills");
   });
 
