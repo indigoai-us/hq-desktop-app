@@ -31,6 +31,23 @@ export interface InstallOutcome {
   reason?: string;
 }
 
+/** Options for one sign-in wait. `signal` stops the wait early. */
+export interface SignInOptions {
+  signal?: AbortSignal;
+}
+
+/**
+ * How often the adapter asks the host whether a sign-in it started has
+ * finished. Bounded: the loop only runs while one sign-in is in flight.
+ */
+export const SIGN_IN_POLL_MS = 2_000;
+/**
+ * How long one sign-in may wait for the browser before the adapter gives up.
+ * A little longer than the host's own 5-minute login deadline, so the host's
+ * "timed out" answer is what normally ends the wait.
+ */
+export const SIGN_IN_DEADLINE_MS = 6 * 60_000;
+
 /**
  * Tauri command name for each tool's installer. Cross-platform per the Rust
  * source: `install_deps.rs` branches on `#[cfg(not(windows))]` vs
@@ -64,7 +81,21 @@ const DOWNLOAD_URL: Record<CodingTool, string> = {
  */
 export interface SetupInstallGuideCallbacks {
   oninstall(tool: CodingTool): Promise<InstallOutcome>;
-  onsignin(tool: CodingTool): Promise<InstallOutcome>;
+  /**
+   * Start the tool's own browser sign-in and resolve once it has FINISHED:
+   * ok:true when the tool reports signed in, ok:false with a plain reason when
+   * it failed, timed out or was cancelled. The host's start command answers
+   * "waiting" straight away; that is not a failure, so this keeps asking
+   * `agent_provider_login_status` until the answer changes.
+   */
+  onsignin(tool: CodingTool, options?: SignInOptions): Promise<InstallOutcome>;
+  /**
+   * Is this tool already signed in on this computer? Never starts a sign-in
+   * and never throws: anything but a clear "connected" reads as false.
+   */
+  onstatus(tool: CodingTool): Promise<boolean>;
+  /** Stop a sign-in the host is waiting on, so a fresh one can start. */
+  oncancelsignin(tool: CodingTool): Promise<void>;
   onrefresh(): Promise<void>;
   downloadUrlFor(tool: CodingTool): string;
   onopen(url: string): Promise<InstallOutcome>;
@@ -79,6 +110,11 @@ export interface SetupInstallGuideCallbacks {
 export interface InstallGuideDeps {
   invoke<T = unknown>(cmd: string, args?: Record<string, unknown>): Promise<T>;
   openUrl(url: string): Promise<unknown>;
+  /** Wait between status checks. Tests pass a fast one. */
+  sleep?(ms: number): Promise<void>;
+  /** Poll cadence and overall deadline for one sign-in (tests shorten them). */
+  signInPollMs?: number;
+  signInDeadlineMs?: number;
 }
 
 interface LoginStateWire {
@@ -164,17 +200,30 @@ export function classifyInstallFailure(
   return null;
 }
 
-function signInFailureReason(state: LoginStateWire, tool: CodingTool): string {
+/** The host is still waiting on the browser. Older hosts said "pending". */
+function isWaiting(state: LoginStateWire | null | undefined): boolean {
+  return state?.state === "waiting" || state?.state === "pending";
+}
+
+/**
+ * A plain sentence for a sign-in that ended without the tool signed in. The
+ * host's own messages are written for this purpose ("Sign-in timed out.
+ * Please retry."), so they are kept; a waiting message is never returned as
+ * a failure reason, because waiting is not a failure.
+ */
+export function signInFailureReason(state: LoginStateWire | null | undefined, tool: CodingTool): string {
   const label = tool === "codex" ? "Codex" : "Claude Code";
+  if (isWaiting(state)) {
+    return `HQ stopped waiting for the ${label} sign-in. Try again when you're ready.`;
+  }
   if (state?.message) return state.message;
   if (state?.state === "error") {
     return `Sign-in for ${label} did not complete.`;
   }
-  if (state?.state === "pending") {
-    return `Sign-in for ${label} is still waiting in its own window.`;
-  }
   return `${label} is not signed in yet.`;
 }
+
+const CANCELLED: InstallOutcome = { ok: false, reason: "Sign-in cancelled." };
 
 /**
  * Build the four-callback shape the guide expects, calling the real Tauri
@@ -185,6 +234,9 @@ function signInFailureReason(state: LoginStateWire, tool: CodingTool): string {
 export function createSetupInstallGuideCallbacks(
   deps: InstallGuideDeps,
 ): SetupInstallGuideCallbacks {
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const pollMs = deps.signInPollMs ?? SIGN_IN_POLL_MS;
+  const deadlineMs = deps.signInDeadlineMs ?? SIGN_IN_DEADLINE_MS;
   return {
     async oninstall(tool: CodingTool): Promise<InstallOutcome> {
       try {
@@ -195,18 +247,51 @@ export function createSetupInstallGuideCallbacks(
       }
     },
 
-    async onsignin(tool: CodingTool): Promise<InstallOutcome> {
+    async onsignin(tool: CodingTool, options: SignInOptions = {}): Promise<InstallOutcome> {
+      const { signal } = options;
+      let state: LoginStateWire;
       try {
-        const state = await deps.invoke<LoginStateWire>(
+        state = await deps.invoke<LoginStateWire>(
           "agent_provider_login_start",
           { tool, force: false },
         );
-        if (state && state.state === "connected") {
-          return { ok: true };
-        }
-        return { ok: false, reason: signInFailureReason(state, tool) };
       } catch (err) {
         return { ok: false, reason: installFailureReason(err, tool) };
+      }
+      // The start command answers "waiting" as soon as the browser opens.
+      // Treating that answer as the result is what showed "Sign-in did not
+      // complete" while the person was still signing in: keep asking until
+      // the host reports how the sign-in actually ended.
+      const started = Date.now();
+      while (isWaiting(state)) {
+        if (signal?.aborted) return CANCELLED;
+        if (Date.now() - started >= deadlineMs) break;
+        await sleep(pollMs);
+        if (signal?.aborted) return CANCELLED;
+        try {
+          state = await deps.invoke<LoginStateWire>("agent_provider_login_status", { tool });
+        } catch {
+          // One failed check is not the end of the sign-in; ask again.
+        }
+      }
+      if (state && state.state === "connected") return { ok: true };
+      return { ok: false, reason: signInFailureReason(state, tool) };
+    },
+
+    async onstatus(tool: CodingTool): Promise<boolean> {
+      try {
+        const state = await deps.invoke<LoginStateWire>("agent_provider_login_status", { tool });
+        return state?.state === "connected";
+      } catch {
+        return false;
+      }
+    },
+
+    async oncancelsignin(tool: CodingTool): Promise<void> {
+      try {
+        await deps.invoke("agent_provider_login_cancel", { tool });
+      } catch {
+        // Nothing to cancel, or the host could not: the next start reports it.
       }
     },
 

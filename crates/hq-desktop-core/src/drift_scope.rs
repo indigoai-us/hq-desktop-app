@@ -519,10 +519,63 @@ pub fn is_conflict_artifact(path: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Hash a drift blob while omitting the desktop-generated PATH field from the
+/// shared Claude settings file. Other settings in that file remain part of the
+/// hash so user-authored edits still surface.
+pub fn drift_blob_sha_for_path(path: &str, bytes: &[u8]) -> String {
+    if path != ".claude/settings.json" {
+        return drift_blob_sha(bytes);
+    }
+
+    let Ok(mut document) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+        return drift_blob_sha(bytes);
+    };
+    let Some(root) = document.as_object_mut() else {
+        return drift_blob_sha(bytes);
+    };
+    let empty_env = root
+        .get_mut("env")
+        .and_then(serde_json::Value::as_object_mut)
+        .map(|vars| {
+            vars.remove("PATH");
+            vars.is_empty()
+        })
+        .unwrap_or(false);
+    if empty_env {
+        root.remove("env");
+    }
+
+    let Ok(normalized) = serde_json::to_vec(&document) else {
+        return drift_blob_sha(bytes);
+    };
+    drift_blob_sha(&normalized)
+}
+
+/// Use the normalized settings hash when available; retain the tree's raw
+/// hash on fetch/parse failure and return the error so the caller can log it.
+pub fn normalized_or_raw_drift_sha(
+    raw_sha: &str,
+    normalized: Result<String, String>,
+) -> (String, Option<String>) {
+    match normalized {
+        Ok(sha) => (sha, None),
+        Err(error) => (raw_sha.to_string(), Some(error)),
+    }
+}
+
 /// True iff the path falls under one of the excluded-path entries.
 /// Always does prefix matching (regardless of trailing slash): `core/packages`
 /// and `core/packages/` both exclude files under that directory tree.
 pub fn path_in_excluded_scope(path: &str, excluded: &[String]) -> bool {
+    // Company-skill wrapper inventory is generated locally and is not an
+    // editable Core file. Match only the marker basename, not its parent tree.
+    if path
+        .rsplit('/')
+        .next()
+        .is_some_and(|name| name == ".hq-company-skill-wrappers")
+    {
+        return true;
+    }
     for scope in excluded {
         let prefix = scope.trim_end_matches('/');
         if path == prefix || path.starts_with(&format!("{}/", prefix)) {
@@ -591,32 +644,6 @@ pub fn drift_hash_matches_with_raw_fallback(
         (Some(local), Some(upstream)) => local == upstream,
         _ => local_raw_sha == upstream_raw_sha,
     }
-}
-
-/// Drift hash for settings JSON, ignoring only the setup-owned PATH.
-pub fn drift_blob_sha_for_path(path: &str, content: &[u8]) -> String {
-    if path != ".claude/settings.json" {
-        return drift_blob_sha(content);
-    }
-    let canonical = serde_json::from_slice::<serde_json::Value>(content)
-        .ok()
-        .map(|mut value| {
-            if let Some(object) = value.as_object_mut() {
-                let empty = object
-                    .get_mut("env")
-                    .and_then(serde_json::Value::as_object_mut)
-                    .map(|vars| {
-                        vars.remove("PATH");
-                        vars.is_empty()
-                    })
-                    .unwrap_or(false);
-                if empty {
-                    object.remove("env");
-                }
-            }
-            serde_json::to_vec(&value).expect("JSON value serializes")
-        });
-    drift_blob_sha(canonical.as_deref().unwrap_or(content))
 }
 
 /// Normalize newlines for drift hashing only.
@@ -715,8 +742,8 @@ pub fn walk_local_under_scope(
                     continue;
                 };
                 let size = content.len() as u64;
-                let sha = drift_blob_sha(&content);
                 let rel_str = rel_path.to_string_lossy().replace('\\', "/");
+                let sha = drift_blob_sha(&content);
                 out.insert(rel_str, (sha, size));
             }
         } else {
