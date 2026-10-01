@@ -25,6 +25,32 @@ function isNetworkUploadError(err: Error): boolean {
   );
 }
 
+function awaitWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      callback();
+    };
+    const onAbort = () => {
+      finish(() =>
+        reject(
+          signal.reason ?? new DOMException("Request timed out", "TimeoutError"),
+        ),
+      );
+    };
+    promise.then(
+      (value) => finish(() => resolve(value)),
+      (error: unknown) => finish(() => reject(error)),
+    );
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -133,6 +159,7 @@ export type PutChatAttachment = (
   url: string,
   headers: Record<string, string>,
   file: File,
+  signal: AbortSignal,
 ) => Promise<Response>;
 
 /**
@@ -144,12 +171,13 @@ export async function putChatAttachmentDirect(
   url: string,
   headers: Record<string, string>,
   file: File,
+  signal: AbortSignal = AbortSignal.timeout(CHAT_ATTACHMENT_UPLOAD_TIMEOUT_MS),
 ): Promise<Response> {
   return fetch(url, {
     method: "PUT",
     headers,
     body: file,
-    signal: AbortSignal.timeout(CHAT_ATTACHMENT_UPLOAD_TIMEOUT_MS),
+    signal,
   });
 }
 
@@ -231,7 +259,11 @@ export async function uploadChatAttachments(opts: {
     }
     let put: Response;
     try {
-      put = await putObject(target.url, target.headers, file);
+      const signal = AbortSignal.timeout(CHAT_ATTACHMENT_UPLOAD_TIMEOUT_MS);
+      put = await awaitWithAbort(
+        putObject(target.url, target.headers, file, signal),
+        signal,
+      );
     } catch (err) {
       throw new Error(uploadFailureMessage(err, file.name));
     }

@@ -164,7 +164,7 @@ describe("uploadChatAttachments deadline", () => {
     });
     await Promise.resolve();
     await Promise.resolve();
-    timeout.abort();
+    timeout.abort(new DOMException("deadline", "TimeoutError"));
     const result = await settleWithin(operation);
 
     expect(result.settled).toBe(true);
@@ -177,6 +177,48 @@ describe("uploadChatAttachments deadline", () => {
         body: expect.any(File),
         signal: timeout.signal,
       },
+    );
+    expect(AbortSignal.timeout).toHaveBeenCalledWith(UPLOAD_TIMEOUT_MS);
+    expect(result).toMatchObject({
+      settled: true,
+      error: expect.objectContaining({
+        message: "Could not upload report.pdf",
+      }),
+    });
+  });
+
+  it("passes the deadline to the injected web upload transport", async () => {
+    const timeout = new AbortController();
+    vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeout.signal);
+    const putObject = vi.fn(
+      () => new Promise<Response>(() => {}),
+    );
+
+    const operation = uploadChatAttachments({
+      files: [pdf()],
+      companyUid: "cmp_acme",
+      scope: "chan",
+      scopeId: "chn_1",
+      presignPut: async () => ({
+        ok: true,
+        value: {
+          results: [{ url: "https://files.example.test/upload", headers: {} }],
+        },
+      }),
+      putObject,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    timeout.abort(new DOMException("deadline", "TimeoutError"));
+    const result = await settleWithin(operation);
+
+    expect(result.settled).toBe(true);
+    expect(putObject).toHaveBeenCalledTimes(1);
+    expect(putObject).toHaveBeenCalledWith(
+      "https://files.example.test/upload",
+      {},
+      expect.any(File),
+      timeout.signal,
     );
     expect(AbortSignal.timeout).toHaveBeenCalledWith(UPLOAD_TIMEOUT_MS);
     expect(result).toMatchObject({
