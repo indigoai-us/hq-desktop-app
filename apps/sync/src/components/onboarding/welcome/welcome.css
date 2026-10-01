@@ -1489,7 +1489,9 @@
   justify-content: center;
   gap: 10px;
 }
-.hq-welcome .tool-pills.tool-pills-status {
+.hq-welcome .tool-pills.tool-pills-status.ai-tools-status-stack {
+  flex-direction: column;
+  min-width: 0;
   align-items: center;
   gap: 12px;
 }
