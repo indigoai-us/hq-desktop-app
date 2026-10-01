@@ -14,10 +14,6 @@ import {
   createLiveNotificationsApi,
   type LiveNotificationsOptions,
   normalizeDirectoryFeed,
-  type AgencyApi,
-  type AgencyMessage,
-  type AgencyQuestion,
-  type AgencyTeam,
   type ChannelDetailResponse,
   type ChannelDirectoryRow,
   type ChannelsResponse,
@@ -31,7 +27,6 @@ import {
   type NotificationsApi,
   type ReplyThreadResponse,
   type RequestsResponse,
-  type Workspace,
 } from "@hq/ui";
 import {
   mergeShallowCache,
@@ -572,37 +567,9 @@ export function createConversationApi(
   };
 }
 
-/** Workspace memberships for the sidebar's company scope + admin gating. */
-export async function fetchWorkspaces(
-  adapter: PlatformAdapter,
-): Promise<Workspace[]> {
-  return call<Workspace[]>(adapter.identity.listWorkspaces());
-}
-
 export function createNotificationsApi(
   adapter: PlatformAdapter,
   options?: LiveNotificationsOptions,
 ): NotificationsApi {
   return createLiveNotificationsApi(adapter, options);
-}
-
-export function createAgencyApi(adapter: PlatformAdapter): AgencyApi {
-  return {
-    listTeams: () => call<AgencyTeam[]>(adapter.agency.listTeams()),
-    listQuestions: () => call<AgencyQuestion[]>(adapter.agency.listQuestions()),
-    listChat: (_company, team) =>
-      call<AgencyMessage[]>(adapter.agency.listChat(team)),
-    answerQuestion: async (args) => {
-      await call<void>(
-        adapter.agency.answerQuestion(args.id, { answer: args.answer }),
-      );
-      return "delivered";
-    },
-    sendMessage: async (args) => {
-      await call<void>(
-        adapter.agency.sendMessage(args.team, { text: args.text }),
-      );
-      return "delivered";
-    },
-  };
 }
