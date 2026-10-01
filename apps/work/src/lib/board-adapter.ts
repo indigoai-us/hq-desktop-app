@@ -49,22 +49,33 @@ async function getJson(
 ): Promise<unknown | null> {
   const controller = new AbortController();
   let timeoutElapsed = false;
+  let rejectDeadline: ((reason: Error) => void) | undefined;
+  const deadline = options.timeoutMs
+    ? new Promise<never>((_resolve, reject) => {
+        rejectDeadline = reject;
+      })
+    : undefined;
   let phase: "request" | "body" = "request";
   const timeout = options.timeoutMs
     ? setTimeout(() => {
         timeoutElapsed = true;
         controller.abort();
+        rejectDeadline?.(new Error("Board thread request timed out"));
       }, options.timeoutMs)
     : undefined;
   try {
-    const res = await fetchFn(
+    const response = fetchFn(
       path,
       options.timeoutMs ? { signal: controller.signal } : undefined,
     );
+    const res = deadline
+      ? await Promise.race([response, deadline])
+      : await response;
     if (res.status === 404 || res.status === 501) return null;
     if (!res.ok) throw new Error(`[http-${res.status}] GET ${path} failed`);
     phase = "body";
-    return await res.json();
+    const body = res.json();
+    return deadline ? await Promise.race([body, deadline]) : await body;
   } catch (error) {
     if (options.diagnostic) {
       const status =

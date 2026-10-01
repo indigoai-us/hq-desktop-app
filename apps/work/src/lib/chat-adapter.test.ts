@@ -119,22 +119,13 @@ describe("hydrateLiveRail", () => {
     await hydrateLiveRail(adapter, [], "prs_deadline");
     vi.setSystemTime(Date.now() + 60_001);
 
-    const bodyFetch = vi.fn(
-      async (_input: RequestInfo | URL, init?: RequestInit) => {
-        const response = new Response(null, { status: 200 });
-        Object.defineProperty(response, "json", {
-          value: () =>
-            new Promise((_resolve, reject) => {
-              init?.signal?.addEventListener(
-                "abort",
-                () => reject(new DOMException("aborted", "AbortError")),
-                { once: true },
-              );
-            }),
-        });
-        return response;
-      },
-    );
+    const bodyFetch = vi.fn(async () => {
+      const response = new Response(null, { status: 200 });
+      Object.defineProperty(response, "json", {
+        value: () => new Promise(() => {}),
+      });
+      return response;
+    });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const pending = hydrateLiveRail(adapter, [], "prs_deadline", {
       fetch: bodyFetch as typeof fetch,
@@ -153,6 +144,29 @@ describe("hydrateLiveRail", () => {
       expect.objectContaining({ event: "timeout" }),
     );
     warn.mockRestore();
+  });
+
+  it("bounds a stalled fetch that ignores its abort signal", async () => {
+    vi.useFakeTimers();
+    const adapter = stubAdapter(async () => ok({ rows: [] }));
+    const nativeFetch = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Promise<Response>(() => {}),
+    );
+    const pending = hydrateLiveRail(adapter, [], "prs_ignores_abort", {
+      fetch: nativeFetch as typeof fetch,
+    });
+    const resolved = vi.fn();
+    void pending.then(resolved);
+    await Promise.resolve();
+    expect(nativeFetch.mock.calls[0]?.[1]?.signal).toBeDefined();
+
+    await vi.advanceTimersByTimeAsync(15_000);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(resolved).toHaveBeenCalled();
+    expect(resolved.mock.calls[0]?.[0].directory).toEqual([]);
   });
 
   it("logs a bounded work-feed transport failure and keeps the empty result", async () => {

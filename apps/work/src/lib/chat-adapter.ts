@@ -107,15 +107,21 @@ async function loadWorkFeed(
   }
   const controller = new AbortController();
   let timeoutElapsed = false;
+  let rejectDeadline!: (reason: Error) => void;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    rejectDeadline = reject;
+  });
   let phase: "request" | "body" = "request";
   const timeout = setTimeout(() => {
     timeoutElapsed = true;
     controller.abort();
+    rejectDeadline(new Error("Work feed request timed out"));
   }, WORK_FEED_REQUEST_TIMEOUT_MS);
   try {
-    const res = await fetchImpl("/v1/work-mesh/work", {
-      signal: controller.signal,
-    });
+    const res = await Promise.race([
+      fetchImpl("/v1/work-mesh/work", { signal: controller.signal }),
+      deadline,
+    ]);
     if (!res.ok) {
       console.warn("[hq-work-feed] request failed", {
         event: "http-error",
@@ -124,7 +130,7 @@ async function loadWorkFeed(
       return workFeedCache?.key === personUid ? workFeedCache.items : [];
     }
     phase = "body";
-    const items = parseWorkFeed(await res.json());
+    const items = parseWorkFeed(await Promise.race([res.json(), deadline]));
     workFeedCache = { key: personUid, at: now, items };
     return items;
   } catch {

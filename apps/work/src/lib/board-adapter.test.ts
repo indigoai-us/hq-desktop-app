@@ -8,27 +8,14 @@ function createApi(fetchFn: typeof fetch) {
   return createBoardDataApi({} as PlatformAdapter, fetchFn);
 }
 
-function rejectWhenAborted(signal: AbortSignal | null | undefined) {
-  return new Promise<Response>((_resolve, reject) => {
-    signal?.addEventListener(
-      "abort",
-      () => reject(new DOMException("aborted", "AbortError")),
-      { once: true },
-    );
-  });
+function stallRequestIgnoringAbort() {
+  return new Promise<Response>(() => {});
 }
 
-function responseWithStalledBody(signal: AbortSignal | null | undefined) {
+function responseWithStalledBody() {
   const response = new Response(null, { status: 200 });
   Object.defineProperty(response, "json", {
-    value: () =>
-      new Promise((_resolve, reject) => {
-        signal?.addEventListener(
-          "abort",
-          () => reject(new DOMException("aborted", "AbortError")),
-          { once: true },
-        );
-      }),
+    value: () => new Promise(() => {}),
   });
   return response;
 }
@@ -44,8 +31,8 @@ describe("board thread request deadlines", () => {
   });
 
   it("bounds a stalled thread-list request and keeps the empty result", async () => {
-    const fetchFn = vi.fn((_input: RequestInfo | URL, init?: RequestInit) =>
-      rejectWhenAborted(init?.signal),
+    const fetchFn = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
+      stallRequestIgnoringAbort(),
     ) as unknown as typeof fetch;
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const pending = createApi(fetchFn).listThreads();
@@ -62,8 +49,8 @@ describe("board thread request deadlines", () => {
   });
 
   it("bounds a stalled thread body read and keeps the missing-thread result", async () => {
-    const fetchFn = vi.fn((_input: RequestInfo | URL, init?: RequestInit) =>
-      Promise.resolve(responseWithStalledBody(init?.signal)),
+    const fetchFn = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
+      Promise.resolve(responseWithStalledBody()),
     ) as unknown as typeof fetch;
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const pending = createApi(fetchFn).getThread("cmp_1", "thread_1");
