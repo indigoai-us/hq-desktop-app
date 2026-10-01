@@ -55,8 +55,6 @@ export const APPEARANCE_SIZES: ReadonlyArray<{
   { id: "large", label: "Large" },
 ];
 
-export const MEETING_PLATFORM_ORDER = ["Zoom", "Google Meet", "Teams"] as const;
-
 export interface SettingsCompanyRow {
   id: string;
   slug: string;
@@ -123,7 +121,7 @@ function toRow(workspace: Workspace): SettingsCompanyRow {
 }
 
 /** Prototype always shows a Personal vault row under companies. */
-export function personalSettingsRow(label?: string | null): SettingsCompanyRow {
+function personalSettingsRow(label?: string | null): SettingsCompanyRow {
   const name = (label ?? "").trim() || "Personal";
   return {
     id: "personal",
@@ -238,7 +236,7 @@ export function currentColorTheme(
 }
 
 /** Clamp to the user-facing slider range (which must include the default). */
-export function clampSliderOpacity(value: number): number {
+function clampSliderOpacity(value: number): number {
   return Math.min(
     MAX_SLIDER_WINDOW_OPACITY,
     Math.max(MIN_SLIDER_WINDOW_OPACITY, Math.round(value)),
