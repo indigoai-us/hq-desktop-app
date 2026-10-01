@@ -9265,7 +9265,11 @@ mod tests {
             .into_iter()
             .next()
             .expect("report must capture an event");
-        serde_json::json!({"tags": event.tags, "contexts": event.contexts})
+        serde_json::json!({
+            "tags": event.tags,
+            "contexts": event.contexts,
+            "extras": event.extra,
+        })
     }
 
     fn fixture_prefix() -> (tempfile::TempDir, String, String) {
@@ -9310,15 +9314,7 @@ mod tests {
             event["tags"]["resolved_prefix_class"].as_str(),
             Some("user")
         );
-        assert_eq!(
-            prefix,
-            Path::new(&hq)
-                .parent()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .to_string_lossy()
-        );
+        assert_eq!(prefix, npm_prefix_from_hq_bin(&hq).unwrap());
     }
 
     #[test]
@@ -9403,15 +9399,41 @@ mod tests {
 
     #[test]
     fn windows_profile_path_never_enters_non_convergence_tags_or_contexts() {
-        let windows_hq = r"C:\Users\sc-desktop-8a-privacy-fixture\AppData\Roaming\npm\hq.cmd";
+        #[cfg(windows)]
+        let (profile, prefix, hq) = {
+            let profile = paths::home_dir().expect("Windows profile home is available");
+            let prefix = profile.join("AppData/Roaming/npm");
+            let hq = prefix.join("hq.cmd");
+            (
+                profile.to_string_lossy().into_owned(),
+                prefix.to_string_lossy().into_owned(),
+                hq.to_string_lossy().into_owned(),
+            )
+        };
+        #[cfg(not(windows))]
+        let (profile, prefix, hq) = (
+            r"C:\Users\sc-desktop-8a-privacy-fixture".to_string(),
+            r"C:\Users\sc-desktop-8a-privacy-fixture\AppData\Roaming\npm".to_string(),
+            r"C:\Users\sc-desktop-8a-privacy-fixture\AppData\Roaming\npm\hq.cmd".to_string(),
+        );
         let event = captured_non_convergent_event(
-            windows_hq,
-            Some(r"C:\Users\sc-desktop-8a-privacy-fixture\AppData\Roaming\npm"),
+            &hq,
+            Some(&prefix),
             ExecutedCopyAim::Undrivable,
             paths::ResolutionSource::SettingsPath,
         );
-        let safe_event_fields = event.to_string();
-        assert!(!safe_event_fields.contains(r"C:\Users\sc-desktop-8a-privacy-fixture"));
+        let tags_and_contexts = serde_json::json!({
+            "tags": event["tags"],
+            "contexts": event["contexts"],
+        })
+        .to_string();
+        assert!(!tags_and_contexts.contains(&profile));
+        #[cfg(windows)]
+        {
+            let extras = event["extras"].to_string();
+            assert!(!extras.contains(&profile));
+            assert!(extras.contains("~"));
+        }
     }
 
     #[test]
