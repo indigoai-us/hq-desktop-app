@@ -118,6 +118,17 @@ function asRow(value: unknown): ChannelDirectoryRow | null {
       rec.lastActivityAt ?? rec.last_activity_at,
       nested?.lastActivityAt ?? nested?.last_activity_at,
     ),
+    ...(pickActivity(
+      rec.lastHumanMessageAt ?? rec.last_human_message_at,
+      nested?.lastHumanMessageAt ?? nested?.last_human_message_at,
+    )
+      ? {
+          lastHumanMessageAt: pickActivity(
+            rec.lastHumanMessageAt ?? rec.last_human_message_at,
+            nested?.lastHumanMessageAt ?? nested?.last_human_message_at,
+          ),
+        }
+      : {}),
     createdAt: pickActivity(rec.createdAt ?? rec.created_at, nested?.createdAt),
     ...(asString(rec.createdBy ?? rec.created_by).trim()
       ? { createdBy: asString(rec.createdBy ?? rec.created_by).trim() }

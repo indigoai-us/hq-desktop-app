@@ -9,6 +9,10 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Internal: startup diagnostics now label observed CLI resolver candidates, managed package state, and bundled CLI source.
+- The sidebar orders DMs and channels by the latest message a person typed.
+
+- HQ no longer restarts for an update, or at support's request, while a meeting
+  is being recorded; it waits until the recording finishes.
 
 - Internal: removed two unused packages/ui helpers and made three module-only helpers private (TD-60, #1198). No user-visible change.
 

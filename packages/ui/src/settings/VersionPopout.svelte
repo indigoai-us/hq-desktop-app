@@ -318,7 +318,10 @@
         phase = "ready";
       } else {
         console.error("install update failed:", res.message);
-        errorMessage = "Install failed";
+        errorMessage =
+          res.message === "HQ will restart to update after your recording finishes"
+            ? res.message
+            : "Install failed";
         phase = "error";
       }
     } else if (phase === "downloading") {
