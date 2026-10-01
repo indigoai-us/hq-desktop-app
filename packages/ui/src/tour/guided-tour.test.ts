@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { formatShortcut } from "../common/keyboard-shortcuts.js";
 import {
   TOUR_IDLE,
   TOUR_SEEN_STORAGE_KEY,
@@ -90,7 +91,7 @@ describe("tourSteps", () => {
       '[data-testid="chat-companies-section"]',
     ]);
     expect(steps[4].targets).toEqual(['[data-testid="titlebar-meetings"]']);
-    expect(steps[7].title).toBe("Find anything with ⌘K");
+    expect(steps[7].title).toBe(`Find anything with ${formatShortcut("Mod+K")}`);
     expect(steps[7].targets).toEqual(['[data-testid="command-palette"]']);
   });
 

@@ -292,7 +292,7 @@
       </div>
       <div>
         <dt>Runs on</dt>
-        <dd>This Mac{bot.daemonInstalled ? " · starts at login" : ""}</dd>
+        <dd>{`This ${hostNoun}`}{bot.daemonInstalled ? " · starts at login" : ""}</dd>
       </div>
       {#if localBotKindLabel(bot)}
         <div>

@@ -3505,7 +3505,7 @@
           {installPending ? 'Almost ready.' : 'HQ is ready.'}
         </h2>
         <p class="body">
-          HQ lives in your menu bar now and keeps everything in sync.<br />Open HQ Desktop and your setup bot will walk you through the rest.
+          HQ lives in your {setupHostOs === 'macos' ? 'menu bar' : 'system tray'} now and keeps everything in sync.<br />Open HQ Desktop and your setup bot will walk you through the rest.
         </p>
       </div>
       <div class="prog" class:done={!installPending} bind:this={refs.readyProg}>

@@ -1200,16 +1200,16 @@
       <div class="set-row">
         <div>
           <div class="sn">Launch at login</div>
-          <div class="sd">Start HQ when you sign in to your Mac</div>
+          <div class="sd">Start HQ when you sign in to {hostComputerNoun() === "Mac" ? "your Mac" : hostComputerNoun() === "PC" ? "your PC" : "your computer"}</div>
         </div>
         <button type="button" class="toggle" class:on={native.startAtLogin} role="switch" aria-checked={native.startAtLogin} aria-label="Launch at login" aria-busy={pending("launch")} disabled={!nativeLoaded || pending("launch")} onclick={() => void toggleLaunch()}></button>
       </div>
       <div class="set-row">
-        <div><div class="sn">Show in Dock</div><div class="sd">Keep HQ in the Dock and {hostComputerNoun() === "Mac" ? "⌘-Tab" : "Alt+Tab"} switcher</div></div>
-        <button type="button" class="toggle" class:on={prefs.showInDock} role="switch" aria-checked={prefs.showInDock} aria-label="Show in Dock" onclick={() => void toggleDock()}></button>
+        <div><div class="sn">{hostComputerNoun() === "Mac" ? "Show in Dock" : "Show in taskbar"}</div><div class="sd">Keep HQ in the {hostComputerNoun() === "Mac" ? "Dock" : "taskbar"} and {hostComputerNoun() === "Mac" ? "⌘-Tab" : "Alt+Tab"} switcher</div></div>
+        <button type="button" class="toggle" class:on={prefs.showInDock} role="switch" aria-checked={prefs.showInDock} aria-label={hostComputerNoun() === "Mac" ? "Show in Dock" : "Show in taskbar"} data-testid="settings-dock-toggle" onclick={() => void toggleDock()}></button>
       </div>
       <div class="set-row unavailable" data-testid="settings-menubar-unavailable">
-        <div><div class="sn">Menubar quick access</div><div class="sd">Managed by the native HQ popover in this release; this embedded screen cannot change it.</div></div>
+        <div><div class="sn">{hostComputerNoun() === "Mac" ? "Menu bar quick access" : "System tray quick access"}</div><div class="sd">Managed by the native HQ popover in this release; this embedded screen cannot change it.</div></div>
         <span class="mono">HOST-OWNED</span>
       </div>
     {/if}

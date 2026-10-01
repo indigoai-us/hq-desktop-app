@@ -490,5 +490,5 @@ it("explains a blocked file transfer beside promotion without exposing paths as 
   await vi.waitFor(() => expect(host.textContent).toContain("This requires an HQ update"));
   expect(q('[data-testid="local-bot-promotion-error"] details')?.hasAttribute("open")).toBe(false);
   expect(q('[data-testid="local-bot-detail-actions"]')?.textContent).not.toContain("unsafe or private path");
-  expect(host.textContent).toContain("files are still on this Mac");
+  expect(host.textContent).toContain("files are still on this computer");
 });

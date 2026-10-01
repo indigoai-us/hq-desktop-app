@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Windows-visible copy now uses PC controls, the system tray, and file manager labels where older screens assumed a Mac, menu bar, or Finder.
 - Platform wording and keyboard hints now follow the visitor's or desktop's OS instead of assuming macOS.
 
 - Internal: unused exports in the shared UI package are now module-private. No behaviour change.

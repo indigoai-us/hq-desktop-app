@@ -19,6 +19,7 @@
    */
   import { untrack } from "svelte";
   import { formatShortcut } from "../../common/keyboard-shortcuts.js";
+  import { isMac } from "../../common/platform.js";
   import type { PlatformAdapter, VaultFileHit, VaultNoteLinks, VaultSummaryWire } from "@hq/platform";
   import type { Workspace } from "../../chat/workspaces.js";
   import FilePreviewPane from "../FilePreviewPane.svelte";
@@ -52,6 +53,7 @@
   }
 
   let { adapter, companies, vaultId = null, path = null, onlocationchange }: Props = $props();
+  const fileManagerName = $derived(isMac() ? "Finder" : "file manager");
 
   const vaults = $derived(vaultsFor(companies));
   let currentVaultId = $state<string>(untrack(() => vaultId) ?? PERSONAL_VAULT.id);
@@ -267,7 +269,7 @@
   async function reveal(p: string): Promise<void> {
     revealError = null;
     const res = await adapter.files.revealInFinder(p);
-    if (!res.ok) revealError = res.message || "Could not open Finder.";
+    if (!res.ok) revealError = res.message || `Could not open ${fileManagerName}.`;
   }
 
   const canReveal = $derived(adapter.isAvailable("localFiles"));
@@ -368,7 +370,7 @@
             {/if}
             <button type="button" class="vx-action" onclick={() => copyPath(activePath)}>{copied ? "Copied" : "Copy path"}</button>
             {#if canReveal}
-              <button type="button" class="vx-action" onclick={() => reveal(activePath)} title={revealError ?? "Show in Finder"}>Show in Finder</button>
+              <button type="button" class="vx-action" onclick={() => reveal(activePath)} title={revealError ?? `Show in ${fileManagerName}`}>{`Show in ${fileManagerName}`}</button>
             {/if}
           </div>
         {/if}
