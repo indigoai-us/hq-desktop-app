@@ -6,7 +6,7 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 import { mount, tick, unmount } from "svelte";
-import { ok, type PlatformAdapter } from "@hq/platform";
+import { ok, type Capability, type PlatformAdapter } from "@hq/platform";
 
 import DesktopApp from "./DesktopApp.svelte";
 import ExtraPageProbe from "./ExtraPageProbe.test.svelte";
@@ -37,6 +37,27 @@ function webAdapter(): PlatformAdapter {
   } as unknown as PlatformAdapter;
 }
 
+function libraryAdapter(): PlatformAdapter {
+  const skills = Array.from({ length: 30 }, (_, index) => ({
+    name: `Skill ${index + 1}`,
+    description: "A test skill",
+    scope: "root" as const,
+    path: `skills/${index + 1}`,
+    allowedTools: [],
+  }));
+  return {
+    ...webAdapter(),
+    capabilities: { canInstallLocally: true },
+    isAvailable: (capability: Capability) => capability === "canInstallLocally",
+    library: {
+      getRoot: async () => ok({ workers: [], skills }),
+      getCompany: async () => ok({ workers: [], skills: [] }),
+      getWorkerDetail: async () => ok({}),
+      getSkillDetail: async () => ok({}),
+    },
+  } as unknown as PlatformAdapter;
+}
+
 const memoryStorage = installMemoryLocalStorage();
 
 let host: HTMLDivElement;
@@ -63,13 +84,13 @@ const pages = {
   },
 };
 
-async function mountShell(): Promise<void> {
+async function mountShell(adapter: PlatformAdapter = webAdapter()): Promise<void> {
   host = document.createElement("div");
   document.body.appendChild(host);
   component = mount(DesktopApp, {
     target: host,
     props: {
-      adapter: webAdapter(),
+      adapter,
       sidebarApi: createFixtureChatSidebarApi(),
       notificationsApi: createEmptyNotificationsApi(),
       self: {
@@ -91,6 +112,12 @@ async function goTo(page: "alpha" | "bravo"): Promise<void> {
   await tick();
 }
 
+async function goToLibrary(tab: "skills" | "workers"): Promise<void> {
+  dispatchEmbeddedNavigation({ kind: "library", tab });
+  await tick();
+  await tick();
+}
+
 function extraPage(): string | null {
   return (
     host
@@ -100,6 +127,35 @@ function extraPage(): string | null {
 }
 
 describe("DesktopApp title-bar back/forward", () => {
+  it("Library Back skips Library tab history and returns to the prior app route", async () => {
+    await mountShell(libraryAdapter());
+    await goTo("alpha");
+    await goToLibrary("workers");
+    host.querySelector<HTMLButtonElement>(
+      '[data-testid="library-nav-skills"]',
+    )?.click();
+    await tick();
+    await tick();
+
+    expect(host.querySelector('[data-testid="library-skills-panel"]')).not.toBeNull();
+    const skillsPanel = host.querySelector<HTMLElement>(
+      '[data-testid="library-skills-panel"]',
+    );
+    if (skillsPanel) {
+      skillsPanel.scrollTop = 900;
+      skillsPanel.dispatchEvent(new Event("scroll", { bubbles: true }));
+    }
+
+    host.querySelector<HTMLButtonElement>(
+      '[data-testid="library-back"]',
+    )?.click();
+    await tick();
+    await tick();
+
+    expect(host.querySelector('[data-testid="library-overlay"]')).toBeNull();
+    expect(extraPage()).toBe("alpha");
+  });
+
   it("Given history A→B, when the user clicks Back then Forward, then selection returns to A then B and button disabled states match the stack", async () => {
     await mountShell();
     await goTo("alpha");
