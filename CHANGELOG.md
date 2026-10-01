@@ -9,6 +9,8 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Setup diagnostics now identify the resolved CLI copy and settings PATH source using path-free values.
+- Internal: unused exports in the shared UI package are now module-private. No behaviour change.
+
 - Internal: unused exports in the work shell and installer are now module-private. No behaviour change.
 
 - With the Personal workspace board rollout enabled, HQ Desktop shows the
