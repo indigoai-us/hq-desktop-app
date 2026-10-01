@@ -25,6 +25,11 @@ use crate::commands::vault_client::{
 use crate::util::client_info::build_client;
 use crate::util::paths;
 
+// All telemetry cycles share one persisted cursor. Serialize the read/modify/
+// write interval so overlapping fire-and-forget sync tasks cannot overwrite
+// newer backoff or source progress with a stale cursor snapshot.
+static TELEMETRY_CURSOR_CYCLE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 // ── Cursor schema ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -41,6 +46,10 @@ struct TelemetryCursor {
     files: HashMap<String, CursorEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     codex_next_rollout: Option<String>,
+    #[serde(default)]
+    consecutive_unaccepted_flushes: u8,
+    #[serde(default)]
+    retry_after_unix_secs: u64,
 }
 
 impl Default for TelemetryCursor {
@@ -49,6 +58,8 @@ impl Default for TelemetryCursor {
             version: "1".to_string(),
             files: HashMap::new(),
             codex_next_rollout: None,
+            consecutive_unaccepted_flushes: 0,
+            retry_after_unix_secs: 0,
         }
     }
 }
@@ -1904,7 +1915,85 @@ struct UsageAck {
 }
 
 fn usage_ack_is_complete(ack: &UsageAck, event_count: usize) -> bool {
-    ack.ok && ack.skipped.is_empty() && ack.written.checked_add(ack.deduped) == Some(event_count)
+    if !ack.ok {
+        return false;
+    }
+
+    let Some(skipped_indices) = ack
+        .skipped
+        .iter()
+        .map(|entry| {
+            entry
+                .get("index")
+                .and_then(Value::as_u64)
+                .and_then(|index| usize::try_from(index).ok())
+        })
+        .collect::<Option<Vec<_>>>()
+    else {
+        return false;
+    };
+    let unique_skipped_indices = skipped_indices
+        .iter()
+        .copied()
+        .collect::<std::collections::HashSet<_>>();
+    if unique_skipped_indices.len() != skipped_indices.len()
+        || skipped_indices.iter().any(|index| *index >= event_count)
+    {
+        return false;
+    }
+
+    ack.written
+        .checked_add(ack.deduped)
+        .and_then(|settled| settled.checked_add(skipped_indices.len()))
+        == Some(event_count)
+}
+
+fn usage_retry_delay_secs(consecutive_failures: u8) -> u64 {
+    if consecutive_failures < 3 {
+        return 0;
+    }
+    let exponent = u32::from(consecutive_failures.saturating_sub(3)).min(4);
+    (5 * 60 * 2u64.pow(exponent)).min(60 * 60)
+}
+
+fn upload_backoff_remaining_secs(cursor: &TelemetryCursor, now_unix_secs: u64) -> Option<u64> {
+    (cursor.consecutive_unaccepted_flushes >= 3 && now_unix_secs < cursor.retry_after_unix_secs)
+        .then(|| cursor.retry_after_unix_secs - now_unix_secs)
+}
+
+fn record_unaccepted_flush(cursor: &mut TelemetryCursor, now_unix_secs: u64) {
+    cursor.consecutive_unaccepted_flushes = cursor.consecutive_unaccepted_flushes.saturating_add(1);
+    let delay_secs = usage_retry_delay_secs(cursor.consecutive_unaccepted_flushes);
+    cursor.retry_after_unix_secs = if delay_secs == 0 {
+        0
+    } else {
+        now_unix_secs.saturating_add(delay_secs)
+    };
+}
+
+fn reset_unaccepted_flushes(cursor: &mut TelemetryCursor) {
+    cursor.consecutive_unaccepted_flushes = 0;
+    cursor.retry_after_unix_secs = 0;
+}
+
+fn unix_now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default()
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum FlushOutcome {
+    Accepted,
+    Unaccepted { reason: &'static str },
+    ConsentRevoked,
+}
+
+impl FlushOutcome {
+    fn is_accepted(&self) -> bool {
+        matches!(self, Self::Accepted)
+    }
 }
 const MAX_BATCH_BYTES: usize = 1_000_000;
 const MAX_CODEX_BATCHES_PER_SYNC: usize = 4;
@@ -1957,6 +2046,14 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
     _hq_folder: &str,
     jwt: &str,
 ) -> Result<(), String> {
+    send_telemetry_if_opted_in_at(_app, _hq_folder, jwt).await
+}
+
+async fn send_telemetry_if_opted_in_at<R: tauri::Runtime>(
+    _app: &tauri::AppHandle<R>,
+    _hq_folder: &str,
+    jwt: &str,
+) -> Result<(), String> {
     // 1. Build VaultClient
     let api_url = resolve_vault_api_url()?;
     let vault = VaultClient::new(&api_url, jwt);
@@ -1968,7 +2065,15 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
 
     // 3. Load cursor and schedule Codex rollouts only after opt-in succeeds.
     let home = telemetry_home_dir().ok_or("home dir unavailable")?;
-    let cursor = load_cursor();
+    let _cursor_cycle_guard = TELEMETRY_CURSOR_CYCLE_LOCK.lock().await;
+    let mut cursor = load_cursor();
+    if let Some(remaining_secs) = upload_backoff_remaining_secs(&cursor, unix_now_secs()) {
+        eprintln!(
+            "[telemetry] usage upload skipped during backoff: consecutive_unaccepted_flushes={} retry_in_secs={remaining_secs}",
+            cursor.consecutive_unaccepted_flushes
+        );
+        return Ok(());
+    }
     let loaded_files = cursor.files.clone();
     let codex_candidates = codex_candidate_entries(&home.join(".codex"), &cursor);
     let mut newly_committed: HashMap<String, CursorEntry> = HashMap::new();
@@ -2115,11 +2220,14 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
                         &machine_id,
                         &installer_version,
                         cli_version.as_deref(),
+                        &mut cursor,
+                        unix_now_secs(),
                         &mut batch_events,
                         &mut batch_sources,
                         &mut newly_committed,
                     )
                     .await
+                    .is_accepted()
                     {
                         upload_failed = true;
                         break 'claude_files;
@@ -2234,11 +2342,14 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
                                 &machine_id,
                                 &installer_version,
                                 cli_version.as_deref(),
+                                &mut cursor,
+                                unix_now_secs(),
                                 &mut batch_events,
                                 &mut batch_sources,
                                 &mut newly_committed,
                             )
                             .await
+                            .is_accepted()
                             {
                                 upload_failed = true;
                                 break 'codex_files;
@@ -2300,6 +2411,8 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
                 &machine_id,
                 &installer_version,
                 cli_version.as_deref(),
+                &mut cursor,
+                unix_now_secs(),
                 &mut batch_events,
                 &mut batch_sources,
                 &mut newly_committed,
@@ -2327,6 +2440,8 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
         version: "1".to_string(),
         files: final_files,
         codex_next_rollout,
+        consecutive_unaccepted_flushes: cursor.consecutive_unaccepted_flushes,
+        retry_after_unix_secs: cursor.retry_after_unix_secs,
     };
     save_cursor(&final_cursor)?;
 
@@ -2384,17 +2499,19 @@ async fn flush_batch(
     machine_id: &str,
     installer_version: &str,
     cli_version: Option<&str>,
+    cursor: &mut TelemetryCursor,
+    cycle_started_at_unix_secs: u64,
     batch_events: &mut Vec<Value>,
     batch_sources: &mut Vec<RowSource>,
     newly_committed: &mut HashMap<String, CursorEntry>,
-) -> bool {
+) -> FlushOutcome {
     // Consent is checked at the request boundary, including the first and only
     // batch in a cycle. A withdrawal while files are being scanned must prevent
     // the pending payload from ever leaving the machine.
     if !resolve_telemetry_enabled(vault).await {
         batch_events.clear();
         batch_sources.clear();
-        return false;
+        return FlushOutcome::ConsentRevoked;
     }
     let event_count = batch_events.len();
     let batch = UsageBatch {
@@ -2405,30 +2522,82 @@ async fn flush_batch(
     };
     let sources = std::mem::take(batch_sources);
 
-    let acknowledged = match build_client()
+    let response = match build_client()
         .post(format!("{}/v1/usage", api_url.trim_end_matches('/')))
         .bearer_auth(jwt)
         .json(&batch)
         .send()
         .await
     {
-        Ok(response) if response.status().is_success() => response
-            .json::<UsageAck>()
-            .await
-            .ok()
-            .map(|ack| usage_ack_is_complete(&ack, event_count))
-            .unwrap_or(false),
-        _ => false,
+        Ok(response) => response,
+        Err(_) => {
+            eprintln!("[telemetry] usage flush not accepted: request_failed");
+            record_unaccepted_flush(cursor, unix_now_secs().max(cycle_started_at_unix_secs));
+            return FlushOutcome::Unaccepted {
+                reason: "request_failed",
+            };
+        }
     };
 
-    if acknowledged {
+    let status = response.status();
+    if !status.is_success() {
+        eprintln!(
+            "[telemetry] usage flush not accepted: http_status={}",
+            status.as_u16()
+        );
+        record_unaccepted_flush(cursor, unix_now_secs().max(cycle_started_at_unix_secs));
+        return FlushOutcome::Unaccepted {
+            reason: "http_status",
+        };
+    }
+
+    let ack = match response.json::<UsageAck>().await {
+        Ok(ack) => ack,
+        Err(_) => {
+            eprintln!(
+                "[telemetry] usage flush not accepted: http_status={} unparseable_ack",
+                status.as_u16()
+            );
+            record_unaccepted_flush(cursor, unix_now_secs().max(cycle_started_at_unix_secs));
+            return FlushOutcome::Unaccepted {
+                reason: "unparseable_ack",
+            };
+        }
+    };
+
+    let skipped_count = ack.skipped.len();
+    if usage_ack_is_complete(&ack, event_count) {
         commit_acknowledged_sources(&sources, newly_committed);
-        true
+        reset_unaccepted_flushes(cursor);
+        if skipped_count > 0 {
+            eprintln!(
+                "[telemetry] usage flush settled with skipped rows: http_status={} ok={} written={} deduped={} skipped={skipped_count}",
+                status.as_u16(),
+                ack.ok,
+                ack.written,
+                ack.deduped
+            );
+        }
+        FlushOutcome::Accepted
     } else {
+        let reason = if ack.ok {
+            "ack_count_mismatch"
+        } else {
+            "ack_not_ok"
+        };
+        eprintln!(
+            "[telemetry] usage flush not accepted: http_status={} ok={} written={} deduped={} skipped={} reason={reason}",
+            status.as_u16(),
+            ack.ok,
+            ack.written,
+            ack.deduped,
+            skipped_count
+        );
         // Any partial/malformed acknowledgment retains the whole source range.
         // Continuing could acknowledge a later batch from the same file and
         // advance its cursor across this unacknowledged gap.
-        false
+        record_unaccepted_flush(cursor, unix_now_secs().max(cycle_started_at_unix_secs));
+        FlushOutcome::Unaccepted { reason }
     }
 }
 
@@ -2722,7 +2891,10 @@ mod codex_telemetry_tests {
             "no-consent",
         );
 
-        assert_eq!(event.properties["appVersion"], crate::app_version::current());
+        assert_eq!(
+            event.properties["appVersion"],
+            crate::app_version::current()
+        );
         assert_eq!(event.properties["step"], "connector-import");
 
         let completed = build_desktop_telemetry_event(
@@ -2732,7 +2904,10 @@ mod codex_telemetry_tests {
             None,
             "no-consent",
         );
-        assert_eq!(completed.properties["appVersion"], crate::app_version::current());
+        assert_eq!(
+            completed.properties["appVersion"],
+            crate::app_version::current()
+        );
     }
 
     #[test]
@@ -3313,7 +3488,10 @@ mod codex_telemetry_tests {
         );
         assert_eq!(first.occurred_at, retry.occurred_at);
         assert_eq!(first.idempotency_key, retry.idempotency_key);
-        assert_eq!(first.properties["appVersion"], crate::app_version::current());
+        assert_eq!(
+            first.properties["appVersion"],
+            crate::app_version::current()
+        );
         let platform = first.properties["platform"].as_str().unwrap();
         assert!(
             crate::commands::version_gate::DESKTOP_PLATFORM_VALUES.contains(&platform),
@@ -3329,7 +3507,10 @@ mod codex_telemetry_tests {
             serialized["idempotencyKey"],
             "hq-desktop-app:daily-active:2026-07-15"
         );
-        assert_eq!(serialized["properties"]["appVersion"], crate::app_version::current());
+        assert_eq!(
+            serialized["properties"]["appVersion"],
+            crate::app_version::current()
+        );
         assert_eq!(serialized["properties"]["platform"], platform);
         for unexpected_key in ["machineId", "appVersion", "companyUid", "personUid"] {
             assert!(serialized.get(unexpected_key).is_none());
@@ -5084,7 +5265,19 @@ mod codex_telemetry_tests {
     }
 
     #[test]
-    fn complete_ack_requires_every_submitted_event() {
+    fn old_cursor_without_upload_backoff_fields_uses_zero_defaults() {
+        let cursor: TelemetryCursor = serde_json::from_value(json!({
+            "version": "1",
+            "files": {}
+        }))
+        .unwrap();
+
+        assert_eq!(cursor.consecutive_unaccepted_flushes, 0);
+        assert_eq!(cursor.retry_after_unix_secs, 0);
+    }
+
+    #[test]
+    fn settled_ack_requires_every_submitted_event() {
         let full = UsageAck {
             ok: true,
             written: 2,
@@ -5109,11 +5302,44 @@ mod codex_telemetry_tests {
             deduped: 0,
             skipped: vec![json!({"index": 1, "code": "invalid"})],
         };
+        let duplicate_skips = UsageAck {
+            ok: true,
+            written: 0,
+            deduped: 0,
+            skipped: vec![
+                json!({"index": 0, "code": "invalid"}),
+                json!({"index": 0, "code": "invalid"}),
+            ],
+        };
+        let out_of_range_skip = UsageAck {
+            ok: true,
+            written: 0,
+            deduped: 0,
+            skipped: vec![json!({"index": 2, "code": "invalid"})],
+        };
+        let missing_index = UsageAck {
+            ok: true,
+            written: 1,
+            deduped: 0,
+            skipped: vec![json!({"code": "invalid"})],
+        };
 
         assert!(usage_ack_is_complete(&full, 2));
         assert!(usage_ack_is_complete(&deduped, 2));
+        assert!(usage_ack_is_complete(&skipped, 2));
         assert!(!usage_ack_is_complete(&partial, 2));
-        assert!(!usage_ack_is_complete(&skipped, 2));
+        assert!(!usage_ack_is_complete(&duplicate_skips, 2));
+        assert!(!usage_ack_is_complete(&out_of_range_skip, 2));
+        assert!(!usage_ack_is_complete(&missing_index, 2));
+        assert!(!usage_ack_is_complete(
+            &UsageAck {
+                ok: true,
+                written: 0,
+                deduped: 0,
+                skipped: vec![json!({"index": 1, "code": "invalid"})],
+            },
+            2
+        ));
     }
 
     #[tokio::test]
@@ -5132,7 +5358,7 @@ mod codex_telemetry_tests {
                 "ok": true,
                 "written": 0,
                 "deduped": 0,
-                "skipped": [{"index": 0, "code": "invalid"}]
+                "skipped": []
             })))
             .mount(&partial_server)
             .await;
@@ -5146,20 +5372,26 @@ mod codex_telemetry_tests {
         let mut events = vec![event()];
         let mut sources = vec![source()];
         let mut committed = HashMap::new();
+        let mut cursor = TelemetryCursor::default();
 
-        assert!(
-            !flush_batch(
+        assert_eq!(
+            flush_batch(
                 &partial_vault,
                 &partial_server.uri(),
                 "token",
                 "machine",
                 "version",
                 Some("9.9.9"),
+                &mut cursor,
+                1_000,
                 &mut events,
                 &mut sources,
                 &mut committed,
             )
-            .await
+            .await,
+            FlushOutcome::Unaccepted {
+                reason: "ack_count_mismatch"
+            }
         );
         assert!(committed.is_empty());
 
@@ -5178,25 +5410,311 @@ mod codex_telemetry_tests {
             .await;
         let mut retry_events = vec![event()];
         let mut retry_sources = vec![source()];
-        assert!(
-            flush_batch(
-                &full_vault,
-                &full_server.uri(),
-                "token",
-                "machine",
-                "version",
-                Some("9.9.9"),
-                &mut retry_events,
-                &mut retry_sources,
-                &mut committed,
-            )
-            .await
-        );
+        assert!(flush_batch(
+            &full_vault,
+            &full_server.uri(),
+            "token",
+            "machine",
+            "version",
+            Some("9.9.9"),
+            &mut cursor,
+            1_001,
+            &mut retry_events,
+            &mut retry_sources,
+            &mut committed,
+        )
+        .await
+        .is_accepted());
         assert_eq!(committed["rollout"].offset, 99);
+        assert_eq!(cursor.consecutive_unaccepted_flushes, 0);
         let partial_body = post_bodies(&partial_server).await;
         let retry_body = post_bodies(&full_server).await;
         assert_eq!(partial_body[0]["events"][0]["uuid"], "stable-event");
         assert_eq!(retry_body[0]["events"][0]["uuid"], "stable-event");
+    }
+
+    #[tokio::test]
+    async fn fully_accounted_skipped_ack_commits_cursor_and_prevents_resend() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"enabled": true})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/usage"))
+            .respond_with(|request: &wiremock::Request| {
+                let event_count = serde_json::from_slice::<Value>(&request.body)
+                    .ok()
+                    .and_then(|body| body.get("events").and_then(Value::as_array).map(Vec::len))
+                    .unwrap_or(0);
+                let skipped = (0..event_count)
+                    .map(|index| json!({"index": index, "code": "invalid"}))
+                    .collect::<Vec<_>>();
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "ok": true,
+                    "written": 0,
+                    "deduped": 0,
+                    "skipped": skipped
+                }))
+            })
+            .mount(&server)
+            .await;
+
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
+        let home = setup_home();
+        write_menubar(home.path(), r#"{"machineId":"skip-ack"}"#);
+        let source_path = write_jsonl(
+            home.path(),
+            "project",
+            "session.jsonl",
+            &[USER_ROW, ASST_ROW],
+        );
+        let source_key = normalize_cursor_file_key(&source_path);
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("HQ_TEST_HOME", home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+        let app = make_app_handle();
+
+        send_telemetry_if_opted_in(&app, "/hq", "test-jwt")
+            .await
+            .unwrap();
+        let cursor = read_cursor(home.path());
+        assert_eq!(
+            cursor.files[&source_key].offset,
+            fs::metadata(&source_path).unwrap().len()
+        );
+
+        send_telemetry_if_opted_in(&app, "/hq", "test-jwt")
+            .await
+            .unwrap();
+        std::env::remove_var("HOME");
+        std::env::remove_var("HQ_TEST_HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+
+        assert_eq!(post_bodies(&server).await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn third_unaccepted_flush_suppresses_next_cycle_inside_backoff() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"enabled": true})))
+            .mount(&server)
+            .await;
+        let posts = Arc::new(AtomicUsize::new(0));
+        let post_counter = posts.clone();
+        Mock::given(method("POST"))
+            .and(path("/v1/usage"))
+            .respond_with(move |request: &wiremock::Request| {
+                let attempt = post_counter.fetch_add(1, Ordering::SeqCst);
+                if attempt < 3 {
+                    ResponseTemplate::new(500).set_body_string("retry")
+                } else {
+                    complete_ack(request)
+                }
+            })
+            .mount(&server)
+            .await;
+
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
+        let home = setup_home();
+        write_menubar(home.path(), r#"{"machineId":"backoff"}"#);
+        write_jsonl(home.path(), "project", "session.jsonl", &[USER_ROW]);
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("HQ_TEST_HOME", home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+        let app = make_app_handle();
+
+        for _ in 0..3 {
+            send_telemetry_if_opted_in(&app, "/hq", "test-jwt")
+                .await
+                .unwrap();
+        }
+        let mut cursor = read_cursor(home.path());
+        assert_eq!(cursor.consecutive_unaccepted_flushes, 3);
+        assert!(cursor.retry_after_unix_secs > unix_now_secs());
+
+        send_telemetry_if_opted_in(&app, "/hq", "test-jwt")
+            .await
+            .unwrap();
+        assert_eq!(posts.load(Ordering::SeqCst), 3);
+
+        // Move the persisted deadline to the past so the accepted response can
+        // prove it resets the counter without sleeping through the real delay.
+        cursor.retry_after_unix_secs = 0;
+        save_cursor(&cursor).unwrap();
+        send_telemetry_if_opted_in(&app, "/hq", "test-jwt")
+            .await
+            .unwrap();
+
+        std::env::remove_var("HOME");
+        std::env::remove_var("HQ_TEST_HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+        assert_eq!(posts.load(Ordering::SeqCst), 4);
+        let cursor = read_cursor(home.path());
+        assert_eq!(cursor.consecutive_unaccepted_flushes, 0);
+        assert_eq!(cursor.retry_after_unix_secs, 0);
+    }
+
+    #[tokio::test]
+    async fn overlapping_cycles_serialize_backoff_cursor_updates() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"enabled": true})))
+            .mount(&server)
+            .await;
+        let posts = Arc::new(AtomicUsize::new(0));
+        let post_counter = posts.clone();
+        Mock::given(method("POST"))
+            .and(path("/v1/usage"))
+            .respond_with(move |_request: &wiremock::Request| {
+                post_counter.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(500)
+                    .set_delay(Duration::from_millis(100))
+                    .set_body_string("retry")
+            })
+            .mount(&server)
+            .await;
+
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
+        let home = setup_home();
+        write_menubar(home.path(), r#"{"machineId":"overlapping"}"#);
+        write_jsonl(home.path(), "project", "session.jsonl", &[USER_ROW]);
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("HQ_TEST_HOME", home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+        let app = make_app_handle();
+
+        let first = send_telemetry_if_opted_in(&app, "/hq", "test-jwt");
+        let second = send_telemetry_if_opted_in(&app, "/hq", "test-jwt");
+        let (first, second) = tokio::join!(first, second);
+        first.unwrap();
+        second.unwrap();
+
+        std::env::remove_var("HOME");
+        std::env::remove_var("HQ_TEST_HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+        assert_eq!(posts.load(Ordering::SeqCst), 2);
+        assert_eq!(read_cursor(home.path()).consecutive_unaccepted_flushes, 2);
+    }
+
+    #[tokio::test]
+    async fn retry_delay_starts_at_flush_failure_time() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"enabled": true})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/usage"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("retry"))
+            .mount(&server)
+            .await;
+
+        let vault = VaultClient::new(server.uri(), "token");
+        let mut events = vec![json!({"uuid": "event", "inputTokens": 1})];
+        let mut sources = vec![RowSource {
+            file_path: "rollout".to_string(),
+            end_offset: 99,
+            mtime: 1,
+            context: Some(CodexUsageContext::default()),
+        }];
+        let mut cursor = TelemetryCursor {
+            consecutive_unaccepted_flushes: 2,
+            ..TelemetryCursor::default()
+        };
+        let mut committed = HashMap::new();
+
+        assert!(matches!(
+            flush_batch(
+                &vault,
+                &server.uri(),
+                "token",
+                "machine",
+                "version",
+                None,
+                &mut cursor,
+                1,
+                &mut events,
+                &mut sources,
+                &mut committed,
+            )
+            .await,
+            FlushOutcome::Unaccepted {
+                reason: "http_status"
+            }
+        ));
+        assert!(cursor.retry_after_unix_secs > unix_now_secs() + 298);
+    }
+
+    #[test]
+    fn unaccepted_flush_backoff_grows_exponentially_and_caps_at_one_hour() {
+        assert_eq!(usage_retry_delay_secs(0), 0);
+        assert_eq!(usage_retry_delay_secs(2), 0);
+        assert_eq!(usage_retry_delay_secs(3), 5 * 60);
+        assert_eq!(usage_retry_delay_secs(4), 10 * 60);
+        assert_eq!(usage_retry_delay_secs(5), 20 * 60);
+        assert_eq!(usage_retry_delay_secs(6), 40 * 60);
+        assert_eq!(usage_retry_delay_secs(7), 60 * 60);
+        assert_eq!(usage_retry_delay_secs(u8::MAX), 60 * 60);
+    }
+
+    #[tokio::test]
+    async fn unparseable_success_ack_keeps_sources_uncommitted() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"enabled": true})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/usage"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not-json"))
+            .mount(&server)
+            .await;
+
+        let vault = VaultClient::new(server.uri(), "token");
+        let mut events = vec![json!({"uuid": "event", "inputTokens": 1})];
+        let mut sources = vec![RowSource {
+            file_path: "rollout".to_string(),
+            end_offset: 99,
+            mtime: 1,
+            context: Some(CodexUsageContext::default()),
+        }];
+        let mut cursor = TelemetryCursor::default();
+        let mut committed = HashMap::new();
+
+        assert_eq!(
+            flush_batch(
+                &vault,
+                &server.uri(),
+                "token",
+                "machine",
+                "version",
+                None,
+                &mut cursor,
+                1_000,
+                &mut events,
+                &mut sources,
+                &mut committed,
+            )
+            .await,
+            FlushOutcome::Unaccepted {
+                reason: "unparseable_ack"
+            }
+        );
+        assert!(committed.is_empty());
+        assert_eq!(cursor.consecutive_unaccepted_flushes, 1);
     }
 
     #[test]

@@ -939,6 +939,7 @@ dependencies = [
  "serde_yaml",
  "sha1",
  "sha2 0.10.9",
+ "shlex",
  "tar",
  "tempfile",
  "thiserror 1.0.69",

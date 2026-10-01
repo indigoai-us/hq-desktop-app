@@ -47,55 +47,23 @@ use hq_desktop_core::runner_error_shape::{
 };
 use hq_desktop_core::runner_target::RunnerTargetState;
 use hq_desktop_core::sync_outcome::{
-    DeferredSessionEndOutcome,
-    MemoryExhaustionEvidence,
-    RUNNER_PHASE_PRE_PROTOCOL,
-    RunnerErrorClass,
-    RunnerFatalClass,
-    SESSION_END_GRACE_MS,
-    SessionEndLatchReading,
-    SpawnFailureCapturePolicy,
-    SyncCancelCause,
-    TeardownLogReading,
-    TeardownShuttingDown,
-    TerminationHost,
-    WINDOWS_SESSION_TERMINATE_EXIT,
-    WatcherExitCapturePolicy,
-    WindowsTeardownProbeReading,
-    WindowsTeardownVerdict,
-    WindowsTermination,
-    WindowsTerminatorAttribution,
-    classify_runner_fatal_signature,
-    classify_windows_exit_status,
-    current_termination_host,
-    deferred_session_end_confirmed,
-    deferred_session_end_outcome,
-    describe_exit,
-    is_crash_signal,
-    is_windows_console_control_exit,
-    is_windows_fault_exit,
-    normalized_abort_description,
-    resolved_session_end_attribution,
-    runner_assertion_for_class,
-    runner_fault_is_disk_exhaustion_content,
-    runner_fault_is_file_lock_content,
-    runner_phase_elapsed_bucket,
-    runner_phase_from_event,
-    runner_stack_shape,
-    runner_stack_shape_for_exit,
-    session_end_grace_waited_bucket,
-    should_capture_watcher_exit,
-    spawn_failure_capture_policy,
-    spawn_failure_fingerprint_token,
-    termination_fingerprint_token,
-    termination_fingerprint_token_for_host,
-    watcher_exit_attributed_to_app_teardown,
-    watcher_exit_capture_policy,
-    watcher_exit_capture_policy_with_attribution,
-    watcher_exit_signal_class,
-    windows_exit_status_hex,
-    windows_fault_symbol,
-    windows_teardown_verdict,
+    classify_runner_fatal_signature, classify_windows_exit_status, current_termination_host,
+    deferred_session_end_confirmed, deferred_session_end_outcome, describe_exit, is_crash_signal,
+    is_windows_console_control_exit, is_windows_fault_exit, normalized_abort_description,
+    resolved_session_end_attribution, runner_assertion_for_class,
+    runner_fault_is_disk_exhaustion_content, runner_fault_is_file_lock_content,
+    runner_phase_elapsed_bucket, runner_phase_from_event, runner_stack_shape,
+    runner_stack_shape_for_exit, session_end_grace_waited_bucket, should_capture_watcher_exit,
+    spawn_failure_capture_policy, spawn_failure_fingerprint_token, termination_fingerprint_token,
+    termination_fingerprint_token_for_host, watcher_exit_attributed_to_app_teardown,
+    watcher_exit_capture_policy, watcher_exit_capture_policy_with_attribution,
+    watcher_exit_signal_class, windows_exit_status_hex, windows_fault_symbol,
+    windows_teardown_verdict, DeferredSessionEndOutcome, MemoryExhaustionEvidence,
+    RunnerErrorClass, RunnerFatalClass, SessionEndLatchReading, SpawnFailureCapturePolicy,
+    SyncCancelCause, TeardownLogReading, TeardownShuttingDown, TerminationHost,
+    WatcherExitCapturePolicy, WindowsTeardownProbeReading, WindowsTeardownVerdict,
+    WindowsTermination, WindowsTerminatorAttribution, RUNNER_PHASE_PRE_PROTOCOL,
+    SESSION_END_GRACE_MS, WINDOWS_SESSION_TERMINATE_EXIT,
 };
 use hq_desktop_core::watcher_fault::{
     UnmatchedStderrShapeRollup, WatcherFaultProvenance, WatcherFaultReadCounters,
@@ -112,8 +80,8 @@ use windows::Win32::System::Threading::{
 
 #[allow(unused_imports)]
 pub use hq_desktop_core::daemon::{
-    build_watch_runner_args, is_autostart_enabled, is_instant_sync_enabled,
-    is_pid_alive, is_realtime_sync_enabled, read_daemon_json, read_menubar_bool, read_pid_file,
+    build_watch_runner_args, is_autostart_enabled, is_instant_sync_enabled, is_pid_alive,
+    is_realtime_sync_enabled, read_daemon_json, read_menubar_bool, read_pid_file,
     resolve_hq_folder_path, should_cancel_stalled_daemon, should_event_push,
     should_force_clear_stalled_start, should_respawn_daemon, should_respawn_daemon_gated,
     DaemonFailureCategory, DaemonJson, DaemonStatus, WatchDaemonState,
@@ -361,7 +329,10 @@ pub(crate) fn handle_watch_stdout_line<R: tauri::Runtime>(
             EVENT_SYNC_PLAN_LIMIT,
             payload.clone(),
         ) {
-            log("daemon", &format!("failed to emit plan-limit notice: {error}"));
+            log(
+                "daemon",
+                &format!("failed to emit plan-limit notice: {error}"),
+            );
         }
     }
     if let SyncEvent::AllComplete(payload) = &event {
@@ -773,7 +744,10 @@ mod watcher_stop_attribution_tests {
         );
         let supervisor = exit_stop_attribution(generation, None, false, false, "unavailable");
         assert_eq!(supervisor.reason, "heartbeat_stall");
-        assert_eq!(supervisor.initiator, WatcherStopInitiator::WatcherSupervisor);
+        assert_eq!(
+            supervisor.initiator,
+            WatcherStopInitiator::WatcherSupervisor
+        );
 
         let app = exit_stop_attribution(0, None, true, false, "none");
         assert_eq!(app.reason, "app_quit");
@@ -1084,7 +1058,10 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
     if let Ok(hq_root) = resolve_hq_folder_path() {
         if hq_daemon_owns_live_watch(&hq_root) {
             set_lifecycle_state(WatchDaemonState::Running, DaemonFailureCategory::None);
-            log("daemon", "hq-daemon owns the live watch lease; desktop sync remains read-only");
+            log(
+                "daemon",
+                "hq-daemon owns the live watch lease; desktop sync remains read-only",
+            );
             return Ok("hq-daemon owns sync; desktop is read-only".to_string());
         }
     }
@@ -1259,6 +1236,14 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
         &mut spawn_args.args,
         &runner_hq_cloud_version,
     );
+    hq_desktop_core::watch_owner::append_desktop_exit_with_parent_argument(
+        &mut spawn_args.args,
+        &runner_hq_cloud_version,
+    );
+    hq_desktop_core::watch_owner::append_desktop_watch_parent_pid_argument(
+        &mut spawn_args.args,
+        &runner_hq_cloud_version,
+    );
     // Whether this spawn ALSO mirrors the report flags into argv — true only on the
     // bare-`node` local-runner path. Both production routes (npx/cmd_shim) deliver
     // through NODE_OPTIONS only, so this is the one bit distinguishing `env_escaped`
@@ -1430,9 +1415,10 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                             } else {
                                 None
                             };
-                        let mut watch_owner_exit =
-                            if signal.is_none() && matches!(code, Some(20 | 21)) {
-                                Some(hq_desktop_core::watch_owner::plan_busy_watch_exit(
+                        let mut watch_owner_exit = if signal.is_none()
+                            && matches!(code, Some(20 | 21))
+                        {
+                            Some(hq_desktop_core::watch_owner::plan_busy_watch_exit_with_unknown_orphan(
                                     code,
                                     watch_owner_inspection
                                         .as_ref()
@@ -1443,10 +1429,13 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                                     watch_owner_inspection
                                         .as_ref()
                                         .is_some_and(|inspection| inspection.is_child_of_app),
+                                    watch_owner_inspection
+                                        .as_ref()
+                                        .is_some_and(|inspection| inspection.is_unknown_desktop_orphan),
                                 ))
-                            } else {
-                                None
-                            };
+                        } else {
+                            None
+                        };
                         if let (Some(plan), Some(inspection)) =
                             (watch_owner_exit.as_mut(), watch_owner_inspection.as_ref())
                         {
@@ -1465,7 +1454,12 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                                         plan.respawn_once = false;
                                     }
                                     Err(error) => {
-                                        log("daemon", &format!("watch-owner orphan termination failed: {error}"));
+                                        log(
+                                            "daemon",
+                                            &format!(
+                                                "watch-owner orphan termination failed: {error}"
+                                            ),
+                                        );
                                         plan.classification = "orphan_termination_failed";
                                         plan.record_failure = true;
                                         plan.respawn_once = false;
@@ -1579,17 +1573,15 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                         // exists AND the user set no `--report-*` of their own), and it
                         // is handed to the deferred fault worker below to read OFF the
                         // exit path. Otherwise the seed records why none will be read.
-                        let generation_report_dir =
-                            hq_desktop_core::daemon::runner_report_dir(
-                                "watcher",
-                                daemon_generation,
-                            )
-                            .filter(|dir| dir.exists());
-                        let report_request =
-                            hq_desktop_core::daemon::resolve_runner_report_request(
-                                std::env::var("NODE_OPTIONS").ok().as_deref(),
-                                generation_report_dir.as_deref(),
-                            );
+                        let generation_report_dir = hq_desktop_core::daemon::runner_report_dir(
+                            "watcher",
+                            daemon_generation,
+                        )
+                        .filter(|dir| dir.exists());
+                        let report_request = hq_desktop_core::daemon::resolve_runner_report_request(
+                            std::env::var("NODE_OPTIONS").ok().as_deref(),
+                            generation_report_dir.as_deref(),
+                        );
                         exit_context.runner_report_read =
                             report_request.seed_read_token().to_string();
                         // Delivery provenance (HQ-DESKTOP-5W): the SAME request, crossed
@@ -2194,9 +2186,10 @@ impl Default for WatcherExitCaptureContext {
             // No live-PID query has run by default (non-Windows, or a clean exit):
             // survivors are unknown, so the honest token is `unavailable` and the
             // count is withheld — never `none`, which would assert an empty tree.
-            watcher_job_survivors: hq_desktop_core::watcher_fault::WatcherJobSurvivors::unavailable()
-                .token()
-                .to_string(),
+            watcher_job_survivors:
+                hq_desktop_core::watcher_fault::WatcherJobSurvivors::unavailable()
+                    .token()
+                    .to_string(),
             watcher_job_survivor_count: None,
             runner_report_deferred_dir: None,
         }
@@ -2309,7 +2302,8 @@ fn watcher_exit_capture_context(
     );
     let app_quitting = crate::commands::process::app_initiated_exit();
     let updater_installing = crate::updater::update_install_in_progress();
-    let lifecycle = crate::commands::watcher_exit_lifecycle::current_watcher_exit_lifecycle_evidence();
+    let lifecycle =
+        crate::commands::watcher_exit_lifecycle::current_watcher_exit_lifecycle_evidence();
     let stop = exit_stop_attribution(
         process_generation,
         cancellation_record,
@@ -2462,9 +2456,7 @@ fn node_fatal_stderr_lines(stderr_tail: &[String]) -> Vec<String> {
     const MAX_INPUT_BYTES: usize = 1_024;
     stderr_tail
         .iter()
-        .filter(|line| {
-            classify_runner_fatal_signature(line).class == RunnerFatalClass::NodeFatal
-        })
+        .filter(|line| classify_runner_fatal_signature(line).class == RunnerFatalClass::NodeFatal)
         .take(MAX_LINES)
         .map(|line| {
             let line = line.split(['\r', '\n']).next().unwrap_or_default();
@@ -2708,12 +2700,7 @@ fn resolve_deferred_decision(
     let verdict = windows_teardown_verdict(teardown);
     let outcome = reading
         .map(|reading| {
-            deferred_session_end_outcome(
-                reading.attribution,
-                verdict,
-                latch,
-                unconfirmed_run_count,
-            )
+            deferred_session_end_outcome(reading.attribution, verdict, latch, unconfirmed_run_count)
         })
         // Fail closed: an observer that cannot be consulted never suppresses on
         // its own. A contemporaneous latch is still positive evidence even when
@@ -4514,7 +4501,12 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     // seeded from the request and upgraded by the deferred worker. Both diagnostic-only.
     tags.push((
         "runner_fatal_source",
-        if runner_fatal_class_seen { "stderr" } else { "none" }.to_string(),
+        if runner_fatal_class_seen {
+            "stderr"
+        } else {
+            "none"
+        }
+        .to_string(),
     ));
     tags.push(("runner_report_read", context.runner_report_read.clone()));
     // Report-directory delivery provenance (HQ-DESKTOP-5W): how the per-generation
@@ -4714,10 +4706,7 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
                 "runner_fatal_line_count",
                 sentry::protocol::Value::Number(lines.lines().count().into()),
             ));
-            extras.push((
-                "runner_fatal_lines",
-                sentry::protocol::Value::String(lines),
-            ));
+            extras.push(("runner_fatal_lines", sentry::protocol::Value::String(lines)));
         }
     }
     // Carry the bare terminating signal integer alongside its content-safe class
@@ -5742,9 +5731,9 @@ fn note_watcher_footprint_and_decide(sample: ScopedRssSample) -> FootprintDecisi
     // --max-old-space-size above the default) is never throttled below the heap it
     // was granted.
     let heap_ceiling_mb = hq_desktop_core::daemon::effective_runner_heap_ceiling().mb;
-    let ceiling_kb = u64::from(
-        hq_desktop_core::daemon::effective_watcher_footprint_ceiling_mb(heap_ceiling_mb),
-    ) * 1024;
+    let ceiling_kb =
+        u64::from(hq_desktop_core::daemon::effective_watcher_footprint_ceiling_mb(heap_ceiling_mb))
+            * 1024;
     // The declared V8 old-space ceiling gates the rate-aware projection: it may only
     // fire once the footprint exceeds this, so a cold heap-bounded ramp is never
     // projected away (the 2,776 MB-against-3,584 MB false kill, HQ-DESKTOP-60).
@@ -5889,9 +5878,9 @@ fn read_fresh_memory_class_within(
         }
 
         if !array_buffers_done {
-            if let Some(path) = array_buffers_path.filter(|p| {
-                file_is_fresh(p, array_buffers_before)
-            }) {
+            if let Some(path) =
+                array_buffers_path.filter(|p| file_is_fresh(p, array_buffers_before))
+            {
                 if let Ok(bytes) = std::fs::read(path) {
                     let parsed = parse_runner_report_memory_class(&bytes);
                     if let Some(value) = parsed.array_buffers_mb {
@@ -5997,12 +5986,11 @@ fn resolve_memory_class_from_report(
         sample.tree_largest_child_member_kb,
         sample.tree_largest_child_kind,
     ) {
-        (
-            RssSampleKind::Tree,
-            Some(root_kb),
-            Some(child_kb),
-            Some(kind),
-        ) if child_kb > root_kb && kind != WatcherProcessKind::Node => Some(child_kb / 1024),
+        (RssSampleKind::Tree, Some(root_kb), Some(child_kb), Some(kind))
+            if child_kb > root_kb && kind != WatcherProcessKind::Node =>
+        {
+            Some(child_kb / 1024)
+        }
         _ => None,
     };
     if largest_child_mb.is_some_and(|child| child > largest_report_component) {
@@ -6887,6 +6875,7 @@ struct InspectedWatchOwner {
     status: hq_desktop_core::watch_owner::WatchOwnerStatus,
     is_live_runner: bool,
     is_child_of_app: bool,
+    is_unknown_desktop_orphan: bool,
 }
 
 fn watch_owner_status_path(hq_root: &str) -> PathBuf {
@@ -6918,6 +6907,7 @@ fn inspect_watch_owner(hq_root: &str) -> Result<Option<InspectedWatchOwner>, Str
             status,
             is_live_runner: false,
             is_child_of_app: false,
+            is_unknown_desktop_orphan: false,
         }));
     };
     let is_live_runner = is_sync_runner_command(&command, hq_root);
@@ -6939,10 +6929,23 @@ fn inspect_watch_owner(hq_root: &str) -> Result<Option<InspectedWatchOwner>, Str
         }
         parent = next_parent;
     }
+    let is_unknown_desktop_orphan = hq_desktop_core::runner_target::runner_spawn_target()
+        .attribution_npx_cache_dir()
+        .is_some_and(|npx_cache_dir| {
+            hq_desktop_core::watch_owner::unknown_owner_is_desktop_orphan(
+                &status.owner,
+                status.pid,
+                std::process::id(),
+                Path::new(hq_root),
+                &npx_cache_dir,
+                |pid| process_info(pid).ok().flatten(),
+            )
+        });
     Ok(Some(InspectedWatchOwner {
         status,
         is_live_runner,
         is_child_of_app,
+        is_unknown_desktop_orphan,
     }))
 }
 
@@ -6966,11 +6969,12 @@ fn live_watch_owner_defers_supervisor(hq_root: &str) -> Result<Option<String>, S
     let Some(owner) = inspect_watch_owner(hq_root)? else {
         return Ok(None);
     };
-    let plan = hq_desktop_core::watch_owner::plan_busy_watch_exit(
+    let plan = hq_desktop_core::watch_owner::plan_busy_watch_exit_with_unknown_orphan(
         Some(20),
         Some(&owner.status),
         owner.is_live_runner,
         owner.is_child_of_app,
+        owner.is_unknown_desktop_orphan,
     );
     if hq_desktop_core::watch_owner::supervisor_should_defer_for_live_owner(
         &plan,
@@ -7027,8 +7031,11 @@ fn terminate_external_watch_runner(
     }
 
     #[cfg(unix)]
-    let forced = nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), nix::sys::signal::Signal::SIGKILL)
-        .map_err(|error| format!("force stop orphan watch runner {pid}: {error}"));
+    let forced = nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(pid as i32),
+        nix::sys::signal::Signal::SIGKILL,
+    )
+    .map_err(|error| format!("force stop orphan watch runner {pid}: {error}"));
     #[cfg(target_os = "windows")]
     let forced = Command::new("taskkill")
         .args(["/PID", &pid.to_string(), "/T", "/F"])
@@ -7041,11 +7048,9 @@ fn terminate_external_watch_runner(
     if let Err(error) = forced {
         return Err(error);
     }
-    hq_desktop_core::watch_owner::wait_for_process_to_exit(
-        pid,
-        Duration::from_secs(1),
-        |command| is_sync_runner_command(command, hq_root),
-    )
+    hq_desktop_core::watch_owner::wait_for_process_to_exit(pid, Duration::from_secs(1), |command| {
+        is_sync_runner_command(command, hq_root)
+    })
 }
 
 /// Background supervisor: every `SUPERVISOR_INTERVAL`, ensure the watch daemon
@@ -7390,7 +7395,8 @@ mod tests {
             RUNNER_HEAP_CEILING_DEFAULT_MB, WATCHER_FOOTPRINT_CEILING_CONSECUTIVE,
             WATCHER_FOOTPRINT_CEILING_MB, WATCHER_FOOTPRINT_HARD_CEILING_GROWTH_MB_PER_SEC,
             WATCHER_FOOTPRINT_HARD_CEILING_MB, WATCHER_FOOTPRINT_MIN_WATCH_SECS,
-            WATCHER_FOOTPRINT_OVERSHOOT_BUDGET_MB, WATCHER_FOOTPRINT_WORST_OBSERVED_GROWTH_MB_PER_SEC,
+            WATCHER_FOOTPRINT_OVERSHOOT_BUDGET_MB,
+            WATCHER_FOOTPRINT_WORST_OBSERVED_GROWTH_MB_PER_SEC,
         };
 
         // Pin the deliberate split: the ordinary backstop remains anti-spike,
@@ -8382,8 +8388,12 @@ mod tests {
                 .iter()
                 .map(|(key, value)| (key.as_str(), value.clone()))
                 .collect();
-            self.deferred_runner_report
-                .push(recorded_capture(message, fingerprint, &applied_refs, extras));
+            self.deferred_runner_report.push(recorded_capture(
+                message,
+                fingerprint,
+                &applied_refs,
+                extras,
+            ));
         }
     }
 
@@ -8613,7 +8623,8 @@ mod tests {
         // SIGKILL is `fault`, a plain exit 221 is `none` — so it can never be absent
         // or wrong on a captured termination.
         let host = current_termination_host();
-        for (code, signal, expected_class) in [(None, Some(9), "fault"), (Some(221), None, "none")] {
+        for (code, signal, expected_class) in [(None, Some(9), "fault"), (Some(221), None, "none")]
+        {
             let mut effects = RecordingWatcherEffects::default();
             handle_watcher_exit_with_effects(
                 &mut effects,
@@ -9459,7 +9470,10 @@ mod tests {
             ("runner_stack_shape".to_string(), "all_redacted".to_string()),
             ("runner_stack_signature".to_string(), "unknown".to_string()),
             ("runner_fatal_source".to_string(), "none".to_string()),
-            ("runner_report_read".to_string(), "report_absent".to_string()),
+            (
+                "runner_report_read".to_string(),
+                "report_absent".to_string(),
+            ),
         ]
     }
 
@@ -9513,7 +9527,10 @@ mod tests {
         apply_report_to_fault_tags(&mut tags, &report);
         assert_eq!(report_tag_of(&tags, "runner_fatal_class"), "libuv_assert");
         assert_eq!(report_tag_of(&tags, "runner_fatal_source"), "stderr");
-        assert_eq!(report_tag_of(&tags, "runner_stack_shape"), "node_check_abort>v8_abort");
+        assert_eq!(
+            report_tag_of(&tags, "runner_stack_shape"),
+            "node_check_abort>v8_abort"
+        );
         // Only the read provenance is recorded.
         assert_eq!(report_tag_of(&tags, "runner_report_read"), "report_read");
     }
@@ -9546,7 +9563,10 @@ mod tests {
         );
         assert_eq!(report.fatal_class.as_str(), "heap_oom");
         // The reader removed the directory after reading, bounding disk.
-        assert!(!dir.exists(), "report directory must be removed after the read");
+        assert!(
+            !dir.exists(),
+            "report directory must be removed after the read"
+        );
     }
 
     #[test]
@@ -9641,7 +9661,10 @@ mod tests {
             disposition,
             RunnerReportDirDisposition::OwnedByDeferredReader
         );
-        assert!(!dir.exists(), "the report directory is removed after the read");
+        assert!(
+            !dir.exists(),
+            "the report directory is removed after the read"
+        );
     }
 
     #[test]
@@ -9794,7 +9817,10 @@ mod tests {
         );
         let event = effects.captures.first().expect("immediate capture");
         assert_eq!(recorded_tag(event, "watcher_job_survivors"), "node_exe");
-        assert_eq!(recorded_number_extra(event, "watcher_job_survivor_count"), 2);
+        assert_eq!(
+            recorded_number_extra(event, "watcher_job_survivor_count"),
+            2
+        );
     }
 
     #[test]
@@ -9923,10 +9949,7 @@ mod tests {
         let make = || {
             DeferredWatcherFaultCapture::new(
                 "auto-sync watcher exited unexpectedly",
-                &[
-                    "sync-watcher-exit",
-                    "stack_buffer_overrun",
-                ],
+                &["sync-watcher-exit", "stack_buffer_overrun"],
                 &[("watcher_fault_provenance", "deferred".to_string())],
                 &[],
                 WatcherFaultDeferredRead {
@@ -9970,10 +9993,7 @@ mod tests {
         let make = || {
             DeferredWatcherFaultCapture::new(
                 "auto-sync watcher exited unexpectedly",
-                &[
-                    "sync-watcher-exit",
-                    "stack_buffer_overrun",
-                ],
+                &["sync-watcher-exit", "stack_buffer_overrun"],
                 &[("watcher_fault_provenance", "deferred".to_string())],
                 &[],
                 WatcherFaultDeferredRead {
@@ -10014,14 +10034,14 @@ mod tests {
         };
         let base = DeferredWatcherFaultCapture::new(
             "auto-sync watcher exited unexpectedly",
-            &[
-                "sync-watcher-exit",
-                "stack_buffer_overrun",
-            ],
+            &["sync-watcher-exit", "stack_buffer_overrun"],
             &[
                 ("watcher_fault_provenance", "deferred".to_string()),
                 ("watcher_fault_faulting_image", "unavailable".to_string()),
-                ("watcher_fault_read", "seen:0,parsed:0,stale:0,rej_win:0,rej_code:0,sweeps:0,ms:0".to_string()),
+                (
+                    "watcher_fault_read",
+                    "seen:0,parsed:0,stale:0,rej_win:0,rej_code:0,sweeps:0,ms:0".to_string(),
+                ),
             ],
             &[],
             WatcherFaultDeferredRead {
@@ -10676,10 +10696,7 @@ mod tests {
         );
         let event = hq_telemetry::before_send(captures.into_iter().next().expect("capture"))
             .expect("external SIGKILL event remains sendable");
-        assert_eq!(
-            event.fingerprint,
-            vec!["sync-watcher-exit", "sigkill"]
-        );
+        assert_eq!(event.fingerprint, vec!["sync-watcher-exit", "sigkill"]);
         assert_eq!(event.tags["runner_fatal_class"], "none");
         assert_eq!(
             event.extra["watcher_cancelled"],
@@ -10926,10 +10943,7 @@ mod tests {
         );
         let event = hq_telemetry::before_send(captures.into_iter().next().expect("capture"))
             .expect("external SIGKILL event remains sendable");
-        assert_eq!(
-            event.fingerprint,
-            vec!["sync-watcher-exit", "sigkill"]
-        );
+        assert_eq!(event.fingerprint, vec!["sync-watcher-exit", "sigkill"]);
         assert_eq!(
             event.extra["cancellation_record_present"],
             sentry::protocol::Value::String("true".to_string())
@@ -11369,10 +11383,7 @@ mod tests {
             recorded_string_extra(event, "runner_error_scope"),
             "company:0,file:0,local_state:1"
         );
-        assert_eq!(
-            event.fingerprint,
-            vec!["sync-watcher-exit", "minus_one"]
-        );
+        assert_eq!(event.fingerprint, vec!["sync-watcher-exit", "minus_one"]);
     }
 
     #[test]
@@ -12194,7 +12205,11 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert_eq!(deferred.deferred.len(), 1, "the session-terminate still defers");
+        assert_eq!(
+            deferred.deferred.len(),
+            1,
+            "the session-terminate still defers"
+        );
         assert_eq!(
             deferred.consecutive, 0,
             "an OS-supplied termination must not advance the consecutive-failure streak"
@@ -12800,10 +12815,7 @@ mod tests {
         );
         let serialized = serde_json::to_string(&event.extras).expect("serialize extras");
         assert!(!serialized.contains(private_path));
-        assert_eq!(
-            event.fingerprint,
-            vec!["sync-watcher-exit", "other"]
-        );
+        assert_eq!(event.fingerprint, vec!["sync-watcher-exit", "other"]);
     }
 
     #[test]
@@ -12967,10 +12979,7 @@ mod tests {
             "{}",
             first.message
         );
-        assert_eq!(
-            first.fingerprint,
-            vec!["sync-watcher-exit", "other"]
-        );
+        assert_eq!(first.fingerprint, vec!["sync-watcher-exit", "other"]);
         assert_eq!(
             recorded_string_extra(first, "runner_exec_resolution"),
             "npx_cache"
@@ -12993,10 +13002,7 @@ mod tests {
             "{}",
             fifth.message
         );
-        assert_eq!(
-            fifth.fingerprint,
-            vec!["sync-watcher-exit", "other"]
-        );
+        assert_eq!(fifth.fingerprint, vec!["sync-watcher-exit", "other"]);
         assert_eq!(recorded_number_extra(fifth, "exec_not_runnable_streak"), 4);
         assert_eq!(
             recorded_string_extra(fifth, "runner_exec_target_exists"),
@@ -13009,10 +13015,7 @@ mod tests {
             "{}",
             ninth.message
         );
-        assert_eq!(
-            ninth.fingerprint,
-            vec!["sync-watcher-exit", "other"]
-        );
+        assert_eq!(ninth.fingerprint, vec!["sync-watcher-exit", "other"]);
         assert_eq!(recorded_number_extra(ninth, "exec_not_runnable_streak"), 8);
     }
 
@@ -13079,10 +13082,7 @@ mod tests {
         // Grouping is stable: every captured SIGKILL keeps the signal:9 Capture
         // fingerprint, byte-identical across the episode.
         for capture in &effects.captures {
-            assert_eq!(
-                capture.fingerprint,
-                vec!["sync-watcher-exit", "sigkill"]
-            );
+            assert_eq!(capture.fingerprint, vec!["sync-watcher-exit", "sigkill"]);
         }
     }
 
@@ -13326,10 +13326,7 @@ mod tests {
             .captures
             .first()
             .expect("a 190 launcher fast-fail captures at #1");
-        assert_eq!(
-            event.fingerprint,
-            vec!["sync-watcher-exit", "other"]
-        );
+        assert_eq!(event.fingerprint, vec!["sync-watcher-exit", "other"]);
         assert_eq!(
             recorded_string_extra(event, "runner_exec_resolution"),
             "npx_cache"
@@ -13367,10 +13364,7 @@ mod tests {
             &probed,
         );
         let direct_event = direct.captures.first().expect("still captured at #1");
-        assert_eq!(
-            direct_event.fingerprint,
-            vec!["sync-watcher-exit", "other"]
-        );
+        assert_eq!(direct_event.fingerprint, vec!["sync-watcher-exit", "other"]);
         assert!(
             !direct_event
                 .extras
@@ -13424,10 +13418,7 @@ mod tests {
             &post_protocol,
         );
         let exec_event = exec.captures.first().expect("127 captures at streak 4");
-        assert_eq!(
-            exec_event.fingerprint,
-            vec!["sync-watcher-exit", "other"]
-        );
+        assert_eq!(exec_event.fingerprint, vec!["sync-watcher-exit", "other"]);
         assert_eq!(
             recorded_string_extra(exec_event, "runner_exec_target_exists"),
             "false"
@@ -14261,7 +14252,10 @@ mod tests {
         );
         assert_eq!(data_source, Src::ReportNeverCompleted);
         assert_eq!(report_source, Src::ReportNeverCompleted);
-        assert!(start.elapsed() < Duration::from_secs(2), "must not block past the deadline");
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "must not block past the deadline"
+        );
 
         // 4) Mid-write on first observation, complete before the deadline -> report_read.
         std::fs::write(&path, &complete.as_bytes()[..complete.len() / 2]).unwrap();
@@ -14281,7 +14275,11 @@ mod tests {
             Instant::now() + Duration::from_secs(2),
         );
         writer.join().unwrap();
-        assert_eq!(data_source, Src::ReportRead, "a mid-write report that completes must resolve to report_read");
+        assert_eq!(
+            data_source,
+            Src::ReportRead,
+            "a mid-write report that completes must resolve to report_read"
+        );
         assert_eq!(report_source, Src::ReportRead);
         assert_eq!(mc.js_heap_total_mb, Some(3584));
 
@@ -14365,7 +14363,10 @@ mod tests {
             report.array_buffers_mb.unwrap_or(0) >= 16,
             "process.memoryUsage().arrayBuffers should include the retained Buffer"
         );
-        assert!(report_path.is_file(), "Node's signal report still gets written");
+        assert!(
+            report_path.is_file(),
+            "Node's signal report still gets written"
+        );
     }
 
     #[cfg(unix)]
@@ -14540,10 +14541,7 @@ mod tests {
         // Grouping is message-independent: the fingerprint is byte-identical with
         // and without heap evidence (the retitled RSS/heap lines cannot regroup).
         assert_eq!(heap_capture.fingerprint, base_capture.fingerprint);
-        assert_eq!(
-            heap_capture.fingerprint,
-            vec!["sync-watcher-exit", "other"]
-        );
+        assert_eq!(heap_capture.fingerprint, vec!["sync-watcher-exit", "other"]);
     }
 
     fn assert_signed_out_entry_point_records_origin(
@@ -14967,9 +14965,7 @@ mod tests {
         let private_path = "/Users/ada/private/workspace/cache";
         let context = WatcherExitCaptureContext {
             runner_fatal_class: "node_fatal".to_string(),
-            runner_fatal_lines: vec![format!(
-                "FATAL ERROR: Reached heap limit at {private_path}"
-            )],
+            runner_fatal_lines: vec![format!("FATAL ERROR: Reached heap limit at {private_path}")],
             ..WatcherExitCaptureContext::default()
         };
         let mut effects = RecordingWatcherEffects::default();
@@ -14986,11 +14982,11 @@ mod tests {
             &context,
         );
 
-        let event = effects.captures.first().expect("Node fatal remains visible");
-        assert_eq!(
-            event.fingerprint,
-            vec!["sync-watcher-exit", "node_fatal"]
-        );
+        let event = effects
+            .captures
+            .first()
+            .expect("Node fatal remains visible");
+        assert_eq!(event.fingerprint, vec!["sync-watcher-exit", "node_fatal"]);
         assert_eq!(recorded_tag(event, "exit_class"), "node_fatal");
         assert_eq!(recorded_number_extra(event, "runner_fatal_line_count"), 1);
         let fatal_lines = recorded_string_extra(event, "runner_fatal_lines");

@@ -1,9 +1,8 @@
 /**
  * Switcher row helpers for the sidebar SEARCH and HISTORY overlays.
  *
- * Product data comes from live conversation rows. The authored
- * SWITCHER_ROWS / COMPOSE_SUGGESTIONS lists below are retained only for
- * isolated visual-QA tests — ChatSidebar must not use them as a fallback.
+ * Product data comes from live conversation rows; ChatSidebar does not
+ * use static fixture fallbacks.
  *
  * The create flow's own rules live in `create-flow.ts`.
  */
@@ -27,92 +26,6 @@ export interface SwitcherRow {
   secondary?: string;
 }
 
-/**
- * "Search or jump to…" channel switcher roster (?view=v2). Order matches the
- * prototype: pinned/active channels, then a DM, a group, more channels, and the
- * cross-workspace Sender Agency rows last.
- */
-export const SWITCHER_ROWS: SwitcherRow[] = [
-  { id: "hq-desktop", name: "hq-desktop", company: "Indigo", kind: "channel" },
-  { id: "hq-sync", name: "hq-sync", company: "Indigo", kind: "channel" },
-  {
-    id: "agent-orchestrator",
-    name: "agent-orchestrator",
-    company: "Indigo",
-    kind: "channel",
-  },
-  {
-    id: "gtm-standup",
-    name: "gtm-standup",
-    company: "Indigo",
-    kind: "channel",
-  },
-  { id: "person-bryan", name: "Bryan", company: "Indigo", kind: "dm" },
-  {
-    id: "group-sofia-marcus-priya",
-    name: "Sofia, Marcus, Priya",
-    company: "Indigo",
-    kind: "group",
-  },
-  {
-    id: "standup-brief",
-    name: "standup-brief",
-    company: "Indigo",
-    kind: "channel",
-  },
-  {
-    id: "customer-conversations",
-    name: "customer-conversations",
-    company: "Indigo",
-    kind: "channel",
-  },
-  {
-    id: "enterprise-pricing",
-    name: "enterprise-pricing",
-    company: "Indigo",
-    kind: "channel",
-  },
-  {
-    id: "creative-pipeline",
-    name: "creative-pipeline",
-    company: "Sender Agency",
-    kind: "channel",
-  },
-  {
-    id: "ramen-bae",
-    name: "ramen-bae",
-    company: "Sender Agency",
-    kind: "channel",
-  },
-];
-
-/**
- * "New message" compose suggestion roster (?view=v2) — the recipients offered
- * under the To field before the user types.
- */
-export const COMPOSE_SUGGESTIONS: SwitcherRow[] = [
-  { id: "hq-desktop", name: "hq-desktop", company: "Indigo", kind: "channel" },
-  { id: "hq-sync", name: "hq-sync", company: "Indigo", kind: "channel" },
-  {
-    id: "agent-orchestrator",
-    name: "agent-orchestrator",
-    company: "Indigo",
-    kind: "channel",
-  },
-  {
-    id: "gtm-standup",
-    name: "gtm-standup",
-    company: "Indigo",
-    kind: "channel",
-  },
-  { id: "person-bryan", name: "Bryan", company: "Indigo", kind: "dm" },
-  {
-    id: "standup-brief",
-    name: "standup-brief",
-    company: "Indigo",
-    kind: "channel",
-  },
-];
 
 /** Case-insensitive name filter shared by the switcher + compose typeaheads. */
 export function filterSwitcher(

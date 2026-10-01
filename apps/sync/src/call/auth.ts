@@ -45,6 +45,7 @@ export const AUTH_SESSION_EVENT = "auth:session-changed";
 export type AuthSessionStatus =
   | "active"
   | "credentials_absent"
+  | "credentials_read_error"
   | "credentials_invalid"
   | "refresh_temporarily_unavailable";
 
@@ -62,6 +63,7 @@ function isAuthSessionStatus(value: unknown): value is AuthSessionStatus {
   return (
     value === "active" ||
     value === "credentials_absent" ||
+    value === "credentials_read_error" ||
     value === "credentials_invalid" ||
     value === "refresh_temporarily_unavailable"
   );

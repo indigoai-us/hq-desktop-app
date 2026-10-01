@@ -82,11 +82,13 @@
 
   function canRemove(row: StatusPersonRow): boolean {
     if (!onremovemember) return false;
-    // Server contract: owner may remove others; self-leave is allowed for
-    // non-owners only (owners get 409 CHANNEL_OWNER_CANNOT_LEAVE, and there is
-    // no in-app owner-transfer / delete-on-leave flow — owners use the trash
-    // control in the popover footer instead).
-    if (isSelf(row.personUid, self)) return !selfIsOwner;
+    // The roster is asynchronous. Only offer self-leave once the caller is
+    // explicitly known to be a member; unknown/stale role data must fail
+    // closed because the server rejects owner self-leave.
+    if (isSelf(row.personUid, self)) {
+      const role = (row.role ?? "").trim().toLowerCase();
+      return !selfIsOwner && role === "member";
+    }
     return selfIsOwner;
   }
 

@@ -650,16 +650,17 @@ pub async fn oauth_exchange_code(app: AppHandle, code: String) -> Result<AuthSta
     // also ends on, so there is exactly one definition of "signed in".
     let state = crate::commands::auth::complete_auth_session(&app, &tokens).await?;
     // The control cohort needs the same durable login-completed edge as the
-    // continuation cohort. Persist before background delivery so a transient
-    // telemetry failure cannot make its completed sign-in disappear.
+    // continuation cohort. The flag-gated path waits for its local queue write
+    // before returning to the wizard; network delivery remains asynchronous.
     if let Some(account_id) = state.account_id.as_deref() {
-        let _ = crate::commands::desktop_auth::record_desktop_login_completed(
+        crate::commands::desktop_auth::record_desktop_login_completed_gated(
             &app,
             account_id,
             "manual_oauth",
             "control",
             identity_provider.as_deref(),
-        );
+        )
+        .await;
     } else {
         eprintln!("[desktop-onboarding] login_completed receipt not queued without an authenticated account");
     }

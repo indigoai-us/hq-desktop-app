@@ -103,10 +103,10 @@ const MARKDOWN_CACHE_LIMIT = 200;
 const markdownCache = new Map<string, string>();
 
 /** Full Markdown on agent log/JSON dumps freezes the click loop. */
-export const MESSAGE_MARKDOWN_MAX_CHARS = 1_200;
+const MESSAGE_MARKDOWN_MAX_CHARS = 1_200;
 
 /** Past this even clearly written prose renders plain: Markdown cost grows with size. */
-export const MESSAGE_MARKDOWN_HARD_MAX_CHARS = 6_000;
+const MESSAGE_MARKDOWN_HARD_MAX_CHARS = 6_000;
 
 function markdownCueCount(lines: string[]): number {
   return lines.filter((line) =>
