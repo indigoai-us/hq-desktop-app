@@ -467,59 +467,88 @@ pub fn build_payload(
 mod tests {
     use super::*;
 
-    #[test]
-    fn candidate_count_buckets_are_closed() {
-        assert_eq!(bounded_candidate_count_bucket("0"), "0");
-        assert_eq!(bounded_candidate_count_bucket("1"), "1");
-        assert_eq!(bounded_candidate_count_bucket("2_plus"), "2_plus");
-        assert_eq!(bounded_candidate_count_bucket("/private/home"), "unknown");
+    fn resolver_diagnostic_pairs(
+        candidate_count_bucket: &str,
+        managed_package_state: &str,
+        bundled_cli_mode: &str,
+    ) -> Vec<(&'static str, &'static str)> {
+        startup_diagnostic_tags_with_auth_session(
+            false,
+            "absent",
+            None,
+            "loading",
+            StartupLifecycleInputs {
+                inputs: LifecycleInputs {
+                    install_completed: false,
+                    first_run_completed: false,
+                    had_machine_id: false,
+                    config_valid: false,
+                    hq_root_valid: false,
+                    has_auth: false,
+                    install_in_progress: false,
+                    consent_answered: false,
+                    evidence_unreadable: false,
+                },
+                hq_root_probe: None,
+                hq_program_kind: None,
+                node_program_kind: None,
+                require_local_toolchain_demoted: false,
+                hq_candidate_count_bucket: candidate_count_bucket,
+                managed_hq_package_state: managed_package_state,
+                bundled_cli_mode,
+            },
+            "credentials_absent",
+            "none",
+        )
+        .as_pairs()
+        .to_vec()
     }
 
     #[test]
-    fn managed_package_states_are_closed() {
-        for state in ["present", "missing", "invalid", "unreadable"] {
-            assert_eq!(managed_hq_package_state_tag(state), state);
+    fn emitted_tag_pairs_cover_each_bounded_hq_candidate_count_bucket() {
+        for (input, expected) in [
+            ("0", "0"),
+            ("1", "1"),
+            ("2_plus", "2_plus"),
+            ("/private/home", "unknown"),
+        ] {
+            let pairs = resolver_diagnostic_pairs(input, "unknown", "unknown");
+            assert!(
+                pairs.contains(&("hq_candidate_count_bucket", expected)),
+                "producer output must include the bounded candidate bucket {expected}"
+            );
         }
-        assert_eq!(managed_hq_package_state_tag("/private/home"), "unknown");
     }
 
     #[test]
-    fn bundled_cli_modes_are_closed() {
-        assert_eq!(bundled_cli_mode_tag("resource"), "resource");
-        assert_eq!(bundled_cli_mode_tag("registry_fallback"), "registry_fallback");
-        assert_eq!(bundled_cli_mode_tag("/private/home"), "unknown");
-    }
-
-    // These contract checks intentionally read the producer, not their own
-    // assertions, so a test-only first push compiles on main and fails by
-    // assertion until the lifecycle report exposes each bounded field.
-    const LIFECYCLE_REPORT_SOURCE: &str =
-        include_str!("../../../apps/sync/src-tauri/src/commands/lifecycle.rs");
-    const RESOLVER_SOURCE: &str = include_str!("paths.rs");
-    const BUNDLED_CLI_SOURCE: &str =
-        include_str!("../../../apps/sync/src-tauri/src/commands/install_deps.rs");
-
-    #[test]
-    fn lifecycle_report_exposes_bounded_hq_candidate_count_bucket() {
-        assert!(LIFECYCLE_REPORT_SOURCE.contains("hq_candidate_count_bucket"));
-        for bucket in ["0", "1", "2_plus"] {
-            assert!(RESOLVER_SOURCE.contains(bucket));
+    fn emitted_tag_pairs_cover_each_bounded_managed_package_state() {
+        for (input, expected) in [
+            ("present", "present"),
+            ("missing", "missing"),
+            ("invalid", "invalid"),
+            ("unreadable", "unreadable"),
+            ("/private/home", "unknown"),
+        ] {
+            let pairs = resolver_diagnostic_pairs("0", input, "unknown");
+            assert!(
+                pairs.contains(&("managed_hq_package_state", expected)),
+                "producer output must include the bounded managed-package state {expected}"
+            );
         }
     }
 
     #[test]
-    fn lifecycle_report_exposes_bounded_managed_package_state() {
-        assert!(LIFECYCLE_REPORT_SOURCE.contains("managed_hq_package_state"));
-        for state in ["present", "missing", "invalid", "unreadable", "unknown"] {
-            assert!(RESOLVER_SOURCE.contains(state));
-        }
-    }
-
-    #[test]
-    fn lifecycle_report_exposes_bounded_bundled_cli_mode() {
-        assert!(LIFECYCLE_REPORT_SOURCE.contains("bundled_cli_mode"));
-        for mode in ["resource", "registry_fallback", "unknown"] {
-            assert!(BUNDLED_CLI_SOURCE.contains(mode));
+    fn emitted_tag_pairs_cover_each_bounded_bundled_cli_mode() {
+        for (input, expected) in [
+            ("resource", "resource"),
+            ("registry_fallback", "registry_fallback"),
+            ("/private/home", "unknown"),
+        ] {
+            let pairs = resolver_diagnostic_pairs("0", "unknown", input);
+            assert!(
+                pairs.contains(&("bundled_cli_mode", expected)),
+                "producer output must include the bounded bundled-CLI mode {expected}"
+            );
         }
     }
 
