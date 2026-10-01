@@ -88,4 +88,34 @@ describe("NewBotTakeover", () => {
       /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*?\.new-bot-takeover-card\s*\{[\s\S]*?animation:\s*none;/,
     );
   });
+
+  it("hands a created bot into the waking screen instead of closing the takeover", async () => {
+    const onwaking = vi.fn();
+    render({
+      companies: [{ companyUid: "cmp_acme", label: "Acme" }],
+      currentCompanyUid: "cmp_acme",
+      runtimeReady: { codex: true },
+      loadProvisionOptions: async () => ({
+        ok: true as const,
+        value: {
+          defaultInstanceType: "t4g.medium",
+          catalogVersion: "test",
+          options: [{ key: "basic" as const, productName: "Basic", instanceType: "t4g.medium", listCents: 5000, default: true, selectable: true, netMonthlyCents: 5000, deltaCents: 5000, unavailableReason: null, notBilled: false, lanes: 1, workers: 1 }],
+        },
+      }),
+      oncreate: async () => ({ ok: true as const, target: { channelId: "chn_nova", cardId: null, cardKind: null, agentUid: "agt_nova" } }),
+      getStatus: async () => ({ ok: true, value: { setupState: { phase: "creating" } } }),
+      onwaking,
+    });
+    await settle();
+    const input = document.querySelector<HTMLInputElement>('[data-testid="new-bot-name"]')!;
+    input.value = "Nova";
+    input.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    await settle();
+    document.querySelector<HTMLButtonElement>('[data-testid="new-bot-create-submit"]')!.click();
+    await settle();
+
+    expect(document.querySelector('[data-testid="new-bot-waking-screen"]')?.textContent).toContain("Waking up Nova");
+    expect(onwaking).toHaveBeenCalledWith(expect.objectContaining({ agentUid: "agt_nova", channelId: "chn_nova" }));
+  });
 });

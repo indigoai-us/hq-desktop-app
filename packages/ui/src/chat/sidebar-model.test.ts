@@ -61,6 +61,7 @@ import {
   resolveRailCompanyName,
   titlebarDayDate,
   togglePin,
+  withWakingBotRow,
   type ConversationRow,
   type GroupedConversations,
   type DmContactInput,
@@ -167,6 +168,26 @@ describe("isStrictlyRicherConversationRow", () => {
     expect(
       isStrictlyRicherConversationRow({ ...enriched, id: "ch:chn_other" }, stub),
     ).toBe(false);
+  });
+});
+
+describe("withWakingBotRow", () => {
+  it("keeps a newly created bot visible until the directory catches up", () => {
+    const rows = withWakingBotRow([], {
+      agentUid: "agt_nova",
+      channelId: "chn_nova",
+      companyUid: "cmp_acme",
+      name: "Nova",
+      startedAt: NOW,
+      progress: 42,
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: "ch:chn_nova",
+      title: "Nova",
+      channelId: "chn_nova",
+      wakingBot: { agentUid: "agt_nova", progress: 42 },
+    });
   });
 });
 

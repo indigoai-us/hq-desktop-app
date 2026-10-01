@@ -52,6 +52,7 @@
     type ChatWakeBus,
   } from "./chat-api";
   import type { CloudBotDraft, EntryPointResult } from "./lifecycle-entry-points.js";
+  import type { WakingBotSession } from "./create-bot/waking-model.js";
   import type {
     AdapterPromise,
     AgentProvisionOptionsView,
@@ -161,6 +162,7 @@
     historyDayGroups,
     searchHitSnippet,
     takeRailConversations,
+    withWakingBotRow,
     flattenGrouped,
     pickAutoOpenConversation,
     pickSettledBootConversation,
@@ -282,6 +284,8 @@
           draft: CloudBotDraft,
         ) => Promise<EntryPointResult>)
       | null;
+    /** Polls a just-created cloud bot while its waking screen is open. */
+    loadAgentStatus?: ((agentUid: string) => Promise<unknown>) | null;
     loadClaudeProviderFlag?: (() => AdapterPromise<boolean>) | null;
     loadCloudProvisionOptions?: ((companyUid: string) => AdapterPromise<AgentProvisionOptionsView>) | null;
     /** Personal local bot (local-bots): desktop hosts only; see CreateModal. */
@@ -438,6 +442,7 @@
     oncreatecompany = null,
     companyCreate = null,
     oncreateagent = null,
+    loadAgentStatus = null,
     loadClaudeProviderFlag = null,
     loadCloudProvisionOptions = null,
     oncreatebot = null,
@@ -932,6 +937,7 @@
     return [...out.values()];
   });
 
+  let wakingBot = $state<WakingBotSession | null>(null);
   const contactsWithUnreads = $derived(applyPairUnreads(contacts, pairUnreads));
 
   /**
@@ -943,6 +949,7 @@
   const ownAgentUids = $derived([
     ...(localBots ?? []).map((bot) => bot.agentUid),
     ...(ownedLocalBotUids ?? []),
+    ...(wakingBot?.agentUid ? [wakingBot.agentUid] : []),
   ]);
 
   // Synthetic #setup support channel (deduped against a real server `setup`
@@ -994,14 +1001,14 @@
   });
 
   const allRows = $derived(
-    normalizeConversations(channelsWithSetup, contactsWithUnreads, {
+    withWakingBotRow(normalizeConversations(channelsWithSetup, contactsWithUnreads, {
       pinnedIds: pinsWithSetup,
       dmDots,
       recentDms,
       engagedAgentUids: engagedAgents,
       ownAgentUids,
       homeChannelIdByUid,
-    }),
+    }), wakingBot),
   );
 
   /**
@@ -1411,6 +1418,10 @@
   function handleRowClick(row: ConversationRow, event: MouseEvent): void {
     const multi = event.metaKey || event.ctrlKey || event.shiftKey;
     if (!selectionMode && !multi) {
+      if (row.wakingBot) {
+        newBotOpen = true;
+        return;
+      }
       void openRow(row);
       return;
     }
@@ -1624,6 +1635,19 @@
     newBotOpen = true;
   }
 
+  function beginWakingBot(session: WakingBotSession): void {
+    wakingBot = session;
+  }
+
+  function updateWakingBot(session: WakingBotSession | null): void {
+    wakingBot = session;
+  }
+
+  function openWakingBotChat(session: WakingBotSession): void {
+    const row = allRows.find((candidate) => candidate.channelId === session.channelId);
+    if (row) void openRow(row);
+  }
+
   async function cancelNewBotTakeover(): Promise<void> {
     newBotOpen = false;
     createStep = "find";
@@ -1636,10 +1660,6 @@
     newBotOpen = false;
     createStep = "bot";
     createOpen = true;
-  }
-
-  function completeNewBotTakeover(): void {
-    newBotOpen = false;
   }
 
   /** Host entry point (#welcome's "Start a project channel"): open the create modal. */
@@ -3769,12 +3789,17 @@
       canCreateLocalBot={!!oncreatebot}
       oncancel={cancelNewBotTakeover}
       onopenlocal={oncreatebot ? openLocalBotFromTakeover : null}
-      oncomplete={completeNewBotTakeover}
       companies={agentCompanies}
       currentCompanyUid={scopeUid}
       runtimeReady={botRuntimeReady}
       loadProvisionOptions={loadCloudProvisionOptions}
       oncreate={oncreateagent}
+      getStatus={loadAgentStatus}
+      wakingSession={wakingBot}
+      onwaking={beginWakingBot}
+      onwakingchange={updateWakingBot}
+      onopenchat={openWakingBotChat}
+      onclosewaking={() => { newBotOpen = false; }}
     />
   {/if}
 </aside>
@@ -3888,7 +3913,17 @@
         oncontextmenu={(e) => openContextMenu(row, e)}
       >
         {#if row.kind === "channel"}
-          <span class="chat-glyph-wrap" aria-hidden="true">
+          {#if row.wakingBot}
+            <span
+              class="chat-waking-ring"
+              data-testid="chat-waking-bot-ring"
+              style={`--chat-waking-progress: ${row.wakingBot.progress}%`}
+              aria-label={`${row.title} is waking up`}
+            >
+              <span>{initialsFor(row.title)}</span>
+            </span>
+          {:else}
+            <span class="chat-glyph-wrap" aria-hidden="true">
             {#if !hasChildren && isCompanyScopedRow(row)}
               <CompanyIcon iconUrl={rowCompanyIcon(row)} size={16} />
             {:else if !hasChildren}
@@ -3901,7 +3936,8 @@
                 aria-label="Someone online"
               ></span>
             {/if}
-          </span>
+            </span>
+          {/if}
         {:else if row.kind === "group"}
           <span
             class="chat-avatar group"
@@ -4878,6 +4914,28 @@
        variable. */
     line-height: 1;
     letter-spacing: 0.02em;
+  }
+
+  .chat-waking-ring {
+    display: grid;
+    flex: 0 0 auto;
+    place-items: center;
+    width: 21px;
+    height: 21px;
+    border-radius: 50%;
+    background: conic-gradient(#e7a069 var(--chat-waking-progress), var(--bg3) 0);
+  }
+
+  .chat-waking-ring > span {
+    display: grid;
+    place-items: center;
+    width: 17px;
+    height: 17px;
+    border-radius: 50%;
+    background: var(--bg1);
+    color: var(--t1);
+    font-size: 7px;
+    font-weight: 600;
   }
 
   .chat-avatar.group {

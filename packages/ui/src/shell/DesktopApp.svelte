@@ -118,7 +118,6 @@
   } from "../chat/setup-bot.js";
   import {
     findLifecycleCardElement,
-    claudeSubscriptionSignInUrl,
     runCreateCloudBotEntry,
     runCreateCompanyEntry,
     type EntryPointResult,
@@ -5759,9 +5758,6 @@
         // names the profile to write it to.
         console.warn("[hq-desktop] cloud bot title not saved: the create sequence returned no agent uid");
       }
-      navigateToEntryTarget(result.target, companyUid);
-      const signInUrl = claudeSubscriptionSignInUrl(draft, agentUid);
-      if (signInUrl) onopenurl?.(signInUrl);
     }
     return result;
   }
@@ -8836,6 +8832,7 @@
           oncreatecompany={canRunEntryPoints ? createCompanyEntry : null}
           companyCreate={companyCreateSeam}
           oncreateagent={canCreateCloudBots ? createCloudBotEntry : null}
+          loadAgentStatus={(agentUid) => adapter.agents.getStatus(agentUid)}
           loadClaudeProviderFlag={() => adapter.identity.hasFeature(CLAUDE_PROVIDER_FLAG)}
           humanOnly={humanOnlyConversations}
           loadCloudProvisionOptions={(companyUid) => adapter.agents.getProvisionOptions(companyUid)}

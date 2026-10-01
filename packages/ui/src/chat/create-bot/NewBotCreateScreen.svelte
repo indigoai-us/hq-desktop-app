@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import type { AdapterPromise, AgentProvisionOptionsView } from "@hq/platform";
-  import type { EntryPointResult, CloudBotDraft } from "../lifecycle-entry-points.js";
+  import type { EntryPointResult, EntryPointTarget, CloudBotDraft } from "../lifecycle-entry-points.js";
   import {
     botHandle,
     cloudNameIssue,
@@ -12,13 +12,19 @@
 
   type Company = { companyUid: string; label: string };
 
+  export interface NewBotCreated {
+    name: string;
+    companyUid: string;
+    target: EntryPointTarget;
+  }
+
   interface Props {
     companies: readonly Company[];
     currentCompanyUid?: string | null;
     runtimeReady?: Record<string, boolean> | null;
     loadProvisionOptions: (companyUid: string) => AdapterPromise<AgentProvisionOptionsView>;
     oncreate: (companyUid: string, draft: CloudBotDraft) => Promise<EntryPointResult>;
-    oncomplete: () => void;
+    oncomplete: (created: NewBotCreated) => void;
   }
 
   let {
@@ -122,7 +128,7 @@
     }));
     busy = false;
     if (result.ok) {
-      oncomplete();
+      oncomplete({ name: name.trim(), companyUid, target: result.target });
       return;
     }
     const message = result.reason.trim() || "We couldn't create this bot. Try again in a moment.";

@@ -108,6 +108,49 @@ export interface ConversationRow {
   notifyLevel?: NotifyLevel | null;
   /** Channel creator uid, when known. */
   createdBy?: string | null;
+  /** A newly created cloud bot that is still waking up. */
+  wakingBot?: {
+    agentUid: string;
+    progress: number;
+  } | null;
+}
+
+export interface WakingSidebarBot {
+  agentUid: string;
+  channelId: string;
+  companyUid: string;
+  name: string;
+  startedAt: number;
+  progress: number;
+}
+
+/**
+ * Keeps a just-created bot visible before its server conversation reaches the
+ * directory. The real directory row replaces this optimistic row by id.
+ */
+export function withWakingBotRow(
+  rows: readonly ConversationRow[],
+  bot: WakingSidebarBot | null,
+): ConversationRow[] {
+  if (!bot?.channelId) return [...rows];
+  const id = `ch:${bot.channelId}`;
+  const wakingBot = { agentUid: bot.agentUid, progress: bot.progress };
+  const known = rows.find((row) => row.id === id);
+  if (known) {
+    return rows.map((row) => row.id === id ? { ...row, wakingBot } : row);
+  }
+  return [{
+    id,
+    kind: "channel",
+    title: bot.name || "Your bot",
+    companyUid: bot.companyUid || null,
+    unreadDot: false,
+    lastActivityAt: bot.startedAt,
+    pinned: false,
+    channelId: bot.channelId,
+    channelScope: "company",
+    wakingBot,
+  }, ...rows];
 }
 
 /**

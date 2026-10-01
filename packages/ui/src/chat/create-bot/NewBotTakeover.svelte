@@ -6,19 +6,26 @@
   import { focusOnMount, portal } from "../portal.js";
   import type { AdapterPromise, AgentProvisionOptionsView } from "@hq/platform";
   import type { CloudBotDraft, EntryPointResult } from "../lifecycle-entry-points.js";
-  import NewBotCreateScreen from "./NewBotCreateScreen.svelte";
+  import NewBotCreateScreen, { type NewBotCreated } from "./NewBotCreateScreen.svelte";
+  import NewBotWakingScreen from "./NewBotWakingScreen.svelte";
+  import { beginWakingSession, type WakingBotSession } from "./waking-model.js";
   import "./new-bot-takeover.css";
 
   interface Props {
     canCreateLocalBot?: boolean;
     oncancel: () => void;
-    oncomplete?: (() => void) | null;
     onopenlocal?: (() => void) | null;
     companies?: ReadonlyArray<{ companyUid: string; label: string }>;
     currentCompanyUid?: string | null;
     runtimeReady?: Record<string, boolean> | null;
     loadProvisionOptions?: ((companyUid: string) => AdapterPromise<AgentProvisionOptionsView>) | null;
     oncreate?: ((companyUid: string, draft: CloudBotDraft) => Promise<EntryPointResult>) | null;
+    getStatus?: ((agentUid: string) => Promise<unknown>) | null;
+    wakingSession?: WakingBotSession | null;
+    onwaking?: ((session: WakingBotSession) => void) | null;
+    onwakingchange?: ((session: WakingBotSession | null) => void) | null;
+    onopenchat?: ((session: WakingBotSession) => void) | null;
+    onclosewaking?: (() => void) | null;
     /** Test seam. Production starts on the first clean bundled wallpaper. */
     wallpaperIndex?: number;
   }
@@ -26,13 +33,18 @@
   let {
     canCreateLocalBot = false,
     oncancel,
-    oncomplete = null,
     onopenlocal = null,
     companies = [],
     currentCompanyUid = null,
     runtimeReady = null,
     loadProvisionOptions = null,
     oncreate = null,
+    getStatus = null,
+    wakingSession = null,
+    onwaking = null,
+    onwakingchange = null,
+    onopenchat = null,
+    onclosewaking = null,
     wallpaperIndex = 0,
   }: Props = $props();
 
@@ -40,6 +52,8 @@
   const wallpaper = $derived(wallpapers[Math.abs(wallpaperIndex) % wallpapers.length] ?? glassWhiteboard);
 
   let dialogEl = $state<HTMLDivElement | null>(null);
+  let localWakingSession = $state<WakingBotSession | null>(null);
+  const activeWakingSession = $derived(localWakingSession ?? wakingSession);
 
   const focusableSelector =
     'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])';
@@ -48,7 +62,8 @@
     if (event.key === "Escape") {
       event.preventDefault();
       event.stopPropagation();
-      oncancel();
+      if (activeWakingSession) closeWaking();
+      else oncancel();
       return;
     }
     if (event.key !== "Tab") return;
@@ -68,6 +83,38 @@
       ? (index - 1 + focusable.length) % focusable.length
       : (index + 1) % focusable.length;
     focusable[nextIndex]?.focus();
+  }
+
+  function startWaking(created: NewBotCreated): void {
+    const session = beginWakingSession({
+      agentUid: created.target.agentUid ?? "",
+      channelId: created.target.channelId,
+      companyUid: created.companyUid,
+      name: created.name,
+    });
+    localWakingSession = session;
+    onwaking?.(session);
+  }
+
+  function updateWaking(session: WakingBotSession): void {
+    localWakingSession = session;
+    onwakingchange?.(session);
+  }
+
+  function closeWaking(): void {
+    if (activeWakingSession) onwakingchange?.(activeWakingSession);
+    onclosewaking?.();
+  }
+
+  function retryWaking(): void {
+    localWakingSession = null;
+    onwakingchange?.(null);
+  }
+
+  function openWakingChat(): void {
+    if (!activeWakingSession) return;
+    onopenchat?.(activeWakingSession);
+    closeWaking();
   }
 </script>
 
@@ -92,22 +139,31 @@
       class="new-bot-takeover-cancel"
       data-testid="new-bot-takeover-cancel"
       use:focusOnMount
-      onclick={oncancel}
+      onclick={activeWakingSession ? closeWaking : oncancel}
     >
-      Cancel
+      {activeWakingSession ? "Close" : "Cancel"}
     </button>
   </header>
 
   <main class="new-bot-takeover-stage">
     <div class="new-bot-takeover-card">
-      {#if oncreate && oncomplete && loadProvisionOptions && companies.length}
+      {#if activeWakingSession}
+        <NewBotWakingScreen
+          session={activeWakingSession}
+          {getStatus}
+          onupdate={updateWaking}
+          onclose={closeWaking}
+          onretry={retryWaking}
+          onopenchat={openWakingChat}
+        />
+      {:else if oncreate && loadProvisionOptions && companies.length}
         <NewBotCreateScreen
           {companies}
           {currentCompanyUid}
           {runtimeReady}
           loadProvisionOptions={loadProvisionOptions}
           oncreate={oncreate}
-          oncomplete={oncomplete}
+          oncomplete={startWaking}
         />
       {:else}
         <p class="new-bot-takeover-kicker">A new teammate</p>
