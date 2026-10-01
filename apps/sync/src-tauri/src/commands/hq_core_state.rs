@@ -4282,7 +4282,7 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
                             staging_status: None,
                         });
                     }
-                    None => {
+                    (None, _) => {
                         user_only.push(DriftEntry {
                             path: (*path).clone(),
                             size: *size_local,
