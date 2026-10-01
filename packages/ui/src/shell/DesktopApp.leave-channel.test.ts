@@ -132,6 +132,37 @@ async function openPopover(): Promise<void> {
 }
 
 describe("DesktopApp leave channel (self-remove)", () => {
+  it.each(["missing", "null"] as const)(
+    "does not offer Leave when the parsed roster has a %s caller role",
+    async (roleShape) => {
+      const roster = {
+        members: [
+          {
+            personUid: "prs_me",
+            displayName: "Ada Lovelace",
+            ...(roleShape === "null" ? { role: null } : {}),
+          },
+          {
+            personUid: "prs_owner",
+            displayName: "Marcus Chen",
+            role: "owner",
+          },
+        ],
+      };
+      await mountApp({ listChannelMembers: async () => ok(roster) });
+
+      await openPopover();
+
+      const selfRow = [...host.querySelectorAll<HTMLElement>(
+        '[data-testid="status-member"]',
+      )].find((row) => row.textContent?.includes("Ada Lovelace"));
+      expect(selfRow, "parsed caller roster row is visible").toBeTruthy();
+      expect(
+        selfRow?.querySelector('[data-testid="status-member-remove"]'),
+      ).toBeNull();
+    },
+  );
+
   it("success: emits channel:removed, drops the rail row, clears selection, closes popover", async () => {
     const removeChannelMember = vi.fn(async () => ok({ removed: "prs_me" }));
     const wakes = await mountApp({ removeChannelMember });
@@ -160,9 +191,9 @@ describe("DesktopApp leave channel (self-remove)", () => {
     expect(host.querySelector('[data-testid="channel-action-error"]')).toBeNull();
   });
 
-  it("failure: surfaces the server error and keeps the rail row + selection", async () => {
+  it("failure: preserves a trimmed server message and keeps the rail row + selection", async () => {
     const removeChannelMember = vi.fn(async () =>
-      failure("http-403", "You can't leave this channel."),
+      failure("http-403", "  You can't leave this channel.  "),
     );
     const wakes = await mountApp({ removeChannelMember });
     const removed: string[] = [];
@@ -186,5 +217,63 @@ describe("DesktopApp leave channel (self-remove)", () => {
     expect(
       host.querySelector('[data-testid="channel-name"]')?.textContent,
     ).toBe("launch");
+  });
+
+  it("failure without a server message uses the safe retry fallback", async () => {
+    const removeChannelMember = vi.fn(async () => failure("http-403", "  "));
+    await mountApp({ removeChannelMember });
+
+    await openPopover();
+    host
+      .querySelector<HTMLButtonElement>(
+        '[data-testid="status-member-remove"]',
+      )!
+      .click();
+    await settle();
+
+    expect(
+      host.querySelector('[data-testid="channel-action-error"]')?.textContent,
+    ).toContain("Couldn't leave this channel. Refresh and try again.");
+  });
+
+  it("failure from a rejected adapter preserves its trimmed error message", async () => {
+    const removeChannelMember = vi.fn(async () => {
+      throw new Error("  Channel service is temporarily unavailable.  ");
+    });
+    await mountApp({ removeChannelMember });
+
+    await openPopover();
+    host
+      .querySelector<HTMLButtonElement>(
+        '[data-testid="status-member-remove"]',
+      )!
+      .click();
+    await settle();
+
+    expect(
+      host.querySelector('[data-testid="channel-action-error"]')?.textContent,
+    ).toContain("Channel service is temporarily unavailable.");
+  });
+
+  it("handles a stale owner-role 409 with a clear message and no raw error", async () => {
+    const removeChannelMember = vi.fn(async () =>
+      failure("invoke", "CHANNEL_OWNER_CANNOT_LEAVE"),
+    );
+    await mountApp({ removeChannelMember });
+
+    await openPopover();
+    host
+      .querySelector<HTMLButtonElement>(
+        '[data-testid="status-member-remove"]',
+      )!
+      .click();
+    await settle();
+
+    const alert = host.querySelector('[data-testid="channel-action-error"]');
+    expect(alert?.textContent).toContain(
+      "Channel owners can't leave their own channel.",
+    );
+    expect(alert?.textContent).not.toContain("CHANNEL_OWNER_CANNOT_LEAVE");
+    expect(host.querySelector('[data-testid="channel-header"]')).toBeTruthy();
   });
 });

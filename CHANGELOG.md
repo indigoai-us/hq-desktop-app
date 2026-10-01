@@ -9,6 +9,8 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - On Apple Silicon Macs, the app now replaces a managed Node.js that was installed for Intel Macs instead of reusing it, so setup and repair install the right one.
+- Channel owners no longer see Leave while their channel role is unknown, and
+  a stale owner-role conflict gives a clear recovery message.
 
 ## [0.10.371] — 2026-10-01
 
