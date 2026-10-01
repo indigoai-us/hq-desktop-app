@@ -31,9 +31,3 @@ export function coalesceWorkSessionWires<
   }
   return out.reverse();
 }
-
-export function excerptFromBody(body: string, max = 180): string {
-  const text = body.replace(/\s+/g, " ").trim();
-  if (text.length <= max) return text;
-  return `${text.slice(0, max - 1)}…`;
-}

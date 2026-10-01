@@ -57,7 +57,7 @@ export const AUTO_RESTORE_MAX_ATTEMPTS = 3;
 export const AUTO_RESTORE_RETRY_MS = 30_000;
 
 /** True when a bot tried at `lastAttemptAt` may be tried again. */
-export function canRetryAutoRestore(lastAttemptAt: number | null, now: number): boolean {
+function canRetryAutoRestore(lastAttemptAt: number | null, now: number): boolean {
   return lastAttemptAt === null || now - lastAttemptAt >= AUTO_RESTORE_RETRY_MS;
 }
 
