@@ -1,7 +1,8 @@
 use std::fs;
 
 use hq_desktop_core::drift_scope::{
-    drift_blob_sha, drift_blob_sha_for_path, excluded_scope_paths_for, normalized_or_raw_drift_sha,
+    drift_blob_sha, drift_blob_sha_for_path, drift_hash_matches_with_raw_fallback,
+    excluded_scope_paths_for, normalized_or_raw_drift_sha,
     path_in_excluded_scope, walk_local_under_scope,
 };
 
@@ -36,19 +37,36 @@ fn generated_path_is_ignored_but_other_settings_edits_remain_visible() {
     let stripped_upstream = without_generated_path(upstream);
     assert_eq!(
         local.get(".claude/settings.json").unwrap().0,
-        drift_blob_sha(&stripped_upstream),
-        "an HQ-generated env.PATH must not appear as user drift"
+        drift_blob_sha(generated.as_bytes()),
+        "the local walker retains the real Git blob hash"
     );
+    assert_eq!(
+        drift_blob_sha_for_path(".claude/settings.json", generated.as_bytes()),
+        drift_blob_sha(&stripped_upstream),
+        "the semantic settings hash ignores the HQ-generated env.PATH"
+    );
+    assert!(drift_hash_matches_with_raw_fallback(
+        &local[".claude/settings.json"].0,
+        &drift_blob_sha(upstream.as_bytes()),
+        Some(&drift_blob_sha_for_path(".claude/settings.json", generated.as_bytes())),
+        Some(&drift_blob_sha_for_path(".claude/settings.json", upstream.as_bytes())),
+    ));
 
     let edited =
         r#"{"permissions":{"allow":["Read","Write"]},"env":{"PATH":"/managed/bin:/usr/bin"}}"#;
     fs::write(&settings, edited).unwrap();
     let local = walk_local_under_scope(root, &locked);
     assert_ne!(
-        local.get(".claude/settings.json").unwrap().0,
+        drift_blob_sha_for_path(".claude/settings.json", edited.as_bytes()),
         drift_blob_sha(&stripped_upstream),
         "a user edit outside env.PATH must remain visible as drift"
     );
+    assert!(!drift_hash_matches_with_raw_fallback(
+        &local[".claude/settings.json"].0,
+        &drift_blob_sha(upstream.as_bytes()),
+        Some(&drift_blob_sha_for_path(".claude/settings.json", edited.as_bytes())),
+        Some(&drift_blob_sha_for_path(".claude/settings.json", upstream.as_bytes())),
+    ));
 }
 
 #[test]

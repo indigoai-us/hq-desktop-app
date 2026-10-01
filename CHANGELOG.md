@@ -7,8 +7,10 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+- Core Drift ignores setup PATH changes and generated wrapper markers while retaining raw-hash fallback when settings JSON cannot be parsed.
 - Core Drift ignores the desktop-generated `env.PATH` in `.claude/settings.json` and the company skill-wrapper marker, while continuing to report other settings edits.
 
+- Desktop company-creation invites identify the desktop surface in the hq-pro team invite action.
 - Windows setup now detects Claude Code from the current user PATH and
   Anthropic's user-local install directory, including on Retry.
 - The sidebar orders DMs and channels by the latest message a person typed.
@@ -17,6 +19,7 @@ The release moves it under the version it ships in.
   is being recorded; it waits until the recording finishes.
 
 - When HQ daemon owns sync, Sync Now, pause/resume, and company sync modes go through the daemon. Instant Sync follows its setting, and sync help points to the daemon log while preserving the old log for history.
+- On macOS 26.2 and later, the installer window shows its background artwork again instead of a plain white window behind the HQ and Applications icons.
 
 - Internal: removed two unused packages/ui helpers and made three module-only helpers private (TD-60, #1198). No user-visible change.
 
