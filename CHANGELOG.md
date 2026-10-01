@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Library Back now leaves internal Library tab history and returns to the prior app screen.
 - Internal: unused exports in the shared UI package are now module-private. No behaviour change.
 
 - Internal: unused exports in the work shell and installer are now module-private. No behaviour change.
