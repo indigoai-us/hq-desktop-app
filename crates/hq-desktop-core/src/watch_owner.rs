@@ -10,6 +10,10 @@ use sha1::{Digest, Sha1};
 
 /// First hq-cloud release that accepts the `sync-runner --owner` option (#685).
 pub const OWNER_ARGUMENT_MIN_VERSION: &str = "6.18.13";
+/// First hq-cloud release that accepts `sync-runner --exit-with-parent`.
+pub const EXIT_WITH_PARENT_ARGUMENT_MIN_VERSION: &str = "6.18.24";
+/// First hq-cloud release that accepts `sync-runner --watch-parent-pid`.
+pub const WATCH_PARENT_PID_ARGUMENT_MIN_VERSION: &str = "6.18.25";
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -57,6 +61,57 @@ pub fn append_desktop_owner_argument(args: &mut Vec<String>, runner_version: &st
     }
     args.extend(["--owner".to_string(), "hq-desktop".to_string()]);
     true
+}
+
+pub fn append_desktop_exit_with_parent_argument(
+    args: &mut Vec<String>,
+    runner_version: &str,
+) -> bool {
+    if !args.iter().any(|arg| arg == "--watch")
+        || !runner_supports_exit_with_parent_argument(runner_version)
+    {
+        return false;
+    }
+    args.push("--exit-with-parent".to_string());
+    true
+}
+
+pub fn runner_supports_exit_with_parent_argument(version: &str) -> bool {
+    let version = version.strip_prefix('v').unwrap_or(version);
+    let (Ok(version), Ok(minimum)) = (
+        semver::Version::parse(version),
+        semver::Version::parse(EXIT_WITH_PARENT_ARGUMENT_MIN_VERSION),
+    ) else {
+        return false;
+    };
+    version >= minimum
+}
+
+pub fn append_desktop_watch_parent_pid_argument(
+    args: &mut Vec<String>,
+    runner_version: &str,
+) -> bool {
+    if !args.iter().any(|arg| arg == "--watch")
+        || !runner_supports_watch_parent_pid_argument(runner_version)
+    {
+        return false;
+    }
+    args.extend([
+        "--watch-parent-pid".to_string(),
+        std::process::id().to_string(),
+    ]);
+    true
+}
+
+pub fn runner_supports_watch_parent_pid_argument(version: &str) -> bool {
+    let version = version.strip_prefix('v').unwrap_or(version);
+    let (Ok(version), Ok(minimum)) = (
+        semver::Version::parse(version),
+        semver::Version::parse(WATCH_PARENT_PID_ARGUMENT_MIN_VERSION),
+    ) else {
+        return false;
+    };
+    version >= minimum
 }
 
 pub fn classify_busy_owner(owner: &str, pid_is_child_of_app: bool) -> BusyOwnerDisposition {
@@ -462,6 +517,74 @@ mod tests {
         assert_eq!(supported, ["--watch", "--owner", "hq-desktop"]);
         assert!(runner_supports_owner_argument("6.18.21"));
         assert!(!runner_supports_owner_argument("unknown"));
+    }
+
+    #[test]
+    fn exit_with_parent_argument_is_watch_only_and_version_gated() {
+        let mut old_watch = vec!["--watch".to_string()];
+        assert!(!append_desktop_exit_with_parent_argument(
+            &mut old_watch,
+            "6.18.23"
+        ));
+        assert_eq!(old_watch, ["--watch"]);
+
+        let mut supported_watch = vec!["--watch".to_string()];
+        assert!(append_desktop_exit_with_parent_argument(
+            &mut supported_watch,
+            "6.18.24"
+        ));
+        assert_eq!(supported_watch, ["--watch", "--exit-with-parent"]);
+
+        let mut one_shot = vec!["--companies".to_string()];
+        assert!(!append_desktop_exit_with_parent_argument(
+            &mut one_shot,
+            "6.18.24"
+        ));
+        assert_eq!(one_shot, ["--companies"]);
+    }
+
+    #[test]
+    fn watch_parent_pid_argument_is_watch_only_and_version_gated() {
+        let mut below = vec!["--watch".to_string()];
+        assert!(!append_desktop_watch_parent_pid_argument(
+            &mut below, "6.18.24"
+        ));
+        assert_eq!(below, ["--watch"]);
+
+        let mut at_minimum = vec!["--watch".to_string()];
+        assert!(append_desktop_watch_parent_pid_argument(
+            &mut at_minimum,
+            "6.18.25"
+        ));
+        assert_eq!(
+            at_minimum,
+            [
+                "--watch",
+                "--watch-parent-pid",
+                &std::process::id().to_string()
+            ]
+        );
+
+        let mut above_minimum = vec!["--watch".to_string()];
+        assert!(append_desktop_watch_parent_pid_argument(
+            &mut above_minimum,
+            "6.18.26"
+        ));
+        assert_eq!(
+            above_minimum,
+            [
+                "--watch",
+                "--watch-parent-pid",
+                &std::process::id().to_string()
+            ]
+        );
+
+        let mut one_shot = vec!["--companies".to_string()];
+        assert!(!append_desktop_watch_parent_pid_argument(
+            &mut one_shot,
+            "6.18.25"
+        ));
+        assert_eq!(one_shot, ["--companies"]);
     }
 
     #[test]
