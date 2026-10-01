@@ -3571,13 +3571,14 @@
   const activeTab = $derived(isProjectChannel ? tab : "chat");
 
   const headerTitle = $derived(
-    resolveConversationTitle(selectedRow, railRows, selectedHomeCompany?.slug ?? null),
+    resolveConversationTitle(
+      selectedRow,
+      railRows,
+      selectedHomeCompany?.displayName || selectedHomeCompany?.slug || null,
+    ),
   );
 
-  /**
-   * Company hero shows the company's display name ("Ramen Bae"), not the
-   * channel slug ("ramen-bae") — the channel header keeps `#ramen-bae`.
-   */
+  /** Company hero and home-channel title use the company display name. */
   const companyHeroTitle = $derived(
     companyAppearanceName ||
       companyDisplayName(selectedRow?.companyUid, companyNames) ||
