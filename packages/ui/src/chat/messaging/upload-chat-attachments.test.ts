@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createSyncPlatformAdapter, type PlatformAdapter } from "@hq/platform";
 
 import {
@@ -9,6 +9,24 @@ import {
 } from "./upload-chat-attachments";
 
 const UPGRADE_URL = "https://hq.computer/companies/acme/billing?upgrade=1";
+const UPLOAD_TIMEOUT_MS = 300_000;
+
+async function settleWithin<T>(promise: Promise<T>) {
+  return Promise.race([
+    promise.then(
+      (value) => ({ settled: true as const, value }),
+      (error: unknown) => ({ settled: true as const, error }),
+    ),
+    new Promise<{ settled: false }>((resolve) =>
+      setTimeout(() => resolve({ settled: false }), 100),
+    ),
+  ]);
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 /** hq-pro `evaluatePlanHardStopFromInputs` body for files.create over storage. */
 const HARD_STOP_BODY = {
@@ -110,5 +128,62 @@ describe("uploadChatAttachments plan-limit refusals", () => {
       presignItemRefusal({ results: [{ key: "k", op: "put", url: "https://s3/x" }] }),
     ).toBeNull();
     expect(presignItemRefusal({ results: [] })).toBeNull();
+  });
+});
+
+describe("uploadChatAttachments deadline", () => {
+  it("maps a timed out PUT to the current upload failure without retrying", async () => {
+    const timeout = new AbortController();
+    vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeout.signal);
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation((_input, init) =>
+      new Promise<Response>((_resolve, reject) => {
+        if (init?.signal?.aborted) {
+          reject(new DOMException("deadline", "TimeoutError"));
+          return;
+        }
+        init?.signal?.addEventListener(
+          "abort",
+          () => reject(new DOMException("deadline", "TimeoutError")),
+          { once: true },
+        );
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const operation = uploadChatAttachments({
+      files: [pdf()],
+      companyUid: "cmp_acme",
+      scope: "chan",
+      scopeId: "chn_1",
+      presignPut: async () => ({
+        ok: true,
+        value: {
+          results: [{ url: "https://files.example.test/upload", headers: {} }],
+        },
+      }),
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    timeout.abort();
+    const result = await settleWithin(operation);
+
+    expect(result.settled).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://files.example.test/upload",
+      {
+        method: "PUT",
+        headers: {},
+        body: expect.any(File),
+        signal: timeout.signal,
+      },
+    );
+    expect(AbortSignal.timeout).toHaveBeenCalledWith(UPLOAD_TIMEOUT_MS);
+    expect(result).toMatchObject({
+      settled: true,
+      error: expect.objectContaining({
+        message: "Could not upload report.pdf",
+      }),
+    });
   });
 });

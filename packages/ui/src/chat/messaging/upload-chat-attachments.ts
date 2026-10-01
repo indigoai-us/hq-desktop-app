@@ -15,6 +15,16 @@ import {
   type ChatAttachmentWire,
 } from "./chat-attachments.js";
 
+// 25 MiB needs about 210 s at 1 Mbit/s; 300 s allows slow-link transfer slack.
+const CHAT_ATTACHMENT_UPLOAD_TIMEOUT_MS = 300_000;
+
+function isNetworkUploadError(err: Error): boolean {
+  return (
+    err.name === "TimeoutError" ||
+    /failed to fetch|networkerror|^load failed$/i.test(err.message)
+  );
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -135,14 +145,16 @@ export async function putChatAttachmentDirect(
   headers: Record<string, string>,
   file: File,
 ): Promise<Response> {
-  return fetch(url, { method: "PUT", headers, body: file });
+  return fetch(url, {
+    method: "PUT",
+    headers,
+    body: file,
+    signal: AbortSignal.timeout(CHAT_ATTACHMENT_UPLOAD_TIMEOUT_MS),
+  });
 }
 
 function uploadFailureMessage(err: unknown, fileName: string): string {
-  if (
-    err instanceof Error &&
-    /failed to fetch|networkerror|^load failed$/i.test(err.message)
-  ) {
+  if (err instanceof Error && isNetworkUploadError(err)) {
     return `Could not upload ${fileName}`;
   }
   if (err instanceof Error && err.message) {
