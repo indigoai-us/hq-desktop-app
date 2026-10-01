@@ -88,6 +88,7 @@ function agentsApi(over: Partial<AgentsApi> = {}): AgentsApi {
     updateProfile: async () => ok({ uid: "agt_izzy" }),
     stop: async () => ok({ uid: "agt_izzy" }),
     start: async () => ok({ uid: "agt_izzy" }),
+    retryProvisioning: async () => ok({ uid: "agt_izzy" }),
     deprovision: async () => ok({ uid: "agt_izzy" }),
     listOwners: async () =>
       ok({
