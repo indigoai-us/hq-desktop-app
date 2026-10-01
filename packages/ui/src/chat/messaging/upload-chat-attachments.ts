@@ -159,7 +159,7 @@ export type PutChatAttachment = (
   url: string,
   headers: Record<string, string>,
   file: File,
-  signal: AbortSignal,
+  signal?: AbortSignal,
 ) => Promise<Response>;
 
 /**

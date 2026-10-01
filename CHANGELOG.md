@@ -11,7 +11,6 @@ The release moves it under the version it ships in.
 - Desktop sync now recovers legacy watcher processes left behind by an app update when their process path and ancestry prove they belong to the desktop. Other active sync owners continue to be left alone.
 - Home now lists projects from your Personal workspace, and Personal board and summary requests resolve with your Personal identity.
 - Usage telemetry now backs off after unaccepted batches and does not resend rows the server explicitly skipped.
-- Work attachment previews and uploads now end with their usual errors instead of hanging indefinitely.
 
 ## [0.10.370] — 2026-10-01
 
