@@ -1432,7 +1432,10 @@
       updateResult = "Restarting…";
     } else {
       console.error("install update failed:", res.message);
-      updateResult = "Install failed";
+      updateResult =
+        res.message === "HQ will restart to update after your recording finishes"
+          ? res.message
+          : "Install failed";
       appUpdateInstalling = false;
     }
   }
