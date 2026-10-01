@@ -160,7 +160,7 @@ describe("DesktopApp leave channel (self-remove)", () => {
     expect(host.querySelector('[data-testid="channel-action-error"]')).toBeNull();
   });
 
-  it("failure: surfaces the server error and keeps the rail row + selection", async () => {
+  it("failure: shows a safe retry message and keeps the rail row + selection", async () => {
     const removeChannelMember = vi.fn(async () =>
       failure("http-403", "You can't leave this channel."),
     );
@@ -180,11 +180,35 @@ describe("DesktopApp leave channel (self-remove)", () => {
     expect(removed).toEqual([]);
     const alert = host.querySelector('[data-testid="channel-action-error"]');
     expect(alert, "error surfaces near the header").toBeTruthy();
-    expect(alert?.textContent).toContain("You can't leave this channel.");
+    expect(alert?.textContent).toContain(
+      "Couldn't leave this channel. Refresh and try again.",
+    );
     // Selection preserved — header still shows #launch.
     expect(host.querySelector('[data-testid="channel-header"]')).toBeTruthy();
     expect(
       host.querySelector('[data-testid="channel-name"]')?.textContent,
     ).toBe("launch");
+  });
+
+  it("handles a stale owner-role 409 with a clear message and no raw error", async () => {
+    const removeChannelMember = vi.fn(async () =>
+      failure("invoke", "CHANNEL_OWNER_CANNOT_LEAVE"),
+    );
+    await mountApp({ removeChannelMember });
+
+    await openPopover();
+    host
+      .querySelector<HTMLButtonElement>(
+        '[data-testid="status-member-remove"]',
+      )!
+      .click();
+    await settle();
+
+    const alert = host.querySelector('[data-testid="channel-action-error"]');
+    expect(alert?.textContent).toContain(
+      "Channel owners can't leave their own channel.",
+    );
+    expect(alert?.textContent).not.toContain("CHANNEL_OWNER_CANNOT_LEAVE");
+    expect(host.querySelector('[data-testid="channel-header"]')).toBeTruthy();
   });
 });

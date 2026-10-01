@@ -4788,17 +4788,32 @@
           openAgentMember = null;
         }
       } else {
-        channelActionError =
-          res.message?.trim() ||
-          (isSelfLeave
-            ? `Couldn't leave #${activeRow?.title ?? "channel"}.`
-            : `Couldn't remove ${row.displayName || "member"}.`);
+        channelActionError = isOwnerCannotLeave(res.code, res.message)
+          ? OWNER_CANNOT_LEAVE_MESSAGE
+          : isSelfLeave
+            ? "Couldn't leave this channel. Refresh and try again."
+            : "Couldn't remove this member. Refresh and try again.";
       }
     } catch (err) {
-      channelActionError = err instanceof Error ? err.message : String(err);
+      const message = err instanceof Error ? err.message : String(err);
+      channelActionError = isOwnerCannotLeave(undefined, message)
+        ? OWNER_CANNOT_LEAVE_MESSAGE
+        : isSelfLeave
+          ? "Couldn't leave this channel. Refresh and try again."
+          : "Couldn't remove this member. Refresh and try again.";
     } finally {
       removingMemberUid = null;
     }
+  }
+
+  const OWNER_CANNOT_LEAVE_MESSAGE =
+    "Channel owners can't leave their own channel. Delete it or ask another owner to transfer ownership.";
+
+  function isOwnerCannotLeave(code?: string, message?: string): boolean {
+    return (
+      code === "CHANNEL_OWNER_CANNOT_LEAVE" ||
+      message?.includes("CHANNEL_OWNER_CANNOT_LEAVE") === true
+    );
   }
 
   // ── Channel notification level (header mute control) ─────────────────────
