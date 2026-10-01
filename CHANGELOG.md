@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- With the Personal workspace board rollout enabled, HQ Desktop shows the
+  cloud-backed board alongside company workspaces.
 - Work feed and Board reads now stop waiting after 15 seconds and keep their cached or empty states when requests fail.
 - On Apple Silicon Macs, the app now replaces a managed Node.js that was installed for Intel Macs instead of reusing it, so setup and repair install the right one.
 - Channel owners no longer see Leave while their channel role is unknown, and
@@ -190,6 +192,9 @@ The release moves it under the version it ships in.
   picked, a note says to update the coding tool if the bot cannot start with
   it, and a bot whose tool does not know its model now says so in plain words.
 
+- Personal workspaces with a cloud vault can show their board when the
+  `desktop.personal-workspace-board-v1` hq-flags rollout is enabled; it stays
+  off until explicitly enabled.
 - In a DM with a bot, the "is thinking" / "working on it" line now
   disappears as soon as the bot's reply appears, instead of staying under
   the reply for a few more seconds. It shows again when you send another
