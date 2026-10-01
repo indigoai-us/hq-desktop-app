@@ -36,6 +36,7 @@ aws-sigv4 = { version = "=1.4.3", features = ["http1"] }
 # `.no_gzip().no_brotli()` to keep Content-Length meaning the raw byte count.
 reqwest = { version = "0.12", features = ["json", "gzip", "brotli", "rustls-tls"] }
 semver = "1"
+shlex = "2"
 # ui_hot: UI hot-update bundles are tar.gz archives signed with the Tauri
 # updater's minisign key; verified with the same crate the updater plugin uses.
 flate2 = "1"
