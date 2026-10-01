@@ -696,6 +696,18 @@ describe('installs the CLI when the machine has none', () => {
     expect(body).not.toContain('is_bun_global_shim');
   });
 
+  it('preserves an already-restored install when a later rollback step fails', () => {
+    const restoreStart = cliUpdate.indexOf('fn restore(&mut self) -> Result<(), String> {');
+    const restoreEnd = cliUpdate.indexOf('\n    }', restoreStart);
+    const restore = normalize(cliUpdate.slice(restoreStart, restoreEnd));
+
+    // A prior restore may consume the package backup before a later shim rename
+    // fails. A retry must only remove the target when its backup still exists.
+    expect(restore).toContain(
+      'if path_entry_exists(saved) { remove_install_path(target)?; std::fs::rename(saved, target)',
+    );
+  });
+
   it('provisions HQ managed Node when a first install has no npm to run', () => {
     // The population with no CLI is the one least likely to have a toolchain.
     // A missing npm fails at the very first spawn, and that error propagates
