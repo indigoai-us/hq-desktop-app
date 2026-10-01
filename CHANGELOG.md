@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- The sidebar orders DMs and channels by the latest message a person typed.
+
 - HQ no longer restarts for an update, or at support's request, while a meeting
   is being recorded; it waits until the recording finishes.
 
