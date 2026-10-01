@@ -92,7 +92,7 @@ describe("SetupChannelIntro - guided install path (US-005)", () => {
     expect(host.querySelector('[data-testid="setup-install-guide"]')).toBeTruthy();
     expect(
       host.querySelector('[data-testid="setup-install-guide-primary"]')?.textContent,
-    ).toContain("Install Claude Code");
+    ).toBe("Install Claude");
   });
 
   it("does not render the guided path when the host has not wired installGuide", async () => {
@@ -167,5 +167,64 @@ describe("SetupChannelIntro - guided install path (US-005)", () => {
     download.click();
     await settle();
     expect(onopen).toHaveBeenCalledWith("https://claude.com/download");
+  });
+});
+
+describe("SetupChannelIntro - one next step while no coding tool is signed in", () => {
+  function guide(overrides: Record<string, unknown> = {}) {
+    return {
+      oninstall: vi.fn(async () => ({ ok: true as const })),
+      onsignin: vi.fn(async () => ({ ok: true as const })),
+      onrefresh: vi.fn(async () => undefined),
+      downloadUrlFor: () => "https://claude.com/download",
+      onopen: () => undefined,
+      ...overrides,
+    };
+  }
+
+  it("drops Retry and the hero button while the guide owns the next step, keeping the step-by-step link", async () => {
+    await render({ installGuide: guide() });
+    expect(host.querySelector('[data-testid="setup-install-guide"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="setup-bot-retry"]')).toBeNull();
+    expect(host.querySelector('[data-testid="setup-run"]')).toBeNull();
+    expect(host.querySelector('[data-testid="setup-bot-fallback"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="setup-bot-error"]')?.textContent).not.toContain("Retry");
+  });
+
+  it("keeps Retry when the host has no guide to offer", async () => {
+    await render({ installGuide: null });
+    expect(host.querySelector('[data-testid="setup-bot-retry"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="setup-run"]')).toBeTruthy();
+  });
+
+  it("an already signed-in tool shows Continue, and Continue starts the setup bot", async () => {
+    const start = vi.fn(async () => ({ ok: true as const, existing: false }));
+    await render({
+      setupBot: { ...setupBotNoRuntime, start },
+      installGuide: guide({ onstatus: vi.fn(async (tool: string) => tool === "claude") }),
+    });
+    await vi.waitFor(() =>
+      expect(host.querySelector('[data-testid="setup-install-guide-state"]')?.textContent).toBe("done"),
+    );
+    const primary = host.querySelector<HTMLButtonElement>('[data-testid="setup-install-guide-primary"]')!;
+    expect(primary.textContent).toBe("Continue");
+    expect(start).not.toHaveBeenCalled();
+    primary.click();
+    await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+  });
+
+  it("a sign-in finished in the guide starts the setup bot without another click", async () => {
+    const start = vi.fn(async () => ({ ok: true as const, existing: false }));
+    await render({
+      setupBot: { ...setupBotNoRuntime, start },
+      installGuide: guide({ onstatus: vi.fn(async () => false) }),
+    });
+    const primary = () =>
+      host.querySelector<HTMLButtonElement>('[data-testid="setup-install-guide-primary"]')!;
+    primary().click(); // Install Claude
+    await vi.waitFor(() => expect(primary().textContent).toBe("Sign in to Claude Code"));
+    expect(start).not.toHaveBeenCalled();
+    primary().click(); // Sign in; finishing it continues by itself
+    await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1));
   });
 });

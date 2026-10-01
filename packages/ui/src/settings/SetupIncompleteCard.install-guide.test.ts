@@ -87,8 +87,8 @@ describe("SetupIncompleteCard - guided install path (US-005)", () => {
     expect(guide).toBeTruthy();
     // The dead-end launches are still visible as a secondary option, but the
     // guided path is the primary way through.
-    expect(host.querySelector('[data-testid="setup-install-guide-primary"]')?.textContent).toContain(
-      "Install Claude Code",
+    expect(host.querySelector('[data-testid="setup-install-guide-primary"]')?.textContent).toBe(
+      "Install Claude",
     );
   });
 

@@ -42,7 +42,11 @@ interface RenderOpts {
   tools: AiTools | null;
   preferred?: CodingTool;
   oninstall?: (tool: CodingTool) => Promise<InstallOutcome>;
-  onsignin?: (tool: CodingTool) => Promise<InstallOutcome>;
+  onsignin?: (tool: CodingTool, options?: { signal?: AbortSignal }) => Promise<InstallOutcome>;
+  onstatus?: (tool: CodingTool) => Promise<boolean>;
+  oncancelsignin?: (tool: CodingTool) => Promise<void>;
+  oncontinue?: () => Promise<void> | void;
+  recheckMs?: number;
   onrefresh?: () => Promise<void>;
   downloadUrlFor?: (tool: CodingTool) => string;
   onopen?: (url: string) => Promise<InstallOutcome> | void;
@@ -58,6 +62,11 @@ async function render(opts: RenderOpts): Promise<{
   const onsignin = vi.fn(opts.onsignin ?? (async () => ({ ok: true })));
   const onrefresh = vi.fn(opts.onrefresh ?? (async () => undefined));
   const onopen = vi.fn(opts.onopen ?? (() => undefined));
+  const extra: Record<string, unknown> = {};
+  if (opts.onstatus) extra.onstatus = opts.onstatus;
+  if (opts.oncancelsignin) extra.oncancelsignin = opts.oncancelsignin;
+  if (opts.oncontinue) extra.oncontinue = opts.oncontinue;
+  if (opts.recheckMs !== undefined) extra.recheckMs = opts.recheckMs;
 
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -71,6 +80,7 @@ async function render(opts: RenderOpts): Promise<{
       onrefresh,
       downloadUrlFor: opts.downloadUrlFor ?? ((tool) => `https://download.example/${tool}`),
       onopen,
+      ...extra,
     },
   });
   await settle();
@@ -95,10 +105,10 @@ describe("SetupInstallGuide - no coding tool is installed", () => {
       tools: { ...NO_AI_TOOLS },
     });
 
-    // Fresh: primary says Install Claude Code, guide is idle.
+    // Fresh: primary says Install Claude, guide is idle.
     expect(state()).toBe("idle");
     const primary = q<HTMLButtonElement>('[data-testid="setup-install-guide-primary"]')!;
-    expect(primary.textContent).toContain("Install Claude Code");
+    expect(primary.textContent).toBe("Install Claude");
     expect(lede()).toContain("HQ can install");
 
     // Install runs, guide flips to installed-need-signin, primary is now Sign in.
@@ -115,7 +125,7 @@ describe("SetupInstallGuide - no coding tool is installed", () => {
     // Second click: sign-in runs and lands on done.
     q<HTMLButtonElement>('[data-testid="setup-install-guide-primary"]')!.click();
     await vi.waitFor(() => expect(state()).toBe("done"));
-    expect(onsignin).toHaveBeenCalledWith("claude");
+    expect(onsignin.mock.calls[0]?.[0]).toBe("claude");
     expect(onrefresh).toHaveBeenCalledTimes(2);
     expect(q<HTMLButtonElement>('[data-testid="setup-install-guide-primary"]')!.disabled).toBe(true);
   });
@@ -136,7 +146,7 @@ describe("SetupInstallGuide - tool present but not signed in", () => {
     await vi.waitFor(() => expect(state()).toBe("done"));
     // Install path never fired - the guide correctly picked the right step.
     expect(oninstall).not.toHaveBeenCalled();
-    expect(onsignin).toHaveBeenCalledWith("claude");
+    expect(onsignin.mock.calls[0]?.[0]).toBe("claude");
   });
 });
 
@@ -253,6 +263,262 @@ describe("SetupInstallGuide - safety rules", () => {
     // tool isn't there and offers Install as the reasonable first step.
     expect(
       q<HTMLButtonElement>('[data-testid="setup-install-guide-primary"]')!.textContent,
-    ).toContain("Install Claude Code");
+    ).toBe("Install Claude");
+  });
+});
+
+function primary(): HTMLButtonElement {
+  return q<HTMLButtonElement>('[data-testid="setup-install-guide-primary"]')!;
+}
+
+describe("SetupInstallGuide - choosing Claude Code or Codex", () => {
+  it("offers both tools and installs and signs in to the one the person picks", async () => {
+    const { oninstall, onsignin } = await render({ tools: { ...NO_AI_TOOLS } });
+
+    const claude = q<HTMLButtonElement>('[data-testid="setup-install-guide-pick-claude"]')!;
+    const codex = q<HTMLButtonElement>('[data-testid="setup-install-guide-pick-codex"]')!;
+    expect(claude.textContent).toBe("Claude Code");
+    expect(codex.textContent).toBe("Codex");
+    expect(claude.getAttribute("aria-checked")).toBe("true");
+
+    codex.click();
+    await settle();
+    expect(codex.getAttribute("aria-checked")).toBe("true");
+    expect(primary().textContent).toBe("Install Codex");
+    expect(lede()).toContain("HQ can install Codex");
+
+    primary().click();
+    await vi.waitFor(() => expect(state()).toBe("installed-need-signin"));
+    expect(oninstall).toHaveBeenCalledWith("codex");
+    expect(primary().textContent).toBe("Sign in to Codex");
+
+    primary().click();
+    await vi.waitFor(() => expect(state()).toBe("done"));
+    expect(onsignin.mock.calls[0]?.[0]).toBe("codex");
+  });
+
+  it("offers sign-in, not install, for a tool that is already on this computer", async () => {
+    await render({ tools: { ...NO_AI_TOOLS, codex_cli: true, any: true } });
+    q<HTMLButtonElement>('[data-testid="setup-install-guide-pick-codex"]')!.click();
+    await settle();
+    expect(primary().textContent).toBe("Sign in to Codex");
+  });
+
+  it("hides the picker while a step is running and once a tool is signed in", async () => {
+    let finishInstall!: (outcome: InstallOutcome) => void;
+    await render({
+      tools: { ...NO_AI_TOOLS },
+      oninstall: () => new Promise<InstallOutcome>((resolve) => (finishInstall = resolve)),
+    });
+    primary().click();
+    await vi.waitFor(() => expect(state()).toBe("installing"));
+    expect(q('[data-testid="setup-install-guide-picker"]')).toBeNull();
+    finishInstall({ ok: true });
+    await vi.waitFor(() => expect(state()).toBe("installed-need-signin"));
+    expect(q('[data-testid="setup-install-guide-picker"]')).not.toBeNull();
+  });
+});
+
+describe("SetupInstallGuide - install button label", () => {
+  it("reads 'Install Claude' on the button and keeps 'Claude Code' in the sentence", async () => {
+    await render({ tools: { ...NO_AI_TOOLS } });
+    expect(primary().textContent).toBe("Install Claude");
+    expect(lede()).toContain("HQ can install Claude Code");
+  });
+});
+
+describe("SetupInstallGuide - noticing sign-in by itself", () => {
+  it("skips straight to Continue when a coding tool is already signed in", async () => {
+    const oncontinue = vi.fn(async () => undefined);
+    const onstatus = vi.fn(async (tool: CodingTool) => tool === "codex");
+    const { oninstall, onsignin } = await render({
+      tools: { ...NO_AI_TOOLS, claude_cli: true, codex_cli: true, any: true },
+      onstatus,
+      oncontinue,
+    });
+
+    await vi.waitFor(() => expect(state()).toBe("done"));
+    expect(q('[data-testid="setup-install-guide"]')!.getAttribute("data-tool")).toBe("codex");
+    expect(primary().textContent).toBe("Continue");
+    expect(primary().disabled).toBe(false);
+    expect(lede()).toContain("Codex is ready");
+    expect(oninstall).not.toHaveBeenCalled();
+    expect(onsignin).not.toHaveBeenCalled();
+    // An existing sign-in is shown, not acted on: the person clicks Continue.
+    expect(oncontinue).not.toHaveBeenCalled();
+
+    primary().click();
+    await vi.waitFor(() => expect(oncontinue).toHaveBeenCalledTimes(1));
+  });
+
+  it("keeps checking while idle and shows Continue once the sign-in lands elsewhere", async () => {
+    let signedIn = false;
+    const onstatus = vi.fn(async () => signedIn);
+    await render({
+      tools: { ...NO_AI_TOOLS, claude_cli: true, any: true },
+      onstatus,
+      oncontinue: async () => undefined,
+      recheckMs: 10,
+    });
+    expect(state()).toBe("idle");
+    signedIn = true;
+    await vi.waitFor(() => expect(state()).toBe("done"));
+    expect(primary().textContent).toBe("Continue");
+    const calls = onstatus.mock.calls.length;
+    // Once done, the checks stop.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(onstatus.mock.calls.length).toBe(calls);
+  });
+
+  it("continues by itself after a sign-in finished in the guide", async () => {
+    const oncontinue = vi.fn(async () => undefined);
+    await render({
+      tools: { ...NO_AI_TOOLS, claude_cli: true, any: true },
+      onstatus: async () => false,
+      oncontinue,
+    });
+    primary().click();
+    await vi.waitFor(() => expect(state()).toBe("done"));
+    await vi.waitFor(() => expect(oncontinue).toHaveBeenCalledTimes(1));
+  });
+
+  it("keeps a Continue button to retry when continuing fails", async () => {
+    const oncontinue = vi.fn(async () => {
+      throw new Error("boom");
+    });
+    await render({ tools: { ...NO_AI_TOOLS, claude_cli: true, any: true }, oncontinue });
+    primary().click();
+    await vi.waitFor(() =>
+      expect(q('[data-testid="setup-install-guide-continue-error"]')).not.toBeNull(),
+    );
+    expect(primary().textContent).toBe("Continue");
+    expect(primary().disabled).toBe(false);
+    expect(q('[data-testid="setup-install-guide-continue-error"]')!.textContent).not.toContain("boom");
+  });
+});
+
+describe("SetupInstallGuide - waiting for the browser sign-in", () => {
+  it("shows a waiting state, not a failure, while the browser sign-in is open", async () => {
+    let finish!: (outcome: InstallOutcome) => void;
+    await render({
+      tools: { ...NO_AI_TOOLS, claude_cli: true, any: true },
+      onsignin: () => new Promise<InstallOutcome>((resolve) => (finish = resolve)),
+      oncancelsignin: async () => undefined,
+    });
+    primary().click();
+    await vi.waitFor(() => expect(state()).toBe("signing-in"));
+    expect(q('[data-testid="setup-install-guide-error"]')).toBeNull();
+    expect(lede()).toContain("in your browser");
+    expect(primary().textContent).toBe("Waiting for sign-in…");
+    finish({ ok: true });
+    await vi.waitFor(() => expect(state()).toBe("done"));
+  });
+
+  it("'Open the sign-in page again' stops the pending sign-in and starts a fresh one", async () => {
+    const signals: (AbortSignal | undefined)[] = [];
+    const onsignin = vi.fn(
+      (_tool: CodingTool, options?: { signal?: AbortSignal }) =>
+        new Promise<InstallOutcome>((resolve) => {
+          signals.push(options?.signal);
+          options?.signal?.addEventListener("abort", () => resolve({ ok: false, reason: "Sign-in cancelled." }));
+        }),
+    );
+    const oncancelsignin = vi.fn(async () => undefined);
+    await render({
+      tools: { ...NO_AI_TOOLS, claude_cli: true, any: true },
+      onsignin,
+      oncancelsignin,
+    });
+    primary().click();
+    await vi.waitFor(() => expect(state()).toBe("signing-in"));
+    q<HTMLButtonElement>('[data-testid="setup-install-guide-restart-signin"]')!.click();
+    await vi.waitFor(() => expect(onsignin).toHaveBeenCalledTimes(2));
+    expect(oncancelsignin).toHaveBeenCalledWith("claude");
+    expect(signals[0]?.aborted).toBe(true);
+    // The cancelled first attempt never surfaces as a failure.
+    expect(state()).toBe("signing-in");
+    expect(q('[data-testid="setup-install-guide-error"]')).toBeNull();
+  });
+});
+
+describe("SetupInstallGuide - recovering when sign-in did not complete", () => {
+  it("offers one retry, the other tool, and notices a late sign-in", async () => {
+    let signedIn = false;
+    await render({
+      tools: { ...NO_AI_TOOLS, claude_cli: true, any: true },
+      onsignin: async () => ({ ok: false, reason: "Sign-in timed out. Please retry." }),
+      onstatus: async () => signedIn,
+      oncontinue: async () => undefined,
+      recheckMs: 10,
+    });
+    primary().click();
+    await vi.waitFor(() => expect(state()).toBe("signin-failed"));
+    expect(primary().textContent).toBe("Try signing in again");
+    expect(lede()).toContain("choose Codex instead");
+    expect(q('[data-testid="setup-install-guide-pick-codex"]')).not.toBeNull();
+    // Only one primary action in the guide.
+    expect(host.querySelectorAll("button.primary").length).toBe(1);
+
+    // The sign-in finished after HQ stopped waiting: no dead end.
+    signedIn = true;
+    await vi.waitFor(() => expect(state()).toBe("done"));
+    expect(primary().textContent).toBe("Continue");
+  });
+
+  it("switching to Codex after a failed sign-in offers to install Codex", async () => {
+    const { oninstall } = await render({
+      tools: { ...NO_AI_TOOLS, claude_cli: true, any: true },
+      onsignin: async () => ({ ok: false, reason: "Sign-in did not complete." }),
+    });
+    primary().click();
+    await vi.waitFor(() => expect(state()).toBe("signin-failed"));
+    q<HTMLButtonElement>('[data-testid="setup-install-guide-pick-codex"]')!.click();
+    await settle();
+    expect(state()).toBe("idle");
+    expect(q('[data-testid="setup-install-guide-error"]')).toBeNull();
+    expect(primary().textContent).toBe("Install Codex");
+    primary().click();
+    await vi.waitFor(() => expect(oninstall).toHaveBeenCalledWith("codex"));
+  });
+});
+
+describe("SetupInstallGuide - no empty panel", () => {
+  it("does not render the assistant-app box when no assistant app is on this computer", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(SetupInstallGuide, {
+      target: host,
+      props: {
+        tools: { ...NO_AI_TOOLS },
+        oninstall: async () => ({ ok: true }),
+        onsignin: async () => ({ ok: true }),
+        onrefresh: async () => undefined,
+        downloadUrlFor: () => "",
+        onopen: () => undefined,
+        onopenassistant: async () => ({ ok: true }),
+      },
+    });
+    await settle();
+    expect(q('[data-testid="install-choice-panel"]')).toBeNull();
+  });
+
+  it("renders it when the ChatGPT app is on this computer", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(SetupInstallGuide, {
+      target: host,
+      props: {
+        tools: { ...NO_AI_TOOLS, codex_desktop: true, any: true },
+        oninstall: async () => ({ ok: true }),
+        onsignin: async () => ({ ok: true }),
+        onrefresh: async () => undefined,
+        downloadUrlFor: () => "",
+        onopen: () => undefined,
+        onopenassistant: async () => ({ ok: true }),
+      },
+    });
+    await settle();
+    // ChatGPT is there; Claude Code (the active tool) is not installed.
+    expect(q('[data-testid="install-choice-panel"]')).not.toBeNull();
   });
 });

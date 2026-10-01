@@ -7,6 +7,14 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+- Setting up a coding tool after onboarding is smoother. You can choose
+  Claude Code or Codex, and the install button now reads "Install Claude".
+  HQ notices by itself when a coding tool is already signed in, or when you
+  finish signing in in your browser, and shows one Continue button instead of
+  "Sign in above, then Retry". It no longer says "Sign-in did not complete"
+  while your browser sign-in is still open, and if a sign-in does fail you
+  can try again, switch tools, or reopen the sign-in page.
+
 - Core Drift ignores setup PATH changes and generated wrapper markers while retaining raw-hash fallback when settings JSON cannot be parsed.
 - Core Drift ignores the desktop-generated `env.PATH` in `.claude/settings.json` and the company skill-wrapper marker, while continuing to report other settings edits.
 
