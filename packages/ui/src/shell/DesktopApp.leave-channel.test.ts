@@ -132,6 +132,37 @@ async function openPopover(): Promise<void> {
 }
 
 describe("DesktopApp leave channel (self-remove)", () => {
+  it.each(["missing", "null"] as const)(
+    "does not offer Leave when the parsed roster has a %s caller role",
+    async (roleShape) => {
+      const roster = {
+        members: [
+          {
+            personUid: "prs_me",
+            displayName: "Ada Lovelace",
+            ...(roleShape === "null" ? { role: null } : {}),
+          },
+          {
+            personUid: "prs_owner",
+            displayName: "Marcus Chen",
+            role: "owner",
+          },
+        ],
+      };
+      await mountApp({ listChannelMembers: async () => ok(roster) });
+
+      await openPopover();
+
+      const selfRow = [...host.querySelectorAll<HTMLElement>(
+        '[data-testid="status-member"]',
+      )].find((row) => row.textContent?.includes("Ada Lovelace"));
+      expect(selfRow, "parsed caller roster row is visible").toBeTruthy();
+      expect(
+        selfRow?.querySelector('[data-testid="status-member-remove"]'),
+      ).toBeNull();
+    },
+  );
+
   it("success: emits channel:removed, drops the rail row, clears selection, closes popover", async () => {
     const removeChannelMember = vi.fn(async () => ok({ removed: "prs_me" }));
     const wakes = await mountApp({ removeChannelMember });
