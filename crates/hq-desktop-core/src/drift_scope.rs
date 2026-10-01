@@ -580,6 +580,19 @@ pub fn drift_blob_sha(content: &[u8]) -> String {
     git_blob_sha(normalized.as_ref())
 }
 
+/// Compare semantic settings hashes when both exist, otherwise raw blob SHAs.
+pub fn drift_hash_matches_with_raw_fallback(
+    local_raw_sha: &str,
+    upstream_raw_sha: &str,
+    local_settings_sha: Option<&str>,
+    upstream_settings_sha: Option<&str>,
+) -> bool {
+    match (local_settings_sha, upstream_settings_sha) {
+        (Some(local), Some(upstream)) => local == upstream,
+        _ => local_raw_sha == upstream_raw_sha,
+    }
+}
+
 /// Drift hash for settings JSON, ignoring only the setup-owned PATH.
 pub fn drift_blob_sha_for_path(path: &str, content: &[u8]) -> String {
     if path != ".claude/settings.json" {
@@ -702,8 +715,8 @@ pub fn walk_local_under_scope(
                     continue;
                 };
                 let size = content.len() as u64;
-                let rel_str = rel_path.to_string_lossy().replace('\\', "/");
                 let sha = drift_blob_sha(&content);
+                let rel_str = rel_path.to_string_lossy().replace('\\', "/");
                 out.insert(rel_str, (sha, size));
             }
         } else {
@@ -775,6 +788,12 @@ mod tests {
             drift_blob_sha_for_path(".claude/settings.json", before),
             drift_blob_sha_for_path(".claude/settings.json", after),
         );
+    }
+
+    #[test]
+    fn settings_comparison_falls_back_to_raw_shas_when_semantic_hash_is_missing() {
+        assert!(drift_hash_matches_with_raw_fallback("same", "same", Some("left"), None));
+        assert!(!drift_hash_matches_with_raw_fallback("local", "upstream", Some("same"), None));
     }
 
     #[test]

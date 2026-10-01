@@ -4127,15 +4127,23 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
             };
             let target_settings_sha = match target_in_scope.get(settings_path) {
                 Some((sha, _)) => {
-                    let content = fetch_blob_content(&client, &target_repo, sha, request_scope)
-                        .await
-                        .map_err(|error| {
-                            CoreUpdateError::new(CoreUpdateErrorKind::Network, error)
-                        })?;
-                    Some(hq_desktop_core::drift_scope::drift_blob_sha_for_path(
-                        settings_path,
-                        &content,
-                    ))
+                    match fetch_blob_content(&client, &target_repo, sha, request_scope).await {
+                        Ok(content) => Some(
+                            hq_desktop_core::drift_scope::drift_blob_sha_for_path(
+                                settings_path,
+                                &content,
+                            ),
+                        ),
+                        Err(error) => {
+                            log(
+                                "hq-core-state",
+                                &format!(
+                                    "could not read target settings blob for semantic drift comparison: {error}; retaining raw SHA comparison"
+                                ),
+                            );
+                            None
+                        }
+                    }
                 }
                 None => None,
             };
@@ -4185,21 +4193,23 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
                     .get(*path)
                     .cloned()
                     .unwrap_or_else(|| sha_target.clone());
-                let (compare_local, compare_expected) = if *path == settings_path {
+                let unchanged = if *path == settings_path {
                     let expected = if floor_in_scope.contains_key(settings_path) {
-                        floor_settings_sha.as_ref()
+                        floor_settings_sha.as_deref()
                     } else {
-                        target_settings_sha.as_ref()
+                        target_settings_sha.as_deref()
                     };
-                    match (local_settings_sha.as_ref(), expected) {
-                        (Some(local_sha), Some(expected_sha)) => (local_sha, expected_sha),
-                        _ => (sha_local, &classification_sha),
-                    }
+                    hq_desktop_core::drift_scope::drift_hash_matches_with_raw_fallback(
+                        sha_local,
+                        &classification_sha,
+                        local_settings_sha.as_deref(),
+                        expected,
+                    )
                 } else {
-                    (sha_local, &classification_sha)
+                    sha_local == &classification_sha
                 };
 
-                if compare_local == compare_expected {
+                if unchanged {
                     unchanged_count += 1;
                 } else {
                     user_edit.push(DriftEntry {
@@ -4249,10 +4259,12 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
                 let floor_sha_at_path = floor_in_scope.get(*path);
                 let floor_matches_local = floor_sha_at_path.map(|floor_sha| {
                     if *path == settings_path {
-                        match (local_settings_sha.as_ref(), floor_settings_sha.as_ref()) {
-                            (Some(local_sha), Some(floor_settings)) => local_sha == floor_settings,
-                            _ => sha_local == floor_sha,
-                        }
+                        hq_desktop_core::drift_scope::drift_hash_matches_with_raw_fallback(
+                            sha_local,
+                            floor_sha,
+                            local_settings_sha.as_deref(),
+                            floor_settings_sha.as_deref(),
+                        )
                     } else {
                         sha_local == floor_sha
                     }
