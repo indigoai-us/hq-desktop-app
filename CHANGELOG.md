@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Work feed and Board reads now stop waiting after 15 seconds and keep their cached or empty states when requests fail.
+
 ## [0.10.371] — 2026-10-01
 
 - Desktop sync now recovers legacy watcher processes left behind by an app update when their process path and ancestry prove they belong to the desktop. Other active sync owners continue to be left alone.

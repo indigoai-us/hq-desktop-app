@@ -64,6 +64,8 @@ async function call<T>(p: Promise<AdapterResult<unknown>>): Promise<T> {
 const INBOX_PAGE_LIMIT = 50;
 const INBOX_HYDRATE_PAGES = 2;
 const WORK_FEED_TTL_MS = 60_000;
+// Keep a stalled feed from holding sidebar hydration past a normal refresh window.
+const WORK_FEED_REQUEST_TIMEOUT_MS = 15_000;
 
 export interface HydratedRail {
   directory: ChannelDirectoryRow[];
@@ -103,16 +105,39 @@ async function loadWorkFeed(
   ) {
     return workFeedCache.items;
   }
+  const controller = new AbortController();
+  let timeoutElapsed = false;
+  let phase: "request" | "body" = "request";
+  const timeout = setTimeout(() => {
+    timeoutElapsed = true;
+    controller.abort();
+  }, WORK_FEED_REQUEST_TIMEOUT_MS);
   try {
-    const res = await fetchImpl("/v1/work-mesh/work");
+    const res = await fetchImpl("/v1/work-mesh/work", {
+      signal: controller.signal,
+    });
     if (!res.ok) {
+      console.warn("[hq-work-feed] request failed", {
+        event: "http-error",
+        status: res.status,
+      });
       return workFeedCache?.key === personUid ? workFeedCache.items : [];
     }
+    phase = "body";
     const items = parseWorkFeed(await res.json());
     workFeedCache = { key: personUid, at: now, items };
     return items;
   } catch {
+    console.warn("[hq-work-feed] request failed", {
+      event: timeoutElapsed
+        ? "timeout"
+        : phase === "body"
+          ? "body-error"
+          : "transport-error",
+    });
     return workFeedCache?.key === personUid ? workFeedCache.items : [];
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
