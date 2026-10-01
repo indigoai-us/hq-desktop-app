@@ -17,8 +17,10 @@ describe('LaunchAgent bundle-rename heal (source contracts)', () => {
     expect(autostart).toContain('schedule_handoff_after_exit()');
     expect(autostart).toContain('exiting without GUI relaunch');
     expect(autostart).toContain(
-      'pub fn restart_preferring_launch_agent(app: &tauri::AppHandle) -> !',
+      'pub fn restart_preferring_launch_agent(app: &tauri::AppHandle) -> bool',
     );
+    expect(autostart).toContain('crate::updater::restart_is_held(app)');
+    expect(autostart).toContain('crate::updater::defer_restart_until_safe(app.clone())');
   });
 
   it('does not steal focus when launchd KeepAlive starts a second copy', () => {
