@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Home now lists projects from your Personal workspace, and Personal board and summary requests resolve with your Personal identity.
 - Usage telemetry now backs off after unaccepted batches and does not resend rows the server explicitly skipped.
 - First-run setup now retries a just-published npm package when the registry
   briefly returns E404 or ETARGET, while keeping setup progress active.
