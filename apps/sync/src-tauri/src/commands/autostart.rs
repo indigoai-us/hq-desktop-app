@@ -92,8 +92,17 @@ pub fn reconcile_launch_agent_after_update() {
 /// A LaunchServices relaunch is invisible to the KeepAlive agent, which then
 /// starts a second copy every ~10s and the single-instance handler steals
 /// focus. Falls back to `app.restart()` when no LaunchAgent is installed.
-/// Never returns: same contract as `AppHandle::restart`.
-pub fn restart_preferring_launch_agent(app: &tauri::AppHandle) -> ! {
+/// Returns `false` when a protected activity deferred the restart. Successful
+/// restart paths do not return, preserving `AppHandle::restart` semantics.
+pub fn restart_preferring_launch_agent(app: &tauri::AppHandle) -> bool {
+    if let Some(reasons) = crate::updater::restart_is_held(app) {
+        log(
+            "updater",
+            &format!("restart deferred while protected activity is active: {reasons:?}"),
+        );
+        crate::updater::defer_restart_until_safe(app.clone());
+        return false;
+    }
     #[cfg(target_os = "macos")]
     {
         if hq_platform::launchagent::schedule_handoff_after_exit() {

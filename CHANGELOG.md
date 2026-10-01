@@ -9,6 +9,10 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Setup diagnostics now identify the resolved CLI copy and settings PATH source using path-free values.
+- The sidebar orders DMs and channels by the latest message a person typed.
+
+- HQ no longer restarts for an update, or at support's request, while a meeting
+  is being recorded; it waits until the recording finishes.
 - Internal: removed two unused packages/ui helpers and made three module-only helpers private (TD-60, #1198). No user-visible change.
 - Internal: unused exports in the shared UI package are now module-private. No behaviour change.
 
