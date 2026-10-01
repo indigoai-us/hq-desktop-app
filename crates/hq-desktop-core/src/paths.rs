@@ -687,6 +687,20 @@ pub fn resolve_bin_on_child_path(name: &str) -> Option<ResolvedProgram> {
 /// version probes need exactly that distinction to report an installed-but-
 /// unreadable CLI honestly instead of reporting it as absent.
 pub fn resolve_bin_with_kind(name: &str) -> ResolvedProgram {
+    resolve_bin_with_diagnostics(name).0
+}
+
+/// Resolve the startup `hq` executable and return only observations already
+/// made by its ordinary resolver traversal. This is used by the lifecycle
+/// reporter; it never performs a second search or emits the selected path.
+pub fn resolve_hq_with_diagnostics() -> (ResolvedProgram, HqResolverDiagnostics) {
+    resolve_bin_with_diagnostics("hq")
+}
+
+fn resolve_bin_with_diagnostics(
+    name: &str,
+) -> (ResolvedProgram, HqResolverDiagnostics) {
+    let mut diagnostics = HqResolverDiagnostics::unknown();
     #[cfg(target_os = "windows")]
     {
         let candidates = candidate_filenames(name);
@@ -708,13 +722,21 @@ pub fn resolve_bin_with_kind(name: &str) -> ResolvedProgram {
             let mut dirs = settings_path_dirs();
             dirs.extend(extended_search_dirs());
             let backing = |path: &Path| crate::hq_cli_update::hq_cli_backing(path);
-            if let Some(found) = select_hq_program_on_disk(&dirs, &candidates, &reject, &backing) {
-                return found;
+            let (found, observed) = select_hq_program_in_dirs_with_diagnostics(
+                &dirs,
+                &candidates,
+                &|path: &Path| path.exists(),
+                &reject,
+                &backing,
+            );
+            diagnostics = observed;
+            if let Some(found) = found {
+                return (found, diagnostics);
             }
         } else if let Some(found) =
             select_program_on_disk_rejecting(&extended_search_dirs(), &candidates, &reject)
         {
-            return found;
+            return (found, diagnostics);
         }
 
         let mut where_cmd = Command::new("where.exe");
@@ -730,13 +752,16 @@ pub fn resolve_bin_with_kind(name: &str) -> ResolvedProgram {
                     // Drop an npx-cache `hq` from where.exe's list too.
                     .filter(|l| !reject(Path::new(l)))
                     .collect();
+                if name == "hq" && diagnostics.candidate_count == 0 {
+                    diagnostics.candidate_count = matches.len().min(2) as u8;
+                }
                 if let Some(best) = pick_spawnable_program(&matches) {
-                    return best;
+                    return (best, diagnostics);
                 }
             }
         }
 
-        ResolvedProgram::not_resolved(name)
+        (ResolvedProgram::not_resolved(name), diagnostics)
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -747,7 +772,7 @@ pub fn resolve_bin_with_kind(name: &str) -> ResolvedProgram {
         // environment and its login shell cannot be started.
         if name == "node" {
             if let Some(resolved) = resolve_bin_on_child_path(name) {
-                return resolved;
+                return (resolved, diagnostics);
             }
         }
 
@@ -758,7 +783,7 @@ pub fn resolve_bin_with_kind(name: &str) -> ResolvedProgram {
         // with the one the child will execute.
         if name == "git" {
             if let Some(resolved) = resolve_bin_on_child_path(name) {
-                return resolved;
+                return (resolved, diagnostics);
             }
         }
 
@@ -777,31 +802,39 @@ pub fn resolve_bin_with_kind(name: &str) -> ResolvedProgram {
         if name == "hq" {
             let reject = |path: &Path| hq_lookup_rejects_candidate(name, path);
             let backing = |path: &Path| crate::hq_cli_update::hq_cli_backing(path);
-            if let Some(found) = select_hq_program_in_dirs(
+            let (found, observed) = select_hq_program_in_dirs_with_diagnostics(
                 &unix_hq_search_dirs(home_dir().as_deref()),
                 &[name.to_string()],
                 &is_executable_file,
                 &reject,
                 &backing,
-            ) {
+            );
+            diagnostics = observed;
+            if let Some(found) = found {
                 // Unix has no extension-based spawnability contract: normalise the
                 // selector's extensionless classification to `Exe` so the closed
                 // diagnostics keep the Unix arm's documented
                 // `resolved_program_kind: exe` vocabulary.
-                return ResolvedProgram {
-                    path: found.path,
-                    kind: ResolvedProgramKind::Exe,
-                };
+                return (
+                    ResolvedProgram {
+                        path: found.path,
+                        kind: ResolvedProgramKind::Exe,
+                    },
+                    diagnostics,
+                );
             }
         } else if let Some(path) = resolve_bin_in_dirs(home_dir().as_deref(), name) {
             // Every non-`hq` name keeps the untouched search. Unix has no
             // extension-based spawnability contract: a file the resolver found is
             // a program the loader will attempt, reported as `Exe` so the closed
             // diagnostics stay meaningful cross-platform.
-            return ResolvedProgram {
-                path,
-                kind: ResolvedProgramKind::Exe,
-            };
+            return (
+                ResolvedProgram {
+                    path,
+                    kind: ResolvedProgramKind::Exe,
+                },
+                diagnostics,
+            );
         }
 
         // 5. Login-shell PATH lookup — catches nvm/volta/asdf + any custom prefix
@@ -831,7 +864,7 @@ pub fn resolve_bin_with_kind(name: &str) -> ResolvedProgram {
                 // match otherwise — a machine whose only `hq` is unbacked still
                 // resolves and is never reported absent by this lane. Every other
                 // name keeps `command -v`'s single first match.
-                let mut first_found: Option<String> = None;
+                let mut first_found: Option<(String, CandidateBacking)> = None;
                 for line in stdout.lines() {
                     let path = line.trim();
                     if path.is_empty()
@@ -840,31 +873,52 @@ pub fn resolve_bin_with_kind(name: &str) -> ResolvedProgram {
                     {
                         continue;
                     }
-                    if name != "hq"
-                        || crate::hq_cli_update::hq_cli_backing(Path::new(path))
-                            == CandidateBacking::Backed
-                    {
-                        return ResolvedProgram {
-                            path: path.to_string(),
-                            kind: ResolvedProgramKind::Exe,
-                        };
-                    }
-                    if first_found.is_none() {
-                        first_found = Some(path.to_string());
+                    if name == "hq" {
+                        diagnostics.candidate_count =
+                            diagnostics.candidate_count.saturating_add(1).min(2);
+                        let candidate_backing =
+                            crate::hq_cli_update::hq_cli_backing(Path::new(path));
+                        if candidate_backing.is_backed() {
+                            diagnostics.managed_package_state =
+                                managed_hq_package_state(Path::new(path), candidate_backing);
+                            return (
+                                ResolvedProgram {
+                                    path: path.to_string(),
+                                    kind: ResolvedProgramKind::Exe,
+                                },
+                                diagnostics,
+                            );
+                        }
+                        if first_found.is_none() {
+                            first_found = Some((path.to_string(), candidate_backing));
+                        }
+                    } else {
+                        return (
+                            ResolvedProgram {
+                                path: path.to_string(),
+                                kind: ResolvedProgramKind::Exe,
+                            },
+                            diagnostics,
+                        );
                     }
                 }
-                if let Some(path) = first_found {
-                    return ResolvedProgram {
-                        path,
-                        kind: ResolvedProgramKind::Exe,
-                    };
+                if let Some((path, candidate_backing)) = first_found {
+                    diagnostics.managed_package_state =
+                        managed_hq_package_state(Path::new(&path), candidate_backing);
+                    return (
+                        ResolvedProgram {
+                            path,
+                            kind: ResolvedProgramKind::Exe,
+                        },
+                        diagnostics,
+                    );
                 }
             }
         }
 
         // Fall back to bare name — Command::new will then produce os error 2
         // with the binary name still recognizable in the error message.
-        ResolvedProgram::not_resolved(name)
+        (ResolvedProgram::not_resolved(name), diagnostics)
     }
 }
 
@@ -1869,12 +1923,58 @@ pub fn select_program_on_disk_rejecting(
 pub enum CandidateBacking {
     Backed,
     AbsentDefinitive,
+    ManifestInvalid,
+    ManifestUnreadable,
     Indeterminate,
 }
 
 impl CandidateBacking {
     fn is_backed(self) -> bool {
         matches!(self, Self::Backed)
+    }
+
+    pub fn managed_package_state_tag(self) -> &'static str {
+        match self {
+            Self::Backed => "present",
+            Self::AbsentDefinitive => "missing",
+            Self::ManifestInvalid => "invalid",
+            Self::ManifestUnreadable => "unreadable",
+            Self::Indeterminate => "unknown",
+        }
+    }
+}
+
+fn managed_hq_package_state(path: &Path, backing: CandidateBacking) -> &'static str {
+    if hq_bin_in_managed_root(path) {
+        backing.managed_package_state_tag()
+    } else {
+        "unknown"
+    }
+}
+
+/// Path-free summary of the candidate observations made by the normal `hq`
+/// resolver traversal. Counts only candidates the traversal actually checked;
+/// it does not initiate a second search to discover shadowed binaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HqResolverDiagnostics {
+    pub candidate_count: u8,
+    pub managed_package_state: &'static str,
+}
+
+impl HqResolverDiagnostics {
+    pub fn candidate_count_bucket(self) -> &'static str {
+        match self.candidate_count {
+            0 => "0",
+            1 => "1",
+            _ => "2_plus",
+        }
+    }
+
+    pub fn unknown() -> Self {
+        Self {
+            candidate_count: 0,
+            managed_package_state: "unknown",
+        }
     }
 }
 
@@ -1906,39 +2006,69 @@ pub fn select_hq_program_in_dirs(
     reject: &dyn Fn(&Path) -> bool,
     backing: &dyn Fn(&Path) -> CandidateBacking,
 ) -> Option<ResolvedProgram> {
-    let base = select_program_in_dirs_rejecting(dirs, candidates, exists, reject)?;
-    // The base winner is already the best of its spawnability class (first
-    // spawnable, else first found). If it is also backed it cannot be outranked —
-    // return it without probing any other candidate's backing.
-    if backing(Path::new(&base.path)).is_backed() {
-        return Some(base);
-    }
-    // The base winner is unbacked. Widen for a backed candidate that outranks it:
-    //   - a spawnable base (tier 2) is only beaten by a backed+spawnable (tier 1);
-    //   - a non-spawnable base (tier 4 — no spawnable exists anywhere) is beaten by
-    //     the first backed candidate (tier 3).
-    let spawnable_only = base.is_spawnable();
-    first_backed_candidate(dirs, candidates, exists, reject, backing, spawnable_only).or(Some(base))
+    select_hq_program_in_dirs_with_diagnostics(dirs, candidates, exists, reject, backing).0
 }
 
-/// First existing, non-rejected, BACKED candidate in resolver order (directory
-/// precedence, spawnable candidates first). When `spawnable_only`, non-spawnable
-/// candidates are skipped so a backed non-spawnable can never outrank an unbacked
-/// spawnable. Used only on the widen path, so its extra backing probes never
-/// touch the healthy hot path.
-fn first_backed_candidate(
+/// The same short-circuiting selection as `select_hq_program_in_dirs`, with a
+/// bounded count of candidates observed during its existing traversal and the
+/// backing result for the selected program. No additional filesystem probes
+/// are performed for diagnostics.
+fn select_hq_program_in_dirs_with_diagnostics(
     dirs: &[PathBuf],
     candidates: &[String],
     exists: &dyn Fn(&Path) -> bool,
     reject: &dyn Fn(&Path) -> bool,
     backing: &dyn Fn(&Path) -> CandidateBacking,
-    spawnable_only: bool,
-) -> Option<ResolvedProgram> {
-    let passes: &[bool] = if spawnable_only {
-        &[true]
-    } else {
-        &[true, false]
+) -> (Option<ResolvedProgram>, HqResolverDiagnostics) {
+    let mut observed = std::collections::HashSet::<PathBuf>::new();
+    let mut base = None;
+    for spawnable_pass in [true, false] {
+        'search: for dir in dirs {
+            for candidate in candidates {
+                if is_spawnable_program(candidate) != spawnable_pass {
+                    continue;
+                }
+                let full = dir.join(candidate);
+                if exists(&full) && !reject(&full) {
+                    observed.insert(full.clone());
+                    base = Some(ResolvedProgram {
+                        path: full.to_string_lossy().to_string(),
+                        kind: program_kind(candidate),
+                    });
+                    break 'search;
+                }
+            }
+        }
+        if base.is_some() {
+            break;
+        }
+    }
+    let Some(base) = base else {
+        return (
+            None,
+            HqResolverDiagnostics {
+                candidate_count: 0,
+                managed_package_state: "unknown",
+            },
+        );
     };
+    let base_backing = backing(Path::new(&base.path));
+    if base_backing.is_backed() {
+        return (
+            Some(base),
+            HqResolverDiagnostics {
+                candidate_count: 1,
+                managed_package_state: managed_hq_package_state(Path::new(&base.path), base_backing),
+            },
+        );
+    }
+
+    // Preserve the existing widening path exactly. It already revisits the
+    // candidate directories when the base winner is not backed; count only new
+    // candidates observed there and retain the chosen candidate's existing
+    // backing result.
+    let spawnable_only = base.is_spawnable();
+    let passes: &[bool] = if spawnable_only { &[true] } else { &[true, false] };
     for spawnable_pass in passes {
         for dir in dirs {
             for candidate in candidates {
@@ -1946,16 +2076,33 @@ fn first_backed_candidate(
                     continue;
                 }
                 let full = dir.join(candidate);
-                if exists(&full) && !reject(&full) && backing(&full).is_backed() {
-                    return Some(ResolvedProgram {
-                        path: full.to_string_lossy().to_string(),
-                        kind: program_kind(candidate),
-                    });
+                if !exists(&full) || reject(&full) {
+                    continue;
+                }
+                let is_new = observed.insert(full.clone());
+                let candidate_backing = backing(&full);
+                if candidate_backing.is_backed() {
+                    return (
+                        Some(ResolvedProgram {
+                            path: full.to_string_lossy().to_string(),
+                            kind: program_kind(candidate),
+                        }),
+                        HqResolverDiagnostics {
+                            candidate_count: if is_new { 2 } else { 1 },
+                            managed_package_state: managed_hq_package_state(&full, candidate_backing),
+                        },
+                    );
                 }
             }
         }
     }
-    None
+    (
+        Some(base),
+        HqResolverDiagnostics {
+            candidate_count: observed.len().min(2) as u8,
+            managed_package_state: managed_hq_package_state(Path::new(&base.path), base_backing),
+        },
+    )
 }
 
 /// [`select_hq_program_in_dirs`] against the real filesystem, with the real
@@ -3113,6 +3260,58 @@ mod tests {
             "a spawnable hq.cmd in a later lane must beat a non-spawnable settings hit"
         );
         assert_eq!(selected.kind, ResolvedProgramKind::CmdOrBat);
+    }
+
+    #[test]
+    fn hq_resolver_diagnostics_bucket_only_candidates_seen_by_existing_walk() {
+        let lane_one = PathBuf::from("/resolver/lane-one");
+        let lane_two = PathBuf::from("/resolver/lane-two");
+        let dirs = vec![lane_one.clone(), lane_two.clone()];
+        let candidates = vec!["hq".to_string()];
+
+        let (none, none_diagnostics) = select_hq_program_in_dirs_with_diagnostics(
+            &dirs,
+            &candidates,
+            &|_| false,
+            &never_reject,
+            &|_| CandidateBacking::AbsentDefinitive,
+        );
+        assert!(none.is_none());
+        assert_eq!(none_diagnostics.candidate_count_bucket(), "0");
+
+        let one = lane_one.join("hq");
+        let (one_program, one_diagnostics) = select_hq_program_in_dirs_with_diagnostics(
+            &dirs,
+            &candidates,
+            &|path| path == one,
+            &never_reject,
+            &|_| CandidateBacking::Backed,
+        );
+        assert_eq!(
+            one_program.unwrap().path,
+            one.to_string_lossy().to_string()
+        );
+        assert_eq!(one_diagnostics.candidate_count_bucket(), "1");
+
+        let two = lane_two.join("hq");
+        let (two_program, two_diagnostics) = select_hq_program_in_dirs_with_diagnostics(
+            &dirs,
+            &candidates,
+            &|path| path == one || path == two,
+            &never_reject,
+            &|path| {
+                if path == one {
+                    CandidateBacking::AbsentDefinitive
+                } else {
+                    CandidateBacking::Backed
+                }
+            },
+        );
+        assert_eq!(
+            two_program.unwrap().path,
+            two.to_string_lossy().to_string()
+        );
+        assert_eq!(two_diagnostics.candidate_count_bucket(), "2_plus");
     }
 
     #[test]

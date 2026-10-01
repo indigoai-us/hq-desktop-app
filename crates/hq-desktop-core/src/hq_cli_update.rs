@@ -692,7 +692,19 @@ pub fn version_if_hq_cli(pkg: &Path) -> Option<String> {
 /// Read an hq-cli manifest while retaining enough information for the caller
 /// to distinguish an absent package from an unreadable or malformed one. A
 /// package for a different npm module is a normal ancestor-walk miss.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ManifestProbeFailure {
+    Invalid,
+    Unreadable,
+}
+
 fn read_hq_cli_package_version(pkg: &Path) -> Result<Option<String>, ()> {
+    read_hq_cli_package_version_detailed(pkg).map_err(|_| ())
+}
+
+fn read_hq_cli_package_version_detailed(
+    pkg: &Path,
+) -> Result<Option<String>, ManifestProbeFailure> {
     let bytes = match std::fs::read(pkg) {
         Ok(bytes) => bytes,
         Err(error)
@@ -703,9 +715,10 @@ fn read_hq_cli_package_version(pkg: &Path) -> Result<Option<String>, ()> {
         {
             return Ok(None)
         }
-        Err(_) => return Err(()),
+        Err(_) => return Err(ManifestProbeFailure::Unreadable),
     };
-    let parsed: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| ())?;
+    let parsed: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|_| ManifestProbeFailure::Invalid)?;
     if parsed.get("name").and_then(|name| name.as_str()) != Some("@indigoai-us/hq-cli") {
         return Ok(None);
     }
@@ -713,7 +726,7 @@ fn read_hq_cli_package_version(pkg: &Path) -> Result<Option<String>, ()> {
         .get("version")
         .and_then(|version| version.as_str())
         .map(|version| Some(version.to_string()))
-        .ok_or(())
+        .ok_or(ManifestProbeFailure::Invalid)
 }
 
 /// Resolve the installed version by anchoring to the *actual `hq` binary the
@@ -732,16 +745,37 @@ pub fn version_from_hq_binary(hq_bin: &Path) -> Option<String> {
 }
 
 fn version_from_hq_binary_probe(hq_bin: &Path) -> (Option<String>, VersionProbeOutcome) {
+    let (version, outcome, _) = version_from_hq_binary_probe_detailed(hq_bin);
+    (version, outcome)
+}
+
+fn version_from_hq_binary_probe_detailed(
+    hq_bin: &Path,
+) -> (Option<String>, VersionProbeOutcome, paths::CandidateBacking) {
     let real = match std::fs::canonicalize(hq_bin) {
         Ok(real) => real,
-        Err(_) => return (None, VersionProbeOutcome::CanonicalizeFailed),
+        Err(_) => {
+            return (
+                None,
+                VersionProbeOutcome::CanonicalizeFailed,
+                paths::CandidateBacking::Indeterminate,
+            )
+        }
     };
-    let mut saw_manifest_failure = false;
+    let mut saw_manifest_invalid = false;
+    let mut saw_manifest_unreadable = false;
     for ancestor in real.ancestors() {
-        match read_hq_cli_package_version(&ancestor.join("package.json")) {
-            Ok(Some(version)) => return (Some(version), VersionProbeOutcome::Succeeded),
+        match read_hq_cli_package_version_detailed(&ancestor.join("package.json")) {
+            Ok(Some(version)) => {
+                return (
+                    Some(version),
+                    VersionProbeOutcome::Succeeded,
+                    paths::CandidateBacking::Backed,
+                )
+            }
             Ok(None) => {}
-            Err(()) => saw_manifest_failure = true,
+            Err(ManifestProbeFailure::Invalid) => saw_manifest_invalid = true,
+            Err(ManifestProbeFailure::Unreadable) => saw_manifest_unreadable = true,
         }
     }
     let hq_bin_str = hq_bin.to_string_lossy();
@@ -764,7 +798,11 @@ fn version_from_hq_binary_probe(hq_bin: &Path) -> (Option<String>, VersionProbeO
     // unaffected and fall through to their own reads below.
     if let Some(home) = pnpm_home_from_hq_bin(hq_bin) {
         if let Some(version) = installed_hq_cli_version_in_pnpm_store(&home.to_string_lossy()) {
-            return (Some(version), VersionProbeOutcome::Succeeded);
+            return (
+                Some(version),
+                VersionProbeOutcome::Succeeded,
+                paths::CandidateBacking::Backed,
+            );
         }
     }
     // Bun's global shim is also a plain script. Its package manifest lives in
@@ -773,7 +811,11 @@ fn version_from_hq_binary_probe(hq_bin: &Path) -> (Option<String>, VersionProbeO
     if is_bun_global_shim(&hq_bin_str) {
         if let Some(home) = bun_home_from_hq_bin(hq_bin) {
             if let Some(version) = installed_hq_cli_version_in_bun_global(&home) {
-                return (Some(version), VersionProbeOutcome::Succeeded);
+                return (
+                    Some(version),
+                    VersionProbeOutcome::Succeeded,
+                    paths::CandidateBacking::Backed,
+                );
             }
         }
     }
@@ -784,19 +826,32 @@ fn version_from_hq_binary_probe(hq_bin: &Path) -> (Option<String>, VersionProbeO
     // unrelated default global root.
     if let Some(prefix) = npm_prefix_from_hq_bin(&hq_bin_str) {
         for package_json in hq_cli_package_json_candidates(Path::new(&prefix), hq_bin) {
-            match read_hq_cli_package_version(&package_json) {
-                Ok(Some(version)) => return (Some(version), VersionProbeOutcome::Succeeded),
+            match read_hq_cli_package_version_detailed(&package_json) {
+                Ok(Some(version)) => {
+                    return (
+                        Some(version),
+                        VersionProbeOutcome::Succeeded,
+                        paths::CandidateBacking::Backed,
+                    )
+                }
                 Ok(None) => {}
-                Err(()) => saw_manifest_failure = true,
+                Err(ManifestProbeFailure::Invalid) => saw_manifest_invalid = true,
+                Err(ManifestProbeFailure::Unreadable) => saw_manifest_unreadable = true,
             }
         }
     }
-    let outcome = if saw_manifest_failure {
+    let outcome = if saw_manifest_invalid || saw_manifest_unreadable {
         VersionProbeOutcome::ManifestReadOrParseFailed
     } else {
         VersionProbeOutcome::PackageNotFound
     };
-    (None, outcome)
+    let backing = match (saw_manifest_invalid, saw_manifest_unreadable) {
+        (true, false) => paths::CandidateBacking::ManifestInvalid,
+        (false, true) => paths::CandidateBacking::ManifestUnreadable,
+        (false, false) => paths::CandidateBacking::AbsentDefinitive,
+        (true, true) => paths::CandidateBacking::Indeterminate,
+    };
+    (None, outcome, backing)
 }
 
 /// Whether an `@indigoai-us/hq-cli` package manifest is reachable from a resolved
@@ -815,11 +870,7 @@ fn version_from_hq_binary_probe(hq_bin: &Path) -> (Option<String>, VersionProbeO
 /// reinstall. This is the same `Ok(None)`-vs-`Err(())` distinction
 /// [`read_hq_cli_package_version`] already draws.
 pub fn hq_cli_backing(hq_bin: &Path) -> paths::CandidateBacking {
-    match version_from_hq_binary_probe(hq_bin).1 {
-        VersionProbeOutcome::Succeeded => paths::CandidateBacking::Backed,
-        VersionProbeOutcome::PackageNotFound => paths::CandidateBacking::AbsentDefinitive,
-        _ => paths::CandidateBacking::Indeterminate,
-    }
+    version_from_hq_binary_probe_detailed(hq_bin).2
 }
 
 /// Map an already-computed binary-anchor outcome for a resolved `hq` into the
@@ -16014,7 +16065,7 @@ mod tests {
     // ---- HQ-DESKTOP-3P: hq-cli backing oracle + telemetry sub-case. ----
 
     #[test]
-    fn hq_cli_backing_classifies_backed_absent_and_indeterminate() {
+    fn hq_cli_backing_classifies_backed_absent_invalid_and_unreadable() {
         let tmp = tempfile::TempDir::new().unwrap();
 
         // Backed: a shim whose @indigoai-us/hq-cli manifest is reachable from the
@@ -16049,7 +16100,22 @@ mod tests {
         std::fs::write(locked.join("hq.cmd"), "@echo off\n").unwrap();
         assert_eq!(
             hq_cli_backing(&locked.join("hq.cmd")),
-            paths::CandidateBacking::Indeterminate
+            paths::CandidateBacking::ManifestUnreadable
+        );
+
+        // Invalid: a readable package manifest that cannot be parsed must not
+        // be conflated with either an absent package or an unreadable file.
+        let invalid = tmp.path().join("invalid");
+        std::fs::create_dir_all(invalid.join("node_modules/@indigoai-us/hq-cli")).unwrap();
+        std::fs::write(invalid.join("hq.cmd"), "@echo off\n").unwrap();
+        std::fs::write(
+            invalid.join("node_modules/@indigoai-us/hq-cli/package.json"),
+            b"{invalid json",
+        )
+        .unwrap();
+        assert_eq!(
+            hq_cli_backing(&invalid.join("hq.cmd")),
+            paths::CandidateBacking::ManifestInvalid
         );
     }
 

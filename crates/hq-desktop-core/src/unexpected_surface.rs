@@ -161,6 +161,9 @@ pub struct StartupLifecycleInputs {
     pub hq_program_kind: Option<ResolvedProgramKind>,
     pub node_program_kind: Option<ResolvedProgramKind>,
     pub require_local_toolchain_demoted: bool,
+    pub hq_candidate_count_bucket: &'static str,
+    pub managed_hq_package_state: &'static str,
+    pub bundled_cli_mode: &'static str,
 }
 
 fn bool_tag(value: bool) -> &'static str {
@@ -227,11 +230,14 @@ pub struct StartupDiagnosticTags {
     pub invalidation_marker_present: bool,
     pub first_read_result: &'static str,
     pub recheck_read_result: &'static str,
+    pub hq_candidate_count_bucket: &'static str,
+    pub managed_hq_package_state: &'static str,
+    pub bundled_cli_mode: &'static str,
 }
 
 impl StartupDiagnosticTags {
     /// Keep the Sentry keys and values together so tests cover the reporter contract.
-    pub fn as_pairs(self) -> [(&'static str, &'static str); 25] {
+    pub fn as_pairs(self) -> [(&'static str, &'static str); 28] {
         [
             ("session_restore_state", self.session_restore_state),
             ("token_present", self.token_present),
@@ -267,6 +273,9 @@ impl StartupDiagnosticTags {
             ),
             ("first_read_result", self.first_read_result),
             ("recheck_read_result", self.recheck_read_result),
+            ("hq_candidate_count_bucket", self.hq_candidate_count_bucket),
+            ("managed_hq_package_state", self.managed_hq_package_state),
+            ("bundled_cli_mode", self.bundled_cli_mode),
         ]
     }
 }
@@ -330,6 +339,43 @@ pub fn startup_diagnostic_tags_with_auth_session(
         invalidation_marker_present: false,
         first_read_result: "not_checked",
         recheck_read_result: "not_checked",
+        hq_candidate_count_bucket: bounded_candidate_count_bucket(
+            lifecycle.hq_candidate_count_bucket,
+        ),
+        managed_hq_package_state: managed_hq_package_state_tag(
+            lifecycle.managed_hq_package_state,
+        ),
+        bundled_cli_mode: bundled_cli_mode_tag(lifecycle.bundled_cli_mode),
+    }
+}
+
+/// Restrict resolver count labels to the three-value report vocabulary.
+pub fn bounded_candidate_count_bucket(bucket: &str) -> &'static str {
+    match bucket {
+        "0" => "0",
+        "1" => "1",
+        "2_plus" => "2_plus",
+        _ => "unknown",
+    }
+}
+
+/// Restrict managed package state to path-free, low-cardinality values.
+pub fn managed_hq_package_state_tag(state: &str) -> &'static str {
+    match state {
+        "present" => "present",
+        "missing" => "missing",
+        "invalid" => "invalid",
+        "unreadable" => "unreadable",
+        _ => "unknown",
+    }
+}
+
+/// Restrict bundled CLI source to its two supported modes and unknown.
+pub fn bundled_cli_mode_tag(mode: &str) -> &'static str {
+    match mode {
+        "resource" => "resource",
+        "registry_fallback" => "registry_fallback",
+        _ => "unknown",
     }
 }
 
@@ -421,17 +467,43 @@ pub fn build_payload(
 mod tests {
     use super::*;
 
+    #[test]
+    fn candidate_count_buckets_are_closed() {
+        assert_eq!(bounded_candidate_count_bucket("0"), "0");
+        assert_eq!(bounded_candidate_count_bucket("1"), "1");
+        assert_eq!(bounded_candidate_count_bucket("2_plus"), "2_plus");
+        assert_eq!(bounded_candidate_count_bucket("/private/home"), "unknown");
+    }
+
+    #[test]
+    fn managed_package_states_are_closed() {
+        for state in ["present", "missing", "invalid", "unreadable"] {
+            assert_eq!(managed_hq_package_state_tag(state), state);
+        }
+        assert_eq!(managed_hq_package_state_tag("/private/home"), "unknown");
+    }
+
+    #[test]
+    fn bundled_cli_modes_are_closed() {
+        assert_eq!(bundled_cli_mode_tag("resource"), "resource");
+        assert_eq!(bundled_cli_mode_tag("registry_fallback"), "registry_fallback");
+        assert_eq!(bundled_cli_mode_tag("/private/home"), "unknown");
+    }
+
     // These contract checks intentionally read the producer, not their own
     // assertions, so a test-only first push compiles on main and fails by
     // assertion until the lifecycle report exposes each bounded field.
     const LIFECYCLE_REPORT_SOURCE: &str =
         include_str!("../../../apps/sync/src-tauri/src/commands/lifecycle.rs");
+    const RESOLVER_SOURCE: &str = include_str!("paths.rs");
+    const BUNDLED_CLI_SOURCE: &str =
+        include_str!("../../../apps/sync/src-tauri/src/commands/install_deps.rs");
 
     #[test]
     fn lifecycle_report_exposes_bounded_hq_candidate_count_bucket() {
         assert!(LIFECYCLE_REPORT_SOURCE.contains("hq_candidate_count_bucket"));
         for bucket in ["0", "1", "2_plus"] {
-            assert!(LIFECYCLE_REPORT_SOURCE.contains(bucket));
+            assert!(RESOLVER_SOURCE.contains(bucket));
         }
     }
 
@@ -439,7 +511,7 @@ mod tests {
     fn lifecycle_report_exposes_bounded_managed_package_state() {
         assert!(LIFECYCLE_REPORT_SOURCE.contains("managed_hq_package_state"));
         for state in ["present", "missing", "invalid", "unreadable", "unknown"] {
-            assert!(LIFECYCLE_REPORT_SOURCE.contains(state));
+            assert!(RESOLVER_SOURCE.contains(state));
         }
     }
 
@@ -447,7 +519,7 @@ mod tests {
     fn lifecycle_report_exposes_bounded_bundled_cli_mode() {
         assert!(LIFECYCLE_REPORT_SOURCE.contains("bundled_cli_mode"));
         for mode in ["resource", "registry_fallback", "unknown"] {
-            assert!(LIFECYCLE_REPORT_SOURCE.contains(mode));
+            assert!(BUNDLED_CLI_SOURCE.contains(mode));
         }
     }
 
@@ -681,6 +753,9 @@ mod tests {
                 hq_program_kind: Some(ResolvedProgramKind::Exe),
                 node_program_kind: Some(ResolvedProgramKind::Exe),
                 require_local_toolchain_demoted: false,
+                hq_candidate_count_bucket: "1",
+                managed_hq_package_state: "present",
+                bundled_cli_mode: "resource",
             },
             "credentials_invalid",
             "http_4xx",
@@ -731,6 +806,9 @@ mod tests {
                 ("invalidation_marker_present", "false"),
                 ("first_read_result", "not_checked"),
                 ("recheck_read_result", "not_checked"),
+                ("hq_candidate_count_bucket", "1"),
+                ("managed_hq_package_state", "present"),
+                ("bundled_cli_mode", "resource"),
             ]
         );
         assert_eq!(
@@ -816,6 +894,9 @@ mod tests {
                     hq_program_kind: None,
                     node_program_kind: None,
                     require_local_toolchain_demoted: false,
+                    hq_candidate_count_bucket: "0",
+                    managed_hq_package_state: "unknown",
+                    bundled_cli_mode: "unknown",
                 },
                 "credentials_invalid",
                 "http_4xx",
@@ -925,6 +1006,9 @@ mod tests {
                 hq_program_kind: Some(ResolvedProgramKind::NotResolved),
                 node_program_kind: None,
                 require_local_toolchain_demoted: true,
+                hq_candidate_count_bucket: "0",
+                managed_hq_package_state: "unknown",
+                bundled_cli_mode: "registry_fallback",
             },
         );
 
@@ -935,5 +1019,8 @@ mod tests {
         assert!(pairs.contains(&("node_resolved", "not_observed")));
         assert!(pairs.contains(&("node_resolved_program_kind", "not_observed")));
         assert!(pairs.contains(&("require_local_toolchain_demoted", "true")));
+        assert!(pairs.contains(&("hq_candidate_count_bucket", "0")));
+        assert!(pairs.contains(&("managed_hq_package_state", "unknown")));
+        assert!(pairs.contains(&("bundled_cli_mode", "registry_fallback")));
     }
 }
