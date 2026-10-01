@@ -8,6 +8,9 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- With the Personal workspace board rollout enabled, HQ Desktop shows the
+  cloud-backed board alongside company workspaces.
+
 - Channel owners no longer see Leave while their channel role is unknown, and
   a stale owner-role conflict gives a clear recovery message.
 - Goals with an empty company board now explain that the board has no goals yet.
