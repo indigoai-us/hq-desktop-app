@@ -14,6 +14,9 @@ The release moves it under the version it ships in.
 
 - With the Personal workspace board rollout enabled, HQ Desktop shows the
   cloud-backed board alongside company workspaces.
+
+- Core drift ignores only the setup-managed `env.PATH` value in `.claude/settings.json`; other settings changes remain visible.
+
 - Work feed and Board reads now stop waiting after 15 seconds and keep their cached or empty states when requests fail.
 - On Apple Silicon Macs, the app now replaces a managed Node.js that was installed for Intel Macs instead of reusing it, so setup and repair install the right one.
 - Channel owners no longer see Leave while their channel role is unknown, and
