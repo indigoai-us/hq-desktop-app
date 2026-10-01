@@ -117,6 +117,7 @@ pub fn auth_session_status_tag(status: &str) -> &'static str {
     match status {
         "active" => "active",
         "credentials_absent" => "credentials_absent",
+        "credentials_read_error" => "credentials_read_error",
         "credentials_invalid" => "credentials_invalid",
         "refresh_temporarily_unavailable" => "refresh_temporarily_unavailable",
         "non_human_principal" => "non_human_principal",
@@ -711,6 +712,7 @@ mod tests {
         for (status, tag) in [
             ("active", "active"),
             ("credentials_absent", "credentials_absent"),
+            ("credentials_read_error", "credentials_read_error"),
             ("credentials_invalid", "credentials_invalid"),
             (
                 "refresh_temporarily_unavailable",

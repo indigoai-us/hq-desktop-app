@@ -243,10 +243,21 @@ pub struct AuthState {
 pub enum AuthSessionStatus {
     Active,
     CredentialsAbsent,
+    CredentialsReadError,
     CredentialsInvalid,
     RefreshTemporarilyUnavailable,
     /// Usable credentials that belong to a fleet agent or outpost, not a person.
     NonHumanPrincipal,
+}
+
+/// Classify a missing token-store result after startup resolution fails.
+/// A failed read is not evidence that the store is empty.
+pub fn startup_token_store_status(read_failed: bool) -> AuthSessionStatus {
+    if read_failed {
+        AuthSessionStatus::CredentialsReadError
+    } else {
+        AuthSessionStatus::CredentialsAbsent
+    }
 }
 
 /// Convert the authoritative native session classification into the startup
@@ -1432,6 +1443,35 @@ mod tests {
         .expect("invalid credentials must route to sign-in");
 
         assert!(!result.authenticated);
+    }
+
+    #[test]
+    fn startup_token_store_read_error_is_not_classified_as_absent() {
+        assert_eq!(
+            startup_token_store_status(true),
+            AuthSessionStatus::CredentialsReadError
+        );
+        assert_eq!(
+            startup_token_store_status(false),
+            AuthSessionStatus::CredentialsAbsent
+        );
+        assert_eq!(
+            serde_json::to_string(&AuthSessionStatus::CredentialsReadError).unwrap(),
+            "\"credentials_read_error\""
+        );
+        let signed_out = startup_auth_state_result(
+            AuthState {
+                authenticated: false,
+                expires_at: None,
+                account_id: None,
+                email: None,
+                display_name: None,
+                startup_token_read_result: None,
+            },
+            &AuthSessionStatus::CredentialsReadError,
+        )
+        .expect("read errors preserve the existing signed-out startup route");
+        assert!(!signed_out.authenticated);
     }
 
     #[test]
