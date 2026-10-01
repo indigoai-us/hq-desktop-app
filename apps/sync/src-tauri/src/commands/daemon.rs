@@ -1259,6 +1259,14 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
         &mut spawn_args.args,
         &runner_hq_cloud_version,
     );
+    hq_desktop_core::watch_owner::append_desktop_exit_with_parent_argument(
+        &mut spawn_args.args,
+        &runner_hq_cloud_version,
+    );
+    hq_desktop_core::watch_owner::append_desktop_watch_parent_pid_argument(
+        &mut spawn_args.args,
+        &runner_hq_cloud_version,
+    );
     // Whether this spawn ALSO mirrors the report flags into argv — true only on the
     // bare-`node` local-runner path. Both production routes (npx/cmd_shim) deliver
     // through NODE_OPTIONS only, so this is the one bit distinguishing `env_escaped`
