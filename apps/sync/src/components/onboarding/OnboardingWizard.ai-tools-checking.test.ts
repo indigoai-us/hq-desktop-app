@@ -117,6 +117,10 @@ const byId = <T extends HTMLElement = HTMLElement>(id: string) =>
 beforeEach(() => {
   host = document.createElement('div');
   document.body.appendChild(host);
+  Object.defineProperty(navigator, 'userAgent', {
+    configurable: true,
+    value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36',
+  });
   vi.stubGlobal(
     'matchMedia',
     vi.fn((query: string) => ({
@@ -152,6 +156,8 @@ describe('ready scene: AI-tool checking surface', () => {
 
     await flushUntil(() => Boolean(byId('onboarding-ai-tools-checking')), 'the checking line');
     expect(byId('onboarding-ai-tools-checking')!.textContent).toContain('Checking for AI tools');
+    expect(byId('onboarding-ai-tools-checking')!.textContent).toContain('this PC');
+    expect(byId('onboarding-ai-tools-checking')!.className).toContain('ai-tools-status-stack');
     expect(byId('onboarding-launch-claude')).toBeNull();
     // The rest of the step stays usable: the primary Open HQ Desktop card is
     // still there.
@@ -175,6 +181,8 @@ describe('ready scene: AI-tool checking surface', () => {
 
     await flushUntil(() => Boolean(byId('onboarding-ai-tools-recheck')), 'the recheck control');
     expect(byId('onboarding-ai-tools-recheck')!.textContent).toContain("couldn’t check");
+    expect(byId('onboarding-ai-tools-recheck')!.textContent).toContain('this PC');
+    expect(byId('onboarding-ai-tools-recheck')!.className).toContain('ai-tools-status-stack');
     expect(byId<HTMLButtonElement>('onboarding-ai-tools-recheck-button')).not.toBeNull();
 
     byId<HTMLButtonElement>('onboarding-ai-tools-recheck-button')!.click();

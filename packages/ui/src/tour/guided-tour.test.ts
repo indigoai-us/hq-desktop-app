@@ -50,10 +50,10 @@ describe("tourSteps", () => {
   });
 
   it("words the files step for a person with only Personal", () => {
-    const withCompany = tourSteps({ hasCompanyVault: true })[1];
+    const withCompany = tourSteps({ hasCompanyVault: true }, true)[1];
     expect(withCompany.title).toBe("Your company's files");
     expect(withCompany.body).toMatch(/^Click here to open your files\./);
-    const personalOnly = tourSteps({ hasCompanyVault: false })[1];
+    const personalOnly = tourSteps({ hasCompanyVault: false }, true)[1];
     expect(personalOnly.title).toBe("Your files");
     expect(personalOnly.body).toMatch(/once setup creates it/);
   });
@@ -75,7 +75,7 @@ describe("tourSteps", () => {
   });
 
   it("points steps 2 and 3 at the buttons that get there, not the surfaces", () => {
-    const steps = tourSteps({ hasCompany: true });
+    const steps = tourSteps({ hasCompany: true }, true);
     expect(steps[1].targets).toEqual(['[data-testid="titlebar-files"]']);
     expect(steps[2].title).toBe("Make your own bots");
     expect(steps[2].body).toMatch(/^Click \+ to start a new bot/);
@@ -83,7 +83,7 @@ describe("tourSteps", () => {
   });
 
   it("points the later steps at companies, meetings and the palette", () => {
-    const steps = tourSteps({ hasCompany: true });
+    const steps = tourSteps({ hasCompany: true }, true);
     expect(steps[3].title).toBe("Bring in your team");
     expect(steps[3].targets).toEqual([
       '[data-testid="team-invite"]',
@@ -92,6 +92,13 @@ describe("tourSteps", () => {
     expect(steps[4].targets).toEqual(['[data-testid="titlebar-meetings"]']);
     expect(steps[7].title).toBe("Find anything with ⌘K");
     expect(steps[7].targets).toEqual(['[data-testid="command-palette"]']);
+  });
+
+  it("uses platform-appropriate file and shortcut copy on Windows and Linux", () => {
+    const steps = tourSteps({ hasCompanyVault: true }, false);
+    expect(steps[1].body).toContain("synced to this computer");
+    expect(steps[1].body).not.toContain("this Mac");
+    expect(steps[7].title).toBe("Find anything with Ctrl+K");
   });
 
   it("centers the invite step with no target until a company exists", () => {

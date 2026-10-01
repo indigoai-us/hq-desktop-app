@@ -11,6 +11,8 @@
  */
 
 import { SETUP_ROW_ID } from "../chat/setup-channel.js";
+import { formatShortcut } from "../common/keyboard-shortcuts.js";
+import { isMac } from "../common/platform.js";
 
 export type TourStepId =
   | "setup-bot"
@@ -78,7 +80,7 @@ function attr(value: string): string {
 }
 
 /** The eight steps, in order, for the current shell. */
-export function tourSteps(ctx: TourContext = {}): TourStep[] {
+export function tourSteps(ctx: TourContext = {}, mac = isMac()): TourStep[] {
   const botUid = ctx.setupBotUid?.trim() || null;
   const botRow = botUid ? `.chat-row[data-conversation-id="dm:${attr(botUid)}"]` : null;
   const setupTargets = [
@@ -103,8 +105,8 @@ export function tourSteps(ctx: TourContext = {}): TourStep[] {
       id: "company-vault",
       title: company ? "Your company's files" : "Your files",
       body: company
-        ? "Click here to open your files. Everything HQ knows about your company lives there, synced to this Mac and shared with your team."
-        : "Click here to open your files, synced to this Mac. Your company's files appear there once setup creates it.",
+        ? `Click here to open your files. Everything HQ knows about your company lives there, synced to ${mac ? "this Mac" : "this computer"} and shared with your team.`
+        : `Click here to open your files, synced to ${mac ? "this Mac" : "this computer"}. Your company's files appear there once setup creates it.`,
       // Hidden on the web host: the card centers.
       targets: ['[data-testid="titlebar-files"]'],
       placement: "bottom",
@@ -161,7 +163,7 @@ export function tourSteps(ctx: TourContext = {}): TourStep[] {
     },
     {
       id: "command-palette",
-      title: "Find anything with ⌘K",
+      title: `Find anything with ${formatShortcut("Mod+K", mac)}`,
       body: "Jump to files, people, bots and settings. You can replay this tour from here too.",
       targets: ['[data-testid="command-palette"]'],
       placement: "bottom",

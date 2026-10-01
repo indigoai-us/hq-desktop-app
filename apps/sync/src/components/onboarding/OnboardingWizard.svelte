@@ -115,6 +115,7 @@
   import {
     readOnboardingHostOs,
     setupExpectationCopy,
+    thisComputerNounFor,
     yourComputerNounFor,
   } from '../../lib/onboarding-platform';
   import { postOptIn, markConsentRepromptShown } from '../../lib/onboarding-telemetry';
@@ -544,6 +545,7 @@
   );
   const setupExpectation = $derived(setupExpectationCopy(setupHostOs));
   // The global shortcut is Option-Shift-O on a Mac and Alt+Shift+O elsewhere.
+  const thisComputer = $derived(thisComputerNounFor(setupHostOs));
   const yourComputer = $derived(yourComputerNounFor(setupHostOs));
   const chordKeys = $derived(setupHostOs === 'windows' ? ['Alt', 'Shift', 'O'] : ['⌥', '⇧', 'O']);
   const chordSpoken = $derived(
@@ -3540,23 +3542,23 @@
         </button>
         {#if probeInFlight && !probeTimedOut && !detectionFailed && installedToolSlots.length === 0}
           <div
-            class="tool-pills tool-pills-status"
+            class="tool-pills tool-pills-status ai-tools-status-stack"
             data-testid="onboarding-ai-tools-checking"
             role="status"
             aria-live="polite"
           >
             <span class="ai-tools-checking">
               <span class="ai-tools-spinner" aria-hidden="true"></span>
-              <span>Checking for AI tools on this Mac…</span>
+              <span>Checking for AI tools on {thisComputer}…</span>
             </span>
           </div>
         {:else if (probeTimedOut || detectionFailed) && installedToolSlots.length === 0}
           <div
-            class="tool-pills tool-pills-status"
+            class="tool-pills tool-pills-status ai-tools-status-stack"
             data-testid="onboarding-ai-tools-recheck"
             role="status"
           >
-            <span class="ai-tools-checking failed">We couldn’t check for AI tools on this Mac.</span>
+            <span class="ai-tools-checking failed">We couldn’t check for AI tools on {thisComputer}.</span>
             <button
               class="tool-pill"
               type="button"
