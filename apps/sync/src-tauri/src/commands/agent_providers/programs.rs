@@ -69,16 +69,40 @@ pub(super) fn claude_probe_path() -> String {
 /// their existing behavior.
 fn claude_search_dirs(
     mut existing: Vec<PathBuf>,
-    _current_user_path: Vec<PathBuf>,
-    _user_profile: Option<PathBuf>,
+    current_user_path: Vec<PathBuf>,
+    user_profile: Option<PathBuf>,
     inherited_path: Vec<PathBuf>,
 ) -> Vec<PathBuf> {
-    // Fail-first baseline: search only the app's inherited process path.
+    // The user's current persisted PATH is authoritative over the stale copy
+    // captured in the desktop process at launch.
+    existing.extend(current_user_path);
+    if let Some(profile) = user_profile {
+        existing.push(profile.join(".local").join("bin"));
+    }
     existing.extend(inherited_path);
 
     let mut seen = std::collections::HashSet::new();
     existing.retain(|dir| seen.insert(dir.to_string_lossy().to_lowercase()));
-    existing
+    let (mut real_candidates, windows_apps): (Vec<_>, Vec<_>) = existing
+        .into_iter()
+        .partition(|dir| !is_windows_apps_dir(dir));
+    real_candidates.extend(windows_apps);
+    real_candidates
+}
+
+fn is_windows_apps_dir(path: &std::path::Path) -> bool {
+    let mut components = path.components().rev();
+    let is_windows_apps = components.next().is_some_and(|part| {
+        part.as_os_str()
+            .to_string_lossy()
+            .eq_ignore_ascii_case("WindowsApps")
+    });
+    let is_microsoft = components.next().is_some_and(|part| {
+        part.as_os_str()
+            .to_string_lossy()
+            .eq_ignore_ascii_case("Microsoft")
+    });
+    is_windows_apps && is_microsoft
 }
 
 fn resolve_claude_in_dirs(dirs: &[PathBuf]) -> Option<paths::ResolvedProgram> {
@@ -312,6 +336,26 @@ mod tests {
         assert!(resolved.is_some(), "refreshed PATH finds Claude");
         let resolved = resolved.unwrap();
         assert_eq!(resolved.path, executable.to_string_lossy());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn claude_lookup_prefers_real_cli_over_windows_apps_alias() {
+        let temp = tempfile::tempdir().expect("temporary search root");
+        let windows_apps = temp.path().join("Microsoft").join("WindowsApps");
+        let npm_global = temp.path().join("AppData").join("npm");
+        std::fs::create_dir_all(&windows_apps).expect("create alias directory");
+        std::fs::create_dir_all(&npm_global).expect("create npm directory");
+        let alias = windows_apps.join("claude.exe");
+        let real_cli = npm_global.join("claude.cmd");
+        std::fs::write(&alias, b"app execution alias fixture").expect("write alias fixture");
+        std::fs::write(&real_cli, "@echo off\r\necho {\"loggedIn\":true}\r\n")
+            .expect("write npm shim fixture");
+
+        let dirs = claude_search_dirs(vec![windows_apps], vec![npm_global], None, Vec::new());
+        let resolved = resolve_claude_in_dirs(&dirs);
+        assert!(resolved.is_some(), "resolve real Claude Code candidate");
+        assert_eq!(resolved.unwrap().path, real_cli.to_string_lossy());
     }
 
     #[cfg(windows)]

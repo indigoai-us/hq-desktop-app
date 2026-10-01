@@ -8,6 +8,9 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Windows setup now detects Claude Code from the current user PATH and
+  Anthropic's user-local install directory, including on Retry.
+
 - Internal: unused exports in the shared UI package are now module-private. No behaviour change.
 
 - Internal: unused exports in the work shell and installer are now module-private. No behaviour change.
