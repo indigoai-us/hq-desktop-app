@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- On macOS 26.2 and later, the installer window shows its background artwork again instead of a plain white window behind the HQ and Applications icons.
+
 - Internal: removed two unused packages/ui helpers and made three module-only helpers private (TD-60, #1198). No user-visible change.
 
 - Internal: unused exports in the shared UI package are now module-private. No behaviour change.
