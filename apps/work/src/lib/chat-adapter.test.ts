@@ -119,13 +119,15 @@ describe("hydrateLiveRail", () => {
     await hydrateLiveRail(adapter, [], "prs_deadline");
     vi.setSystemTime(Date.now() + 60_001);
 
-    const bodyFetch = vi.fn(async () => {
-      const response = new Response(null, { status: 200 });
-      Object.defineProperty(response, "json", {
-        value: () => new Promise(() => {}),
-      });
-      return response;
-    });
+    const bodyFetch = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) => {
+        const response = new Response(null, { status: 200 });
+        Object.defineProperty(response, "json", {
+          value: () => new Promise(() => {}),
+        });
+        return response;
+      },
+    );
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const pending = hydrateLiveRail(adapter, [], "prs_deadline", {
       fetch: bodyFetch as typeof fetch,
