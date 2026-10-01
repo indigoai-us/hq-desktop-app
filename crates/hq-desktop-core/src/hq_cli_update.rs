@@ -9275,11 +9275,10 @@ mod tests {
             .tempdir_in(home)
             .expect("create private path fixture");
         let prefix = temp.path().join("npm-global");
-        let bin = prefix.join("bin");
-        std::fs::create_dir_all(&bin).unwrap();
-        let npm = bin.join("npm");
+        let npm = colocated_npm_path(&prefix);
+        std::fs::create_dir_all(npm.parent().unwrap()).unwrap();
         std::fs::write(&npm, "fixture").unwrap();
-        let hq = bin.join("hq").to_string_lossy().into_owned();
+        let hq = prefix_hq_shim_path(&prefix).to_string_lossy().into_owned();
         (temp, prefix.to_string_lossy().into_owned(), hq)
     }
 
