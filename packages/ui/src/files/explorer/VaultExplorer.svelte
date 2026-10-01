@@ -18,6 +18,7 @@
    * (`appShell.setActiveCompany`), which the native company gate requires.
    */
   import { untrack } from "svelte";
+  import { formatShortcut } from "../../common/keyboard-shortcuts.js";
   import type { PlatformAdapter, VaultFileHit, VaultNoteLinks, VaultSummaryWire } from "@hq/platform";
   import type { Workspace } from "../../chat/workspaces.js";
   import FilePreviewPane from "../FilePreviewPane.svelte";
@@ -316,7 +317,7 @@
       <button type="button" class="vx-search" onclick={() => (switcherOpen = true)} data-testid="vault-search">
         <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.25" fill="none" stroke="currentColor" stroke-width="1.3" /><path d="m10.2 10.2 3.3 3.3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" /></svg>
         <span>Find a file</span>
-        <kbd>⌘O</kbd>
+        <kbd>{formatShortcut("Mod+O")}</kbd>
       </button>
     </div>
     <div class="vx-tree">

@@ -493,7 +493,7 @@
         <!-- No signed-in agent on this Mac yet: connect one first. -->
         <SetupConnectStep api={agent.api} providers={agent.providers} onrefresh={() => agent!.refreshProviders(true)} />
       {:else}
-      <div class="hero-actions" role="group" aria-label="Set up this Mac">
+      <div class="hero-actions" role="group" aria-label={`Set up this ${hostNoun}`}>
         <SetupButton
           variant="primary"
           data-testid="setup-run"

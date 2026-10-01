@@ -9,7 +9,8 @@
    * Avatar is read-only here: local bots have no hq-pro profile to save a
    * pack selection against, so the mark renders the monogram/known avatar.
    */
-  import type { LocalBotRow, PlatformAdapter } from "@hq/platform";
+  import { onMount } from "svelte";
+  import { hostComputerNoun, subscribeHostComputerNoun, type LocalBotRow, type PlatformAdapter } from "@hq/platform";
   import IdentityMark from "./messaging/IdentityMark.svelte";
   import BotKindChip from "./BotKindChip.svelte";
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
@@ -52,6 +53,9 @@
   }
 
   let { bot, adapter, avatarUrl = null, companies = [], onopenurl, onclose, onchanged, onstart = null }: Props = $props();
+
+  let hostNoun = $state(hostComputerNoun());
+  onMount(() => subscribeHostComputerNoun((next) => (hostNoun = next)));
 
   let busy = $state<"start" | "stop" | "remove" | null>(null);
   let actionError = $state<string | null>(null);
@@ -371,7 +375,7 @@
     {#if bot.kind === "personal"}
       <section class="ad-section" data-testid="local-bot-promotion-personal">
         <h3 class="ad-kicker">Cloud hosting</h3>
-        <p class="ad-muted">Personal bots stay on this Mac.</p>
+        <p class="ad-muted">Personal bots stay on this {hostNoun}.</p>
       </section>
     {:else if adapter.bots?.promote && promotionCompanies.length}
       <section class="ad-section" data-testid="local-bot-promotion">
@@ -402,7 +406,7 @@
               <details><summary>Technical details</summary><p class="ad-error">{promotionError}</p></details>
             </div>
           {/if}
-          {#if promotionPhase}<p class="ad-muted">{promotionError ? "Your bot has not moved to the cloud. Its local run is paused and its files are still on this Mac." : "Keep this profile open while we finish. Your local bot is paused so only one copy can answer."}</p>{/if}
+          {#if promotionPhase}<p class="ad-muted">{promotionError ? `Your bot has not moved to the cloud. Its local run is paused and its files are still on this ${hostNoun}.` : "Keep this profile open while we finish. Your local bot is paused so only one copy can answer."}</p>{/if}
         {/if}
       </section>
     {/if}

@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Platform wording and keyboard hints now follow the visitor's or desktop's OS instead of assuming macOS.
+
 - Internal: unused exports in the shared UI package are now module-private. No behaviour change.
 
 - Internal: unused exports in the work shell and installer are now module-private. No behaviour change.

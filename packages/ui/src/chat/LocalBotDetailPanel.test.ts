@@ -40,6 +40,7 @@ let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 
 afterEach(async () => {
+  Reflect.deleteProperty(globalThis, "__HQ_HOST_OS__");
   if (component) await unmount(component);
   component = null;
   host?.remove();
@@ -350,11 +351,13 @@ describe("LocalBotDetailPanel — model and thinking", () => {
 
 describe("bot kinds (personal vs company)", () => {
   it("shows Personal · acts as you and no promote control for a personal bot", async () => {
+    Object.defineProperty(globalThis, "__HQ_HOST_OS__", { value: "windows", configurable: true });
     mountPanel({ bot: bot({ kind: "personal" }), bots: botsApi({ promote: vi.fn() }), companies: [{ uid: "cmp_TEST", name: "Test" }] });
     await tick();
     expect(q('[data-testid="local-bot-detail-kind"]')?.textContent).toBe("Personal · acts as you");
     expect(q('[data-testid="local-bot-promotion"]')).toBeNull();
-    expect(q('[data-testid="local-bot-promotion-personal"]')?.textContent).toContain("Personal bots stay on this Mac");
+    expect(q('[data-testid="local-bot-promotion-personal"]')?.textContent).toContain("Personal bots stay on this PC");
+    Reflect.deleteProperty(globalThis, "__HQ_HOST_OS__");
   });
 
   it("shows Company · slugs and offers promotion for a company bot", async () => {
