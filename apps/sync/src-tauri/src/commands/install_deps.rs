@@ -8113,10 +8113,12 @@ mod install_deps_planner_tests {
         std::fs::create_dir_all(&node_bin).expect("create managed node bin");
         let node = node_bin.join("node");
         let npm_invoked = home.path().join("npm-invoked-with-managed-node");
+        let expected_arch = node_dist_arch_for(std::env::consts::ARCH)
+            .expect("supported Node distribution architecture");
         std::fs::write(
             &node,
             format!(
-                "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo {MANAGED_NODE_VERSION}; else echo \"$2\" > '{}'; echo 11.0.0; fi\n",
+                "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo {MANAGED_NODE_VERSION}; elif [ \"$1\" = \"-p\" ] && [ \"$2\" = \"process.arch\" ]; then echo {expected_arch}; else echo \"$2\" > '{}'; echo 11.0.0; fi\n",
                 npm_invoked.display()
             ),
         )
