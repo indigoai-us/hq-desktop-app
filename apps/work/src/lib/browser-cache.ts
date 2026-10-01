@@ -182,16 +182,6 @@ export function writeShallowCache(
   }
 }
 
-function clearShallowCache(
-  storage: ShallowCacheStorage | null = defaultStorage(),
-): void {
-  try {
-    storage?.removeItem(SHALLOW_CACHE_KEY);
-  } catch {
-    /* ignore */
-  }
-}
-
 /** Persist the last open REST timeline for first-paint on the next visit. */
 export function persistLastThread(
   personUid: string,
@@ -271,19 +261,6 @@ export function seedConversationCacheFromRail(
     },
     storage,
   );
-}
-
-/** Persist live directory/contacts into the rail blob after a REST fetch. */
-function persistShallowSidebar(
-  api: ChatSidebarApi,
-  personUid: string,
-): ChatSidebarApi {
-  if (!personUid) return api;
-  return {
-    ...api,
-    fetchChannelDirectory: async (cursor) => api.fetchChannelDirectory(cursor),
-    listContacts: async () => api.listContacts(),
-  };
 }
 
 function defaultStorage(): ShallowCacheStorage | null {
