@@ -267,7 +267,7 @@ describe("submitCreateCompany", () => {
       tab: "team",
       cardId: "team:invite",
       actionId: "invite",
-      values: { email: "ada@example.com", role: "owner" },
+      values: { email: "ada@example.com", role: "owner", inviteSurface: "desktop" },
     });
   });
 });
