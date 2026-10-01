@@ -2053,12 +2053,13 @@ fn select_hq_program_in_dirs_with_diagnostics(
         );
     };
     let base_backing = backing(Path::new(&base.path));
+    let base_package_state = managed_hq_package_state(Path::new(&base.path), base_backing);
     if base_backing.is_backed() {
         return (
             Some(base),
             HqResolverDiagnostics {
                 candidate_count: 1,
-                managed_package_state: managed_hq_package_state(Path::new(&base.path), base_backing),
+                managed_package_state: base_package_state,
             },
         );
     }
@@ -2100,7 +2101,7 @@ fn select_hq_program_in_dirs_with_diagnostics(
         Some(base),
         HqResolverDiagnostics {
             candidate_count: observed.len().min(2) as u8,
-            managed_package_state: managed_hq_package_state(Path::new(&base.path), base_backing),
+            managed_package_state: base_package_state,
         },
     )
 }
