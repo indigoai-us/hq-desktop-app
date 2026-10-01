@@ -283,6 +283,10 @@ pub(crate) const UPDATE_DEFERRED_DURING_MUTATION: &str =
     "Update deferred while an HQ change is active";
 pub(crate) const UPDATE_DEFERRED_DURING_PROCESS_EXIT: &str =
     "Update deferred while HQ processes are still stopping";
+/// A user-visible manual update refusal. The staged package stays intact and
+/// the normal automatic waiter is re-armed after the protected work finishes.
+pub(crate) const UPDATE_DEFERRED_DURING_PROTECTED_ACTIVITY: &str =
+    "HQ will restart to update after your recording finishes";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BackgroundUpdateAction {
@@ -429,6 +433,11 @@ fn install_failure_is_transient_deferral(error: &str) -> bool {
         error,
         UPDATE_DEFERRED_DURING_MUTATION | UPDATE_DEFERRED_DURING_PROCESS_EXIT
     )
+}
+
+fn automatic_install_should_retry(error: &str) -> bool {
+    error == UPDATE_DEFERRED_DURING_PROTECTED_ACTIVITY
+        || install_failure_is_transient_deferral(error)
 }
 
 pub(crate) fn deferral_decision(
@@ -628,16 +637,46 @@ fn discovered_update(version: String, body: Option<String>, date: Option<String>
 /// decision time on every manual install path. Mirrors the inline probe block
 /// in the automatic waiter loop.
 pub(crate) fn sync_probed_holds(holds: &crate::commands::update_gate::UpdateHoldsState) {
-    if crate::commands::hq_core_state::is_core_update_in_progress() {
-        holds.0.acquire(HoldReason::CoreUpdateInProgress);
-    } else {
-        holds.0.release(HoldReason::CoreUpdateInProgress);
+    holds.0.set(
+        HoldReason::CoreUpdateInProgress,
+        crate::commands::hq_core_state::is_core_update_in_progress(),
+    );
+    holds.0.set(HoldReason::UploadInFlight, sync_in_progress());
+}
+
+/// Synchronise external probes and return active protected work. Every update
+/// installer and the final restart chokepoint use this same view so a recording
+/// which starts between checks cannot be interrupted by a process exit.
+pub(crate) fn protected_update_holds(app: &AppHandle) -> Vec<HoldReason> {
+    let Some(holds) = app.try_state::<UpdateHoldsState>() else {
+        return Vec::new();
+    };
+    sync_probed_holds(&holds);
+    holds.0.active()
+}
+
+pub(crate) fn restart_is_held(app: &AppHandle) -> Option<Vec<HoldReason>> {
+    let reasons = protected_update_holds(app);
+    (!reasons.is_empty()).then_some(reasons)
+}
+
+fn gate_staged_install(app: &AppHandle, trigger: UpdateTrigger) -> Result<(), String> {
+    let (Some(holds), Some(focus)) = (
+        app.try_state::<UpdateHoldsState>(),
+        app.try_state::<AppFocusState>(),
+    ) else {
+        return Ok(());
+    };
+    sync_probed_holds(&holds);
+    let gate = decide(trigger, focus.app_focus(), &holds.0);
+    if let UpdateDecision::Defer { reason } = gate {
+        log("updater", &format!("staged update deferred: {reason:?}"));
+        if matches!(trigger, UpdateTrigger::Manual) {
+            spawn_auto_install_waiter(app.clone());
+        }
+        return Err(UPDATE_DEFERRED_DURING_PROTECTED_ACTIVITY.to_string());
     }
-    if sync_in_progress() {
-        holds.0.acquire(HoldReason::UploadInFlight);
-    } else {
-        holds.0.release(HoldReason::UploadInFlight);
-    }
+    Ok(())
 }
 
 /// Return the pending update version string, if any, from managed state.
@@ -1095,7 +1134,12 @@ async fn install_verified_update(
         // server sees the post-update state (installed target version +
         // cleared updater state) without waiting for relaunch.
         crate::commands::client_health::emit_client_health_after_update(&update.version).await;
-        crate::commands::autostart::restart_preferring_launch_agent(app);
+        if !crate::commands::autostart::restart_preferring_launch_agent(app) {
+            // A recording won the final exit race. The updater work has already
+            // been deferred by the chokepoint instead of terminating the app.
+            return Ok(());
+        }
+        unreachable!("a successful restart handoff never returns")
     }
 }
 
@@ -1192,6 +1236,13 @@ async fn commit_staged_install_unguarded(
     app: &AppHandle,
     trigger: InstallTrigger,
 ) -> Result<(), String> {
+    let update_trigger = match trigger {
+        InstallTrigger::Automatic => UpdateTrigger::Automatic,
+        InstallTrigger::Manual | InstallTrigger::Forced => UpdateTrigger::Manual,
+    };
+    // This is deliberately immediately before `take()`: no entry point may
+    // replace a staged bundle after a recording began.
+    gate_staged_install(app, update_trigger)?;
     let staged = app
         .state::<DownloadedUpdate>()
         .take()
@@ -1335,7 +1386,7 @@ fn spawn_auto_install_waiter(app: AppHandle) {
                             tokio::time::sleep(IDLE_POLL_INTERVAL).await;
                             continue;
                         }
-                        Err(error) if install_failure_is_transient_deferral(&error) => {
+                        Err(error) if automatic_install_should_retry(&error) => {
                             log(
                                 "updater",
                                 "automatic update deferred during install startup; retrying soon",
@@ -1356,6 +1407,71 @@ fn spawn_auto_install_waiter(app: AppHandle) {
                     return;
                 }
             }
+        }
+    });
+}
+
+static DEFERRED_RESTART_ACTIVE: AtomicBool = AtomicBool::new(false);
+static DEFERRED_INSTALL_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn deferred_restart_is_safe(held: bool, focused: bool) -> bool {
+    !held && !focused
+}
+
+/// A support-requested restart has no staged installer for the standard waiter
+/// to consume. Wait on the same poll cadence, then require the normal
+/// automatic-update focus rule before exiting the app.
+pub(crate) fn defer_restart_until_safe(app: AppHandle) {
+    if DEFERRED_RESTART_ACTIVE
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let held = restart_is_held(&app).is_some();
+            let focused = app
+                .try_state::<AppFocusState>()
+                .is_some_and(|focus| focus.is_focused());
+            if deferred_restart_is_safe(held, focused) {
+                log("updater", "deferred restart is now safe; restarting");
+                crate::commands::autostart::restart_preferring_launch_agent(&app);
+            }
+            tokio::time::sleep(IDLE_POLL_INTERVAL).await;
+        }
+    });
+}
+
+/// A support-requested desktop update can arrive during a recording before an
+/// installer is staged. Preserve the command's safety boundary, then perform
+/// the normal updater flow once the same restart predicate is satisfied.
+pub(crate) fn defer_install_until_safe(app: AppHandle) {
+    if DEFERRED_INSTALL_ACTIVE
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let held = restart_is_held(&app).is_some();
+            let focused = app
+                .try_state::<AppFocusState>()
+                .is_some_and(|focus| focus.is_focused());
+            if deferred_restart_is_safe(held, focused) {
+                DEFERRED_INSTALL_ACTIVE.store(false, Ordering::Release);
+                if let Err(error) = install_update(app.clone()).await {
+                    // A recording can begin in the narrow interval between the
+                    // waiter probe and install_update's final hold gate.
+                    // Re-arm instead of dropping the support-requested update.
+                    if error.starts_with("update held:") {
+                        defer_install_until_safe(app.clone());
+                    }
+                }
+                return;
+            }
+            tokio::time::sleep(IDLE_POLL_INTERVAL).await;
         }
     });
 }
@@ -1484,6 +1600,10 @@ pub async fn download_update(app: AppHandle) -> Result<UpdateInfo, String> {
 /// the automatic sync-idle deferral.
 #[tauri::command]
 pub async fn install_downloaded_update(app: AppHandle) -> Result<(), String> {
+    // Settings/Core popover "Restart to update" previously bypassed all holds.
+    // Re-arm the staged waiter on refusal so it restarts automatically only
+    // after the recording is finished and the app is unfocused.
+    gate_staged_install(&app, UpdateTrigger::Manual)?;
     let _install_guard = UpdateInstallGuard::acquire(&UPDATE_INSTALL_IN_PROGRESS)
         .ok_or_else(|| "An update installation is already in progress".to_string())?;
     AUTO_INSTALL_WAITER_GENERATION.fetch_add(1, Ordering::AcqRel);
@@ -1509,7 +1629,13 @@ async fn install_staged_update(app: &AppHandle, staged: &StagedDownload) -> Resu
         // server sees the post-update state (installed target version +
         // cleared updater state) without waiting for relaunch.
         crate::commands::client_health::emit_client_health_after_update(&staged.info.version).await;
-        crate::commands::autostart::restart_preferring_launch_agent(app);
+        if !crate::commands::autostart::restart_preferring_launch_agent(app) {
+            // A recording won the final exit race. The staged install entry
+            // gate normally prevents this; retain a successful deferred
+            // outcome for the remaining narrow race window.
+            return Ok(());
+        }
+        unreachable!("a successful restart handoff never returns")
     }
 }
 
@@ -2041,6 +2167,13 @@ pub async fn update_install_pending(app: AppHandle) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn deferred_restart_waits_for_both_the_hold_and_focus_to_clear() {
+        assert!(!deferred_restart_is_safe(true, false));
+        assert!(!deferred_restart_is_safe(false, true));
+        assert!(deferred_restart_is_safe(false, false));
+    }
+
     /// The "is newer" check runs against the runtime-resolved version. A
     /// cached shell compiled at 0.10.328 but assembled as 0.10.400 must not
     /// be offered 0.10.350 (the compile-time value would have said "newer"),
@@ -2436,6 +2569,14 @@ mod tests {
         assert!(!install_failure_is_transient_deferral(
             "Windows update helper did not become ready"
         ));
+    }
+
+    #[test]
+    fn protected_activity_deferral_retries_without_consuming_the_staged_update() {
+        assert!(automatic_install_should_retry(
+            UPDATE_DEFERRED_DURING_PROTECTED_ACTIVITY
+        ));
+        assert!(!automatic_install_should_retry("signature verification failed"));
     }
 
     #[test]
