@@ -8,13 +8,10 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
-<<<<<<< HEAD
 - Home now lists projects from your Personal workspace, and Personal board and summary requests resolve with your Personal identity.
 
-=======
 - First-run setup now retries a just-published npm package when the registry
   briefly returns E404 or ETARGET, while keeping setup progress active.
->>>>>>> origin/main
 - Startup diagnostics now distinguish unreadable saved credentials from an empty token store.
 
 - With a compatible hq-cloud runner, auto-sync watches the desktop process directly and releases its lease when the app exits, including after a crash or force-quit.
