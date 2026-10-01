@@ -23,10 +23,12 @@ describe("GET /api/chat-attachment-bytes", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
   it("rejects an upstream declaration above the chat attachment cap", async () => {
+    vi.useFakeTimers();
     fetchMock.mockResolvedValue(
       new Response("not read", {
         headers: {
@@ -40,6 +42,7 @@ describe("GET /api/chat-attachment-bytes", () => {
     );
 
     expect(response.status).toBe(413);
+    expect(vi.getTimerCount()).toBe(0);
     await expect(response.json()).resolves.toEqual({
       error: "File is too large",
       code: "SOURCE_TOO_LARGE",
@@ -69,6 +72,7 @@ describe("GET /api/chat-attachment-bytes", () => {
   });
 
   it("returns a normal-sized attachment intact", async () => {
+    vi.useFakeTimers();
     const source = Uint8Array.from([0, 1, 2, 253, 254, 255]);
     fetchMock.mockResolvedValue(
       new Response(source, {
@@ -81,11 +85,75 @@ describe("GET /api/chat-attachment-bytes", () => {
     );
 
     expect(response.status).toBe(200);
+    expect(vi.getTimerCount()).toBe(0);
     expect(response.headers.get("content-type")).toBe(
       "application/octet-stream",
     );
     expect(Array.from(new Uint8Array(await response.arrayBuffer()))).toEqual(
       Array.from(source),
     );
+  });
+
+  it("returns SOURCE_UNREACHABLE when the upstream GET never returns headers", async () => {
+    vi.useFakeTimers();
+    fetchMock.mockImplementation(
+      (_input, init) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("Aborted", "AbortError")),
+            { once: true },
+          );
+        }),
+    );
+
+    const pending = GET(
+      event(new Headers({ "x-hq-source-url": sourceUrl })),
+    );
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+    await vi.runAllTimersAsync();
+    const response = await pending;
+
+    expect(response.status).toBe(502);
+    expect(vi.getTimerCount()).toBe(0);
+    await expect(response.json()).resolves.toEqual({
+      error: "File upstream failed",
+      code: "SOURCE_UNREACHABLE",
+    });
+  });
+
+  it("returns SOURCE_UNREACHABLE when the upstream GET body stalls", async () => {
+    vi.useFakeTimers();
+    fetchMock.mockImplementation(async (_input, init) => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          init?.signal?.addEventListener(
+            "abort",
+            () => controller.error(new DOMException("Aborted", "AbortError")),
+            { once: true },
+          );
+        },
+        pull() {
+          return new Promise<void>(() => {});
+        },
+      });
+      return new Response(body, {
+        headers: { "content-type": "text/plain" },
+      });
+    });
+
+    const pending = GET(
+      event(new Headers({ "x-hq-source-url": sourceUrl })),
+    );
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+    await vi.runAllTimersAsync();
+    const response = await pending;
+
+    expect(response.status).toBe(502);
+    expect(vi.getTimerCount()).toBe(0);
+    await expect(response.json()).resolves.toEqual({
+      error: "File upstream failed",
+      code: "SOURCE_UNREACHABLE",
+    });
   });
 });

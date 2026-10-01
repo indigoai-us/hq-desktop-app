@@ -9,6 +9,15 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - With a compatible hq-cloud runner, auto-sync watches the desktop process directly and releases its lease when the app exits, including after a crash or force-quit.
+- A stalled attachment upload or download in the Work app now ends with the usual upload or download error instead of staying open indefinitely.
+- When a saved access token is rejected, HQ Desktop tries its stored refresh token before asking you to sign in. After Cognito rejects that refresh, HQ Desktop stops retrying the same token and keeps sign-in available.
+
+## [0.10.368] — 2026-10-01
+
+- Window opacity is reset to 100% once for existing installs, including anyone who had chosen a lower value. The theme is unchanged, and an opacity chosen after the update is kept.
+
+## [0.10.367] — 2026-09-30
+
 - Auto-sync identifies its watch-runner lease owner, stops a live orphan desktop runner once, and defers to hq-daemon when it owns the root. Lease-busy exits do not count as repeated runner failures.
 - A watch runner that exits during orphan recovery now counts as stopped, so auto-sync can finish recovery instead of reporting a false runner failure.
 - Fresh installs now open fully opaque until Window opacity is changed; saved
@@ -56,6 +65,7 @@ The release moves it under the version it ships in.
 - Desktop setup continues to report installation failures after an internal error interrupts its diagnostic cache.
 
 - The existing sync plan-limit notice can report gated exposure and Upgrade-click measurements.
+- Successful sign-ins can wait for their local receipt queue write behind a default-off flag before returning to the setup flow.
 
 ## [0.10.363] — 2026-09-30
 
