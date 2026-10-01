@@ -71,7 +71,7 @@ export const TOUR_AUTO_START_DELAY_MS = 600;
 export const TOUR_TARGET_TIMEOUT_MS = 1500;
 
 /** Space between the target's box and the cutout edge. */
-export const TOUR_SPOTLIGHT_PADDING = 8;
+const TOUR_SPOTLIGHT_PADDING = 8;
 
 function attr(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
@@ -198,10 +198,6 @@ export function backTourState(state: TourState): TourState {
 export function skipTourState(state: TourState): TourState {
   if (state.status !== "active") return state;
   return { status: "skipped" };
-}
-
-export function isTourActive(state: TourState): state is { status: "active"; index: number } {
-  return state.status === "active";
 }
 
 /** "N of M" for the card. */

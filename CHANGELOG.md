@@ -10,6 +10,48 @@ The release moves it under the version it ships in.
 
 - HQ no longer restarts for an update, or at support's request, while a meeting
   is being recorded; it waits until the recording finishes.
+
+- Internal: removed two unused packages/ui helpers and made three module-only helpers private (TD-60, #1198). No user-visible change.
+
+- Internal: unused exports in the shared UI package are now module-private. No behaviour change.
+
+- Internal: unused exports in the work shell and installer are now module-private. No behaviour change.
+
+- With the Personal workspace board rollout enabled, HQ Desktop shows the
+  cloud-backed board alongside company workspaces.
+
+- Core drift ignores only the setup-managed `env.PATH` value in `.claude/settings.json`; other settings changes remain visible.
+
+- Work feed and Board reads now stop waiting after 15 seconds and keep their cached or empty states when requests fail.
+- On Apple Silicon Macs, the app now replaces a managed Node.js that was installed for Intel Macs instead of reusing it, so setup and repair install the right one.
+- Channel owners no longer see Leave while their channel role is unknown, and
+  a stale owner-role conflict gives a clear recovery message.
+- Goals with an empty company board now explain that the board has no goals yet.
+
+- Internal: unused UI exports are now module-private. No behaviour change.
+
+## [0.10.371] — 2026-10-01
+
+- Desktop sync now recovers legacy watcher processes left behind by an app update when their process path and ancestry prove they belong to the desktop. Other active sync owners continue to be left alone.
+- Home now lists projects from your Personal workspace, and Personal board and summary requests resolve with your Personal identity.
+- Usage telemetry now backs off after unaccepted batches and does not resend rows the server explicitly skipped.
+
+## [0.10.370] — 2026-10-01
+
+- First-run setup now retries a just-published npm package when the registry
+  briefly returns E404 or ETARGET, while keeping setup progress active.
+- Startup diagnostics now distinguish unreadable saved credentials from an empty token store.
+
+- With a compatible hq-cloud runner, auto-sync watches the desktop process directly and releases its lease when the app exits, including after a crash or force-quit.
+- A stalled attachment upload or download in the Work app now ends with the usual upload or download error instead of staying open indefinitely.
+- When a saved access token is rejected, HQ Desktop tries its stored refresh token before asking you to sign in. After Cognito rejects that refresh, HQ Desktop stops retrying the same token and keeps sign-in available.
+
+## [0.10.368] — 2026-10-01
+
+- Window opacity is reset to 100% once for existing installs, including anyone who had chosen a lower value. The theme is unchanged, and an opacity chosen after the update is kept.
+
+## [0.10.367] — 2026-09-30
+
 - Auto-sync identifies its watch-runner lease owner, stops a live orphan desktop runner once, and defers to hq-daemon when it owns the root. Lease-busy exits do not count as repeated runner failures.
 - A watch runner that exits during orphan recovery now counts as stopped, so auto-sync can finish recovery instead of reporting a false runner failure.
 - Fresh installs now open fully opaque until Window opacity is changed; saved
@@ -57,6 +99,7 @@ The release moves it under the version it ships in.
 - Desktop setup continues to report installation failures after an internal error interrupts its diagnostic cache.
 
 - The existing sync plan-limit notice can report gated exposure and Upgrade-click measurements.
+- Successful sign-ins can wait for their local receipt queue write behind a default-off flag before returning to the setup flow.
 
 ## [0.10.363] — 2026-09-30
 
@@ -163,6 +206,9 @@ The release moves it under the version it ships in.
   picked, a note says to update the coding tool if the bot cannot start with
   it, and a bot whose tool does not know its model now says so in plain words.
 
+- Personal workspaces with a cloud vault can show their board when the
+  `desktop.personal-workspace-board-v1` hq-flags rollout is enabled; it stays
+  off until explicitly enabled.
 - In a DM with a bot, the "is thinking" / "working on it" line now
   disappears as soon as the bot's reply appears, instead of staying under
   the reply for a few more seconds. It shows again when you send another

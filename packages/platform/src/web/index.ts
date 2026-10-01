@@ -39,6 +39,7 @@ import {
 import {
   bearerTokenFromHeaders,
   createFeatureFlagGate,
+  PERSONAL_WORKSPACE_BOARD_FLAG,
   type FeatureFlagGate,
 } from "../flags.js";
 import {
@@ -486,7 +487,11 @@ export class WebPlatformAdapter implements PlatformAdapter {
    * byte-for-byte.
    */
   private legacyHasFeature(flag: string): AdapterPromise<boolean> {
-    if (flag === "meetings" || flag === "agents.claude-provider") {
+    if (
+      flag === "meetings" ||
+      flag === "agents.claude-provider" ||
+      flag === PERSONAL_WORKSPACE_BOARD_FLAG
+    ) {
       return Promise.resolve(ok(false));
     }
     return this.get(WEB_PATHS.hasFeature(flag));

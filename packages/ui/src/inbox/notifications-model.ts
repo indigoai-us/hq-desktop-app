@@ -10,6 +10,7 @@
  * notificationGroups helper (Today / Yesterday / date).
  */
 
+import { isRecord } from "../common/is-record";
 import { dayKey, dayLabel } from "./notification-groups";
 import { bundleFileNotifications } from "./file-bundles";
 import { bundleAgentJoinNotifications } from "./agent-join-bundles";
@@ -127,10 +128,6 @@ export interface NotificationsResponseWire {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function asOptionalString(value: unknown): string | null {
   if (typeof value !== "string") return null;

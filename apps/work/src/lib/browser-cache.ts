@@ -11,7 +11,6 @@ import {
   saveConversationCache,
   takeDirectorySeed,
   type ChannelDirectoryRow,
-  type ChatSidebarApi,
   type ConversationMessageWire,
   type DmContactInput,
 } from "@hq/ui";
@@ -19,12 +18,12 @@ import {
 export const SHALLOW_CACHE_KEY = "hq.web.rail-cache.v4";
 export const SHALLOW_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const MAX_DIRECTORY_ROWS = 800;
-export const MAX_CONTACTS = 200;
+const MAX_CONTACTS = 200;
 export const MAX_THREAD_MESSAGES = 40;
 /** Huge agent dumps must not be stringified into localStorage on every send. */
 export const MAX_CACHED_BODY_CHARS = 4_000;
 
-export interface ShallowLastThread {
+interface ShallowLastThread {
   key: string;
   messages: ConversationMessageWire[];
 }
@@ -182,16 +181,6 @@ export function writeShallowCache(
   }
 }
 
-export function clearShallowCache(
-  storage: ShallowCacheStorage | null = defaultStorage(),
-): void {
-  try {
-    storage?.removeItem(SHALLOW_CACHE_KEY);
-  } catch {
-    /* ignore */
-  }
-}
-
 /** Persist the last open REST timeline for first-paint on the next visit. */
 export function persistLastThread(
   personUid: string,
@@ -271,19 +260,6 @@ export function seedConversationCacheFromRail(
     },
     storage,
   );
-}
-
-/** Persist live directory/contacts into the rail blob after a REST fetch. */
-export function persistShallowSidebar(
-  api: ChatSidebarApi,
-  personUid: string,
-): ChatSidebarApi {
-  if (!personUid) return api;
-  return {
-    ...api,
-    fetchChannelDirectory: async (cursor) => api.fetchChannelDirectory(cursor),
-    listContacts: async () => api.listContacts(),
-  };
 }
 
 function defaultStorage(): ShallowCacheStorage | null {

@@ -169,7 +169,7 @@ function kebabSlug(value: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
-export function projectIdCandidates(row: ConversationRow | null): string[] {
+function projectIdCandidates(row: ConversationRow | null): string[] {
   if (!row) return [];
   const out: string[] = [];
   const add = (value: string) => {

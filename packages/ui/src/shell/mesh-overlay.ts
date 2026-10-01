@@ -642,7 +642,7 @@ export function parseChannelMembers(raw: unknown): StatusMemberInput[] {
       avatarUrl: pick("avatarUrl"),
       description: pick("description"),
       role:
-        typeof row.role === "string" ? row.role : agent ? "agent" : "member",
+        typeof row.role === "string" ? row.role : agent ? "agent" : undefined,
       isAgent: agent,
     });
   }
