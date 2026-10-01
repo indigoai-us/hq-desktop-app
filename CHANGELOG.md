@@ -9,6 +9,8 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Setup diagnostics now identify the resolved CLI copy and settings PATH source using path-free values.
+- Internal: unused exports in the work shell and installer are now module-private. No behaviour change.
+
 - With the Personal workspace board rollout enabled, HQ Desktop shows the
   cloud-backed board alongside company workspaces.
 - Work feed and Board reads now stop waiting after 15 seconds and keep their cached or empty states when requests fail.
