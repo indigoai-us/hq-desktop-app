@@ -6,9 +6,8 @@
  * sidebar never runs the server action itself — it calls the host callbacks
  * and either closes (success) or shows the reason inline (blocked).
  *
- * Every AI teammate is a bot. One "New bot" row opens the create-bot flow
- * (kind → home → details); the Home step picks Local (this Mac) or Cloud
- * (company bot, today's create-agent team action).
+ * New Bot opens the cloud takeover when cloud creation is available. Local
+ * creation retains its existing create-bot flow and is linked from there.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
@@ -96,7 +95,7 @@ function click(selector: string): void {
   el.click();
 }
 
-/** Kind step → Home step (Blank is preselected). */
+/** Kind step → Home step (Blank is preselected) for the unchanged local flow. */
 async function toHomeStep(): Promise<void> {
   click('[data-testid="chat-create-new-bot"]');
   await settle();
@@ -170,199 +169,47 @@ describe("ChatSidebar lifecycle entry points", () => {
     );
   });
 
-  it("New bot with only Cloud available opens on Cloud and creates in the one company", async () => {
+  it("New Bot in the plus menu opens the dark cloud takeover", async () => {
     const oncreateagent = vi.fn(async () => okTarget);
     mountSidebar({ companies: [INDIGO], oncreateagent });
     await settle();
     await openModal();
     const row = q<HTMLButtonElement>('[data-testid="chat-create-new-bot"]');
-    expect(row).toBeTruthy();
     expect(row?.textContent).toContain("New bot");
-    expect(row?.textContent).toContain("Indigo");
-    await toHomeStep();
-    // No local runtime on this host → Local is disabled and Cloud is preselected.
-    const local = q<HTMLButtonElement>('[data-testid="chat-bot-where-local"]');
-    const cloud = q<HTMLButtonElement>('[data-testid="chat-bot-where-cloud"]');
-    expect(local?.disabled).toBe(true);
-    expect(cloud?.getAttribute("aria-checked")).toBe("true");
-    // One company → no picker; the details step then names the bot, because
-    // the company channel's card that used to ask is not shown any more.
-    expect(q('[data-testid="chat-create-agent-picker"]')).toBeNull();
-    click('[data-testid="create-bot-next"]');
+    row!.click();
     await settle();
-    expect(q('[data-testid="create-bot-cloud-details-step"]')).toBeTruthy();
-    const create = q<HTMLButtonElement>('[data-testid="chat-bot-create"]');
-    expect(create?.textContent).toContain("Create in Indigo");
-    create!.click();
-    await settle(10);
-    expect(oncreateagent).toHaveBeenCalledWith("cmp_indigo", {
-      name: expect.stringMatching(/\S/),
-      handle: expect.stringMatching(/\S/),
-      runtime: "codex",
-      size: "basic",
-      authMode: "subscription",
-    });
     expect(q('[data-testid="chat-create-modal"]')).toBeNull();
-  });
-
-  it("passes the Title typed on the Cloud details step through to the host", async () => {
-    const oncreateagent = vi.fn(async () => okTarget);
-    mountSidebar({ companies: [INDIGO], oncreateagent });
-    await settle();
-    await openModal();
-    await toHomeStep();
-    click('[data-testid="create-bot-next"]');
-    await settle();
-    const name = q<HTMLInputElement>('[data-testid="chat-bot-name"]')!;
-    name.value = "Polar";
-    name.dispatchEvent(new Event("input", { bubbles: true }));
-    const title = q<HTMLInputElement>('[data-testid="chat-bot-title"]')!;
-    title.value = "Ad account analyst";
-    title.dispatchEvent(new Event("input", { bubbles: true }));
-    await settle();
-    click('[data-testid="chat-bot-create"]');
-    await settle(10);
-    expect(oncreateagent).toHaveBeenCalledWith("cmp_indigo", {
-      name: "Polar",
-      handle: "polar",
-      title: "Ad account analyst",
-      runtime: "codex",
-      size: "basic",
-      authMode: "subscription",
-    });
-  });
-
-  it("offers a company the directory knows before the workspace list refreshes", async () => {
-    const oncreateagent = vi.fn(async () => okTarget);
-    const directoryRow = {
-      channelId: "chn_ramen_bae",
-      name: "ramen-bae",
-      scope: "company",
-      type: "chat",
-      companyUid: "cmp_ramen_bae",
-      companyName: "Ramen Bae",
-      lastActivityAt: new Date().toISOString(),
-      unreadCount: 0,
-      memberCount: 2,
-    };
-    const api = {
-      ...createFixtureChatSidebarApi(),
-      fetchChannelDirectory: async () => ({
-        contractVersion: 2,
-        snapshot: true,
-        cursor: "entry-points-cursor",
-        cursorExpiresAt: new Date(Date.now() + 86_400_000).toISOString(),
-        rows: [directoryRow],
-      }),
-    } as unknown as ReturnType<typeof createFixtureChatSidebarApi>;
-    mountSidebar({ api, companies: [], oncreateagent, seedDirectory: [directoryRow] });
-    await settle();
-    await openModal();
-    const row = q<HTMLButtonElement>('[data-testid="chat-create-new-bot"]');
-    expect(row).toBeTruthy();
-    expect(row?.textContent).toContain("Ramen Bae");
-    await toHomeStep();
-    click('[data-testid="create-bot-next"]');
-    await settle();
-    click('[data-testid="chat-bot-create"]');
-    await settle(10);
-    expect(oncreateagent).toHaveBeenCalledWith("cmp_ramen_bae", {
-      name: expect.stringMatching(/\S/),
-      handle: expect.stringMatching(/\S/),
-      runtime: "codex",
-      size: "basic",
-      authMode: "subscription",
-    });
-  });
-
-  it("Cloud with several companies shows the company picker, keyboard included, and Create uses the pick", async () => {
-    const oncreateagent = vi.fn(async () => okTarget);
-    const oncreatebot = vi.fn(async () => ({ ok: true as const, agentUid: "agt_new", name: "assistant" }));
-    mountSidebar({ companies: [INDIGO, ACME], oncreateagent, oncreatebot });
-    await settle();
-    await openModal();
-    const row = q<HTMLButtonElement>('[data-testid="chat-create-new-bot"]');
-    expect(row?.textContent).toContain("Runs on this computer or in the cloud");
-    await toHomeStep();
-    // Both hosts available → Local is the default, the picker is hidden, and Next leads to details.
-    expect(q<HTMLButtonElement>('[data-testid="chat-bot-where-local"]')?.getAttribute("aria-checked")).toBe("true");
-    expect(q('[data-testid="chat-create-agent-picker"]')).toBeNull();
-    expect(q('[data-testid="create-bot-next"]')).toBeTruthy();
-    click('[data-testid="chat-bot-where-cloud"]');
-    await settle();
+    const takeover = q('[data-testid="new-bot-takeover"]');
+    expect(takeover?.getAttribute("role")).toBe("dialog");
+    expect(takeover?.textContent).toContain("Meet your");
+    expect(takeover?.querySelectorAll(".new-bot-takeover-card").length).toBe(1);
     expect(oncreateagent).not.toHaveBeenCalled();
-    const picker = q('[data-testid="chat-create-agent-picker"]');
-    expect(picker?.getAttribute("role")).toBe("listbox");
-    expect(picker?.getAttribute("aria-label")).toBe("Add a bot to which company?");
-    const options = Array.from(
-      document.querySelectorAll<HTMLButtonElement>(
-        '[data-testid="chat-create-agent-company"]',
-      ),
-    );
-    expect(options.map((o) => o.dataset.company)).toEqual(["cmp_indigo", "cmp_acme"]);
-    // Company tiles use the app-wide monogram helper (`initialsFor`), the same
-    // two-letter mark the sidebar rows and scope switcher show.
-    expect(options.map((o) => o.textContent?.replace(/\s+/g, " ").trim())).toEqual(["IN Indigo", "AC Acme"]);
-    // First company is preselected.
-    expect(options.map((o) => o.getAttribute("aria-selected"))).toEqual(["true", "false"]);
-
-    // Arrow keys move between the company rows.
-    options[0]!.focus();
-    picker!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
-    expect(document.activeElement).toBe(options[1]);
-
-    options[1]!.click();
-    await settle();
-    expect(oncreateagent).not.toHaveBeenCalled();
-    expect(options.map((o) => o.getAttribute("aria-selected"))).toEqual(["false", "true"]);
-    click('[data-testid="create-bot-next"]');
-    await settle();
-    expect(q('[data-testid="chat-bot-create"]')?.textContent).toContain("Create in Acme");
-    click('[data-testid="chat-bot-create"]');
-    await settle(10);
-    expect(oncreateagent).toHaveBeenCalledWith("cmp_acme", {
-      name: expect.stringMatching(/\S/),
-      handle: expect.stringMatching(/\S/),
-      runtime: "codex",
-      size: "basic",
-      authMode: "subscription",
-    });
-    expect(oncreatebot).not.toHaveBeenCalled();
-    expect(q('[data-testid="chat-create-modal"]')).toBeNull();
   });
 
-  it("shows a blocked reason inline in the bot step and keeps the modal open", async () => {
-    const oncreateagent = vi.fn(
-      async (): Promise<EntryPointResult> => ({
-        ok: false,
-        reason: "Only owners can add agents.",
-        blocked: true,
-      }),
-    );
-    mountSidebar({ companies: [INDIGO, ACME], oncreateagent });
+  it("Cancel returns to the prior create surface", async () => {
+    mountSidebar({ companies: [INDIGO], oncreateagent: async () => okTarget });
     await settle();
     await openModal();
-    await toHomeStep();
-    document
-      .querySelector<HTMLButtonElement>('[data-company="cmp_acme"]')!
-      .click();
+    click('[data-testid="chat-create-new-bot"]');
     await settle();
-    click('[data-testid="create-bot-next"]');
+    click('[data-testid="new-bot-takeover-cancel"]');
     await settle();
-    click('[data-testid="chat-bot-create"]');
-    await settle(10);
-    expect(oncreateagent).toHaveBeenCalledWith("cmp_acme", {
-      name: expect.stringMatching(/\S/),
-      handle: expect.stringMatching(/\S/),
-      runtime: "codex",
-      size: "basic",
-      authMode: "subscription",
-    });
+    expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
     expect(q('[data-testid="chat-create-modal"]')).toBeTruthy();
-    expect(q('[data-testid="chat-create-bot-step"]')).toBeTruthy();
-    const error = q('[data-testid="chat-create-entry-error"]');
-    expect(error?.getAttribute("role")).toBe("alert");
-    expect(error?.textContent).toContain("Only owners can add agents.");
+  });
+
+  it("links to the unchanged local creation flow from the takeover", async () => {
+    const oncreatebot = vi.fn(async () => ({ ok: true as const, agentUid: "agt_new", name: "assistant" }));
+    mountSidebar({ companies: [INDIGO], oncreateagent: async () => okTarget, oncreatebot });
+    await settle();
+    await openModal();
+    click('[data-testid="chat-create-new-bot"]');
+    await settle();
+    click('[data-testid="new-bot-takeover-local"]');
+    await settle();
+    expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
+    expect(q('[data-testid="create-bot-kind-step"]')).toBeTruthy();
+    expect(oncreatebot).not.toHaveBeenCalled();
   });
 
   it("the company switcher ends with a New company row that runs the same flow", async () => {

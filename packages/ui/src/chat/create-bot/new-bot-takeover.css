@@ -1,0 +1,167 @@
+@font-face {
+  font-family: "New Bot Fraunces";
+  src: url("./assets/new-bot-wallpapers/fraunces-variable-latin.woff2") format("woff2");
+  font-style: italic;
+  font-weight: 300 700;
+  font-display: swap;
+}
+
+.new-bot-takeover {
+  --new-bot-ink: #fafafa;
+  --new-bot-muted: rgba(250, 250, 250, 0.66);
+  --new-bot-line: rgba(255, 255, 255, 0.14);
+  position: fixed;
+  z-index: 90;
+  inset: 0;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  overflow: hidden;
+  isolation: isolate;
+  color: var(--new-bot-ink);
+  background: #09090b var(--new-bot-wallpaper) center / cover no-repeat;
+  font-family: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-weight: 400;
+}
+
+.new-bot-takeover-shade {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  background:
+    radial-gradient(ellipse at center, rgba(9, 9, 11, 0.24), rgba(9, 9, 11, 0.82)),
+    rgba(9, 9, 11, 0.2);
+}
+
+.new-bot-takeover-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 22px 28px;
+}
+
+.new-bot-takeover-wordmark {
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+}
+
+.new-bot-takeover-cancel,
+.new-bot-takeover-local {
+  border: 0;
+  background: transparent;
+  color: var(--new-bot-muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 400;
+  cursor: pointer;
+}
+
+.new-bot-takeover-cancel {
+  padding: 7px 0;
+}
+
+.new-bot-takeover-cancel:hover,
+.new-bot-takeover-local:hover {
+  color: var(--new-bot-ink);
+}
+
+.new-bot-takeover-cancel:focus-visible,
+.new-bot-takeover-local:focus-visible {
+  outline: 1px solid var(--new-bot-ink);
+  outline-offset: 4px;
+}
+
+.new-bot-takeover-stage {
+  display: grid;
+  place-items: center;
+  padding: 28px;
+}
+
+.new-bot-takeover-card {
+  width: min(480px, 100%);
+  border: 1px solid var(--new-bot-line);
+  padding: clamp(30px, 7vw, 42px);
+  background: rgba(17, 17, 19, 0.62);
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(28px) saturate(140%);
+  -webkit-backdrop-filter: blur(28px) saturate(140%);
+  animation: new-bot-takeover-arrive 280ms cubic-bezier(0.23, 1, 0.32, 1) both;
+}
+
+.new-bot-takeover-kicker {
+  margin: 0 0 18px;
+  color: rgba(255, 255, 255, 0.54);
+  font-family: "Geist Mono", ui-monospace, Menlo, monospace;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.new-bot-takeover h1 {
+  max-width: 340px;
+  margin: 0;
+  font-size: 34px;
+  font-weight: 400;
+  letter-spacing: -0.04em;
+  line-height: 1.1;
+}
+
+.new-bot-takeover h1 em {
+  background: linear-gradient(90deg, #ff809f, #ffb580);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  font-family: "New Bot Fraunces", Fraunces, Georgia, serif;
+  font-style: italic;
+  font-weight: 300;
+}
+
+.new-bot-takeover-copy {
+  max-width: 360px;
+  margin: 12px 0 0;
+  color: var(--new-bot-muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.new-bot-takeover-next {
+  margin: 28px 0 0;
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 13px;
+}
+
+.new-bot-takeover-local {
+  display: block;
+  margin-top: 22px;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+@keyframes new-bot-takeover-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 560px) {
+  .new-bot-takeover-header {
+    padding: 18px 20px;
+  }
+
+  .new-bot-takeover-stage {
+    padding: 20px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .new-bot-takeover-card {
+    animation: none;
+  }
+}

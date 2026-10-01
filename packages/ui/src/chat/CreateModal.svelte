@@ -138,6 +138,8 @@
           draft: CloudBotDraft,
         ) => Promise<EntryPointResult>)
       | null;
+    /** Opens Desktop's cloud-only New Bot takeover. */
+    onnewcloudbot?: (() => void) | null;
     loadClaudeProviderFlag?: (() => AdapterPromise<boolean>) | null;
     loadCloudProvisionOptions?: ((companyUid: string) => AdapterPromise<AgentProvisionOptionsView>) | null;
     /** Companies an agent can be added to (cloud companies the user is in). */
@@ -199,7 +201,7 @@
      * Which step to open on. "company" is the New company entry: the modal
      * opens straight on its second step, with no name typed yet.
      */
-    initialStep?: "find" | "company";
+    initialStep?: "find" | "company" | "bot";
   }
 
   let {
@@ -216,6 +218,7 @@
     oncreatecompany = null,
     companyCreate = null,
     oncreateagent = null,
+    onnewcloudbot = null,
     loadClaudeProviderFlag = null,
     loadCloudProvisionOptions = null,
     agentCompanies = null,
@@ -515,6 +518,10 @@
   // ── New bot: the create-bot flow (kind → home → details) ──────────────────
   function newBot(): void {
     if (!canCreateLocalBot && !canCreateCloudBot) return;
+    if (canCreateCloudBot && onnewcloudbot) {
+      onnewcloudbot();
+      return;
+    }
     entryError = null;
     step = "bot";
   }
@@ -600,6 +607,7 @@
     if (initialStepApplied) return;
     initialStepApplied = true;
     if (initialStep === "company" && companyCreate) void enterCompanyStep("");
+    else if (initialStep === "bot") step = "bot";
   });
   let query = $state("");
   let queryDebounced = $state("");

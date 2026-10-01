@@ -183,6 +183,7 @@
     type SwitcherRow,
   } from "./sidebar-modal-fixtures";
   import CreateModal from "./CreateModal.svelte";
+  import NewBotTakeover from "./create-bot/NewBotTakeover.svelte";
   import type { CompanyCreateSeam } from "./create-company/create-company-flow.js";
   import { registerShortcuts } from "../common/keyboard-shortcuts";
   import { titleWhenTruncated } from "../common/truncation-title";
@@ -1584,6 +1585,7 @@
     scopeMenuOpen = false;
     footerMenuOpen = false;
     createOpen = false;
+    newBotOpen = false;
     searchOpen = false;
   }
 
@@ -1613,7 +1615,26 @@
   /** What the create modal makes inside a company when opened by the host. */
   let createKind = $state<"channel" | "project">("channel");
   /** Which step the create modal opens on — "company" for New company. */
-  let createStep = $state<"find" | "company">("find");
+  let createStep = $state<"find" | "company" | "bot">("find");
+  /** Cloud creation starts in the dedicated full-window takeover. */
+  let newBotOpen = $state(false);
+
+  function openNewBotTakeover(): void {
+    createOpen = false;
+    newBotOpen = true;
+  }
+
+  function cancelNewBotTakeover(): void {
+    newBotOpen = false;
+    createStep = "find";
+    createOpen = true;
+  }
+
+  function openLocalBotFromTakeover(): void {
+    newBotOpen = false;
+    createStep = "bot";
+    createOpen = true;
+  }
 
   /** Host entry point (#welcome's "Start a project channel"): open the create modal. */
   export function openCreateChannel(options: { kind?: "channel" | "project" } = {}): void {
@@ -3712,6 +3733,7 @@
       {oncreatecompany}
       {companyCreate}
       {oncreateagent}
+      onnewcloudbot={openNewBotTakeover}
       {loadClaudeProviderFlag}
       {loadCloudProvisionOptions}
       {agentCompanies}
@@ -3733,6 +3755,14 @@
       {loadAvatarPacks}
       initialKind={createKind}
       initialStep={createStep}
+    />
+  {/if}
+
+  {#if newBotOpen}
+    <NewBotTakeover
+      canCreateLocalBot={!!oncreatebot}
+      oncancel={cancelNewBotTakeover}
+      onopenlocal={oncreatebot ? openLocalBotFromTakeover : null}
     />
   {/if}
 </aside>
