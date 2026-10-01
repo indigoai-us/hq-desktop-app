@@ -290,15 +290,26 @@ where
             continue;
         }
 
-        let display_name = entry
-            .display_name
-            .clone()
-            .unwrap_or_else(|| humanize_slug(&entry.slug));
         let local_path_str = Some(entry.path.to_string_lossy().to_string());
 
         let cloud_entity_for_slug = entities_by_slug.get(entry.slug.as_str()).copied();
         let membership_for_slug = cloud_entity_for_slug
             .and_then(|ent| memberships.iter().find(|m| m.company_uid == ent.uid));
+        let display_name = cloud_entity_for_slug
+            .and_then(|entity| entity.name.clone())
+            .filter(|name| !name.trim().is_empty())
+            .or_else(|| {
+                membership_for_slug
+                    .and_then(|membership| membership.company_name.clone())
+                    .filter(|name| !name.trim().is_empty())
+            })
+            .or_else(|| {
+                entry
+                    .display_name
+                    .clone()
+                    .filter(|name| !name.trim().is_empty())
+            })
+            .unwrap_or_else(|| humanize_slug(&entry.slug));
         let membership_status = membership_for_slug.map(|m| m.status.clone());
         let role = membership_for_slug.and_then(|m| m.role.clone());
         let invited_by = membership_for_slug.and_then(|m| m.invited_by.clone());
