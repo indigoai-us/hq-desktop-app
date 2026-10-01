@@ -230,25 +230,17 @@ describe("ChatSidebar Companies section — click opens the home channel", () =>
       },
     });
 
-    let personalRow: HTMLButtonElement | null = null;
     await vi.waitFor(() => {
-      personalRow = host.querySelector<HTMLButtonElement>(
-        '[data-testid="chat-companies-row-disabled-prs_personal_test"]',
-      );
       expect(host.querySelector('[data-testid="chat-companies-row-cmp_indigo"]')).toBeTruthy();
     });
 
-    // On the old code this row exists and clicking it reaches the company-only
-    // ensure endpoint. The fixed code has no company-section control to click.
-    personalRow?.click();
-    await tick();
-    const personalRowStillInSection = host.querySelector(
+    // The personal workspace is not a company-section row, so it cannot reach
+    // the company-only ensure endpoint through this section.
+    const personalRow = host.querySelector<HTMLButtonElement>(
       '[data-testid="chat-companies-row-disabled-prs_personal_test"], [data-testid="chat-companies-row-prs_personal_test"]',
     );
-    expect({
-      personalRowStillInSection: personalRowStillInSection !== null,
-      ensureCalls: ensureCompanyHomeChannel.mock.calls.length,
-    }).toEqual({ personalRowStillInSection: false, ensureCalls: 0 });
+    expect(personalRow).toBeNull();
+    expect(ensureCompanyHomeChannel).not.toHaveBeenCalled();
   });
 
   it("ensureCompanyHomeChannel and logToFile are required: a no-homeChannelId row still attempts ensure on click, never silently disables", async () => {
