@@ -163,6 +163,30 @@ describe("NewBotWakingScreen", () => {
     expect(writeText).toHaveBeenNthCalledWith(2, "");
   });
 
+  it("does not erase a newer clipboard value after Codex approval completes", async () => {
+    vi.useFakeTimers();
+    let ready = false;
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { readText: vi.fn(async () => "newer clipboard value"), writeText },
+    });
+    render({
+      ...beginWakingSession({ agentUid: "agt_nova", channelId: "chn_nova", companyUid: "cmp_acme", name: "Nova" }),
+      approval: { provider: "codex", url: "https://auth.openai.com/codex/device", code: "TEST-CODE", capturedAt: new Date().toISOString() },
+    }, {
+      getStatus: async () => ({ ok: true, value: { setupState: { phase: ready ? "ready" : "creating" } } }),
+      openExternal: vi.fn(),
+    });
+    await settle();
+    document.querySelector<HTMLButtonElement>('[data-testid="new-bot-approval-open"]')!.click();
+    await settle();
+    ready = true;
+    await vi.advanceTimersByTimeAsync(WAKING_POLL_MS);
+    expect(writeText).toHaveBeenCalledOnce();
+    expect(writeText).toHaveBeenCalledWith("TEST-CODE");
+  });
+
   it("submits the Claude browser code and enters a pending state", async () => {
     const submitClaudeLoginCode = vi.fn(async () => ({ ok: true }));
     const openExternal = vi.fn();
@@ -181,6 +205,28 @@ describe("NewBotWakingScreen", () => {
     expect(openExternal).toHaveBeenCalledWith("https://claude.ai/oauth/authorize");
     expect(submitClaudeLoginCode).toHaveBeenCalledWith("agt_nova", "returned-code");
     expect(document.querySelector('[data-testid="new-bot-approval-message"]')?.textContent).toContain("Checking your sign-in");
+  });
+
+  it("removes the approval action when the next status response resumes waking", async () => {
+    const initial = {
+      ...beginWakingSession({ agentUid: "agt_nova", channelId: "chn_nova", companyUid: "cmp_acme", name: "Nova" }),
+      approval: { provider: "grok" as const, url: "https://accounts.x.ai/device", code: "TEST-CODE", capturedAt: new Date().toISOString() },
+    };
+    const { onupdate } = render(initial, {
+      getStatus: async () => ({ ok: true, value: { setupState: { phase: "creating" } } }),
+    });
+    await settle();
+
+    const resumed = onupdate.mock.calls[0]?.[0];
+    expect(resumed).toMatchObject({ phase: "waking", approval: null });
+
+    await unmount(component!);
+    component = null;
+    host.remove();
+    render(resumed, { getStatus: null });
+    await settle();
+    expect(document.querySelector('[data-testid="new-bot-approval-open"]')).toBeNull();
+    expect(document.querySelector('[data-testid="new-bot-waking-status"]')?.textContent).not.toBe("One thing from you.");
   });
 
   it("offers a fresh approval after ten minutes", async () => {
