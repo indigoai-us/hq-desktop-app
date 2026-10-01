@@ -5,9 +5,15 @@
 export type AttachmentPreviewKind =
   "image" | "text" | "markdown" | "pdf" | "sheet" | "file";
 
+// 25 MiB needs about 210 s at 1 Mbit/s; 300 s leaves transfer and response slack.
+const ATTACHMENT_PREVIEW_TIMEOUT_MS = 300_000;
+
 export function isNetworkFetchError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
-  return /failed to fetch|networkerror|^load failed$/i.test(err.message);
+  return (
+    err.name === "TimeoutError" ||
+    /failed to fetch|networkerror|^load failed$/i.test(err.message)
+  );
 }
 
 export function attachmentPreviewKind(input: {
@@ -106,6 +112,16 @@ function isHtmlDocument(res: Response): boolean {
   return type.includes("text/html");
 }
 
+async function bufferAttachmentResponse(res: Response): Promise<Response> {
+  const body =
+    res.status === 204 || res.status === 205 ? null : await res.arrayBuffer();
+  return new Response(body, {
+    headers: res.headers,
+    status: res.status,
+    statusText: res.statusText,
+  });
+}
+
 /** True when this origin is the Work web app (has /api/chat-attachment-bytes).
  * Desktop Vite (port 1420) has no such route — it returns index.html. */
 export function canUseWebAttachmentProxy(origin: string): boolean {
@@ -123,8 +139,12 @@ export function canUseWebAttachmentProxy(origin: string): boolean {
 
 export async function readAttachmentResponse(url: string): Promise<Response> {
   try {
-    const direct = await fetch(url);
-    if (direct.ok && !isHtmlDocument(direct)) return direct;
+    const direct = await fetch(url, {
+      signal: AbortSignal.timeout(ATTACHMENT_PREVIEW_TIMEOUT_MS),
+    });
+    if (direct.ok && !isHtmlDocument(direct)) {
+      return await bufferAttachmentResponse(direct);
+    }
   } catch (err) {
     if (!isNetworkFetchError(err)) throw err;
   }
@@ -133,8 +153,11 @@ export async function readAttachmentResponse(url: string): Promise<Response> {
   if (canUseWebAttachmentProxy(origin)) {
     const proxied = await fetch("/api/chat-attachment-bytes", {
       headers: { "x-hq-source-url": url },
+      signal: AbortSignal.timeout(ATTACHMENT_PREVIEW_TIMEOUT_MS),
     });
-    if (proxied.ok && !isHtmlDocument(proxied)) return proxied;
+    if (proxied.ok && !isHtmlDocument(proxied)) {
+      return await bufferAttachmentResponse(proxied);
+    }
   }
   throw new Error("Could not load the file");
 }
