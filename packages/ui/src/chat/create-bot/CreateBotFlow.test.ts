@@ -455,7 +455,6 @@ describe("CreateBotFlow", () => {
       handle: "ice",
       runtime: "claude",
       size: "basic",
-      authMode: "subscription",
     });
     expect(oncreate).not.toHaveBeenCalled();
   });
@@ -501,7 +500,6 @@ describe("CreateBotFlow", () => {
       handle: "polar-bear",
       runtime: "claude",
       size: "basic",
-      authMode: "subscription",
     });
   });
 
@@ -533,7 +531,6 @@ describe("CreateBotFlow", () => {
       handle: "polar",
       runtime: "claude",
       size: "basic",
-      authMode: "subscription",
       title: "Ad account analyst",
     });
   });
@@ -614,10 +611,6 @@ describe("CreateBotFlow", () => {
     await settle();
     q<HTMLInputElement>('[data-testid="cloud-bot-runtime-grok"]')!.click();
     await settle();
-    q<HTMLInputElement>('[data-testid="cloud-bot-auth-api-key"]')!.click();
-    await settle();
-    type(q<HTMLInputElement>('[data-testid="cloud-bot-api-key"]')!, "sk-test-cloud-key");
-    await settle();
     q<HTMLInputElement>('[data-testid="cloud-bot-size-power"]')!.click();
     await settle();
 
@@ -663,7 +656,7 @@ describe("CreateBotFlow", () => {
     expect(q<HTMLInputElement>('[data-testid="cloud-bot-runtime-codex"]')?.checked).toBe(true);
   });
 
-  it("passes the chosen runtime, quote size, auth mode, and API key to create", async () => {
+  it("passes the chosen runtime and quote size to create, with no auth mode or API key", async () => {
     const onCloudCreate = vi.fn(async () => undefined);
     render({ oncreate: vi.fn(), onCloudCreate, agentTargets: COMPANIES });
     await settle();
@@ -675,10 +668,6 @@ describe("CreateBotFlow", () => {
     await settle();
     q<HTMLInputElement>('[data-testid="cloud-bot-runtime-grok"]')!.click();
     await settle();
-    q<HTMLInputElement>('[data-testid="cloud-bot-auth-api-key"]')!.click();
-    await settle();
-    type(q<HTMLInputElement>('[data-testid="cloud-bot-api-key"]')!, "sk-test-cloud-key");
-    await settle();
     type(q<HTMLInputElement>('[data-testid="chat-bot-name"]')!, "Polar");
     await settle();
     click('[data-testid="chat-bot-create"]');
@@ -688,12 +677,10 @@ describe("CreateBotFlow", () => {
       handle: "polar",
       runtime: "grok",
       size: "basic",
-      authMode: "apiKey",
-      apiKey: "sk-test-cloud-key",
     });
   });
 
-  it("clears a Cloud API key when the draft moves to another company", async () => {
+  it("does not offer an API key option for Cloud bots", async () => {
     const onCloudCreate = vi.fn(async (_companyUid: string, _draft: CloudBotDraft) => undefined);
     render({ oncreate: vi.fn(), onCloudCreate, agentTargets: COMPANIES });
     await settle();
@@ -703,31 +690,18 @@ describe("CreateBotFlow", () => {
     await settle();
     click('[data-testid="create-bot-next"]');
     await settle();
-    click('[data-testid="cloud-bot-auth-api-key"]');
-    await settle();
-    type(q<HTMLInputElement>('[data-testid="cloud-bot-api-key"]')!, "sk-test-cloud-key");
-    await settle();
 
-    click('[data-testid="create-bot-back"]');
-    await settle();
-    host.querySelector<HTMLButtonElement>('[data-testid="chat-create-agent-company"][data-company="cmp_acme"]')!.click();
-    await settle();
-    click('[data-testid="create-bot-next"]');
-    await settle();
+    expect(q('[data-testid="cloud-bot-auth-choice"]')).toBeNull();
+    expect(q('[data-testid="cloud-bot-auth-api-key"]')).toBeNull();
+    expect(q('[data-testid="cloud-bot-api-key"]')).toBeNull();
 
-    expect(q<HTMLInputElement>('[data-testid="cloud-bot-api-key"]')?.value).toBe("");
-    expect(q('[data-testid="create-bot-issue"]')?.textContent).toContain("Enter an API key");
-    expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')?.disabled).toBe(true);
-    click('[data-testid="chat-bot-create"]');
-    await settle();
-    expect(onCloudCreate).not.toHaveBeenCalled();
-
-    type(q<HTMLInputElement>('[data-testid="cloud-bot-api-key"]')!, "sk-test-acme-cloud-key");
+    type(q<HTMLInputElement>('[data-testid="chat-bot-name"]')!, "Polar");
     await settle();
     click('[data-testid="chat-bot-create"]');
     await settle();
-    expect(onCloudCreate).toHaveBeenCalledWith("cmp_acme", expect.objectContaining({ apiKey: "sk-test-acme-cloud-key" }));
-    expect(onCloudCreate.mock.calls[0]?.[1]).not.toHaveProperty("apiKey", "sk-test-cloud-key");
+    expect(onCloudCreate).toHaveBeenCalledTimes(1);
+    expect(onCloudCreate.mock.calls[0]?.[1]).not.toHaveProperty("apiKey");
+    expect(onCloudCreate.mock.calls[0]?.[1]).not.toHaveProperty("authMode");
   });
 
   it("blocks creation and retries tenant pricing when the person asks", async () => {

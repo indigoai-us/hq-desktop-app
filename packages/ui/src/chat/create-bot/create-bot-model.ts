@@ -27,7 +27,6 @@ export type CreateBotStep = "kind" | "home" | "details";
 export type BotKindChoice = "blank" | "template";
 export type BotHome = "local" | "cloud";
 export type BotRuntime = LocalBotCreateInput["runtime"];
-export type CloudBotAuthMode = "subscription" | "apiKey";
 export type BotMemory = "synced" | "local";
 /** Who a Local bot acts as (bot-kinds): the owner, or itself inside its companies. */
 export type BotScope = LocalBotKind;
@@ -39,8 +38,6 @@ export interface CreateBotDraft {
   runtime: BotRuntime;
   /** Cloud-only size rung, chosen from the current company quote. */
   size: "basic" | "power" | "dev" | "";
-  /** Cloud-only provider credential mode. */
-  authMode: CloudBotAuthMode;
   companyUid?: string;
   /** Local only: personal (acts as you) or company (acts as itself). */
   scope: BotScope;
@@ -94,7 +91,6 @@ export interface CreateBotContext {
   /** Tenant-specific options from GET /v1/agents/provision-options. */
   cloudProvisionOptions?: AgentProvisionOptionsView | null;
   cloudQuoteStatus?: "loading" | "ready" | "error";
-  cloudApiKeyPresent?: boolean;
   /**
    * Plain-language name for the host machine ("Mac", "PC", or "computer")
    * from `hostComputerNoun`. Absent means "not ready"; the copy stays neutral.
@@ -148,7 +144,6 @@ export function initialDraft(ctx: Pick<CreateBotContext, "canLocal" | "canCloud"
     home: ctx.canLocal ? "local" : "cloud",
     runtime: ctx.canLocal ? firstReadyRuntime(ctx.runtimeReady) : "codex",
     size: "",
-    authMode: "subscription",
     companyUid: ctx.companies[0]?.companyUid,
     scope: "personal",
     companySlugs: [],
@@ -488,9 +483,6 @@ export function stepIssue(step: CreateBotStep, draft: CreateBotDraft, ctx: Creat
         );
         if (!quotedSize?.selectable || quotedSize.netMonthlyCents === null) {
           return "Choose an available size.";
-        }
-        if (draft.authMode === "apiKey" && !ctx.cloudApiKeyPresent) {
-          return "Enter an API key to continue.";
         }
         return null;
       }
