@@ -242,8 +242,13 @@ describe("ChatSidebar Companies section — click opens the home channel", () =>
     // ensure endpoint. The fixed code has no company-section control to click.
     personalRow?.click();
     await tick();
-    expect(personalRow).toBeNull();
-    expect(ensureCompanyHomeChannel).not.toHaveBeenCalled();
+    const personalRowStillInSection = host.querySelector(
+      '[data-testid="chat-companies-row-disabled-prs_personal_test"], [data-testid="chat-companies-row-prs_personal_test"]',
+    );
+    expect({
+      personalRowStillInSection: personalRowStillInSection !== null,
+      ensureCalls: ensureCompanyHomeChannel.mock.calls.length,
+    }).toEqual({ personalRowStillInSection: false, ensureCalls: 0 });
   });
 
   it("ensureCompanyHomeChannel and logToFile are required: a no-homeChannelId row still attempts ensure on click, never silently disables", async () => {
