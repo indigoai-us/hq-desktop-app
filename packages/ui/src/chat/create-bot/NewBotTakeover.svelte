@@ -3,6 +3,7 @@
   import glassWhiteboard from "./assets/new-bot-wallpapers/glass-whiteboard.jpg";
   import nodeConstellation from "./assets/new-bot-wallpapers/node-constellation.jpg";
   import roadSunrise from "./assets/new-bot-wallpapers/road-sunrise.jpg";
+  import { focusOnMount, portal } from "../portal.js";
   import "./new-bot-takeover.css";
 
   interface Props {
@@ -23,16 +24,42 @@
   const wallpapers = [glassWhiteboard, roadSunrise, nodeConstellation, aurora];
   const wallpaper = $derived(wallpapers[Math.abs(wallpaperIndex) % wallpapers.length] ?? glassWhiteboard);
 
+  let dialogEl = $state<HTMLDivElement | null>(null);
+
+  const focusableSelector =
+    'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])';
+
   function onKeydown(event: KeyboardEvent): void {
-    if (event.key !== "Escape") return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      oncancel();
+      return;
+    }
+    if (event.key !== "Tab") return;
+
+    const focusable = dialogEl
+      ? [...dialogEl.querySelectorAll<HTMLElement>(focusableSelector)]
+      : [];
+    if (focusable.length === 0) return;
+
     event.preventDefault();
-    oncancel();
+    const index = focusable.indexOf(document.activeElement as HTMLElement);
+    if (index === -1) {
+      focusable[event.shiftKey ? focusable.length - 1 : 0]?.focus();
+      return;
+    }
+    const nextIndex = event.shiftKey
+      ? (index - 1 + focusable.length) % focusable.length
+      : (index + 1) % focusable.length;
+    focusable[nextIndex]?.focus();
   }
 </script>
 
 <svelte:window onkeydown={onKeydown} />
 
 <div
+  bind:this={dialogEl}
   class="new-bot-takeover"
   data-testid="new-bot-takeover"
   role="dialog"
@@ -40,6 +67,7 @@
   aria-labelledby="new-bot-takeover-title"
   tabindex="-1"
   style={`--new-bot-wallpaper: url("${wallpaper}")`}
+  use:portal
 >
   <div class="new-bot-takeover-shade" aria-hidden="true"></div>
   <header class="new-bot-takeover-header">
@@ -48,6 +76,7 @@
       type="button"
       class="new-bot-takeover-cancel"
       data-testid="new-bot-takeover-cancel"
+      use:focusOnMount
       onclick={oncancel}
     >
       Cancel
