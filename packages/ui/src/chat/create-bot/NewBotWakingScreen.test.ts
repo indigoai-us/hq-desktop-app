@@ -97,6 +97,18 @@ describe("NewBotWakingScreen", () => {
     expect(document.querySelector('[data-testid="new-bot-approval-waiting"]')?.textContent).toContain("Waiting for Grok");
   });
 
+  it("keeps approval recoverable when the provider page cannot open", async () => {
+    render({
+      ...beginWakingSession({ agentUid: "agt_nova", channelId: "chn_nova", companyUid: "cmp_acme", name: "Nova" }),
+      approval: { provider: "grok", url: "https://accounts.x.ai/device", code: "TEST-CODE", capturedAt: new Date().toISOString() },
+    }, { openExternal: vi.fn(async () => { throw new Error("blocked"); }) });
+    await settle();
+    document.querySelector<HTMLButtonElement>('[data-testid="new-bot-approval-open"]')!.click();
+    await settle();
+    expect(document.querySelector('[data-testid="new-bot-approval-message"]')?.textContent).toContain("couldn't open");
+    expect(document.querySelector('[data-testid="new-bot-approval-waiting"]')).toBeNull();
+  });
+
   it("polls the selected brain so the server returns the current pairing", async () => {
     const getStatus = vi.fn(async () => ({ ok: true, value: { setupState: { phase: "creating" } } }));
     render(beginWakingSession({

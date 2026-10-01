@@ -71,8 +71,14 @@
         }
         showCodexCode = true;
       }
-      await openExternal?.(approvalOpenUrl(approval));
+      if (!openExternal) {
+        actionMessage = "We couldn't open the sign-in page. Try again.";
+        return;
+      }
+      await openExternal(approvalOpenUrl(approval));
       approvalOpened = true;
+    } catch {
+      actionMessage = "We couldn't open the sign-in page. Try again.";
     } finally {
       actionBusy = false;
     }
