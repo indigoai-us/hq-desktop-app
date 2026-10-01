@@ -8,6 +8,9 @@ import { MAX_CHAT_ATTACHMENT_BYTES } from "@hq/ui";
 import { ID_TOKEN_COOKIE } from "$lib/server/auth";
 import { isAllowedS3PresignUrl } from "$lib/server/s3-presign-url";
 
+// The 25 MiB download cap needs room for slower S3 transfers while bounding a stalled request.
+const CHAT_ATTACHMENT_S3_GET_DEADLINE_MS = 60_000;
+
 function jsonError(status: number, error: string, code: string): Response {
   return new Response(JSON.stringify({ error, code }), {
     status,
@@ -86,26 +89,29 @@ export const GET: RequestHandler = async ({ request, cookies }) => {
   }
 
   const controller = new AbortController();
+  const deadline = setTimeout(
+    () => controller.abort(),
+    CHAT_ATTACHMENT_S3_GET_DEADLINE_MS,
+  );
   let upstream: Response;
-  try {
-    upstream = await fetch(target, { method: "GET", signal: controller.signal });
-  } catch {
-    return jsonError(502, "File upstream failed", "SOURCE_UNREACHABLE");
-  }
-
-  const maxBytes = requestedByteLimit(request);
-  if ((headerByteLength(upstream) ?? 0) > maxBytes) {
-    controller.abort();
-    return jsonError(413, "File is too large", "SOURCE_TOO_LARGE");
-  }
-
-  const contentType =
-    upstream.headers.get("content-type") ?? "application/octet-stream";
+  let contentType = "application/octet-stream";
   let body: Uint8Array | null;
   try {
+    upstream = await fetch(target, { method: "GET", signal: controller.signal });
+
+    const maxBytes = requestedByteLimit(request);
+    if ((headerByteLength(upstream) ?? 0) > maxBytes) {
+      controller.abort();
+      return jsonError(413, "File is too large", "SOURCE_TOO_LARGE");
+    }
+
+    contentType =
+      upstream.headers.get("content-type") ?? "application/octet-stream";
     body = await readBounded(upstream, maxBytes, controller);
   } catch {
     return jsonError(502, "File upstream failed", "SOURCE_UNREACHABLE");
+  } finally {
+    clearTimeout(deadline);
   }
   if (!body) {
     return jsonError(413, "File is too large", "SOURCE_TOO_LARGE");

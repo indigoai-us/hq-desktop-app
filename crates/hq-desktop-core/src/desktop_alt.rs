@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::{read_hq_config_lenient, MenubarPrefs};
 use crate::ignore::MAX_FILE_BYTES;
 use crate::paths;
-use crate::workspaces::{Workspace, WorkspaceState};
+use crate::workspaces::{Workspace, WorkspaceKind, WorkspaceState};
 
 const HQ_DEPLOY_APP_DOMAIN: &str = "indigo-hq.com";
 
@@ -373,6 +373,14 @@ pub fn resolve_company_uid_from_workspaces(
         .into_iter()
         .find(|workspace| workspace.slug == slug)
         .ok_or_else(|| format!("company '{slug}' was not found"))?;
+    if workspace.kind == WorkspaceKind::Personal && workspace.state == WorkspaceState::Personal {
+        if workspace.slug != "personal" {
+            return Err("personal workspace has an invalid identity".to_string());
+        }
+        return workspace
+            .cloud_uid
+            .ok_or_else(|| "personal workspace is not connected to cloud".to_string());
+    }
     if workspace.state == WorkspaceState::Broken {
         let reason = workspace
             .broken_reason
@@ -3746,6 +3754,36 @@ mod tests {
             brand: None,
             home_channel_id: None,
         }
+    }
+
+    #[test]
+    fn personal_board_resolution_uses_only_the_personal_workspace_identity() {
+        let mut personal = company_workspace(
+            "personal",
+            WorkspaceState::Personal,
+            Some("person_fixture"),
+            None,
+        );
+        personal.kind = WorkspaceKind::Personal;
+        assert_eq!(
+            super::resolve_company_uid_from_workspaces(vec![personal], "personal").unwrap(),
+            "person_fixture"
+        );
+
+        assert_eq!(
+            super::resolve_company_uid_from_workspaces(
+                vec![company_workspace(
+                    "acme",
+                    WorkspaceState::Synced,
+                    Some("cmp_acme"),
+                    None,
+                )],
+                "acme",
+            )
+            .unwrap(),
+            "cmp_acme",
+            "company board resolution remains unchanged",
+        );
     }
 
     #[test]

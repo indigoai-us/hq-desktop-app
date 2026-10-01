@@ -10,6 +10,77 @@ The release moves it under the version it ships in.
 
 - On Apple Silicon Macs, the app now replaces a managed Node.js that was installed for Intel Macs instead of reusing it, so setup and repair install the right one.
 
+## [0.10.371] — 2026-10-01
+
+- Desktop sync now recovers legacy watcher processes left behind by an app update when their process path and ancestry prove they belong to the desktop. Other active sync owners continue to be left alone.
+- Home now lists projects from your Personal workspace, and Personal board and summary requests resolve with your Personal identity.
+- Usage telemetry now backs off after unaccepted batches and does not resend rows the server explicitly skipped.
+
+## [0.10.370] — 2026-10-01
+
+- First-run setup now retries a just-published npm package when the registry
+  briefly returns E404 or ETARGET, while keeping setup progress active.
+- Startup diagnostics now distinguish unreadable saved credentials from an empty token store.
+
+- With a compatible hq-cloud runner, auto-sync watches the desktop process directly and releases its lease when the app exits, including after a crash or force-quit.
+- A stalled attachment upload or download in the Work app now ends with the usual upload or download error instead of staying open indefinitely.
+- When a saved access token is rejected, HQ Desktop tries its stored refresh token before asking you to sign in. After Cognito rejects that refresh, HQ Desktop stops retrying the same token and keeps sign-in available.
+
+## [0.10.368] — 2026-10-01
+
+- Window opacity is reset to 100% once for existing installs, including anyone who had chosen a lower value. The theme is unchanged, and an opacity chosen after the update is kept.
+
+## [0.10.367] — 2026-09-30
+
+- Auto-sync identifies its watch-runner lease owner, stops a live orphan desktop runner once, and defers to hq-daemon when it owns the root. Lease-busy exits do not count as repeated runner failures.
+- A watch runner that exits during orphan recovery now counts as stopped, so auto-sync can finish recovery instead of reporting a false runner failure.
+- Fresh installs now open fully opaque until Window opacity is changed; saved
+  opacity values remain in effect.
+
+## [0.10.365] — 2026-09-30
+
+- Opening the desktop window no longer freezes the whole app for seconds
+  while it checks which AI tools are installed. That check (shell probes plus
+  a scan of the Claude, Codex, and Grok config folders) ran on the app's main
+  thread, so under disk load it stalled every window, every other request, and
+  the boot watchdog, which then showed the Recovery dialog. It now runs in the
+  background. The "HQ Work installed" probe moves off the main thread for the
+  same reason.
+
+- The Recovery dialog no longer stays open when the desktop window was only
+  slow to load. If the window finishes loading after the dialog appeared, the
+  dialog closes by itself, including when it finishes while Recovery is still
+  checking for updates. When the app notices its own timers running late
+  (the machine or the app was stalled), it waits an extra ten seconds before
+  showing Recovery instead of alarming right away. The log now records how long
+  each window took to load and when the app's background runtime stalls, so a
+  slow open can be told apart from a broken one.
+
+- On Windows, template installs now use safe file-copy and junction fallbacks when symlink creation is unavailable.
+
+- Added desktop regression tests for adapter results and call-window URL target rejection.
+
+- First-time setup shows when it is checking for AI tools instead of waiting silently.
+
+## [0.10.364] — 2026-09-30
+
+- The desktop app no longer checks which AI tools are installed every time it opens; it checks when you create a bot or run setup.
+
+- On macOS, HQ Sync restarts after an abnormal exit and waits at least 30
+  seconds between crash restarts. Existing enabled LaunchAgents are refreshed
+  on app startup, and the updater handoff avoids a duplicate restart.
+
+- Internal desktop regression tests now exercise runtime behavior instead of reading implementation source text.
+- Core update failures caused by low snapshot space now report a dedicated
+  diagnostic class and coarse required/available space buckets.
+
+- Startup reporting now treats pending first-run consent and confirmed
+  missing-root recovery as expected.
+- Desktop setup continues to report installation failures after an internal error interrupts its diagnostic cache.
+
+- The existing sync plan-limit notice can report gated exposure and Upgrade-click measurements.
+- Successful sign-ins can wait for their local receipt queue write behind a default-off flag before returning to the setup flow.
+
 ## [0.10.363] — 2026-09-30
 
 - Opening a conversation no longer shows an empty pane when recent activity was hidden; older messages from people load automatically.

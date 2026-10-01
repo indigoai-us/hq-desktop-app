@@ -124,6 +124,7 @@ pub mod watcher_fault;
 pub mod win32_path;
 pub mod update_gate;
 pub mod workspaces;
+pub mod watch_owner;
 
 #[cfg(test)]
 pub(crate) mod test_support;

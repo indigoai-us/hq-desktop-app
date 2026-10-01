@@ -9,6 +9,94 @@ export type DesktopTelemetryProperties = Record<
 
 const EMIT_SKILL_TELEMETRY_COMMAND = 'emit_desktop_telemetry_if_opted_in';
 const EMIT_OPERATIONAL_TELEMETRY_COMMAND = 'emit_desktop_operational_telemetry';
+const PLAN_LIMIT_PROMPT_FLAG = 'billing.limit-at-action-prompt';
+
+export type PlanLimitPromptEventName =
+  | 'plan_limit_prompt_exposed'
+  | 'plan_limit_prompt_engaged';
+
+export interface EmitPlanLimitPromptTelemetryOptions {
+  /** Authenticated native hq-pro transport; the webview never reads a token. */
+  fetch: typeof globalThis.fetch;
+  eventName: PlanLimitPromptEventName;
+  companyUid: string;
+  exposureId: string;
+  action?: 'upgrade_clicked';
+  occurredAt?: string;
+}
+
+/**
+ * Send the rendered desktop sync-limit prompt facts through hq-pro's existing
+ * authenticated telemetry endpoint. The rollout flag resolves through the
+ * same hq-flags service and fails closed when absent or unreadable.
+ */
+export async function emitPlanLimitPromptTelemetry({
+  fetch: authenticatedFetch,
+  eventName,
+  companyUid,
+  exposureId,
+  action,
+  occurredAt = new Date().toISOString(),
+}: EmitPlanLimitPromptTelemetryOptions): Promise<void> {
+  if (!/^cmp_[A-Za-z0-9_-]+$/.test(companyUid)) return;
+  if (
+    !/^[A-Za-z0-9_.:#-]{1,160}$/.test(exposureId) ||
+    /^(?:prs|agt|cmp)_[A-Za-z0-9_-]+$/.test(exposureId)
+  ) return;
+  if (
+    (eventName === 'plan_limit_prompt_engaged' && action !== 'upgrade_clicked') ||
+    (eventName === 'plan_limit_prompt_exposed' && action !== undefined)
+  ) return;
+
+  try {
+    const flagResponse = await authenticatedFetch('/v1/flags/resolve');
+    if (!flagResponse.ok) return;
+    const snapshot: unknown = await flagResponse.json();
+    if (
+      typeof snapshot !== 'object' ||
+      snapshot === null ||
+      !('flags' in snapshot) ||
+      typeof snapshot.flags !== 'object' ||
+      snapshot.flags === null ||
+      !(PLAN_LIMIT_PROMPT_FLAG in snapshot.flags) ||
+      snapshot.flags[PLAN_LIMIT_PROMPT_FLAG] !== true
+    ) return;
+
+    const properties: Record<string, string> = {
+      surface: 'desktop_sync_limit_notice',
+      resourceKind: 'storageBytes',
+      presentationKind: 'advisory',
+      exposureId,
+    };
+    if (action) properties.action = action;
+
+    const response = await authenticatedFetch('/v1/telemetry/events', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        events: [
+          {
+            eventName,
+            app: 'hq-desktop-app',
+            source: 'desktop',
+            occurredAt,
+            consentBasis: 'no-consent',
+            schemaVersion: 2,
+            idempotencyKey: `desktop-limit-prompt:${eventName}:${exposureId}`,
+            companyUid,
+            properties,
+          },
+        ],
+      }),
+    });
+    if (!response.ok) {
+      console.warn('[telemetry] desktop plan-limit prompt event was rejected');
+    }
+  } catch {
+    // Best effort: telemetry transport failures must not affect the notice or CTA.
+    console.warn('[telemetry] desktop plan-limit prompt event could not be sent');
+  }
+}
 
 export interface EmitDesktopTelemetryOptions {
   eventName: string;
