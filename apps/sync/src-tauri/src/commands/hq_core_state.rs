@@ -58,8 +58,9 @@ use tauri::{AppHandle, Emitter, Listener, Manager};
 
 use crate::commands::config::{read_hq_config_lenient, MenubarPrefs};
 use crate::commands::hq_core_drift::{
-    excluded_scope_paths_for, is_conflict_artifact, path_in_excluded_scope, path_in_locked_scope,
-    read_locked_paths, walk_local_under_scope, BaselineStatus, DriftEntry, DriftReport,
+    drift_blob_sha_for_path, excluded_scope_paths_for, git_blob_sha, is_conflict_artifact,
+    normalized_or_raw_drift_sha, path_in_excluded_scope, path_in_locked_scope, read_locked_paths,
+    walk_local_under_scope, BaselineStatus, DriftEntry, DriftReport,
 };
 use crate::commands::hq_core_staging;
 use crate::commands::hq_core_update::get_local_version;
@@ -3430,6 +3431,47 @@ async fn fetch_tree(
     Ok(out)
 }
 
+const GENERATED_SETTINGS_PATH: &str = ".claude/settings.json";
+
+/// Resolve the generated PATH settings file to the same normalized hash used
+/// for the local tree. The tree API carries only blob hashes, so fetch this
+/// one small source blob to strip env.PATH while preserving every other key.
+async fn fetch_normalized_settings_sha(
+    client: &reqwest::Client,
+    repo: &str,
+    git_ref: &str,
+    expected_raw_sha: Option<&str>,
+) -> Result<String, String> {
+    let url = format!(
+        "https://api.github.com/repos/{repo}/contents/{GENERATED_SETTINGS_PATH}?ref={git_ref}"
+    );
+    let response = client
+        .get(&url)
+        .header(reqwest::header::ACCEPT, "application/vnd.github.raw+json")
+        .send()
+        .await
+        .map_err(|error| format!("GET generated settings source: {error}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "generated settings source returned HTTP {}",
+            response.status()
+        ));
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| format!("read generated settings source: {error}"))?;
+    if let Some(expected) = expected_raw_sha {
+        let actual = git_blob_sha(&bytes);
+        if actual != expected {
+            return Err(format!(
+                "generated settings source sha mismatch: expected {expected}, got {actual}"
+            ));
+        }
+    }
+    Ok(drift_blob_sha_for_path(GENERATED_SETTINGS_PATH, &bytes))
+}
+
 // ─── Floor SHA reader ────────────────────────────────────────────────────────
 
 /// Capture the paths known to the last successful baseline before rescue
@@ -4026,24 +4068,80 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
     // Fetch trees. Target only if we're actually going to scan drift.
     // Floor only if available + matches source.
     let (target_tree, floor_blobs) = if drift_scan_possible {
-        let target_tree = fetch_tree(&client, &target_repo, &target_ref, request_scope)
+        let mut target_tree = fetch_tree(&client, &target_repo, &target_ref, request_scope)
             .await
             .map_err(|error| CoreUpdateError::new(CoreUpdateErrorKind::Network, error))?;
+        if let Some((raw_sha, _)) = target_tree.get(GENERATED_SETTINGS_PATH).cloned() {
+            let normalized =
+                fetch_normalized_settings_sha(&client, &target_repo, &target_ref, Some(&raw_sha))
+                    .await;
+            let (normalized_sha, error) = normalized_or_raw_drift_sha(&raw_sha, normalized);
+            if let Some(error) = error {
+                log(
+                    "hq-core-state",
+                    &format!(
+                        "could not normalize target {GENERATED_SETTINGS_PATH} at {target_repo}@{target_ref}; retaining raw tree SHA ({error})"
+                    ),
+                );
+            }
+            if let Some((sha, _)) = target_tree.get_mut(GENERATED_SETTINGS_PATH) {
+                *sha = normalized_sha;
+            }
+        }
         let floor_blobs = match floor_identity.as_ref() {
             Some((source, commit)) => {
                 let local = hq_desktop_core::drift_scope::load_core_drift_baseline(
                     &hq_folder, source, commit,
                 )
                 .map(|baseline| baseline.normalized_blobs);
-                if local.is_some() {
-                    local
+                if let Some(mut local) = local {
+                    if let Some(raw_sha) = local.get(GENERATED_SETTINGS_PATH).cloned() {
+                        let normalized =
+                            fetch_normalized_settings_sha(&client, source, commit, None).await;
+                        let (normalized_sha, error) =
+                            normalized_or_raw_drift_sha(&raw_sha, normalized);
+                        if let Some(error) = error {
+                            log(
+                                "hq-core-state",
+                                &format!(
+                                    "could not normalize installed {GENERATED_SETTINGS_PATH} at {source}@{commit}; retaining raw baseline SHA ({error})"
+                                ),
+                            );
+                        }
+                        local.insert(GENERATED_SETTINGS_PATH.to_string(), normalized_sha);
+                    }
+                    Some(local)
                 } else if source == &target_repo {
                     match fetch_tree(&client, source, commit, request_scope).await {
-                        Ok(tree) => Some(
-                            tree.into_iter()
-                                .map(|(path, (sha, _))| (path, sha))
-                                .collect(),
-                        ),
+                        Ok(mut tree) => {
+                            if let Some((raw_sha, _)) = tree.get(GENERATED_SETTINGS_PATH).cloned() {
+                                let normalized = fetch_normalized_settings_sha(
+                                    &client,
+                                    source,
+                                    commit,
+                                    Some(&raw_sha),
+                                )
+                                .await;
+                                let (normalized_sha, error) =
+                                    normalized_or_raw_drift_sha(&raw_sha, normalized);
+                                if let Some(error) = error {
+                                    log(
+                                        "hq-core-state",
+                                        &format!(
+                                            "could not normalize baseline {GENERATED_SETTINGS_PATH} at {source}@{commit}; retaining raw tree SHA ({error})"
+                                        ),
+                                    );
+                                }
+                                if let Some((sha, _)) = tree.get_mut(GENERATED_SETTINGS_PATH) {
+                                    *sha = normalized_sha;
+                                }
+                            }
+                            Some(
+                                tree.into_iter()
+                                    .map(|(path, (sha, _))| (path, sha))
+                                    .collect(),
+                            )
+                        }
                         Err(e) => {
                             log(
                                 "hq-core-state",
