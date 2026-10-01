@@ -39,6 +39,6 @@ describe("CompanyGoalsPage", () => {
     flushSync();
 
     await expect.poll(() => host?.querySelector('[data-testid="empty-goals-state"]')).toBeTruthy();
-    expect(host.textContent).toContain("No goals are set on this company's board yet.");
+    expect(host.textContent).toContain("No goals are available from this company's local board yet.");
   });
 });
