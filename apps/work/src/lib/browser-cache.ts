@@ -11,7 +11,6 @@ import {
   saveConversationCache,
   takeDirectorySeed,
   type ChannelDirectoryRow,
-  type ChatSidebarApi,
   type ConversationMessageWire,
   type DmContactInput,
 } from "@hq/ui";
