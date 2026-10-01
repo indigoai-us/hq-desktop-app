@@ -2698,7 +2698,7 @@ mod tests {
     // ── prune_dangling_cloud_uids ───────────────────────────────────────
 
     #[test]
-    fn prune_strips_when_cloud_has_no_entity_for_slug() {
+    fn prune_does_not_strip_when_cloud_has_no_entity_for_slug() {
         let tmp = TempDir::new().unwrap();
         write_manifest(
             tmp.path(),
@@ -2721,13 +2721,13 @@ companies:
         )];
 
         let pruned = prune_dangling_cloud_uids(tmp.path(), &mut entries, &BTreeMap::new(), true);
-        assert_eq!(pruned, 1);
-        assert!(entries[0].cloud_uid.is_none());
-        assert!(entries[0].bucket_name.is_none());
+        assert_eq!(pruned, 0, "an absent entity is not proof of a tombstone");
+        assert_eq!(entries[0].cloud_uid.as_deref(), Some("cmp_GONE"));
+        assert_eq!(entries[0].bucket_name.as_deref(), Some("hq-vault-cmp-gone"));
 
         let (reread, _) = discover_local_companies(tmp.path());
         let alpha = reread.iter().find(|e| e.slug == "alpha").unwrap();
-        assert!(alpha.cloud_uid.is_none());
+        assert_eq!(alpha.cloud_uid.as_deref(), Some("cmp_GONE"));
     }
 
     #[test]
