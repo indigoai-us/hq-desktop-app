@@ -21,5 +21,3 @@ export const SETUP_HERO_ART = {
   dark: auroraUrl,
   light: monolithsUrl,
 } as const;
-
-export type SetupHeroArtTheme = keyof typeof SETUP_HERO_ART;
