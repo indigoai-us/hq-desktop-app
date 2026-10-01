@@ -7,6 +7,15 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+- Core Drift ignores the desktop-generated `env.PATH` in `.claude/settings.json` and the company skill-wrapper marker, while continuing to report other settings edits.
+
+- Windows setup now detects Claude Code from the current user PATH and
+  Anthropic's user-local install directory, including on Retry.
+- The sidebar orders DMs and channels by the latest message a person typed.
+
+- HQ no longer restarts for an update, or at support's request, while a meeting
+  is being recorded; it waits until the recording finishes.
+- Internal: removed two unused packages/ui helpers and made three module-only helpers private (TD-60, #1198). No user-visible change.
 
 - Internal: unused exports in the shared UI package are now module-private. No behaviour change.
 - When an HQ CLI update fails partway through installing, the desktop app now
@@ -18,11 +27,16 @@ The release moves it under the version it ships in.
 
 - With the Personal workspace board rollout enabled, HQ Desktop shows the
   cloud-backed board alongside company workspaces.
+
+- Core drift ignores only the setup-managed `env.PATH` value in `.claude/settings.json`; other settings changes remain visible.
+
 - Work feed and Board reads now stop waiting after 15 seconds and keep their cached or empty states when requests fail.
 - On Apple Silicon Macs, the app now replaces a managed Node.js that was installed for Intel Macs instead of reusing it, so setup and repair install the right one.
 - Channel owners no longer see Leave while their channel role is unknown, and
   a stale owner-role conflict gives a clear recovery message.
 - Goals with an empty company board now explain that the board has no goals yet.
+
+- Internal: unused UI exports are now module-private. No behaviour change.
 
 ## [0.10.371] — 2026-10-01
 

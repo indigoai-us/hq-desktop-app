@@ -85,18 +85,24 @@ function toStamp(v: string | number | null | undefined): number {
 
 /**
  * Return the recency key (epoch-ms, 0 when unknown) the sidebar should sort
- * by. In humanOnly mode, prefer `lastHumanMessageAt`; when the server has
- * not sent one, fall back to `lastActivityAt` / `lastMessageAt` so a channel
- * with no known human timestamp does not silently drop below every other
- * row on hosts that have not yet started shipping the field.
+ * by.
+ *
+ * In `humanOnly` mode the sidebar orders strictly by
+ * `lastHumanMessageAt`. Falling back to `lastActivityAt` here defeats the
+ * point of the mode — a channel whose only recent activity is work-mesh /
+ * bot posts would bump `lastActivityAt` on every event and jump back to the
+ * top. When the server has not sent `lastHumanMessageAt`, treat the row as
+ * having no known typed message (key = 0) so it sorts to the bottom of the
+ * human-typed section rather than piggy-backing on mesh recency.
+ *
+ * In non-humanOnly mode we still fall back to `lastActivityAt` / `lastMessageAt`.
  */
 export function humanRecencyKey<T extends HumanRecencyChannel>(
   row: T,
   humanOnly: boolean,
 ): number {
   if (humanOnly) {
-    const human = toStamp(row.lastHumanMessageAt);
-    if (human > 0) return human;
+    return toStamp(row.lastHumanMessageAt);
   }
   const activity = toStamp(row.lastActivityAt);
   if (activity > 0) return activity;

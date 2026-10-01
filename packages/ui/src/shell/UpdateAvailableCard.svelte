@@ -43,12 +43,19 @@
   }: Props = $props();
 
   const held = $derived(reasons.length > 0);
+  const restartDeferred = $derived(
+    installError?.includes("HQ will restart to update after your recording finishes") ?? false,
+  );
   const holdText = $derived(held ? primaryReason(reasons) : null);
   const secondaryLine = $derived(
-    holdText ?? `HQ ${version} is ready to install`,
+    restartDeferred
+      ? "HQ will restart after your recording finishes"
+      : holdText ?? `HQ ${version} is ready to install`,
   );
-  const buttonLabel = $derived(installing ? "Restarting…" : "Restart to update");
-  const buttonDisabled = $derived(held || installing);
+  const buttonLabel = $derived(
+    restartDeferred ? "Will restart after recording" : installing ? "Restarting…" : "Restart to update",
+  );
+  const buttonDisabled = $derived(held || installing || restartDeferred);
   const tooltipText = $derived(holdText ?? null);
 </script>
 
@@ -60,7 +67,7 @@
   data-testid="update-available-card"
 >
   <div class="update-copy">
-    <strong class="update-title">Update available</strong>
+    <strong class="update-title">{restartDeferred ? "Update scheduled" : "Update available"}</strong>
     <span class="update-secondary" data-testid="update-secondary">
       {secondaryLine}
     </span>

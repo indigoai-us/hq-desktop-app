@@ -58,6 +58,8 @@ export interface ChannelDirectoryRow {
   /** Server-computed subtitle label. */
   subtitle?: string;
   lastActivityAt: string | null;
+  /** Latest person-typed message, supplied by the notify directory projection. */
+  lastHumanMessageAt?: string | null;
   /** Notify-channel created stamp — sidebar fallback when activity is a provision clone. */
   createdAt?: string | null;
   /** Channel creator uid (drives the default notification level). */
