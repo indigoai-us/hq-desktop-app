@@ -20,6 +20,8 @@ The release moves it under the version it ships in.
   a stale owner-role conflict gives a clear recovery message.
 - Goals with an empty company board now explain that the board has no goals yet.
 
+- Internal: unused UI exports are now module-private. No behaviour change.
+
 ## [0.10.371] — 2026-10-01
 
 - Desktop sync now recovers legacy watcher processes left behind by an app update when their process path and ancestry prove they belong to the desktop. Other active sync owners continue to be left alone.
