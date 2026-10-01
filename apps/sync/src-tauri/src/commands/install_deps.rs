@@ -2908,11 +2908,15 @@ pub fn managed_node_reported_version(node_bin: &std::path::Path) -> Option<Strin
 /// too old for the system npm that happens to be on PATH.
 #[cfg(not(windows))]
 fn managed_node_toolchain_is_usable(home: &std::path::Path) -> bool {
+    let Some(expected_arch) = node_dist_arch_for(std::env::consts::ARCH) else {
+        return false;
+    };
     let node = managed_node_bin_in(home).join("node");
     let npm = managed_node_bin_in(home).join("npm");
     if !node.is_file()
         || !managed_node_reported_version(&node)
             .is_some_and(|version| version.trim() == MANAGED_NODE_VERSION)
+        || !hq_desktop_core::toolchain::node_binary_has_arch(&node, expected_arch)
         || !npm.is_file()
     {
         return false;
@@ -8109,10 +8113,12 @@ mod install_deps_planner_tests {
         std::fs::create_dir_all(&node_bin).expect("create managed node bin");
         let node = node_bin.join("node");
         let npm_invoked = home.path().join("npm-invoked-with-managed-node");
+        let expected_arch = node_dist_arch_for(std::env::consts::ARCH)
+            .expect("supported Node distribution architecture");
         std::fs::write(
             &node,
             format!(
-                "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo {MANAGED_NODE_VERSION}; else echo \"$2\" > '{}'; echo 11.0.0; fi\n",
+                "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo {MANAGED_NODE_VERSION}; elif [ \"$1\" = \"-p\" ] && [ \"$2\" = \"process.arch\" ]; then echo {expected_arch}; else echo \"$2\" > '{}'; echo 11.0.0; fi\n",
                 npm_invoked.display()
             ),
         )
