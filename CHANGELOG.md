@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Startup diagnostics now distinguish unreadable saved credentials from an empty token store.
+- Desktop sync now recovers legacy watcher processes left behind by an app update when their process path and ancestry prove they belong to the desktop. Other active sync owners continue to be left alone.
 
 - With a compatible hq-cloud runner, auto-sync watches the desktop process directly and releases its lease when the app exits, including after a crash or force-quit.
 - A stalled attachment upload or download in the Work app now ends with the usual upload or download error instead of staying open indefinitely.

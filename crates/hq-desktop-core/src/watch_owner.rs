@@ -133,6 +133,22 @@ pub fn plan_busy_watch_exit(
     holder_is_live_runner: bool,
     holder_is_child_of_app: bool,
 ) -> WatchOwnerExitPlan {
+    plan_busy_watch_exit_with_unknown_orphan(
+        exit_code,
+        status,
+        holder_is_live_runner,
+        holder_is_child_of_app,
+        false,
+    )
+}
+
+pub fn plan_busy_watch_exit_with_unknown_orphan(
+    exit_code: Option<i32>,
+    status: Option<&WatchOwnerStatus>,
+    holder_is_live_runner: bool,
+    holder_is_child_of_app: bool,
+    unknown_is_desktop_orphan: bool,
+) -> WatchOwnerExitPlan {
     let owner_label = status.map_or_else(|| "unknown".to_string(), |status| status.owner.clone());
     let is_busy_exit = matches!(exit_code, Some(20 | 21));
     if !is_busy_exit || !holder_is_live_runner {
@@ -147,6 +163,17 @@ pub fn plan_busy_watch_exit(
             defer_to_daemon: false,
             record_failure: true,
             respawn_once: false,
+        };
+    }
+
+    if owner_label == "unknown" && unknown_is_desktop_orphan && !holder_is_child_of_app {
+        return WatchOwnerExitPlan {
+            owner_label,
+            classification: "unknown_orphan_takeover",
+            take_over_orphan: true,
+            defer_to_daemon: false,
+            record_failure: false,
+            respawn_once: true,
         };
     }
 
@@ -176,6 +203,151 @@ pub fn plan_busy_watch_exit(
             respawn_once: false,
         },
     }
+}
+
+/// Prove that a legacy `unknown` lease is the current desktop's old npx runner.
+/// The process lookup is injectable so every ancestry/path rule stays testable
+/// without inspecting or signalling live machine processes.
+#[cfg(not(target_os = "windows"))]
+pub fn unknown_owner_is_desktop_orphan<F>(
+    owner: &str,
+    pid: u32,
+    current_app_pid: u32,
+    hq_root: &Path,
+    npx_cache_dir: &Path,
+    mut process: F,
+) -> bool
+where
+    F: FnMut(u32) -> Option<(u32, String)>,
+{
+    if owner != "unknown" || pid == current_app_pid {
+        return false;
+    }
+    let Some((mut parent, command)) = process(pid) else {
+        return false;
+    };
+    if !is_sync_runner_for_root(&command, hq_root)
+        || !command_resolves_inside_npx_cache(&command, npx_cache_dir)
+        || command_has_daemon_path(&command)
+    {
+        return false;
+    }
+
+    for _ in 0..64 {
+        if parent == current_app_pid || parent == pid || parent == 0 {
+            return false;
+        }
+        if parent == 1 {
+            return true;
+        }
+        let Some((next_parent, ancestor_command)) = process(parent) else {
+            return false;
+        };
+        if is_hq_desktop_app_command(&ancestor_command)
+            || !is_npx_wrapper_command(&ancestor_command)
+            || next_parent == parent
+        {
+            return false;
+        }
+        parent = next_parent;
+    }
+    false
+}
+
+#[cfg(target_os = "windows")]
+pub fn unknown_owner_is_desktop_orphan<F>(
+    _owner: &str,
+    _pid: u32,
+    _current_app_pid: u32,
+    _hq_root: &Path,
+    _npx_cache_dir: &Path,
+    _process: F,
+) -> bool
+where
+    F: FnMut(u32) -> Option<(u32, String)>,
+{
+    // Windows command-line and ancestor identity are not proven by the current
+    // process snapshot API. Unknown owners remain deferred until that evidence
+    // can be established safely.
+    false
+}
+
+#[cfg(not(target_os = "windows"))]
+fn command_resolves_inside_npx_cache(command: &str, npx_cache_dir: &Path) -> bool {
+    let Some(tokens) = shlex::split(command) else {
+        return false;
+    };
+    let Ok(cache) = std::fs::canonicalize(npx_cache_dir) else {
+        return false;
+    };
+    tokens.iter().any(|token| {
+        let path = Path::new(token);
+        if !is_sync_runner_path(path) || !path.is_absolute() {
+            return false;
+        }
+        let Ok(resolved) = std::fs::canonicalize(path) else {
+            return false;
+        };
+        crate::runner_target::npx_entry_dir_for(&cache, &resolved).is_some()
+    })
+}
+
+fn is_sync_runner_path(path: &Path) -> bool {
+    matches!(
+        path.file_name().and_then(std::ffi::OsStr::to_str),
+        Some("sync-runner.js" | "hq-sync-runner" | "hq-sync-runner.cmd")
+    )
+}
+
+fn is_sync_runner_for_root(command: &str, hq_root: &Path) -> bool {
+    let lower = command.to_ascii_lowercase();
+    (lower.contains("sync-runner.js")
+        || lower.contains("hq-sync-runner")
+        || lower.contains("hq-sync-runner.cmd"))
+        && command_matches_hq_root(command, hq_root)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn command_has_daemon_path(command: &str) -> bool {
+    let Some(tokens) = shlex::split(command) else {
+        return true;
+    };
+    tokens.iter().any(|token| {
+        let path = Path::new(token);
+        if !is_sync_runner_path(path) {
+            return false;
+        }
+        let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        resolved
+            .components()
+            .collect::<Vec<_>>()
+            .windows(2)
+            .any(|parts| parts[0].as_os_str() == ".hq" && parts[1].as_os_str() == "daemon")
+    })
+}
+
+fn is_npx_wrapper_command(command: &str) -> bool {
+    let Some(program) = shlex::split(command).and_then(|tokens| tokens.into_iter().next()) else {
+        return false;
+    };
+    let name = Path::new(&program)
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    matches!(name.as_str(), "npx" | "npm" | "node" | "sh")
+}
+
+fn is_hq_desktop_app_command(command: &str) -> bool {
+    let Some(program) = shlex::split(command).and_then(|tokens| tokens.into_iter().next()) else {
+        return false;
+    };
+    let name = Path::new(&program)
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    matches!(name.as_str(), "hq" | "hq-sync-menubar" | "hq-desktop")
 }
 
 /// The one-shot orphan recovery uses the same settings and cloud-pause gates
@@ -670,9 +842,195 @@ mod tests {
         assert!(!plan.record_failure);
     }
 
+    fn fake_process_table<const N: usize>(
+        rows: [(u32, u32, String); N],
+    ) -> impl FnMut(u32) -> Option<(u32, String)> {
+        let rows = rows
+            .into_iter()
+            .map(|(pid, parent, command)| (pid, (parent, command)))
+            .collect::<std::collections::HashMap<_, _>>();
+        move |pid| rows.get(&pid).cloned()
+    }
+
+    #[cfg(unix)]
+    fn npx_fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("npm-cache/_npx");
+        let runner = cache.join("entry-a/node_modules/@indigo/hq-cloud/dist/bin/sync-runner.js");
+        std::fs::create_dir_all(runner.parent().unwrap()).unwrap();
+        std::fs::write(&runner, "").unwrap();
+        (dir, cache, runner)
+    }
+
+    #[cfg(unix)]
+    fn runner_command(runner: &Path) -> String {
+        format!("node {} --hq-root /same/HQ --watch", runner.display())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unknown_desktop_npx_runner_reparented_to_launchd_is_taken_over() {
+        let (_dir, cache, runner) = npx_fixture();
+        let table = fake_process_table([
+            (42, 100, runner_command(&runner)),
+            (100, 1, "/bin/sh -c npx".to_string()),
+            (1, 0, "/sbin/launchd".to_string()),
+        ]);
+        assert!(unknown_owner_is_desktop_orphan(
+            "unknown",
+            42,
+            999,
+            Path::new("/same/HQ"),
+            &cache,
+            table
+        ));
+        let plan = plan_busy_watch_exit_with_unknown_orphan(
+            Some(20),
+            Some(&status("unknown")),
+            true,
+            false,
+            true,
+        );
+        assert_eq!(plan.classification, "unknown_orphan_takeover");
+        assert!(plan.take_over_orphan && plan.respawn_once);
+        assert!(!plan.record_failure);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unknown_daemon_path_is_never_taken_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("npm-cache/_npx");
+        let daemon_runner = dir.path().join(
+            "home/.hq/daemon/hq-cloud/node_modules/@indigoai-us/hq-cloud/dist/bin/sync-runner.js",
+        );
+        std::fs::create_dir_all(daemon_runner.parent().unwrap()).unwrap();
+        std::fs::write(&daemon_runner, "").unwrap();
+        let table = fake_process_table([
+            (42, 1, runner_command(&daemon_runner)),
+            (1, 0, "/sbin/launchd".to_string()),
+        ]);
+        assert!(!unknown_owner_is_desktop_orphan(
+            "unknown",
+            42,
+            999,
+            Path::new("/same/HQ"),
+            &cache,
+            table
+        ));
+        let plan = plan_busy_watch_exit_with_unknown_orphan(
+            Some(20),
+            Some(&status("unknown")),
+            true,
+            false,
+            false,
+        );
+        assert_eq!(plan.classification, "live_owner_deferral");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unknown_npx_runner_with_live_hq_app_ancestor_is_deferred() {
+        let (_dir, cache, runner) = npx_fixture();
+        let table = fake_process_table([
+            (42, 200, runner_command(&runner)),
+            (200, 1, "/Applications/HQ.app/Contents/MacOS/HQ".to_string()),
+            (1, 0, "/sbin/launchd".to_string()),
+        ]);
+        assert!(!unknown_owner_is_desktop_orphan(
+            "unknown",
+            42,
+            999,
+            Path::new("/same/HQ"),
+            &cache,
+            table
+        ));
+        let plan = plan_busy_watch_exit_with_unknown_orphan(
+            Some(20),
+            Some(&status("unknown")),
+            true,
+            false,
+            false,
+        );
+        assert_eq!(plan.classification, "live_owner_deferral");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unknown_runner_outside_own_npx_cache_is_deferred() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("npm-cache/_npx");
+        let other_runner = dir.path().join("other/node_modules/sync-runner.js");
+        std::fs::create_dir_all(other_runner.parent().unwrap()).unwrap();
+        std::fs::write(&other_runner, "").unwrap();
+        let table = fake_process_table([
+            (42, 1, runner_command(&other_runner)),
+            (1, 0, "/sbin/launchd".to_string()),
+        ]);
+        assert!(!unknown_owner_is_desktop_orphan(
+            "unknown",
+            42,
+            999,
+            Path::new("/same/HQ"),
+            &cache,
+            table
+        ));
+        let plan = plan_busy_watch_exit_with_unknown_orphan(
+            Some(20),
+            Some(&status("unknown")),
+            true,
+            false,
+            false,
+        );
+        assert_eq!(plan.classification, "live_owner_deferral");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn current_app_child_keeps_existing_deferral_even_with_npx_evidence() {
+        let (_dir, cache, runner) = npx_fixture();
+        let table = fake_process_table([(42, 999, runner_command(&runner))]);
+        assert!(!unknown_owner_is_desktop_orphan(
+            "unknown",
+            42,
+            999,
+            Path::new("/same/HQ"),
+            &cache,
+            table
+        ));
+        let plan = plan_busy_watch_exit_with_unknown_orphan(
+            Some(20),
+            Some(&status("unknown")),
+            true,
+            true,
+            true,
+        );
+        assert_eq!(plan.classification, "live_owner_deferral");
+        assert!(!plan.take_over_orphan);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn unknown_owner_defers_when_windows_process_evidence_is_not_supported() {
+        assert!(!unknown_owner_is_desktop_orphan(
+            "unknown",
+            42,
+            999,
+            Path::new("C:\\HQ"),
+            Path::new("C:\\Users\\user\\AppData\\Local\\npm-cache\\_npx"),
+            |_| Some((1, "node.exe sync-runner.js --hq-root C:\\HQ".to_string())),
+        ));
+    }
+
     #[test]
     fn exit_20_hq_daemon_defers_without_failure_or_respawn() {
-        let plan = plan_busy_watch_exit(Some(20), Some(&status("hq-daemon")), true, false);
+        let plan = plan_busy_watch_exit_with_unknown_orphan(
+            Some(20),
+            Some(&status("hq-daemon")),
+            true,
+            false,
+            true,
+        );
         assert_eq!(plan.classification, "daemon_deferral");
         assert!(plan.defer_to_daemon);
         assert!(!plan.record_failure);
