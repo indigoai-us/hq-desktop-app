@@ -2630,6 +2630,34 @@ mod tests {
         assert_eq!(result[1].display_name, "Acme From Manifest");
     }
 
+    #[test]
+    fn local_workspace_prefers_cloud_company_name_over_slug_fallback() {
+        let tmp = TempDir::new().unwrap();
+        let p = person("prs_x", None);
+        let entries = vec![local_full(
+            "xy",
+            tmp.path(),
+            true,
+            None,
+            Some("cmp_xy"),
+            None,
+        )];
+        let mut entities = BTreeMap::new();
+        entities.insert(
+            "cmp_xy".to_string(),
+            company_entity("cmp_xy", "xy", Some("Two Word Company")),
+        );
+
+        let result =
+            assemble_workspaces(tmp.path(), Some(&p), &[], &entities, &entries, true, |_| None);
+
+        let company = result
+            .iter()
+            .find(|workspace| workspace.slug == "xy")
+            .unwrap();
+        assert_eq!(company.display_name, "Two Word Company");
+    }
+
     // ── prune_dangling_cloud_uids ───────────────────────────────────────
 
     #[test]
