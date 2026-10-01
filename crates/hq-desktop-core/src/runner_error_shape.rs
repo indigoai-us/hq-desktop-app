@@ -290,7 +290,14 @@ const ROLLUP_TAG_TOP_N: usize = 3;
 /// `complete` event's new optional `filesPlanLimited` counter instead of
 /// per-file `error` events. The source-version marker moves with the runner
 /// pin.
-pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.18.17";
+
+/// The `~6.18.17` -> `~6.18.25` bump was re-derived from the published runner
+/// source (`git diff v6.18.17..v6.18.25 -- src`, excluding tests). The
+/// personal-scope flag fix and subsequent watcher/sync changes add no literal
+/// `this.name` or `readonly name` identity; the `HQ_CLOUD_IDENTITIES` set stays
+/// at 57. `src/bin/sync-runner-events.ts` is unchanged, so `ERROR_TYPES` stays
+/// (`error`, `auth-error`). The source-version marker moves with the pin.
+pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.18.25";
 
 /// Compile-time byte-equality for two `&str`, used only by the vocabulary-drift
 /// guard below. A stable-Rust `const fn` (a `while` byte loop, no new

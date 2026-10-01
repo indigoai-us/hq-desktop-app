@@ -715,7 +715,15 @@
 /// the 6.18 minor line, so `RESCUE_CONTRACT_FLOOR` stays 6.18.0. Raising the
 /// lower bound moves npm's cache key so installed copies refresh their cached
 /// runner.
-pub const HQ_CLOUD_VERSION: &str = "~6.18.17";
+///
+/// `~6.18.17` -> `~6.18.25`: includes hq-cloud 6.18.21's fix to read personal
+/// sync flags in the signed-in person's scope (hq-cloud#727 / HQ-PRO-14A).
+/// Releases 6.18.22 and 6.18.23 also improve watch recovery and avoid conflicts
+/// for marked KMS copies. 6.18.24 adds per-run presign-refusal caching and an
+/// opt-in parent-exit mode; 6.18.25 adds an opt-in launcher-PID mode. The
+/// desktop does not require a new protocol floor or runner-error identity for
+/// these releases; the existing behavior floors and error vocabulary stay put.
+pub const HQ_CLOUD_VERSION: &str = "~6.18.25";
 
 /// First `@indigoai-us/hq-cloud` version that ships the post-sync
 /// manifest-upload pass (US-004, sync-reconciliation-audit).
@@ -843,7 +851,7 @@ mod tests {
     /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
     fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.18.17");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.18.25");
     }
 
     /// Root-`bin/` exclusion floor (hq-cloud#501). Below this floor a personal

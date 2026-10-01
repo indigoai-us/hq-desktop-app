@@ -8,6 +8,9 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Desktop sync now reads personal-vault feature flags in the signed-in person's
+  scope. Its hq-cloud runner pin moves to 6.18.25 so cached npx runners refresh
+  to the fixed version.
 - With the Personal workspace board rollout enabled, HQ Desktop shows the
   cloud-backed board alongside company workspaces.
 - Work feed and Board reads now stop waiting after 15 seconds and keep their cached or empty states when requests fail.
