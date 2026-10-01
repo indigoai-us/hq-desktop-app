@@ -93,12 +93,14 @@ describe("humanRecencyKey", () => {
     expect(key).toBe(Date.parse("2026-09-29T09:00:00Z"));
   });
 
-  it("falls back to lastActivityAt when lastHumanMessageAt is absent", () => {
+  it("does NOT fall back to lastActivityAt in humanOnly mode (mesh-busy channel stays put)", () => {
+    // A mesh-busy channel with no known typed message must not piggy-back on
+    // lastActivityAt — that would put it back on top the moment mesh fires.
     const key = humanRecencyKey(
       { lastActivityAt: "2026-09-29T10:00:00Z" },
       true,
     );
-    expect(key).toBe(Date.parse("2026-09-29T10:00:00Z"));
+    expect(key).toBe(0);
   });
 
   it("uses lastActivityAt when the flag is off", () => {
@@ -150,14 +152,35 @@ describe("orderChannelsForViewer", () => {
     ]);
   });
 
-  it("no human messages: falls back to lastActivityAt in humanOnly mode", () => {
+  it("no human messages: rows tie at 0 in humanOnly mode, keep stable input order", () => {
     const noHuman = [
       { id: "later-bot", lastActivityAt: "2026-09-29T11:00:00Z" },
       { id: "earlier-bot", lastActivityAt: "2026-09-29T09:00:00Z" },
     ];
+    // Neither row carries lastHumanMessageAt, so both key to 0. Sort is stable
+    // → input order is preserved.
     expect(orderChannelsForViewer(noHuman, true).map((r) => r.id)).toEqual([
       "later-bot",
       "earlier-bot",
+    ]);
+  });
+
+  it("humanOnly: a mesh-busy channel stays below one with a newer typed message", () => {
+    const rows = [
+      {
+        id: "typed-yesterday",
+        lastActivityAt: "2026-09-28T09:00:00Z",
+        lastHumanMessageAt: "2026-09-28T09:00:00Z",
+      },
+      {
+        id: "mesh-busy-today",
+        lastActivityAt: "2026-09-30T15:00:00Z", // constantly bumped by mesh
+        // no lastHumanMessageAt — server never found a typed one under the cap
+      },
+    ];
+    expect(orderChannelsForViewer(rows, true).map((r) => r.id)).toEqual([
+      "typed-yesterday",
+      "mesh-busy-today",
     ]);
   });
 });

@@ -84,6 +84,7 @@ describe("normalizeDirectoryFeed", () => {
             name: "",
             subtitle: "Direct message",
             lastActivityAt: "2026-08-04T17:25:35.887Z",
+            lastHumanMessageAt: "2026-08-03T17:25:35.887Z",
             unreadCount: 0,
             memberCount: 3,
           },
@@ -96,6 +97,7 @@ describe("normalizeDirectoryFeed", () => {
         type: "dm",
         scope: "group",
         lastActivityAt: "2026-08-04T17:25:35.887Z",
+        lastHumanMessageAt: "2026-08-03T17:25:35.887Z",
         members: [
           { personUid: "prs_a", displayName: "Ada" },
           { personUid: "prs_b", displayName: "Ben" },
