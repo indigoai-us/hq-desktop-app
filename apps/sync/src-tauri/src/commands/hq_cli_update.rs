@@ -1350,11 +1350,21 @@ impl HqCliInstallBackup {
     }
 
     fn restore(&mut self) -> Result<(), String> {
+        // Targets without backups were absent before install, so remove any
+        // partially installed artifacts. Backed-up targets are handled below:
+        // if a prior restore consumed their backup, preserve the restored target.
         for target in &self.targets {
-            remove_install_path(target)?;
+            let had_previous_entry = self
+                .moved
+                .iter()
+                .any(|(moved_target, _)| moved_target == target);
+            if !had_previous_entry {
+                remove_install_path(target)?;
+            }
         }
         for (target, saved) in &self.moved {
             if path_entry_exists(saved) {
+                remove_install_path(target)?;
                 std::fs::rename(saved, target).map_err(|error| {
                     format!("restore previous install {}: {error}", target.display())
                 })?;
