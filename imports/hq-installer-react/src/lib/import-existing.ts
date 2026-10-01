@@ -10,7 +10,7 @@ const IMPORTS_DIR = "workspace/imports";
 const BREADCRUMB_PATH = `${IMPORTS_DIR}/.installer-import.json`;
 export const IMPORT_PROCESS_EXIT_TIMEOUT_MS = 5 * 60 * 1000;
 
-export interface ImportSpawnResult {
+interface ImportSpawnResult {
   ok: boolean;
   stdout?: string;
   stderr?: string[];

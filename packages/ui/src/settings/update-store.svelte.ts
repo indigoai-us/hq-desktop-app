@@ -15,6 +15,7 @@ import {
 } from "./update-orchestration";
 import {
   isInstallAlreadyInProgress,
+  isRecordingRestartDeferral,
   isInstallBusyPhase,
   progressPercentFrom,
   recommendBannerFromPayload,
@@ -247,8 +248,8 @@ export async function restartToUpdate(
       installPhase = "queued";
       return;
     }
-    installPhase = "ready";
     installError = result.message ?? "Install failed";
+    installPhase = isRecordingRestartDeferral(result.message) ? "deferred" : "ready";
   })().finally(() => {
     if (generation === storeGeneration) installInFlight = null;
   });

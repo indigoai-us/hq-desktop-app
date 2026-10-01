@@ -1042,6 +1042,11 @@ export function directoryRowToChannel(
       : {}),
     projectId: row.projectId ?? prev?.projectId ?? null,
     lastActivityAt: activity,
+    ...(row.lastHumanMessageAt !== undefined
+      ? { lastHumanMessageAt: row.lastHumanMessageAt }
+      : prev?.lastHumanMessageAt !== undefined
+        ? { lastHumanMessageAt: prev.lastHumanMessageAt }
+        : {}),
     ...(activity
       ? { lastMessageAt: newestIso(prev?.lastMessageAt, activity) }
       : {}),
@@ -1230,8 +1235,7 @@ export function rowRecencyKey(
   humanOnly: boolean,
 ): number {
   if (humanOnly) {
-    const human = row.lastHumanMessageAt ?? 0;
-    if (human > 0) return human;
+    return row.lastHumanMessageAt ?? 0;
   }
   return row.lastActivityAt;
 }

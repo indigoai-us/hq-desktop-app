@@ -115,7 +115,7 @@ impl RunnerSpawnTarget {
         }
     }
 
-    fn attribution_npx_cache_dir(&self) -> Option<PathBuf> {
+    pub fn attribution_npx_cache_dir(&self) -> Option<PathBuf> {
         match self {
             Self::Local { .. } => None,
             Self::Npx { cache_root } => cache_root

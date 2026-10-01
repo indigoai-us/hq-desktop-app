@@ -700,6 +700,14 @@
     } catch (err) {
       console.error('install_update failed:', err);
       updateInstalling = false;
+      const message = err instanceof Error ? err.message : String(err);
+      // The main window owns update UI. Relay a recording deferral there so a
+      // notification action never degrades into a console-only failure.
+      if (message.includes('HQ will restart to update after your recording finishes')) {
+        void invoke('update_gate_status')
+          .then((status) => emit('update-gate://deferred', status))
+          .catch(() => {});
+      }
       // Ordinary callers swallow the failure — the desktop window's Settings →
       // Updates pane owns the visible install-error surface.
       // Custom notification actions request propagation so Rust can reject the

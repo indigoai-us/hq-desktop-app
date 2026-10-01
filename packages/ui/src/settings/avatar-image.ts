@@ -10,7 +10,7 @@
  */
 
 /** Target square edge in px — the server's minimum, which is plenty for a UI avatar. */
-export const AVATAR_EDGE = 512;
+const AVATAR_EDGE = 512;
 
 /** Server ceiling on the decoded avatar. */
 export const AVATAR_MAX_BYTES = 192 * 1024;

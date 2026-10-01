@@ -14,10 +14,6 @@ import {
   createLiveNotificationsApi,
   type LiveNotificationsOptions,
   normalizeDirectoryFeed,
-  type AgencyApi,
-  type AgencyMessage,
-  type AgencyQuestion,
-  type AgencyTeam,
   type ChannelDetailResponse,
   type ChannelDirectoryRow,
   type ChannelsResponse,
@@ -31,7 +27,6 @@ import {
   type NotificationsApi,
   type ReplyThreadResponse,
   type RequestsResponse,
-  type Workspace,
 } from "@hq/ui";
 import {
   mergeShallowCache,
@@ -64,6 +59,8 @@ async function call<T>(p: Promise<AdapterResult<unknown>>): Promise<T> {
 const INBOX_PAGE_LIMIT = 50;
 const INBOX_HYDRATE_PAGES = 2;
 const WORK_FEED_TTL_MS = 60_000;
+// Keep a stalled feed from holding sidebar hydration past a normal refresh window.
+const WORK_FEED_REQUEST_TIMEOUT_MS = 15_000;
 
 export interface HydratedRail {
   directory: ChannelDirectoryRow[];
@@ -103,16 +100,45 @@ async function loadWorkFeed(
   ) {
     return workFeedCache.items;
   }
+  const controller = new AbortController();
+  let timeoutElapsed = false;
+  let rejectDeadline!: (reason: Error) => void;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    rejectDeadline = reject;
+  });
+  let phase: "request" | "body" = "request";
+  const timeout = setTimeout(() => {
+    timeoutElapsed = true;
+    controller.abort();
+    rejectDeadline(new Error("Work feed request timed out"));
+  }, WORK_FEED_REQUEST_TIMEOUT_MS);
   try {
-    const res = await fetchImpl("/v1/work-mesh/work");
+    const res = await Promise.race([
+      fetchImpl("/v1/work-mesh/work", { signal: controller.signal }),
+      deadline,
+    ]);
     if (!res.ok) {
+      console.warn("[hq-work-feed] request failed", {
+        event: "http-error",
+        status: res.status,
+      });
       return workFeedCache?.key === personUid ? workFeedCache.items : [];
     }
-    const items = parseWorkFeed(await res.json());
+    phase = "body";
+    const items = parseWorkFeed(await Promise.race([res.json(), deadline]));
     workFeedCache = { key: personUid, at: now, items };
     return items;
   } catch {
+    console.warn("[hq-work-feed] request failed", {
+      event: timeoutElapsed
+        ? "timeout"
+        : phase === "body"
+          ? "body-error"
+          : "transport-error",
+    });
     return workFeedCache?.key === personUid ? workFeedCache.items : [];
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -541,37 +567,9 @@ export function createConversationApi(
   };
 }
 
-/** Workspace memberships for the sidebar's company scope + admin gating. */
-export async function fetchWorkspaces(
-  adapter: PlatformAdapter,
-): Promise<Workspace[]> {
-  return call<Workspace[]>(adapter.identity.listWorkspaces());
-}
-
 export function createNotificationsApi(
   adapter: PlatformAdapter,
   options?: LiveNotificationsOptions,
 ): NotificationsApi {
   return createLiveNotificationsApi(adapter, options);
-}
-
-export function createAgencyApi(adapter: PlatformAdapter): AgencyApi {
-  return {
-    listTeams: () => call<AgencyTeam[]>(adapter.agency.listTeams()),
-    listQuestions: () => call<AgencyQuestion[]>(adapter.agency.listQuestions()),
-    listChat: (_company, team) =>
-      call<AgencyMessage[]>(adapter.agency.listChat(team)),
-    answerQuestion: async (args) => {
-      await call<void>(
-        adapter.agency.answerQuestion(args.id, { answer: args.answer }),
-      );
-      return "delivered";
-    },
-    sendMessage: async (args) => {
-      await call<void>(
-        adapter.agency.sendMessage(args.team, { text: args.text }),
-      );
-      return "delivered";
-    },
-  };
 }

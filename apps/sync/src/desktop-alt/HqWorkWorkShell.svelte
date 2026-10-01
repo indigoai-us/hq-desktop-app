@@ -152,6 +152,7 @@
   type AuthSessionStatus =
     | 'active'
     | 'credentials_absent'
+    | 'credentials_read_error'
     | 'credentials_invalid'
     | 'refresh_temporarily_unavailable'
     | 'non_human_principal';
@@ -285,6 +286,7 @@
     return (
       value === 'active' ||
       value === 'credentials_absent' ||
+      value === 'credentials_read_error' ||
       value === 'credentials_invalid' ||
       value === 'refresh_temporarily_unavailable' ||
       value === 'non_human_principal'
@@ -316,7 +318,10 @@
     signOutError = null;
     navigation.clear();
 
-    if (next.status === 'credentials_absent') {
+    if (
+      next.status === 'credentials_absent' ||
+      next.status === 'credentials_read_error'
+    ) {
       signedOutReason = 'signed-out';
       lifecycle = 'signed-out';
       flushSync();

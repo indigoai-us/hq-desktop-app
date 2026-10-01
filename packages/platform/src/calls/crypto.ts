@@ -72,17 +72,6 @@ export function toHex(bytes: Uint8Array): string {
   return out;
 }
 
-export function fromHex(hex: string): Uint8Array {
-  if (hex.length % 2 !== 0 || !/^[0-9a-f]*$/.test(hex)) {
-    throw new CallsContractError("INVALID_INPUT");
-  }
-  const out = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < out.length; i += 1) {
-    out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-  }
-  return out;
-}
-
 function decodeBase64(value: string): Uint8Array {
   const binary = atob(value);
   const out = new Uint8Array(binary.length);
@@ -97,7 +86,7 @@ function encodeBase64(bytes: Uint8Array): string {
 }
 
 /** Strict base64url decode: rejects padding and non-canonical encodings. */
-export function fromBase64Url(value: string): Uint8Array {
+function fromBase64Url(value: string): Uint8Array {
   if (!/^[A-Za-z0-9_-]*$/.test(value)) {
     throw new CallsContractError("INVALID_SIGNATURE");
   }
@@ -117,7 +106,7 @@ export function toBase64Url(bytes: Uint8Array): string {
     .replaceAll("=", "");
 }
 
-export function fromBase64(value: string): Uint8Array {
+function fromBase64(value: string): Uint8Array {
   try {
     return decodeBase64(value);
   } catch {
@@ -125,7 +114,7 @@ export function fromBase64(value: string): Uint8Array {
   }
 }
 
-export function toBase64(bytes: Uint8Array): string {
+function toBase64(bytes: Uint8Array): string {
   return encodeBase64(bytes);
 }
 
@@ -170,7 +159,7 @@ export function signedBytes(value: Record<string, unknown>): Uint8Array {
 }
 
 /** The pre-image the content digest is taken over (exposed for tests). */
-export function contentBytes(value: Record<string, unknown>): Uint8Array {
+function contentBytes(value: Record<string, unknown>): Uint8Array {
   return utf8.encode(
     `hq-meet/1\0content:${String(value.kind)}\0${canonical(
       withoutFields(value, true),

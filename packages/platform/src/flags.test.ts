@@ -8,6 +8,7 @@ import {
   LOGIN_RECEIPT_DURABILITY_FLAG,
   MEETINGS_LEGACY_FLAG,
   MEETINGS_REGISTRY_KEY,
+  PERSONAL_WORKSPACE_BOARD_FLAG,
   SETUP_STAGE_TIMEOUT_FIX_FLAG,
   bearerTokenFromHeaders,
   createFeatureFlagGate,
@@ -54,6 +55,15 @@ describe("registry key mapping", () => {
   it("maps the setup directory fallback to its hq-flags registry key", () => {
     expect(registryKeyFor("desktop.setup-directory-parent-fallback")).toBe(
       "desktop.setup-directory-parent-fallback",
+    );
+  });
+
+  it("maps the personal workspace board through the default-off hq-flags gate", () => {
+    expect(PERSONAL_WORKSPACE_BOARD_FLAG).toBe(
+      "desktop.personal-workspace-board-v1",
+    );
+    expect(registryKeyFor(PERSONAL_WORKSPACE_BOARD_FLAG)).toBe(
+      PERSONAL_WORKSPACE_BOARD_FLAG,
     );
   });
 
@@ -117,6 +127,24 @@ describe("createFeatureFlagGate", () => {
       ok(true),
     );
     expect(isEnabled).toHaveBeenCalledExactlyOnceWith(SETUP_STAGE_TIMEOUT_FIX_FLAG);
+  });
+
+  it("keeps personal workspace board reads off when hq-flags has no configured value", async () => {
+    const isEnabled = vi.fn(() => true);
+    const adapter = createSyncPlatformAdapter({
+      invoke: vi.fn(async () => undefined),
+      createFlagClient: () =>
+        fakeClient({
+          ready: async () => {},
+          snapshot: () => ({ version: 1, flags: {} }),
+          isEnabled,
+        }),
+    });
+
+    await expect(
+      adapter.identity.hasFeature(PERSONAL_WORKSPACE_BOARD_FLAG),
+    ).resolves.toEqual(ok(false));
+    expect(isEnabled).not.toHaveBeenCalled();
   });
 
   it("uses the first-folder registry override when it is explicitly enabled", async () => {
