@@ -46,6 +46,7 @@
   let claudeCode = $state("");
   let actionBusy = $state(false);
   let actionMessage = $state("");
+  let copiedCodexCode = $state<string | null>(null);
 
   const initials = $derived(
     session.name
@@ -58,6 +59,20 @@
   const statusLine = $derived(wakingStatusLine(session));
   const approval = $derived(session.approval);
 
+  async function clearCopiedCodexCode(): Promise<void> {
+    const code = copiedCodexCode;
+    copiedCodexCode = null;
+    if (!code) return;
+    try {
+      // Do not erase a newer value the person copied after opening the device page.
+      if (await navigator.clipboard?.readText() === code) {
+        await navigator.clipboard.writeText("");
+      }
+    } catch {
+      // Clipboard access is best effort outside the button's user gesture.
+    }
+  }
+
   async function openApproval(): Promise<void> {
     if (!approval || actionBusy) return;
     actionBusy = true;
@@ -66,6 +81,7 @@
       if (approval.provider === "codex") {
         try {
           await navigator.clipboard?.writeText(approval.code);
+          copiedCodexCode = approval.code;
         } catch {
           actionMessage = "Copy the code below and paste it on the next page.";
         }
@@ -148,6 +164,7 @@
         const next = response && response.ok === true
           ? applyWakingStatus(checkedSession, response.value)
           : recordWakingCheckFailure(checkedSession);
+        if (next.phase === "ready") void clearCopiedCodexCode();
         onupdate(next);
       } catch {
         if (!stopped) onupdate(recordWakingCheckFailure(checkedSession));

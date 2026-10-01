@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 
 import NewBotWakingScreen from "./NewBotWakingScreen.svelte";
-import { beginWakingSession, recordWakingCheckFailure } from "./waking-model";
+import { beginWakingSession, recordWakingCheckFailure, WAKING_POLL_MS } from "./waking-model";
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -46,6 +46,7 @@ afterEach(async () => {
   if (component) await unmount(component);
   component = null;
   host?.remove();
+  vi.useRealTimers();
 });
 
 describe("NewBotWakingScreen", () => {
@@ -136,6 +137,30 @@ describe("NewBotWakingScreen", () => {
     expect(writeText).toHaveBeenCalledWith("TEST-CODE");
     expect(openExternal).toHaveBeenCalledWith("https://auth.openai.com/codex/device");
     expect(document.querySelector('[data-testid="new-bot-codex-code"]')?.textContent).toBe("TEST-CODE");
+  });
+
+  it("clears the copied Codex code after the bot is ready", async () => {
+    vi.useFakeTimers();
+    let ready = false;
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { readText: vi.fn(async () => "TEST-CODE"), writeText },
+    });
+    render({
+      ...beginWakingSession({ agentUid: "agt_nova", channelId: "chn_nova", companyUid: "cmp_acme", name: "Nova" }),
+      approval: { provider: "codex", url: "https://auth.openai.com/codex/device", code: "TEST-CODE", capturedAt: new Date().toISOString() },
+    }, {
+      getStatus: async () => ({ ok: true, value: { setupState: { phase: ready ? "ready" : "creating" } } }),
+      openExternal: vi.fn(),
+    });
+    await settle();
+    document.querySelector<HTMLButtonElement>('[data-testid="new-bot-approval-open"]')!.click();
+    await settle();
+    ready = true;
+    await vi.advanceTimersByTimeAsync(WAKING_POLL_MS);
+    expect(writeText).toHaveBeenNthCalledWith(1, "TEST-CODE");
+    expect(writeText).toHaveBeenNthCalledWith(2, "");
   });
 
   it("submits the Claude browser code and enters a pending state", async () => {
