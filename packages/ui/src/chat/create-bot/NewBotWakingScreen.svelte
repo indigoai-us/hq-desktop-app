@@ -7,6 +7,7 @@
     wakingStatusLine,
     type WakingBotSession,
   } from "./waking-model.js";
+  import { focusOnMount } from "../portal.js";
 
   interface Props {
     session: WakingBotSession;
@@ -61,23 +62,32 @@
   });
 </script>
 
-<section class="new-bot-waking" data-testid="new-bot-waking-screen" aria-live="polite">
+<section class="new-bot-waking" data-testid="new-bot-waking-screen">
   <div
     class="new-bot-waking-ring"
     data-testid="new-bot-waking-ring"
     style={`--waking-progress: ${session.progress}%`}
-    aria-label={`${session.progress}% complete`}
+    role="progressbar"
+    aria-label={`Waking up ${session.name}`}
+    aria-valuemin="0"
+    aria-valuemax="100"
+    aria-valuenow={session.progress}
   >
     <span class="new-bot-waking-avatar">{initials}</span>
   </div>
   <p class="new-bot-takeover-kicker">A new teammate</p>
   <h1 id="new-bot-takeover-title">Waking up <em>{session.name}</em></h1>
-  <p class="new-bot-waking-status" data-testid="new-bot-waking-status">{statusLine}</p>
+  <p
+    class="new-bot-waking-status"
+    data-testid="new-bot-waking-status"
+    aria-live="polite"
+    aria-atomic="true"
+  >{statusLine}</p>
 
   {#if session.phase === "failed"}
-    <button type="button" class="new-bot-waking-action" data-testid="new-bot-waking-retry" onclick={onretry}>Try again</button>
+    <button type="button" class="new-bot-waking-action" data-testid="new-bot-waking-retry" use:focusOnMount onclick={onretry}>Try again</button>
   {:else}
-    <button type="button" class="new-bot-waking-link" data-testid="new-bot-waking-open-chat" onclick={onopenchat}>Open chat now</button>
+    <button type="button" class="new-bot-waking-link" data-testid="new-bot-waking-open-chat" use:focusOnMount onclick={onopenchat}>Open chat now</button>
   {/if}
 
   <button type="button" class="new-bot-waking-close" data-testid="new-bot-waking-close" onclick={onclose}>Close</button>

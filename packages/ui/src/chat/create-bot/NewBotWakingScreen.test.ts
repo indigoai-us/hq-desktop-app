@@ -47,9 +47,15 @@ describe("NewBotWakingScreen", () => {
     render();
     await settle();
     const screen = document.querySelector('[data-testid="new-bot-waking-screen"]');
+    const ring = document.querySelector('[data-testid="new-bot-waking-ring"]');
+    const status = document.querySelector('[data-testid="new-bot-waking-status"]');
     expect(screen?.textContent).toContain("Waking up Nova");
     expect(screen?.textContent).not.toMatch(/identity|membership|vault|runtime|sync|channels|audit/i);
-    expect(document.querySelector('[data-testid="new-bot-waking-ring"]')).toBeTruthy();
+    expect(screen?.hasAttribute("aria-live")).toBe(false);
+    expect(ring?.getAttribute("role")).toBe("progressbar");
+    expect(ring?.getAttribute("aria-valuenow")).toBe("8");
+    expect(status?.getAttribute("aria-live")).toBe("polite");
+    expect(status?.getAttribute("aria-atomic")).toBe("true");
   });
 
   it("offers a quiet close and early chat route while the bot wakes", async () => {
