@@ -3344,6 +3344,30 @@ async fn fetch_main_head_sha(
     fetch_commit_sha(client, repo, "main", scope).await
 }
 
+/// Fetch the upstream settings bytes so the drift classifier can compare
+/// `.claude/settings.json` after removing setup's machine-local `env.PATH`.
+async fn fetch_settings_json_blob(
+    client: &reqwest::Client,
+    repo: &str,
+    git_ref: &str,
+    scope: crate::commands::github_api::ApiScope,
+) -> Result<Vec<u8>, String> {
+    let url = format!(
+        "https://raw.githubusercontent.com/{repo}/{git_ref}/.claude/settings.json"
+    );
+    let response = crate::commands::github_api::get(client, &url, scope)
+        .await
+        .map_err(github_api_fetch_failure)?;
+    if !response.status().is_success() {
+        return Err(github_http_fetch_failure(
+            response.status(),
+            &response.headers,
+            format!("{git_ref}/.claude/settings.json"),
+        ));
+    }
+    Ok(response.body)
+}
+
 /// Fetch a tree at any ref (tag, branch, commit SHA). Returns
 /// `path → (blob_sha, size)`. Drops symlinks (mode `120000`) — their blob
 /// is the target-path string, not the target's content.
@@ -4040,7 +4064,74 @@ async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, CoreUpdateErro
             // Local files under locked scopes.
             // Pack landings + static runtime excludes (see drift_scope).
             let excluded = excluded_scope_paths_for(&hq_folder);
-            let local = walk_local_under_scope(&hq_folder, &locked);
+            let mut target_tree = target_tree;
+            let mut floor_blobs = floor_blobs;
+            let mut local = walk_local_under_scope(&hq_folder, &locked);
+
+            // Setup writes a machine-local PATH snapshot to the base settings
+            // file while the default-off settings-local flag remains false.
+            // Compare all available sides semantically after removing only that
+            // owned key; if a raw fetch fails, retain byte-level drift behavior.
+            const SETTINGS_PATH: &str = ".claude/settings.json";
+            if local.contains_key(SETTINGS_PATH) {
+                let target_settings = if target_tree.contains_key(SETTINGS_PATH) {
+                    Some(
+                        fetch_settings_json_blob(&client, &target_repo, &target_ref, request_scope)
+                            .await,
+                    )
+                } else {
+                    None
+                };
+                let floor_settings = if floor_blobs.contains_key(SETTINGS_PATH) {
+                    match floor_identity.as_ref() {
+                        Some((source, commit)) => Some(
+                            fetch_settings_json_blob(&client, source, commit, request_scope).await,
+                        ),
+                        None => None,
+                    }
+                } else {
+                    None
+                };
+                let target_fetch_ok = target_settings
+                    .as_ref()
+                    .map_or(true, |result| result.is_ok());
+                let floor_fetch_ok = floor_settings
+                    .as_ref()
+                    .map_or(true, |result| result.is_ok());
+                if target_fetch_ok && floor_fetch_ok {
+                    if let Ok(local_bytes) = std::fs::read(hq_folder.join(SETTINGS_PATH)) {
+                        if let Some((sha, _)) = local.get_mut(SETTINGS_PATH) {
+                            *sha = hq_desktop_core::drift_scope::drift_blob_sha_for_path(
+                                SETTINGS_PATH,
+                                &local_bytes,
+                            );
+                        }
+                        if let Some(Ok(bytes)) = target_settings.as_ref() {
+                            if let Some((sha, _)) = target_tree.get_mut(SETTINGS_PATH) {
+                                *sha = hq_desktop_core::drift_scope::drift_blob_sha_for_path(
+                                    SETTINGS_PATH,
+                                    bytes,
+                                );
+                            }
+                        }
+                        if let Some(Ok(bytes)) = floor_settings.as_ref() {
+                            floor_blobs.insert(
+                                SETTINGS_PATH.to_string(),
+                                hq_desktop_core::drift_scope::drift_blob_sha_for_path(
+                                    SETTINGS_PATH,
+                                    bytes,
+                                ),
+                            );
+                        }
+                    }
+                } else {
+                    log(
+                        "hq-core-state",
+                        "could not fetch upstream settings.json for PATH-only drift normalization; retaining raw hashes",
+                    );
+                }
+            }
+
             let local: BTreeMap<String, (String, u64)> = local
                 .into_iter()
                 .filter(|(p, _)| !path_in_excluded_scope(p, &excluded))

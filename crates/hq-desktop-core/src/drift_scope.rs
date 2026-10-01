@@ -580,6 +580,31 @@ pub fn drift_blob_sha(content: &[u8]) -> String {
     git_blob_sha(normalized.as_ref())
 }
 
+/// Hash local settings for Core Drift while ignoring only the PATH snapshot
+/// owned by setup. Callers must apply the same function to the matching
+/// upstream/floor blob so unrelated settings edits remain visible.
+pub fn drift_blob_sha_for_path(path: &str, content: &[u8]) -> String {
+    if path != ".claude/settings.json" {
+        return drift_blob_sha(content);
+    }
+    let Ok(mut settings) = serde_json::from_slice::<serde_json::Value>(content) else {
+        return drift_blob_sha(content);
+    };
+    let Some(root) = settings.as_object_mut() else {
+        return drift_blob_sha(content);
+    };
+    if let Some(env) = root.get_mut("env").and_then(serde_json::Value::as_object_mut) {
+        env.remove("PATH");
+        if env.is_empty() {
+            root.remove("env");
+        }
+    }
+    let Ok(without_setup_path) = serde_json::to_vec(&settings) else {
+        return drift_blob_sha(content);
+    };
+    drift_blob_sha(&without_setup_path)
+}
+
 /// Normalize newlines for drift hashing only.
 ///
 /// - Leaves binary-looking buffers unchanged (NUL in the sample → binary).
@@ -750,6 +775,31 @@ mod tests {
         let lf = b"#!/usr/bin/env bash\nset -euo pipefail\n";
         assert_eq!(drift_blob_sha(lf), git_blob_sha(lf));
         assert!(matches!(normalize_newlines_for_drift(lf), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn settings_drift_ignores_only_setup_owned_env_path() {
+        let upstream = br#"{"permissions":{"defaultMode":"acceptEdits"},"env":{"LANG":"en_US.UTF-8"}}"#;
+        let setup_path_only = br#"{"permissions":{"defaultMode":"acceptEdits"},"env":{"LANG":"en_US.UTF-8","PATH":"/machine/bin:/usr/bin"}}"#;
+        let changed_permission = br#"{"permissions":{"defaultMode":"plan"},"env":{"LANG":"en_US.UTF-8","PATH":"/machine/bin:/usr/bin"}}"#;
+        let changed_other_env = br#"{"permissions":{"defaultMode":"acceptEdits"},"env":{"LANG":"fr_FR","PATH":"/machine/bin:/usr/bin"}}"#;
+
+        assert_eq!(
+            drift_blob_sha_for_path(".claude/settings.json", upstream),
+            drift_blob_sha_for_path(".claude/settings.json", setup_path_only),
+        );
+        assert_ne!(
+            drift_blob_sha_for_path(".claude/settings.json", upstream),
+            drift_blob_sha_for_path(".claude/settings.json", changed_permission),
+        );
+        assert_ne!(
+            drift_blob_sha_for_path(".claude/settings.json", upstream),
+            drift_blob_sha_for_path(".claude/settings.json", changed_other_env),
+        );
+        assert_ne!(
+            drift_blob_sha_for_path("core/settings.json", upstream),
+            drift_blob_sha_for_path("core/settings.json", setup_path_only),
+        );
     }
 
     #[test]
