@@ -49,12 +49,24 @@ export interface ConversationRow {
   /** Epoch-ms of most recent activity (0 when unknown). */
   lastActivityAt: number;
   /**
-   * Epoch-ms of the most recent HUMAN message (audience = human / both;
-   * mesh + system rows excluded). 0 when the server has never sent one.
-   * Read only when the `desktop.human-only-conversations` flag is on; the
-   * sidebar falls back to `lastActivityAt` when 0.
+   * Epoch-ms of the most recent message a person typed (mesh, bot, and
+   * system rows excluded). Present only when the server sent one. Read only
+   * when the `desktop.human-only-conversations` flag is on. See
+   * `rowHumanRecencyState` for the three states this and `hasHumanMessage`
+   * encode.
    */
   lastHumanMessageAt?: number;
+  /**
+   * `false` when the server knows the conversation holds no human message.
+   * Never `true`. Absent with no `lastHumanMessageAt` means unknown, and the
+   * sidebar then falls back to `lastActivityAt`.
+   */
+  hasHumanMessage?: false;
+  /**
+   * Epoch-ms creation time. Set only on rows known to hold no human message,
+   * where it is the sort key. Never used as activity.
+   */
+  createdAt?: number;
   /**
    * Epoch-ms of the most recent DURABLE MESSAGE, with no creation-time
    * fallback (0 when the conversation has never carried one). The directory
@@ -326,11 +338,16 @@ export interface DmContactInput {
   lastActivityAt?: string | null;
   lastDmAt?: string | null;
   /**
-   * Server-supplied timestamp of the last HUMAN message on this DM
-   * (audience = human / both). Absent on older servers; used only when
-   * the `desktop.human-only-conversations` flag is on.
+   * Server-supplied timestamp of the last message a person typed in this DM.
+   * Present only when the server knows it; used only when the
+   * `desktop.human-only-conversations` flag is on.
    */
   lastHumanMessageAt?: string | null;
+  /**
+   * `false` when the server knows the pair holds no human message; never
+   * `true`. Absent with no `lastHumanMessageAt` means unknown.
+   */
+  hasHumanMessage?: boolean | null;
   /** Local-only activity dot — used when server pair unread is absent. */
   activityDot?: boolean;
   /**
@@ -352,6 +369,91 @@ export interface DmContactInput {
    * the preview in the DM rail (default: hide agent-only previews).
    */
   lastMessageAudience?: string | null;
+}
+
+/** The two wire fields that describe a conversation's last human message. */
+export interface HumanRecencyFields {
+  lastHumanMessageAt?: string | null;
+  hasHumanMessage?: boolean | null;
+}
+
+/**
+ * Resolve the human-recency fields when a new payload arrives for a
+ * conversation the client already holds.
+ *
+ *  - incoming carries a time: known. A previous "none" is dropped.
+ *  - incoming says `hasHumanMessage: false`: known none. A previous time is
+ *    dropped, because the server is the only source of this value.
+ *  - incoming carries neither: unknown on this payload, so whatever was known
+ *    before is kept. An omitted field is never read as "none".
+ *
+ * Returns only the keys that apply, so the result can be spread over an
+ * object that holds neither key.
+ */
+export function resolveHumanRecency(
+  prev: HumanRecencyFields | null | undefined,
+  incoming: HumanRecencyFields | null | undefined,
+): { lastHumanMessageAt?: string; hasHumanMessage?: false } {
+  const incomingAt = (incoming?.lastHumanMessageAt ?? "").trim();
+  if (incomingAt) return { lastHumanMessageAt: incomingAt };
+  if (incoming?.hasHumanMessage === false) return { hasHumanMessage: false };
+  const prevAt = (prev?.lastHumanMessageAt ?? "").trim();
+  if (prevAt) return { lastHumanMessageAt: prevAt };
+  if (prev?.hasHumanMessage === false) return { hasHumanMessage: false };
+  return {};
+}
+
+/** Copy of `value` without the two human-recency keys. */
+function withoutHumanRecency<T extends HumanRecencyFields>(
+  value: T,
+): Omit<T, "lastHumanMessageAt" | "hasHumanMessage"> {
+  const copy: HumanRecencyFields = { ...value };
+  delete copy.lastHumanMessageAt;
+  delete copy.hasHumanMessage;
+  return copy as Omit<T, "lastHumanMessageAt" | "hasHumanMessage">;
+}
+
+/** One DM pair's human-recency fields, as read from GET /v1/notify/dm-threads. */
+export interface DmHumanRecencyInput extends HumanRecencyFields {
+  personUid: string;
+}
+
+/**
+ * Apply DM human-recency fields from the DM thread listing onto the contacts
+ * roster. Entries that carry neither field change nothing, so an older
+ * server (or an inbox-derived activity entry) cannot erase a known value.
+ * Returns the same array when nothing changed.
+ */
+export function applyDmHumanRecency(
+  contacts: readonly DmContactInput[],
+  entries: readonly DmHumanRecencyInput[],
+): DmContactInput[] {
+  const byUid = new Map<string, DmHumanRecencyInput>();
+  for (const entry of entries) {
+    const uid = (entry.personUid ?? "").trim();
+    if (!uid) continue;
+    const carriesTime = Boolean((entry.lastHumanMessageAt ?? "").trim());
+    if (!carriesTime && entry.hasHumanMessage !== false) continue;
+    byUid.set(uid, entry);
+  }
+  if (byUid.size === 0) return contacts as DmContactInput[];
+  let changed = false;
+  const next = contacts.map((contact) => {
+    const entry = byUid.get(contact.personUid.trim());
+    if (!entry) return contact;
+    const resolved = resolveHumanRecency(contact, entry);
+    const prevAt = (contact.lastHumanMessageAt ?? "").trim();
+    if (
+      (resolved.lastHumanMessageAt ?? "") === prevAt &&
+      (resolved.hasHumanMessage === false) ===
+        (!prevAt && contact.hasHumanMessage === false)
+    ) {
+      return contact;
+    }
+    changed = true;
+    return { ...withoutHumanRecency(contact), ...resolved };
+  });
+  return changed ? next : (contacts as DmContactInput[]);
 }
 
 export interface InboxEventInput {
@@ -540,6 +642,9 @@ export function stampContactsFromDmThreads(
       lastMessageAt: last ?? prev?.lastMessageAt ?? null,
       lastActivityAt: last ?? prev?.lastActivityAt ?? null,
       ...(typeof unread === "number" ? { unreadCount: unread } : {}),
+      // The cached thread stamp says nothing about who typed. Keep what the
+      // roster already knew.
+      ...resolveHumanRecency(prev, null),
     });
   }
   return [...byUid.values()];
@@ -569,8 +674,7 @@ export function mergeContactActivity(
       newerIso(contact.lastActivityAt, prev?.lastActivityAt) ??
       newerIso(contact.lastDmAt, prev?.lastDmAt);
     out.push({
-      ...prev,
-      ...contact,
+      ...withoutHumanRecency({ ...prev, ...contact }),
       personUid: uid,
       displayName: contact.displayName || prev?.displayName,
       email: contact.email || prev?.email,
@@ -578,6 +682,9 @@ export function mergeContactActivity(
         last ?? contact.lastMessageAt ?? prev?.lastMessageAt ?? null,
       lastActivityAt:
         last ?? contact.lastActivityAt ?? prev?.lastActivityAt ?? null,
+      // A roster refresh that omits the human fields keeps the known state;
+      // one that carries a field replaces the pair as a unit.
+      ...resolveHumanRecency(prev, contact),
     });
   }
   for (const [uid, prev] of prevByUid) {
@@ -661,6 +768,14 @@ export function normalizeChannel(
     parseActivityMs(channel.lastMessageAt),
   );
   const humanMessageActivity = parseActivityMs(channel.lastHumanMessageAt);
+  const knownNoHumanMessage =
+    humanMessageActivity <= 0 && channel.hasHumanMessage === false;
+  const createdForOrder = knownNoHumanMessage
+    ? Math.max(
+        parseActivityMs(channel.directoryCreatedAt),
+        parseActivityMs(channel.createdAt),
+      )
+    : 0;
   const unread = Math.max(0, channel.unread ?? 0);
   const homeChannelId = channel.companyUid
     ? options.homeChannelIdByUid instanceof Map
@@ -693,6 +808,8 @@ export function normalizeChannel(
     ...(humanMessageActivity > 0
       ? { lastHumanMessageAt: humanMessageActivity }
       : {}),
+    ...(knownNoHumanMessage ? { hasHumanMessage: false as const } : {}),
+    ...(createdForOrder > 0 ? { createdAt: createdForOrder } : {}),
     pinned: pinnedIds.has(id),
     memberCount: channel.memberCount,
     members: channel.members,
@@ -769,7 +886,9 @@ export function normalizeDm(
     lastActivityAt: activity,
     ...(humanMessageActivity > 0
       ? { lastHumanMessageAt: humanMessageActivity }
-      : {}),
+      : contact.hasHumanMessage === false
+        ? { hasHumanMessage: false as const }
+        : {}),
     pinned: pinnedIds.has(id),
     personUid: contact.personUid,
     email: contact.email ?? null,
@@ -1042,11 +1161,13 @@ export function directoryRowToChannel(
       : {}),
     projectId: row.projectId ?? prev?.projectId ?? null,
     lastActivityAt: activity,
-    ...(row.lastHumanMessageAt !== undefined
-      ? { lastHumanMessageAt: row.lastHumanMessageAt }
-      : prev?.lastHumanMessageAt !== undefined
-        ? { lastHumanMessageAt: prev.lastHumanMessageAt }
-        : {}),
+    // Three states: a time, a known "none", or neither. A row that omits both
+    // fields keeps what the previous payload established. See
+    // `resolveHumanRecency`.
+    ...resolveHumanRecency(prev, row),
+    ...(row.createdAt || prev?.directoryCreatedAt
+      ? { directoryCreatedAt: row.createdAt || prev?.directoryCreatedAt }
+      : {}),
     ...(activity
       ? { lastMessageAt: newestIso(prev?.lastMessageAt, activity) }
       : {}),
@@ -1224,20 +1345,69 @@ export function filterByPerson(
   );
 }
 
+/** What the row carries about the conversation's last human message. */
+export type RowHumanRecencyState = "known" | "none" | "unknown";
+
 /**
- * Recency key the sidebar sorts by. In `humanOnly` mode, prefer the
- * server-provided last-human-message stamp; when absent (older server /
- * channel with no human message), fall back to `lastActivityAt` so the
- * row is still orderable. Match `humanRecencyKey` in `@hq/platform`.
+ * The three human-recency states of a row. Match `humanRecencyState` in
+ * `@hq/platform`.
+ *
+ *  - `known`: the server sent a last-human-message time.
+ *  - `none`: the server said the conversation holds no human message.
+ *  - `unknown`: the server sent neither field (an older server, a 1:1 DM the
+ *    server does not report on, or a channel it has not examined).
+ */
+export function rowHumanRecencyState(row: ConversationRow): RowHumanRecencyState {
+  if ((row.lastHumanMessageAt ?? 0) > 0) return "known";
+  if (row.hasHumanMessage === false) return "none";
+  return "unknown";
+}
+
+/**
+ * Recency key the sidebar sorts by. Match `humanRecencyKey` in
+ * `@hq/platform`.
+ *
+ * In `humanOnly` mode:
+ *  - `known`: the last-human-message time.
+ *  - `none`: 0. Bot and session activity never moves such a row;
+ *    `compareRowRecency` orders these rows by creation time below the rest.
+ *  - `unknown`: `lastActivityAt`, so a row the server has not reported on
+ *    keeps its place instead of sinking to the bottom in title order.
+ *
+ * With the flag off the key is `lastActivityAt`.
  */
 export function rowRecencyKey(
   row: ConversationRow,
   humanOnly: boolean,
 ): number {
   if (humanOnly) {
-    return row.lastHumanMessageAt ?? 0;
+    const state = rowHumanRecencyState(row);
+    if (state === "known") return row.lastHumanMessageAt ?? 0;
+    if (state === "none") return 0;
   }
   return row.lastActivityAt;
+}
+
+/**
+ * Order two rows by recency: negative when `a` sorts first, 0 on a tie (the
+ * caller then applies its own tie-break). In `humanOnly` mode rows known to
+ * hold no human message sort below every other row, newest creation time
+ * first; such rows without a creation time tie, which leaves them in title
+ * order under the caller's tie-break. Match `compareHumanRecency` in
+ * `@hq/platform`.
+ */
+export function compareRowRecency(
+  a: ConversationRow,
+  b: ConversationRow,
+  humanOnly: boolean,
+): number {
+  if (humanOnly) {
+    const aNone = rowHumanRecencyState(a) === "none";
+    const bNone = rowHumanRecencyState(b) === "none";
+    if (aNone !== bNone) return aNone ? 1 : -1;
+    if (aNone && bNone) return (b.createdAt ?? 0) - (a.createdAt ?? 0);
+  }
+  return rowRecencyKey(b, humanOnly) - rowRecencyKey(a, humanOnly);
 }
 
 export function sortConversations(
@@ -1255,24 +1425,58 @@ export function sortConversations(
     copy.sort((a, b) => {
       const kindDiff = order[a.kind] - order[b.kind];
       if (kindDiff !== 0) return kindDiff;
-      const ak = rowRecencyKey(a, humanOnly);
-      const bk = rowRecencyKey(b, humanOnly);
-      if (bk !== ak) return bk - ak;
+      const recency = compareRowRecency(a, b, humanOnly);
+      if (recency !== 0) return recency;
       return a.title.localeCompare(b.title) || a.id.localeCompare(b.id);
     });
     return copy;
   }
   // Recent
   copy.sort((a, b) => {
-    const ak = rowRecencyKey(a, humanOnly);
-    const bk = rowRecencyKey(b, humanOnly);
-    if (bk !== ak) return bk - ak;
-    const aUnread = a.unreadCount ?? (a.unreadDot ? 1 : 0);
-    const bUnread = b.unreadCount ?? (b.unreadDot ? 1 : 0);
-    if (bUnread !== aUnread) return bUnread - aUnread;
+    const recency = compareRowRecency(a, b, humanOnly);
+    if (recency !== 0) return recency;
+    // A row known to hold no human message is ordered by creation time, then
+    // title. Unread is bot or session activity there, so it is not a
+    // tie-break for those rows.
+    const noneTier = humanOnly && rowHumanRecencyState(a) === "none";
+    if (!noneTier) {
+      const aUnread = a.unreadCount ?? (a.unreadDot ? 1 : 0);
+      const bUnread = b.unreadCount ?? (b.unreadDot ? 1 : 0);
+      if (bUnread !== aUnread) return bUnread - aUnread;
+    }
     return a.title.localeCompare(b.title) || a.id.localeCompare(b.id);
   });
   return copy;
+}
+
+/**
+ * True when a new-message wake could change a channel's human recency, so the
+ * sidebar should read the directory again.
+ *
+ * A row in the unknown state is ordered by `lastActivityAt`, which the wake
+ * itself stamps, so it needs no server read. A row in the known or none state
+ * is ordered by a value only the server computes: the wake names a sender and
+ * a time, but it cannot say whether a person typed the message (a work
+ * session posts under the person's uid). An agent's post never counts as a
+ * typed message, and a wake no newer than the known time changes nothing.
+ */
+export function wakeMayChangeHumanRecency(
+  channel: Pick<Channel, "lastHumanMessageAt" | "hasHumanMessage"> | undefined,
+  wake: { createdAt?: string | null; fromPersonUid?: string | null },
+): boolean {
+  if (!channel) return false;
+  const knownAt = (channel.lastHumanMessageAt ?? "").trim();
+  const knownNone = !knownAt && channel.hasHumanMessage === false;
+  if (!knownAt && !knownNone) return false;
+  if (isAgentUid((wake.fromPersonUid ?? "").trim())) return false;
+  const at = (wake.createdAt ?? "").trim();
+  if (!at) return false;
+  if (knownNone) return true;
+  const atMs = Date.parse(at);
+  const knownMs = Date.parse(knownAt);
+  return Number.isFinite(atMs) && Number.isFinite(knownMs)
+    ? atMs > knownMs
+    : at > knownAt;
 }
 
 export function applySidebarFilters(
@@ -1283,8 +1487,9 @@ export function applySidebarFilters(
     sort?: SortMode;
     personUid?: string | null;
     /**
-     * When true, sort by `lastHumanMessageAt` (with a per-row fallback to
-     * `lastActivityAt`). See `rowRecencyKey`.
+     * When true, sort by the last human message, in three states: a known
+     * time, a known "none" (below the rest, by creation time), or unknown
+     * (falls back to `lastActivityAt`). See `compareRowRecency`.
      */
     humanOnly?: boolean;
   } = {},

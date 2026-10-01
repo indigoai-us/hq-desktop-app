@@ -70,11 +70,29 @@ export interface HumanRecencyChannel {
   lastActivityAt?: string | number | null;
   lastMessageAt?: string | number | null;
   /**
-   * Server-provided timestamp of the last HUMAN message on this row. Absent
-   * on older servers → the caller falls back to `lastActivityAt`.
+   * Server-provided timestamp of the last HUMAN message on this row. Present
+   * only when the server knows it.
    */
   lastHumanMessageAt?: string | number | null;
+  /**
+   * `false` only when the server knows the conversation holds no human
+   * message. The server never sends `true`. Absent means unknown (an older
+   * server, or a conversation the server has not examined yet) and must not
+   * be read as "none".
+   */
+  hasHumanMessage?: boolean | null;
+  /** Creation time. Orders rows that are known to hold no human message. */
+  createdAt?: string | number | null;
 }
+
+/**
+ * What is known about the last human message of a conversation.
+ *
+ *  - `known`: the server sent `lastHumanMessageAt`.
+ *  - `none`: the server sent `hasHumanMessage: false`.
+ *  - `unknown`: the server sent neither field.
+ */
+export type HumanRecencyState = "known" | "none" | "unknown";
 
 function toStamp(v: string | number | null | undefined): number {
   if (v === null || v === undefined) return 0;
@@ -83,26 +101,38 @@ function toStamp(v: string | number | null | undefined): number {
   return Number.isFinite(ms) ? ms : 0;
 }
 
+/** Classify a row into one of the three human-recency states. */
+export function humanRecencyState(row: HumanRecencyChannel): HumanRecencyState {
+  if (toStamp(row.lastHumanMessageAt) > 0) return "known";
+  if (row.hasHumanMessage === false) return "none";
+  return "unknown";
+}
+
 /**
- * Return the recency key (epoch-ms, 0 when unknown) the sidebar should sort
- * by.
+ * Return the recency key (epoch-ms, 0 when there is none) the sidebar should
+ * sort by.
  *
- * In `humanOnly` mode the sidebar orders strictly by
- * `lastHumanMessageAt`. Falling back to `lastActivityAt` here defeats the
- * point of the mode — a channel whose only recent activity is work-mesh /
- * bot posts would bump `lastActivityAt` on every event and jump back to the
- * top. When the server has not sent `lastHumanMessageAt`, treat the row as
- * having no known typed message (key = 0) so it sorts to the bottom of the
- * human-typed section rather than piggy-backing on mesh recency.
+ * In `humanOnly` mode there are three states (see `humanRecencyState`):
  *
- * In non-humanOnly mode we still fall back to `lastActivityAt` / `lastMessageAt`.
+ *  - `known`: the key is `lastHumanMessageAt`.
+ *  - `none`: the key is 0. Bot and session activity never moves such a row.
+ *    `compareHumanRecency` places these rows below the others and orders
+ *    them by creation time.
+ *  - `unknown`: the key falls back to `lastActivityAt` / `lastMessageAt`.
+ *    An older server sends no human fields at all, and a current server
+ *    sends none for a conversation it has not examined, so treating absent
+ *    as "none" would sink those rows to the bottom in title order.
+ *
+ * In non-humanOnly mode the key is `lastActivityAt` / `lastMessageAt`.
  */
 export function humanRecencyKey<T extends HumanRecencyChannel>(
   row: T,
   humanOnly: boolean,
 ): number {
   if (humanOnly) {
-    return toStamp(row.lastHumanMessageAt);
+    const state = humanRecencyState(row);
+    if (state === "known") return toStamp(row.lastHumanMessageAt);
+    if (state === "none") return 0;
   }
   const activity = toStamp(row.lastActivityAt);
   if (activity > 0) return activity;
@@ -110,20 +140,40 @@ export function humanRecencyKey<T extends HumanRecencyChannel>(
 }
 
 /**
- * Sort channels descending by the appropriate recency key. Stable: rows with
- * equal keys keep their relative order.
+ * Comparator for sidebar order: negative when `a` sorts before `b`, 0 when
+ * the two rows tie (the caller applies its own tie-break).
+ *
+ * In `humanOnly` mode rows known to hold no human message sort below every
+ * other row. Among themselves they are ordered by creation time, newest
+ * first, and rows without a creation time come last. All other rows are
+ * ordered by `humanRecencyKey`, newest first.
+ */
+export function compareHumanRecency(
+  a: HumanRecencyChannel,
+  b: HumanRecencyChannel,
+  humanOnly: boolean,
+): number {
+  if (humanOnly) {
+    const aNone = humanRecencyState(a) === "none";
+    const bNone = humanRecencyState(b) === "none";
+    if (aNone !== bNone) return aNone ? 1 : -1;
+    if (aNone && bNone) return toStamp(b.createdAt) - toStamp(a.createdAt);
+  }
+  return humanRecencyKey(b, humanOnly) - humanRecencyKey(a, humanOnly);
+}
+
+/**
+ * Sort channels with `compareHumanRecency`. Stable: rows that tie keep their
+ * relative order.
  */
 export function orderChannelsForViewer<T extends HumanRecencyChannel>(
   channels: readonly T[],
   humanOnly: boolean,
 ): T[] {
-  const paired = channels.map((row, index) => ({
-    row,
-    index,
-    key: humanRecencyKey(row, humanOnly),
-  }));
+  const paired = channels.map((row, index) => ({ row, index }));
   paired.sort((a, b) => {
-    if (b.key !== a.key) return b.key - a.key;
+    const diff = compareHumanRecency(a.row, b.row, humanOnly);
+    if (diff !== 0) return diff;
     return a.index - b.index;
   });
   return paired.map((p) => p.row);

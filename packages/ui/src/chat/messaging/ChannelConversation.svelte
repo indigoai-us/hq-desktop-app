@@ -282,6 +282,18 @@
      * exact rule. Default off preserves the legacy view.
      */
     humanOnly?: boolean;
+    /**
+     * The host's history pages for this conversation are filtered and paged
+     * by the server (it echoed `view: "human"`). `hasEarlier` is then exactly
+     * "the last page carried a cursor", and a page may add no visible row
+     * while a cursor remains (the server's read budget ran out, or the page
+     * held only rows this pane hides). In that case the pane keeps fetching,
+     * bounded per user action, and shows a loading state instead of an empty
+     * pane with a "load earlier" button. Leave false for a server that did
+     * not echo the view: the pane then behaves exactly as it did before this
+     * option existed. Read only when `humanOnly` is on.
+     */
+    serverHumanView?: boolean;
   }
 
   let {
@@ -329,6 +341,7 @@
     restoreScroll = null,
     localBots = null,
     humanOnly = false,
+    serverHumanView = false,
   }: Props = $props();
 
   /** Presence-store online flag for an actor in this conversation's company. */
@@ -707,6 +720,16 @@
    */
   const AUTO_FETCH_MAX_PAGES = 5;
   let autoFetchPages = $state(0);
+  /**
+   * Server human view: history requests one user action may issue while the
+   * pages it gets back add no visible row. Opening the conversation counts as
+   * one action, and so does each press of the button. The server reads up to
+   * 1,000 underlying rows per request, so one action crosses about 8,000
+   * hidden rows before the pane stops and asks.
+   */
+  const SERVER_VIEW_MAX_REQUESTS_PER_ACTION = 8;
+  /** Server human view: the open-time run has been started for this mount. */
+  let serverViewAutoStarted = $state(false);
   /** "Show N earlier" prepends rows; anchor the height so the view holds still. */
   let earlierError = $state(false);
   async function showEarlier(): Promise<void> {
@@ -715,7 +738,23 @@
     earlierError = false;
     prependAnchorHeight = scroller?.scrollHeight ?? 0;
     try {
-      if (windowed.hidden === 0) await onloadearlier?.();
+      if (windowed.hidden === 0) {
+        const visibleBefore = visibleRootMessages.length;
+        let requests = 0;
+        do {
+          await onloadearlier?.();
+          requests += 1;
+          // Without the server's echo this is one request per action, as it
+          // always was. The echo is read after the request because it arrives
+          // with the page.
+          if (!(humanOnly && serverHumanView)) break;
+          await tick();
+        } while (
+          hasEarlier &&
+          visibleRootMessages.length === visibleBefore &&
+          requests < SERVER_VIEW_MAX_REQUESTS_PER_ACTION
+        );
+      }
       extraOlder += TIMELINE_WINDOW;
     } catch {
       earlierError = true;
@@ -741,14 +780,35 @@
     if (!hasEarlier) return;
     if (loadingEarlier) return;
     if (earlierError) return;
-    if (autoFetchPages >= AUTO_FETCH_MAX_PAGES) return;
+    // Server human view: one bounded run per mount (`showEarlier` issues the
+    // requests). Otherwise: one request per run, up to the page cap.
+    if (serverHumanView) {
+      if (serverViewAutoStarted) return;
+    } else if (autoFetchPages >= AUTO_FETCH_MAX_PAGES) return;
     // Only auto-fetch when the visible pane is EMPTY. Any visible human row
     // means the reader has something to read on open; further paging stays
     // click-driven so an ordinary channel does not silently chew server pages.
     if (visibleRootMessages.length > 0) return;
-    autoFetchPages += 1;
+    if (serverHumanView) serverViewAutoStarted = true;
+    else autoFetchPages += 1;
     void showEarlier();
   });
+
+  /**
+   * Server human view with nothing to show yet while the server still holds a
+   * cursor. The pane must not present this as an empty conversation with a
+   * "load earlier" button: before the open-time run starts it reads as
+   * loading, and once a run has spent its request budget it says so and
+   * offers to keep looking.
+   */
+  const serverScanEmpty = $derived(
+    humanOnly &&
+      serverHumanView &&
+      hasEarlier &&
+      !loading &&
+      !earlierError &&
+      timeline.length === 0,
+  );
 
   let selectedMentions = $state<MentionTarget[]>([]);
   let mentionHighlight = $state(0);
@@ -1565,8 +1625,28 @@
             {/each}
           </div>
         {/if}
-        {#if loadingEarlier}
-          <div role="status" class="dm-load-earlier">Loading earlier messages…</div>
+        {#if loadingEarlier || (serverScanEmpty && !serverViewAutoStarted)}
+          <div
+            role="status"
+            class="dm-load-earlier"
+            data-testid="conversation-loading-earlier"
+          >Loading earlier messages…</div>
+        {:else if serverScanEmpty}
+          <div
+            role="status"
+            class="dm-thread-empty"
+            data-testid="conversation-scan-paused"
+          >
+            No messages found in the most recent activity.
+          </div>
+          <button
+            type="button"
+            class="dm-load-earlier"
+            data-testid="conversation-load-earlier"
+            onclick={showEarlier}
+          >
+            Look further back
+          </button>
         {:else if windowed.hidden > 0 || hasEarlier}
           <button
             type="button"

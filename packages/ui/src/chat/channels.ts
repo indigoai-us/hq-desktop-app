@@ -60,12 +60,25 @@ export interface Channel {
   lastActivityAt?: string | null;
   lastMessageAt?: string | null;
   /**
-   * Server-supplied timestamp of the last HUMAN message on this channel
-   * (audience = human / both, excludes work-mesh + system events). Absent
-   * on older servers; used only when the `desktop.human-only-conversations`
-   * flag is on. When absent the sidebar falls back to `lastActivityAt`.
+   * Server-supplied timestamp of the last message a person typed on this
+   * channel (work-mesh, bot, and system rows excluded). Present only when the
+   * server knows it. Used only when the `desktop.human-only-conversations`
+   * flag is on.
    */
   lastHumanMessageAt?: string | null;
+  /**
+   * `false` when the server knows this channel holds no human message. The
+   * server never sends `true`. Absent, together with an absent
+   * `lastHumanMessageAt`, means unknown (an older server, or a channel the
+   * server has not examined): the sidebar then falls back to `lastActivityAt`.
+   */
+  hasHumanMessage?: boolean | null;
+  /**
+   * Creation stamp carried from the directory row. Used only to order
+   * channels known to hold no human message. Kept apart from `createdAt`,
+   * which counts as activity for day grouping.
+   */
+  directoryCreatedAt?: string | null;
   /** Client-only epoch-ms stamp of when this channel first entered the rail,
    * set once by `upsertChannel` on insert. NOT part of the server wire shape —
    * it lets a brand-new channel with no server timestamps surface as recent in

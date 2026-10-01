@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   filterHumanMessages,
+  compareHumanRecency,
   humanRecencyKey,
+  humanRecencyState,
   isHumanMessage,
   orderChannelsForViewer,
 } from "./humanMessage.js";
@@ -81,8 +83,39 @@ describe("isHumanMessage inferFromUid option", () => {
   });
 });
 
+describe("humanRecencyState", () => {
+  it("known: the server sent lastHumanMessageAt", () => {
+    expect(
+      humanRecencyState({ lastHumanMessageAt: "2026-09-29T09:00:00Z" }),
+    ).toBe("known");
+  });
+
+  it("none: the server sent hasHumanMessage false", () => {
+    expect(humanRecencyState({ hasHumanMessage: false })).toBe("none");
+  });
+
+  it("unknown: neither field, an explicit null, or a stray true", () => {
+    expect(humanRecencyState({ lastActivityAt: "2026-09-29T10:00:00Z" })).toBe(
+      "unknown",
+    );
+    expect(
+      humanRecencyState({ lastHumanMessageAt: null, hasHumanMessage: null }),
+    ).toBe("unknown");
+    expect(humanRecencyState({ hasHumanMessage: true })).toBe("unknown");
+  });
+
+  it("a human time wins when a row carries both fields", () => {
+    expect(
+      humanRecencyState({
+        lastHumanMessageAt: "2026-09-29T09:00:00Z",
+        hasHumanMessage: false,
+      }),
+    ).toBe("known");
+  });
+});
+
 describe("humanRecencyKey", () => {
-  it("prefers lastHumanMessageAt in humanOnly mode", () => {
+  it("known: uses lastHumanMessageAt in humanOnly mode", () => {
     const key = humanRecencyKey(
       {
         lastActivityAt: "2026-09-29T10:00:00Z",
@@ -93,25 +126,85 @@ describe("humanRecencyKey", () => {
     expect(key).toBe(Date.parse("2026-09-29T09:00:00Z"));
   });
 
-  it("does NOT fall back to lastActivityAt in humanOnly mode (mesh-busy channel stays put)", () => {
-    // A mesh-busy channel with no known typed message must not piggy-back on
-    // lastActivityAt — that would put it back on top the moment mesh fires.
+  it("unknown: falls back to lastActivityAt in humanOnly mode", () => {
+    // Neither field arrived: an older server, a 1:1 DM, or a channel the
+    // server has not examined. Absent is not "none", so the row keeps its
+    // activity order instead of sinking to the bottom.
     const key = humanRecencyKey(
       { lastActivityAt: "2026-09-29T10:00:00Z" },
+      true,
+    );
+    expect(key).toBe(Date.parse("2026-09-29T10:00:00Z"));
+  });
+
+  it("unknown: falls back to lastMessageAt when lastActivityAt is absent", () => {
+    const key = humanRecencyKey({ lastMessageAt: "2026-09-29T07:00:00Z" }, true);
+    expect(key).toBe(Date.parse("2026-09-29T07:00:00Z"));
+  });
+
+  it("none: never uses bot or session activity in humanOnly mode", () => {
+    const key = humanRecencyKey(
+      {
+        lastActivityAt: "2026-09-29T10:00:00Z",
+        lastMessageAt: "2026-09-29T10:00:00Z",
+        hasHumanMessage: false,
+      },
       true,
     );
     expect(key).toBe(0);
   });
 
-  it("uses lastActivityAt when the flag is off", () => {
-    const key = humanRecencyKey(
-      {
-        lastActivityAt: "2026-09-29T10:00:00Z",
-        lastHumanMessageAt: "2026-09-29T09:00:00Z",
-      },
-      false,
+  it("uses lastActivityAt when the flag is off, in every state", () => {
+    const at = Date.parse("2026-09-29T10:00:00Z");
+    expect(
+      humanRecencyKey(
+        {
+          lastActivityAt: "2026-09-29T10:00:00Z",
+          lastHumanMessageAt: "2026-09-29T09:00:00Z",
+        },
+        false,
+      ),
+    ).toBe(at);
+    expect(
+      humanRecencyKey(
+        { lastActivityAt: "2026-09-29T10:00:00Z", hasHumanMessage: false },
+        false,
+      ),
+    ).toBe(at);
+    expect(
+      humanRecencyKey({ lastActivityAt: "2026-09-29T10:00:00Z" }, false),
+    ).toBe(at);
+  });
+});
+
+describe("compareHumanRecency", () => {
+  const known = { lastHumanMessageAt: "2026-09-20T09:00:00Z" };
+  const unknown = { lastActivityAt: "2026-09-10T09:00:00Z" };
+  const none = {
+    lastActivityAt: "2026-09-30T09:00:00Z",
+    hasHumanMessage: false,
+    createdAt: "2026-09-01T00:00:00Z",
+  };
+
+  it("humanOnly: a known-none row sorts below known and unknown rows", () => {
+    expect(compareHumanRecency(none, known, true)).toBeGreaterThan(0);
+    expect(compareHumanRecency(none, unknown, true)).toBeGreaterThan(0);
+    expect(compareHumanRecency(known, none, true)).toBeLessThan(0);
+  });
+
+  it("humanOnly: known-none rows order by creation time, newest first", () => {
+    const older = { hasHumanMessage: false, createdAt: "2026-08-01T00:00:00Z" };
+    const newer = { hasHumanMessage: false, createdAt: "2026-09-01T00:00:00Z" };
+    const undated = { hasHumanMessage: false };
+    expect(compareHumanRecency(newer, older, true)).toBeLessThan(0);
+    expect(compareHumanRecency(undated, older, true)).toBeGreaterThan(0);
+    expect(compareHumanRecency(undated, { hasHumanMessage: false }, true)).toBe(
+      0,
     );
-    expect(key).toBe(Date.parse("2026-09-29T10:00:00Z"));
+  });
+
+  it("flag off: hasHumanMessage is ignored", () => {
+    expect(compareHumanRecency(none, known, false)).toBeLessThan(0);
   });
 });
 
@@ -152,35 +245,55 @@ describe("orderChannelsForViewer", () => {
     ]);
   });
 
-  it("no human messages: rows tie at 0 in humanOnly mode, keep stable input order", () => {
-    const noHuman = [
-      { id: "later-bot", lastActivityAt: "2026-09-29T11:00:00Z" },
-      { id: "earlier-bot", lastActivityAt: "2026-09-29T09:00:00Z" },
+  it("unknown rows: humanOnly orders them by lastActivityAt (older server)", () => {
+    // An older server sends neither field for any row. The order must match
+    // the flag-off order instead of collapsing to input or title order.
+    const noFields = [
+      { id: "earlier", lastActivityAt: "2026-09-29T09:00:00Z" },
+      { id: "later", lastActivityAt: "2026-09-29T11:00:00Z" },
     ];
-    // Neither row carries lastHumanMessageAt, so both key to 0. Sort is stable
-    // → input order is preserved.
-    expect(orderChannelsForViewer(noHuman, true).map((r) => r.id)).toEqual([
-      "later-bot",
-      "earlier-bot",
+    expect(orderChannelsForViewer(noFields, true).map((r) => r.id)).toEqual([
+      "later",
+      "earlier",
     ]);
   });
 
-  it("humanOnly: a mesh-busy channel stays below one with a newer typed message", () => {
-    const rows = [
+  it("humanOnly: a channel known to hold no human message stays below one with a typed message", () => {
+    const meshRows = [
+      {
+        id: "mesh-busy-today",
+        lastActivityAt: "2026-09-30T15:00:00Z", // constantly bumped by mesh
+        hasHumanMessage: false,
+        createdAt: "2026-06-01T00:00:00Z",
+      },
       {
         id: "typed-yesterday",
         lastActivityAt: "2026-09-28T09:00:00Z",
         lastHumanMessageAt: "2026-09-28T09:00:00Z",
       },
-      {
-        id: "mesh-busy-today",
-        lastActivityAt: "2026-09-30T15:00:00Z", // constantly bumped by mesh
-        // no lastHumanMessageAt — server never found a typed one under the cap
-      },
     ];
-    expect(orderChannelsForViewer(rows, true).map((r) => r.id)).toEqual([
+    expect(orderChannelsForViewer(meshRows, true).map((r) => r.id)).toEqual([
       "typed-yesterday",
       "mesh-busy-today",
+    ]);
+  });
+
+  it("humanOnly: the three states together", () => {
+    const mixed = [
+      { id: "none-old", hasHumanMessage: false, createdAt: "2026-07-01T00:00:00Z", lastActivityAt: "2026-09-30T23:00:00Z" },
+      { id: "unknown-dm", lastActivityAt: "2026-09-29T12:00:00Z" },
+      { id: "none-undated", hasHumanMessage: false, lastActivityAt: "2026-09-30T22:00:00Z" },
+      { id: "known-new", lastHumanMessageAt: "2026-09-30T08:00:00Z", lastActivityAt: "2026-09-30T08:00:00Z" },
+      { id: "none-new", hasHumanMessage: false, createdAt: "2026-09-15T00:00:00Z" },
+      { id: "known-old", lastHumanMessageAt: "2026-09-01T08:00:00Z", lastActivityAt: "2026-09-30T21:00:00Z" },
+    ];
+    expect(orderChannelsForViewer(mixed, true).map((r) => r.id)).toEqual([
+      "known-new",
+      "unknown-dm",
+      "known-old",
+      "none-new",
+      "none-old",
+      "none-undated",
     ]);
   });
 });

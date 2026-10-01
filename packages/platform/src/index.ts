@@ -17,14 +17,17 @@ export {
   SETUP_DIRECTORY_PARENT_FALLBACK_FLAG,
 } from "./flags.js";
 export {
+  compareHumanRecency,
   filterHumanMessages,
   humanRecencyKey,
+  humanRecencyState,
   isHumanMessage,
   orderChannelsForViewer,
 } from "./humanMessage.js";
 export type {
   HumanClassifiable,
   HumanRecencyChannel,
+  HumanRecencyState,
 } from "./humanMessage.js";
 
 // Shared 429 / Retry-After policy and the jittered background pollers (R2).

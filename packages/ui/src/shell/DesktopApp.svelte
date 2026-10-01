@@ -555,6 +555,7 @@
     sinceForChannelWake,
     timelineHasEvent,
     timelinePageFromPayload,
+    HUMAN_HISTORY_VIEW,
   } from "../chat/live-messages.js";
   import {
     DM_INBOX_SINCE_KEY,
@@ -562,6 +563,7 @@
     dmActivityFromInboxPage,
     dmActivityFromThreadsPage,
     dmActivityFromTimeline,
+    dmThreadsPageCarriesHumanRecency,
     type InboxDmActivity,
     isMissingEndpointFailure,
     mergeDmActivity,
@@ -1713,6 +1715,14 @@
    * this is true. See `packages/platform/src/humanMessage.ts` for the rule.
    */
   let humanOnlyConversations = $state(true);
+  /**
+   * The adapter has answered that the flag is on. `humanOnlyConversations`
+   * starts `true` before any answer so the first paint hides mesh rows, but a
+   * history request only asks the server for the human view (`view=human`)
+   * once the answer is in. Otherwise a host that ends up with the flag off
+   * would have loaded a server-filtered page it then has to show unfiltered.
+   */
+  let humanOnlyConfirmed = $state(false);
   $effect(() => {
     const identity = adapter?.identity;
     if (!identity || typeof identity.hasFeature !== "function") return;
@@ -1724,6 +1734,7 @@
         );
         if (cancelled) return;
         humanOnlyConversations = initial.ok && initial.value === true;
+        humanOnlyConfirmed = humanOnlyConversations;
       } catch {
         // Registry outage / partial mock — stay dark.
       }
@@ -1733,6 +1744,7 @@
         ? identity.subscribeFeature(HUMAN_ONLY_CONVERSATIONS_FLAG, (result) => {
             if (cancelled) return;
             humanOnlyConversations = result.ok && result.value === true;
+            humanOnlyConfirmed = humanOnlyConversations;
           })
         : undefined;
     return () => {
@@ -3731,6 +3743,14 @@
    * predates the peer index. Stop asking; the inbox path still runs.
    */
   let dmThreadsUnsupported = false;
+  /**
+   * The DM thread listing reported a last human message (or a known "none")
+   * for at least one pair, so this server maintains it. Only then is the
+   * listing re-read when a DM arrives or is sent: the sidebar orders such a
+   * pair by a value nothing else on the client can supply. An older server
+   * sends neither field and keeps the single backfill read.
+   */
+  let dmThreadsCarryHumanRecency = false;
 
   // Client-side "agent is thinking" rows, keyed by conversation row id.
   // Local only — the backend has no typing/ack events. Per-conversation so
@@ -3936,9 +3956,18 @@
     });
   }
 
+  /**
+   * `history` marks the read that loads a conversation's newest history page
+   * (its result goes to `applyFetchedTimeline`). Only that read asks the
+   * server for the human view. A catch-up read does not, with or without
+   * `since`: it runs on every wake and on the safety poll, and a filtered
+   * read may scan a thousand rows on the server where an unfiltered one
+   * reads twenty. The local filter hides what a catch-up page should not show.
+   */
   async function fetchTimelineRaw(
     row: ConversationRow,
     since?: string,
+    history = false,
   ): Promise<unknown | null> {
     const started = performance.now();
     console.info("[hq-desktop]", {
@@ -3947,12 +3976,16 @@
       id: row.id,
       since: since ?? null,
     });
+    const view = history && !since && wantsServerHumanView()
+      ? { view: HUMAN_HISTORY_VIEW }
+      : {};
     try {
       if (row.kind === "dm" && row.personUid) {
         const res = await adapter.messaging.fetchDmThread({
           withPersonUid: row.personUid,
           limit: since ? 20 : 50,
           since,
+          ...view,
         });
         console.info("[hq-desktop]", {
           t: Date.now(),
@@ -3968,6 +4001,7 @@
           channelId: row.channelId,
           limit: since ? 20 : 50,
           since,
+          ...view,
         });
         console.info("[hq-desktop]", {
           t: Date.now(),
@@ -3992,6 +4026,36 @@
   }
 
   let historyCursors = $state<Record<string, string | null>>({});
+  /**
+   * Row id → the newest history page for it came back with `view: "human"`,
+   * meaning the server filtered and paged it. Only then is the page trusted:
+   * "earlier" exists exactly when the page carried a `nextCursor`, and a 1:1
+   * DM gets a cursor at all. An older server ignores `view` and echoes
+   * nothing, which leaves a row out of this map and on the previous
+   * behaviour (local filter, bounded auto-fetch, no DM paging).
+   */
+  let historyServerView = $state<Record<string, boolean>>({});
+
+  /** History requests ask for the server-side human view only once the flag is confirmed on. */
+  function wantsServerHumanView(): boolean {
+    return humanOnlyConversations && humanOnlyConfirmed;
+  }
+
+  /** Record what one history page says about paging for this row. */
+  function recordHistoryPage(
+    row: ConversationRow,
+    raw: unknown,
+    requestedCursor: string | null,
+  ): void {
+    const page = timelinePageFromPayload(raw);
+    const serverView = page.view === HUMAN_HISTORY_VIEW;
+    historyServerView[row.id] = serverView;
+    // Without the echo a 1:1 DM keeps no cursor, as before this option
+    // existed. With it, the server's cursor is the only paging signal.
+    const next = row.channelId || serverView ? (page.nextCursor ?? null) : null;
+    historyCursors[row.id] =
+      requestedCursor !== null && next === requestedCursor ? null : next;
+  }
 
   async function loadEarlierTimeline(): Promise<void> {
     const row = selectedRow;
@@ -3999,14 +4063,39 @@
     const generation = tenantGeneration;
     const cursor = historyCursors[row.id];
     if (!cursor) return;
+    // A cursor from a human-view page must go back with `view=human`. One
+    // from an unfiltered page is a plain row key, which that route accepts
+    // too, so the option follows the mode and not the cursor's origin.
+    const view = wantsServerHumanView() ? { view: HUMAN_HISTORY_VIEW } : {};
     const raw = row.channelId
-      ? unwrapAdapter(await adapter.messaging.fetchChannel({ channelId: row.channelId, cursor, limit: 50 }))
-      : null;
+      ? unwrapAdapter(await adapter.messaging.fetchChannel({ channelId: row.channelId, cursor, limit: 50, ...view }))
+      : row.kind === "dm" && row.personUid
+        ? unwrapAdapter(await adapter.messaging.fetchDmThread({ withPersonUid: row.personUid, cursor, limit: 50, ...view }))
+        : null;
     if (selectedRow?.id !== row.id || tenantGeneration !== generation || raw === null) return;
-    const page = timelinePageFromPayload(raw);
-    historyCursors[row.id] = page.nextCursor === cursor ? null : (page.nextCursor ?? null);
+    recordHistoryPage(row, raw, cursor);
     commitTimeline(row, mergeFetchedTimeline(liveTimeline, raw));
   }
+
+  // The flag turned off while server-filtered pages are held: those pages
+  // lack the rows the unfiltered view shows. Drop them and read the open
+  // conversation again without `view`.
+  $effect(() => {
+    if (humanOnlyConversations) return;
+    untrack(() => {
+      const filtered = Object.keys(historyServerView).filter(
+        (id) => historyServerView[id],
+      );
+      if (filtered.length === 0) return;
+      for (const id of filtered) timelineCache.delete(id);
+      historyServerView = {};
+      const row = selectedRow;
+      if (!row || !filtered.includes(row.id)) return;
+      void fetchTimelineRaw(row, undefined, true)
+        .then((raw) => applyFetchedTimeline(row, raw))
+        .catch(() => {});
+    });
+  });
 
   /**
    * A channel opened by id before it was in the loaded rows (a deep link, a
@@ -4058,7 +4147,7 @@
     timelineHydrating = false;
     if (raw == null) return;
     hydrateStubChannelRow(row, raw);
-    historyCursors[row.id] = row.channelId ? (timelinePageFromPayload(raw).nextCursor ?? null) : null;
+    recordHistoryPage(row, raw, null);
     let incoming = messagesForDisplay(raw);
     // An immediate readback can lag the accepted mutation. Preserve its
     // pending receipt over a stale open card, but accept any newer state.
@@ -4148,7 +4237,7 @@
     timelineHydrating = true;
     const frame = requestAnimationFrame(() => {
       if (selectedRow?.id !== token) return;
-      void fetchTimelineRaw(row)
+      void fetchTimelineRaw(row, undefined, true)
         .then((raw) => applyFetchedTimeline(row, raw))
         .finally(() => {
           if (selectedRow?.id === token) timelineHydrating = false;
@@ -5247,6 +5336,8 @@
       return {
         messages: normalizeConversationMessages(page.messages),
         nextCursor: page.nextCursor ?? null,
+        ...(page.view ? { view: page.view } : {}),
+        ...(page.viewScanTruncated ? { viewScanTruncated: true } : {}),
       };
     },
     sendChannelMessage: async (args) => {
@@ -5263,6 +5354,8 @@
       return {
         messages: normalizeConversationMessages(page.messages),
         nextCursor: page.nextCursor ?? null,
+        ...(page.view ? { view: page.view } : {}),
+        ...(page.viewScanTruncated ? { viewScanTruncated: true } : {}),
       };
     },
     sendDm: async (args) => {
@@ -5862,7 +5955,7 @@
       }
       // Fetch newly created steps even when no live event arrives. Failure
       // must not turn an already-saved choice into a failed mutation.
-      void fetchTimelineRaw(actionRow)
+      void fetchTimelineRaw(actionRow, undefined, true)
         .then((raw) => applyFetchedTimeline(actionRow, raw, state === "pending" ? event.cardId : undefined))
         .catch(() => {});
     }
@@ -7002,6 +7095,7 @@
     lastDmTimelineStampByUid.clear();
     lastChannelTimelineStampById.clear();
     dmThreadsUnsupported = false;
+    dmThreadsCarryHumanRecency = false;
     thinkingByRow = {};
     answeredWhileBusy = {};
     openReplyRootId = null;
@@ -7378,7 +7472,7 @@
     // directions. Feature-detected: a 404 (older server) or a host without
     // the method falls back to inbox-only, so old servers keep working.
     const wantThreads =
-      backfill &&
+      (backfill || dmThreadsCarryHumanRecency) &&
       !dmThreadsUnsupported &&
       typeof notifications.fetchDmThreads === "function";
     const [res, threadsRes] = await Promise.all([
@@ -7410,6 +7504,9 @@
         threadActivity = dmActivityFromThreadsPage(threadsRes.value, {
           selfUid: self?.uid,
         });
+        if (dmThreadsPageCarriesHumanRecency(threadsRes.value)) {
+          dmThreadsCarryHumanRecency = true;
+        }
       } else if (isMissingEndpointFailure(threadsRes)) {
         dmThreadsUnsupported = true;
       }
@@ -7445,6 +7542,39 @@
     }
     if (!backfill && parsed.nextSince)
       storage?.setItem(DM_INBOX_SINCE_KEY, parsed.nextSince);
+  }
+
+  /**
+   * Re-read the DM thread listing after the owner sends a DM, so the pair's
+   * last human message (which only the server computes) follows the send. An
+   * outgoing DM raises no wake on this client, so nothing else would. No-op
+   * unless the server has shown it maintains the value.
+   */
+  async function refreshDmHumanRecency(): Promise<void> {
+    const bus = wakes;
+    const notifications = adapter.notifications;
+    if (!bus || !dmThreadsCarryHumanRecency || dmThreadsUnsupported) return;
+    if (!notifications || typeof notifications.fetchDmThreads !== "function") {
+      return;
+    }
+    const expectedGeneration = tenantGeneration;
+    const expectedCompanyId = tenantCompanyId;
+    const res = await raceTimeout(
+      notifications.fetchDmThreads({ limit: 100 }),
+      bootTimeoutMs,
+      "dm-threads",
+    ).catch(() => null);
+    if (!res || !res.ok) return;
+    if (
+      expectedGeneration !== tenantGeneration ||
+      expectedCompanyId !== tenantCompanyId
+    ) {
+      return;
+    }
+    const activity = dmActivityFromThreadsPage(res.value, {
+      selfUid: self?.uid,
+    });
+    if (activity.length > 0) bus.emit?.("dm:pair-unreads", { activity });
   }
 
   $effect(() => {
@@ -7490,6 +7620,7 @@
     lastDmTimelineStampByUid.clear();
     lastChannelTimelineStampById.clear();
     dmThreadsUnsupported = false;
+    dmThreadsCarryHumanRecency = false;
     if (!wakes) return;
     untrack(() => {
       void catchUpDmInbox({ backfill: true });
@@ -7605,6 +7736,7 @@
         const wire = sentMessageFromResult(res.value, extras);
         if (wire)
           commitTimeline(row, mergeTimelineMessages(liveTimeline, [wire]));
+        void refreshDmHumanRecency();
         // A 1:1 DM with an agent is inherently addressed to that agent, so
         // any send starts the indicator — no @mention required (unlike a
         // channel, where only an explicit mention wakes an agent). Started
@@ -7661,6 +7793,9 @@
       }
       const wire = sentMessageFromResult(res.value, extras);
       if (wire) commitTimeline(row, mergeTimelineMessages(liveTimeline, [wire]));
+      // After the commit above, whose activity wake the rail may answer with
+      // a throttled directory read: this one is known to be a typed message.
+      wakes?.emit?.("channel:own-send", { channelId });
       // Channel sends need an explicit @agent mention (agent DMs start their
       // row in the DM branch above).
       for (const mention of mentions) {
@@ -9730,6 +9865,8 @@
                     wakes?.emit?.("conversation:read", { id: row.id });
                   }}
                   hasEarlier={Boolean(historyCursors[selectedRow.id])}
+                  serverHumanView={humanOnlyConversations &&
+                    Boolean(historyServerView[selectedRow.id])}
                   onloadearlier={loadEarlierTimeline}
                   emptyLabel={conversationEmptyLabel}
                   reactions={rowReactions}

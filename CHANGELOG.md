@@ -9,6 +9,16 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - The sidebar orders DMs and channels by the latest message a person typed.
+  A conversation the server has not reported that time for, which includes
+  every direct message today, keeps its place by latest activity instead of
+  dropping to the bottom in alphabetical order. A conversation known to hold
+  no typed message sorts below the rest, by when it was created.
+
+- Channels and direct messages that hide bot and session activity now ask the
+  server for the filtered history. A channel with a long run of hidden
+  activity opens on its messages, or keeps loading until it finds them,
+  instead of showing an empty pane with a "load earlier" button. With an
+  older server the app filters on its side, as before.
 
 - HQ no longer restarts for an update, or at support's request, while a meeting
   is being recorded; it waits until the recording finishes.
