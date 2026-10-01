@@ -184,7 +184,7 @@ describe("DesktopApp title-bar back/forward", () => {
     ).toBe(true);
     expect(
       host.querySelector('[data-testid="titlebar-forward"]')?.getAttribute("title"),
-    ).toBe("Library");
+    ).toBe("Library · Skills");
   });
 
   it("Given history A→B, when the user clicks Back then Forward, then selection returns to A then B and button disabled states match the stack", async () => {
