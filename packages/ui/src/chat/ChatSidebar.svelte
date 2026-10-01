@@ -1638,6 +1638,10 @@
     createOpen = true;
   }
 
+  function completeNewBotTakeover(): void {
+    newBotOpen = false;
+  }
+
   /** Host entry point (#welcome's "Start a project channel"): open the create modal. */
   export function openCreateChannel(options: { kind?: "channel" | "project" } = {}): void {
     createKind = options.kind ?? "channel";
@@ -3765,6 +3769,12 @@
       canCreateLocalBot={!!oncreatebot}
       oncancel={cancelNewBotTakeover}
       onopenlocal={oncreatebot ? openLocalBotFromTakeover : null}
+      oncomplete={completeNewBotTakeover}
+      companies={agentCompanies}
+      currentCompanyUid={scopeUid}
+      runtimeReady={botRuntimeReady}
+      loadProvisionOptions={loadCloudProvisionOptions}
+      oncreate={oncreateagent}
     />
   {/if}
 </aside>

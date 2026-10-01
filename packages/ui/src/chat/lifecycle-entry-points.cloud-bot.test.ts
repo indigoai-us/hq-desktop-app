@@ -176,7 +176,7 @@ describe("runCreateCloudBotEntry", () => {
       values: { runtime: "claude" },
     }));
     expect(runCardAction).toHaveBeenNthCalledWith(3, expect.objectContaining({
-      values: { size: "power", authMode: "apiKey", apiKey },
+      values: { size: "power", authMode: "apiKey", apiKey, deferChannels: "true" },
     }));
     expect(runCardAction.mock.calls[0]?.[0].values).not.toHaveProperty("apiKey");
     expect(runCardAction.mock.calls[1]?.[0].values).not.toHaveProperty("apiKey");
@@ -204,7 +204,7 @@ describe("runCreateCloudBotEntry", () => {
     expect(runCardAction).toHaveBeenNthCalledWith(2, expect.objectContaining({ values: { runtime: "codex" } }));
     expect(runCardAction).toHaveBeenNthCalledWith(3, expect.objectContaining({
       actionId: "create",
-      values: { size: "basic", authMode: "subscription" },
+      values: { size: "basic", authMode: "subscription", deferChannels: "true" },
     }));
     // Nothing is focused: no card was ever drawn. The new bot's uid rides
     // back with the target: no turn asked for the draft's title, so the

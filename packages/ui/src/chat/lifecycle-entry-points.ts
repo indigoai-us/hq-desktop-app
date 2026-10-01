@@ -418,10 +418,11 @@ function valuesForCard(
     if (!value && field.required) return null;
     values[field.id] = value;
   }
-  // Auth is carried only on the final create action. In particular, the API
-  // key never enters a lifecycle field or a card snapshot.
+  // Auth and the Desktop-only channel deferral are carried only on the final
+  // create action. An API key never enters a lifecycle field or card snapshot.
   if (card.fields.some((field) => field.id === "size")) {
     values.authMode = draft.authMode ?? "subscription";
+    values.deferChannels = "true";
     if (values.authMode === "apiKey" && draft.apiKey) {
       values.apiKey = draft.apiKey;
     }

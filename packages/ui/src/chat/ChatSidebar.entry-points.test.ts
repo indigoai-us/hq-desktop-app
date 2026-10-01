@@ -183,7 +183,8 @@ describe("ChatSidebar lifecycle entry points", () => {
     expect(takeover?.getAttribute("role")).toBe("dialog");
     expect(takeover?.getAttribute("aria-modal")).toBe("true");
     expect(takeover?.style.getPropertyValue("--new-bot-wallpaper")).toContain("url(");
-    expect(takeover?.textContent).toContain("Meet your");
+    expect(takeover?.textContent).toContain("Make it");
+    expect(q('[data-testid="new-bot-create-screen"]')).toBeTruthy();
     expect(takeover?.querySelectorAll(".new-bot-takeover-card").length).toBe(1);
     expect(oncreateagent).not.toHaveBeenCalled();
   });

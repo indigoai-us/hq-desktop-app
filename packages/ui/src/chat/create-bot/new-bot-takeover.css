@@ -142,6 +142,151 @@
   text-underline-offset: 4px;
 }
 
+.new-bot-create {
+  display: grid;
+  gap: 14px;
+}
+
+.new-bot-create h1 {
+  margin-bottom: 0;
+}
+
+.new-bot-create-copy,
+.new-bot-price,
+.new-bot-muted {
+  margin: 0;
+  color: var(--new-bot-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.new-bot-create-label {
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.new-bot-name-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.new-bot-create-input {
+  min-width: 0;
+  border: 1px solid var(--new-bot-line);
+  border-radius: 0;
+  padding: 10px 12px;
+  background: rgba(9, 9, 11, 0.5);
+  color: var(--new-bot-ink);
+  font: inherit;
+  font-size: 14px;
+}
+
+.new-bot-create-input:focus-visible,
+.new-bot-create-submit:focus-visible,
+.new-bot-more:focus-visible,
+.new-bot-brain:has(input:focus-visible),
+.new-bot-size:has(input:focus-visible),
+.new-bot-email:has(input:focus-visible) {
+  outline: 1px solid var(--new-bot-ink);
+  outline-offset: 3px;
+}
+
+.new-bot-handle {
+  min-width: 0;
+  color: var(--new-bot-muted);
+  font-family: "Geist Mono", ui-monospace, Menlo, monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.new-bot-brains,
+.new-bot-sizes {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.new-bot-brain,
+.new-bot-size,
+.new-bot-email {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--new-bot-line);
+  border-radius: 0;
+  padding: 9px 10px;
+  background: rgba(9, 9, 11, 0.36);
+  color: var(--new-bot-ink);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.new-bot-brain.selected,
+.new-bot-size.selected {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.new-bot-brain small {
+  margin-left: auto;
+  color: var(--new-bot-muted);
+  font-size: 11px;
+}
+
+.new-bot-more {
+  justify-self: start;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--new-bot-muted);
+  font: inherit;
+  font-size: 13px;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+  cursor: pointer;
+}
+
+.new-bot-advanced {
+  display: grid;
+  gap: 10px;
+  border-left: 1px solid var(--new-bot-line);
+  padding-left: 12px;
+}
+
+.new-bot-email {
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.new-bot-create-submit {
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  border-radius: 0;
+  padding: 11px 14px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #111113;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.new-bot-create-submit:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.new-bot-create-error {
+  margin: 0;
+  color: #fecaca;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 @keyframes new-bot-takeover-arrive {
   from {
     opacity: 0;

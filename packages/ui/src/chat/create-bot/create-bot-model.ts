@@ -168,6 +168,16 @@ export function firstReadyRuntime(ready: Record<string, boolean> | null | undefi
   return LOCAL_BOT_RUNTIMES.find((r) => ready[r.id] !== false)?.id ?? "claude";
 }
 
+/**
+ * Cloud creation is subscription-only. Prefer the provider already signed in
+ * on this Mac, but make Codex the predictable first choice when none are.
+ */
+export function firstSignedInCloudRuntime(
+  ready: Record<string, boolean> | null | undefined,
+): BotRuntime {
+  return LOCAL_BOT_RUNTIMES.find((runtime) => ready?.[runtime.id] === true)?.id ?? "codex";
+}
+
 export function runtimeIsReady(ready: Record<string, boolean> | null | undefined, id: string): boolean {
   if (!ready) return true;
   return ready[id] !== false;

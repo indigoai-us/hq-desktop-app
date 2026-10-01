@@ -9,6 +9,7 @@ import {
   companyTemplates,
   firstBlockingStep,
   firstReadyRuntime,
+  firstSignedInCloudRuntime,
   firstSentence,
   groupTemplates,
   handleIssue,
@@ -126,6 +127,15 @@ describe("initialDraft", () => {
     expect(initialDraft(ctx({ canLocal: false })).runtime).toBe("codex");
     expect(firstReadyRuntime(null)).toBe("claude");
     expect(firstReadyRuntime({ claude: false, codex: false, grok: false })).toBe("claude");
+  });
+});
+
+describe("firstSignedInCloudRuntime", () => {
+  it("uses the provider signed in on this Mac and otherwise starts with Codex", () => {
+    expect(firstSignedInCloudRuntime({ claude: false, codex: true, grok: true })).toBe("codex");
+    expect(firstSignedInCloudRuntime({ claude: true, codex: true, grok: true })).toBe("claude");
+    expect(firstSignedInCloudRuntime({ claude: false, codex: false, grok: false })).toBe("codex");
+    expect(firstSignedInCloudRuntime(null)).toBe("codex");
   });
 });
 
