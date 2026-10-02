@@ -196,6 +196,28 @@ fn setup_notification_producers(app: &tauri::AppHandle) {
     });
 }
 
+fn prepare_first_run_welcome_window(app: &tauri::AppHandle, first_run: bool) {
+    if !first_run {
+        return;
+    }
+
+    welcome_window::set_welcome_window_active(true);
+    if let Some(window) = app.get_webview_window("main") {
+        // Set the full-screen welcome geometry before showing the initially
+        // hidden window. Lifecycle probes and the bundled-asset cache gate can
+        // continue after the user has a visible startup surface.
+        welcome_window::apply_window_controls(&window, true);
+        let _ = window.set_shadow(false);
+        hq_platform::window_effects::clear_popover_vibrancy(&window);
+        if !welcome_window::fit_to_work_area(&window) {
+            let _ = window.set_size(tauri::LogicalSize::new(1024.0, 700.0));
+            let _ = window.center();
+        }
+    }
+    tray::show_window_centered(app);
+    util::logfile::log("app", "first-run launch: early welcome window shown");
+}
+
 fn setup_startup_surfaces(
     app: &tauri::AppHandle,
     first_run: bool,
@@ -203,11 +225,6 @@ fn setup_startup_surfaces(
     tray::setup_tray(app)?;
     crate::recovery::on_startup(app);
     crate::recovery::spawn_runtime_stall_sentinel();
-
-    if first_run {
-        tray::show_window_centered(app);
-        util::logfile::log("app", "first-run launch: centered onboarding card");
-    }
 
     // macOS: the menu-bar item lives in a separate native helper process
     // (tao parks an in-process status item off-screen on Tahoe).
@@ -1157,6 +1174,14 @@ fn main() {
             // for a machine that is plainly set up, and the launch kind must
             // read the repaired file — otherwise a lost marker still opens the
             // setup card and sends the Dock click to the popover.
+            // Paint a genuinely fresh install's welcome window before local
+            // lifecycle probes or release cache eviction can delay startup.
+            // This is only a hint: lifecycle may backfill a lost completion
+            // marker for older installations before the final surface verdict.
+            let early_first_run = commands::first_run::early_launch_hint()
+                == commands::first_run::LaunchKind::FirstRun;
+            prepare_first_run_welcome_window(app.handle(), early_first_run);
+
             commands::lifecycle::setup_lifecycle(app.handle());
             let launch_kind = commands::first_run::classify_launch(app.handle());
 
@@ -1268,6 +1293,21 @@ fn main() {
                 commands::first_run::should_autoshow_on_launch(launch_kind),
                 commands::lifecycle::current_lifecycle_state(app.handle()),
             );
+            if early_first_run && !first_run {
+                // Lifecycle repaired an older install's missing marker. Close
+                // the provisional splash so that existing users keep their
+                // tray-only startup behavior.
+                welcome_window::set_welcome_window_active(false);
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.hide();
+                    hq_platform::window_effects::apply_popover_vibrancy(&window);
+                }
+            } else if first_run && !early_first_run {
+                // A normal launch can still need setup when lifecycle finds
+                // missing local installation evidence. Apply the same welcome
+                // surface after that final verdict.
+                prepare_first_run_welcome_window(app.handle(), true);
+            }
 
             // The very first launch opens the welcome flow, which fills the
             // work area of the current monitor (no rounded card, no native
@@ -1277,19 +1317,8 @@ fn main() {
             // flash of the small frosted popover shell before onboarding
             // takes the window over (`welcome_window::set_welcome_window`).
             #[cfg(any(target_os = "macos", target_os = "windows"))]
-            if let Some(window) = app.get_webview_window("main") {
-                if first_run {
-                    welcome_window::set_welcome_window_active(true);
-                    // Close and minimize controls from the first frame: the
-                    // flow can run for minutes and must never trap the screen.
-                    welcome_window::apply_window_controls(&window, true);
-                    let _ = window.set_shadow(false);
-                    hq_platform::window_effects::clear_popover_vibrancy(&window);
-                    if !welcome_window::fit_to_work_area(&window) {
-                        let _ = window.set_size(tauri::LogicalSize::new(1024.0, 700.0));
-                        let _ = window.center();
-                    }
-                } else {
+            if !first_run {
+                if let Some(window) = app.get_webview_window("main") {
                     hq_platform::window_effects::apply_popover_vibrancy(&window);
                     #[cfg(target_os = "windows")]
                     if let Ok(h) = window.hwnd() {
