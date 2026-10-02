@@ -30,6 +30,7 @@ const adapter = read('src/lib/desktop-continuation-tauri.ts');
 const signInPrompt = read('src/components/SignInPrompt.svelte');
 const onboardingWizard = read('src/components/onboarding/OnboardingWizard.svelte');
 const desktopAltCapability = read('src-tauri/capabilities/desktop-alt.json');
+const windowsInstallerHooks = read('src-tauri/windows/installer-hooks.nsh');
 
 /** The body of a `fn`/`async fn` named `name`, up to its closing brace. */
 function rustFunction(source: string, name: string): string {
@@ -201,6 +202,17 @@ describe('the first-run wizard never opens the browser on its own', () => {
     expect(record.indexOf('setInstallAttemptId(')).toBeLessThan(
       record.lastIndexOf('onboardingTelemetry.recordFirstLaunch()'),
     );
+  });
+});
+
+describe('Windows installer captures only its own download token', () => {
+  it('uses NSIS string commands for the bounded HostUrl token extraction', () => {
+    expect(windowsInstallerHooks).toContain('ReadINIStr $0 "$EXEPATH:Zone.Identifier" "ZoneTransfer" "HostUrl"');
+    expect(windowsInstallerHooks).toContain('StrCpy $2 $0 102');
+    expect(windowsInstallerHooks).toContain('StrCpy $3 $0 43 102');
+    expect(windowsInstallerHooks).toContain('StrCpy $2 $0 104');
+    expect(windowsInstallerHooks).toContain('StrCpy $3 $0 43 104');
+    expect(windowsInstallerHooks).not.toContain('${StrCpy}');
   });
 });
 

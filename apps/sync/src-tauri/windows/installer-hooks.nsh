@@ -9,9 +9,9 @@ ${StrStr}
   ReadINIStr $0 "$EXEPATH:Zone.Identifier" "ZoneTransfer" "HostUrl"
   ${StrStr} $1 $0 "https://github.com/indigoai-us/hq-desktop-app/releases/latest/download/HQ_x64-setup.exe?downloadToken="
   ${If} $1 == $0
-    ${StrCpy} $2 $0 102
+    StrCpy $2 $0 102
     ${If} $2 == "https://github.com/indigoai-us/hq-desktop-app/releases/latest/download/HQ_x64-setup.exe?downloadToken="
-      ${StrCpy} $3 $0 43 102
+      StrCpy $3 $0 43 102
       ${StrLen} $4 $0
       ${If} $4 == 145
         CreateDirectory "$PROFILE\.hq"
@@ -23,9 +23,9 @@ ${StrStr}
   ${Else}
     ${StrStr} $1 $0 "https://github.com/indigoai-us/hq-desktop-app/releases/latest/download/HQ_arm64-setup.exe?downloadToken="
     ${If} $1 == $0
-      ${StrCpy} $2 $0 104
+      StrCpy $2 $0 104
       ${If} $2 == "https://github.com/indigoai-us/hq-desktop-app/releases/latest/download/HQ_arm64-setup.exe?downloadToken="
-        ${StrCpy} $3 $0 43 104
+        StrCpy $3 $0 43 104
         ${StrLen} $4 $0
         ${If} $4 == 147
           CreateDirectory "$PROFILE\.hq"
