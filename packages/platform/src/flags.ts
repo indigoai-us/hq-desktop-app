@@ -88,6 +88,8 @@ export const POST_READY_ACTION_TELEMETRY_FLAG =
   "desktop.post-ready-action-telemetry-v1";
 export const READY_FIRST_ACTION_FLAG = "desktop.ready-first-action-v1";
 export const DESKTOP_LIMIT_STATUS_PUSH_FLAG = "desktop.limit-status-push";
+export const SETUP_DEPS_TIMEOUT_RETRY_FLAG =
+  "desktop.setup-deps-timeout-retry-v1";
 export const HUMAN_ONLY_CONVERSATIONS_FLAG =
   "desktop.human-only-conversations";
 /**
@@ -115,6 +117,7 @@ export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
   [POST_READY_ACTION_TELEMETRY_FLAG]: POST_READY_ACTION_TELEMETRY_FLAG,
   [READY_FIRST_ACTION_FLAG]: READY_FIRST_ACTION_FLAG,
   [DESKTOP_LIMIT_STATUS_PUSH_FLAG]: DESKTOP_LIMIT_STATUS_PUSH_FLAG,
+  [SETUP_DEPS_TIMEOUT_RETRY_FLAG]: SETUP_DEPS_TIMEOUT_RETRY_FLAG,
   [HUMAN_ONLY_CONVERSATIONS_FLAG]: HUMAN_ONLY_CONVERSATIONS_FLAG,
   [DESKTOP_AGENT_CREATION_FLAG]: DESKTOP_AGENT_CREATION_FLAG,
   "desktop.mirror-quarantine-move-not-deletion":

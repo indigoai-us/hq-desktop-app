@@ -41,6 +41,7 @@ import {
   PERSONAL_WORKSPACE_BOARD_FLAG,
   POST_READY_ACTION_TELEMETRY_FLAG,
   READY_FIRST_ACTION_FLAG,
+  SETUP_DEPS_TIMEOUT_RETRY_FLAG,
   createHqProFlagFetch,
   createHqProRestFetch,
   createScopedFeatureFlagGates,
@@ -201,6 +202,10 @@ export function createSyncPlatformAdapter(
     }
     if (flag === DESKTOP_LIMIT_STATUS_PUSH_FLAG) {
       // Missing rows and registry outages preserve event-only behavior.
+      return Promise.resolve(ok(false));
+    }
+    if (flag === SETUP_DEPS_TIMEOUT_RETRY_FLAG) {
+      // Dependency timeout retries are opt-in until hq-flags explicitly enables them.
       return Promise.resolve(ok(false));
     }
     if (flag === FIRST_FOLDER_SYNC_STEP_FLAG) {

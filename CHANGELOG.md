@@ -14,6 +14,8 @@ The release moves it under the version it ships in.
 
 - New cloud bots created from the desktop New bot flow sign in with your model subscription. The API key option is no longer offered there.
 
+- When hq-flags enables `desktop.setup-deps-timeout-retry-v1`, a dependency setup timeout gets one automatic retry before setup is marked passed with that step skipped.
+
 - Desktop no longer shows your personal space in the Companies list, where clicking it looped between Setting up and Tap to retry.
 
 - Windows-visible copy now uses PC controls, the system tray, and file manager labels where older screens assumed a Mac, menu bar, or Finder.
@@ -21,6 +23,8 @@ The release moves it under the version it ships in.
 - Platform wording and keyboard hints now follow the visitor's or desktop's OS instead of assuming macOS.
 
 - Fixes a race in the agent sign-in test when reading the child process ID.
+
+- Internal: startup diagnostics now label observed CLI resolver candidates, managed package state, and bundled CLI source.
 
 - Desktop usage uploads are limited to four requests and 4 MB per sync; remaining records resume on later syncs.
 
