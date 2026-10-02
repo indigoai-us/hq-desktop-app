@@ -260,6 +260,19 @@ describe("US-029 FilesConnectPage", () => {
     expect(calls).toContain("list:companies/indigo");
   });
 
+  it("Vault Share shows this company's vault, never a secret from another view (QA-023)", async () => {
+    const files = { listDir: vi.fn(async () => ok([])), getFileContent: vi.fn(async () => ok("")) };
+    const target = mountPage("vault", files);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+    (target.querySelector("[data-testid='vault-share']") as HTMLButtonElement).click();
+    flushSync();
+    const sheet = document.querySelector("[data-testid='sheet-share']");
+    expect(sheet?.textContent).toContain("companies/indigo");
+    expect(sheet?.textContent).not.toContain("ATTIO_API_KEY");
+    expect(sheet?.querySelector("[aria-selected='true']")?.textContent).toBe("Read");
+  });
+
   it("opens the upload sheet from Vault Upload", async () => {
     const files = { listDir: vi.fn(async () => ok([])), getFileContent: vi.fn(async () => ok("")) };
     const target = mountPage("vault", files);

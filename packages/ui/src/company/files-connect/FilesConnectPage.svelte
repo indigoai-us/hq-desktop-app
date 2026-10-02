@@ -107,6 +107,11 @@
   $effect(() => {
     const s = slug;
     data = readFilesConnectCache(s) ?? fixtureCache();
+    // A company switch drops every open sheet and selection (QA-023).
+    sheet = null;
+    selectedSecret = null;
+    selectedDeploy = null;
+    grantLevel = "read";
     secrets = cachedSecrets(s);
     deployments = cachedDeployments(s);
     let live = true;
@@ -249,6 +254,12 @@
     (deployments ?? []).find((row) => row.id === selectedDeploy) ?? (deployments ?? [])[0],
   );
   const shareView = $derived(secretCurrent ? shareSheet(secretCurrent) : null);
+
+  /** Share always opens fresh for the current company and page (QA-023). */
+  function openShare(kind: "share" | "share-secret"): void {
+    grantLevel = "read";
+    sheet = kind;
+  }
 
   function closeSheet(): void {
     sheet = null;
@@ -446,13 +457,13 @@
       <h1>Vault</h1>
       {#if vaultRootSummary}<span class="count">{vaultRootSummary}</span>{/if}
       <span class="grow"></span>
-      <div class="seg" role="tablist" aria-label="Vault view">
-        <button class="seg-tab" role="tab" aria-selected={vaultTab === "all"} onclick={() => (vaultTab = "all")}>All</button>
-        <button class="seg-tab" role="tab" aria-selected={vaultTab === "new"} data-testid="vault-whats-new" onclick={() => (vaultTab = "new")}>What's new</button>
+      <div class="fc-seg" role="tablist" aria-label="Vault view">
+        <button class="fc-seg-tab" role="tab" aria-selected={vaultTab === "all"} onclick={() => (vaultTab = "all")}>All</button>
+        <button class="fc-seg-tab" role="tab" aria-selected={vaultTab === "new"} data-testid="vault-whats-new" onclick={() => (vaultTab = "new")}>What's new</button>
       </div>
       <input class="field search" placeholder="Search files" bind:value={query} />
       <button class="btn" type="button" data-testid="vault-upload" onclick={openUpload}>Upload</button>
-      <button class="btn" type="button" data-testid="vault-share" onclick={() => (sheet = "share")}>Share</button>
+      <button class="btn" type="button" data-testid="vault-share" onclick={() => openShare("share")}>Share</button>
     </header>
     <div class="split vault-split" class:has-tree={showVaultTree}>
       {#if showVaultTree}
@@ -513,9 +524,9 @@
             {/each}
           </div>
           <div class="actions">
-            <div class="seg" role="tablist" aria-label="Grant level">
+            <div class="fc-seg" role="tablist" aria-label="Grant level">
               {#each ACCESS_LEVELS as level (level)}
-                <button class="seg-tab" type="button" role="tab" aria-selected={grantLevel === level} onclick={() => (grantLevel = level)}>{level === "read" ? "Read" : "Write"}</button>
+                <button class="fc-seg-tab" type="button" role="tab" aria-selected={grantLevel === level} onclick={() => (grantLevel = level)}>{level === "read" ? "Read" : "Write"}</button>
               {/each}
             </div>
             <button class="btn" type="button" data-testid="grant-access" onclick={() => (sheet = "grant")}>Grant access</button>
@@ -528,10 +539,10 @@
       <h1>Integrations</h1>
       <span class="count" data-testid="integrations-count">{countLabel("Integrations", integrationRows.length)}</span>
       <span class="grow"></span>
-      <div class="seg" role="tablist" aria-label="Integrations view">
-        <button class="seg-tab" role="tab" aria-selected={integrationTab === "connected"} onclick={() => (integrationTab = "connected")}>Connected</button>
-        <button class="seg-tab" role="tab" aria-selected={integrationTab === "available"} onclick={() => (integrationTab = "available")}>Available</button>
-        <button class="seg-tab" role="tab" aria-selected={integrationTab === "mcp"} data-testid="integrations-mcp" onclick={() => (integrationTab = "mcp")}>Agents & MCP</button>
+      <div class="fc-seg" role="tablist" aria-label="Integrations view">
+        <button class="fc-seg-tab" role="tab" aria-selected={integrationTab === "connected"} onclick={() => (integrationTab = "connected")}>Connected</button>
+        <button class="fc-seg-tab" role="tab" aria-selected={integrationTab === "available"} onclick={() => (integrationTab = "available")}>Available</button>
+        <button class="fc-seg-tab" role="tab" aria-selected={integrationTab === "mcp"} data-testid="integrations-mcp" onclick={() => (integrationTab = "mcp")}>Agents & MCP</button>
       </div>
       <input class="field search" placeholder="App name or website" bind:value={query} />
       <button class="btn primary" type="button" data-testid="connect-app" onclick={() => (sheet = "connect")}>Connect app</button>
@@ -571,10 +582,10 @@
       <h1>Secrets</h1>
       {#if secrets}<span class="count" data-testid="secrets-count">{countLabel("Secrets", secretRows.length)}</span>{/if}
       <span class="grow"></span>
-      <div class="seg" role="tablist" aria-label="Secret kind">
-        <button class="seg-tab" role="tab" aria-selected={secretTab === "all"} onclick={() => (secretTab = "all")}>All</button>
-        <button class="seg-tab" role="tab" aria-selected={secretTab === "standard"} onclick={() => (secretTab = "standard")}>Standard</button>
-        <button class="seg-tab" role="tab" aria-selected={secretTab === "proxy"} onclick={() => (secretTab = "proxy")}>Proxy-only</button>
+      <div class="fc-seg" role="tablist" aria-label="Secret kind">
+        <button class="fc-seg-tab" role="tab" aria-selected={secretTab === "all"} onclick={() => (secretTab = "all")}>All</button>
+        <button class="fc-seg-tab" role="tab" aria-selected={secretTab === "standard"} onclick={() => (secretTab = "standard")}>Standard</button>
+        <button class="fc-seg-tab" role="tab" aria-selected={secretTab === "proxy"} onclick={() => (secretTab = "proxy")}>Proxy-only</button>
       </div>
       <input class="field search" placeholder="Search secrets" bind:value={query} />
       <button class="btn primary" type="button" data-testid="new-secret" onclick={openNewSecret}>New secret</button>
@@ -611,7 +622,7 @@
             <p class="meta">The value is never shown here.</p>
             <div class="actions">
               <button class="btn" type="button" data-testid="rotate-secret" onclick={() => (sheet = "rotate")}>Rotate</button>
-              <button class="btn" type="button" data-testid="share-secret" onclick={() => (sheet = "share-secret")}>Share</button>
+              <button class="btn" type="button" data-testid="share-secret" onclick={() => openShare("share-secret")}>Share</button>
               <button class="btn" type="button" data-testid="bind-secret" onclick={() => (sheet = "bind")}>Bind</button>
               <button class="btn" type="button" data-testid="bind-outpost" onclick={() => (sheet = "bind-outpost")}>Bind to outpost</button>
             </div>
@@ -684,9 +695,9 @@
         <div class="fr"><span class="lb">Item</span><span class={sheet === "share-secret" ? "mono" : ""}>{sheet === "share-secret" ? shareView?.name : vaultFile ?? vaultRoot}</span></div>
         <div class="fr">
           <span class="lb">Access</span>
-          <div class="seg" role="tablist">
+          <div class="fc-seg" role="tablist">
             {#each ACCESS_LEVELS as level (level)}
-              <button class="seg-tab" type="button" role="tab" aria-selected={grantLevel === level} onclick={() => (grantLevel = clampAccess(level))}>{level === "read" ? "Read" : "Write"}</button>
+              <button class="fc-seg-tab" type="button" role="tab" aria-selected={grantLevel === level} onclick={() => (grantLevel = clampAccess(level))}>{level === "read" ? "Read" : "Write"}</button>
             {/each}
           </div>
         </div>
@@ -695,9 +706,9 @@
         <div class="fr"><span class="lb">Folder</span><span class="mono">{vaultFolder ? `${vaultRoot}/${vaultFolder}` : vaultRoot}</span></div>
         <div class="fr">
           <span class="lb">Access</span>
-          <div class="seg" role="tablist">
+          <div class="fc-seg" role="tablist">
             {#each ACCESS_LEVELS as level (level)}
-              <button class="seg-tab" type="button" role="tab" aria-selected={grantLevel === level} onclick={() => (grantLevel = level)}>{level === "read" ? "Read" : "Write"}</button>
+              <button class="fc-seg-tab" type="button" role="tab" aria-selected={grantLevel === level} onclick={() => (grantLevel = level)}>{level === "read" ? "Read" : "Write"}</button>
             {/each}
           </div>
         </div>
@@ -728,9 +739,9 @@
         <div class="fr"><span class="lb">Deployment</span><span>{deployCurrent?.name}</span></div>
         <div class="fr">
           <span class="lb">Access</span>
-          <div class="seg" role="tablist">
+          <div class="fc-seg" role="tablist">
             {#each ACCESS_LEVELS as level (level)}
-              <button class="seg-tab" type="button" role="tab" aria-selected={grantLevel === level} onclick={() => (grantLevel = level)}>{level === "read" ? "Read" : "Write"}</button>
+              <button class="fc-seg-tab" type="button" role="tab" aria-selected={grantLevel === level} onclick={() => (grantLevel = level)}>{level === "read" ? "Read" : "Write"}</button>
             {/each}
           </div>
         </div>
@@ -754,9 +765,9 @@
         <div class="fr"><span class="lb">Folder</span><span class="mono">{uploadFolder}/</span></div>
         <div class="fr">
           <span class="lb">On conflict</span>
-          <div class="seg" role="radiogroup" aria-label="On conflict">
+          <div class="fc-seg" role="radiogroup" aria-label="On conflict">
             {#each [["keep-both", "Keep both"], ["replace", "Replace"], ["skip", "Skip"]] as [id, label] (id)}
-              <button class="seg-tab" type="button" role="radio" aria-checked={conflict === id} aria-selected={conflict === id} onclick={() => (conflict = id as ConflictPolicy)}>{label}</button>
+              <button class="fc-seg-tab" type="button" role="radio" aria-checked={conflict === id} aria-selected={conflict === id} onclick={() => (conflict = id as ConflictPolicy)}>{label}</button>
             {/each}
           </div>
         </div>
@@ -818,9 +829,9 @@
   h2 { font-size: 13px; font-weight: 500; line-height: 17px; margin: 0; overflow-wrap: anywhere; }
   .count { color: var(--t3, var(--v4-text-3)); font-variant-numeric: tabular-nums; }
   .grow { flex: 1; }
-  .seg { display: flex; gap: 2px; width: max-content; padding: 2px; border-radius: 6px; border: 1px solid var(--panel-border, var(--v4-hairline)); background: var(--hover, var(--v4-hover)); }
-  .seg-tab { border: 0; background: transparent; color: var(--t2, var(--v4-text-2)); padding: 2px 8px; border-radius: 4px; line-height: 18px; cursor: pointer; }
-  .seg-tab[aria-selected="true"] { background: var(--v4-active-row, var(--sel)); color: var(--t1, var(--v4-text-1)); }
+  .fc-seg { justify-content: flex-start; display: flex; gap: 2px; width: max-content; padding: 2px; border-radius: 6px; border: 1px solid var(--panel-border, var(--v4-hairline)); background: var(--hover, var(--v4-hover)); }
+  .fc-seg-tab { border: 0; background: transparent; color: var(--t2, var(--v4-text-2)); padding: 2px 8px; border-radius: 4px; line-height: 18px; cursor: pointer; }
+  .fc-seg-tab[aria-selected="true"] { background: var(--v4-active-row, var(--sel)); color: var(--t1, var(--v4-text-1)); }
   .field { height: 28px; border-radius: 6px; border: 1px solid var(--line2, var(--v4-control-border)); background: transparent; color: inherit; padding: 0 8px; min-width: 0; }
   .search { width: 200px; }
   .btn { height: 26px; border-radius: 6px; border: 1px solid var(--line2, var(--v4-control-border)); background: transparent; color: var(--t1, var(--v4-text-1)); padding: 0 10px; cursor: pointer; white-space: nowrap; }
