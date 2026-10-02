@@ -2060,16 +2060,19 @@
   <div
     bind:this={dialogEl}
     class="create-card"
-    class:create-card--wide={step === "bot"}
+    class:create-card--wide={step === "bot" && !agentStepper}
+    class:create-card--sheet={step === "bot" && agentStepper}
     role="dialog"
     aria-modal="true"
-    aria-labelledby="create-modal-title"
+    aria-label={step === "bot" && agentStepper ? "New agent" : undefined}
+    aria-labelledby={step === "bot" && agentStepper ? undefined : "create-modal-title"}
     tabindex="-1"
     onkeydown={onDialogKey}
   >
     <!-- `inert` while the cross-company question is up: the alertdialog asks
          about the very workspace this form edits, so nothing under it may be
          tabbed to, clicked, or read out as if it were live. -->
+    {#if !(step === "bot" && agentStepper)}
     <div class="create-head" inert={confirmSubject !== null}>
       {#if step === "find"}
         <span class="create-search-ic" aria-hidden="true">
@@ -2156,6 +2159,7 @@
         <span aria-hidden="true">×</span>
       </button>
     </div>
+    {/if}
 
     {#if step === "find"}
       <div
@@ -3161,6 +3165,12 @@
   /* The bot flow needs room for three cards and a preview rail. */
   .create-card--wide {
     width: min(880px, 100%);
+    max-height: min(88vh, 720px);
+  }
+
+  /* Same 480 px sheet frame as the company sheets, one header (the stepper's). */
+  .create-card--sheet {
+    width: min(480px, 100%);
     max-height: min(88vh, 720px);
   }
 
