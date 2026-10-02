@@ -61,7 +61,6 @@
     box-shadow: var(--v4-shadow-popover);
     color: var(--v4-text-1);
     font: 13px/1.3 var(--font-ui);
-    backdrop-filter: var(--v4-glass-filter);
   }
 
   .ts-mk {

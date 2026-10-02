@@ -200,7 +200,6 @@
     color: var(--v4-text-1);
     border: 1px solid var(--v4-hairline);
     box-shadow: var(--v4-shadow-popover);
-    backdrop-filter: var(--v4-glass-filter-popover);
     font-family: var(--font-ui);
   }
 
