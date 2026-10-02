@@ -1,17 +1,17 @@
 <script lang="ts">
   /**
-   * The sync widget: a slim bar at the bottom of a cloud bot's direct
-   * message, above the message box, while the bot's copy of the company's
-   * files is being brought up to date.
+   * The sync widget: a slim bar pinned at the bottom of a cloud bot's direct
+   * message, above the suggested replies and the message box, while the
+   * bot's copy of the company's files is being brought up to date.
    *
    * It is drawn from plain facts (bot-sync-model.ts), so anything that knows
    * about a sync can show it: the first download after a bot is created, a
    * later sync the server reports, a sync the app asked for. With no facts,
    * or once a finished sync has been shown for a few seconds, it is not there.
    *
-   * It sits in the flow of the conversation and takes its own room: it never
-   * covers a message. Its height opens and closes gently, so the rows around
-   * it do not jump.
+   * The host pins it under the thread, so it stays in view while the person
+   * scrolls. It takes its own room and never covers a message. Its height
+   * opens and closes gently, so the thread above it does not jump.
    *
    * The look is the connection cards' at bar size: a strip of the same
    * wallpaper, a dark scrim, a glass panel holding the words. Like the cards
@@ -55,16 +55,16 @@
   let shown = $state<BotSyncView | null>(untrack(() => (view.visible ? view : null)));
   let open = $state(untrack(() => view.visible));
   let slot = $state<HTMLElement | null>(null);
-  // A finished or failed bar has fewer words than a syncing one. It keeps the
-  // height the syncing bar had, so the rows above it do not move.
+  // A finished bar has fewer words than a syncing or a failed one. It keeps
+  // the height the bar had before, so the thread above it does not move.
   let glass = $state<HTMLElement | null>(null);
-  let syncingHeight = $state(0);
-  const heldHeight = $derived(shown && shown.state !== "syncing" && syncingHeight > 0 ? `${syncingHeight}px` : null);
+  let lastHeight = $state(0);
+  const heldHeight = $derived(shown?.state === "done" && lastHeight > 0 ? `${lastHeight}px` : null);
   $effect(() => {
     const el = glass;
-    if (!el || shown?.state !== "syncing") return;
+    if (!el || !shown || shown.state === "done") return;
     const measure = (): void => {
-      if (el.offsetHeight > 0) syncingHeight = el.offsetHeight;
+      if (el.offsetHeight > 0) lastHeight = el.offsetHeight;
     };
     measure();
     if (typeof ResizeObserver === "undefined") return;
@@ -204,10 +204,11 @@
     isolation: isolate;
     overflow: hidden;
     box-sizing: border-box;
-    /* In line with the message text and the reply buttons, clear of the avatars. */
-    margin: 6px 0 10px 44px;
-    max-width: 640px;
-    padding: 3px;
+    /* As wide as the host's column (the message box), with air under it. Its
+       own width decides the tighter layout below, whatever the window is. */
+    container-type: inline-size;
+    margin: 0 0 8px;
+    padding: 2px;
     border: 1px solid rgba(255, 255, 255, 0.16);
     border-radius: 8px;
     font-family: var(--font-ui, inherit);
@@ -241,9 +242,6 @@
     align-items: center;
     gap: 9px;
     box-sizing: border-box;
-    /* The height of a syncing bar on one line of words, so a failed or a
-       finished bar is never shorter than that. */
-    min-height: 52px;
     padding: 7px 10px 8px;
     border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: 5px;
@@ -278,7 +276,7 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: var(--bs-gap, 4px);
   }
   /* Title and line share a row when there is room, and wrap when there is not. */
   .bot-sync-words {
@@ -300,7 +298,12 @@
     display: flex;
     align-items: center;
     gap: 9px;
-    height: 12px;
+    height: var(--bs-meter, 12px);
+  }
+  /* A failed bar has no meter. It keeps the meter's room, half above and half
+     below its words, so it is exactly as tall as a syncing bar. */
+  .bot-sync[data-state="failed"] .bot-sync-body {
+    padding-block: calc((var(--bs-meter, 12px) + var(--bs-gap, 4px)) / 2);
   }
   .bot-sync-track {
     position: relative;
@@ -338,10 +341,22 @@
     flex: 0 0 auto;
     min-width: 30px;
     font-size: 11px;
-    line-height: 12px;
+    line-height: var(--bs-meter, 12px);
     font-variant-numeric: tabular-nums;
     text-align: right;
     color: var(--bs-muted);
+  }
+  /* A narrow bar wraps its words onto more lines: it gives up some air to
+     stay slim. */
+  @container (max-width: 480px) {
+    .bot-sync-glass {
+      --bs-meter: 10px;
+      --bs-gap: 3px;
+      padding: 5px 9px 6px;
+    }
+    .bot-sync-words {
+      row-gap: 0;
+    }
   }
   @media (prefers-reduced-motion: reduce) {
     .bot-sync-slot,

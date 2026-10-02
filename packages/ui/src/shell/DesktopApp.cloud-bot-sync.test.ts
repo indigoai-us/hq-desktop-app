@@ -210,16 +210,17 @@ describe("DesktopApp sync widget in a cloud bot's direct message", () => {
     expect(now).toBeLessThan(100);
   });
 
-  it("sits in the conversation after the messages and above the suggested replies and the message box", async () => {
+  it("is pinned under the thread, above the suggested replies and the message box", async () => {
     const w = world({ thread: thread(NOVA, SUGGESTIONS) });
     await mountNewBotDm(w);
     await vi.waitFor(() => expect(widget()).not.toBeNull());
     await vi.waitFor(() => expect(chipRow()).not.toBeNull());
     const el = widget()!;
-    // In the scrolling conversation, so it takes its own room and covers nothing.
-    expect(threadEl()!.contains(el)).toBe(true);
-    const lastMessage = [...host.querySelectorAll('[data-testid="conversation-message"]')].at(-1)!;
-    expect(before(lastMessage, el)).toBe(true);
+    // Not in the scroller: it stays in view while the person scrolls, and it
+    // takes its own room, so it covers nothing.
+    expect(threadEl()!.contains(el)).toBe(false);
+    expect(el.closest('[data-testid="conversation-pinned"]')).not.toBeNull();
+    expect(before(threadEl()!, el)).toBe(true);
     expect(before(el, chipRow()!)).toBe(true);
     expect(before(chipRow()!, host.querySelector("textarea")!)).toBe(true);
     // The chips still work as before.

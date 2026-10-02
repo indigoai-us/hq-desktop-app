@@ -254,7 +254,14 @@
      */
     belowMessages?: Snippet;
     /**
-     * Suggested replies to show as buttons after the newest message. The host
+     * Optional row pinned under the scroller, above the suggested replies and
+     * the message box (a bot's file sync). It is not part of the thread: it
+     * stays in view while the person scrolls, and takes its own room, so it
+     * never covers a message.
+     */
+    aboveComposer?: Snippet;
+    /**
+     * Suggested replies to show as buttons above the message box. The host
      * decides which conversation gets them and when; a click sends the text
      * as the person's reply, exactly as if they had typed it.
      */
@@ -346,6 +353,7 @@
     attachmentValidator = validateChatAttachment,
     header,
     belowMessages,
+    aboveComposer,
     suggestedReplies = [],
     suggestedReplyText = null,
     connections = null,
@@ -1485,15 +1493,22 @@
     const content = threadContent;
     if (!el || !content || typeof ResizeObserver === "undefined") return;
     let lastHeight = content.offsetHeight;
+    // The scroller itself changes height when the area pinned under it does
+    // (a sync row or suggested replies appear or go, the message box grows).
+    // A tall thread's content box does not change then, so it is watched too.
+    let lastViewport = el.clientHeight;
     const observer = new ResizeObserver(() => {
       const height = content.offsetHeight;
-      if (height === lastHeight) return;
+      const viewport = el.clientHeight;
+      if (height === lastHeight && viewport === lastViewport) return;
       lastHeight = height;
+      lastViewport = viewport;
       if (!stickToBottom || loadingEarlier || prependAnchorHeight > 0) return;
       if (restoreScrollPending) return;
       el.scrollTop = el.scrollHeight;
     });
     observer.observe(content);
+    observer.observe(el);
     return () => observer.disconnect();
   });
 
@@ -1985,24 +2000,6 @@
           {/if}
         {/each}
         {#if belowMessages}{@render belowMessages()}{/if}
-        {#if visibleSuggestions.length > 0 && !composerLocked}
-          <div class="suggested-replies" data-testid="suggested-replies" role="group" aria-label="Suggested replies">
-            {#each visibleSuggestions as label (label)}
-              <button
-                type="button"
-                class="suggested-reply"
-                data-testid="suggested-reply"
-                onclick={() => void sendSuggestion(label)}
-              >{label}</button>
-            {/each}
-            <button
-              type="button"
-              class="suggested-reply suggested-reply-other"
-              data-testid="suggested-reply-other"
-              onclick={chooseOtherSuggestion}
-            >{SUGGESTION_OTHER_LABEL}</button>
-          </div>
-        {/if}
         {/if}
       </div>
       </div>
@@ -2021,6 +2018,34 @@
   </div>
 
   {#if !headerOnly}
+  <!--
+    Pinned under the thread, in this order: the host's row (a bot's file
+    sync), the suggested replies, the message box. None of it scrolls with
+    the messages. When this area grows or shrinks the scroller changes height;
+    the effect that holds the bottom keeps a reader at the newest message
+    there, and leaves a reader who scrolled up where they are.
+  -->
+  {#if aboveComposer}
+    <div class="conversation-pinned" data-testid="conversation-pinned">{@render aboveComposer()}</div>
+  {/if}
+  {#if visibleSuggestions.length > 0 && !composerLocked}
+    <div class="suggested-replies" data-testid="suggested-replies" role="group" aria-label="Suggested replies">
+      {#each visibleSuggestions as label (label)}
+        <button
+          type="button"
+          class="suggested-reply"
+          data-testid="suggested-reply"
+          onclick={() => void sendSuggestion(label)}
+        >{label}</button>
+      {/each}
+      <button
+        type="button"
+        class="suggested-reply suggested-reply-other"
+        data-testid="suggested-reply-other"
+        onclick={chooseOtherSuggestion}
+      >{SUGGESTION_OTHER_LABEL}</button>
+    </div>
+  {/if}
   <div class="dm-reply" class:is-locked={composerLocked}>
     <div class="dm-reply-composer">
       {#if showMentionPicker}
@@ -3298,11 +3323,18 @@
     cursor: default;
   }
 
+  /* The host's pinned row: the message box's column, edge to edge. */
+  .conversation-pinned {
+    flex: 0 0 auto;
+    min-width: 0;
+    margin: 0 var(--conv-inset, 16px);
+  }
   .suggested-replies {
+    flex: 0 0 auto;
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
-    margin: 4px 0 12px 44px;
+    margin: 0 var(--conv-inset, 16px) 10px;
   }
   .suggested-reply {
     font: inherit;

@@ -10411,8 +10411,11 @@
                     </div>
                   {/if}
                   {#if botNoticeBelow}{@render localBotNotice()}{/if}
-                  <!-- Last in the conversation, just above the suggested
-                       replies and the message box: the bot's file sync. -->
+                {/snippet}
+                {#snippet botSyncPinned()}
+                  <!-- Pinned under the thread, above the suggested replies
+                       and the message box: the bot's file sync. It stays in
+                       view while the person scrolls. -->
                   {#if dmCloudBotUid}
                     <BotSyncWidget facts={dmCloudBotSync} botName={headerTitle} />
                   {/if}
@@ -10615,6 +10618,7 @@
                         ? botProgressHeader
                         : undefined}
                   belowMessages={agentThinkingBelow}
+                  aboveComposer={botSyncPinned}
                   suggestedReplies={setupSuggestedReplies.length > 0 ? setupSuggestedReplies : cloudBotSuggestedReplies}
                   suggestedReplyText={setupSuggestedReplies.length > 0 ? null : cloudBotSuggestedReplyText}
                   connections={cloudBotConnections}
