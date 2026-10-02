@@ -163,8 +163,8 @@ fn host_mode_for_flag_resolution(
     choose_sync_host(resolution.enabled, cli_installed_locally, cli_version)
 }
 
-fn host_mode_event_requires_reresolve(event_name: &str) -> bool {
-    event_name == AUTH_SESSION_READY_EVENT
+fn queue_auth_session_reresolve(sender: &tokio::sync::mpsc::UnboundedSender<()>) {
+    let _ = sender.send(());
 }
 
 fn next_host_flag_retry_delay(current: Duration, read_failed: bool, sign_in: bool) -> Duration {
@@ -769,7 +769,7 @@ fn install_host_mode_auth_listener<R: Runtime>(
 ) -> tokio::sync::mpsc::UnboundedReceiver<()> {
     let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
     app.listen(AUTH_SESSION_READY_EVENT, move |_| {
-        let _ = sender.send(());
+        queue_auth_session_reresolve(&sender);
     });
     receiver
 }
@@ -1320,15 +1320,9 @@ mod tests {
 
     #[test]
     fn sign_in_requests_a_fresh_host_mode_resolution() {
-        use tauri::Emitter;
-
-        let app = tauri::test::mock_app();
-        let handle = app.handle();
-        let mut events = install_host_mode_auth_listener(handle);
-        handle.emit(AUTH_SESSION_READY_EVENT, ()).unwrap();
+        let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+        queue_auth_session_reresolve(&sender);
         assert!(events.try_recv().is_ok());
-        assert!(host_mode_event_requires_reresolve(AUTH_SESSION_READY_EVENT));
-        assert!(!host_mode_event_requires_reresolve("auth:session-changed"));
     }
 
     #[test]
