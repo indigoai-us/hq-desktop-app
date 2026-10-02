@@ -71,6 +71,7 @@
   import SetupInstallGuide, {
     type CodingTool,
     type InstallOutcome,
+    type SignInOptions,
   } from "../settings/SetupInstallGuide.svelte";
 
   interface Props {
@@ -148,7 +149,11 @@
      */
     installGuide?: {
       oninstall(tool: CodingTool): Promise<InstallOutcome>;
-      onsignin(tool: CodingTool): Promise<InstallOutcome>;
+      onsignin(tool: CodingTool, options?: SignInOptions): Promise<InstallOutcome>;
+      /** Is this tool already signed in? Lets the guide skip to Continue. */
+      onstatus?(tool: CodingTool): Promise<boolean>;
+      /** Stop a pending sign-in so "Open the sign-in page again" can restart it. */
+      oncancelsignin?(tool: CodingTool): Promise<void>;
       onrefresh(): Promise<void>;
       downloadUrlFor(tool: CodingTool): string;
       onopen(url: string): Promise<InstallOutcome> | void;
@@ -299,6 +304,15 @@
   let botBusy = $state(false);
   let botError = $state<string | null>(null);
   const visibleBotError = $derived(botError ?? setupBot?.error);
+  /**
+   * No coding tool is signed in and the host can install and sign one in:
+   * the install guide owns the next step, so the hero's own Open Setup Agent
+   * button and the Retry button (both of which would only fail again) step
+   * aside and the guide's Continue takes over once a tool is signed in.
+   */
+  const showInstallGuide = $derived(
+    Boolean(installGuide) && isSetupBotNoRuntimeMessage(visibleBotError),
+  );
   /** The bot could not be made: the scripted run takes over from the next click. */
   let scriptedFallback = $state(false);
 
@@ -493,6 +507,7 @@
         <!-- No signed-in agent on this Mac yet: connect one first. -->
         <SetupConnectStep api={agent.api} providers={agent.providers} onrefresh={() => agent!.refreshProviders(true)} />
       {:else}
+      {#if !showInstallGuide}
       <div class="hero-actions" role="group" aria-label="Set up this Mac">
         <SetupButton
           variant="primary"
@@ -511,19 +526,25 @@
               : runLabel}
         </SetupButton>
       </div>
+      {/if}
       {#if visibleBotError}
         <!-- The bot could not be created: say why, offer another go, and
              keep the old scripted run one click away. -->
         <div class="bot-failure" data-testid="setup-bot-failure">
           <p class="launch-error" role="alert" data-testid="setup-bot-error">{visibleBotError}</p>
-          {#if installGuide && isSetupBotNoRuntimeMessage(visibleBotError)}
+          {#if installGuide && showInstallGuide}
             <!-- US-005: no coding tool is signed in. Instead of dead-ending
-                 the user, offer a guided Install + sign-in path. -->
+                 the user, offer a guided Install + sign-in path. Continue
+                 (shown as soon as a tool is signed in, detected by itself)
+                 starts the setup bot, which is what Retry used to do. -->
             {#await ensureInstallGuideTools() then _}
               <SetupInstallGuide
                 tools={installGuideTools}
                 oninstall={installGuide.oninstall}
                 onsignin={installGuide.onsignin}
+                onstatus={installGuide.onstatus}
+                oncancelsignin={installGuide.oncancelsignin}
+                oncontinue={runSetupBot}
                 onrefresh={async () => {
                   installGuideProbed = false;
                   await ensureInstallGuideTools();
@@ -536,9 +557,11 @@
             {/await}
           {/if}
           <div class="hero-actions" role="group" aria-label="Setup bot recovery">
-            <SetupButton data-testid="setup-bot-retry" disabled={botBusy} onclick={() => void runSetupBot()}>
-              {copy.retry}
-            </SetupButton>
+            {#if !showInstallGuide}
+              <SetupButton data-testid="setup-bot-retry" disabled={botBusy} onclick={() => void runSetupBot()}>
+                {copy.retry}
+              </SetupButton>
+            {/if}
             <SetupButton
               variant="quiet"
               data-testid="setup-bot-fallback"
