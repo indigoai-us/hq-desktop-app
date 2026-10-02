@@ -148,12 +148,36 @@ describe("DesktopApp app rail (console-rail US-003)", () => {
 
   it("opens a placeholder that names the story for personal pages not built yet", async () => {
     await mountShell();
-    click("rail-secrets");
+    click("rail-outpost");
     await settle();
     const placeholder = host.querySelector('[data-testid="rail-placeholder"]');
-    expect(placeholder?.getAttribute("data-story")).toBe("US-033");
-    expect(placeholder?.textContent).toContain("Built in US-033");
+    expect(placeholder?.getAttribute("data-story")).toBe("US-034");
+    expect(placeholder?.textContent).toContain("Built in US-034");
+    expect(current()).toBe("outpost");
+  });
+
+  it("opens personal secrets through the lazy host instead of the placeholder", async () => {
+    await mountShell();
+    click("rail-secrets");
+    await settle();
+    expect(host.querySelector('[data-testid="personal-rail-host"]')?.getAttribute("data-page")).toBe("secrets");
+    expect(host.querySelector('[data-testid="personal-rail-skeleton"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="rail-placeholder"]')).toBeNull();
     expect(current()).toBe("secrets");
+  });
+
+  it("opens library and personal deployments through lazy hosts", async () => {
+    await mountShell();
+    click("rail-library");
+    await settle();
+    expect(host.querySelector('[data-testid="library-host"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="library-skeleton"]')).not.toBeNull();
+    expect(current()).toBe("library");
+    click("rail-deployments");
+    await settle();
+    expect(host.querySelector('[data-testid="personal-deployments-host"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="personal-deployments-skeleton"]')).not.toBeNull();
+    expect(current()).toBe("deployments");
   });
 
   it("opens telemetry through the lazy host instead of the placeholder", async () => {
