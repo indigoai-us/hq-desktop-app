@@ -10003,6 +10003,8 @@
               settings: adapter.settings ?? null,
               openExternal: onopenurl,
               listDeployApps: adapter.company?.listDeployApps,
+              adapter,
+              companyUid: companyPaneCompany.uid ?? null,
             }}
           >
             {#snippet skeleton()}

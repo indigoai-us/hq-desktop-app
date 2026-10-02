@@ -10,6 +10,7 @@
   import CompanyFileTree from "../files/CompanyFileTree.svelte";
   import FilePreviewPane from "../files/FilePreviewPane.svelte";
   import type { DirEntry } from "../files/file-tree.js";
+  import { withCompanyReadScope } from "../files/company-read-scope.js";
   import type { PortfolioSessionRef } from "./projects-model.js";
   import {
     cachedChildren,
@@ -124,9 +125,18 @@
 
   const inflightLists = new Set<string>();
 
+  // The native file gate refuses company reads until the window binds the
+  // company (QA-007).
+  const scopedListDir = withCompanyReadScope(
+    adapter.appShell?.setActiveCompany
+      ? (slug: string) => adapter.appShell.setActiveCompany(slug)
+      : null,
+    (relPath: string) => adapter.files.listDir(relPath),
+  );
+
   function loadChildren(relPath: string): Promise<DirEntry[]> {
     const cached = cachedChildren(relPath);
-    const fresh = adapter.files.listDir(relPath).then((result) => {
+    const fresh = scopedListDir(relPath).then((result) => {
       if (!result.ok) throw new Error(result.message ?? "Could not list files");
       const entries = result.value as unknown as DirEntry[];
       rememberChildren(relPath, entries);

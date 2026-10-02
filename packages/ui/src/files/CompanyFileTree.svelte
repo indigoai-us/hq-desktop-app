@@ -34,6 +34,7 @@
     type LazyNode,
   } from "./file-tree.js";
   import "../chat/tokens.css";
+  import { fileTreeErrorReason } from "./company-read-scope.js";
 
   interface Props {
     /**
@@ -107,7 +108,7 @@
       .catch((err) => {
         console.error("list_hq_dir failed:", err);
         if (!cancelled && generation === treeGeneration) {
-          rootError = errorReason ? errorReason(err) : String(err);
+          rootError = errorReason ? errorReason(err) : fileTreeErrorReason(err);
           roots = [];
         }
       })
@@ -333,10 +334,7 @@
       role="alert"
       data-testid="file-tree-error"
     >
-      <span>Files unavailable</span>
-      {#if errorReason && rootError}
-        <span class="ft-reason" data-testid="file-tree-error-reason">{rootError}</span>
-      {/if}
+      <span class="ft-error-text"><span>Files unavailable</span><span class="ft-error-reason" data-testid="file-tree-error-reason">{rootError}</span></span>
       <button
         type="button"
         class="ft-retry"
@@ -485,17 +483,17 @@
     align-items: center;
     gap: 6px;
     width: 100%;
-    min-height: 32px;
+    min-height: 28px;
     height: auto;
     padding: 4px 8px;
     border: none;
-    border-radius: 0;
+    border-radius: 4px;
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
     font-size: 13px;
     font-weight: 400;
-    line-height: 1.2;
+    line-height: 17px;
     text-align: left;
     cursor: pointer;
     transition: background 140ms ease;
@@ -568,7 +566,7 @@
     color: inherit;
     font-size: 13px;
     font-weight: inherit;
-    line-height: 1.25;
+    line-height: 17px;
     white-space: nowrap;
     text-overflow: ellipsis;
   }
@@ -579,7 +577,7 @@
     color: var(--v4-text-3);
     font-size: 13px;
     font-weight: 400;
-    line-height: 1.3;
+    line-height: 16px;
     white-space: nowrap;
     text-overflow: ellipsis;
   }
@@ -647,6 +645,15 @@
     text-align: center;
   }
 
+  .ft-error-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .ft-error-reason {
+    color: var(--t3, var(--v4-text-3));
+  }
   .ft-root-error,
   .ft-node-error {
     display: flex;
@@ -654,10 +661,6 @@
     flex-wrap: wrap;
     justify-content: center;
     gap: 8px;
-  }
-
-  .ft-reason {
-    color: var(--v4-text-3);
   }
 
   .ft-node-error {
