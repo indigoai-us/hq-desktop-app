@@ -800,6 +800,12 @@
     ) => void;
     /** Persist the conversation the user just opened (fresh-load restore). */
     onselectrow?: (row: ConversationRow) => void;
+    /**
+     * QA-075: the company whose pane is open (a company or project channel),
+     * or null on personal pages and every non-conversation view. Hosts use it
+     * to scope per-company notices to that company's pane.
+     */
+    onactivecompanychange?: (company: { uid: string | null; slug: string } | null) => void;
     /** Desktop: PUT attachment bytes outside the webview (no S3 CORS). */
     putAttachmentObject?: PutChatAttachment;
     /**
@@ -969,6 +975,7 @@
     hydrateLiveMessages = false,
     onlivemessages,
     onselectrow,
+    onactivecompanychange,
     putAttachmentObject,
     getAttachmentObject,
     bootTimeoutMs = DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
@@ -3566,6 +3573,18 @@
       (companies ?? []).find((c) => (c.cloudUid ?? "").trim() === uid)?.slug ??
       ""
     );
+  });
+  const activeCompanyPane = $derived.by(() => {
+    if (view !== "conversation" || selectedRow?.kind !== "channel") return null;
+    const scope = (selectedRow.channelScope ?? "").trim();
+    if (scope !== "company" && scope !== "project" && !selectedHomeCompany) return null;
+    const uid = (selectedRow.companyUid ?? selectedHomeCompany?.cloudUid ?? "").trim() || null;
+    const slug = selectedCompanySlug.trim();
+    return uid || slug ? { uid, slug } : null;
+  });
+  $effect(() => {
+    const active = activeCompanyPane;
+    onactivecompanychange?.(active ? { uid: active.uid, slug: active.slug } : null);
   });
 
   /** "Indigo · project channel" style subtitle under the channel name. */
