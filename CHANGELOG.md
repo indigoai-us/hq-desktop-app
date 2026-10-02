@@ -12,7 +12,11 @@ The release moves it under the version it ships in.
   outcomes. When a Node report is available, they add a safe error identifier and
   the top frame's file name for HQ's own scripts only; frames from other files
   report "external", so a user's file names are never sent.
+
 - Behind `desktop.ready-first-action-v1`, the post-setup welcome screen can offer a one-click first sync and record whether the action was shown and used.
+
+- Reinstalling HQ setup preserves files already present in your HQ folder.
+
 - Core update failures now report a specific snapshot failure class, such as
   insufficient space, a protected recovery snapshot, a permission error, a
   symlink, or a copy failure.
