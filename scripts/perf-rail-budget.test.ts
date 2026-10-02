@@ -100,4 +100,33 @@ describe("console rail budget", () => {
       true,
     );
   });
+
+  it("judges initial JS from the static graph, not lazy chunks", () => {
+    const run = (initialJsBytes: number) =>
+      judgeRail(
+        {
+          "coldLoad.shellReadyMs": { median: 146, p95: 150 },
+          "coldLoad.firstContentfulPaintMs": { median: 154, p95: 156 },
+          "idle.busyMs": { median: 0, p95: 0 },
+          // Total JS includes lazy doors and is far over the headroom.
+          "bundle.jsBytes": { median: 3_000_000, p95: 3_000_000 },
+        },
+        reference,
+        {
+          companySwitch: { skipped: true, todo: "US-004" },
+          sidepaneSwitch: { skipped: true, todo: "US-006" },
+          lazyChunks: {
+            atlasInInitialJs: false,
+            telemetryInInitialJs: false,
+            atlasBytes: 0,
+            telemetryBytes: 0,
+            initialJsBytes,
+            atlasInitial: [],
+            telemetryInitial: [],
+          },
+        },
+      ).checks.find((c) => c.name === "initialJsBytes");
+    expect(run(2_486_977 + 150 * 1024)?.pass).toBe(true);
+    expect(run(2_486_977 + 150 * 1024 + 1)?.pass).toBe(false);
+  });
 });

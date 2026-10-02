@@ -381,11 +381,10 @@ async function timeToNextPaint(page, act) {
 async function measureInteractions(page) {
   const out = {};
 
-  // Switch conversation: click the second row in the rail.
-  const rows = await page.$$(
-    '[data-testid="chat-sidebar"] button, .chat-sidebar button',
-  );
-  if (rows.length > 1) {
+  // Switch conversation: click the second conversation row. Header buttons
+  // (New message, search, filter) open menus that would cover the app rail.
+  const rows = await page.$$('[data-testid="chat-row-group"] button.chat-row');
+  if (rows.length > 0) {
     out["interaction.switchConversation"] = await timeToNextPaint(page, () =>
       rows[Math.min(1, rows.length - 1)].click({ timeout: 5000 }).catch(() => {}),
     );

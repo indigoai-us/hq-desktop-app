@@ -839,6 +839,22 @@ describe("first-frame-of-Home budget: lazy doors stay lazy", () => {
     "packages/ui/src/chat/NewChannelSheet.svelte",
     "packages/ui/src/chat/PeoplePicker.svelte",
     "packages/ui/src/agents/agent-stepper-model.ts",
+    // US-040 gate: Atlas, telemetry, meetings, create sheets, company pages
+    // and personal pages load behind their own doors.
+    "packages/ui/src/atlas/index.ts",
+    "packages/ui/src/telemetry/index.ts",
+    "packages/ui/src/meetings/MeetingsStatesBody.svelte",
+    "packages/ui/src/meetings/MeetingCanvas.svelte",
+    "packages/ui/src/meetings/MeetingsSidepane.svelte",
+    "packages/ui/src/shell/new-company/NewCompanySheet.svelte",
+    "packages/ui/src/company/brain/BrainPage.svelte",
+    "packages/ui/src/company/files-connect/FilesConnectPage.svelte",
+    "packages/ui/src/company/CompanySettingsPage.svelte",
+    "packages/ui/src/library/PersonalLibraryPage.svelte",
+    "packages/ui/src/library/PersonalDeploymentsPage.svelte",
+    "packages/ui/src/outpost/OutpostPage.svelte",
+    "packages/ui/src/personal/PersonalRailPage.svelte",
+    "packages/ui/src/account/AccountPages.svelte",
   ];
 
   it("keeps every lazy body out of the shell's static import graph", () => {

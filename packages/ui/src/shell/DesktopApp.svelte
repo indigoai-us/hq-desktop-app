@@ -3337,6 +3337,19 @@
   const lastSyncLabel = $derived(lastSyncLabelFromLive(liveSync));
   /** ⌘K / sidebar-search overlay (fixture typeahead, zero-network). */
   let paletteOpen = $state(false);
+  // US-040: mount the palette hidden on idle after shell-ready, so the first
+  // Cmd-K only flips visibility instead of rendering the whole list.
+  let paletteMounted = $state(false);
+  function premountPaletteWhenIdle() {
+    const run = () => {
+      paletteMounted = true;
+    };
+    if (typeof requestIdleCallback === "function") {
+      requestIdleCallback(run, { timeout: 3000 });
+    } else {
+      setTimeout(run, 1500);
+    }
+  }
   let linkMenu = $state<LinkMenuAnchor | null>(null);
   /** Channel-header member pill → status/members popover. */
   let membersOpen = $state(false);
@@ -9618,6 +9631,7 @@
           welcomeFirst={welcomeSetupRun || hasBootDeepLink || initialRow ? false : welcomeSetupOwed === null ? "pending" : welcomeSetupOwed}
           onShellReady={() => {
             tourShellReady = true;
+            premountPaletteWhenIdle();
             onShellReady?.();
           }}
           projectHasPresence={rowHasProjectPresence}
@@ -10996,8 +11010,9 @@
     />
   {/if}
 
-  {#if paletteOpen}
+  {#if paletteOpen || paletteMounted}
     <CommandPalette
+      open={paletteOpen}
       commands={paletteCommands}
       companyUid={tenantCompanyId}
       companyName={paletteCompanies.find((c) => c.companyUid === tenantCompanyId)

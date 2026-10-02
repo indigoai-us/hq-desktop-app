@@ -26,6 +26,7 @@ export async function inspectLazyChunks(buildDir) {
       telemetryInInitialJs: false,
       atlasBytes: 0,
       telemetryBytes: 0,
+      initialJsBytes: null,
       atlasInitial: [],
       telemetryInitial: [],
       note: "no Vite manifest; treated as absent (chunks not built)",
@@ -52,6 +53,7 @@ export async function inspectLazyChunks(buildDir) {
   const telemetryInitial = [];
   let atlasBytes = 0;
   let telemetryBytes = 0;
+  let initialJsBytes = 0;
 
   for (const item of Object.values(manifest)) {
     if (!item.file) continue;
@@ -63,6 +65,7 @@ export async function inspectLazyChunks(buildDir) {
       bytes = 0;
     }
     const inInitial = initial.has(item.file);
+    if (inInitial && item.file.endsWith(".js")) initialJsBytes += bytes;
     if (matches(item, ATLAS)) {
       atlasBytes += bytes;
       if (inInitial) atlasInitial.push(item.src ?? item.file);
@@ -79,6 +82,7 @@ export async function inspectLazyChunks(buildDir) {
     telemetryInInitialJs: telemetryInitial.length > 0,
     atlasBytes,
     telemetryBytes,
+    initialJsBytes,
     atlasInitial,
     telemetryInitial,
   };

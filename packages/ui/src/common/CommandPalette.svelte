@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import CompanyIcon from "../company/CompanyIcon.svelte";
   import { formatShortcut } from "./keyboard-shortcuts";
   import {
@@ -50,6 +50,11 @@
 
   interface Props {
     commands: CommandPaletteItem[];
+    /**
+     * False keeps the palette mounted but hidden. The host pre-mounts it on
+     * idle after shell-ready so Cmd-K only flips visibility (US-040).
+     */
+    open?: boolean;
     onclose: () => void;
     /** Active company name for the first scope chip. */
     companyName?: string;
@@ -75,8 +80,14 @@
     message: string;
   }
 
-  let { commands, onclose, companyName = "Company", companyUid = null, oncreate }: Props =
-    $props();
+  let {
+    commands,
+    onclose,
+    open = true,
+    companyName = "Company",
+    companyUid = null,
+    oncreate,
+  }: Props = $props();
   let query = $state("");
   let scope = $state<PaletteScopeId>("company");
   let highlightedIndex = $state(0);
@@ -84,6 +95,10 @@
   let paletteEl: HTMLDivElement | null = $state(null);
   let executingId = $state<string | null>(null);
   let actionError = $state<CommandActionError | null>(null);
+  // First open paints the input and the first rows in one frame; the rest of
+  // the list mounts on the next frame so Cmd-K never waits on the full list.
+  const FIRST_PAINT_ROWS = 8;
+  let rowBudget = $state(FIRST_PAINT_ROWS);
 
   function errorMessage(error: unknown): string {
     if (error instanceof Error && error.message) return error.message;
@@ -226,7 +241,9 @@
       label: paletteSectionLabel(id),
       items: [],
     }));
+    let budget = rowBudget;
     for (const command of visibleCommands) {
+      if (budget-- <= 0) break;
       const target = sections.find(
         (section) => section.id === sectionId(command),
       );
@@ -234,6 +251,10 @@
     }
     return sections.filter((section) => section.items.length > 0);
   });
+
+  const visibleIndex = $derived(
+    new Map(visibleCommands.map((command, index) => [command.id, index])),
+  );
 
   $effect(() => {
     if (highlightedIndex >= visibleCommands.length) {
@@ -246,16 +267,35 @@
     highlightedIndex = 0;
   });
 
-  onMount(() => {
-    const returnFocus =
-      document.activeElement instanceof HTMLElement
-        ? document.activeElement
-        : null;
-    void tick().then(() => inputEl?.focus());
+  let returnFocus: HTMLElement | null = null;
 
-    return () => {
-      if (returnFocus?.isConnected) returnFocus.focus();
-    };
+  function restoreFocus() {
+    if (returnFocus?.isConnected) returnFocus.focus();
+    returnFocus = null;
+  }
+
+  // Each open starts fresh: empty query, company scope, focus in the input.
+  $effect.pre(() => {
+    if (!open) return;
+    untrack(() => {
+      returnFocus =
+        document.activeElement instanceof HTMLElement
+          ? document.activeElement
+          : null;
+      query = "";
+      scope = "company";
+      highlightedIndex = 0;
+      actionError = null;
+    });
+    void tick().then(() => inputEl?.focus());
+    return restoreFocus;
+  });
+
+  onMount(() => {
+    const frame = requestAnimationFrame(() => {
+      rowBudget = Number.POSITIVE_INFINITY;
+    });
+    return () => cancelAnimationFrame(frame);
   });
 
   async function execute(command: CommandPaletteItem | undefined) {
@@ -330,6 +370,7 @@
 <div
   class="command-backdrop"
   role="presentation"
+  hidden={!open}
   onclick={() => {
     if (!executingId) onclose();
   }}
@@ -410,7 +451,7 @@
           <div class="command-section" role="presentation">
             <div class="command-section-title">{section.label}</div>
             {#each section.items as command (command.id)}
-              {@const index = visibleCommands.indexOf(command)}
+              {@const index = visibleIndex.get(command.id) ?? -1}
               <button
                 id={command.id}
                 class:highlighted={index === highlightedIndex}
@@ -465,6 +506,10 @@
 </div>
 
 <style>
+  .command-backdrop[hidden] {
+    display: none;
+  }
+
   .command-backdrop {
     position: fixed;
     inset: 0;
@@ -799,9 +844,10 @@
     }
   }
 
+  /* Opacity, not background: the fade stays on the compositor. */
   @keyframes command-backdrop-in {
     from {
-      background: rgba(0, 0, 0, 0);
+      opacity: 0;
     }
   }
 

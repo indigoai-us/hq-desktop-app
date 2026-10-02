@@ -148,15 +148,20 @@ export function judgeRail(summaries, reference, rail) {
     });
   }
 
-  const js = summaries["bundle.jsBytes"];
+  // Initial JS is the entry chunk plus its static imports. Lazy chunks only
+  // download when a door opens, so they do not count. The reference is the
+  // branch point's total, which equals its initial graph (it had no splits).
+  const initialJs = Number.isFinite(rail.lazyChunks?.initialJsBytes)
+    ? rail.lazyChunks.initialJsBytes
+    : summaries["bundle.jsBytes"]?.median;
   const jsRef = reference["bundle.jsBytes"]?.median;
-  if (js && Number.isFinite(jsRef)) {
+  if (Number.isFinite(initialJs) && Number.isFinite(jsRef)) {
     const limit = jsRef + INITIAL_JS_HEADROOM;
     checks.push({
       name: "initialJsBytes",
       ...limitLine(
-        js.median <= limit,
-        `${js.median} bytes, limit ${limit} (reference ${jsRef} + 150 KB)`,
+        initialJs <= limit,
+        `${initialJs} bytes, limit ${limit} (reference ${jsRef} + 150 KB)`,
       ),
     });
   }
