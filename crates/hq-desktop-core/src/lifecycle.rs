@@ -386,22 +386,17 @@ fn probe_hq_root_for_startup_with(
 
 /// The pure classifier.
 pub fn classify_lifecycle(inputs: LifecycleInputs) -> LifecycleVerdict {
-    // An install is recognized from what is actually on disk: a valid HQ root
-    // plus evidence the machine has been set up before — an explicit
-    // completion marker, a prior machineId, a valid config.json, OR usable
-    // Cognito auth tokens.
-    //
-    // `config.json` is deliberately NOT required. The onboarding flow does not
-    // reliably write `~/.hq/config.json` (the personal-vault first-push
-    // short-circuits when the vault already exists), so gating on it sent a
-    // fully set-up user back through the entire onboarding wizard on the next
-    // launch/restart. The rule is now "valid HQ folder + (prior setup OR auth
-    // on disk) => installed, show the menu bar".
-    let has_prior_setup = inputs.install_completed
-        || inputs.first_run_completed
-        || inputs.had_machine_id
-        || inputs.config_valid;
-    let is_installed = inputs.hq_root_valid && (has_prior_setup || inputs.has_auth);
+    // Setup is complete when this install recorded the first-run completion.
+    // Older desktop builds predated that marker, so retain their compatibility
+    // evidence: the installer stage completed and consent was answered, or a
+    // prior app launch minted machineId and consent was answered. A workspace
+    // directory, parsed config, or auth token alone can be carried into a fresh
+    // desktop install and must not stand in for completed setup.
+    let explicit_setup_completion = inputs.first_run_completed;
+    let legacy_setup_completion =
+        (inputs.install_completed || inputs.had_machine_id) && inputs.consent_answered;
+    let is_installed = inputs.hq_root_valid
+        && (explicit_setup_completion || legacy_setup_completion);
     let needs_install_backfill = is_installed && !inputs.install_completed;
 
     // Installed and consent answered: setup is done whatever the markers say.
@@ -479,6 +474,22 @@ mod tests {
 
     fn map(v: Value) -> Map<String, Value> {
         v.as_object().cloned().unwrap()
+    }
+
+    #[test]
+    fn an_existing_hq_folder_and_auth_do_not_prove_this_install_completed_setup() {
+        let verdict = classify_lifecycle(LifecycleInputs {
+            config_valid: true,
+            hq_root_valid: true,
+            has_auth: true,
+            consent_answered: true,
+            ..input()
+        });
+
+        assert_eq!(verdict.state, LifecycleState::NeedsInstall);
+        assert!(!verdict.needs_install_backfill);
+        assert!(!verdict.needs_first_run_backfill);
+        assert!(installation_required(verdict.state));
     }
 
     #[test]
