@@ -1,0 +1,377 @@
+{
+ "light-messages": {
+  "err": null,
+  "pageErrs": [],
+  "overlay": null,
+  "v": {
+   "weight": [
+    "600 \"HQ\"",
+    "600 \"IN\"",
+    "600 \"AL\"",
+    "600 \"All\"",
+    "600 \"PINNED\"",
+    "600 \"setup\""
+   ],
+   "font-size": [
+    "10px \"FRIDAY · OCT 2\" <span.v4-day-date>",
+    "12px \"Launch\" <button.v4-core-pill>",
+    "12px \"● Core\" <button.v4-core-pill>",
+    "7px \"●\" <span.v4-core-dot>",
+    "12px \"IN\" <span.co-tile>",
+    "10px \"AL\" <span.avatar>"
+   ],
+   "mono": [
+    "\"FRIDAY · OCT 2\"",
+    "\"PINNED\"",
+    "\"TODAY\"",
+    "\"ACCESS REQUEST READ\"",
+    "\"READ\"",
+    "\"knowledge/\""
+   ],
+   "tracked-caps": [
+    "0.8px \"FRIDAY · OCT 2\"",
+    "1px \"PINNED\"",
+    "0.8px \"TODAY\"",
+    "1px \"ACCESS REQUEST READ\"",
+    "0.8px \"READ\""
+   ],
+   "emoji": [
+    "\"👍\"",
+    "\"🎉\""
+   ],
+   "white-text-light": [
+    "\"👍\"",
+    "\"🎉\""
+   ]
+  }
+ },
+ "light-home": {
+  "err": null,
+  "pageErrs": [],
+  "overlay": null,
+  "v": {
+   "weight": [
+    "600 \"HQ\"",
+    "600 \"IN\"",
+    "600 \"AL\"",
+    "600 \"All\"",
+    "600 \"PINNED\"",
+    "600 \"setup\""
+   ],
+   "font-size": [
+    "10px \"FRIDAY · OCT 2\" <span.v4-day-date>",
+    "12px \"Launch\" <button.v4-core-pill>",
+    "12px \"● Core\" <button.v4-core-pill>",
+    "7px \"●\" <span.v4-core-dot>",
+    "11px \"Home · Messages & Inbo\" <span.tooltip-bubble>",
+    "12px \"IN\" <span.co-tile>"
+   ],
+   "mono": [
+    "\"FRIDAY · OCT 2\"",
+    "\"PINNED\"",
+    "\"TODAY\"",
+    "\"ACCESS REQUEST READ\"",
+    "\"READ\"",
+    "\"knowledge/\""
+   ],
+   "tracked-caps": [
+    "0.8px \"FRIDAY · OCT 2\"",
+    "1px \"PINNED\"",
+    "0.8px \"TODAY\"",
+    "1px \"ACCESS REQUEST READ\"",
+    "0.8px \"READ\""
+   ],
+   "emoji": [
+    "\"👍\"",
+    "\"🎉\""
+   ],
+   "white-text-light": [
+    "\"👍\"",
+    "\"🎉\""
+   ]
+  }
+ },
+ "light-meetings": {
+  "err": null,
+  "pageErrs": [],
+  "overlay": null,
+  "v": {
+   "weight": [
+    "600 \"HQ\"",
+    "600 \"IN\"",
+    "600 \"AL\"",
+    "600 \"Meetings\"",
+    "600 \"TODAY · OCT 2\"",
+    "600 \"TOMORROW\""
+   ],
+   "font-size": [
+    "10px \"FRIDAY · OCT 2\" <span.v4-day-date>",
+    "12px \"Launch\" <button.v4-core-pill>",
+    "12px \"● Core\" <button.v4-core-pill>",
+    "7px \"●\" <span.v4-core-dot>",
+    "11px \"Meetings\" <span.tooltip-bubble>",
+    "12px \"IN\" <span.co-tile>"
+   ],
+   "mono": [
+    "\"FRIDAY · OCT 2\"",
+    "\"TODAY · OCT 2\"",
+    "\"11:00\"",
+    "\"15:30\"",
+    "\"TOMORROW\"",
+    "\"10:00\""
+   ],
+   "tracked-caps": [
+    "0.8px \"FRIDAY · OCT 2\"",
+    "1px \"TODAY · OCT 2\"",
+    "1px \"TOMORROW\"",
+    "1px \"NEXT\"",
+    "1px \"LATER TODAY\""
+   ]
+  }
+ },
+ "light-library": {
+  "err": null,
+  "pageErrs": [],
+  "overlay": null,
+  "v": {
+   "weight": [
+    "600 \"HQ\"",
+    "600 \"IN\"",
+    "600 \"AL\"",
+    "600 \"Library\"",
+    "700 \"My files\"",
+    "700 \"week-41-plan.md\""
+   ],
+   "font-size": [
+    "10px \"FRIDAY · OCT 2\" <span.v4-day-date>",
+    "12px \"Launch\" <button.v4-core-pill>",
+    "12px \"● Core\" <button.v4-core-pill>",
+    "7px \"●\" <span.v4-core-dot>",
+    "12px \"IN\" <span.co-tile>",
+    "11px \"Library · your files &\" <span.tooltip-bubble>"
+   ],
+   "mono": [
+    "\"FRIDAY · OCT 2\"",
+    "\"COMPANIES\"",
+    "\"LOCAL\"",
+    "\"My files\"",
+    "\"personal/projects/cut3\"",
+    "\"inline code\""
+   ],
+   "tracked-caps": [
+    "0.8px \"FRIDAY · OCT 2\"",
+    "0.8px \"COMPANIES\"",
+    "0.8px \"LOCAL\""
+   ],
+   "left-bar": [
+    "3px rgba(255, 255, 255, 0.16) \"A quoted operating not\""
+   ]
+  }
+ },
+ "light-secrets": {
+  "err": null,
+  "pageErrs": [],
+  "overlay": null,
+  "v": {
+   "weight": [
+    "600 \"HQ\"",
+    "600 \"IN\"",
+    "600 \"AL\"",
+    "600 \"Secrets\"",
+    "700 \"GITHUB_TOKEN\""
+   ],
+   "font-size": [
+    "10px \"FRIDAY · OCT 2\" <span.v4-day-date>",
+    "12px \"Launch\" <button.v4-core-pill>",
+    "12px \"● Core\" <button.v4-core-pill>",
+    "7px \"●\" <span.v4-core-dot>",
+    "12px \"IN\" <span.co-tile>",
+    "11px \"Secrets\" <span.tooltip-bubble>"
+   ],
+   "mono": [
+    "\"FRIDAY · OCT 2\"",
+    "\"NAME\"",
+    "\"SCOPE\"",
+    "\"MODE\"",
+    "\"LAST ROTATED\"",
+    "\"BOUND APPS\""
+   ],
+   "tracked-caps": [
+    "0.8px \"FRIDAY · OCT 2\"",
+    "0.8px \"NAME\"",
+    "0.8px \"SCOPE\"",
+    "0.8px \"MODE\"",
+    "0.8px \"LAST ROTATED\"",
+    "0.8px \"BOUND APPS\""
+   ]
+  }
+ },
+ "light-palette": {
+  "err": null,
+  "pageErrs": [],
+  "overlay": {
+   "cls": "command-list s-sf-PLrCUIY_W",
+   "role": "listbox",
+   "aria": "Commands",
+   "w": 558,
+   "h": 499
+  },
+  "v": {
+   "font-size": [
+    "11px \"PEOPLE AND BOTS\" <div.command-section-title>",
+    "11px \"CHANNELS\" <div.command-section-title>",
+    "11px \"COMMANDS\" <div.command-section-title>"
+   ],
+   "weight": [
+    "600 \"PEOPLE AND BOTS\"",
+    "600 \"Grace Hopper\"",
+    "600 \"CHANNELS\"",
+    "600 \"#general\"",
+    "600 \"COMMANDS\"",
+    "600 \"Notifications\""
+   ],
+   "mono": [
+    "\"⌘,\""
+   ]
+  }
+ },
+ "light-notifications": {
+  "err": null,
+  "pageErrs": [],
+  "overlay": {
+   "cls": "npop s-mlKGOivr3m9v",
+   "role": "dialog",
+   "aria": "Notifications",
+   "w": 380,
+   "h": 209
+  },
+  "v": {
+   "weight": [
+    "600 \"Notifications\"",
+    "600 \"You're caught up\""
+   ],
+   "font-size": [
+    "12px \"All\" <button.tab>",
+    "12px \"Mentions\" <button.tab>",
+    "12px \"Requests\" <button.tab>",
+    "14px \"You're caught up\" <div.tt>",
+    "12px \"Mentions, bot completi\" <div.mm>",
+    "11px \"Notification settings\" <button.link>"
+   ]
+  }
+ },
+ "light-sidebar-filter": {
+  "err": null,
+  "pageErrs": [],
+  "overlay": {
+   "cls": "chat-popover chat-filter-menu s-yENFqf8TE8Le",
+   "role": "dialog",
+   "aria": "Conversation filters",
+   "w": 182,
+   "h": 276
+  },
+  "v": {
+   "font-size": [
+    "10px \"SORT BY\" <div.chat-filter-caption>",
+    "11px \"🕐\" <span.chat-sort-ic>",
+    "11px \"≣\" <span.chat-sort-ic>",
+    "10px \"SHOW\" <div.chat-filter-caption>",
+    "12px \"⌂\" <span.chat-filter-lead>",
+    "12px \"✓\" <span.chat-filter-check>"
+   ],
+   "weight": [
+    "600 \"SORT BY\"",
+    "600 \"SHOW\""
+   ],
+   "mono": [
+    "\"SORT BY\"",
+    "\"SHOW\""
+   ],
+   "tracked-caps": [
+    "1px \"SORT BY\"",
+    "1px \"SHOW\""
+   ],
+   "emoji": [
+    "\"🕐 Recent\"",
+    "\"🕐\"",
+    "\"💬\"",
+    "\"🗄\""
+   ]
+  }
+ },
+ "light-account": {
+  "err": null,
+  "pageErrs": [],
+  "overlay": {
+   "cls": "menu s-MmqaOR9kfN-1",
+   "role": "menu",
+   "aria": "Account",
+   "w": 300,
+   "h": 260
+  },
+  "v": {
+   "font-size": [
+    "11px \"AL\" <span.avatar>",
+    "12px \"ada@getindigo.ai\" <span.meta>",
+    "14px \"Profile\" <span.t>",
+    "14px \"Billing\" <span.t>",
+    "14px \"Settings\" <span.t>",
+    "10px \"COMPANIES\" <div.sec>"
+   ],
+   "weight": [
+    "600 \"AL\"",
+    "600 \"Ada Lovelace\"",
+    "600 \"COMPANIES\""
+   ],
+   "mono": [
+    "\"COMPANIES\""
+   ],
+   "tracked-caps": [
+    "1px \"COMPANIES\""
+   ]
+  }
+ },
+ "pane-bot2": {
+  "err": null,
+  "pageErrs": [],
+  "overlay": null,
+  "v": {
+   "weight": [
+    "600 \"HQ\"",
+    "600 \"IN\"",
+    "600 \"AL\"",
+    "600 \"All\"",
+    "600 \"PINNED\"",
+    "600 \"setup\""
+   ],
+   "font-size": [
+    "10px \"FRIDAY · OCT 2\" <span.v4-day-date>",
+    "12px \"Launch\" <button.v4-core-pill>",
+    "12px \"● Core\" <button.v4-core-pill>",
+    "7px \"●\" <span.v4-core-dot>",
+    "12px \"IN\" <span.co-tile>",
+    "10px \"AL\" <span.avatar>"
+   ],
+   "mono": [
+    "\"FRIDAY · OCT 2\"",
+    "\"PINNED\"",
+    "\"TODAY\"",
+    "\"ACCESS REQUEST READ\"",
+    "\"READ\"",
+    "\"knowledge/\""
+   ],
+   "tracked-caps": [
+    "0.8px \"FRIDAY · OCT 2\"",
+    "1px \"PINNED\"",
+    "0.8px \"TODAY\"",
+    "1px \"ACCESS REQUEST READ\"",
+    "0.8px \"READ\"",
+    "1px \"UID\""
+   ],
+   "emoji": [
+    "\"👍\"",
+    "\"🎉\""
+   ]
+  }
+ }
+}
