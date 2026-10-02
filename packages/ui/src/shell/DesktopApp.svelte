@@ -37,7 +37,13 @@
   import ChannelSkeleton from "./ChannelSkeleton.svelte";
   import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
   import AppRail from "./AppRail.svelte";
-  import MoreCompaniesPopover from "./MoreCompaniesPopover.svelte";
+  import LazyDoor from "./LazyDoor.svelte";
+  import {
+    moreCompaniesDoor,
+    notificationsPopoverDoor,
+    preloadDoorsWhenIdle,
+    profilePaneDoor,
+  } from "./lazy-doors.js";
   import type { MoreCompany } from "./more-companies.js";
   import TelemetryRailHost from "./TelemetryRailHost.svelte";
   import AtlasLandingHost from "./AtlasLandingHost.svelte";
@@ -217,7 +223,6 @@
   } from "../chat/tabs/tab-model.js";
   import type { OfficeCallsHost } from "../meet/office-host.js";
   import NotificationsView from "../inbox/NotificationsView.svelte";
-  import NotificationsPopover from "../inbox/NotificationsPopover.svelte";
   import ToastStack from "./ToastStack.svelte";
   import SharedFilesOverlay from "../inbox/SharedFilesOverlay.svelte";
   import VaultExplorer from "../files/explorer/VaultExplorer.svelte";
@@ -297,7 +302,6 @@
   import { vaultsFor } from "../files/explorer/vault-model.js";
   import MemberProfilePanel from "../chat/MemberProfilePanel.svelte";
   import AgentDetailPanel from "../chat/AgentDetailPanel.svelte";
-  import ProfilePaneHost from "./profile-panes/ProfilePaneHost.svelte";
   import LocalBotDetailPanel from "../chat/LocalBotDetailPanel.svelte";
   import BotSignInBanner from "../chat/BotSignInBanner.svelte";
   import BotRestoreBanner from "../chat/BotRestoreBanner.svelte";
@@ -2156,6 +2160,9 @@
       botRecheckBusy = false;
     }
   }
+  // Lazy surfaces (profile panes, popovers, create sheets) warm once the first
+  // frame is up, so the first click rarely shows their skeleton.
+  onMount(() => preloadDoorsWhenIdle());
   onMount(() => {
     if (!adapter.bots) return;
     void refreshLocalBots();
@@ -9170,13 +9177,16 @@
   />
 
   {#if notificationsPopoverOpen}
-    <NotificationsPopover
-      api={notificationsApi}
-      onclose={() => (notificationsPopoverOpen = false)}
-      onopen={openNotification}
-      onopensettings={() => {
-        notificationsPopoverOpen = false;
-        openSettings("notifications");
+    <LazyDoor
+      door={notificationsPopoverDoor}
+      props={{
+        api: notificationsApi,
+        onclose: () => (notificationsPopoverOpen = false),
+        onopen: openNotification,
+        onopensettings: () => {
+          notificationsPopoverOpen = false;
+          openSettings("notifications");
+        },
       }}
     />
   {/if}
@@ -9220,18 +9230,21 @@
       />
     {/if}
     {#if moreCompaniesOpen}
-      <MoreCompaniesPopover
-        companies={moreCompanyList}
-        pinnedIds={pinnedCompanyIds ?? []}
-        recentIds={companyRecentIds}
-        anchorTop={moreCompaniesAnchor.top}
-        anchorLeft={moreCompaniesAnchor.left}
-        onclose={() => (moreCompaniesOpen = false)}
-        onopen={openCompanyFromMore}
-        onpins={setPinnedCompanies}
-        onnewcompany={() => {
-          moreCompaniesOpen = false;
-          if (canRunEntryPoints) void createCompanyEntry();
+      <LazyDoor
+        door={moreCompaniesDoor}
+        props={{
+          companies: moreCompanyList,
+          pinnedIds: pinnedCompanyIds ?? [],
+          recentIds: companyRecentIds,
+          anchorTop: moreCompaniesAnchor.top,
+          anchorLeft: moreCompaniesAnchor.left,
+          onclose: () => (moreCompaniesOpen = false),
+          onopen: openCompanyFromMore,
+          onpins: setPinnedCompanies,
+          onnewcompany: () => {
+            moreCompaniesOpen = false;
+            if (canRunEntryPoints) void createCompanyEntry();
+          },
         }}
       />
     {/if}
@@ -10551,16 +10564,23 @@
                   data-testid="local-bot-detail-column"
                   data-reply-layout={narrowViewport ? "overlay" : "column"}
                 >
-                  <ProfilePaneHost
-                    kind="bot"
-                    name={openAgentMember.displayName}
-                    email={openAgentMember.email}
-                    owner={self?.displayName ?? null}
-                    company={selectedRow.companyUid ? companyDisplayName(selectedRow.companyUid, companyNames) : null}
-                    live={openAgentMember.online}
-                    onclose={closeAgentDetail}
-                    onmessage={() => messageMemberDirectly(openAgentMember!)}
-                  />
+                  <LazyDoor
+                    door={profilePaneDoor}
+                    props={{
+                      kind: "bot",
+                      name: openAgentMember.displayName,
+                      email: openAgentMember.email,
+                      owner: self?.displayName ?? null,
+                      company: selectedRow.companyUid ? companyDisplayName(selectedRow.companyUid, companyNames) : null,
+                      live: openAgentMember.online,
+                      onclose: closeAgentDetail,
+                      onmessage: () => messageMemberDirectly(openAgentMember!),
+                    }}
+                  >
+                    {#snippet skeleton()}
+                      <div class="profile-pane-skeleton" data-testid="profile-pane-skeleton" aria-busy="true"></div>
+                    {/snippet}
+                  </LazyDoor>
                   <div class="legacy-detail">
                   <LocalBotDetailPanel
                     companies={(companies ?? []).filter(c => c.cloudUid?.startsWith("cmp_")).map(c => ({ uid: c.cloudUid!, name: c.displayName || c.slug, slug: c.slug }))}
@@ -10583,16 +10603,23 @@
                   data-testid="agent-detail-column"
                   data-reply-layout={narrowViewport ? "overlay" : "column"}
                 >
-                  <ProfilePaneHost
-                    kind="bot"
-                    name={openAgentMember.displayName}
-                    email={openAgentMember.email}
-                    role={openAgentMember.role}
-                    company={selectedRow.companyUid ? companyDisplayName(selectedRow.companyUid, companyNames) : null}
-                    live={openAgentMember.online}
-                    onclose={closeAgentDetail}
-                    onmessage={() => messageMemberDirectly(openAgentMember!)}
-                  />
+                  <LazyDoor
+                    door={profilePaneDoor}
+                    props={{
+                      kind: "bot",
+                      name: openAgentMember.displayName,
+                      email: openAgentMember.email,
+                      role: openAgentMember.role,
+                      company: selectedRow.companyUid ? companyDisplayName(selectedRow.companyUid, companyNames) : null,
+                      live: openAgentMember.online,
+                      onclose: closeAgentDetail,
+                      onmessage: () => messageMemberDirectly(openAgentMember!),
+                    }}
+                  >
+                    {#snippet skeleton()}
+                      <div class="profile-pane-skeleton" data-testid="profile-pane-skeleton" aria-busy="true"></div>
+                    {/snippet}
+                  </LazyDoor>
                   <div class="legacy-detail">
                   <AgentDetailPanel
                     agentUid={openAgentMember.personUid}
@@ -10624,16 +10651,23 @@
                   data-testid="profile-column"
                   data-reply-layout={narrowViewport ? "overlay" : "column"}
                 >
-                  <ProfilePaneHost
-                    kind="person"
-                    name={openProfileMember.displayName}
-                    email={openProfileMember.email}
-                    role={openProfileMember.role}
-                    company={selectedRow.companyUid ? companyDisplayName(selectedRow.companyUid, companyNames) : null}
-                    live={openProfileMember.online}
-                    onclose={closeMemberProfile}
-                    onmessage={() => messageMemberDirectly(openProfileMember!)}
-                  />
+                  <LazyDoor
+                    door={profilePaneDoor}
+                    props={{
+                      kind: "person",
+                      name: openProfileMember.displayName,
+                      email: openProfileMember.email,
+                      role: openProfileMember.role,
+                      company: selectedRow.companyUid ? companyDisplayName(selectedRow.companyUid, companyNames) : null,
+                      live: openProfileMember.online,
+                      onclose: closeMemberProfile,
+                      onmessage: () => messageMemberDirectly(openProfileMember!),
+                    }}
+                  >
+                    {#snippet skeleton()}
+                      <div class="profile-pane-skeleton" data-testid="profile-pane-skeleton" aria-busy="true"></div>
+                    {/snippet}
+                  </LazyDoor>
                   <div class="legacy-detail">
                   <MemberProfilePanel
                     member={openProfileMember}
@@ -11096,6 +11130,13 @@
   .reply-column.inspector-pane {
     width: 340px;
     flex: 0 0 340px;
+    background: var(--v4-secondary-sidebar, var(--side-bg));
+  }
+
+  /* First frame of a profile pane while its chunk loads (lazy-doors.ts). */
+  .profile-pane-skeleton {
+    flex: 1 1 auto;
+    min-height: 0;
     background: var(--v4-secondary-sidebar, var(--side-bg));
   }
 
