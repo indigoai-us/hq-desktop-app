@@ -89,6 +89,7 @@
     createPostReadyActionTelemetry,
     isPostReadyAction,
     POST_READY_ACTION_EVENT,
+    registerPostReadyCloseTelemetry,
   } from './lib/post-ready-action-telemetry';
   import './styles/popover.css';
 
@@ -139,9 +140,7 @@
     );
   }
   window.addEventListener(POST_READY_ACTION_EVENT, handlePostReadyAction);
-  const postReadyCloseListener = getCurrentWindow().onCloseRequested(() => {
-    void postReadyTelemetry.then((telemetry) => telemetry.record('close_window'));
-  });
+  const postReadyCloseListener = registerPostReadyCloseTelemetry(postReadyTelemetry);
   onDestroy(() => {
     window.removeEventListener(POST_READY_ACTION_EVENT, handlePostReadyAction);
     void postReadyCloseListener.then((unlisten) => unlisten());
