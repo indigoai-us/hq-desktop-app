@@ -49,7 +49,7 @@ pub use hq_desktop_core::desktop_alt::{
     live_cloud_uid_from_broken_reason, nested_number_field, nested_string_field,
     normalize_deployment_host, normalize_deployment_state, normalize_slug, number_field,
     parse_activity_response, parse_board_response, parse_company_activity, parse_company_board,
-    parse_crm_projection_response, parse_deployment_entries, parse_deployments_response,
+    parse_crm_projection_response, parse_deploy_apps_response, parse_deployment_entries, parse_deployments_response,
     parse_project_creators, parse_project_creators_response, parse_secret_envs,
     parse_secrets_response, prefix_company_resolution_error, read_file_bytes_capped,
     read_file_content, read_file_content_capped, resolve_company_uid_from_workspaces,
@@ -589,6 +589,47 @@ pub async fn get_company_deployments(slug: String) -> Result<Vec<DeploymentEntry
     );
 
     parse_deployments_response(status, &text, &slug)
+}
+
+/// Every hq-deploy app in one scope, rows passed through for the personal
+/// Deployments page. `scope` is a company slug or `personal`. `callerSub` lets
+/// the page mark the caller's own deploys. Tokens never reach the log.
+#[tauri::command]
+pub async fn list_deploy_apps(scope: String) -> Result<serde_json::Value, String> {
+    let scope = normalize_slug(&scope)?;
+    let url = deployments_url(HQ_DEPLOY_API_BASE);
+    let tokens = cognito::get_valid_tokens()
+        .await
+        .map_err(|e| format!("auth: {e}"))?;
+    let caller_sub = tokens
+        .id_token
+        .as_deref()
+        .and_then(|t| cognito::decode_id_token_claims(t).ok())
+        .and_then(|c| c.sub);
+
+    let mut req = build_client()
+        .get(&url)
+        .header("authorization", format!("Bearer {}", tokens.access_token));
+    req = if scope == "personal" {
+        req.header("x-hq-deploy-scope", "personal")
+    } else {
+        req.header("x-org-slug", &scope)
+    };
+    let res = req
+        .send()
+        .await
+        .map_err(|e| format!("deploy apps fetch: {e}"))?;
+    let status = res.status();
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("deploy apps read: {e}"))?;
+    let apps = parse_deploy_apps_response(status, &text)?;
+    eprintln!(
+        "[desktop-alt] deploy apps scope={scope} -> HTTP {status} ({} apps)",
+        apps.len()
+    );
+    Ok(serde_json::json!({ "scope": scope, "callerSub": caller_sub, "apps": apps }))
 }
 
 #[tauri::command]

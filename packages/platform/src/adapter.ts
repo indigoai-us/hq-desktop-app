@@ -935,6 +935,11 @@ export interface CreatorProfileUpdate {
 
 export interface CompanyApi {
   getDeployments(slug: string): AdapterPromise<Json[]>;
+  /**
+   * Raw hq-deploy `/api/apps` rows for one scope (company slug or
+   * `personal`): `{ scope, callerSub, apps }`. Desktop only.
+   */
+  listDeployApps?(scope: string): AdapterPromise<Json>;
   getSecrets(slug: string): AdapterPromise<Json[]>;
   listMembers(slug: string): AdapterPromise<Json[]>;
   getTeamTelemetry(slug: string): AdapterPromise<Json>;

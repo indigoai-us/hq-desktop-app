@@ -6,7 +6,8 @@ import {
   personalLibraryFixture,
   sharedGrantPreview,
 } from "./personal-library.js";
-import { beginRedeploy, filterDeployments, personalDeploymentsFixture, progressFor } from "./personal-deployments.js";
+import { deploymentFromApp, filterDeployments, formatViews, loadDeployments, progressFor } from "./personal-deployments.js";
+import { deployAppsFixture, FIXTURE_CALLER_SUB } from "./personal-deployments.fixture.js";
 
 describe("personal library (US-031)", () => {
   it("shows the selected shared file in the preview model", () => {
@@ -37,21 +38,73 @@ describe("personal library (US-031)", () => {
 });
 
 describe("personal deployments (US-031)", () => {
-  it("keeps the old build serving while a redeploy is in progress", () => {
-    const row = personalDeploymentsFixture().rows[0]!;
-    const deploying = beginRedeploy(row);
-    expect(deploying.status).toBe("deploying");
-    const progress = progressFor(deploying);
-    expect(progress.step).toBe(3);
-    expect(progress.serving).toBe(row.liveVersion);
-    expect(progress.swapped).toBe(false);
-    expect(deploying.detail).toContain("stays live until swap");
+  const now = Date.parse("2026-10-02T12:00:00Z");
+  const scopes = [
+    { id: "personal", label: "Personal" },
+    { id: "indigo", label: "Indigo" },
+  ];
+
+  it("maps raw hq-deploy apps and keeps null views as unavailable", () => {
+    const row = deploymentFromApp(
+      { id: "x", name: "app-x", subdomain: "app-x", url: "https://app-x.indigo-hq.com", status: "active", active: true, accessMode: "company", ownerId: "me", views30d: null, lastVisitAt: "2026-10-02T11:57:00Z", createdAt: "2026-10-01T12:00:00Z" },
+      { id: "indigo", label: "Indigo" },
+      "me",
+      now,
+    )!;
+    expect(row.views30d).toBeNull();
+    expect(formatViews(row.views30d)).toBe("—");
+    expect(row.access).toBe("Company");
+    expect(row.lastVisit).toBe("3m ago");
+    expect(row.byYou).toBe(true);
+    expect(row.host).toBe(".indigo-hq.com");
+    expect(row.detail).toBe("deployed 1d ago by you");
+    expect(row.scope).toBe("company");
   });
 
-  it("filters sleeping rows without dropping the cache", () => {
-    const rows = personalDeploymentsFixture().rows;
-    const sleeping = filterDeployments(rows, "sleeping", "");
-    expect(sleeping.map((row) => row.id)).toEqual(["sleep"]);
-    expect(filterDeployments(rows, "all", "cut30").map((row) => row.id)).toEqual(["cut30"]);
+  it("marks deactivated apps and falls back to legacy access flags", () => {
+    const row = deploymentFromApp(
+      { id: "y", subdomain: "app-y", active: false, passwordProtected: true },
+      { id: "personal", label: "Personal" },
+      null,
+      now,
+    )!;
+    expect(row.status).toBe("deactivated");
+    expect(row.access).toBe("Password");
+    expect(row.scopeLabel).toBe("Personal");
+    expect(row.byYou).toBe(false);
+  });
+
+  it("merges every scope and survives one failing scope", async () => {
+    const load = await loadDeployments(
+      async (scope) => {
+        if (scope === "indigo") throw new Error("offline");
+        return deployAppsFixture(scope, now);
+      },
+      scopes,
+      now,
+    );
+    expect(load.failed).toEqual(["indigo"]);
+    expect(load.cache.rows.map((r) => r.name)).toEqual(["cut30-week-41", "rail-idea-v1", "telemetry-sep-export"]);
+  });
+
+  it("filters real rows by status, scope and owner", async () => {
+    const { cache } = await loadDeployments(async (scope) => deployAppsFixture(scope, now), scopes, now);
+    const rows = cache.rows;
+    expect(rows).toHaveLength(6);
+    expect(filterDeployments(rows, "sleeping", "").map((r) => r.name)).toEqual(["telemetry-sep-export"]);
+    expect(filterDeployments(rows, "deactivated", "").map((r) => r.name)).toEqual(["rail-idea-v1"]);
+    expect(filterDeployments(rows, "scope-company", "")).toHaveLength(3);
+    expect(filterDeployments(rows, "by-you", "").some((r) => r.name === "indigo-standup-report")).toBe(false);
+    expect(filterDeployments(rows, "all", "cut30").map((r) => r.name)).toEqual(["cut30-week-41"]);
+    expect(rows.every((r) => r.byYou === (r.name !== "indigo-standup-report"))).toBe(true);
+    expect(FIXTURE_CALLER_SUB).toBeTruthy();
+  });
+
+  it("keeps the old build serving while a real row is deploying", () => {
+    const row = { ...deploymentFromApp({ id: "d", subdomain: "d", status: "deploying" }, scopes[0]!, null, now)!, step: 3, liveVersion: "v4", nextVersion: "v5" };
+    const progress = progressFor(row);
+    expect(progress.step).toBe(3);
+    expect(progress.serving).toBe("v4");
+    expect(progress.swapped).toBe(false);
   });
 });

@@ -925,6 +925,37 @@ pub fn parse_deployments_response(
     parse_deployment_entries(text, selected_slug)
 }
 
+/// Raw `/api/apps` rows for the personal Deployments page. Unlike
+/// `parse_deployments_response`, rows pass through untouched so fields such as
+/// `views30d`, `lastVisitAt`, `accessMode` and `ownerId` reach the UI. Auth
+/// failures stay errors; a scope with no deploy org yet is an empty list.
+pub fn parse_deploy_apps_response(
+    status: StatusCode,
+    text: &str,
+) -> Result<Vec<serde_json::Value>, String> {
+    if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+        return Err(format!("AUTH_REQUIRED: deploy apps (HTTP {status})"));
+    }
+    if status == StatusCode::NO_CONTENT {
+        return Ok(Vec::new());
+    }
+    if status == StatusCode::NOT_FOUND && is_deployments_not_provisioned(text) {
+        return Ok(Vec::new());
+    }
+    if !status.is_success() {
+        return Err(format!("deploy apps HTTP {status}"));
+    }
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(Vec::new());
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| format!("deploy apps parse: {e}"))?;
+    deployment_rows(&value)
+        .map(|rows| rows.iter().filter(|row| row.is_object()).cloned().collect())
+        .ok_or_else(|| "deploy apps parse: missing apps array".to_string())
+}
+
 pub fn parse_deployment_entries(
     text: &str,
     selected_slug: &str,
@@ -3726,6 +3757,41 @@ mod tests {
             !serialized.contains("evil.example.com"),
             "the hostile host must never make it into a parsed entry"
         );
+    }
+
+    #[test]
+    fn deploy_apps_pass_through_visit_fields_and_owner() {
+        let rows = super::parse_deploy_apps_response(
+            reqwest::StatusCode::OK,
+            r#"{"apps":[
+                {"id":"a1","name":"one","subdomain":"one","status":"active","views30d":null,
+                 "lastVisitAt":"2026-09-28T17:23:25.798Z","accessMode":"company","ownerId":"u1"},
+                {"id":"a2","name":"two","subdomain":"two","status":"sleeping","views30d":12},
+                "not-an-object"
+            ]}"#,
+        )
+        .expect("apps parse");
+        assert_eq!(rows.len(), 2, "non-object rows drop; real rows survive");
+        assert!(rows[0]["views30d"].is_null(), "null views stays null, not 0");
+        assert_eq!(rows[0]["ownerId"], "u1");
+        assert_eq!(rows[0]["lastVisitAt"], "2026-09-28T17:23:25.798Z");
+        assert_eq!(rows[1]["views30d"], 12);
+    }
+
+    #[test]
+    fn deploy_apps_auth_errors_and_unprovisioned_scope() {
+        let err = super::parse_deploy_apps_response(reqwest::StatusCode::UNAUTHORIZED, "{}")
+            .expect_err("401 is an auth error");
+        assert!(err.starts_with("AUTH_REQUIRED"));
+        let empty = super::parse_deploy_apps_response(reqwest::StatusCode::NOT_FOUND, "")
+            .expect("unprovisioned scope is empty");
+        assert!(empty.is_empty());
+        let err = super::parse_deploy_apps_response(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            "secret-ish body",
+        )
+        .expect_err("5xx is an error");
+        assert!(!err.contains("secret-ish"), "error text never carries the body");
     }
 
     fn company_workspace(

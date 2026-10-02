@@ -27,6 +27,8 @@ export type PersonalDeployFilter =
 export interface PersonalDeployment {
   id: string;
   name: string;
+  /** Full https URL the Visit button opens. */
+  url: string;
   host: string;
   project: string;
   detail: string;
@@ -35,7 +37,8 @@ export interface PersonalDeployment {
   scopeMark: string;
   status: PersonalDeployStatus;
   access: string;
-  views30d: number;
+  /** null = analytics unavailable for this app. Never shown as 0. */
+  views30d: number | null;
   lastVisit: string;
   /** 1-based deploy step when status is deploying or building. */
   step: number | null;
@@ -50,164 +53,210 @@ export interface PersonalDeploymentsCache {
   rows: PersonalDeployment[];
 }
 
+/** One deploy scope the page reads: a company, or the caller's personal scope. */
+export interface DeployScope {
+  /** Company slug, or "personal". */
+  id: string;
+  label: string;
+}
+
+/** Raw `/api/apps` scope page as returned by the `list_deploy_apps` command. */
+export interface DeployAppsPage {
+  callerSub?: string | null;
+  apps?: unknown[];
+}
+
+export type ListDeployApps = (scope: string) => Promise<DeployAppsPage>;
+
 const memory = new Map<string, PersonalDeploymentsCache>();
+const STORAGE_PREFIX = "hq.personal-deployments.v2:";
+
+function storage(): Storage | null {
+  try {
+    return typeof localStorage === "undefined" ? null : localStorage;
+  } catch (err) {
+    console.warn("[deployments] localStorage unavailable", err);
+    return null;
+  }
+}
 
 export function readPersonalDeploymentsCache(accountId: string): PersonalDeploymentsCache | null {
-  return memory.get(accountId) ?? null;
+  const warm = memory.get(accountId);
+  if (warm) return warm;
+  const raw = storage()?.getItem(STORAGE_PREFIX + accountId);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as PersonalDeploymentsCache;
+    if (!Array.isArray(parsed?.rows)) return null;
+    memory.set(accountId, parsed);
+    return parsed;
+  } catch (err) {
+    console.warn("[deployments] dropping unreadable cache", err);
+    return null;
+  }
 }
 
 export function writePersonalDeploymentsCache(
   accountId: string,
   value: PersonalDeploymentsCache,
 ): void {
-  if (accountId) memory.set(accountId, value);
+  if (!accountId) return;
+  memory.set(accountId, value);
+  try {
+    storage()?.setItem(STORAGE_PREFIX + accountId, JSON.stringify(value));
+  } catch (err) {
+    console.warn("[deployments] cache write failed", err);
+  }
 }
 
-export function personalDeploymentsFixture(): PersonalDeploymentsCache {
+function str(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function initials(label: string): string {
+  const letters = label.replace(/[^A-Za-z0-9]/g, "");
+  return letters.slice(0, 2).toUpperCase();
+}
+
+/** "3m ago" style age. Empty when the timestamp is missing or unreadable. */
+export function relativeAge(iso: string, now: number = Date.now()): string {
+  const at = Date.parse(iso);
+  if (!iso || Number.isNaN(at)) return "";
+  const minutes = Math.max(0, Math.round((now - at) / 60_000));
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  const months = Math.round(days / 30);
+  if (months < 12) return `${months}mo ago`;
+  return `${Math.round(months / 12)}y ago`;
+}
+
+function accessLabel(app: Record<string, unknown>): string {
+  switch (str(app.accessMode)) {
+    case "company":
+      return "Company";
+    case "selected":
+      return "Selected people";
+    case "password":
+      return "Password";
+    case "private":
+      return "Invited only";
+    case "public":
+      return "Public";
+  }
+  if (app.privateMode === true) return "Invited only";
+  if (app.passwordProtected === true) return "Password";
+  return "Public";
+}
+
+function statusOf(app: Record<string, unknown>): PersonalDeployStatus {
+  if (app.active === false) return "deactivated";
+  const status = str(app.status).toLowerCase();
+  if (status === "sleeping" || status === "paused") return "sleeping";
+  if (status === "failed" || status === "error") return "failed";
+  if (status === "building") return "building";
+  if (status === "deploying") return "deploying";
+  if (status === "deactivated" || status === "inactive" || status === "deleted") return "deactivated";
+  return "active";
+}
+
+/** Map one raw hq-deploy app into a page row. Null when it has no name. */
+export function deploymentFromApp(
+  raw: unknown,
+  scope: DeployScope,
+  callerSub: string | null | undefined,
+  now: number = Date.now(),
+): PersonalDeployment | null {
+  if (!raw || typeof raw !== "object") return null;
+  const app = raw as Record<string, unknown>;
+  const sub = str(app.subdomain);
+  const name = str(app.name) || sub;
+  if (!name) return null;
+  const url = str(app.url).startsWith("https://") ? str(app.url) : "";
+  let host = "";
+  if (url) {
+    try {
+      const hostname = new URL(url).hostname;
+      host = sub && hostname.startsWith(`${sub}.`) ? hostname.slice(sub.length) : hostname;
+    } catch (err) {
+      console.warn("[deployments] unreadable app url", err);
+    }
+  }
+  const deployedAt = str(app.deployedAt) || str(app.updatedAt) || str(app.createdAt);
+  const deployedBy = str(app.deployedBy);
+  const ownerId = str(app.ownerId);
+  const byYou = Boolean(callerSub && ownerId && ownerId === callerSub);
+  const age = relativeAge(deployedAt, now);
+  const who = deployedBy || (byYou ? "you" : "");
+  const detail = [age && `deployed ${age}`, who && `by ${who}`].filter(Boolean).join(" ");
+  const views = app.views30d;
+  const scopeLabel = scope.id === "personal" ? "Personal" : scope.label;
+  const version = str(app.version) || str(app.liveVersion);
   return {
-    rows: [
-      {
-        id: "storyboard",
-        name: "hq-desktop-console-rail-storyboard",
-        host: ".indigo-hq.com",
-        project: "hq-desktop-console-rail",
-        detail: "deployed 41m ago by you",
-        scope: "company",
-        scopeLabel: "Indigo",
-        scopeMark: "IN",
-        status: "active",
-        access: "Password",
-        views30d: 96,
-        lastVisit: "3m ago",
-        step: null,
-        liveVersion: "v4",
-        nextVersion: "v5",
-        byYou: true,
-        byBot: false,
-        log: [],
-      },
-      {
-        id: "cut30",
-        name: "cut30-week-41",
-        host: ".corey.hq-deploy.app",
-        project: "cut30",
-        detail: "deployed 2h ago by you",
-        scope: "personal",
-        scopeLabel: "Personal",
-        scopeMark: "CE",
-        status: "active",
-        access: "Only you",
-        views30d: 18,
-        lastVisit: "22m ago",
-        step: null,
-        liveVersion: "v2",
-        nextVersion: "v3",
-        byYou: true,
-        byBot: false,
-        log: [],
-      },
-      {
-        id: "standup",
-        name: "indigo-standup-report",
-        host: ".indigo-hq.com",
-        project: "standup-brief",
-        detail: "deployed 2h ago by deacon",
-        scope: "company",
-        scopeLabel: "Indigo",
-        scopeMark: "IN",
-        status: "active",
-        access: "Company",
-        views30d: 1284,
-        lastVisit: "6m ago",
-        step: null,
-        liveVersion: "v9",
-        nextVersion: "v10",
-        byYou: false,
-        byBot: true,
-        log: [],
-      },
-      {
-        id: "interview",
-        name: "personal-interview",
-        host: ".corey.hq-deploy.app",
-        project: "personal-interview",
-        detail: "building · 2/5 · deacon",
-        scope: "personal",
-        scopeLabel: "Personal",
-        scopeMark: "CE",
-        status: "building",
-        access: "Only you",
-        views30d: 0,
-        lastVisit: "—",
-        step: 2,
-        liveVersion: "v1",
-        nextVersion: "v2",
-        byYou: false,
-        byBot: true,
-        log: ["pack ok", "build running"],
-      },
-      {
-        id: "ontology",
-        name: "ontology-explorer",
-        host: ".indigo-hq.com",
-        project: "ontology",
-        detail: "last deploy failed 32m ago · build step 3/5",
-        scope: "company",
-        scopeLabel: "Indigo",
-        scopeMark: "IN",
-        status: "failed",
-        access: "Company",
-        views30d: 40,
-        lastVisit: "4d ago",
-        step: 3,
-        liveVersion: "v6",
-        nextVersion: "v7",
-        byYou: true,
-        byBot: false,
-        log: ["build failed"],
-      },
-      {
-        id: "sleep",
-        name: "telemetry-sep-export",
-        host: ".corey.hq-deploy.app",
-        project: "exports",
-        detail: "deployed 12d ago by you",
-        scope: "personal",
-        scopeLabel: "Personal",
-        scopeMark: "CE",
-        status: "sleeping",
-        access: "Link",
-        views30d: 6,
-        lastVisit: "9d ago",
-        step: null,
-        liveVersion: "v1",
-        nextVersion: "v1",
-        byYou: true,
-        byBot: false,
-        log: [],
-      },
-      {
-        id: "off",
-        name: "rail-idea-v1",
-        host: ".corey.hq-deploy.app",
-        project: "drafts",
-        detail: "deactivated Sep 12 · delete after Oct 12",
-        scope: "personal",
-        scopeLabel: "Personal",
-        scopeMark: "CE",
-        status: "deactivated",
-        access: "Only you",
-        views30d: 0,
-        lastVisit: "24d ago",
-        step: null,
-        liveVersion: "v1",
-        nextVersion: "v1",
-        byYou: true,
-        byBot: false,
-        log: [],
-      },
-    ],
+    id: `${scope.id}:${str(app.id) || sub || name}`,
+    name,
+    url,
+    host,
+    project: str(app.project) || str(app.projectSlug),
+    detail,
+    scope: scope.id === "personal" ? "personal" : "company",
+    scopeLabel,
+    scopeMark: initials(scopeLabel),
+    status: statusOf(app),
+    access: accessLabel(app),
+    views30d: typeof views === "number" && Number.isFinite(views) ? views : null,
+    lastVisit: relativeAge(str(app.lastVisitAt), now),
+    step: null,
+    liveVersion: version,
+    nextVersion: version,
+    byYou,
+    byBot: app.deployedByKind === "agent" || app.ownerKind === "agent",
+    log: [],
   };
+}
+
+export interface DeploymentsLoad {
+  cache: PersonalDeploymentsCache;
+  /** Scopes that failed to load. Their rows are absent, not zeroed. */
+  failed: string[];
+}
+
+/**
+ * Read every scope in parallel and merge. One failing scope does not blank
+ * the others. Rows sort by scope, then name.
+ */
+export async function loadDeployments(
+  list: ListDeployApps,
+  scopes: readonly DeployScope[],
+  now: number = Date.now(),
+): Promise<DeploymentsLoad> {
+  const results = await Promise.allSettled(scopes.map((scope) => list(scope.id)));
+  const rows: PersonalDeployment[] = [];
+  const failed: string[] = [];
+  const seen = new Set<string>();
+  results.forEach((result, index) => {
+    const scope = scopes[index]!;
+    if (result.status === "rejected") {
+      console.warn(`[deployments] scope ${scope.id} failed`, result.reason);
+      failed.push(scope.id);
+      return;
+    }
+    for (const raw of result.value.apps ?? []) {
+      const row = deploymentFromApp(raw, scope, result.value.callerSub, now);
+      if (!row || seen.has(row.id)) continue;
+      seen.add(row.id);
+      rows.push(row);
+    }
+  });
+  rows.sort((a, b) => a.scopeLabel.localeCompare(b.scopeLabel) || a.name.localeCompare(b.name));
+  return { cache: { rows }, failed };
+}
+
+export function formatViews(views: number | null): string {
+  return views === null ? "—" : views.toLocaleString();
 }
 
 export function filterDeployments(
@@ -229,22 +278,6 @@ export function filterDeployments(
     if (!q) return true;
     return `${row.name} ${row.host} ${row.project} ${row.scopeLabel}`.toLowerCase().includes(q);
   });
-}
-
-/** Start a redeploy. The previous version keeps serving until swap. */
-export function beginRedeploy(row: PersonalDeployment): PersonalDeployment {
-  return {
-    ...row,
-    status: "deploying",
-    step: 3,
-    detail: `${row.project} · redeploying · step 3/5 · ${row.liveVersion} stays live until swap`,
-    log: [
-      ...(row.log ?? []),
-      "pack ok",
-      "build ok",
-      "upload running",
-    ],
-  };
 }
 
 export function progressFor(row: PersonalDeployment): DeployProgress {

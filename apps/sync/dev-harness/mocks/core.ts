@@ -4,6 +4,7 @@
 import type { Workspace } from '../../src/lib/workspaces';
 import { resolveHarnessPersona, type ShellPersona } from '../personas';
 import { emit } from './event';
+import { deployAppsFixture } from '../../../../packages/ui/src/library/personal-deployments.fixture';
 
 const settings = {
   hqPath: '/Users/corey/Documents/HQ',
@@ -979,6 +980,7 @@ This final paragraph verifies spacing after a thematic break.
     { sub: 'preview', url: 'preview.hq.computer', state: 'deploying', lastDeploy: 'just now', size: '18.3 MB', ver: 'v0.10.34-rc.1', pwd: true },
     { sub: 'docs', url: 'docs.hq.computer', state: 'paused', lastDeploy: '3d ago', size: '6.8 MB', ver: 'v4.2.0', pwd: false },
   ],
+  list_deploy_apps: (args) => deployAppsFixture(String(args?.scope ?? 'personal')),
   get_company_secrets: () => [
     {
       env: 'production',

@@ -941,6 +941,7 @@ fn main() {
             commands::desktop_alt::list_agent_tasks,
             commands::desktop_alt::list_channel_agent_tasks,
             commands::desktop_alt::get_company_deployments,
+            commands::desktop_alt::list_deploy_apps,
             commands::desktop_alt::get_company_secrets,
             commands::desktop_alt::get_company_crm_projection_vault,
             commands::desktop_alt::get_company_file_tree,

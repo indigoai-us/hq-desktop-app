@@ -9972,6 +9972,8 @@
         {:else if extraPageId === "rail-deployments"}
           <DeploymentsRailHost
             accountId={tenantAccountId ?? "local"}
+            listDeployApps={adapter.company?.listDeployApps}
+            companies={companies ?? []}
             openExternal={onopenurl}
           />
         {:else if (railPlaceholder?.id === "vault" || railPlaceholder?.id === "integrations" || railPlaceholder?.id === "secrets" || railPlaceholder?.id === "deployments") && companyPaneCompany}

@@ -4,13 +4,17 @@
    */
   import { onMount } from "svelte";
   import type { Component } from "svelte";
+  import type { AdapterPromise, Json } from "@hq/platform";
+  import type { Workspace } from "../chat/workspaces.js";
 
   interface Props {
     accountId?: string;
+    listDeployApps?: (scope: string) => AdapterPromise<Json>;
+    companies?: Pick<Workspace, "slug" | "displayName" | "kind" | "state">[];
     openExternal?: (url: string) => void;
   }
 
-  let { accountId = "local", openExternal }: Props = $props();
+  let { accountId = "local", listDeployApps, companies = [], openExternal }: Props = $props();
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let Page = $state<Component<any> | null>(null);
@@ -31,7 +35,7 @@
 
 <div class="host" data-testid="personal-deployments-host">
   {#if Page}
-    <Page {accountId} {openExternal} />
+    <Page {accountId} {listDeployApps} {companies} {openExternal} />
   {:else}
     <div class="skeleton" data-testid="personal-deployments-skeleton" aria-busy="true">
       <aside><div class="bar"></div><div class="bar"></div></aside>
