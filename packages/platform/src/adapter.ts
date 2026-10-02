@@ -731,6 +731,12 @@ export interface MessagingApi {
    * omits it and the step falls back to submit-time validation.
    */
   checkCompanySlug?(slug: string): AdapterPromise<Json>;
+  /**
+   * POST activate-cloud for a company: owner-only, idempotent cloud vault
+   * provisioning (bucket, KMS, owner grants). Optional: a host without the
+   * route omits it.
+   */
+  activateCompanyCloud?(companyUid: string): AdapterPromise<Json>;
   /** GET /v1/companies/{uid}/tabs/{tab} (US-015). */
   getCompanyTab?(companyUid: string, tab: string): AdapterPromise<Json>;
   /** POST /v1/companies/{uid}/tabs/{tab}/actions (US-015). */
