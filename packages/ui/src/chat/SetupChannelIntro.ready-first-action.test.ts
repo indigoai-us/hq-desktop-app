@@ -62,7 +62,7 @@ describe("ready first action", () => {
     };
     window.addEventListener("hq:desktop-post-ready-action", onAction);
 
-    await mountIntro({ readyFirstActionEnabled: true, onstartsync });
+    await mountIntro({ readyFirstActionEnabled: true, readyFirstActionReady: true, onstartsync });
     expect(host.querySelector('[data-testid="ready-first-action"]')).not.toBeNull();
     expect(actions).toContain("ready_first_action_shown");
 
@@ -71,6 +71,31 @@ describe("ready first action", () => {
 
     expect(actions).toContain("ready_first_action_clicked");
     expect(onstartsync).toHaveBeenCalledOnce();
+    window.removeEventListener("hq:desktop-post-ready-action", onAction);
+  });
+
+  it("keeps setup primary before the ready marker", async () => {
+    const onstartsync = vi.fn(async () => ok(undefined));
+    const actions: string[] = [];
+    const onAction = (event: Event) => {
+      const action = (event as CustomEvent<{ action?: unknown }>).detail?.action;
+      if (typeof action === "string") actions.push(action);
+    };
+    window.addEventListener("hq:desktop-post-ready-action", onAction);
+
+    await mountIntro({
+      readyFirstActionEnabled: true,
+      readyFirstActionReady: false,
+      onstartsync,
+    });
+
+    expect(host.querySelector('[data-testid="ready-first-action"]')).toBeNull();
+    expect(
+      (host.querySelector('[data-testid="setup-run"]') as HTMLButtonElement | null)?.getAttribute(
+        "data-variant",
+      ),
+    ).toBe("primary");
+    expect(actions).not.toContain("ready_first_action_shown");
     window.removeEventListener("hq:desktop-post-ready-action", onAction);
   });
 });

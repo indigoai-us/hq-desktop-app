@@ -783,6 +783,8 @@
           }
         | null,
     ) => void;
+    /** The persisted post-ready marker used by the desktop telemetry path. */
+    readyFirstActionReady?: boolean;
     /**
      * When true, messagesByRow is first-paint only — the shell still fetches
      * REST for the selected row so mentions, member-added lines, and the
@@ -961,6 +963,7 @@
     uiVersion = null,
     notificationWakeSeq = 0,
     onactivethreadchange,
+    readyFirstActionReady = false,
     hydrateLiveMessages = false,
     onlivemessages,
     onselectrow,
@@ -9853,6 +9856,7 @@
                     {onretryroster}
                     onsetupstarted={recordWelcomeSetupRun}
                     readyFirstActionEnabled={readyFirstActionEnabled}
+                    {readyFirstActionReady}
                     onstartsync={() => adapter.sync.startSync()}
                     agent={setupAgent}
                     setupBot={setupBotLauncher}

@@ -166,6 +166,8 @@
           }
         | null,
     ) => void;
+    /** The persisted post-ready marker used by the desktop telemetry path. */
+    postReadyActionReady?: boolean;
     /** Native host-only full-column surfaces, forwarded to DesktopApp. */
     extraPages?: Record<
       string,
@@ -263,6 +265,7 @@
     callsHost = null,
     onembeddednavigationready,
     onactivethreadchange,
+    postReadyActionReady = false,
     extraPages,
     rowExtrasLoading = false,
     rowExtrasError = false,
@@ -1010,6 +1013,7 @@
       {refreshAppVersion}
       {uiVersion}
       {onactivethreadchange}
+      readyFirstActionReady={postReadyActionReady}
       {extraPages}
       {rowExtrasLoading}
       {rowExtrasError}

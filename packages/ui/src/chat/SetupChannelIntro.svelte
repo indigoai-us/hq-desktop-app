@@ -124,6 +124,8 @@
     onsetupstarted?: () => void;
     /** Opt-in post-ready first real-use action, resolved by the desktop host. */
     readyFirstActionEnabled?: boolean;
+    /** The persisted post-ready marker used by the desktop telemetry path. */
+    readyFirstActionReady?: boolean;
     /** Start the native sync path used by the first real-use action. */
     onstartsync?: () => Promise<{ ok: boolean }> | { ok: boolean };
     /**
@@ -197,6 +199,7 @@
     onretryroster,
     onsetupstarted,
     readyFirstActionEnabled = false,
+    readyFirstActionReady = false,
     onstartsync,
     agent = null,
     onopensessiondetails,
@@ -248,7 +251,7 @@
   let firstActionShown = false;
 
   $effect(() => {
-    if (readyFirstActionEnabled && onstartsync && !firstActionShown) {
+    if (readyFirstActionEnabled && readyFirstActionReady && onstartsync && !firstActionShown) {
       firstActionShown = true;
       dispatchPostReadyAction("ready_first_action_shown");
     }
@@ -544,7 +547,7 @@
         <SetupConnectStep api={agent.api} providers={agent.providers} onrefresh={() => agent!.refreshProviders(true)} />
       {:else}
       {#if !showInstallGuide}
-      {#if readyFirstActionEnabled && onstartsync}
+      {#if readyFirstActionEnabled && readyFirstActionReady && onstartsync}
         <div class="hero-actions" role="group" aria-label="Start using HQ">
           <SetupButton
             variant="primary"
@@ -564,7 +567,7 @@
       {/if}
       <div class="hero-actions" role="group" aria-label="Set up this Mac">
         <SetupButton
-          variant={readyFirstActionEnabled && onstartsync ? "quiet" : "primary"}
+          variant={readyFirstActionEnabled && readyFirstActionReady && onstartsync ? "quiet" : "primary"}
           data-testid="setup-run"
           disabled={botBusy ||
             Boolean(setupBot?.starting && !scriptedFallback) ||
