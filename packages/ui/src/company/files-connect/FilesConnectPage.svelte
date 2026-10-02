@@ -1,48 +1,56 @@
 <script lang="ts">
-  import { dismissable } from "../../common/dismissable.js";
   /**
    * Vault, Integrations, Secrets, Deployments (US-029).
-   * First frame is the cache or a shimmer. Refresh runs after paint.
-   * Secret values are never written into the DOM.
+   * First frame is the cache or a skeleton. Refresh runs after paint.
+   * Secret values are never written into the DOM or this window: creating
+   * and rotating hand off to `hq secrets set`, which prompts in a terminal.
+   * Styling follows the shipped Messages surfaces (chat/), not a new scale.
    */
   import type { AdapterPromise, FilesApi, Json, PlatformAdapter, SettingsApi, ShellApi } from "@hq/platform";
   import type { DeployAppsPage } from "../../library/personal-deployments.js";
+  import { dismissable } from "../../common/dismissable.js";
+  import ShowMoreRow from "../../shell/ShowMoreRow.svelte";
+  import { countLabel, pageRows } from "../../shell/list-paging.js";
   import CompanyFileTree from "../../files/CompanyFileTree.svelte";
   import FilePreviewPane from "../../files/FilePreviewPane.svelte";
   import type { DirEntry } from "../../files/file-tree.js";
-  import { cachedChildren, folderSummary, rememberChildren } from "../../projects/project-files.js";
+  import { withCompanyReadScope } from "../../files/company-read-scope.js";
+  import { cachedChildren, folderSummary, rememberChildren, resolveUploadName, type ConflictPolicy } from "../../projects/project-files.js";
+  import { fileIntegrity, presignUrlFromResult, putChatAttachmentDirect } from "../../chat/messaging/upload-chat-attachments.js";
   import { openAgentWorkflow, type AgentWorkflowApi } from "../agent-workflow.js";
   import "../../home/tokens.css";
   import "../../chat/chat-tokens.css";
   import { companyStore } from "../company-store.svelte.js";
-  import ShowMoreRow from "../../shell/ShowMoreRow.svelte";
-  import { countLabel, pageRows } from "../../shell/list-paging.js";
   import {
     ACCESS_LEVELS,
-    acceptSecretKey,
     applyDeepLink,
     beginConnect,
     clampAccess,
+    companyDeploymentRows,
     deployPrompt,
+    deploymentRowsFromSource,
     filterIntegrations,
     filterSecrets,
     filterVault,
     fixtureCache,
-    publicSecret,
     readFilesConnectCache,
     redeployAllowed,
     redeployPrompt,
+    secretBindPrompt,
+    secretRowsFromSource,
+    secretSetPrompt,
+    secretSharePrompt,
+    shareAccessPrompt,
     shareSheet,
+    statusLabel,
+    vaultUploadKey,
     writeFilesConnectCache,
-    companyDeploymentRows,
-    legacyDeploymentRow,
     type AccessLevel,
     type ConnectSession,
     type DeploymentRowModel,
     type FilesConnectCache,
     type FilesConnectPageId,
     type SecretRow,
-    type VaultNode,
   } from "./files-connect-model.js";
 
   interface Props {
@@ -52,111 +60,98 @@
     shell: ShellApi | null;
     settings: SettingsApi | null;
     openExternal?: (url: string) => void;
-    /** Full platform adapter, when the host has one: turns on the desktop
-     *  Open and Reveal actions in the vault preview. */
+    /** Full platform adapter, when the host has one: binds the company read
+     *  scope and turns on the desktop Open and Reveal actions in the preview. */
     adapter?: PlatformAdapter | null;
+    /** Cloud uid of the company, for vault uploads. */
+    companyUid?: string | null;
     /** hq-deploy apps for one scope; the same client as personal Deployments. */
     listDeployApps?: (scope: string) => AdapterPromise<Json>;
   }
 
-  let { page, slug, files, shell, settings, openExternal, adapter = null, listDeployApps }: Props = $props();
+  let { page, slug, files, shell, settings, openExternal, adapter = null, companyUid = null, listDeployApps }: Props = $props();
 
   const workflow = $derived({ settings, shell } as AgentWorkflowApi);
 
+  function cachedSecrets(s: string): SecretRow[] | null {
+    const list = companyStore.secrets?.(s);
+    return Array.isArray(list) ? secretRowsFromSource(list) : null;
+  }
+  function cachedDeployments(s: string): DeploymentRowModel[] | null {
+    const list = companyStore.deployments?.(s);
+    return Array.isArray(list) ? deploymentRowsFromSource(list, s) : null;
+  }
+
   let data = $state<FilesConnectCache>(fixtureCache());
-  let phase = $state<"shimmer" | "ready">("ready");
+  // Real lists only. null = not loaded yet (skeleton), never sample rows.
+  let secrets = $state<SecretRow[] | null>(null);
+  let deployments = $state<DeploymentRowModel[] | null>(null);
+  let secretsError = $state<string | null>(null);
+  let deploymentsError = $state<string | null>(null);
   let query = $state("");
   let vaultTab = $state<"all" | "new">("all");
   let integrationTab = $state<"connected" | "available" | "mcp">("connected");
   let secretTab = $state<"all" | "standard" | "proxy">("all");
   let selectedVault = $state<string>("storyboard");
   let selectedIntegration = $state<string>("slack");
-  let selectedSecret = $state<string>("anthropic");
-  let selectedDeploy = $state<string>("standup");
+  let selectedSecret = $state<string | null>(null);
+  let selectedDeploy = $state<string | null>(null);
   let grantLevel = $state<AccessLevel>("read");
   let sheet = $state<string | null>(null);
   let connect = $state<ConnectSession | null>(null);
-  let secretDraft = $state("");
+  let secretName = $state("");
   let status = $state("");
   let redeployName = $state("");
-  let deploysLoading = $state(false);
+  let busy = $state(false);
 
   $effect(() => {
-    const cached = readFilesConnectCache(slug);
-    // Deployments never paint fixture names: no cache means a skeleton.
-    data = cached ?? { ...fixtureCache(), deployments: [] };
-    deploysLoading = !cached;
-    phase = "ready";
+    const s = slug;
+    data = readFilesConnectCache(s) ?? fixtureCache();
+    secrets = cachedSecrets(s);
+    deployments = cachedDeployments(s);
     let live = true;
     queueMicrotask(() => {
-      if (!live) return;
-      void refresh();
+      if (live) void refresh(s, () => live);
     });
     return () => {
       live = false;
     };
   });
 
-  async function refresh(): Promise<void> {
-    const next = fixtureCache();
+  async function refresh(s: string, alive: () => boolean): Promise<void> {
     try {
-      const listed = files ? await files.listDir(`companies/${slug}`) : null;
-      if (listed && listed.ok && Array.isArray(listed.value) && listed.value.length > 0) {
-        const nodes: VaultNode[] = listed.value.map((entry, index) => {
-          const rec = entry as { name?: string; path?: string; kind?: string };
-          const name = rec.name ?? `file-${index}`;
-          return {
-            id: name,
-            name,
-            path: rec.path ?? `companies/${slug}/${name}`,
-            kind: rec.kind === "dir" ? "dir" : "file",
-            depth: 1,
-            acl: "team · read",
-            editedBy: "cached",
-            editing: false,
-            preview: "",
-          };
-        });
-        next.nodes = nodes;
-        next.files = nodes.length;
-        selectedVault = nodes[0]?.id ?? selectedVault;
-      }
-    } catch {
-      /* keep the fixture so the frame stays filled */
-    }
-    try {
-      const loaded = await companyStore.loadSecrets(slug, false);
-      if (Array.isArray(loaded)) {
-        const rows = loaded
-          .map((item) => publicSecret((item ?? {}) as Record<string, unknown>))
-          .filter((row): row is SecretRow => row != null);
-        if (rows.length > 0) next.secrets = rows;
-      }
-    } catch {
-      /* fixture */
-    }
-    next.deployments = data.deployments;
-    try {
-      const list = listDeployApps ?? adapter?.company?.listDeployApps;
-      if (list) {
-        const res = await list(slug);
-        if (res.ok) next.deployments = companyDeploymentRows(res.value as DeployAppsPage, slug);
-        else console.warn(`[deployments] ${slug} unavailable: ${res.reason}`);
-      } else {
-        const loaded = await companyStore.loadDeployments(slug, false);
-        if (Array.isArray(loaded)) {
-          next.deployments = loaded.map((item, index) =>
-            legacyDeploymentRow((item ?? {}) as Record<string, unknown>, slug, index),
-          );
-        }
-      }
+      const loaded = await companyStore.loadSecrets(s, false);
+      if (!alive()) return;
+      secrets = secretRowsFromSource(Array.isArray(loaded) ? loaded : []);
+      secretsError = null;
     } catch (err) {
-      console.warn(`[deployments] ${slug} load failed`, err);
+      console.error("secrets load failed:", err);
+      if (!alive()) return;
+      secretsError = "Could not load secrets.";
+      secrets = secrets ?? [];
     }
-    deploysLoading = false;
-    writeFilesConnectCache(slug, next);
-    data = next;
-    phase = "ready";
+    try {
+      // Names come from the real hq-deploy apps (QA-013), else the legacy list.
+      const list = listDeployApps ?? adapter?.company?.listDeployApps;
+      let rows: DeploymentRowModel[];
+      if (list) {
+        const res = await list(s);
+        if (!res.ok) throw new Error(res.message ?? res.reason);
+        rows = companyDeploymentRows(res.value as DeployAppsPage, s);
+      } else {
+        const loaded = await companyStore.loadDeployments(s, false);
+        rows = deploymentRowsFromSource(Array.isArray(loaded) ? loaded : [], s);
+      }
+      if (!alive()) return;
+      deployments = rows;
+      deploymentsError = null;
+    } catch (err) {
+      console.error("deployments load failed:", err);
+      if (!alive()) return;
+      deploymentsError = "Could not load deployments.";
+      deployments = deployments ?? [];
+    }
+    writeFilesConnectCache(s, data);
   }
 
   const vaultRows = $derived(filterVault(data.nodes, vaultTab, query));
@@ -180,11 +175,20 @@
   const vaultRoot = $derived(`companies/${slug}`);
   let vaultFile = $state<string | null>(null);
   let vaultRootSummary = $state<string | null>(null);
+  let treeNonce = $state(0);
+
+  // The native gate refuses company reads until this window binds the
+  // company (QA-011). Bind once per slug, before the first listing.
+  const scopedListDir = $derived(
+    withCompanyReadScope(
+      adapter?.appShell?.setActiveCompany ? (s: string) => adapter!.appShell.setActiveCompany(s) : null,
+      (relPath: string) => (files ? files.listDir(relPath) : Promise.reject(new Error("files unavailable"))),
+    ),
+  );
 
   function loadVaultChildren(relPath: string): Promise<DirEntry[]> {
-    const api = files;
-    if (!api) return Promise.resolve([]);
-    const fresh = api.listDir(relPath).then((result) => {
+    if (!files) return Promise.resolve([]);
+    const fresh = scopedListDir(relPath).then((result) => {
       if (!result.ok) throw new Error(result.message ?? "Could not list files");
       const entries = result.value as unknown as DirEntry[];
       rememberChildren(relPath, entries);
@@ -198,6 +202,7 @@
 
   $effect(() => {
     const root = vaultRoot;
+    void treeNonce;
     vaultFile = null;
     const cached = cachedChildren(root);
     vaultRootSummary = cached ? folderSummary(cached) : null;
@@ -207,7 +212,10 @@
       .then((entries) => {
         if (alive) vaultRootSummary = folderSummary(entries);
       })
-      .catch((err) => console.error("vault folder summary failed:", err));
+      .catch((err) => {
+        console.error("vault folder summary failed:", err);
+        if (alive) vaultRootSummary = "";
+      });
     return () => {
       alive = false;
     };
@@ -225,23 +233,26 @@
   );
   const showVaultTree = $derived(files !== null && vaultTab === "all");
   const integrationRows = $derived(filterIntegrations(data.integrations, integrationTab, query));
-  const secretRows = $derived(filterSecrets(data.secrets, secretTab, query));
+  const secretRows = $derived(filterSecrets(secrets ?? [], secretTab, query));
   const vaultPage = $derived(pageRows(vaultRows, vaultPages));
   const integrationPage = $derived(pageRows(integrationRows, integrationPages));
   const secretPage = $derived(pageRows(secretRows, secretPages));
-  const deployPage = $derived(pageRows(data.deployments, deployPages));
+  const deployPage = $derived(pageRows(deployments ?? [], deployPages));
   const vaultCurrent = $derived(data.nodes.find((node) => node.id === selectedVault) ?? data.nodes[0]);
   const integrationCurrent = $derived(
     data.integrations.find((row) => row.id === selectedIntegration) ?? data.integrations[0],
   );
-  const secretCurrent = $derived(data.secrets.find((row) => row.id === selectedSecret) ?? data.secrets[0]);
+  const secretCurrent = $derived(
+    (secrets ?? []).find((row) => row.id === selectedSecret) ?? (secrets ?? [])[0],
+  );
   const deployCurrent = $derived(
-    data.deployments.find((row) => row.id === selectedDeploy) ?? data.deployments[0],
+    (deployments ?? []).find((row) => row.id === selectedDeploy) ?? (deployments ?? [])[0],
   );
   const shareView = $derived(secretCurrent ? shareSheet(secretCurrent) : null);
 
-  function onSecretBeforeInput(event: InputEvent): void {
-    if (!acceptSecretKey(event.inputType)) event.preventDefault();
+  function closeSheet(): void {
+    sheet = null;
+    busy = false;
   }
 
   function openConnect(app: string): void {
@@ -257,48 +268,197 @@
     status = `${connect.app} returned from the browser.`;
   }
 
+  async function handOff(prompt: string, label: string): Promise<void> {
+    if (busy) return;
+    busy = true;
+    try {
+      const result = await openAgentWorkflow(workflow, prompt, label);
+      status = result.message;
+      sheet = null;
+    } finally {
+      busy = false;
+    }
+  }
+
   async function runDeploy(artifact: string): Promise<void> {
-    const prompt = deployPrompt(slug || "company", artifact);
-    const result = await openAgentWorkflow(workflow, prompt, "deploy workflow");
-    status = result.message;
-    sheet = null;
+    await handOff(deployPrompt(slug || "company", artifact), "deploy workflow");
   }
 
   async function runRedeploy(): Promise<void> {
     if (!redeployAllowed(true) || !deployCurrent) return;
-    const prompt = redeployPrompt(slug || "company", redeployName || deployCurrent.name);
-    const result = await openAgentWorkflow(workflow, prompt, "redeploy");
-    status = result.message;
-    sheet = null;
+    await handOff(redeployPrompt(slug || "company", redeployName || deployCurrent.name), "redeploy");
   }
 
   function askRedeploy(row: DeploymentRowModel): void {
     redeployName = row.name;
     sheet = "confirm-redeploy";
   }
+
+  function openNewSecret(): void {
+    secretName = "";
+    sheet = "new-secret";
+  }
+
+  const secretNameValid = $derived(/^[A-Z][A-Z0-9_]*$/.test(secretName.trim()));
+
+  async function saveSecret(rotate: boolean): Promise<void> {
+    const name = rotate ? secretCurrent?.name ?? "" : secretName.trim();
+    if (!name || (!rotate && !secretNameValid)) return;
+    await handOff(secretSetPrompt(slug, name, rotate), rotate ? "secret rotation" : "new secret");
+  }
+
+  // ---- upload (US-025 upload scene) -----------------------------------------
+  let picked = $state<File[]>([]);
+  let fileInput = $state<HTMLInputElement | null>(null);
+  let uploadFolder = $state("");
+  let conflict = $state<ConflictPolicy>("keep-both");
+  interface UploadRow {
+    name: string;
+    dest: string | null;
+    status: "queued" | "uploading" | "done" | "failed" | "skipped";
+    detail: string;
+  }
+  let uploads = $state<UploadRow[]>([]);
+  const canUpload = $derived(Boolean(companyUid && files?.presignVaultPut));
+
+  function openUpload(): void {
+    picked = [];
+    uploads = [];
+    uploadFolder = vaultFile ? vaultFile.slice(0, vaultFile.lastIndexOf("/")) : vaultRoot;
+    sheet = "upload";
+  }
+
+  function addFiles(list: FileList | null): void {
+    if (list) picked = [...picked, ...Array.from(list)];
+  }
+
+  async function startUpload(): Promise<void> {
+    const api = files;
+    const uid = companyUid;
+    if (!api || !uid || picked.length === 0) return;
+    let existing = new Set<string>();
+    try {
+      existing = new Set((await loadVaultChildren(uploadFolder)).map((entry) => entry.name));
+    } catch (err) {
+      console.error("upload destination list failed:", err);
+    }
+    uploads = picked.map((file) => {
+      const dest = resolveUploadName(file.name, existing, conflict);
+      if (dest && conflict === "keep-both") existing.add(dest);
+      return dest
+        ? { name: file.name, dest, status: "queued" as const, detail: "Waiting" }
+        : { name: file.name, dest: null, status: "skipped" as const, detail: "Skipped, name already in this folder" };
+    });
+    sheet = "upload-progress";
+    for (let index = 0; index < picked.length; index += 1) {
+      const row = uploads[index];
+      const file = picked[index];
+      if (!row || !file || !row.dest) continue;
+      uploads[index] = { ...row, status: "uploading", detail: "Uploading" };
+      try {
+        const key = vaultUploadKey(vaultRoot, uploadFolder, row.dest);
+        if (!key) throw new Error("That folder is outside this company.");
+        const contentType = file.type || "application/octet-stream";
+        const signed = await api.presignVaultPut(uid, key, contentType, await fileIntegrity(file));
+        if (!signed.ok) throw new Error(signed.message || "Could not prepare the upload.");
+        const target = presignUrlFromResult(signed.value);
+        if (!target) throw new Error("Could not prepare the upload.");
+        const put = await putChatAttachmentDirect(target.url, target.headers, file);
+        if (!put.ok) throw new Error("The upload did not finish.");
+        uploads[index] = { ...row, status: "done", detail: "Uploaded. It appears here after the next sync." };
+      } catch (err) {
+        console.error("vault upload failed:", err);
+        uploads[index] = {
+          ...row,
+          status: "failed",
+          detail: err instanceof Error && err.message.endsWith(".") ? err.message : "Could not upload this file.",
+        };
+      }
+    }
+    treeNonce += 1;
+  }
+
+  const uploadHint = $derived.by(() => {
+    const done = uploads.filter((row) => row.status === "done").length;
+    const failed = uploads.filter((row) => row.status === "failed").length;
+    const active = uploads.filter((row) => row.status === "uploading" || row.status === "queued").length;
+    return `${done} done · ${active} in progress · ${failed} failed`;
+  });
+
+  function formatBytes(size: number): string {
+    if (size < 1024) return `${size} B`;
+    if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
+    return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  const sheetTitle = $derived.by(() => {
+    switch (sheet) {
+      case "share":
+      case "share-secret":
+        return "Share";
+      case "grant":
+        return "Grant access";
+      case "connect":
+        return "Connect app";
+      case "connect-waiting":
+        return connect ? `Waiting for ${connect.app}` : "Connect app";
+      case "new-secret":
+        return "New secret";
+      case "rotate":
+        return "Rotate secret";
+      case "bind":
+        return "Bind secret";
+      case "bind-outpost":
+        return "Bind to outpost";
+      case "deploy":
+        return "Deploy from project";
+      case "deploy-allowlist":
+        return "Allowlist";
+      case "deploy-access":
+        return "Deploy access";
+      case "confirm-redeploy":
+        return `Redeploy ${redeployName}?`;
+      case "upload":
+        return "Upload";
+      case "upload-progress":
+        return "Uploading";
+      default:
+        return "";
+    }
+  });
 </script>
 
-<section class="page" data-testid="files-connect" data-page={page} aria-busy={phase === "shimmer"}>
-  {#if phase === "shimmer"}
-    <div class="shimmer" data-testid="files-connect-skeleton"></div>
-  {:else if page === "vault"}
+{#snippet statusDot(value: string)}
+  <span class="st" data-status={value}><i class="dot" aria-hidden="true"></i>{statusLabel(value)}</span>
+{/snippet}
+
+{#snippet skeletonRows()}
+  <div class="skel" aria-busy="true" data-testid="files-connect-skeleton">
+    {#each [0, 1, 2, 3, 4] as row (row)}
+      <span class="skel-row"><i class="skel-icon"></i><i class="skel-line" style:width="{70 - row * 8}%"></i></span>
+    {/each}
+  </div>
+{/snippet}
+
+<section class="page" data-testid="files-connect" data-page={page}>
+  {#if page === "vault"}
     <header class="toolbar">
       <h1>Vault</h1>
-      <span class="chip">{data.files.toLocaleString()} files</span>
+      {#if vaultRootSummary}<span class="count">{vaultRootSummary}</span>{/if}
       <span class="grow"></span>
-      <div class="tabs" role="tablist">
-        <button class="tab" role="tab" aria-selected={vaultTab === "all"} onclick={() => (vaultTab = "all")}>All</button>
-        <button class="tab" role="tab" aria-selected={vaultTab === "new"} data-testid="vault-whats-new" onclick={() => (vaultTab = "new")}>What's new</button>
+      <div class="seg" role="tablist" aria-label="Vault view">
+        <button class="seg-tab" role="tab" aria-selected={vaultTab === "all"} onclick={() => (vaultTab = "all")}>All</button>
+        <button class="seg-tab" role="tab" aria-selected={vaultTab === "new"} data-testid="vault-whats-new" onclick={() => (vaultTab = "new")}>What's new</button>
       </div>
-      <input class="search" placeholder="Search files" bind:value={query} />
-      <button class="btn" type="button">Upload</button>
+      <input class="field search" placeholder="Search files" bind:value={query} />
+      <button class="btn" type="button" data-testid="vault-upload" onclick={openUpload}>Upload</button>
       <button class="btn" type="button" data-testid="vault-share" onclick={() => (sheet = "share")}>Share</button>
     </header>
     <div class="split vault-split" class:has-tree={showVaultTree}>
       {#if showVaultTree}
         <div class="vault-tree" data-testid="vault-tree">
           <div class="vault-root mono" title={vaultRoot}>{vaultRoot}</div>
-          {#key vaultRoot}
+          {#key `${vaultRoot}:${treeNonce}`}
             <CompanyFileTree
               rootPath={vaultRoot}
               loadChildren={loadVaultChildren}
@@ -309,152 +469,169 @@
           {/key}
         </div>
       {:else}
-      <div class="list" data-testid="vault-list">
-        {#each vaultPage.rows as node (node.id)}
-          <button
-            class="row"
-            type="button"
-            aria-current={node.id === vaultCurrent?.id}
-            onclick={() => (selectedVault = node.id)}
-          >
-            <span class="nm" style:padding-left="{node.depth * 12}px">{node.name}</span>
-            <span class="chip">{node.acl}</span>
-            <span class="meta">{node.editedBy}</span>
-          </button>
-        {/each}
-        {#if vaultPage.remaining > 0}
-          <ShowMoreRow shown={vaultPage.rows.length} total={vaultPage.total} next={vaultPage.next} noun="files" testid="vault-show-more" onmore={() => (vaultPages += 1)} />
-        {/if}
-      </div>
+        <div class="list" data-testid="vault-list">
+          {#each vaultPage.rows as node (node.id)}
+            <button class="row" type="button" aria-current={node.id === vaultCurrent?.id} onclick={() => (selectedVault = node.id)}>
+              <span class="nm" style:padding-left="{(node.depth - 1) * 12}px">{node.name}</span>
+              <span class="meta">{node.acl}</span>
+              <span class="meta">{node.editedBy}</span>
+            </button>
+          {/each}
+          {#if vaultPage.remaining > 0}
+            <ShowMoreRow shown={vaultPage.rows.length} total={vaultPage.total} next={vaultPage.next} noun="files" testid="vault-show-more" onmore={() => (vaultPages += 1)} />
+          {/if}
+        </div>
       {/if}
       {#if showVaultTree}
         <section class="vault-preview" aria-label="File preview" data-testid="vault-preview">
           {#if vaultFile}
             <FilePreviewPane adapter={previewAdapter} path={vaultFile} />
           {:else}
-            <div class="vault-empty" data-testid="vault-preview-empty">
-              <span class="vault-empty-title">Select a file</span>
+            <div class="empty" data-testid="vault-preview-empty">
+              <span class="empty-title">Select a file</span>
               <p class="mono" title={vaultRoot}>{vaultRoot}</p>
               <p data-testid="vault-summary">{vaultRootSummary ?? "Reading folder…"}</p>
             </div>
           {/if}
         </section>
       {/if}
-      <aside class="inspector" data-testid="vault-access">
-        <p class="kind">Access</p>
-        {#if showVaultTree}
-          <h2>{vaultFolder ?? slug}</h2>
-        {:else}
-          <h2>{vaultCurrent?.name}</h2>
-          <pre class="preview">{vaultCurrent?.preview}</pre>
-        {/if}
-        {#each data.grants as grant (grant.id)}
-          <div class="grant">
-            <span>{grant.name}</span>
-            <span class="chip">{grant.level}</span>
+      <aside class="pane" data-testid="vault-access">
+        <header class="pane-h"><span class="pane-kind">Access</span></header>
+        <div class="pane-b">
+          {#if showVaultTree}
+            <h2>{vaultFolder ?? slug}</h2>
+          {:else}
+            <h2>{vaultCurrent?.name}</h2>
+            <pre class="preview">{vaultCurrent?.preview}</pre>
+          {/if}
+          <div class="grants">
+            {#each data.grants as grant (grant.id)}
+              <div class="grant">
+                <span class="nm">{grant.name}</span>
+                <span class="meta">{grant.level}</span>
+              </div>
+            {/each}
           </div>
-        {/each}
-        <div class="tabs" role="tablist" aria-label="Grant level">
-          {#each ACCESS_LEVELS as level (level)}
-            <button class="tab" type="button" role="tab" aria-selected={grantLevel === level} onclick={() => (grantLevel = level)}>{level}</button>
-          {/each}
+          <div class="actions">
+            <div class="seg" role="tablist" aria-label="Grant level">
+              {#each ACCESS_LEVELS as level (level)}
+                <button class="seg-tab" type="button" role="tab" aria-selected={grantLevel === level} onclick={() => (grantLevel = level)}>{level === "read" ? "Read" : "Write"}</button>
+              {/each}
+            </div>
+            <button class="btn" type="button" data-testid="grant-access" onclick={() => (sheet = "grant")}>Grant access</button>
+          </div>
         </div>
-        <button class="btn primary" type="button" data-testid="grant-access" onclick={() => (sheet = "grant")}>Grant access</button>
       </aside>
     </div>
   {:else if page === "integrations"}
     <header class="toolbar">
       <h1>Integrations</h1>
-      <span class="chip" data-testid="integrations-count">{countLabel("Integrations", integrationRows.length)}</span>
+      <span class="count" data-testid="integrations-count">{countLabel("Integrations", integrationRows.length)}</span>
       <span class="grow"></span>
-      <div class="tabs" role="tablist">
-        <button class="tab" role="tab" aria-selected={integrationTab === "connected"} onclick={() => (integrationTab = "connected")}>Connected</button>
-        <button class="tab" role="tab" aria-selected={integrationTab === "available"} onclick={() => (integrationTab = "available")}>Available</button>
-        <button class="tab" role="tab" aria-selected={integrationTab === "mcp"} data-testid="integrations-mcp" onclick={() => (integrationTab = "mcp")}>Agents & MCP</button>
+      <div class="seg" role="tablist" aria-label="Integrations view">
+        <button class="seg-tab" role="tab" aria-selected={integrationTab === "connected"} onclick={() => (integrationTab = "connected")}>Connected</button>
+        <button class="seg-tab" role="tab" aria-selected={integrationTab === "available"} onclick={() => (integrationTab = "available")}>Available</button>
+        <button class="seg-tab" role="tab" aria-selected={integrationTab === "mcp"} data-testid="integrations-mcp" onclick={() => (integrationTab = "mcp")}>Agents & MCP</button>
       </div>
-      <input class="search" placeholder="App name or website" bind:value={query} />
+      <input class="field search" placeholder="App name or website" bind:value={query} />
       <button class="btn primary" type="button" data-testid="connect-app" onclick={() => (sheet = "connect")}>Connect app</button>
     </header>
     <div class="split">
       <div class="list">
         {#each integrationPage.rows as row (row.id)}
           <button class="row" type="button" aria-current={row.id === integrationCurrent?.id} onclick={() => (selectedIntegration = row.id)}>
-            <span class="mark">{row.mark}</span>
+            <span class="mark" aria-hidden="true">{row.mark}</span>
             <span class="nm">{row.name}</span>
-            <span class="meta">{row.detail}</span>
-            <span class="chip" data-status={row.status}>{row.status}</span>
+            <span class="meta grow-meta">{row.detail}</span>
+            {@render statusDot(row.status)}
           </button>
         {/each}
         {#if integrationPage.remaining > 0}
           <ShowMoreRow shown={integrationPage.rows.length} total={integrationPage.total} next={integrationPage.next} noun="integrations" testid="integrations-show-more" onmore={() => (integrationPages += 1)} />
         {/if}
       </div>
-      <aside class="inspector">
+      <aside class="pane">
         {#if integrationCurrent}
-          <p class="kind">{integrationCurrent.kind}</p>
-          <h2>{integrationCurrent.name}</h2>
-          <p>{integrationCurrent.detail}</p>
-          <button class="btn" type="button" onclick={() => openConnect(integrationCurrent.name)}>
-            {integrationCurrent.status === "active" ? "Manage" : "Connect"}
-          </button>
+          <header class="pane-h"><span class="pane-kind">{integrationCurrent.kind === "mcp" ? "Agents & MCP" : integrationCurrent.kind === "available" ? "Available" : "Connected"}</span></header>
+          <div class="pane-b">
+            <h2>{integrationCurrent.name}</h2>
+            <p class="meta">{integrationCurrent.detail}</p>
+            {@render statusDot(integrationCurrent.status)}
+            <div class="actions">
+              <button class="btn" type="button" onclick={() => openConnect(integrationCurrent.name)}>
+                {integrationCurrent.status === "active" ? "Manage" : "Connect"}
+              </button>
+            </div>
+          </div>
         {/if}
       </aside>
     </div>
   {:else if page === "secrets"}
     <header class="toolbar">
       <h1>Secrets</h1>
-      <span class="chip" data-testid="secrets-count">{countLabel("Secrets", secretRows.length)}</span>
-      <span class="chip">values never shown</span>
+      {#if secrets}<span class="count" data-testid="secrets-count">{countLabel("Secrets", secretRows.length)}</span>{/if}
       <span class="grow"></span>
-      <input class="search" placeholder="Search secrets" bind:value={query} />
-      <div class="tabs" role="tablist">
-        <button class="tab" role="tab" aria-selected={secretTab === "all"} onclick={() => (secretTab = "all")}>All</button>
-        <button class="tab" role="tab" aria-selected={secretTab === "standard"} onclick={() => (secretTab = "standard")}>Standard</button>
-        <button class="tab" role="tab" aria-selected={secretTab === "proxy"} onclick={() => (secretTab = "proxy")}>Proxy-only</button>
+      <div class="seg" role="tablist" aria-label="Secret kind">
+        <button class="seg-tab" role="tab" aria-selected={secretTab === "all"} onclick={() => (secretTab = "all")}>All</button>
+        <button class="seg-tab" role="tab" aria-selected={secretTab === "standard"} onclick={() => (secretTab = "standard")}>Standard</button>
+        <button class="seg-tab" role="tab" aria-selected={secretTab === "proxy"} onclick={() => (secretTab = "proxy")}>Proxy-only</button>
       </div>
-      <button class="btn primary" type="button" data-testid="new-secret" onclick={() => (sheet = "new-secret")}>New secret</button>
+      <input class="field search" placeholder="Search secrets" bind:value={query} />
+      <button class="btn primary" type="button" data-testid="new-secret" onclick={openNewSecret}>New secret</button>
     </header>
     <div class="split">
       <div class="list" data-testid="secrets-list">
-        {#each secretPage.rows as row (row.id)}
-          <button class="row" type="button" aria-current={row.id === secretCurrent?.id} onclick={() => (selectedSecret = row.id)}>
-            <span class="nm mono">{row.name}</span>
-            <span class="meta">{row.kind} · {row.version}{row.host ? ` · ${row.host}` : ""}</span>
-            <span class="meta">{row.scope}</span>
-            <span class="meta">{row.rotated}</span>
-            <span class="meta">{row.apps}</span>
-            <span class="meta">{row.readers}</span>
-          </button>
-        {/each}
-        {#if secretPage.remaining > 0}
-          <ShowMoreRow shown={secretPage.rows.length} total={secretPage.total} next={secretPage.next} noun="secrets" testid="secrets-show-more" onmore={() => (secretPages += 1)} />
+        {#if secrets === null}
+          {@render skeletonRows()}
+        {:else if secretRows.length === 0}
+          <p class="empty-line" data-testid="secrets-empty">{secretsError ?? (query ? "No matching secrets" : "No secrets yet")}</p>
+        {:else}
+          {#each secretPage.rows as row (row.id)}
+            <button class="row" type="button" data-testid="secret-row" aria-current={row.id === secretCurrent?.id} onclick={() => (selectedSecret = row.id)}>
+              <span class="nm mono">{row.name}</span>
+              <span class="meta grow-meta">{row.scope}</span>
+              <span class="meta">{row.rotated}</span>
+            </button>
+          {/each}
+          {#if secretPage.remaining > 0}
+            <ShowMoreRow shown={secretPage.rows.length} total={secretPage.total} next={secretPage.next} noun="secrets" testid="secrets-show-more" onmore={() => (secretPages += 1)} />
+          {/if}
         {/if}
       </div>
-      <aside class="inspector" data-testid="secret-inspector">
+      <aside class="pane" data-testid="secret-inspector">
         {#if secretCurrent && shareView}
-          <p class="kind">{secretCurrent.kind}</p>
-          <h2 class="mono">{shareView.name}</h2>
-          <p class="meta">Value is not shown.</p>
-          <button class="btn" type="button" data-testid="rotate-secret" onclick={() => (sheet = "rotate")}>Rotate</button>
-          <button class="btn" type="button" data-testid="share-secret" onclick={() => (sheet = "share-secret")}>Share</button>
-          <button class="btn" type="button" data-testid="bind-secret" onclick={() => (sheet = "bind")}>Bind</button>
-          <button class="btn" type="button" onclick={() => (sheet = "bind-outpost")}>Bind to outpost</button>
+          <header class="pane-h"><span class="pane-kind">{secretCurrent.kind === "proxy" ? "Proxy-only secret" : "Secret"}</span></header>
+          <div class="pane-b">
+            <h2 class="mono">{shareView.name}</h2>
+            <dl class="facts">
+              <dt>Scope</dt><dd>{secretCurrent.scope}</dd>
+              <dt>Rotated</dt><dd>{secretCurrent.rotated}</dd>
+              {#if secretCurrent.host}<dt>Host</dt><dd class="mono">{secretCurrent.host}</dd>{/if}
+            </dl>
+            <p class="meta">The value is never shown here.</p>
+            <div class="actions">
+              <button class="btn" type="button" data-testid="rotate-secret" onclick={() => (sheet = "rotate")}>Rotate</button>
+              <button class="btn" type="button" data-testid="share-secret" onclick={() => (sheet = "share-secret")}>Share</button>
+              <button class="btn" type="button" data-testid="bind-secret" onclick={() => (sheet = "bind")}>Bind</button>
+              <button class="btn" type="button" data-testid="bind-outpost" onclick={() => (sheet = "bind-outpost")}>Bind to outpost</button>
+            </div>
+          </div>
         {/if}
       </aside>
     </div>
   {:else}
     <header class="toolbar">
       <h1>Deployments</h1>
-      <span class="chip" data-testid="deployments-count">{countLabel("Deployments", data.deployments.length)}</span>
+      {#if deployments}<span class="count" data-testid="deployments-count">{countLabel("Deployments", deployments.length)}</span>{/if}
       <span class="grow"></span>
       <button class="btn primary" type="button" data-testid="deploy-from-project" onclick={() => (sheet = "deploy")}>Deploy</button>
     </header>
-    {#if deploysLoading && data.deployments.length === 0}
-      <div class="list" data-testid="deployments-skeleton" aria-busy="true"></div>
-    {:else if data.deployments.length === 0}
+    {#if deployments === null}
+      <div class="list" data-testid="deployments-skeleton" aria-busy="true">{@render skeletonRows()}</div>
+    {:else if deployments.length === 0}
       <div class="empty" data-testid="deployments-empty">
-        <h2>Nothing deployed yet</h2>
-        <button class="btn primary" type="button" onclick={() => (sheet = "deploy")}>Deploy from a project</button>
+        <p>{deploymentsError ?? "Nothing deployed yet"}</p>
+        <button class="btn" type="button" onclick={() => (sheet = "deploy")}>Deploy from a project</button>
       </div>
     {:else}
       <div class="split">
@@ -462,22 +639,27 @@
           {#each deployPage.rows as row (row.id)}
             <button class="row" type="button" aria-current={row.id === deployCurrent?.id} onclick={() => (selectedDeploy = row.id)}>
               <span class="nm">{row.name}</span>
-              <span class="meta">{row.project}</span>
-              <span class="chip" data-status={row.status}>{row.status}</span>
+              <span class="meta grow-meta">{row.project}</span>
+              {@render statusDot(row.status)}
             </button>
           {/each}
           {#if deployPage.remaining > 0}
             <ShowMoreRow shown={deployPage.rows.length} total={deployPage.total} next={deployPage.next} noun="deployments" testid="deployments-show-more" onmore={() => (deployPages += 1)} />
           {/if}
         </div>
-        <aside class="inspector">
+        <aside class="pane">
           {#if deployCurrent}
-            <p class="kind">{deployCurrent.status}</p>
-            <h2>{deployCurrent.name}</h2>
-            <p class="mono">{deployCurrent.url}</p>
-            <button class="btn" type="button" onclick={() => openExternal?.(deployCurrent.url)}>Open</button>
-            <button class="btn" type="button" data-testid="redeploy" onclick={() => askRedeploy(deployCurrent)}>Redeploy</button>
-            <button class="btn" type="button" onclick={() => (sheet = "deploy-access")}>Access</button>
+            <header class="pane-h"><span class="pane-kind">Deployment</span></header>
+            <div class="pane-b">
+              <h2>{deployCurrent.name}</h2>
+              {@render statusDot(deployCurrent.status)}
+              {#if deployCurrent.url}<p class="mono meta url">{deployCurrent.url}</p>{/if}
+              <div class="actions">
+                <button class="btn" type="button" disabled={!deployCurrent.url} onclick={() => openExternal?.(deployCurrent.url)}>Open</button>
+                <button class="btn" type="button" data-testid="redeploy" onclick={() => askRedeploy(deployCurrent)}>Redeploy</button>
+                <button class="btn" type="button" data-testid="deploy-access" onclick={() => (sheet = "deploy-access")}>Access</button>
+              </div>
+            </div>
           {/if}
         </aside>
       </div>
@@ -485,103 +667,223 @@
   {/if}
 
   {#if status}<p class="status" data-testid="files-connect-status">{status}</p>{/if}
-
-  {#if sheet}
-    <div class="sheet" role="dialog" data-testid={`sheet-${sheet}`} use:dismissable={{ onclose: () => (sheet = null), outside: true }}>
-      {#if sheet === "share" || sheet === "share-secret"}
-        <h2>Share</h2>
-        <p>{shareView?.name ?? vaultCurrent?.name}</p>
-        <div class="tabs" role="tablist">
-        {#each ACCESS_LEVELS as level (level)}
-          <button class="tab" type="button" role="tab" aria-selected={grantLevel === level} onclick={() => (grantLevel = clampAccess(level))}>{level}</button>
-        {/each}
-        </div>
-        <p class="meta" data-testid="share-no-value">No secret value is included.</p>
-      {:else if sheet === "grant"}
-        <h2>Grant access</h2>
-        <p>Level: {grantLevel}</p>
-      {:else if sheet === "connect"}
-        <h2>Connect app</h2>
-        <button class="btn primary" type="button" data-testid="connect-open" onclick={() => openConnect(query || "Slack")}>Open in browser</button>
-      {:else if sheet === "connect-waiting" && connect}
-        <h2 data-testid="connect-waiting">Waiting for {connect.app}</h2>
-        <p>Finish sign-in in the browser. This sheet stays until the deep link returns.</p>
-        <button class="btn" type="button" data-testid="connect-return" onclick={simulateReturn}>Deep link returned</button>
-      {:else if sheet === "new-secret" || sheet === "rotate"}
-        <h2>{sheet === "rotate" ? "Rotate secret" : "New secret"}</h2>
-        <input
-          class="secret"
-          type="password"
-          autocomplete="off"
-          data-testid="secret-field"
-          placeholder="Paste only"
-          bind:value={secretDraft}
-          onbeforeinput={onSecretBeforeInput}
-        />
-        <p class="meta">Masked. Paste only. The value is not shown again.</p>
-      {:else if sheet === "bind" || sheet === "bind-outpost"}
-        <h2>{sheet === "bind-outpost" ? "Bind to outpost" : "Bind secret"}</h2>
-        <p class="mono">{secretCurrent?.name}</p>
-        <p class="meta">The binding stores the name, not the value.</p>
-      {:else if sheet === "deploy"}
-        <h2>Deploy from project</h2>
-        <button class="btn" type="button" onclick={() => (sheet = "deploy-allowlist")}>Choose allowlist</button>
-        <button class="btn primary" type="button" data-testid="run-deploy" onclick={() => void runDeploy(query || "project")}>Deploy</button>
-      {:else if sheet === "deploy-allowlist"}
-        <h2>Allowlist</h2>
-        <p>Company members with read access can open the link.</p>
-        <button class="btn primary" type="button" onclick={() => (sheet = "deploy")}>Back to deploy</button>
-      {:else if sheet === "deploy-access"}
-        <h2>Deploy access</h2>
-        {#each ACCESS_LEVELS as level (level)}
-          <span class="chip">{level}</span>
-        {/each}
-      {:else if sheet === "confirm-redeploy"}
-        <h2>Redeploy {redeployName}?</h2>
-        <p>This runs the existing hq-deploy command again.</p>
-        <button class="btn" type="button" onclick={() => (sheet = null)}>Cancel</button>
-        <button class="btn primary" type="button" data-testid="confirm-redeploy" onclick={() => void runRedeploy()}>Redeploy</button>
-      {/if}
-      <button class="btn" type="button" onclick={() => (sheet = null)}>Close</button>
-    </div>
-  {/if}
 </section>
 
+{#if sheet}
+  <div class="scrim" role="presentation" onclick={closeSheet}></div>
+  <div class="sheet" role="dialog" aria-modal="true" aria-label={sheetTitle} data-testid={`sheet-${sheet}`} use:dismissable={{ onclose: closeSheet, outside: true }}>
+    <header class="sh">
+      <span>{sheetTitle}</span>
+      <span class="grow"></span>
+      <button class="icon" type="button" aria-label="Close" data-testid="sheet-close" onclick={closeSheet}>
+        <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M3.5 3.5l7 7M10.5 3.5l-7 7" /></svg>
+      </button>
+    </header>
+    <div class="sb">
+      {#if sheet === "share" || sheet === "share-secret"}
+        <div class="fr"><span class="lb">Item</span><span class={sheet === "share-secret" ? "mono" : ""}>{sheet === "share-secret" ? shareView?.name : vaultFile ?? vaultRoot}</span></div>
+        <div class="fr">
+          <span class="lb">Access</span>
+          <div class="seg" role="tablist">
+            {#each ACCESS_LEVELS as level (level)}
+              <button class="seg-tab" type="button" role="tab" aria-selected={grantLevel === level} onclick={() => (grantLevel = clampAccess(level))}>{level === "read" ? "Read" : "Write"}</button>
+            {/each}
+          </div>
+        </div>
+        {#if sheet === "share-secret"}<p class="hint" data-testid="share-no-value">No secret value is included.</p>{/if}
+      {:else if sheet === "grant"}
+        <div class="fr"><span class="lb">Folder</span><span class="mono">{vaultFolder ? `${vaultRoot}/${vaultFolder}` : vaultRoot}</span></div>
+        <div class="fr">
+          <span class="lb">Access</span>
+          <div class="seg" role="tablist">
+            {#each ACCESS_LEVELS as level (level)}
+              <button class="seg-tab" type="button" role="tab" aria-selected={grantLevel === level} onclick={() => (grantLevel = level)}>{level === "read" ? "Read" : "Write"}</button>
+            {/each}
+          </div>
+        </div>
+        <p class="hint">Opens the share flow, which asks who to grant.</p>
+      {:else if sheet === "connect"}
+        <div class="fr"><span class="lb">App</span><span>{query || "Slack"}</span></div>
+        <p class="hint">Sign-in finishes in your browser.</p>
+      {:else if sheet === "connect-waiting" && connect}
+        <p class="hint" data-testid="connect-waiting">Finish sign-in in the browser. This stays open until the app returns.</p>
+      {:else if sheet === "new-secret" || sheet === "rotate"}
+        {#if sheet === "new-secret"}
+          <label class="fr"><span class="lb">Name</span>
+            <input class="field" data-testid="secret-name" placeholder="STRIPE_SECRET_KEY" autocomplete="off" spellcheck="false" bind:value={secretName} />
+          </label>
+        {:else}
+          <div class="fr"><span class="lb">Name</span><span class="mono">{secretCurrent?.name}</span></div>
+        {/if}
+        <p class="hint">Save opens a terminal prompt for the value. The value never passes through this window.</p>
+      {:else if sheet === "bind" || sheet === "bind-outpost"}
+        <div class="fr"><span class="lb">Secret</span><span class="mono">{secretCurrent?.name}</span></div>
+        <p class="hint">The binding stores the name, not the value.</p>
+      {:else if sheet === "deploy"}
+        <div class="fr"><span class="lb">Who can open</span><button class="link" type="button" onclick={() => (sheet = "deploy-allowlist")}>Company members</button></div>
+        <p class="hint">Runs the hq-deploy command and returns the link.</p>
+      {:else if sheet === "deploy-allowlist"}
+        <p class="hint">Company members with read access can open the link.</p>
+      {:else if sheet === "deploy-access"}
+        <div class="fr"><span class="lb">Deployment</span><span>{deployCurrent?.name}</span></div>
+        <div class="fr">
+          <span class="lb">Access</span>
+          <div class="seg" role="tablist">
+            {#each ACCESS_LEVELS as level (level)}
+              <button class="seg-tab" type="button" role="tab" aria-selected={grantLevel === level} onclick={() => (grantLevel = level)}>{level === "read" ? "Read" : "Write"}</button>
+            {/each}
+          </div>
+        </div>
+      {:else if sheet === "confirm-redeploy"}
+        <p class="hint">This runs the existing hq-deploy command again.</p>
+      {:else if sheet === "upload"}
+        <div class="fr">
+          <span class="lb">Files</span>
+          <div class="pick">
+            <button class="btn" type="button" data-testid="upload-choose" onclick={() => fileInput?.click()}>Choose files…</button>
+            <input bind:this={fileInput} type="file" multiple hidden onchange={(event) => addFiles((event.currentTarget as HTMLInputElement).files)} />
+            {#each picked as file, index (file.name + index)}
+              <span class="picked"><span class="nm">{file.name}</span><span class="meta">{formatBytes(file.size)}</span>
+                <button class="icon" type="button" aria-label={`Remove ${file.name}`} onclick={() => (picked = picked.filter((_, i) => i !== index))}>
+                  <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M3.5 3.5l7 7M10.5 3.5l-7 7" /></svg>
+                </button>
+              </span>
+            {/each}
+          </div>
+        </div>
+        <div class="fr"><span class="lb">Folder</span><span class="mono">{uploadFolder}/</span></div>
+        <div class="fr">
+          <span class="lb">On conflict</span>
+          <div class="seg" role="radiogroup" aria-label="On conflict">
+            {#each [["keep-both", "Keep both"], ["replace", "Replace"], ["skip", "Skip"]] as [id, label] (id)}
+              <button class="seg-tab" type="button" role="radio" aria-checked={conflict === id} aria-selected={conflict === id} onclick={() => (conflict = id as ConflictPolicy)}>{label}</button>
+            {/each}
+          </div>
+        </div>
+        {#if !canUpload}<p class="hint" data-testid="upload-unavailable">Uploading needs this company connected to HQ cloud.</p>{/if}
+      {:else if sheet === "upload-progress"}
+        {#each uploads as row (row.name + (row.dest ?? ""))}
+          <div class="fr" data-status={row.status}><span class="lb">{row.status === "done" ? "Done" : row.status === "failed" ? "Failed" : row.status === "skipped" ? "Skipped" : "Uploading"}</span><span><span class="nm">{row.dest ?? row.name}</span><span class="meta"> · {row.detail}</span></span></div>
+        {/each}
+      {/if}
+    </div>
+    <footer class="sf">
+      <span class="hint grow">{sheet === "upload" ? `${picked.length} files` : sheet === "upload-progress" ? uploadHint : ""}</span>
+      {#if sheet === "share" || sheet === "share-secret"}
+        <button class="btn" type="button" onclick={closeSheet}>Cancel</button>
+        <button class="btn primary" type="button" data-testid="share-save" disabled={busy} onclick={() => void handOff(sheet === "share-secret" ? secretSharePrompt(slug, shareView?.name ?? "", grantLevel) : shareAccessPrompt(slug, vaultFile ?? vaultRoot, grantLevel), "share")}>Share</button>
+      {:else if sheet === "grant"}
+        <button class="btn" type="button" onclick={closeSheet}>Cancel</button>
+        <button class="btn primary" type="button" data-testid="grant-save" disabled={busy} onclick={() => void handOff(shareAccessPrompt(slug, vaultFolder ? `${vaultRoot}/${vaultFolder}` : vaultRoot, grantLevel), "share")}>Grant</button>
+      {:else if sheet === "connect"}
+        <button class="btn" type="button" onclick={closeSheet}>Cancel</button>
+        <button class="btn primary" type="button" data-testid="connect-open" onclick={() => openConnect(query || "Slack")}>Open in browser</button>
+      {:else if sheet === "connect-waiting"}
+        <button class="btn" type="button" onclick={closeSheet}>Cancel</button>
+        <button class="btn" type="button" data-testid="connect-return" onclick={simulateReturn}>I've signed in</button>
+      {:else if sheet === "new-secret" || sheet === "rotate"}
+        <button class="btn" type="button" onclick={closeSheet}>Cancel</button>
+        <button class="btn primary" type="button" data-testid="secret-save" disabled={busy || (sheet === "new-secret" && !secretNameValid)} onclick={() => void saveSecret(sheet === "rotate")}>Save</button>
+      {:else if sheet === "bind" || sheet === "bind-outpost"}
+        <button class="btn" type="button" onclick={closeSheet}>Cancel</button>
+        <button class="btn primary" type="button" data-testid="bind-save" disabled={busy} onclick={() => void handOff(secretBindPrompt(slug, secretCurrent?.name ?? "", sheet === "bind-outpost" ? "outpost" : "app"), "binding")}>Bind</button>
+      {:else if sheet === "deploy"}
+        <button class="btn" type="button" onclick={closeSheet}>Cancel</button>
+        <button class="btn primary" type="button" data-testid="run-deploy" disabled={busy} onclick={() => void runDeploy(query || "project")}>Deploy</button>
+      {:else if sheet === "deploy-allowlist"}
+        <button class="btn primary" type="button" onclick={() => (sheet = "deploy")}>Back</button>
+      {:else if sheet === "deploy-access"}
+        <button class="btn" type="button" onclick={closeSheet}>Cancel</button>
+        <button class="btn primary" type="button" disabled={busy} onclick={() => void handOff(shareAccessPrompt(slug, deployCurrent?.url || deployCurrent?.name || "", grantLevel), "access change")}>Save</button>
+      {:else if sheet === "confirm-redeploy"}
+        <button class="btn" type="button" onclick={closeSheet}>Cancel</button>
+        <button class="btn primary" type="button" data-testid="confirm-redeploy" disabled={busy} onclick={() => void runRedeploy()}>Redeploy</button>
+      {:else if sheet === "upload"}
+        <button class="btn" type="button" onclick={closeSheet}>Cancel</button>
+        <button class="btn primary" type="button" data-testid="upload-start" disabled={!canUpload || picked.length === 0} onclick={() => void startUpload()}>Upload</button>
+      {:else}
+        <button class="btn primary" type="button" onclick={closeSheet}>Done</button>
+      {/if}
+    </footer>
+  </div>
+{/if}
+
 <style>
-  .page { display: flex; flex-direction: column; height: 100%; min-height: 0; color: var(--v4-text-1); background: var(--v4-ground); }
-  .toolbar { display: flex; align-items: center; gap: 8px; padding: 12px 16px; }
-  h1 { font-size: var(--type-section, 17px); font-weight: 600; margin: 0; }
-  h2 { font-size: var(--type-body, 15px); margin: 0; }
+  /* Messages metrics: chat/chat-tokens.css, chat/ChatSidebar.svelte rows,
+     chat/MemberProfilePanel.svelte pane, chat/NewChannelSheet.svelte sheet. */
+  .page { display: flex; flex-direction: column; height: 100%; min-height: 0; color: var(--t1, var(--v4-text-1)); background: var(--v4-ground); font: 400 13px/1.45 var(--font-ui, var(--font-sans)); }
+  button, input { font: inherit; }
+  .toolbar { display: flex; align-items: center; gap: 8px; min-height: 48px; padding: 10px 16px; border-bottom: 1px solid var(--line, var(--v4-rowline)); }
+  h1 { font-size: 20px; font-weight: 500; line-height: 1.25; margin: 0; }
+  h2 { font-size: 13px; font-weight: 500; line-height: 17px; margin: 0; overflow-wrap: anywhere; }
+  .count { color: var(--t3, var(--v4-text-3)); font-variant-numeric: tabular-nums; }
   .grow { flex: 1; }
-  .chip { font-size: var(--type-metadata, 13px); color: var(--v4-text-3); border: 1px solid var(--v4-rowline); border-radius: 999px; padding: 2px 8px; }
-  .tabs { display: flex; gap: 4px; }
-  .tab { background: transparent; color: var(--v4-text-2); border: 0; border-radius: 6px; padding: 4px 8px; }
-  .tab[aria-selected="true"] { background: var(--v4-active-row, var(--v4-hover)); color: var(--v4-text-1); }
-  .search, .secret { height: 28px; border-radius: 6px; border: 1px solid var(--v4-control-border); background: var(--v4-control-faint); color: var(--v4-text-1); padding: 0 8px; }
-  .btn { height: 28px; border-radius: 6px; border: 1px solid var(--v4-control-border); background: var(--v4-control-faint); color: var(--v4-text-1); padding: 0 10px; }
-  .btn.primary { background: var(--v4-primary-bg); color: var(--v4-primary-fg); border-color: transparent; }
+  .seg { display: flex; gap: 2px; width: max-content; padding: 2px; border-radius: 6px; border: 1px solid var(--panel-border, var(--v4-hairline)); background: var(--hover, var(--v4-hover)); }
+  .seg-tab { border: 0; background: transparent; color: var(--t2, var(--v4-text-2)); padding: 2px 8px; border-radius: 4px; line-height: 18px; cursor: pointer; }
+  .seg-tab[aria-selected="true"] { background: var(--v4-active-row, var(--sel)); color: var(--t1, var(--v4-text-1)); }
+  .field { height: 28px; border-radius: 6px; border: 1px solid var(--line2, var(--v4-control-border)); background: transparent; color: inherit; padding: 0 8px; min-width: 0; }
+  .search { width: 200px; }
+  .btn { height: 26px; border-radius: 6px; border: 1px solid var(--line2, var(--v4-control-border)); background: transparent; color: var(--t1, var(--v4-text-1)); padding: 0 10px; cursor: pointer; white-space: nowrap; }
+  .btn:hover:not(:disabled) { background: var(--hover, var(--v4-hover)); }
+  .btn.primary { background: var(--t1, var(--v4-text-1)); color: var(--panel-bg, var(--v4-ground)); border-color: transparent; }
+  .btn.primary:hover:not(:disabled) { background: var(--t1, var(--v4-text-1)); opacity: 0.9; }
+  .btn:disabled { opacity: 0.45; cursor: default; }
+  .icon { width: 24px; height: 24px; display: inline-grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--t3, var(--v4-text-3)); padding: 0; cursor: pointer; }
+  .icon:hover { background: var(--hover, var(--v4-hover)); color: var(--t1, var(--v4-text-1)); }
+  .link { border: 0; background: transparent; color: var(--t1, var(--v4-text-1)); padding: 0; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; text-align: left; }
   .split { display: grid; grid-template-columns: minmax(0, 1fr) 320px; min-height: 0; flex: 1; }
-  .list, .inspector { min-height: 0; overflow: auto; }
-  /* Vault: tree · preview · access, matching the vault storyboard scene. */
-  .vault-split.has-tree { grid-template-columns: minmax(240px, 320px) minmax(0, 1fr) 280px; }
-  .vault-tree { min-height: 0; overflow: auto; padding: 8px 8px 16px; border-right: 1px solid var(--v4-rowline); }
-  .vault-root { padding: 4px 8px 6px; color: var(--v4-text-3); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .vault-preview { min-width: 0; min-height: 0; overflow: auto; }
-  .vault-empty { padding: 24px 16px; color: var(--v4-text-3); }
-  .vault-empty p { margin: 2px 0 0; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .vault-empty-title { display: block; margin-bottom: 4px; color: var(--v4-text-1); font-weight: 600; }
-  .inspector { border-left: 1px solid var(--v4-rowline); background: var(--v4-secondary-sidebar); padding: 16px; display: flex; flex-direction: column; gap: 8px; }
-  .row { display: flex; gap: 8px; align-items: center; width: 100%; text-align: left; padding: 8px; border: 0; border-bottom: 1px solid var(--v4-rowline); background: transparent; color: var(--v4-text-2); }
-  .row[aria-current="true"] { background: var(--v4-active-row, var(--v4-hover)); color: var(--v4-text-1); }
-  .nm { color: var(--v4-text-1); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .meta, .kind { color: var(--v4-text-3); font-size: var(--type-metadata, 13px); margin: 0; }
+  .list { min-height: 0; overflow: auto; padding: 6px 8px; display: flex; flex-direction: column; gap: 1px; }
+  .row { display: flex; gap: 10px; align-items: center; width: 100%; min-height: 31px; text-align: left; padding: 7px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--t2, var(--v4-text-2)); line-height: 17px; cursor: pointer; }
+  .row:hover { background: var(--hover, var(--v4-hover)); }
+  .row[aria-current="true"] { background: var(--sel, var(--v4-active-row)); color: var(--t1, var(--v4-text-1)); box-shadow: none; }
+  .nm { color: var(--t1, var(--v4-text-1)); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .meta { color: var(--t3, var(--v4-text-3)); margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .grow-meta { flex: 1; min-width: 0; }
   .mono { font-family: var(--font-mono, ui-monospace, monospace); }
-  .mark { width: 22px; height: 22px; display: grid; place-items: center; border-radius: 4px; background: var(--v4-control-faint); font-size: 10px; }
-  .preview { white-space: pre-wrap; color: var(--v4-text-2); font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; }
-  .grant { display: flex; justify-content: space-between; gap: 8px; }
-  .empty { padding: 32px; }
-  .sheet { position: absolute; right: 16px; bottom: 16px; width: 320px; padding: 16px; border: 1px solid var(--v4-rowline); border-radius: 10px; background: var(--v4-raised, var(--v4-ground)); display: flex; flex-direction: column; gap: 8px; }
-  .shimmer { height: 120px; margin: 16px; border-radius: 8px; background: linear-gradient(90deg, var(--v4-control-faint), var(--v4-hover), var(--v4-control-faint)); background-size: 200% 100%; animation: sk 1.1s linear infinite; }
-  @keyframes sk { from { background-position: 100% 0; } to { background-position: -100% 0; } }
-  .status { padding: 0 16px 12px; color: var(--v4-text-3); font-size: var(--type-metadata, 13px); }
+  .mark { width: 24px; height: 24px; flex: 0 0 24px; display: grid; place-items: center; border-radius: 5px; background: var(--raised, var(--v4-control-faint)); color: var(--t2, var(--v4-text-2)); font-size: 12px; font-weight: 500; }
+  .st { display: inline-flex; align-items: center; gap: 6px; color: var(--t2, var(--v4-text-2)); white-space: nowrap; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--t3, var(--v4-text-3)); }
+  .st[data-status="active"] .dot, .st[data-status="live"] .dot { background: var(--ok, var(--v4-ok)); }
+  .st[data-status="error"] .dot { background: var(--red, var(--v4-danger)); }
+  /* Detail pane: Messages profile pane rhythm. */
+  .pane { min-height: 0; overflow: auto; border-left: 1px solid var(--line, var(--v4-rowline)); display: flex; flex-direction: column; }
+  .pane-h { display: flex; align-items: center; min-height: 48px; padding: 12px 14px; border-bottom: 1px solid var(--line, var(--v4-rowline)); }
+  .pane-kind { color: var(--t2, var(--v4-text-2)); font-weight: 500; }
+  .pane-b { padding: 20px; display: flex; flex-direction: column; gap: 10px; }
+  .pane-b p { margin: 0; }
+  .facts { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 6px 12px; margin: 0; }
+  .facts dt { color: var(--t3, var(--v4-text-3)); }
+  .facts dd { margin: 0; color: var(--t1, var(--v4-text-1)); overflow-wrap: anywhere; }
+  .url { white-space: normal; overflow-wrap: anywhere; }
+  .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding-top: 4px; }
+  .grants { display: flex; flex-direction: column; }
+  .grant { display: flex; justify-content: space-between; align-items: center; gap: 8px; min-height: 28px; }
+  .preview { white-space: pre-wrap; color: var(--t2, var(--v4-text-2)); font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; margin: 0; }
+  /* Vault: tree · preview · access. */
+  .vault-split.has-tree { grid-template-columns: minmax(240px, 300px) minmax(0, 1fr) 280px; }
+  .vault-tree { min-height: 0; overflow: auto; padding: 8px 8px 16px; border-right: 1px solid var(--line, var(--v4-rowline)); }
+  .vault-root { padding: 4px 8px 6px; color: var(--t3, var(--v4-text-3)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .vault-preview { min-width: 0; min-height: 0; overflow: auto; }
+  .empty { padding: 48px 16px; color: var(--t3, var(--v4-text-3)); text-align: center; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  .empty p { margin: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .empty .btn { margin-top: 8px; }
+  .empty-title { color: var(--t2, var(--v4-text-2)); }
+  .empty-line { margin: 0; padding: 48px 16px; text-align: center; color: var(--t3, var(--v4-text-3)); }
+  .skel { display: flex; flex-direction: column; padding: 6px 8px; }
+  .skel-row { display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 8px; }
+  .skel-icon { width: 20px; height: 20px; border-radius: 5px; background: var(--line, var(--v4-control-faint)); }
+  .skel-line { height: 10px; border-radius: 4px; background: var(--line, var(--v4-control-faint)); }
+  .status { margin: 0; padding: 8px 16px; color: var(--t3, var(--v4-text-3)); border-top: 1px solid var(--line, var(--v4-rowline)); }
+  /* Sheet: chat/NewChannelSheet.svelte. */
+  .scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45); z-index: 70; }
+  .sheet { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(480px, calc(100vw - 32px)); max-height: calc(100% - 40px); display: flex; flex-direction: column; overflow: hidden; z-index: 71; background: var(--panel-bg, var(--v4-popover)); border: 1px solid var(--panel-border, var(--v4-hairline)); border-radius: 8px; color: var(--t1, var(--v4-text-1)); font: 400 13px/1.45 var(--font-ui, var(--font-sans)); }
+  .sh { height: 52px; flex: 0 0 52px; display: flex; align-items: center; gap: 8px; padding: 0 10px 0 20px; border-bottom: 1px solid var(--panel-border, var(--v4-hairline)); font-weight: 500; }
+  .sb { overflow: auto; }
+  .fr { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 12px; align-items: center; min-height: 28px; padding: 10px 20px; border-bottom: 1px solid var(--panel-border, var(--v4-rowline)); }
+  .lb { color: var(--t3, var(--v4-text-3)); }
+  .hint { margin: 0; padding: 10px 20px; color: var(--t3, var(--v4-text-3)); }
+  .sf .hint { padding: 0; }
+  .pick { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; }
+  .picked { display: flex; align-items: center; gap: 8px; max-width: 100%; }
+  .sf { display: flex; align-items: center; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--panel-border, var(--v4-hairline)); }
 </style>

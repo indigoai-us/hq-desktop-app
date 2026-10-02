@@ -18,7 +18,9 @@ vi.mock("../company-store.svelte.js", () => ({
     loadSecrets: vi.fn(async () => [
       { name: "ATTIO_API_KEY", value: "sk-live-do-not-render", kind: "standard" },
     ]),
-    loadDeployments: vi.fn(async () => []),
+    loadDeployments: vi.fn(async () => [
+      { name: "standup-report", url: "https://standup.example.test", state: "live" },
+    ]),
   },
 }));
 
@@ -34,7 +36,7 @@ describe("US-029 FilesConnectPage", () => {
   function mountPage(
     page: "vault" | "integrations" | "secrets" | "deployments",
     files: unknown = null,
-    listDeployApps: unknown = undefined,
+    extra: Record<string, unknown> = {},
   ) {
     const target = document.createElement("div");
     document.body.appendChild(target);
@@ -64,7 +66,7 @@ describe("US-029 FilesConnectPage", () => {
           getTelemetryConsent: vi.fn(async () => ok(null)),
         } satisfies SettingsApi,
         openExternal: vi.fn(),
-        listDeployApps: listDeployApps as never,
+        ...extra,
       },
     });
     flushSync();
@@ -130,7 +132,7 @@ describe("US-029 FilesConnectPage", () => {
         ],
       });
     });
-    const target = mountPage("deployments", null, listDeployApps);
+    const target = mountPage("deployments", null, { listDeployApps });
     expect(target.textContent).not.toContain("indigo-standup-report");
     await vi.waitFor(() => expect(target.textContent).toContain("hq-lifecycle-email-map"));
     expect(calls).toEqual(["indigo"]);
@@ -143,7 +145,7 @@ describe("US-029 FilesConnectPage", () => {
     const listDeployApps = vi.fn(async () =>
       ok({ apps: [{ id: "1", name: "real-app", subdomain: "real-app", url: "https://real-app.indigo-hq.com", status: "active" }] }),
     );
-    const target = mountPage("deployments", null, listDeployApps);
+    const target = mountPage("deployments", null, { listDeployApps });
     await vi.waitFor(() => expect(target.querySelector("[data-testid='redeploy']")).not.toBeNull());
     const redeploy = target.querySelector("[data-testid='redeploy']") as HTMLButtonElement;
     redeploy.click();
@@ -191,6 +193,82 @@ describe("US-029 FilesConnectPage", () => {
     expect(target.querySelector("[data-testid='vault-access'] h2")?.textContent).toBe("knowledge");
   });
 
+  it("lists every secret from environment groups, not three sample rows (QA-014)", async () => {
+    const store = (await import("../company-store.svelte.js")).companyStore as unknown as {
+      loadSecrets: ReturnType<typeof vi.fn>;
+    };
+    const items = Array.from({ length: 25 }, (_, i) => ({ key: `KEY_${i}`, upd: "", rot: "2d ago" }));
+    store.loadSecrets.mockResolvedValueOnce([
+      { env: "prod", count: 25, items },
+      { env: "dev", count: 3, items: items.slice(0, 3) },
+    ]);
+    const target = mountPage("secrets");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+    expect(target.querySelectorAll("[data-testid='secret-row']").length).toBe(28);
+    expect(target.querySelector("[data-testid='secrets-count']")?.textContent).toBe("Secrets · 28");
+    expect(target.textContent).not.toContain("STRIPE_SECRET_KEY");
+  });
+
+  it("opens New secret as a centered sheet with Save, and Escape closes it", async () => {
+    const target = mountPage("secrets");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+    (target.querySelector("[data-testid='new-secret']") as HTMLButtonElement).click();
+    flushSync();
+    const sheet = document.querySelector("[data-testid='sheet-new-secret']");
+    expect(sheet?.getAttribute("role")).toBe("dialog");
+    const save = document.querySelector("[data-testid='secret-save']") as HTMLButtonElement;
+    expect(save.textContent).toBe("Save");
+    expect(save.disabled).toBe(true);
+    const name = document.querySelector("[data-testid='secret-name']") as HTMLInputElement;
+    name.value = "NEW_KEY";
+    name.dispatchEvent(new Event("input"));
+    flushSync();
+    expect(save.disabled).toBe(false);
+    expect(document.querySelector("input[type='password']")).toBeNull();
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    flushSync();
+    expect(document.querySelector("[data-testid='sheet-new-secret']")).toBeNull();
+  });
+
+  it("binds the company read scope before listing the vault (QA-011)", async () => {
+    const calls: string[] = [];
+    const files = {
+      listDir: vi.fn(async (path: string) => {
+        calls.push(`list:${path}`);
+        return ok([]);
+      }),
+      getFileContent: vi.fn(async () => ok("")),
+    };
+    const adapter = {
+      files,
+      appShell: {
+        setActiveCompany: vi.fn(async (slug: string) => {
+          calls.push(`bind:${slug}`);
+          return ok(undefined);
+        }),
+      },
+      isAvailable: () => false,
+    };
+    mountPage("vault", files, { adapter });
+    for (let i = 0; i < 4; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+    }
+    expect(calls[0]).toBe("bind:indigo");
+    expect(calls).toContain("list:companies/indigo");
+  });
+
+  it("opens the upload sheet from Vault Upload", async () => {
+    const files = { listDir: vi.fn(async () => ok([])), getFileContent: vi.fn(async () => ok("")) };
+    const target = mountPage("vault", files);
+    flushSync();
+    (target.querySelector("[data-testid='vault-upload']") as HTMLButtonElement).click();
+    flushSync();
+    expect(document.querySelector("[data-testid='sheet-upload']")).not.toBeNull();
+    expect(document.querySelector("[data-testid='upload-choose']")).not.toBeNull();
+  });
   it("closes the Connect app dialog on Escape (QA-012)", () => {
     const target = mountPage("integrations");
     (target.querySelector("[data-testid='connect-app']") as HTMLButtonElement).click();

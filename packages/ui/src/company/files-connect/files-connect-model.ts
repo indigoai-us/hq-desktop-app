@@ -282,3 +282,112 @@ export function filterVault(nodes: readonly VaultNode[], tab: "all" | "new", que
     return `${node.name} ${node.path}`.toLowerCase().includes(q);
   });
 }
+
+/**
+ * Every secret row from the real secrets source (QA-014). The desktop
+ * command returns environment groups (`{ env, count, items: [{ key, upd,
+ * rot }] }`); flat rows (`{ name | key }`) are accepted too. Values are
+ * never read. No cap: the page lists what the sidepane counts.
+ */
+export function secretRowsFromSource(list: readonly unknown[]): SecretRow[] {
+  const rows: SecretRow[] = [];
+  for (const raw of list) {
+    const rec = (raw ?? {}) as Record<string, unknown>;
+    if (Array.isArray(rec.items)) {
+      const env = typeof rec.env === "string" && rec.env ? rec.env : "default";
+      for (const item of rec.items) {
+        const it = (item ?? {}) as Record<string, unknown>;
+        const key = typeof it.key === "string" ? it.key : "";
+        if (!key) continue;
+        const rot = typeof it.rot === "string" && it.rot ? it.rot : "";
+        const upd = typeof it.upd === "string" && it.upd ? it.upd : "";
+        rows.push({
+          id: `${env}:${key}`,
+          name: key,
+          kind: "standard",
+          version: "",
+          host: "",
+          scope: env,
+          rotated: rot || upd || "—",
+          apps: "—",
+          readers: "",
+        });
+      }
+      continue;
+    }
+    const row = publicSecret(rec);
+    if (row) rows.push(row);
+  }
+  return rows;
+}
+
+export function deploymentRowsFromSource(list: readonly unknown[], slug: string): DeploymentRowModel[] {
+  return list.map((item, index) => legacyDeploymentRow((item ?? {}) as Record<string, unknown>, slug, index));
+}
+
+/** Status label for a dot-plus-text status. */
+export function statusLabel(status: string): string {
+  switch (status) {
+    case "active":
+    case "live":
+      return "Live";
+    case "needs-sign-in":
+      return "Needs sign-in";
+    case "error":
+      return "Error";
+    case "off":
+      return "Paused";
+    case "disconnected":
+      return "Disconnected";
+    default:
+      return "Available";
+  }
+}
+
+/** Vault object key (company-relative) for an upload into `folder`. */
+export function vaultUploadKey(companyRoot: string, folder: string, name: string): string | null {
+  const root = companyRoot.replace(/\/+$/, "");
+  const dir = folder.replace(/\/+$/, "");
+  if (dir !== root && !dir.startsWith(`${root}/`)) return null;
+  const rel = dir.slice(root.length).replace(/^\/+/, "");
+  const clean = name.replace(/[\\/]/g, "-").trim();
+  if (!clean || clean === "." || clean === "..") return null;
+  return rel ? `${rel}/${clean}` : clean;
+}
+
+/** Agent hand-off for creating or rotating a secret. The value is entered in
+ *  the terminal prompt that `hq secrets set` opens, never in this window. */
+export function secretSetPrompt(slug: string, name: string, rotate: boolean): string {
+  return [
+    `/hq-secrets ${rotate ? "rotate" : "set"} ${name} --company ${slug}`,
+    "",
+    `${rotate ? "Rotate" : "Create"} the company secret ${name} with \`hq secrets set\`.`,
+    "Let me paste the value into the hidden terminal prompt. Never print or echo it.",
+  ].join("\n");
+}
+
+export function secretBindPrompt(slug: string, name: string, target: "app" | "outpost"): string {
+  return [
+    `/hq-secrets bind ${name} --company ${slug}`,
+    "",
+    target === "outpost"
+      ? `Bind ${name} to my outpost by name. Never print the value.`
+      : `Bind ${name} to an app by name. Ask me which app. Never print the value.`,
+  ].join("\n");
+}
+
+export function shareAccessPrompt(slug: string, path: string, level: AccessLevel): string {
+  return [
+    `/hq-share ${path}`,
+    "",
+    `Company: ${slug}. Grant ${level} access. Ask me who to share with.`,
+  ].join("\n");
+}
+
+export function secretSharePrompt(slug: string, name: string, level: AccessLevel): string {
+  return [
+    `/hq-secrets share ${name} --company ${slug}`,
+    "",
+    `Give ${level} access to the secret ${name}. Ask me who to share with. Never print the value.`,
+  ].join("\n");
+}
