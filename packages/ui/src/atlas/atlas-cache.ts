@@ -19,24 +19,55 @@ export function atlasEndpoint(consoleBase: string, companyUid: string): string {
   return `${consoleBase.replace(/\/$/, "")}/api/companies/${encodeURIComponent(companyUid)}/atlas`;
 }
 
+/** Longest an Atlas refresh may run before it counts as failed (QA-016). */
+export const ATLAS_REFRESH_TIMEOUT_MS = 15_000;
+
 export function consoleAtlasFetcher(
   consoleBase: string,
-  fetchImpl: typeof fetch = fetch,
+  fetchImpl: typeof fetch = (input, init) => fetch(input, init),
+  timeoutMs = ATLAS_REFRESH_TIMEOUT_MS,
 ): AtlasFetcher {
   return async (companyUid) => {
-    const res = await fetchImpl(atlasEndpoint(consoleBase, companyUid), {
-      credentials: "include",
-      cache: "no-store",
-    });
-    if (!res.ok) throw new Error(`atlas ${res.status}`);
-    return res.json();
+    const controller = typeof AbortController === "undefined" ? null : new AbortController();
+    const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+    try {
+      const res = await fetchImpl(atlasEndpoint(consoleBase, companyUid), {
+        credentials: "include",
+        cache: "no-store",
+        signal: controller?.signal,
+      });
+      if (!res.ok) throw new Error(`atlas ${res.status}`);
+      return await res.json();
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   };
+}
+
+/** Reject when `job` has not settled within `ms`; the job itself is left alone. */
+function withTimeout<T>(job: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("atlas refresh timed out")), ms);
+    job.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err: unknown) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
 }
 
 export function createAtlasCache(input: {
   fetcher: AtlasFetcher;
   storage?: AtlasCacheStorage | null;
+  /** Upper bound for one refresh, whatever the fetcher does. */
+  timeoutMs?: number;
 }) {
+  const timeoutMs = input.timeoutMs ?? ATLAS_REFRESH_TIMEOUT_MS;
   const memory = new Map<string, AtlasGraph>();
   const inflight = new Map<string, Promise<AtlasGraph | null>>();
   const storage = input.storage ?? null;
@@ -67,8 +98,7 @@ export function createAtlasCache(input: {
   function refresh(companyUid: string): Promise<AtlasGraph | null> {
     const running = inflight.get(companyUid);
     if (running) return running;
-    const job = input
-      .fetcher(companyUid)
+    const job = withTimeout(Promise.resolve().then(() => input.fetcher(companyUid)), timeoutMs)
       .then((body) => {
         const graph = parseAtlasGraph(body);
         if (!graph) throw new Error("atlas response did not parse");

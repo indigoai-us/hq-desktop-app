@@ -143,4 +143,19 @@ describe("AtlasLandingHost live presence (US-013)", () => {
     expect(target.querySelectorAll("[data-testid^='atlas-node-'].dim")).toHaveLength(0);
     expect(target.querySelector("[data-testid='atlas-filter-chip']")).toBeNull();
   });
+
+  it("QA-016: a company with no cloud uid says so instead of loading forever", async () => {
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    mounted.push(
+      mount(AtlasLandingHost, {
+        target,
+        props: { companyLabel: "Local Co", workingNow: [], companyUid: null },
+      }),
+    );
+    await settle(target);
+    expect(target.textContent).not.toContain("Loading Local Co");
+    expect(target.querySelector("[data-testid='atlas-landing-unlinked']")).not.toBeNull();
+    expect(target.querySelector("[data-testid='atlas-landing']")?.getAttribute("aria-busy")).toBeNull();
+  });
 });

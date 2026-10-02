@@ -63,15 +63,25 @@
   let mod = $state<AtlasModule | null>(null);
   const cache = $derived(mod ? (atlasCache ?? mod.sharedAtlasCache(HQ_CONSOLE_BASE)) : null);
 
-  onMount(() => {
-    let alive = true;
+  // A failed chunk load used to leave "Loading" up forever (QA-016).
+  let chunkFailed = $state(false);
+  let alive = true;
+
+  function loadChunk(): void {
+    chunkFailed = false;
     loadAtlas()
       .then((loaded) => {
         if (alive) mod = loaded;
       })
       .catch((err) => {
         console.error("Atlas chunk failed to load:", err);
+        if (alive) chunkFailed = true;
       });
+  }
+
+  onMount(() => {
+    alive = true;
+    loadChunk();
     return () => {
       alive = false;
     };
@@ -82,7 +92,7 @@
   }
 </script>
 
-<section class="atlas-landing" data-testid="atlas-landing" aria-busy={mod ? undefined : "true"}>
+<section class="atlas-landing" data-testid="atlas-landing" aria-busy={mod || chunkFailed ? undefined : "true"}>
   {#if mod && cache && companyUid}
     <mod.AtlasView
       {companyUid}
@@ -107,7 +117,13 @@
         <circle class="ring" cx="450" cy="320" r="250" />
         <circle class="ring" cx="450" cy="320" r="150" />
       </svg>
-      {#if !mod}<div class="note">Loading {companyLabel}</div>{/if}
+      {#if chunkFailed}
+        <div class="note" data-testid="atlas-landing-error" role="alert">
+          The map didn't load.
+          <button type="button" data-testid="atlas-landing-retry" onclick={loadChunk}>Retry</button>
+        </div>
+      {:else if !mod}<div class="note">Loading {companyLabel}</div>
+      {:else if !companyUid}<div class="note" data-testid="atlas-landing-unlinked">This company isn't linked to HQ cloud yet, so there is no map to show.</div>{/if}
     </div>
     {#if mod}
       <mod.AtlasInspector

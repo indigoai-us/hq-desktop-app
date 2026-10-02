@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, tick, unmount } from "svelte";
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -214,5 +214,45 @@ describe("Atlas chunk boundary", () => {
     };
     walk(src);
     expect(offenders).toEqual([]);
+  });
+
+  it("QA-016: a failed load with no cache shows a plain error and Retry, never an endless skeleton", async () => {
+    let calls = 0;
+    const cache = createAtlasCache({
+      fetcher: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error("atlas 401 Unauthorized {\"raw\":\"server\"}");
+        return smokeAtlasGraph();
+      },
+    });
+    mountView(cache);
+    await vi.waitFor(() => {
+      expect(host.querySelector(sel("atlas-error"))).not.toBeNull();
+    });
+    expect(host.querySelector(sel("atlas-skeleton"))).toBeNull();
+    const text = host.querySelector(sel("atlas-error"))?.textContent ?? "";
+    expect(text).toContain("The map didn't load");
+    expect(text).not.toContain("401");
+    expect(text).not.toContain("raw");
+    (host.querySelector(sel("atlas-retry")) as HTMLButtonElement).click();
+    await vi.waitFor(() => {
+      expect(host.querySelector(sel(`atlas-node-${RAIL}`))).not.toBeNull();
+    });
+    expect(host.querySelector(sel("atlas-error"))).toBeNull();
+    expect(calls).toBe(2);
+  });
+
+  it("QA-016: a fetch that never settles is cut off by the timeout and shows the error state", async () => {
+    const cache = createAtlasCache({
+      fetcher: () => new Promise<unknown>(() => undefined),
+      timeoutMs: 20,
+    });
+    mountView(cache);
+    expect(host.querySelector(sel("atlas-skeleton"))).not.toBeNull();
+    await vi.waitFor(() => {
+      expect(host.querySelector(sel("atlas-error"))).not.toBeNull();
+    });
+    expect(host.querySelector(sel("atlas-skeleton"))).toBeNull();
+    expect(host.querySelector(sel("atlas-retry"))).not.toBeNull();
   });
 });

@@ -137,18 +137,38 @@
       graph = cache.cached(uid);
       selected = null;
       scrubIndex = null;
-      refreshError = false;
-      cache
-        .refresh(uid)
-        .then((fresh) => {
-          if (fresh && uid === companyUid) graph = fresh;
-        })
-        .catch((err) => {
-          console.warn("[atlas] refresh failed", err);
-          if (uid === companyUid) refreshError = true;
-        });
+      loadGraph(uid);
     });
   });
+
+  // The cache bounds every refresh with a timeout, so this always settles:
+  // either a graph arrives or the failed state (with Retry) replaces the
+  // skeleton. Without a cached map a failure must never leave the skeleton up.
+  let retrying = $state(false);
+  const loadFailed = $derived(refreshError && !graph);
+
+  function loadGraph(uid: string): void {
+    refreshError = false;
+    cache
+      .refresh(uid)
+      .then((fresh) => {
+        if (uid !== companyUid) return;
+        if (fresh) graph = fresh;
+        else if (!graph) refreshError = true;
+      })
+      .catch((err) => {
+        console.warn("[atlas] refresh failed", err);
+        if (uid === companyUid) refreshError = true;
+      })
+      .finally(() => {
+        if (uid === companyUid) retrying = false;
+      });
+  }
+
+  function retry(): void {
+    retrying = true;
+    loadGraph(companyUid);
+  }
 
   // Frame once per company when nodes first arrive.
   $effect(() => {
@@ -217,7 +237,7 @@
     {#if graph}
       <span class="chip" data-testid="atlas-object-count">{graph.nodes.length} objects</span>
     {/if}
-    {#if refreshError}
+    {#if refreshError && graph}
       <span class="chip" title="Showing the last saved map">offline copy</span>
     {/if}
     {#if filterActor}
@@ -281,6 +301,13 @@
           onselect={(id) => (selected = id)}
           onview={(next) => (view = next)}
         />
+      {:else if loadFailed}
+        <div class="empty" data-testid="atlas-error" role="alert">
+          <div class="empty-center">
+            <div class="empty-ctr"><b>The map didn't load</b>We couldn't reach your company map just now. Check your connection, then try again.</div>
+            <button type="button" class="btn" data-testid="atlas-retry" disabled={retrying} onclick={retry}>{retrying ? "Trying again" : "Retry"}</button>
+          </div>
+        </div>
       {:else}
         <div class="skeleton" data-testid="atlas-skeleton" aria-busy="true" aria-label="Loading Atlas">
           {#each [0, 1, 2, 3, 4, 5] as i (i)}
