@@ -24,7 +24,7 @@ export type RailPersonalId =
   | "connections"
   | "outpost";
 
-export type RailPlaceholderId = RailPersonalId | "more-companies";
+export type RailPlaceholderId = RailPersonalId | "more-companies" | "library";
 
 export interface RailPlaceholder {
   id: RailPlaceholderId;
@@ -40,6 +40,12 @@ export const RAIL_PLACEHOLDERS: Record<RailPlaceholderId, RailPlaceholder> = {
     title: "More companies",
     story: "US-005",
     summary: "Search, pin, and switch between all of your companies.",
+  },
+  library: {
+    id: "library",
+    title: "Library",
+    story: "US-031",
+    summary: "Your personal files and what has been shared with you.",
   },
   deployments: {
     id: "deployments",
@@ -176,9 +182,10 @@ export function railDestination(
     case "meetings":
       return { kind: "meetings" };
     case "library":
-      return options.localFiles === false
-        ? { kind: "library", tab: "skills" }
-        : { kind: "explorer" };
+      // US-031: the rail opens personal files and Shared with me.
+      // The skills overlay stays available as { kind: "library" }.
+      void options;
+      return { kind: "extra", page: railPlaceholderPage("library") };
     case "more-companies":
       return { kind: "extra", page: railPlaceholderPage("more-companies") };
     case "personal":

@@ -49,10 +49,13 @@ describe("app rail model (console-rail US-003)", () => {
     }
     expect(railDestination(railItems([], "You")[1]!)).toEqual({ kind: "meetings" });
     const library = railItems([], "You").find((item) => item.kind === "library")!;
-    expect(railDestination(library)).toEqual({ kind: "explorer" });
+    expect(railDestination(library)).toEqual({
+      kind: "extra",
+      page: "rail-library",
+    });
     expect(railDestination(library, { localFiles: false })).toEqual({
-      kind: "library",
-      tab: "skills",
+      kind: "extra",
+      page: "rail-library",
     });
   });
 

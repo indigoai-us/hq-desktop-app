@@ -48,6 +48,8 @@
   } from "./lazy-doors.js";
   import type { MoreCompany } from "./more-companies.js";
   import TelemetryRailHost from "./TelemetryRailHost.svelte";
+  import LibraryRailHost from "./LibraryRailHost.svelte";
+  import DeploymentsRailHost from "./DeploymentsRailHost.svelte";
   import PersonalRailHost from "./PersonalRailHost.svelte";
   import OutpostRailHost from "./OutpostRailHost.svelte";
   import AtlasLandingHost from "./AtlasLandingHost.svelte";
@@ -9456,7 +9458,7 @@
           <MeetingsSidepaneHost memory={sidepaneScrollMemory} />
         {/if}
         <!-- Chat stays mounted under the company pane: it owns roster loading. -->
-        <div class="chat-pane-slot" style:display={companyPaneCompany || view === "meetings" ? "none" : "contents"}>
+        <div class="chat-pane-slot" style:display={companyPaneCompany || view === "meetings" || extraPageId === "rail-library" || extraPageId === "rail-deployments" ? "none" : "contents"}>
         <Sidepane
           modelKey={sidepaneModelKey({ tenantCompanyId })}
           scrollSelector=".chat-scroll"
@@ -9668,6 +9670,17 @@
               </div>
             {/snippet}
           </LazyDoor>
+        {:else if extraPageId === "rail-library"}
+          <LibraryRailHost
+            accountId={tenantAccountId ?? "local"}
+            adapter={adapter}
+            library={adapter.library ?? null}
+          />
+        {:else if extraPageId === "rail-deployments"}
+          <DeploymentsRailHost
+            accountId={tenantAccountId ?? "local"}
+            openExternal={onopenurl}
+          />
         {:else if (railPlaceholder?.id === "vault" || railPlaceholder?.id === "integrations" || railPlaceholder?.id === "secrets" || railPlaceholder?.id === "deployments") && companyPaneCompany}
           <LazyDoor
             door={filesConnectDoor}
