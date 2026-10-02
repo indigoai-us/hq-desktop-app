@@ -1333,11 +1333,26 @@ where
         ));
     }
     let mut source = fs::File::open(source)?;
+    let destination_path = destination;
     let mut destination = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(destination)?;
-    copy_stream_with_cancellation(&mut source, &mut destination, &mut is_cancelled)
+        .open(destination_path)?;
+    match copy_stream_with_cancellation(&mut source, &mut destination, &mut is_cancelled) {
+        Ok(()) => Ok(()),
+        Err(copy_error) => {
+            drop(destination);
+            if let Err(cleanup_error) = fs::remove_file(destination_path) {
+                return Err(io::Error::new(
+                    cleanup_error.kind(),
+                    format!(
+                        "copy failed ({copy_error}); failed to remove partial destination {destination_path:?}: {cleanup_error}"
+                    ),
+                ));
+            }
+            Err(copy_error)
+        }
+    }
 }
 
 /// Copy the bytes of `target` to `link_path` as a privilege-free substitute
@@ -1856,43 +1871,61 @@ where
                     }
                 };
                 let mut buf = [0_u8; EXTRACT_READ_CHUNK_BYTES];
-                loop {
-                    if is_cancelled() {
-                        return Err(content_cancelled_error(failure_scope));
-                    }
-                    let n = entry.read(&mut buf).map_err(|e| {
-                        record_content_failure(
-                            failure_scope,
-                            OnboardingErrorCategory::Checksum,
-                            ContentErrorKind::ArchiveInvalid,
-                        );
-                        format!("failed to read {relative} from archive: {e}")
-                    })?;
-                    if n == 0 {
-                        break;
-                    }
-                    file.write_all(&buf[..n]).map_err(|e| {
-                        record_content_io_failure(failure_scope, &e);
-                        format!("failed to write {dest:?}: {e}")
-                    })?;
-                    extracted_bytes = extracted_bytes.saturating_add(n as u64);
-                    if progress_throttle.should_emit() {
-                        if let Some(progress) = progress {
-                            progress.emit(
-                                "extract",
-                                Some(extracted_bytes),
-                                total_bytes,
-                                false,
-                                false,
-                                format!("Extracting {normalized}"),
+                let write_result = (|| {
+                    loop {
+                        if is_cancelled() {
+                            return Err(content_cancelled_error(failure_scope));
+                        }
+                        let n = entry.read(&mut buf).map_err(|e| {
+                            record_content_failure(
+                                failure_scope,
+                                OnboardingErrorCategory::Checksum,
+                                ContentErrorKind::ArchiveInvalid,
                             );
+                            format!("failed to read {relative} from archive: {e}")
+                        })?;
+                        if n == 0 {
+                            break;
+                        }
+                        file.write_all(&buf[..n]).map_err(|e| {
+                            record_content_io_failure(failure_scope, &e);
+                            format!("failed to write {dest:?}: {e}")
+                        })?;
+                        extracted_bytes = extracted_bytes.saturating_add(n as u64);
+                        if progress_throttle.should_emit() {
+                            if let Some(progress) = progress {
+                                progress.emit(
+                                    "extract",
+                                    Some(extracted_bytes),
+                                    total_bytes,
+                                    false,
+                                    false,
+                                    format!("Extracting {normalized}"),
+                                );
+                            }
                         }
                     }
+                    set_entry_mode(&dest, mode).map_err(|e| {
+                        record_content_io_failure(failure_scope, &e);
+                        format!("failed to set file mode: {e}")
+                    })?;
+                    Ok::<(), String>(())
+                })();
+                if let Err(write_error) = write_result {
+                    drop(file);
+                    if let Err(cleanup_error) = std::fs::remove_file(&dest) {
+                        log(
+                            "content",
+                            &format!(
+                                "failed to remove partial template file {dest:?} after extraction error ({write_error}): {cleanup_error}"
+                            ),
+                        );
+                        return Err(format!(
+                            "{write_error}; failed to remove partial template file {dest:?}: {cleanup_error}"
+                        ));
+                    }
+                    return Err(write_error);
                 }
-                set_entry_mode(&dest, mode).map_err(|e| {
-                    record_content_io_failure(failure_scope, &e);
-                    format!("failed to set file mode: {e}")
-                })?;
             }
             _ => {
                 // Hard links / device nodes / fifos etc. are not part of the
