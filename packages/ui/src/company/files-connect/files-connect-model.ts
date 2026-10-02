@@ -1,3 +1,5 @@
+import { deploymentFromApp, type DeployAppsPage } from "../../library/personal-deployments.js";
+
 /**
  * Company Files and connect (console-rail US-029).
  *
@@ -183,6 +185,46 @@ export function beginConnect(app: string): ConnectSession {
 export function applyDeepLink(session: ConnectSession, link: string): ConnectSession {
   if (!link.includes("hq://") && !link.includes("code=")) return session;
   return { ...session, phase: "returned" };
+}
+
+/**
+ * Company Deployments rows from the same hq-deploy client as the personal
+ * Deployments page (`list_deploy_apps` for this company's org). Names come
+ * from the app record, never a placeholder.
+ */
+export function companyDeploymentRows(page: DeployAppsPage, slug: string): DeploymentRowModel[] {
+  const scope = { id: slug, label: slug };
+  const rows: DeploymentRowModel[] = [];
+  for (const raw of page.apps ?? []) {
+    const row = deploymentFromApp(raw, scope, page.callerSub);
+    if (!row) continue;
+    rows.push({
+      id: row.id,
+      name: row.name,
+      url: row.url,
+      project: row.project,
+      status: row.status === "failed" ? "error" : row.status === "active" || row.status === "building" || row.status === "deploying" ? "live" : "off",
+      access: "read",
+      updated: row.lastVisit ? `visited ${row.lastVisit}` : row.detail,
+    });
+  }
+  return rows;
+}
+
+/** Legacy `get_company_deployments` rows carry the subdomain in `sub`. */
+export function legacyDeploymentRow(rec: Record<string, unknown>, slug: string, index: number): DeploymentRowModel {
+  const pick = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : "");
+  const name = pick(rec.name) || pick(rec.sub) || pick(rec.subdomain) || pick(rec.slug) || `deploy-${index}`;
+  const url = pick(rec.url);
+  return {
+    id: name,
+    name,
+    url: url && !url.startsWith("http") ? `https://${url}` : url,
+    project: pick(rec.project) || slug,
+    status: rec.state === "error" ? "error" : rec.state === "paused" ? "off" : "live",
+    access: "read",
+    updated: pick(rec.lastDeploy) || "—",
+  };
 }
 
 export function deployPrompt(slug: string, artifact: string): string {

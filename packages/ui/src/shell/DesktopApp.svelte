@@ -9986,6 +9986,7 @@
               shell: adapter.shell ?? null,
               settings: adapter.settings ?? null,
               openExternal: onopenurl,
+              listDeployApps: adapter.company?.listDeployApps,
             }}
           >
             {#snippet skeleton()}

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  companyDeploymentRows,
+  legacyDeploymentRow,
   ACCESS_LEVELS,
   acceptSecretKey,
   applyDeepLink,
@@ -65,5 +67,23 @@ describe("US-029 files and connect", () => {
     expect(filterSecrets(fixtureCache().secrets, "proxy", "").map((row) => row.name)).toEqual([
       "ANTHROPIC_API_KEY",
     ]);
+  });
+});
+
+describe("company deployment rows (QA-013)", () => {
+  it("uses the legacy subdomain field instead of a placeholder name", () => {
+    const row = legacyDeploymentRow({ sub: "board-v2", url: "board-v2.indigo-hq.com", state: "active" }, "indigo", 0);
+    expect(row.name).toBe("board-v2");
+    expect(row.url).toBe("https://board-v2.indigo-hq.com");
+  });
+
+  it("maps hq-deploy apps through the shared client mapping", () => {
+    const rows = companyDeploymentRows(
+      { apps: [{ id: "1", name: "real", subdomain: "real", url: "https://real.indigo-hq.com", active: false }, 7] },
+      "indigo",
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.name).toBe("real");
+    expect(rows[0]!.status).toBe("off");
   });
 });

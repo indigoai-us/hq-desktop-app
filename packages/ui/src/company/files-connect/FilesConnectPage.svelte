@@ -4,7 +4,8 @@
    * First frame is the cache or a shimmer. Refresh runs after paint.
    * Secret values are never written into the DOM.
    */
-  import type { FilesApi, PlatformAdapter, SettingsApi, ShellApi } from "@hq/platform";
+  import type { AdapterPromise, FilesApi, Json, PlatformAdapter, SettingsApi, ShellApi } from "@hq/platform";
+  import type { DeployAppsPage } from "../../library/personal-deployments.js";
   import CompanyFileTree from "../../files/CompanyFileTree.svelte";
   import FilePreviewPane from "../../files/FilePreviewPane.svelte";
   import type { DirEntry } from "../../files/file-tree.js";
@@ -32,6 +33,8 @@
     redeployPrompt,
     shareSheet,
     writeFilesConnectCache,
+    companyDeploymentRows,
+    legacyDeploymentRow,
     type AccessLevel,
     type ConnectSession,
     type DeploymentRowModel,
@@ -51,9 +54,11 @@
     /** Full platform adapter, when the host has one: turns on the desktop
      *  Open and Reveal actions in the vault preview. */
     adapter?: PlatformAdapter | null;
+    /** hq-deploy apps for one scope; the same client as personal Deployments. */
+    listDeployApps?: (scope: string) => AdapterPromise<Json>;
   }
 
-  let { page, slug, files, shell, settings, openExternal, adapter = null }: Props = $props();
+  let { page, slug, files, shell, settings, openExternal, adapter = null, listDeployApps }: Props = $props();
 
   const workflow = $derived({ settings, shell } as AgentWorkflowApi);
 
@@ -73,10 +78,13 @@
   let secretDraft = $state("");
   let status = $state("");
   let redeployName = $state("");
+  let deploysLoading = $state(false);
 
   $effect(() => {
     const cached = readFilesConnectCache(slug);
-    data = cached ?? fixtureCache();
+    // Deployments never paint fixture names: no cache means a skeleton.
+    data = cached ?? { ...fixtureCache(), deployments: [] };
+    deploysLoading = !cached;
     phase = "ready";
     let live = true;
     queueMicrotask(() => {
@@ -126,26 +134,25 @@
     } catch {
       /* fixture */
     }
+    next.deployments = data.deployments;
     try {
-      const loaded = await companyStore.loadDeployments(slug, false);
-      if (Array.isArray(loaded) && loaded.length > 0) {
-        next.deployments = loaded.map((item, index) => {
-          const rec = (item ?? {}) as Record<string, unknown>;
-          const name = String(rec.name ?? rec.slug ?? `deploy-${index}`);
-          return {
-            id: name,
-            name,
-            url: String(rec.url ?? ""),
-            project: String(rec.project ?? slug),
-            status: rec.state === "error" ? "error" : rec.state === "paused" ? "off" : "live",
-            access: "read" as const,
-            updated: String(rec.lastDeploy ?? "—"),
-          } satisfies DeploymentRowModel;
-        });
+      const list = listDeployApps ?? adapter?.company?.listDeployApps;
+      if (list) {
+        const res = await list(slug);
+        if (res.ok) next.deployments = companyDeploymentRows(res.value as DeployAppsPage, slug);
+        else console.warn(`[deployments] ${slug} unavailable: ${res.reason}`);
+      } else {
+        const loaded = await companyStore.loadDeployments(slug, false);
+        if (Array.isArray(loaded)) {
+          next.deployments = loaded.map((item, index) =>
+            legacyDeploymentRow((item ?? {}) as Record<string, unknown>, slug, index),
+          );
+        }
       }
-    } catch {
-      /* fixture */
+    } catch (err) {
+      console.warn(`[deployments] ${slug} load failed`, err);
     }
+    deploysLoading = false;
     writeFilesConnectCache(slug, next);
     data = next;
     phase = "ready";
@@ -441,7 +448,9 @@
       <span class="grow"></span>
       <button class="btn primary" type="button" data-testid="deploy-from-project" onclick={() => (sheet = "deploy")}>Deploy</button>
     </header>
-    {#if data.deployments.length === 0}
+    {#if deploysLoading && data.deployments.length === 0}
+      <div class="list" data-testid="deployments-skeleton" aria-busy="true"></div>
+    {:else if data.deployments.length === 0}
       <div class="empty" data-testid="deployments-empty">
         <h2>Nothing deployed yet</h2>
         <button class="btn primary" type="button" onclick={() => (sheet = "deploy")}>Deploy from a project</button>

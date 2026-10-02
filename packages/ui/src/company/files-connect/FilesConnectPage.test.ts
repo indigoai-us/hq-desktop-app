@@ -34,6 +34,7 @@ describe("US-029 FilesConnectPage", () => {
   function mountPage(
     page: "vault" | "integrations" | "secrets" | "deployments",
     files: unknown = null,
+    listDeployApps: unknown = undefined,
   ) {
     const target = document.createElement("div");
     document.body.appendChild(target);
@@ -63,6 +64,7 @@ describe("US-029 FilesConnectPage", () => {
           getTelemetryConsent: vi.fn(async () => ok(null)),
         } satisfies SettingsApi,
         openExternal: vi.fn(),
+        listDeployApps: listDeployApps as never,
       },
     });
     flushSync();
@@ -116,8 +118,33 @@ describe("US-029 FilesConnectPage", () => {
     }
   });
 
+  it("names company deployments from real hq-deploy apps, never placeholders (QA-013)", async () => {
+    const calls: string[] = [];
+    const listDeployApps = vi.fn(async (scope: string) => {
+      calls.push(scope);
+      return ok({
+        callerSub: "me",
+        apps: [
+          { id: "1", name: "hq-lifecycle-email-map", subdomain: "hq-lifecycle-email-map", url: "https://hq-lifecycle-email-map.indigo-hq.com", status: "active", active: true },
+          { id: "2", subdomain: "board-v2", url: "https://board-v2.indigo-hq.com", status: "active", active: false },
+        ],
+      });
+    });
+    const target = mountPage("deployments", null, listDeployApps);
+    expect(target.textContent).not.toContain("indigo-standup-report");
+    await vi.waitFor(() => expect(target.textContent).toContain("hq-lifecycle-email-map"));
+    expect(calls).toEqual(["indigo"]);
+    expect(target.textContent).toContain("board-v2");
+    expect(target.textContent).not.toMatch(/deploy-\d/);
+    expect(target.textContent).not.toContain("docs.getindigo.ai");
+  });
+
   it("asks before redeploy and then calls the deploy workflow", async () => {
-    const target = mountPage("deployments");
+    const listDeployApps = vi.fn(async () =>
+      ok({ apps: [{ id: "1", name: "real-app", subdomain: "real-app", url: "https://real-app.indigo-hq.com", status: "active" }] }),
+    );
+    const target = mountPage("deployments", null, listDeployApps);
+    await vi.waitFor(() => expect(target.querySelector("[data-testid='redeploy']")).not.toBeNull());
     const redeploy = target.querySelector("[data-testid='redeploy']") as HTMLButtonElement;
     redeploy.click();
     flushSync();
