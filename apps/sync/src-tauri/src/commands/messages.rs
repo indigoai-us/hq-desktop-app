@@ -1179,6 +1179,28 @@ pub async fn check_company_slug(slug: String) -> Result<serde_json::Value, Strin
     get_json(&url, &token, "MESSAGES_COMPANY_SLUG_AVAILABLE").await
 }
 
+/// POST `/v1/companies/{uid}/activate-cloud` — provision the company's cloud
+/// vault (bucket, KMS, owner grants) and stamp `cloudActivatedAt`.
+///
+/// Owner-only and idempotent on the server: an already-activated company
+/// answers `alreadyActivated: true`. The create-company flow calls this right
+/// after the company exists, so the first sync never meets an entity whose
+/// bucket was never made.
+#[tauri::command]
+pub async fn activate_company_cloud(company_uid: String) -> Result<serde_json::Value, String> {
+    let uid = company_uid.trim();
+    if uid.is_empty() {
+        return Err("companyUid must not be empty".to_string());
+    }
+    let (base, token) = auth_and_base("MESSAGES_COMPANY_ACTIVATE_CLOUD").await?;
+    let url = format!(
+        "{}/v1/companies/{}/activate-cloud",
+        base.trim_end_matches('/'),
+        esc_seg(uid)
+    );
+    post_json(&url, &token, &serde_json::json!({}), "MESSAGES_COMPANY_ACTIVATE_CLOUD").await
+}
+
 /// GET `/v1/companies/{uid}/tabs/{tab}` (US-015).
 #[tauri::command]
 pub async fn get_company_tab(

@@ -5,10 +5,13 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  CREATE_COMPANY_CLOUD_FAILED_REASON,
+  CREATE_COMPANY_CLOUD_UNAVAILABLE_REASON,
   CREATE_COMPANY_NO_ACTION_REASON,
   CREATE_COMPANY_NO_CARD_REASON,
   CREATE_COMPANY_NO_RESULT_REASON,
   openCreateCompanyDraft,
+  provisionCompanyCloud,
   sendCompanyInvites,
   submitCreateCompany,
   waitForCompanyProvisioned,
@@ -62,6 +65,7 @@ function api(overrides: Record<string, unknown> = {}) {
       channelId: "setup",
     })),
     fetchChannel: vi.fn(async () => page([card()])),
+    activateCompanyCloud: vi.fn(async () => ({ alreadyActivated: false })),
     ...overrides,
   } as never;
 }
@@ -193,6 +197,7 @@ describe("submitCreateCompany", () => {
         companyChannelId: "chn_acme",
         inviteFailures: [],
         queuedInvites: [],
+        cloudError: null,
       },
     });
   });
@@ -407,5 +412,86 @@ describe("sendCompanyInvites", () => {
     expect(failures).toEqual([
       { email: "ada@example.com", reason: "Inviting people isn't available in this build." },
     ]);
+  });
+});
+
+describe("cloud provisioning after create", () => {
+  const done = vi.fn(async () => ({
+    cardId: "card_create_company_2",
+    actionId: "submit",
+    state: "done",
+    companyUid: "cmp_acme",
+    companyChannelId: "chn_acme",
+  }));
+
+  it("provisions the new company's cloud vault before reporting it ready", async () => {
+    const order: string[] = [];
+    const activateCompanyCloud = vi.fn(async (uid: string) => {
+      order.push(`activate:${uid}`);
+      return { alreadyActivated: false };
+    });
+    const runCompanyTabAction = vi.fn(async () => {
+      order.push("invite");
+      return { state: "done" };
+    });
+    const phases: string[] = [];
+    const result = await submitCreateCompany(
+      api({ runCardAction: done, activateCompanyCloud, runCompanyTabAction }),
+      FORM,
+      { name: "Acme" },
+      [{ email: "ada@example.com", role: "member" }],
+      { onPhase: (phase) => phases.push(phase) },
+    );
+    expect(activateCompanyCloud).toHaveBeenCalledWith("cmp_acme");
+    expect(order).toEqual(["activate:cmp_acme", "invite"]);
+    expect(phases).toEqual(["provisioning", "inviting"]);
+    expect(result.ok && result.company.cloudError).toBeNull();
+  });
+
+  it("retries a transient failure, then reports the company as created but not provisioned", async () => {
+    const activateCompanyCloud = vi.fn(async () => {
+      throw new Error("Request failed (status 502)");
+    });
+    const result = await submitCreateCompany(
+      api({ runCardAction: done, activateCompanyCloud }),
+      FORM,
+      { name: "Acme" },
+      [],
+      { sleep: async () => {}, provisionAttempts: 3 },
+    );
+    expect(activateCompanyCloud).toHaveBeenCalledTimes(3);
+    expect(result).toEqual({
+      ok: true,
+      company: {
+        companyUid: "cmp_acme",
+        companyChannelId: "chn_acme",
+        inviteFailures: [],
+        queuedInvites: [],
+        cloudError: CREATE_COMPANY_CLOUD_FAILED_REASON,
+      },
+    });
+  });
+
+  it("does not retry a refusal", async () => {
+    const activateCompanyCloud = vi.fn(async () => {
+      throw new Error("Request failed (status 403)");
+    });
+    const result = await provisionCompanyCloud({ activateCompanyCloud }, "cmp_acme", {
+      sleep: async () => {},
+    });
+    expect(activateCompanyCloud).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ ok: false, reason: CREATE_COMPANY_CLOUD_FAILED_REASON });
+  });
+
+  it("says so when the host cannot provision at all", async () => {
+    const result = await provisionCompanyCloud({}, "cmp_acme");
+    expect(result).toEqual({ ok: false, reason: CREATE_COMPANY_CLOUD_UNAVAILABLE_REASON });
+  });
+
+  it("treats an already-provisioned company as success, so Try again is safe", async () => {
+    const activateCompanyCloud = vi.fn(async () => ({ alreadyActivated: true }));
+    expect(await provisionCompanyCloud({ activateCompanyCloud }, "cmp_acme")).toEqual({
+      ok: true,
+    });
   });
 });

@@ -417,6 +417,12 @@ export interface ConversationApi {
    * falls back to the submit-time answer.
    */
   checkCompanySlug?(slug: string): Promise<unknown>;
+  /**
+   * POST activate-cloud — provision the company's cloud vault (bucket, KMS,
+   * owner grants). Owner-only and idempotent. Optional: a host without the
+   * route omits it.
+   */
+  activateCompanyCloud?(companyUid: string): Promise<unknown>;
   /** GET /v1/companies/{uid}/tabs/{tab} (US-015). */
   getCompanyTab?(companyUid: string, tab: string): Promise<unknown>;
   /** POST /v1/companies/{uid}/tabs/{tab}/actions (US-015). */
