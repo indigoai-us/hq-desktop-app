@@ -44,6 +44,7 @@ pub mod agent_usage_scan;
 pub mod authenticated_receipts;
 pub mod bandwidth;
 pub mod banner;
+pub mod cdp_mirror;
 pub mod claude_launch;
 pub mod cli_update_lock;
 pub mod client_diagnostics;

@@ -439,6 +439,7 @@ pub async fn desktop_continuation_await_identity(
     // Link attribution is best-effort and detached: it never waits on the
     // network and no bearer is added to either browser URL.
     if let Some(link) = take_signin_link_attempt(&attempt_id) {
+        crate::commands::cdp_mirror::note_signin_link_claimed(&link);
         post_signin_link_best_effort(link, tokens.access_token.clone());
     }
 
@@ -1010,6 +1011,9 @@ async fn record_desktop_login_completed_inner<R: tauri::Runtime>(
     identity_provider: Option<String>,
     persist_before_return: bool,
 ) -> Result<(), String> {
+    crate::commands::cdp_mirror::note_login_completed(
+        identity_provider.as_deref().unwrap_or("cognito"),
+    );
     let mut body = desktop_receipt_base_in_background(app).await?;
     let object = body
         .as_object_mut()
