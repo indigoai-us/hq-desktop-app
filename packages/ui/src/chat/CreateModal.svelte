@@ -177,12 +177,6 @@
     onrequestaitools?: () => void;
     /** Workers a bot can be created from (the flow offers company workers only; none → blank bot only). */
     botWorkers?: readonly LocalBotWorkerOption[] | null;
-    /**
-     * Open the six-step New agent sheet (Runtime through Verify) instead of
-     * the three-step wizard. Off by default so hosts that still walk the
-     * wizard keep that path. The console rail turns this on.
-     */
-    agentStepper?: boolean;
     /** Names the user's local bots already use (availability check). */
     existingBotNames?: readonly string[] | null;
     /** The owner's companies (slugs) a Local company bot can belong to. */
@@ -236,7 +230,6 @@
     onassistedinstall,
     onrequestaitools,
     botWorkers = null,
-    agentStepper = false,
     existingBotNames = null,
     botCompanies = null,
     botSignIn = null,
@@ -2060,19 +2053,16 @@
   <div
     bind:this={dialogEl}
     class="create-card"
-    class:create-card--wide={step === "bot" && !agentStepper}
-    class:create-card--sheet={step === "bot" && agentStepper}
+    class:create-card--wide={step === "bot"}
     role="dialog"
     aria-modal="true"
-    aria-label={step === "bot" && agentStepper ? "New agent" : undefined}
-    aria-labelledby={step === "bot" && agentStepper ? undefined : "create-modal-title"}
+    aria-labelledby="create-modal-title"
     tabindex="-1"
     onkeydown={onDialogKey}
   >
     <!-- `inert` while the cross-company question is up: the alertdialog asks
          about the very workspace this form edits, so nothing under it may be
          tabbed to, clicked, or read out as if it were live. -->
-    {#if !(step === "bot" && agentStepper)}
     <div class="create-head" inert={confirmSubject !== null}>
       {#if step === "find"}
         <span class="create-search-ic" aria-hidden="true">
@@ -2159,7 +2149,6 @@
         <span aria-hidden="true">×</span>
       </button>
     </div>
-    {/if}
 
     {#if step === "find"}
       <div
@@ -2545,22 +2534,6 @@
           </button>
         {/if}
       </div>
-    {:else if step === "bot" && agentStepper}
-      {#await import("../agents/NewAgentStepper.svelte")}
-        <div class="nas-skel" data-testid="new-agent-stepper-pending" aria-hidden="true"></div>
-      {:then mod}
-        <mod.default
-          companyLabel={scopeCompanies.find((company) => company.companyUid === activeScope)?.label ?? "Personal"}
-          ownerLabel={self?.displayName ?? "You"}
-          companies={(agentCompanies ?? []).map((company) => ({ id: company.companyUid, label: company.label }))}
-          existingNames={existingBotNames ?? []}
-          instantProbe
-          oncancel={() => onclose()}
-          oncreate={canCreateLocalBot ? submitLocalBot : null}
-          onCloudCreate={canCreateCloudBot ? async (companyUid, cloudDraft) => { await newAgentFor(companyUid, cloudDraft); } : null}
-          ondone={() => onclose()}
-        />
-      {/await}
     {:else if step === "bot"}
       <CreateBotFlow
         {botRuntimeReady}
@@ -3165,12 +3138,6 @@
   /* The bot flow needs room for three cards and a preview rail. */
   .create-card--wide {
     width: min(880px, 100%);
-    max-height: min(88vh, 720px);
-  }
-
-  /* Same 480 px sheet frame as the company sheets, one header (the stepper's). */
-  .create-card--sheet {
-    width: min(480px, 100%);
     max-height: min(88vh, 720px);
   }
 

@@ -221,7 +221,7 @@
     openNewChannel: () => void;
     openSearch: () => void;
     openHistory: () => void;
-    /** Open the create modal on the New agent stepper (Team page Add agent). */
+    /** Open the create modal on the New bot flow (Team, Bots, Settings, Atlas). */
     openNewAgent: () => void;
   }
 
@@ -330,8 +330,6 @@
     /** Ask the host to (re-)probe `detect_ai_tools` lazily when CreateModal opens. */
     onrequestaitools?: () => void;
     botWorkers?: readonly LocalBotWorkerOption[] | null;
-    /** Six-step New agent sheet inside the create modal. */
-    agentStepper?: boolean;
     /** New bot flow extras (see CreateModal): taken names, sign-in, avatars. */
     existingBotNames?: readonly string[] | null;
     botSignIn?: RuntimeSignInApi | null;
@@ -468,7 +466,6 @@
     loadClaudeProviderFlag = null,
     loadCloudProvisionOptions = null,
     oncreatebot = null,
-    agentStepper = false,
     botRuntimeReady = null,
     botRuntimeStatus = null,
     onrecheckruntimes = null,
@@ -1713,7 +1710,6 @@
     hint?: { title: string; companyUid: string | null },
   ): void {
     createOpen = false;
-    stepperRequested = false;
     plusBtnEl?.focus();
     if (!openChannelId) return;
     // A just-created channel is opened before the directory feed lists it, so
@@ -1776,12 +1772,8 @@
   function openNewAgent(): void {
     createKind = "channel";
     createStep = "bot";
-    // Team page entry uses the six-step stepper (US-018) even while the
-    // "+" menu keeps the three-step wizard.
-    stepperRequested = true;
     openCreate();
   }
-  let stepperRequested = $state(false);
 
   /** Failure reason from a switcher-triggered New company, shown inline. */
   let scopeEntryError = $state<string | null>(null);
@@ -4010,7 +4002,6 @@
       {onassistedinstall}
       {onrequestaitools}
       {botWorkers}
-      agentStepper={agentStepper || stepperRequested}
       {existingBotNames}
       {botCompanies}
       {botSignIn}

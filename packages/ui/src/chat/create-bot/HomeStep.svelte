@@ -391,6 +391,13 @@
     {/if}
     <p class="cb-help">Hosted by {companies.find((c) => c.companyUid === draft.companyUid)?.label ?? "the company"} and always on. You name it on the next step; it gets its own channel once it is set up.</p>
   {/if}
+  <!-- External: a bot that runs somewhere else enrolls itself with a one-time
+       code. The code is minted by the CLI on the machine that runs the bot,
+       so this step only shows its shape, never a value. -->
+  <details class="cb-help external" data-testid="chat-bot-where-external">
+    <summary>Runs somewhere else? Enroll an external bot <span class="ext-chip" data-testid="chat-bot-external-paid">Paid plans</span></summary>
+    <p>On the machine that runs it: <code>hq agent enroll</code>. It prints a one-time code, shown here as <span class="mono" data-testid="chat-bot-external-enroll-mask">••••-••••</span>; paste it there, not here. The bot joins this company as a member and its DM opens when it checks in.</p>
+  </details>
 </div>
 
 <style>
@@ -407,6 +414,27 @@
     margin: 4px 0 0;
     padding-left: 18px;
     line-height: 1.5;
+  }
+  .external {
+    margin-top: 10px;
+  }
+  .external summary {
+    cursor: pointer;
+  }
+  .external p {
+    margin: 4px 0 0;
+  }
+  .external code,
+  .external .mono {
+    font-family: var(--font-mono);
+  }
+  .ext-chip {
+    margin-left: 6px;
+    padding: 1px 6px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: 999px;
+    font: 500 10px/1.4 var(--font-mono);
+    color: var(--t2);
   }
   .home-cards {
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));

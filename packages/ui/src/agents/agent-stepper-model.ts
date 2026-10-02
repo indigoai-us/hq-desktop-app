@@ -1,6 +1,8 @@
 /**
- * Six-step New agent draft (Runtime → Verify) mapped onto the existing
- * create-bot model. Local create still goes through `toCreateInput`; hosted
+ * Bot draft for the profile pane's Edit sheet (Identity → Runtime), mapped
+ * onto the create-bot model. The six-step creation sheet that first used it
+ * is retired: creating is the three-step New bot modal, and the remaining
+ * setup happens in the bot's thread (chat/create-bot/bot-setup-thread.ts). Local create still goes through `toCreateInput`; hosted
  * create through `CloudBotDraft`. No new backend contract.
  *
  * Grant levels are read and write only. Probe text is redacted before paint
