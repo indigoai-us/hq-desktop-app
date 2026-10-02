@@ -9858,15 +9858,12 @@
             }}
           />
         {:else if railPlaceholder?.id === "atlas" && companyPaneCompany}
-          <!-- Props read companyPaneCompany through getters that can run once
-               more while this branch tears down (switching rail items), so
-               they tolerate it going null. -->
           <AtlasLandingHost
-            companyLabel={companyPaneCompany?.label ?? ""}
+            companyLabel={companyPaneCompany.label}
             workingNow={atlasWorkingNow(atlasCompanyRoster)}
-            slug={companyPaneCompany?.slug ?? ""}
+            slug={companyPaneCompany.slug}
             summaryEnabled={Boolean(adapter.company)}
-            companyUid={companyPaneCompany?.uid ?? null}
+            companyUid={companyPaneCompany.uid}
             actors={atlasActors}
             filterActor={atlasFilterActor}
             onclearfilter={() => (atlasFilterActor = null)}

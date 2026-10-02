@@ -44,3 +44,9 @@ export function restoreNotification(id: string): void {
   hidden.delete(id);
   hiddenVersion += 1;
 }
+
+/** Test helper. Session hides must not leak across popover mounts. */
+export function clearHiddenNotifications(): void {
+  hidden.clear();
+  hiddenVersion += 1;
+}

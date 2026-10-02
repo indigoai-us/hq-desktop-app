@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { isCompanyInviteRequest } from "./company-invite-requests.js";
 import type { NotificationItem } from "./notifications-model.js";
 import {
   actionKindForGrant,
   grantLevelFor,
   isAccessRequest,
+  isRequestRow,
   itemsForTab,
   withoutItem,
 } from "./notifications-panel.js";
@@ -45,6 +47,14 @@ describe("notifications panel", () => {
     expect(itemsForTab(all, "requests").map((row) => row.id)).toEqual(["r"]);
     expect(itemsForTab(all, "mentions").map((row) => row.id)).toEqual(["m"]);
     expect(isAccessRequest(mention)).toBe(false);
+  });
+
+  it("puts a company invite on Requests and leaves it off access grants", () => {
+    const invite = item({ id: "inv", serverType: "membership_invite", actionRef: "acme" });
+    expect(isCompanyInviteRequest(invite)).toBe(true);
+    expect(itemsForTab([invite, mention], "requests").map((row) => row.id)).toEqual(["inv"]);
+    expect(isAccessRequest(invite)).toBe(false);
+    expect(isRequestRow(invite)).toBe(true);
   });
 
   it("grants write only when the request says write, otherwise read", () => {

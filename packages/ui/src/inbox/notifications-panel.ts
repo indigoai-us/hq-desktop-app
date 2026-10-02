@@ -5,6 +5,7 @@
  * not fetch. Access grants are read or write only.
  */
 
+import { isCompanyInviteRequest } from "./company-invite-requests.js";
 import type { NotificationItem } from "./notifications-model.js";
 
 export type NotificationPanelTab = "all" | "mentions" | "requests";
@@ -36,6 +37,11 @@ export function isAccessRequest(item: NotificationItem): boolean {
   );
 }
 
+/** Access grants and pending company invites. Both live on the Requests tab. */
+export function isRequestRow(item: NotificationItem): boolean {
+  return isAccessRequest(item) || isCompanyInviteRequest(item);
+}
+
 /**
  * Read or write only. Anything else, including admin, is read.
  */
@@ -53,7 +59,7 @@ export function itemsForTab(
   tab: NotificationPanelTab,
 ): NotificationItem[] {
   if (tab === "mentions") return items.filter(isMention);
-  if (tab === "requests") return items.filter(isAccessRequest);
+  if (tab === "requests") return items.filter(isRequestRow);
   return [...items];
 }
 

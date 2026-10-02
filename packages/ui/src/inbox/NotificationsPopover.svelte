@@ -12,30 +12,51 @@
   } from "./notifications-cache.svelte.js";
   import { pushToast } from "../shell/toast-stack.svelte.js";
   import {
+    companyInvitesFromWorkspaces,
+    isCompanyInviteRequest,
+    mergeCompanyInvites,
+  } from "./company-invite-requests.js";
+  import {
     actionKindForGrant,
     grantLevelFor,
     isAccessRequest,
+    isRequestRow,
     itemsForTab,
     metadata,
     type NotificationPanelTab,
   } from "./notifications-panel.js";
   import "../chat/chat-tokens.css";
 
+  type CompanyInviteDecision =
+    | { ok: true }
+    | { ok: false; message: string; upgradeUrl: string | null };
+
   interface Props {
     api: NotificationsApi;
+    /** Pending company rows from the workspace list already on screen. */
+    pendingWorkspaces?: readonly unknown[];
     onclose?: () => void;
     onopen?: (item: NotificationItem) => void;
     onopensettings?: () => void;
+    /** Claim the invite, pin when the rail has room, and open Atlas. */
+    onacceptcompany?: (item: NotificationItem) => Promise<CompanyInviteDecision>;
   }
 
-  let { api, onclose, onopen, onopensettings }: Props = $props();
+  let { api, pendingWorkspaces = [], onclose, onopen, onopensettings, onacceptcompany }: Props = $props();
 
   let tab = $state<NotificationPanelTab>("all");
   let root = $state<HTMLElement | null>(null);
+  let inviteNotes = $state<Record<string, { message: string; upgradeUrl: string | null }>>({});
+  let dismissedInviteIds = $state<string[]>([]);
 
   const snap = $derived(notificationsCacheSnapshot());
-  const rows = $derived(itemsForTab(snap.items, tab));
-  const requestCount = $derived(snap.items.filter(isAccessRequest).length);
+  const merged = $derived(
+    mergeCompanyInvites(snap.items, companyInvitesFromWorkspaces(pendingWorkspaces)).filter(
+      (item) => !dismissedInviteIds.includes(item.id),
+    ),
+  );
+  const rows = $derived(itemsForTab(merged, tab));
+  const requestCount = $derived(merged.filter(isRequestRow).length);
 
   function onWindowPointer(event: PointerEvent): void {
     const target = event.target;
@@ -78,6 +99,55 @@
       });
     }
   }
+
+  function dismissInviteRow(id: string): void {
+    hideNotification(id);
+    if (!dismissedInviteIds.includes(id)) dismissedInviteIds = [...dismissedInviteIds, id];
+  }
+
+  function restoreInviteRow(id: string): void {
+    restoreNotification(id);
+    dismissedInviteIds = dismissedInviteIds.filter((entry) => entry !== id);
+  }
+
+  async function acceptInvite(item: NotificationItem): Promise<void> {
+    if (!onacceptcompany) return;
+    dismissInviteRow(item.id);
+    const next = { ...inviteNotes };
+    delete next[item.id];
+    inviteNotes = next;
+    try {
+      const result = await onacceptcompany(item);
+      if (!result.ok) {
+        restoreInviteRow(item.id);
+        inviteNotes = { ...inviteNotes, [item.id]: { message: result.message, upgradeUrl: result.upgradeUrl } };
+      }
+    } catch (err) {
+      console.error("notifications-popover: accept invite failed", err);
+      restoreInviteRow(item.id);
+      inviteNotes = {
+        ...inviteNotes,
+        [item.id]: { message: "Couldn't join the company. Try again.", upgradeUrl: null },
+      };
+    }
+  }
+
+  async function declineInvite(item: NotificationItem): Promise<void> {
+    dismissInviteRow(item.id);
+    try {
+      await api.ackNotification(item.id);
+    } catch (err) {
+      if (!item.id.startsWith("company-invite:")) {
+        console.error("notifications-popover: decline invite failed", err);
+        restoreInviteRow(item.id);
+        pushToast({
+          title: "Couldn't decline the invite",
+          detail: "Try again.",
+          tone: "err",
+        });
+      }
+    }
+  }
 </script>
 
 <div
@@ -109,7 +179,7 @@
         <div class="tt">{tab === "requests" ? "No open requests" : "You're caught up"}</div>
         <div class="mm">
           {tab === "requests"
-            ? "Access requests show up here with Approve and Deny."
+            ? "Company invites and access requests show up here."
             : "Mentions, bot completions, and access requests land here. Nothing is waiting on you."}
         </div>
       </div>
@@ -120,7 +190,34 @@
           <div>
             <span class="verb">{item.verbText}</span>
             {#if item.contextLine}<span class="m">{item.contextLine}</span>{/if}
-            {#if isAccessRequest(item)}
+            {#if isCompanyInviteRequest(item)}
+              <div class="act">
+                <button
+                  type="button"
+                  class="btn"
+                  data-testid="notification-accept-invite"
+                  onclick={() => void acceptInvite(item)}
+                >Accept</button>
+                <button
+                  type="button"
+                  class="btn"
+                  data-testid="notification-decline-invite"
+                  onclick={() => void declineInvite(item)}
+                >Decline</button>
+              </div>
+              {#if inviteNotes[item.id]}
+                <span class="m" data-testid="notification-invite-error">{inviteNotes[item.id].message}</span>
+                {#if inviteNotes[item.id].upgradeUrl}
+                  <a
+                    class="upgrade"
+                    data-testid="notification-invite-upgrade"
+                    href={inviteNotes[item.id].upgradeUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >Review plan</a>
+                {/if}
+              {/if}
+            {:else if isAccessRequest(item)}
               <div class="act">
                 <button
                   type="button"
@@ -276,11 +373,19 @@
     cursor: default;
   }
 
-  .link {
+  .link,
+  .upgrade {
     border: 0;
     background: transparent;
     color: var(--v4-text-3);
     padding: 0;
+  }
+
+  .upgrade {
+    display: inline-block;
+    margin-top: 4px;
+    font-size: 11px;
+    text-decoration: underline;
   }
 
   .nfoot {
