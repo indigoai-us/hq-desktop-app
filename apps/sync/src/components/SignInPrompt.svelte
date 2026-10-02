@@ -16,6 +16,7 @@
     type ContinuationDeps,
     type ContinuationState,
   } from '../lib/desktop-session-continuation';
+  import { mapSignInError, type SignInProvider } from '../lib/onboarding-signin';
 
   interface Props {
     reauth?: boolean;
@@ -29,7 +30,6 @@
 
   let { reauth = false, onsuccess, bringMainToFront = true }: Props = $props();
 
-  type SignInProvider = 'Google' | 'Microsoft';
   const providers: { key: SignInProvider; label: string }[] = [
     { key: 'Google', label: 'Google' },
     { key: 'Microsoft', label: 'Microsoft' },
@@ -37,6 +37,8 @@
 
   let loadingProvider = $state<SignInProvider | null>(null);
   let error = $state('');
+  let microsoftEmail = $state('');
+  let microsoftEmailPrompt = $state(false);
 
   // ── Browser session continuation ────────────────────────────────────
   //
@@ -156,6 +158,12 @@
   }
 
   async function handleSignIn(provider: SignInProvider) {
+    if (provider === 'Microsoft' && microsoftEmail.trim() === '') {
+      microsoftEmailPrompt = true;
+      error = '';
+      return;
+    }
+
     const run = ++signInRun;
     // Claim the flow before anything awaits, so a continuation whose config
     // lands mid-click sees this rather than racing it.
@@ -174,7 +182,10 @@
       const { authorizeUrl, state } = await invoke<{
         authorizeUrl: string;
         state: string;
-      }>('start_oauth_login', { provider });
+      }>('start_oauth_login', {
+        provider,
+        ...(provider === 'Microsoft' ? { email: microsoftEmail.trim() } : {}),
+      });
       if (!isCurrentSignInRun(run)) {
         await cancelPendingSignIn(state);
         return;
@@ -230,7 +241,10 @@
     } catch (err) {
       if (!isCurrentSignInRun(run)) return;
       console.error('[signin] OAuth runner failed:', err);
-      error = 'That sign-in did not finish. Choose your provider and try once more.';
+      error = mapSignInError(
+        err instanceof Error ? err.message : String(err),
+        provider,
+      );
       await cancelPendingSignIn();
     } finally {
       if (isCurrentSignInRun(run)) {
@@ -372,6 +386,36 @@
           {/if}
         </button>
       {/each}
+      {#if microsoftEmailPrompt}
+        <form
+          class="microsoft-email"
+          data-testid="microsoft-email-form"
+          onsubmit={(event) => {
+            event.preventDefault();
+            void handleSignIn('Microsoft');
+          }}
+        >
+          <label for="signin-microsoft-email">Enter the Microsoft email you use with HQ</label>
+          <input
+            id="signin-microsoft-email"
+            data-testid="microsoft-email"
+            type="email"
+            autocomplete="username"
+            autocapitalize="none"
+            spellcheck="false"
+            bind:value={microsoftEmail}
+            disabled={loadingProvider !== null || quitting}
+          />
+          <button
+            class="sign-in-btn"
+            type="submit"
+            data-testid="microsoft-email-continue"
+            disabled={loadingProvider !== null || quitting || microsoftEmail.trim() === ''}
+          >
+            Continue
+          </button>
+        </form>
+      {/if}
     </div>
 
     {#if loadingProvider}
@@ -527,6 +571,38 @@
 
   .sign-in-actions[hidden] {
     display: none;
+  }
+
+  .microsoft-email {
+    display: grid;
+    gap: 0.5rem;
+    width: 100%;
+    margin-top: 0.25rem;
+    text-align: left;
+  }
+
+  .microsoft-email label {
+    font-size: 0.75rem;
+    color: var(--pop-muted);
+    line-height: 1.4;
+  }
+
+  .microsoft-email input {
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 36px;
+    padding: 0.5rem 0.625rem;
+    border: 1px solid var(--pop-border);
+    border-radius: 8px;
+    background: transparent;
+    color: var(--pop-text);
+    font: inherit;
+    font-size: 0.8125rem;
+  }
+
+  .microsoft-email input:focus-visible {
+    outline: 1.5px solid var(--pop-text);
+    outline-offset: 2px;
   }
 
   .continuation-card {

@@ -1,10 +1,15 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
-  import { createSyncPlatformAdapter } from '@hq/platform';
+  import {
+    createSyncPlatformAdapter,
+    POST_READY_ACTION_TELEMETRY_FLAG,
+    type Json,
+  } from '@hq/platform';
   import { startTraySync } from './lib/traySync';
   import { emit, listen } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
+  import { getVersion } from '@tauri-apps/api/app';
   import {
     isPermissionGranted as isNotifyPermissionGranted,
     sendNotification,
@@ -80,12 +85,106 @@
   } from './lib/stopWatchdog';
   import { TELEMETRY_CONSENT_VERSION } from './lib/consent-version';
   import { markConsentRepromptShown } from './lib/onboarding-telemetry';
+  import {
+    createPostReadyActionTelemetry,
+    isPostReadyAction,
+    POST_READY_ACTION_EVENT,
+  } from './lib/post-ready-action-telemetry';
   import './styles/popover.css';
 
   const traySyncAdapter = createSyncPlatformAdapter({
     invoke: (command, args) => invoke(command, args),
     primeMirrorQuarantineGate: true,
   });
+  const postReadyTelemetry = getVersion()
+    .then((appVersion) => createPostReadyActionTelemetry({
+      appVersion,
+      os: desktopTelemetryOs(),
+      isFlagEnabled: async () => {
+        const result = await traySyncAdapter.identity.hasFeature(POST_READY_ACTION_TELEMETRY_FLAG);
+        return result.ok && result.value === true;
+      },
+      getIdentity: async (scope) => resolvePostReadyIdentity(scope),
+    }))
+    .catch((err) => {
+      console.warn('post-ready action telemetry initialization failed:', err);
+      return createPostReadyActionTelemetry({
+        appVersion: 'unknown',
+        os: desktopTelemetryOs(),
+        isFlagEnabled: async () => {
+          const result = await traySyncAdapter.identity.hasFeature(POST_READY_ACTION_TELEMETRY_FLAG);
+          return result.ok && result.value === true;
+        },
+        getIdentity: async (scope) => resolvePostReadyIdentity(scope),
+      });
+    });
+  function handlePostReadyAction(event: Event): void {
+    const detail = (
+      event as CustomEvent<{
+        action?: unknown;
+        companyUid?: unknown;
+        companySlug?: unknown;
+      }>
+    ).detail;
+    if (!detail || !isPostReadyAction(detail.action)) return;
+    const scope = {
+      ...(typeof detail.companyUid === 'string' ? { companyUid: detail.companyUid } : {}),
+      ...(typeof detail.companySlug === 'string' ? { companySlug: detail.companySlug } : {}),
+    };
+    void postReadyTelemetry.then((telemetry) =>
+      telemetry.record(
+        detail.action as Parameters<typeof telemetry.record>[0],
+        scope,
+      ),
+    );
+  }
+  window.addEventListener(POST_READY_ACTION_EVENT, handlePostReadyAction);
+  const postReadyCloseListener = getCurrentWindow().onCloseRequested(() => {
+    void postReadyTelemetry.then((telemetry) => telemetry.record('close_window'));
+  });
+  onDestroy(() => {
+    window.removeEventListener(POST_READY_ACTION_EVENT, handlePostReadyAction);
+    void postReadyCloseListener.then((unlisten) => unlisten());
+  });
+
+  async function resolvePostReadyIdentity(
+    scope?: { companyUid?: string; companySlug?: string },
+  ): Promise<{ personUid: string; companyUid: string | null } | null> {
+    const person = await traySyncAdapter.identity.whoami();
+    if (!person.ok) return null;
+    const workspaces = await traySyncAdapter.identity.listWorkspaces();
+    if (!workspaces.ok) return null;
+    let activeSlug = scope?.companySlug ?? config?.companySlug ?? '';
+    if (!activeSlug && !scope?.companyUid) {
+      activeSlug = (await invoke<string | null>('get_desktop_active_company').catch((err) => {
+        console.warn('active company lookup failed for post-ready telemetry:', err);
+        return null;
+      })) ?? '';
+    }
+    const memberships = workspaces.value as Json[];
+    const active = scope?.companyUid
+      ? memberships.find(
+          (workspace) => String(workspace.companyUid ?? workspace.uid ?? '') === scope.companyUid,
+        )
+      : scope?.companySlug
+        ? memberships.find(
+            (workspace) => String(workspace.slug ?? workspace.companySlug ?? '') === scope.companySlug,
+          )
+        : memberships.find(
+            (workspace) => activeSlug && String(workspace.slug ?? workspace.companySlug ?? '') === activeSlug,
+          ) ?? (memberships.length === 1 ? memberships[0] : undefined);
+    const companyUid = active && String(active.companyUid ?? active.uid ?? '').trim();
+    return { personUid: person.value.personUid, companyUid: companyUid || null };
+  }
+
+  function desktopTelemetryOs(): 'macos' | 'windows' | 'linux' {
+    const platform = typeof navigator === 'undefined'
+      ? ''
+      : `${navigator.platform} ${navigator.userAgent}`.toLowerCase();
+    if (platform.includes('mac')) return 'macos';
+    if (platform.includes('win')) return 'windows';
+    return 'linux';
+  }
   onDestroy(() => {
     void traySyncAdapter.dispose?.();
   });
