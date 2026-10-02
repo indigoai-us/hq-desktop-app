@@ -223,3 +223,13 @@ describe("US-042 New meeting link field", () => {
     expect(draftToEvent(draft, "x")?.meetingUrl).toBe(zoom);
   });
 });
+
+describe("New meeting sheet Escape (QA-017)", () => {
+  it("asks the host to close the sheet on Escape", () => {
+    store.accounts = [{ accountId: "a1" }];
+    const oncloseSheet = vi.fn();
+    render(MeetingsStatesBody, { mode: "empty", sheetOpen: true, sections: [], now, oncloseSheet });
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    expect(oncloseSheet).toHaveBeenCalledTimes(1);
+  });
+});

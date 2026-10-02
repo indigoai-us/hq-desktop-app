@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { dismissable } from "../../common/dismissable.js";
   /**
    * Browse packs sheet (US-036). Installed rows paint from the Core popover
    * cache on the first frame. The marketplace catalog refreshes after.
@@ -84,7 +85,7 @@
 </script>
 
 <div class="bp-scrim" role="presentation" onclick={onclose}></div>
-<div class="bp-sheet" role="dialog" aria-label="Browse packs" data-testid="browse-packs-sheet">
+<div class="bp-sheet" role="dialog" aria-label="Browse packs" data-testid="browse-packs-sheet" use:dismissable={{ onclose }}>
   <header class="bp-h">
     Browse packs
     <button type="button" class="icon" aria-label="Close" data-testid="browse-packs-close" onclick={onclose}>✕</button>

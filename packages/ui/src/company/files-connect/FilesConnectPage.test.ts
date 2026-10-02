@@ -190,4 +190,14 @@ describe("US-029 FilesConnectPage", () => {
     expect(target.querySelector("[data-testid='vault-preview-empty']")).toBeNull();
     expect(target.querySelector("[data-testid='vault-access'] h2")?.textContent).toBe("knowledge");
   });
+
+  it("closes the Connect app dialog on Escape (QA-012)", () => {
+    const target = mountPage("integrations");
+    (target.querySelector("[data-testid='connect-app']") as HTMLButtonElement).click();
+    flushSync();
+    expect(target.querySelector("[data-testid='sheet-connect']")).not.toBeNull();
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    flushSync();
+    expect(target.querySelector("[data-testid='sheet-connect']")).toBeNull();
+  });
 });

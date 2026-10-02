@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { dismissable } from "../common/dismissable.js";
   /**
    * Reusable skill list. Selection is a background highlight only.
    * Callers own the catalog; this component does not fetch.
@@ -29,7 +30,7 @@
   );
 </script>
 
-<div class="sp" role="dialog" aria-label="Choose skills" data-testid="skill-picker">
+<div class="sp" role="dialog" aria-label="Choose skills" data-testid="skill-picker" use:dismissable={{ onclose, trap: false }}>
   <div class="sp-h">
     <h2>Skills</h2>
     <button type="button" class="sp-x" aria-label="Close" onclick={onclose}>✕</button>

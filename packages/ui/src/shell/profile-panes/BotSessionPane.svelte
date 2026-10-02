@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { dismissable } from "../../common/dismissable.js";
   /**
    * Live bot session pane. Transcript lines append; lists past 200 rows
    * window. Stop asks before the pane switches to the ended state.
@@ -152,7 +153,7 @@
     <button type="button" class="btn">Open in Claude Code</button>
   </div>
   {#if phase === "confirm-stop"}
-    <div class="confirm" role="alertdialog" aria-label="Stop session" data-testid="bot-session-confirm">
+    <div class="confirm" role="alertdialog" aria-label="Stop session" data-testid="bot-session-confirm" use:dismissable={{ onclose: () => setPhase(cancelStop(phase)) }}>
       <div class="ct">Stop {name}'s session?</div>
       <div class="cb">{context} stops now. The transcript is kept. Scheduled jobs are untouched.</div>
       <div class="ca">

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { dismissable } from "../../common/dismissable.js";
   /**
    * Company Brain (US-028): Knowledge, Policies, Skills, Workers.
    * First frame is the cache or a shimmer. Refresh runs after paint.
@@ -490,7 +491,7 @@
 
   {#if sheet}
     <div class="scrim" role="presentation" onclick={() => (sheet = null)}></div>
-    <div class="sheet" role="dialog" aria-label={sheet === "policy" ? "New policy" : sheet === "skill" ? "New skill" : sheet === "picker" ? "Skill picker" : "New worker"} data-testid="brain-sheet">
+    <div class="sheet" role="dialog" aria-label={sheet === "policy" ? "New policy" : sheet === "skill" ? "New skill" : sheet === "picker" ? "Skill picker" : "New worker"} data-testid="brain-sheet" use:dismissable={{ onclose: () => (sheet = null) }}>
       <header class="sheet-head">
         <h2>{sheet === "policy" ? "New policy" : sheet === "skill" ? "New skill" : sheet === "picker" ? "Skills" : "New worker"}</h2>
         <button type="button" class="btn" aria-label="Close" onclick={() => (sheet = null)}>✕</button>
@@ -575,7 +576,7 @@
   {/if}
 
   {#if shareOpen && selectedSkill}
-    <div class="sheet share" role="dialog" aria-label="Share" data-testid="share-sheet">
+    <div class="sheet share" role="dialog" aria-label="Share" data-testid="share-sheet" use:dismissable={{ onclose: () => (shareOpen = false), outside: true }}>
       <header class="sheet-head"><h2>Share</h2><button type="button" class="btn" aria-label="Close" onclick={() => (shareOpen = false)}>✕</button></header>
       <p class="path">{selectedSkill.path}</p>
       <p class="meta">Grant level is read or write. The vault share sheet sends the grant.</p>

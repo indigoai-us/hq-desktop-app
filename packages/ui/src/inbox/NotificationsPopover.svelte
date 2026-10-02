@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { dismissable } from "../common/dismissable.js";
   /**
    * Titlebar notifications popover (console-rail US-011).
    * Paints from the cached inbox. Tabs and grant buttons do not fetch.
@@ -152,6 +153,7 @@
 
 <div
   class="npop"
+  use:dismissable={{ onclose: () => onclose?.(), trap: false, autofocus: false }}
   bind:this={root}
   role="dialog"
   aria-label="Notifications"

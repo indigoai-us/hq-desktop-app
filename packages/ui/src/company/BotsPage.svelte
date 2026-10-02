@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { dismissable } from "../common/dismissable.js";
   /**
    * Company Bots page (console-rail US-027).
    *
@@ -228,7 +229,7 @@
 
   {#if jobOpen}
     <div class="scrim" data-testid="edit-job-sheet" data-scene="edit-job">
-      <div class="sheet" role="dialog" aria-label="Edit job">
+      <div class="sheet" role="dialog" aria-label="Edit job" use:dismissable={{ onclose: () => (jobOpen = false), outside: true }}>
         <header class="sh">
           Edit job
           <button type="button" class="icon" aria-label="Close" onclick={() => (jobOpen = false)}>✕</button>

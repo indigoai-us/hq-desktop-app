@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { dismissable } from "../../common/dismissable.js";
   /**
    * Vault, Integrations, Secrets, Deployments (US-029).
    * First frame is the cache or a shimmer. Refresh runs after paint.
@@ -486,7 +487,7 @@
   {#if status}<p class="status" data-testid="files-connect-status">{status}</p>{/if}
 
   {#if sheet}
-    <div class="sheet" role="dialog" data-testid={`sheet-${sheet}`}>
+    <div class="sheet" role="dialog" data-testid={`sheet-${sheet}`} use:dismissable={{ onclose: () => (sheet = null), outside: true }}>
       {#if sheet === "share" || sheet === "share-secret"}
         <h2>Share</h2>
         <p>{shareView?.name ?? vaultCurrent?.name}</p>

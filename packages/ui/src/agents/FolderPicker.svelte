@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { dismissable } from "../common/dismissable.js";
   /**
    * Reusable vault-folder picker. Selection is a background highlight only.
    * Paths are labels; this component does not read the vault.
@@ -23,7 +24,7 @@
   );
 </script>
 
-<div class="fp" role="dialog" aria-label="Choose folder" data-testid="folder-picker">
+<div class="fp" role="dialog" aria-label="Choose folder" data-testid="folder-picker" use:dismissable={{ onclose, trap: false }}>
   <input class="fp-q" placeholder="Filter folders" bind:value={query} data-testid="folder-picker-filter" />
   <div class="fp-list">
     {#each rows as folder (folder.path)}

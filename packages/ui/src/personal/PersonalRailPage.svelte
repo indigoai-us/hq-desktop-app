@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { dismissable } from "../common/dismissable.js";
   /**
    * Personal Secrets and Connections (US-033).
    * First frame is the cache. Refresh runs after paint.
@@ -313,7 +314,7 @@
   </div>
 
   {#if sheet}
-    <div class="sheet" role="dialog" data-testid={`sheet-${sheet}`}>
+    <div class="sheet" role="dialog" data-testid={`sheet-${sheet}`} use:dismissable={{ onclose: () => (sheet = null), outside: true }}>
       {#if sheet === "new-secret" || sheet === "rotate"}
         <h2>{sheet === "rotate" ? `Rotate ${shareView?.name ?? "secret"}` : "New secret"}</h2>
         <input

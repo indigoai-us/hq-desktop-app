@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { dismissable } from "../common/dismissable.js";
   /**
    * Company Team page (console-rail US-027).
    *
@@ -366,7 +367,7 @@
 
   {#if inviteOpen}
     <div class="scrim" data-testid="invite-sheet" data-scene="invite-teammate">
-      <div class="sheet" role="dialog" aria-label="Invite teammate">
+      <div class="sheet" role="dialog" aria-label="Invite teammate" use:dismissable={{ onclose: () => (inviteOpen = false), outside: true }}>
         <header class="sh">
           Invite teammate
           <button type="button" class="icon" aria-label="Close" onclick={() => (inviteOpen = false)}>✕</button>

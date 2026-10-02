@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { dismissable } from "../common/dismissable.js";
   /**
    * Personal Outpost (US-034).
    * First frame is the cache. Refresh runs after paint.
@@ -266,7 +267,7 @@
 
   {#if sheet}
     <div class="ov" data-testid="edit-job-sheet">
-      <div class="sheet" role="dialog" aria-label="Edit job">
+      <div class="sheet" role="dialog" aria-label="Edit job" use:dismissable={{ onclose: () => (sheet = null), outside: true }}>
         <header>Edit job <span class="sub">{sheet.name} · {data.host.name}</span>
           <button type="button" aria-label="Close" onclick={() => (sheet = null)}>✕</button>
         </header>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { dismissable } from "../../common/dismissable.js";
   /** First-frame door. Skeleton paints before the browse-packs chunk loads. */
   import { onMount } from "svelte";
   import type { Component } from "svelte";
@@ -30,7 +31,7 @@
   <Sheet {installed} {marketplace} {onopenLibrary} {onclose} />
 {:else}
   <div class="bp-scrim" role="presentation"></div>
-  <div class="bp-sheet" role="dialog" aria-label="Browse packs" aria-busy="true" data-testid="browse-packs-sheet">
+  <div class="bp-sheet" role="dialog" aria-label="Browse packs" aria-busy="true" data-testid="browse-packs-sheet" use:dismissable={{ onclose }}>
     <header>Browse packs</header>
     <div class="shimmer"></div>
     <div class="shimmer"></div>

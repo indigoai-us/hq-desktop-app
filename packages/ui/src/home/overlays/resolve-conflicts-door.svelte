@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { dismissable } from "../../common/dismissable.js";
   /**
    * First-frame door for the resolve-conflicts sheet. The skeleton paints
    * immediately; the body chunk loads after.
@@ -36,6 +37,7 @@
   <div class="rc-scrim" role="presentation"></div>
   <div
     class="rc-sheet"
+    use:dismissable={{ onclose }}
     role="dialog"
     aria-label="Resolve conflicts"
     aria-busy="true"

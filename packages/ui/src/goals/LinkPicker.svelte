@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { dismissable } from "../common/dismissable.js";
   /**
    * Link picker (US-026). Search projects, then attach the chosen project
    * to a key result. Shared by Link project and New objective.
@@ -35,7 +36,7 @@
   }
 </script>
 
-<div class="popover" data-testid="link-picker" role="dialog" aria-label="Link project">
+<div class="popover" data-testid="link-picker" role="dialog" aria-label="Link project" use:dismissable={{ onclose, trap: false, autofocus: false }}>
   <div class="ctx">
     <span class="t">{chosen ? projectDisplayName(chosen) : "Pick a project"}</span>
     <button class="x" type="button" aria-label="Close" onclick={onclose}>✕</button>

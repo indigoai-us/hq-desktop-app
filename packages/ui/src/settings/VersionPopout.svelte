@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { dismissable } from "../common/dismissable.js";
   import type { SettingsApi, UpdatesApi } from "@hq/platform";
   import type { SettingsUpdater } from "../common/settings-write";
   import UnavailableNote from "../common/UnavailableNote.svelte";
@@ -383,6 +384,7 @@
 
 <div
   class="version-popout"
+  use:dismissable={{ onclose, trap: false, autofocus: false }}
   class:below={placement === "below"}
   data-testid="version-popout"
   role="dialog"

@@ -78,4 +78,26 @@ describe("US-033 PersonalRailPage", () => {
     flushSync();
     expect(policy?.querySelector("[aria-pressed='true']")?.textContent).toBe("Never");
   });
+
+  it("closes Add connection and New secret on Escape (QA-003, QA-015)", async () => {
+    const target = mountPage("connections");
+    (target.querySelector("[data-testid='add-connection']") as HTMLButtonElement).click();
+    flushSync();
+    expect(target.querySelector("[data-testid='sheet-connect']")).not.toBeNull();
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    flushSync();
+    expect(target.querySelector("[data-testid='sheet-connect']")).toBeNull();
+    await unmount(component!);
+    component = null;
+
+    const secrets = mountPage("secrets");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+    (secrets.querySelector("[data-testid='new-secret']") as HTMLButtonElement).click();
+    flushSync();
+    expect(secrets.querySelector("[data-testid='sheet-new-secret']")).not.toBeNull();
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    flushSync();
+    expect(secrets.querySelector("[data-testid='sheet-new-secret']")).toBeNull();
+  });
 });

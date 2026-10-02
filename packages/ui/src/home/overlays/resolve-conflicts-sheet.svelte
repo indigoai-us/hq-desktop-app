@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { dismissable } from "../../common/dismissable.js";
   /**
    * Resolve-conflicts sheet (US-036). Per file: keep local, keep cloud, or
    * discard. Apply sends each choice through the existing sync resolve
@@ -63,6 +64,7 @@
 <div class="rc-scrim" data-testid="resolve-conflicts-scrim" onclick={onclose} role="presentation"></div>
 <div
   class="rc-sheet"
+  use:dismissable={{ onclose }}
   role="dialog"
   aria-label="Resolve conflicts"
   data-testid="resolve-conflicts-sheet"

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { dismissable } from "../../common/dismissable.js";
   /**
    * Edit bot sheet. Tabs are Identity, Membership, Access, Capabilities and
    * Runtime; Access and Capabilities use the shared folder and skill pickers. Field groups follow that step's content. Save is local until
@@ -56,7 +57,7 @@
 </script>
 
 <div class="ov" data-testid="edit-bot-sheet">
-  <div class="sheet" role="dialog" aria-label="Edit bot">
+  <div class="sheet" role="dialog" aria-label="Edit bot" use:dismissable={{ onclose: () => onclose?.(), outside: true }}>
     <header class="sh">
       Edit bot
       <span class="sub">{name}</span>

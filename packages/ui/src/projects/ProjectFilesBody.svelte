@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { dismissable } from "../common/dismissable.js";
   /**
    * Project Files body (US-025). Loaded through project-files-lazy.ts.
    * Vault tree first, linked repo second (hidden without repo access).
@@ -326,7 +327,7 @@
 
 {#if sheet}
   <div class="scrim" data-testid={`sheet-${sheet}`}>
-    <div class="sheet" role="dialog" aria-modal="true" aria-label={sheet}>
+    <div class="sheet" role="dialog" aria-modal="true" aria-label={sheet} use:dismissable={{ onclose: () => (sheet = null), outside: true }}>
       {#if sheet === "new-file"}
         <header class="sheet-h">New file<button type="button" class="icon-x" aria-label="Close" onclick={() => (sheet = null)}>✕</button></header>
         <div class="sheet-b">

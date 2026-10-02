@@ -4,6 +4,7 @@
   stay out of the initial graph. First frame is the door skeleton.
 -->
 <script lang="ts">
+  import { dismissable } from "../common/dismissable.js";
   import PeoplePicker from "../chat/PeoplePicker.svelte";
   import type { PeoplePickerEntry } from "../chat/people-picker.js";
   import type { MeetingEvent, ScheduledBot } from "./meetings-model";
@@ -369,7 +370,7 @@
 
   {#if sheetOpen}
     <div class="scrim" data-testid="new-meeting-scrim" onclick={() => oncloseSheet?.()} role="presentation"></div>
-    <div class="sheet" role="dialog" aria-label="New meeting" data-testid="new-meeting-sheet" tabindex="-1" onpaste={onSheetPaste}>
+    <div class="sheet" role="dialog" aria-label="New meeting" data-testid="new-meeting-sheet" tabindex="-1" use:dismissable={{ onclose: () => oncloseSheet?.() }} onpaste={onSheetPaste}>
       <div class="sh-row">New meeting<span class="grow"></span><button type="button" class="icon-btn" aria-label="Close" onclick={() => oncloseSheet?.()}>✕</button></div>
       <div class="sb">
         <label class="fr"><span class="lb">Title</span>

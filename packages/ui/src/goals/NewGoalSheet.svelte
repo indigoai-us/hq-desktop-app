@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { dismissable } from "../common/dismissable.js";
   /**
    * New objective sheet (US-026). Period choices match the storyboard.
    * Linking a project opens LinkPicker.
@@ -53,7 +54,7 @@
 </script>
 
 <div class="scrim" data-testid="new-goal-sheet" role="presentation" onclick={onclose}></div>
-<div class="sheet" role="dialog" aria-label="New objective">
+<div class="sheet" role="dialog" aria-label="New objective" use:dismissable={{ onclose }}>
   <div class="sh">New objective <span class="grow"></span>
     <button class="x" type="button" aria-label="Close" onclick={onclose}>✕</button>
   </div>
