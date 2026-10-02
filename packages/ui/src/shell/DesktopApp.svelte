@@ -5782,7 +5782,18 @@
     companyUid: string,
     draft: CloudBotDraft,
   ): Promise<EntryPointResult> {
-    const result = await runCreateCloudBotEntry(conversationApi, companyUid, draft);
+    const result = await runCreateCloudBotEntry(
+      {
+        ...conversationApi,
+        // The driver names its own failed exit in the support log. Without
+        // this bridge those lines only reached the webview console.
+        logToFile: async (tag, message) => {
+          unwrapAdapter(await adapter.appShell.logToFile(tag, message));
+        },
+      },
+      companyUid,
+      draft,
+    );
     if (result.ok) {
       const title = draft.title?.trim() ?? "";
       const agentUid = result.target.agentUid?.trim() ?? "";
