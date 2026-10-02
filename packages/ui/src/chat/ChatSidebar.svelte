@@ -52,7 +52,7 @@
     type ChatWakeBus,
   } from "./chat-api";
   import type { CloudBotDraft, EntryPointResult } from "./lifecycle-entry-points.js";
-  import type { WakingBotSession } from "./create-bot/waking-model.js";
+  import { beginWakingSession, type WakingBotSession } from "./create-bot/waking-model.js";
   import type {
     AdapterPromise,
     AgentProvisionOptionsView,
@@ -166,6 +166,7 @@
     searchHitSnippet,
     takeRailConversations,
     withWakingBotRow,
+    withCancelledBotRows,
     flattenGrouped,
     pickAutoOpenConversation,
     pickSettledBootConversation,
@@ -189,6 +190,16 @@
   } from "./sidebar-modal-fixtures";
   import CreateModal from "./CreateModal.svelte";
   import NewBotTakeover from "./create-bot/NewBotTakeover.svelte";
+  import {
+    beginBotRemoval,
+    loadOpenBotRemovals,
+    loadRemovedBots,
+    rememberRemovedBot,
+    runBotRemoval,
+    saveOpenBotRemovals,
+    type BotRemoval,
+    type RemoveBotRequest,
+  } from "./create-bot/cancel-model.js";
   import type { CompanyCreateSeam } from "./create-company/create-company-flow.js";
   import { registerShortcuts } from "../common/keyboard-shortcuts";
   import { titleWhenTruncated } from "../common/truncation-title";
@@ -290,6 +301,15 @@
     /** Polls a just-created cloud bot while its waking screen is open. */
     loadAgentStatus?: ((agentUid: string, brain?: "grok" | "codex" | "claude") => Promise<unknown>) | null;
     retryAgent?: ((agentUid: string) => Promise<unknown>) | null;
+    /**
+     * Ask the server to remove a cloud bot. Cancel in the new bot flow uses it
+     * for a bot the create already made. Safe to call again for the same bot.
+     */
+    removeAgent?: RemoveBotRequest | null;
+    /** A cancelled bot is gone from the server: drop what the host kept for it. */
+    onbotremoved?: ((agentUid: string) => void) | null;
+    /** Test seam: how long a removal waits before asking the server again. */
+    botRemovalRetryMs?: number;
     /** Ask a new cloud bot, on the bot-only lane, to write its first message. */
     sendBotHello?: ((session: WakingBotSession) => Promise<boolean>) | null;
     /** True once that first message is in the direct message. */
@@ -455,6 +475,9 @@
     oncreateagent = null,
     loadAgentStatus = null,
     retryAgent = null,
+    removeAgent = null,
+    onbotremoved = null,
+    botRemovalRetryMs = undefined,
     sendBotHello = null,
     checkBotHello = null,
     restartBrainApproval = null,
@@ -956,6 +979,10 @@
 
   let wakingBot = $state<WakingBotSession | null>(null);
   let botSetupChannels = $state<string[]>(loadBotSetupChannels(storage));
+  /** Cancelled bots: what is being removed, what was removed, what was not. */
+  let botRemovals = $state<BotRemoval[]>(loadOpenBotRemovals(storage));
+  /** Bots the server confirmed removed. Their conversation stays off the list. */
+  let removedBotUids = $state<string[]>(loadRemovedBots(storage));
   const contactsWithUnreads = $derived(applyPairUnreads(contacts, pairUnreads));
 
   /**
@@ -1019,14 +1046,18 @@
   });
 
   const allRows = $derived(
-    withWakingBotRow(withoutBotSetupChannels(normalizeConversations(channelsWithSetup, contactsWithUnreads, {
-      pinnedIds: pinsWithSetup,
-      dmDots,
-      recentDms,
-      engagedAgentUids: engagedAgents,
-      ownAgentUids,
-      homeChannelIdByUid,
-    }), botSetupChannels), wakingBot),
+    withCancelledBotRows(
+      withWakingBotRow(withoutBotSetupChannels(normalizeConversations(channelsWithSetup, contactsWithUnreads, {
+        pinnedIds: pinsWithSetup,
+        dmDots,
+        recentDms,
+        engagedAgentUids: engagedAgents,
+        ownAgentUids,
+        homeChannelIdByUid,
+      }), botSetupChannels), wakingBot),
+      botRemovals,
+      removedBotUids,
+    ),
   );
 
   /**
@@ -1436,7 +1467,9 @@
   function handleRowClick(row: ConversationRow, event: MouseEvent): void {
     const multi = event.metaKey || event.ctrlKey || event.shiftKey;
     if (!selectionMode && !multi) {
-      if (row.wakingBot) {
+      if (row.wakingBot || row.removingBot) {
+        // A bot that is starting, or a cancelled bot that still exists: its
+        // state lives in the new bot screen, and it has no conversation yet.
         newBotOpen = true;
         return;
       }
@@ -1654,6 +1687,7 @@
   }
 
   function beginWakingBot(session: WakingBotSession): void {
+    if (botIsCancelled(session.agentUid)) return;
     wakingBot = session;
     if (session.agentUid && session.channelId) {
       botSetupChannels = rememberBotSetupChannel(botSetupChannels, session.channelId, storage);
@@ -1661,8 +1695,186 @@
   }
 
   function updateWakingBot(session: WakingBotSession | null): void {
+    if (session && botIsCancelled(session.agentUid)) return;
     wakingBot = session;
   }
+
+  // ── Cancel in the new bot flow ───────────────────────────────────────────
+  // Cancel stops the create and removes what it made. The sidebar holds the
+  // state, so a removal keeps going when the takeover closes and an answer
+  // that arrives after Cancel still finds its bot.
+
+  /** The create request that is out now. Cancel marks it; its answer is then handled here. */
+  let createInFlight: {
+    cancelled: boolean;
+    name: string;
+    companyUid: string;
+    brain: string | null;
+    removalId: string | null;
+  } | null = null;
+
+  /** A late answer for a cancelled bot must never bring its waiting screen back. */
+  function botIsCancelled(agentUid: string): boolean {
+    const uid = agentUid.trim();
+    if (!uid) return false;
+    return removedBotUids.includes(uid) || botRemovals.some((removal) => removal.agentUid === uid);
+  }
+
+  function setBotRemovals(next: BotRemoval[]): void {
+    botRemovals = next;
+    saveOpenBotRemovals(next, storage);
+  }
+
+  function patchBotRemoval(id: string, patch: Partial<BotRemoval>): void {
+    setBotRemovals(botRemovals.map((removal) => removal.id === id ? { ...removal, ...patch } : removal));
+  }
+
+  /** The takeover's create request, watched so Cancel can reach it. */
+  async function createAgentFromTakeover(
+    companyUid: string,
+    draft: CloudBotDraft,
+  ): Promise<EntryPointResult> {
+    if (!oncreateagent) return { ok: false, blocked: false, reason: "" };
+    const attempt = {
+      cancelled: false,
+      name: draft.name,
+      companyUid,
+      brain: draft.runtime ?? null,
+      removalId: null as string | null,
+    };
+    createInFlight = attempt;
+    let result: EntryPointResult | null = null;
+    try {
+      result = await oncreateagent(companyUid, draft);
+    } catch (err) {
+      if (!attempt.cancelled) throw err;
+    } finally {
+      if (createInFlight === attempt) createInFlight = null;
+    }
+    if (!attempt.cancelled && result) return result;
+    settleCancelledCreate(attempt.removalId, result);
+    return { ok: false, blocked: false, reason: "", cancelled: true };
+  }
+
+  /** Cancel while the create request is out. Its answer decides what there is to remove. */
+  function cancelCreateInFlight(): void {
+    const attempt = createInFlight;
+    if (!attempt || attempt.cancelled) return;
+    attempt.cancelled = true;
+    createInFlight = null;
+    const removal = beginBotRemoval({ name: attempt.name, companyUid: attempt.companyUid, brain: attempt.brain });
+    attempt.removalId = removal.id;
+    setBotRemovals([removal, ...botRemovals]);
+  }
+
+  /** The answer to a create the person cancelled. A bot it names exists and is removed. */
+  function settleCancelledCreate(removalId: string | null, result: EntryPointResult | null): void {
+    if (!removalId) return;
+    // A card in the answer is the upgrade card: nothing was created.
+    const created = result?.ok && !result.target.cardId ? result.target : null;
+    const agentUid = created?.agentUid?.trim() ?? "";
+    const channelId = created?.channelId?.trim() ?? "";
+    if (!agentUid && !channelId) {
+      patchBotRemoval(removalId, { phase: "not-created" });
+      return;
+    }
+    // An older server also makes a channel for the bot. The server does not
+    // remove that channel with the bot, so it stays off the list.
+    if (channelId) botSetupChannels = rememberBotSetupChannel(botSetupChannels, channelId, storage);
+    if (!agentUid) {
+      patchBotRemoval(removalId, { channelId, phase: "failed", problem: "unknown-bot" });
+      return;
+    }
+    patchBotRemoval(removalId, { agentUid, channelId, phase: "removing", problem: null });
+    void runRemoval(removalId);
+  }
+
+  /** The person confirmed that a bot that is starting should be removed. */
+  function cancelWakingBot(session: WakingBotSession): void {
+    const agentUid = session.agentUid.trim();
+    if (wakingBot && (wakingBot.agentUid === session.agentUid || !agentUid)) wakingBot = null;
+    const removal = beginBotRemoval({
+      name: session.name,
+      companyUid: session.companyUid,
+      agentUid,
+      channelId: session.channelId,
+      brain: session.brain,
+      hadRow: true,
+    });
+    if (!agentUid) {
+      setBotRemovals([{ ...removal, phase: "failed", problem: "unknown-bot" }, ...botRemovals]);
+      return;
+    }
+    setBotRemovals([removal, ...botRemovals.filter((other) => other.agentUid !== agentUid)]);
+    void runRemoval(removal.id);
+  }
+
+  /** Removals this window is asking the server about right now. */
+  const removalsRunning = new Set<string>();
+
+  async function runRemoval(id: string): Promise<void> {
+    const removal = botRemovals.find((candidate) => candidate.id === id);
+    if (!removal || !removal.agentUid || removalsRunning.has(id)) return;
+    if (!removeAgent) {
+      patchBotRemoval(id, { phase: "failed", problem: "error" });
+      return;
+    }
+    removalsRunning.add(id);
+    patchBotRemoval(id, { phase: "removing", problem: null });
+    const agentUid = removal.agentUid;
+    let outcome: Awaited<ReturnType<typeof runBotRemoval>> = "error";
+    try {
+      outcome = await runBotRemoval(agentUid, removeAgent, { retryMs: botRemovalRetryMs });
+    } finally {
+      removalsRunning.delete(id);
+    }
+    if (outcome !== "removed") {
+      patchBotRemoval(id, { phase: "failed", problem: outcome });
+      return;
+    }
+    // Gone on the server: forget the bot here, and keep its conversation off
+    // the list, because the server leaves the thread behind.
+    removedBotUids = rememberRemovedBot(removedBotUids, agentUid, storage);
+    if (wakingBot?.agentUid === agentUid) wakingBot = null;
+    patchBotRemoval(id, { phase: "removed", problem: null });
+    onbotremoved?.(agentUid);
+  }
+
+  /**
+   * Put a failed removal away. The bot was not removed, so it goes back to
+   * being a bot that is starting: its row and its waiting screen return, and
+   * it hands off to chat when it is ready.
+   */
+  function keepCancelledBot(id: string): void {
+    const removal = botRemovals.find((candidate) => candidate.id === id);
+    if (!removal || removal.phase !== "failed") return;
+    setBotRemovals(botRemovals.filter((candidate) => candidate.id !== id));
+    if (!removal.agentUid) return;
+    wakingBot = beginWakingSession({
+      agentUid: removal.agentUid,
+      channelId: removal.channelId,
+      companyUid: removal.companyUid,
+      name: removal.name,
+      brain: removal.brain,
+    });
+  }
+
+  // A removal the app was in the middle of when it last closed is asked again.
+  onMount(() => {
+    for (const removal of botRemovals) {
+      if (removal.phase === "removing") void runRemoval(removal.id);
+    }
+  });
+
+  // Finished cancels are read once. They leave when the takeover closes.
+  $effect(() => {
+    if (newBotOpen) return;
+    untrack(() => {
+      if (botRemovals.some((removal) => removal.phase === "removed" || removal.phase === "not-created")) {
+        setBotRemovals(botRemovals.filter((removal) => removal.phase !== "removed" && removal.phase !== "not-created"));
+      }
+    });
+  });
 
   /** The bot can chat: take the person to their direct message with it. */
   function openWakingBotChat(session: WakingBotSession): void {
@@ -3849,7 +4061,12 @@
       currentCompanyUid={scopeUid}
       runtimeReady={botRuntimeReady}
       loadProvisionOptions={loadCloudProvisionOptions}
-      oncreate={oncreateagent}
+      oncreate={oncreateagent ? createAgentFromTakeover : null}
+      oncancelcreate={cancelCreateInFlight}
+      oncancelbot={removeAgent ? cancelWakingBot : null}
+      removals={botRemovals}
+      onretryremoval={(id) => void runRemoval(id)}
+      ondismissremoval={keepCancelledBot}
       getStatus={loadAgentStatus}
       {retryAgent}
       {restartBrainApproval}
@@ -4051,6 +4268,11 @@
           {#if archivedSet.has(row.id)}
             <span class="chat-row-archived-pill" data-testid="chat-row-archived-pill">
               Archived
+            </span>
+          {/if}
+          {#if row.removingBot}
+            <span class="chat-row-archived-pill" data-testid="chat-row-removing-pill" data-phase={row.removingBot.phase}>
+              {row.removingBot.phase === "failed" ? "Not removed" : "Removing"}
             </span>
           {/if}
           {#if extras?.badge}

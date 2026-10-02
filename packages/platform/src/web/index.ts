@@ -981,8 +981,11 @@ export class WebPlatformAdapter implements PlatformAdapter {
     start: (agentUid) => this.post(WEB_PATHS.agentStart(agentUid)),
     retryProvisioning: (agentUid) =>
       this.post(WEB_PATHS.agentRetryProvisioning(agentUid)),
-    deprovision: (agentUid) =>
-      this.request("DELETE", WEB_PATHS.agentDeprovision(agentUid)),
+    deprovision: (agentUid, options) =>
+      this.request(
+        "DELETE",
+        WEB_PATHS.agentDeprovision(agentUid, options?.confirmDestroyInstanceId),
+      ),
     listOwners: (companyUid, agentUid) =>
       this.get(WEB_PATHS.agentOwners(companyUid, agentUid)),
     getCompanyTelemetry: (companyUid, from, to) =>

@@ -63,7 +63,11 @@
   // Waking up screen takes over from the same low position.
   let creatingProgress = $state(2);
   $effect(() => { if (!busy) { creatingProgress = 2; return; } const timer = setInterval(() => { creatingProgress = Math.min(8, creatingProgress + 0.5); }, 400); return () => clearInterval(timer); });
-  async function submit(): Promise<void> { attempted = true; refusal = null; if (!canCreate || busy) return; busy = true; const result = await oncreate(companyUid, { name: name.trim(), handle: derivedHandle, runtime, size: selectedSize as "basic" | "power" | "dev", authMode: "subscription" }).catch((): EntryPointResult => ({ ok: false, blocked: false, reason: "We couldn't create this bot. Try again in a moment." })); busy = false;
+  async function submit(): Promise<void> { attempted = true; refusal = null; if (!canCreate || busy) return; busy = true; const result = await oncreate(companyUid, { name: name.trim(), handle: derivedHandle, runtime, size: selectedSize as "basic" | "power" | "dev", authMode: "subscription" }).catch((): EntryPointResult => ({ ok: false, blocked: false, reason: "We couldn't create this bot. Try again in a moment." }));
+    // Cancel was pressed while this request was out. The person has moved on:
+    // no waiting screen, no message, nothing of this attempt left on screen.
+    if (!result.ok && result.cancelled) return;
+    busy = false;
     // A bot answers with its own channel and no card. A card in the answer is
     // the upgrade card: the plan cannot host a bot, and nothing was created.
     if (result.ok && result.target.cardId) { if (onupgrade) upgrade = { companyUid, channelId: result.target.channelId, cardId: result.target.cardId }; else refusal = "This company's plan doesn't include cloud bots yet."; return; }

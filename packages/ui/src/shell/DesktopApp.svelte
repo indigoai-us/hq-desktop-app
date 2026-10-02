@@ -3818,6 +3818,24 @@
   /** Bots asked for their first message whose answer has not been seen yet (uid → name). */
   let cloudBotHelloPending = $state<Record<string, string>>({});
   /**
+   * A bot cancelled in the New bot flow is gone from the server. Drop what
+   * this window kept for it, so nothing keeps asking about a bot that no
+   * longer exists.
+   */
+  function forgetRemovedCloudBot(agentUid: string): void {
+    const uid = agentUid.trim();
+    if (!uid) return;
+    if (newCloudBotUids.includes(uid)) setNewCloudBots(newCloudBotUids.filter((id) => id !== uid));
+    if (cloudBotHelloPending[uid]) {
+      const { [uid]: _gone, ...rest } = cloudBotHelloPending;
+      cloudBotHelloPending = rest;
+    }
+    if (agentChatByUid[uid]) {
+      const { [uid]: _state, ...rest } = agentChatByUid;
+      agentChatByUid = rest;
+    }
+  }
+  /**
    * Ask a new cloud bot to write its first message. The request travels on
    * the bot-only lane of the direct message, so the person sees the bot's
    * hello and never the request. One request per bot, however often asked.
@@ -9070,6 +9088,8 @@
           oncreateagent={canCreateCloudBots ? createCloudBotEntry : null}
           loadAgentStatus={(agentUid, brain) => adapter.agents.getStatus(agentUid, brain)}
           retryAgent={(agentUid) => adapter.agents.retryProvisioning(agentUid)}
+          removeAgent={(agentUid, options) => adapter.agents.deprovision(agentUid, options)}
+          onbotremoved={forgetRemovedCloudBot}
           sendBotHello={sendCloudBotHello}
           checkBotHello={cloudBotHelloArrived}
           restartBrainApproval={(agentUid, brain) => adapter.agents.restartBrainApproval?.(agentUid, brain) ?? Promise.resolve({ ok: false })}

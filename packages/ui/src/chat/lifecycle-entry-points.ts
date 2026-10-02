@@ -60,6 +60,11 @@ export type EntryPointResult =
        * lives, so the caller can offer the way forward instead of a dead end.
        */
       upgrade?: { channelId: string; cardId: string };
+      /**
+       * Set when the person cancelled while the request was still out. The
+       * caller shows nothing for it: no waiting screen and no message.
+       */
+      cancelled?: boolean;
     };
 
 export type EntryPointApi = Pick<ConversationApi, "runCardAction">;

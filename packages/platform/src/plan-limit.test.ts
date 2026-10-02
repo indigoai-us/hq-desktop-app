@@ -134,6 +134,47 @@ describe("parseHqProErrorBody", () => {
     });
   });
 
+  it("keeps the machine id of a refused bot removal, and only there", () => {
+    const refused = parseHqProErrorBody(
+      409,
+      JSON.stringify({
+        error: "Refused.",
+        code: "AGENTS_V2_BOX_PROTECTED",
+        instanceId: "i-0abc1234def567890",
+      }),
+      "DELETE /v1/agents/agt_1 failed",
+    );
+    expect(refused).toEqual({
+      code: "AGENTS_V2_BOX_PROTECTED",
+      message: "Refused.",
+      planLimit: false,
+      instanceId: "i-0abc1234def567890",
+    });
+    expect(hqProFailure(refused)).toEqual({
+      ok: false,
+      reason: "error",
+      code: "AGENTS_V2_BOX_PROTECTED",
+      message: "Refused.",
+      instanceId: "i-0abc1234def567890",
+    });
+    // Another refusal carrying the same field is not a removal refusal.
+    expect(
+      parseHqProErrorBody(
+        409,
+        '{"error":"Busy","code":"STEP_ALREADY_IN_PROGRESS","instanceId":"i-0abc1234def567890"}',
+        "x",
+      ),
+    ).toEqual({ code: "STEP_ALREADY_IN_PROGRESS", message: "Busy", planLimit: false });
+    // A value that is not a machine id never reaches a request path.
+    expect(
+      parseHqProErrorBody(
+        409,
+        '{"error":"Refused.","code":"AGENTS_V2_BOX_PROTECTED","instanceId":"x&y=1"}',
+        "x",
+      ),
+    ).toEqual({ code: "AGENTS_V2_BOX_PROTECTED", message: "Refused.", planLimit: false });
+  });
+
   it("keeps a feature gate's own code and does not call it a limit", () => {
     const parsed = parseHqProErrorBody(
       402,
