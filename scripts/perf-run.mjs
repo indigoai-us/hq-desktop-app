@@ -41,13 +41,16 @@ import { fileURLToPath } from "node:url";
 
 import { FRAME_BUDGET_MS, INIT_SCRIPT, SHELL_READY_SELECTORS, frameStats, longTaskBusyMs } from "./perf/collectors.mjs";
 import { HARNESS_ENTRY, HARNESS_OUT_DIR, buildHarness } from "./perf/harness-build.mjs";
+import { inspectLazyChunks } from "./perf/lazy-chunks.mjs";
 import { machineContext } from "./perf/machine.mjs";
+import { RAIL_REFERENCE, RAIL_SCENARIO_TODO, judgeRail, renderRailVerdict } from "./perf/rail-budget.mjs";
 import { compareMetric, renderTable, summarise } from "./perf/stats.mjs";
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const buildDir = HARNESS_OUT_DIR;
 const resultsDir = resolve(rootDir, "perf-results");
 const baselinePath = resolve(rootDir, "scripts/fixtures/perf-baseline.json");
+const railReferencePath = resolve(rootDir, RAIL_REFERENCE);
 
 // ── args ───────────────────────────────────────────────────────────────────
 const argv = process.argv.slice(2);
@@ -62,6 +65,8 @@ const IDLE_SECS = Number(value("idle-secs", 30));
 const HEADED = flag("headed");
 const UPDATE_BASELINE = flag("update-baseline");
 const SKIP_BUILD = flag("skip-build");
+const RAIL = flag("rail");
+const RECORD_REFERENCE = flag("record-reference");
 
 // ── playwright ─────────────────────────────────────────────────────────────
 /**
@@ -301,6 +306,54 @@ async function measureScroll(page) {
 }
 
 /**
+ * Rail scenarios. The company tile and the sidepane host do not exist until
+ * later stories, so a missing control is a registered skip with the story
+ * that turns the measurement on. A present control is timed to the next paint.
+ */
+async function measureRailScenarios(page) {
+  const company = await page.$(
+    '[data-testid="rail-company"], [data-testid="app-rail-company"]',
+  );
+  let companySwitch;
+  if (!company) {
+    companySwitch = {
+      skipped: true,
+      todo: RAIL_SCENARIO_TODO.companySwitch,
+    };
+  } else {
+    companySwitch = {
+      ms: await timeToNextPaint(page, () =>
+        company.click({ timeout: 5000 }).catch(() => {}),
+      ),
+    };
+  }
+
+  const home = await page.$(
+    '[data-testid="rail-home"], [data-testid="app-rail-home"]',
+  );
+  const companyNav = await page.$(
+    '[data-testid="rail-company-nav"], [data-testid="sidepane-company"]',
+  );
+  let sidepaneSwitch;
+  if (!home || !companyNav) {
+    sidepaneSwitch = {
+      skipped: true,
+      todo: RAIL_SCENARIO_TODO.sidepaneSwitch,
+    };
+  } else {
+    const toCompany = await timeToNextPaint(page, () =>
+      companyNav.click({ timeout: 5000 }).catch(() => {}),
+    );
+    const backHome = await timeToNextPaint(page, () =>
+      home.click({ timeout: 5000 }).catch(() => {}),
+    );
+    sidepaneSwitch = { ms: Math.max(toCompany, backHome) };
+  }
+
+  return { companySwitch, sidepaneSwitch };
+}
+
+/**
  * Interaction latency: dispatch the input, then wait for the NEXT painted
  * frame. That gap is what a user perceives as "did it respond?" — it includes
  * the event handler, the Svelte effect flush, style, layout and paint.
@@ -447,6 +500,7 @@ async function main() {
       await page.waitForTimeout(1000); // let the first data flush settle
 
       const interaction = await measureInteractions(page);
+      const railSample = await measureRailScenarios(page);
       // Idle is measured last so it is not polluted by the interactions above;
       // only the first (discarded) run pays the long wait twice.
       const idle = await measureIdle(page, rep === 0 ? 2 : IDLE_SECS);
@@ -467,7 +521,18 @@ async function main() {
 
       // `scroll` keys are already fully qualified ("scroll.messages"), so they
       // are spread rather than nested — nesting would give scroll.scroll.*.
-      perRep.push(flatten({ coldLoad, ...scroll, ...interaction, ...idle }));
+      perRep.push(
+        flatten({
+          coldLoad,
+          ...scroll,
+          ...interaction,
+          ...idle,
+          railCompanyMs: railSample.companySwitch.ms ?? null,
+          railSidepaneMs: railSample.sidepaneSwitch.ms ?? null,
+          railCompanySkip: railSample.companySwitch.skipped ? railSample.companySwitch.todo : null,
+          railSidepaneSkip: railSample.sidepaneSwitch.skipped ? railSample.sidepaneSwitch.todo : null,
+        }),
+      );
     }
   } finally {
     await browser.close();
@@ -558,6 +623,53 @@ async function main() {
       `${JSON.stringify({ ...run, note: BASELINE_NOTE }, null, 2)}\n`,
     );
     console.log(`\nbaseline updated: ${baselinePath}`);
+    return;
+  }
+
+  if (RAIL) {
+    const companySamples = perRep
+      .map((r) => r.railCompanyMs)
+      .filter((v) => typeof v === "number" && Number.isFinite(v));
+    const sideSamples = perRep
+      .map((r) => r.railSidepaneMs)
+      .filter((v) => typeof v === "number" && Number.isFinite(v));
+    const companyTodo = perRep.map((r) => r.railCompanySkip).find(Boolean);
+    const sideTodo = perRep.map((r) => r.railSidepaneSkip).find(Boolean);
+    const lazyChunks = await inspectLazyChunks(buildDir);
+    const rail = {
+      companySwitch: companyTodo
+        ? { skipped: true, todo: companyTodo }
+        : { summary: summarise(companySamples, REPS > 1 ? 1 : 0) },
+      sidepaneSwitch: sideTodo
+        ? { skipped: true, todo: sideTodo }
+        : { summary: summarise(sideSamples, REPS > 1 ? 1 : 0) },
+      lazyChunks,
+    };
+    run.rail = rail;
+    await writeFile(runPath, `${JSON.stringify(run, null, 2)}\n`);
+
+    const referenceFile = await readFile(railReferencePath, "utf8")
+      .then((t) => JSON.parse(t))
+      .catch(() => null);
+    const referenceMetrics = RECORD_REFERENCE || !referenceFile
+      ? summaries
+      : referenceFile.metrics;
+    const judgement = judgeRail(summaries, referenceMetrics, rail);
+    console.log(renderRailVerdict(judgement));
+
+    if (RECORD_REFERENCE || !referenceFile) {
+      const recorded = {
+        ...run,
+        note:
+          "Console-rail reference recorded at the feat/console-rail branch point. " +
+          "Shared scripts/fixtures/perf-baseline.json is unchanged. " +
+          "Regenerate with `pnpm perf:rail -- --record-reference`.",
+      };
+      await writeFile(railReferencePath, `${JSON.stringify(recorded, null, 2)}\n`);
+      console.log(`\nconsole-rail reference written: ${railReferencePath}`);
+    }
+
+    if (!judgement.pass) process.exitCode = 1;
     return;
   }
 

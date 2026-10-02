@@ -52,6 +52,10 @@ import {
   formatFindings,
 } from "./perf/style-budget.js";
 import {
+  findStaticHeavyImports,
+  staticSpecifiers,
+} from "./perf/lazy-import-budget.js";
+import {
   POLL_FLOOR_MS,
   collectNumericConstants,
   findFastPollers,
@@ -762,6 +766,33 @@ const h = setInterval(tick, options.pollMs);`;
     expect(findFastPollers(sites)).toEqual([]);
   });
 
+  it("static heavy imports: flags a shell import of atlas and ignores import()", () => {
+    const files = [
+      {
+        path: "packages/ui/src/shell/DesktopApp.svelte",
+        content: `
+          import Atlas from "../atlas/Map.svelte";
+          const loadChart = () => import("../telemetry/Chart.svelte");
+        `,
+      },
+      {
+        path: "packages/ui/src/atlas/Map.svelte",
+        content: "",
+      },
+      {
+        path: "packages/ui/src/telemetry/Chart.svelte",
+        content: "",
+      },
+    ];
+    const found = findStaticHeavyImports(files, [
+      "packages/ui/src/shell/DesktopApp.svelte",
+    ]);
+    expect(found.map((f) => f.kind)).toEqual(["atlas"]);
+    expect(staticSpecifiers(files[0].content)).toEqual([
+      "../atlas/Map.svelte",
+    ]);
+  });
+
   it("visibility gate: detects both the listener and the state read", () => {
     expect(
       pausesOnVisibility('document.addEventListener("visibilitychange", f);'),
@@ -772,5 +803,33 @@ const h = setInterval(tick, options.pollMs);`;
     expect(pausesOnVisibility("timer = setInterval(refresh, 5000);")).toBe(
       false,
     );
+  });
+});
+
+describe("console rail lazy chunks stay off the shell entry", () => {
+  it("does not statically import packages/ui/src/atlas or telemetry", () => {
+    const entries = [
+      "packages/ui/src/index.ts",
+      "packages/ui/src/shell/DesktopApp.svelte",
+    ].filter((path) => uiScriptFiles.some((file) => file.path === path));
+    const found = findStaticHeavyImports(uiScriptFiles, entries);
+    expect(
+      found,
+      found
+        .map((f) => `${f.file} statically imports ${f.resolved} (${f.kind})`)
+        .join("\n"),
+    ).toEqual([]);
+  });
+});
+
+describe("work SSR build resolves mqtt builtins", () => {
+  it("externalizes bare node builtins during the work SSR build", async () => {
+    const vite = await readFile(
+      resolve(rootDir, "apps/work/vite.config.ts"),
+      "utf8",
+    );
+    expect(vite).toContain("externalize-node-builtins");
+    expect(vite).toContain('id: `node:${id}`');
+    expect(vite).toContain("options?.ssr");
   });
 });
