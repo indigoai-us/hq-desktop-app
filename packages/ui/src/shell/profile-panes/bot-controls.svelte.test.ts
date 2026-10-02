@@ -35,6 +35,7 @@ function agentsApi() {
       ok: true as const,
       value: { perMember: [{ personUid: "agt_01DEACON", tokens: { input: 1200, output: 300 }, sessions: 4 }] },
     })),
+    getStatus: vi.fn(async () => ({ ok: true as const, value: {} })),
     stop: vi.fn(async () => ({ ok: true as const, value: {} })),
     start: vi.fn(async () => ({ ok: true as const, value: {} })),
   };
@@ -163,5 +164,51 @@ describe("bot sidepane controls", () => {
     q<HTMLButtonElement>('[data-testid="edit-bot-save"]')!.click();
     expect(onsave).toHaveBeenCalledOnce();
     expect(onsave.mock.calls[0]![0].skills[0].selected).toBe(true);
+  });
+
+  // QA-063: the Companies section came from the viewing company, so dr-love
+  // read "Companies 1: A" from A and "Companies 1: B" from B.
+  it("shows the bot's real memberships from either company's entry point", async () => {
+    const status = {
+      agentUid: "agt_01DRLOVE",
+      memberships: [
+        { companyUid: "cmp_a", companyName: "Acme", role: "member", status: "active" },
+        { companyUid: "cmp_b", companyName: "Bolt", role: "admin", status: "active" },
+        { companyUid: "cmp_c", companyName: "Gone", role: "member", status: "revoked" },
+      ],
+    };
+    for (const viewing of [{ company: "Acme", companyUid: "cmp_a" }, { company: "Bolt", companyUid: "cmp_b" }]) {
+      host = document.createElement("div");
+      document.body.appendChild(host);
+      const agents = { ...agentsApi(), getStatus: vi.fn(async () => ({ ok: true as const, value: status })) };
+      mount(ProfilePaneHost, {
+        target: host,
+        props: { kind: "bot", name: "dr-love", agentUid: "agt_01DRLOVE", runtimeKind: "cloud", ...viewing, agents: agents as never },
+      });
+      await tick();
+      // Cached first frame only knows this company: no count is claimed.
+      expect(q('[data-testid="bot-profile-companies-label"]')?.textContent).toContain("In this company");
+      expect(host.querySelectorAll('[data-testid="bot-profile-company"]').length).toBe(1);
+      await settle();
+      expect(agents.getStatus).toHaveBeenCalledWith("agt_01DRLOVE");
+      const label = q('[data-testid="bot-profile-companies-label"]')?.textContent ?? "";
+      expect(label).toContain("Companies");
+      expect(label).toContain("2");
+      const rows = [...host.querySelectorAll('[data-testid="bot-profile-company"]')].map((el) => el.textContent?.trim());
+      expect(rows).toEqual(["ACAcmeMember", "BOBoltAdmin"]);
+      host.remove();
+    }
+  });
+
+  it("keeps the in-this-company label when the status has no membership list", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    mount(ProfilePaneHost, {
+      target: host,
+      props: { kind: "bot", name: "dr-love", agentUid: "agt_01DRLOVE", company: "Acme", companyUid: "cmp_a", agents: agentsApi() as never },
+    });
+    await settle();
+    expect(q('[data-testid="bot-profile-companies-label"]')?.textContent).toContain("In this company");
+    expect(q('[data-testid="bot-profile-companies-label"]')?.querySelector(".count")).toBeNull();
   });
 });

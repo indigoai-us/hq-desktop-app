@@ -16,10 +16,13 @@
     usageFromCompanyTelemetry,
   } from "../../chat/agent-detail-model.js";
   import {
+    botMembershipsFromPayload,
     botProfileFromCache,
+    withBotMemberships,
     userProfileFromCache,
     type BotProfileSnapshot,
     type EditBotTab,
+    type ProfileCompany,
     type ProfileRun,
     type SessionLine,
     type SessionPhase,
@@ -73,6 +76,7 @@
   let editTab = $state<EditBotTab>("identity");
   let jobs = $state<ProfileRun[] | null>(null);
   let usage = $state<{ status: "loading" | "ready" | "unavailable"; tokens?: string; sessions?: number | null; daily?: number[]; message?: string } | null>(null);
+  let memberships = $state<ProfileCompany[] | null>(null);
   let paused = $state(false);
   let controlBusy = $state(false);
   let actionError = $state<string | null>(null);
@@ -84,6 +88,7 @@
     const api = agents;
     const company = companyUid ?? null;
     jobs = null;
+    memberships = null;
     actionError = null;
     if (!uid || !api) {
       usage = null;
@@ -92,6 +97,19 @@
     usage = { status: "loading" };
     let cancelled = false;
     const range = defaultTelemetryRange(30);
+    // The bot's own membership list is agent-scoped, so it reads the same from
+    // every company's Bots page. Until it lands the pane shows only this
+    // company's row, labelled "In this company".
+    void Promise.resolve()
+      .then(() => api.getStatus(uid))
+      .then((res) => {
+        if (cancelled) return;
+        if (res.ok) memberships = botMembershipsFromPayload(res.value);
+        else console.warn("[hq-desktop] bot memberships refresh failed", res.message ?? res.reason);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) console.warn("[hq-desktop] bot memberships refresh failed", err);
+      });
     void Promise.all([
       api.listJobs(uid),
       company
@@ -161,7 +179,11 @@
   const cachedBot = $derived(
     bot ?? (name.trim() ? botProfileFromCache({ name, email, owner, live, company }) : null),
   );
-  const botView = $derived(cachedBot && jobs ? { ...cachedBot, jobs } : cachedBot);
+  const botView = $derived.by(() => {
+    if (!cachedBot) return cachedBot;
+    const withRows = withBotMemberships(cachedBot, memberships);
+    return jobs ? { ...withRows, jobs } : withRows;
+  });
   const personView = $derived(
     person ?? (name.trim() ? userProfileFromCache({ name, email, role, live, company }) : null),
   );

@@ -80,6 +80,12 @@ export interface BotProfileSnapshot {
   runtime: { label: string; value: string }[];
   runtimeVersion: string;
   companies: ProfileCompany[];
+  /**
+   * "all": `companies` is the bot's full membership list (every company, with
+   * role). "current": only the viewing company's row is known, so the pane
+   * labels it "In this company" and claims no count.
+   */
+  companiesScope: "all" | "current";
   capabilities: string[];
   runs: ProfileRun[];
   jobs: ProfileRun[];
@@ -126,11 +132,58 @@ export function botProfileFromCache(input: {
     ],
     runtimeVersion: "",
     companies: [{ mark: company.slice(0, 2).toUpperCase(), name: company, role: "Member" }],
+    companiesScope: "current",
     capabilities: [],
     runs: [],
     jobs: [],
     grants: [],
   };
+}
+
+function membershipRole(raw: unknown): string {
+  const role = typeof raw === "string" ? raw.trim() : "";
+  if (!role) return "Member";
+  return role.charAt(0).toUpperCase() + role.slice(1).toLowerCase();
+}
+
+/**
+ * The bot's real memberships from an hq-pro agent payload (status or roster
+ * row). Agents are first-class principals with one membership row per
+ * company; this reads `memberships` (or `companies`) and returns null when the
+ * payload carries no list, so callers keep the current-company fallback.
+ */
+export function botMembershipsFromPayload(payload: unknown): ProfileCompany[] | null {
+  if (!payload || typeof payload !== "object") return null;
+  const record = payload as Record<string, unknown>;
+  const list = Array.isArray(record.memberships)
+    ? record.memberships
+    : Array.isArray(record.companies)
+      ? record.companies
+      : null;
+  if (!list) return null;
+  const rows: ProfileCompany[] = [];
+  const seen = new Set<string>();
+  for (const item of list) {
+    if (!item || typeof item !== "object") continue;
+    const row = item as Record<string, unknown>;
+    const status = typeof row.status === "string" ? row.status.toLowerCase() : "active";
+    if (status === "revoked" || status === "removed") continue;
+    const key = String(row.companyUid ?? row.companySlug ?? row.slug ?? row.companyName ?? row.name ?? "").trim();
+    const name = String(row.companyName ?? row.name ?? row.companySlug ?? row.slug ?? "").trim();
+    if (!key || !name || seen.has(key)) continue;
+    seen.add(key);
+    rows.push({ mark: name.slice(0, 2).toUpperCase(), name, role: membershipRole(row.role) });
+  }
+  return rows.length ? rows : null;
+}
+
+/** Swap in the bot's full membership list once a refresh returns one. */
+export function withBotMemberships(
+  snapshot: BotProfileSnapshot,
+  memberships: ProfileCompany[] | null,
+): BotProfileSnapshot {
+  if (!memberships?.length) return snapshot;
+  return { ...snapshot, companies: memberships, companiesScope: "all" };
 }
 
 export function userProfileFromCache(input: {

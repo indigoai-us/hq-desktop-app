@@ -157,9 +157,9 @@
       </section>
       {#if snapshot.companies.length}
         <section class="g">
-          <div class="k">Companies <span class="count">{snapshot.companies.length}</span> <button type="button" class="link" data-testid="bot-profile-edit-membership" onclick={() => onedit?.("membership")}>Edit</button></div>
+          <div class="k" data-testid="bot-profile-companies-label">{#if snapshot.companiesScope === "all"}Companies <span class="count">{snapshot.companies.length}</span>{:else}In this company{/if} <button type="button" class="link" data-testid="bot-profile-edit-membership" onclick={() => onedit?.("membership")}>Edit</button></div>
           {#each snapshot.companies as co (co.name)}
-            <div class="co"><span class="tile">{co.mark}</span>{co.name}<span class="r">{co.role}</span></div>
+            <div class="co" data-testid="bot-profile-company"><span class="tile">{co.mark}</span>{co.name}<span class="r">{co.role}</span></div>
           {/each}
         </section>
       {/if}
