@@ -834,6 +834,9 @@ fn core_update_rescue_step_from_raw(raw: &str, error_class: &str) -> &'static st
 }
 
 fn core_update_rescue_error_class(line: &str) -> Option<&'static str> {
+    if line.trim() == "HQ_RESCUE_FAILURE_KIND=git_too_old" {
+        return Some("git_too_old");
+    }
     if line.trim() == "HQ_RESCUE_FAILURE_KIND=disk_full" {
         return Some("insufficient-space");
     }
@@ -1490,6 +1493,37 @@ fn core_update_failure_report_disposition(
 fn rescue_failure_requires_no_automatic_retry(stderr: &str) -> bool {
     stderr.contains("HQ_RESCUE_FAILURE_KIND=preserve-restore-failed")
         || stderr.contains("HQ_RESCUE_FAILURE_KIND=snapshot-recovery-circuit-breaker")
+}
+
+const CORE_RESCUE_MIN_GIT_VERSION: &str = "2.19.0";
+
+pub(crate) fn emit_core_update_git_preflight_failure(
+    source: &'static str,
+    channel: Channel,
+    detected_git_version: &str,
+) {
+    crate::commands::telemetry::emit_desktop_telemetry_best_effort(
+        "core_update_git_preflight_failed",
+        json!({
+            "source": source,
+            "channel": channel_label(channel),
+            "errorKind": "git_too_old",
+            "requiredGitVersion": CORE_RESCUE_MIN_GIT_VERSION,
+            "detectedGitVersion": detected_git_version,
+        }),
+    );
+}
+
+fn core_rescue_git_version_notice(stderr: &str) -> Option<String> {
+    let lower = stderr.to_ascii_lowercase();
+    (lower.contains("hq_rescue_failure_kind=git_too_old")
+        || lower.contains("filter_unsupported")
+        || (lower.contains("unknown option") && lower.contains("filter=blob:none")))
+        .then(|| {
+            format!(
+                "Git {CORE_RESCUE_MIN_GIT_VERSION} or newer is required to update HQ Core. Update Git and try again."
+            )
+        })
 }
 
 /// Build the sentence shown after an automatic rescue applied the release but
@@ -4727,6 +4761,7 @@ fn skip_automatic_core_update_for_disabled_updates(
 
 fn defer_automatic_core_update_for_sync(
     candidate: CoreAutoUpdateCandidate<'_>,
+    deferral: Option<(u32, Duration)>,
 ) -> NativeCoreAutoUpdateOutcome {
     log(
         "hq-core-update",
@@ -4747,7 +4782,95 @@ fn defer_automatic_core_update_for_sync(
         None,
         Some("sync_in_progress"),
     );
+    if let Some((deferral_count, first_deferral_age)) = deferral {
+        crate::commands::telemetry::emit_desktop_telemetry_best_effort(
+            "core_update_sync_deferral",
+            json!({
+                "source": "automatic",
+                "channel": channel_label(candidate.channel),
+                "targetCoreVersion": candidate.target_version,
+                "deferralCount": deferral_count,
+                "firstDeferralAgeSeconds": first_deferral_age.as_secs(),
+            }),
+        );
+    }
     NativeCoreAutoUpdateOutcome::DeferredForSync
+}
+
+const CORE_UPDATE_SYNC_DEFERRAL_CAP: u32 = 10;
+const CORE_UPDATE_SYNC_DEFERRAL_AGE_CAP: Duration = Duration::from_secs(6 * 60 * 60);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CoreUpdateSyncDeferralStreak {
+    count: u32,
+    first_deferred_at: Option<Instant>,
+}
+
+impl CoreUpdateSyncDeferralStreak {
+    const fn new() -> Self {
+        Self {
+            count: 0,
+            first_deferred_at: None,
+        }
+    }
+
+    fn record(&mut self, now: Instant) -> (u32, Duration, bool) {
+        let first = *self.first_deferred_at.get_or_insert(now);
+        self.count = self.count.saturating_add(1);
+        let age = now.saturating_duration_since(first);
+        (
+            self.count,
+            age,
+            self.count >= CORE_UPDATE_SYNC_DEFERRAL_CAP
+                || age >= CORE_UPDATE_SYNC_DEFERRAL_AGE_CAP,
+        )
+    }
+
+    fn ready(&self, now: Instant) -> bool {
+        self.count >= CORE_UPDATE_SYNC_DEFERRAL_CAP
+            || self.first_deferred_at.is_some_and(|first| {
+                now.saturating_duration_since(first) >= CORE_UPDATE_SYNC_DEFERRAL_AGE_CAP
+            })
+    }
+
+    fn snapshot(&self, now: Instant) -> (u32, Duration, bool) {
+        let age = self
+            .first_deferred_at
+            .map(|first| now.saturating_duration_since(first))
+            .unwrap_or(Duration::ZERO);
+        (self.count, age, self.ready(now))
+    }
+
+    fn reset(&mut self) {
+        *self = Self::new();
+    }
+}
+
+fn core_update_sync_deferral_streak() -> &'static std::sync::Mutex<CoreUpdateSyncDeferralStreak> {
+    static STREAK: std::sync::OnceLock<std::sync::Mutex<CoreUpdateSyncDeferralStreak>> =
+        std::sync::OnceLock::new();
+    STREAK.get_or_init(|| std::sync::Mutex::new(CoreUpdateSyncDeferralStreak::new()))
+}
+
+fn record_core_update_sync_deferral(now: Instant) -> (u32, Duration, bool) {
+    core_update_sync_deferral_streak()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .record(now)
+}
+
+fn core_update_sync_deferral_snapshot(now: Instant) -> (u32, Duration, bool) {
+    core_update_sync_deferral_streak()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .snapshot(now)
+}
+
+fn reset_core_update_sync_deferral_streak() {
+    core_update_sync_deferral_streak()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .reset();
 }
 
 fn emit_automatic_core_update_hq_change_deferral_telemetry(
@@ -4927,16 +5050,25 @@ fn core_update_auto_install_from_run(
     app: &AppHandle,
     run: &crate::commands::hq_core_staging::RescueRunResult,
 ) -> CoreUpdateAutoInstall {
-    if run.exit_code != 0 && rescue_failure_requires_no_automatic_retry(&run.rescue_stderr_tail) {
-        let detail = preserve_restore_failure_notice(&run.log_tail);
-        let message = match detail {
-            Some(detail) => format!("Update failed. Full log: {}. {detail}", run.log_path),
-            None => format!("Update failed. Full log: {}.", run.log_path),
+    if run.exit_code != 0 {
+        let git_notice = core_rescue_git_version_notice(&run.rescue_stderr_tail);
+        let preserve_notice = rescue_failure_requires_no_automatic_retry(&run.rescue_stderr_tail)
+            .then(|| preserve_restore_failure_notice(&run.log_tail))
+            .flatten();
+        if git_notice.is_none() && preserve_notice.is_none() {
+            return CoreUpdateAutoInstall::from_run(run);
+        }
+        let message = match git_notice {
+            Some(notice) => format!("{notice} Full log: {}.", run.log_path),
+            None => match preserve_notice {
+                Some(detail) => format!("Update failed. Full log: {}. {detail}", run.log_path),
+                None => format!("Update failed. Full log: {}.", run.log_path),
+            },
         };
         let _ = app.emit(
             "hq-core-update:automatic-failed",
             json!({
-                "title": "Update failed",
+                "title": if core_rescue_git_version_notice(&run.rescue_stderr_tail).is_some() { "Update needs newer Git" } else { "Update failed" },
                 "logPath": run.log_path,
                 "message": message,
             }),
@@ -5078,16 +5210,27 @@ where
 {
     let baseline_refresh_pending =
         automatic_target_baseline_refresh_pending_with_path(candidate.channel, injected_path);
+    let mut sync_deferral = (sync_in_progress
+        && auto_updates
+        && !crate::commands::hq_daemon_host::daemon_mode_active()
+        && (candidate.version_behind || baseline_refresh_pending))
+        .then(|| record_core_update_sync_deferral(now()));
+    let mut sync_deferral_cap_reached = sync_deferral.is_some_and(|(_, _, capped)| capped);
     match core_auto_update_decision(
         auto_updates,
         candidate.version_behind || baseline_refresh_pending,
-        sync_in_progress,
+        sync_in_progress && !sync_deferral_cap_reached,
     ) {
         CoreAutoUpdateDecision::Ignore => NativeCoreAutoUpdateOutcome::Ignored,
         CoreAutoUpdateDecision::SkipAutomaticUpdatesDisabled => {
             skip_automatic_core_update_for_disabled_updates(candidate)
         }
-        CoreAutoUpdateDecision::DeferForSync => defer_automatic_core_update_for_sync(candidate),
+        CoreAutoUpdateDecision::DeferForSync => {
+            defer_automatic_core_update_for_sync(
+                candidate,
+                sync_deferral.map(|(count, age, _)| (count, age)),
+            )
+        }
         CoreAutoUpdateDecision::Install => {
             // Do not gate on `state.is_eligible`: that field means Indigo
             // staging-email eligibility. Release-channel client users (the
@@ -5108,7 +5251,25 @@ where
                     return NativeCoreAutoUpdateOutcome::DeferredForPrewarm;
                 }
                 AutomaticCoreUpdatePreinstall::DeferForSync => {
-                    return defer_automatic_core_update_for_sync(candidate);
+                    if crate::commands::hq_daemon_host::daemon_mode_active() {
+                        return defer_automatic_core_update_for_sync(candidate, None);
+                    }
+                    let checked_at = now();
+                    let current_streak = core_update_sync_deferral_snapshot(checked_at);
+                    if !current_streak.2 {
+                        let (count, age, capped) = record_core_update_sync_deferral(checked_at);
+                        if !capped {
+                            return defer_automatic_core_update_for_sync(
+                                candidate,
+                                Some((count, age)),
+                            );
+                        }
+                        sync_deferral = Some((count, age, capped));
+                        sync_deferral_cap_reached = true;
+                    } else {
+                        sync_deferral = Some(current_streak);
+                        sync_deferral_cap_reached = true;
+                    }
                 }
                 AutomaticCoreUpdatePreinstall::SkipAutomaticUpdatesDisabled => {
                     return skip_automatic_core_update_for_disabled_updates(candidate);
@@ -5170,7 +5331,41 @@ where
                 ),
             );
             let observation = CoreUpdateTelemetryContext::automatic(candidate.version_behind);
+            if sync_deferral_cap_reached {
+                crate::commands::telemetry::emit_desktop_telemetry_best_effort(
+                    "core_update_sync_hold_started",
+                    json!({
+                        "source": "automatic",
+                        "channel": channel_label(candidate.channel),
+                        "targetCoreVersion": candidate.target_version,
+                        "deferralCount": sync_deferral
+                            .map(|(count, _, _)| count)
+                            .unwrap_or(CORE_UPDATE_SYNC_DEFERRAL_CAP),
+                        "firstDeferralAgeSeconds": sync_deferral
+                            .map(|(_, age, _)| age.as_secs())
+                            .unwrap_or(0),
+                        "lockTimeoutSeconds": 900,
+                    }),
+                );
+            }
+            reset_core_update_sync_deferral_streak();
             let result = install(candidate.channel, run_guard, observation).await;
+            if sync_deferral_cap_reached {
+                let release_reason = match &result {
+                    Ok(result) if result.exit_code == 0 => "updated",
+                    Ok(result) if result.exit_code == 17 => "timeout",
+                    Ok(_) | Err(_) => "failed",
+                };
+                crate::commands::telemetry::emit_desktop_telemetry_best_effort(
+                    "core_update_sync_hold_released",
+                    json!({
+                        "source": "automatic",
+                        "channel": channel_label(candidate.channel),
+                        "targetCoreVersion": candidate.target_version,
+                        "holdReason": release_reason,
+                    }),
+                );
+            }
             match result {
                 Ok(result)
                     if result.exit_code == 0
@@ -5550,6 +5745,28 @@ mod tests {
 
     static CORE_UPDATE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     static CORE_UPDATE_SENTRY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn core_update_sync_deferral_streak_caps_by_count_or_age_and_resets() {
+        let start = Instant::now();
+        let mut by_count = CoreUpdateSyncDeferralStreak::new();
+        for count in 1..CORE_UPDATE_SYNC_DEFERRAL_CAP {
+            let (observed, age, capped) = by_count.record(start + Duration::from_secs(count as u64));
+            assert_eq!(observed, count);
+            assert_eq!(age, Duration::from_secs((count - 1) as u64));
+            assert!(!capped);
+        }
+        let (observed, _, capped) = by_count.record(start + Duration::from_secs(10));
+        assert_eq!(observed, CORE_UPDATE_SYNC_DEFERRAL_CAP);
+        assert!(capped);
+
+        let mut by_age = CoreUpdateSyncDeferralStreak::new();
+        let (_, _, capped) = by_age.record(start);
+        assert!(!capped);
+        assert!(by_age.ready(start + CORE_UPDATE_SYNC_DEFERRAL_AGE_CAP));
+        by_age.reset();
+        assert!(!by_age.ready(start + CORE_UPDATE_SYNC_DEFERRAL_AGE_CAP));
+    }
 
     // Snapshot of the hq-pro entries that can admit `core_update_failed`
     // properties. Mirrors
@@ -6389,6 +6606,20 @@ mod tests {
             baseline.normalized_blobs.get("core/policies/new.md"),
             Some(&"remote-new-blob".to_string())
         );
+    }
+
+    #[test]
+    fn old_git_clone_filter_failure_gets_a_bounded_actionable_notice() {
+        let notice = core_rescue_git_version_notice(
+            "HQ_RESCUE_CLONE_FAILURE_CLASS=filter_unsupported",
+        )
+        .expect("unsupported partial clone filter identifies old Git");
+        assert!(notice.contains("Git 2.19.0 or newer"));
+        assert!(notice.len() < 160);
+        assert!(core_rescue_git_version_notice("fatal: unable to resolve host").is_none());
+        let preflight = crate::commands::hq_core_staging::rescue_git_preflight_diagnostic("2.15.0");
+        assert!(core_rescue_git_version_notice(&preflight)
+            .is_some_and(|notice| notice.contains("Git 2.19.0 or newer")));
     }
 
     #[tokio::test]

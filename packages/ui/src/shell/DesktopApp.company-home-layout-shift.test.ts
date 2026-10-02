@@ -181,7 +181,7 @@ describe("DesktopApp company-home channel: no layout shift on load", () => {
     await settle(12);
 
     await vi.waitFor(() => {
-      expect(host.querySelector('[data-testid="channel-name"]')?.textContent).toBe("Ramen Bae Home");
+      expect(host.querySelector('[data-testid="channel-name"]')?.textContent).toBe("Ramen Bae");
     });
 
     // The hero is still exactly the same fixed height after the company
