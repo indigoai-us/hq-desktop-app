@@ -151,12 +151,6 @@
     localWakingSession = session;
     onwakingchange?.(session);
   }
-
-  function openWakingChat(): void {
-    if (!activeWakingSession) return;
-    onopenchat?.(activeWakingSession);
-    closeWaking();
-  }
 </script>
 
 <svelte:window onkeydown={onKeydown} />
@@ -200,7 +194,6 @@
           onupdate={updateWaking}
           onclose={closeWaking}
           onretry={retryWaking}
-          onopenchat={openWakingChat}
         />
         {/key}
       {:else if oncreate && loadProvisionOptions && companies.length}

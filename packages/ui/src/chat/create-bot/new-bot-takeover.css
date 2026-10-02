@@ -712,3 +712,116 @@
   justify-self: stretch;
   margin-top: 6px;
 }
+
+/* Brain approval: one panel holding the ask, the code and the actions. */
+.new-bot-approval {
+  display: grid;
+  justify-items: start;
+  gap: 16px;
+  box-sizing: border-box;
+  width: 100%;
+  padding: 20px 22px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(9, 9, 11, 0.42);
+}
+
+.new-bot-approval-ask {
+  margin: 0;
+  color: var(--new-bot-ink);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.new-bot-approval-note {
+  margin: 0;
+  color: var(--new-bot-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.new-bot-code {
+  display: grid;
+  gap: 8px;
+}
+
+.new-bot-code-label {
+  color: rgba(255, 255, 255, 0.54);
+  font-family: "Geist Mono", ui-monospace, Menlo, monospace;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.new-bot-code-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+}
+
+.new-bot-code-value {
+  color: var(--new-bot-ink);
+  font-family: "Geist Mono", ui-monospace, Menlo, monospace;
+  font-size: 30px;
+  font-weight: 500;
+  line-height: 1.1;
+  letter-spacing: 0.1em;
+  user-select: all;
+}
+
+.new-bot-code-copy,
+.new-bot-waking-secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  background: transparent;
+  color: var(--new-bot-ink);
+  font: inherit;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.new-bot-code-copy {
+  padding: 7px 10px;
+  font-size: 12px;
+}
+
+.new-bot-waking-secondary {
+  padding: 10px 13px;
+  font-size: 13px;
+}
+
+.new-bot-code-copy:hover,
+.new-bot-waking-secondary:hover {
+  border-color: rgba(255, 255, 255, 0.6);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.new-bot-code-copy:focus-visible,
+.new-bot-waking-secondary:focus-visible {
+  outline: 1px solid var(--new-bot-ink);
+  outline-offset: 4px;
+}
+
+.new-bot-approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+@media (max-height: 780px) {
+  .new-bot-waking {
+    gap: 12px;
+  }
+
+  .new-bot-approval {
+    gap: 12px;
+    padding: 14px 16px;
+  }
+
+  .new-bot-code-value {
+    font-size: 24px;
+  }
+}

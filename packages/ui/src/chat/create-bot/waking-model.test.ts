@@ -23,31 +23,48 @@ function session() {
 }
 
 describe("waking model", () => {
-  it("never counts down from US-001's median, which was mostly people waiting", () => {
-    // Regression (owner walkthrough 2026-10-02): a bot that reached its
-    // approval step in 49 seconds showed "About 21 minutes left."
+  it("never counts down from US-001's median, which was mostly waiting", () => {
+    // Regression (owner walkthrough 2026-10-02): the screen opened with
+    // "About 21 minutes left."
     expect(US001_MEDIAN_WAKING_ESTIMATE_MS).toBe(1_244_000);
     expect(WAKING_ESTIMATE_MS).toBeLessThanOrEqual(180_000);
-    expect(wakingStatusLine(session(), STARTED)).toBe("About 2 minutes left.");
-    expect(wakingStatusLine(session(), STARTED + 70_000)).toBe("About a minute left.");
+    expect(wakingStatusLine(session(), STARTED)).toBe("Starting up. About 3 minutes left.");
+    expect(wakingStatusLine(session(), STARTED + 130_000)).toBe("Starting up. About a minute left.");
   });
 
-  it("stops the clock while the bot waits on the person's approval", () => {
-    const pairing = { url: "https://auth.openai.com/codex/device", code: "TEST-CODE" };
-    const asked = applyWakingStatus(session(), { agent: { provider: "codex" }, setupState: { phase: "waiting" }, pairing }, STARTED + 50_000);
-    const stillAsked = applyWakingStatus(asked, { agent: { provider: "codex" }, setupState: { phase: "waiting" }, pairing }, STARTED + 650_000);
-    // Ten minutes of the person being away moves nothing.
-    expect(stillAsked.progress).toBe(asked.progress);
-    expect(wakingStatusLine(stillAsked, STARTED + 650_000)).toBe("One thing from you.");
+  const CODEX_PAIRING = { url: "https://auth.openai.com/codex/device", code: "TEST-CODE" };
+  const signInStep = (status: string) => ({ phase: "waiting", steps: [{ name: "runtime", status: "done" }, { name: "codex-auth", status }] });
 
-    const approved = applyWakingStatus(stillAsked, { setupState: { phase: "sync" } }, STARTED + 660_000);
-    expect(approved.approval).toBeNull();
-    expect(approved.approvalSince).toBeNull();
-    // 50 seconds of machine work before the ask; the 610-second wait is removed.
-    expect(wakingStatusLine(approved, STARTED + 660_000)).toBe("About 2 minutes left.");
-    expect(wakingStatusLine(approved, STARTED + 680_000)).toBe("About a minute left.");
-    expect(wakingStatusLine(approved, STARTED + 660_000)).not.toMatch(/taking longer/i);
-    expect(approved.progress).toBeGreaterThanOrEqual(asked.progress);
+  it("keeps the approval on screen when a status read comes back without the code", () => {
+    // Regression (owner walkthrough 2026-10-02): the approval left the screen
+    // before the sign-in was finished. The server reads the code on a
+    // best-effort basis and answers pairing: null when that read fails.
+    const asked = applyWakingStatus(session(), { agent: { provider: "codex" }, setupState: signInStep("waiting"), pairing: CODEX_PAIRING }, STARTED + 150_000);
+    const emptyRead = applyWakingStatus(asked, { agent: { provider: "codex" }, setupState: signInStep("waiting"), pairing: null }, STARTED + 153_000);
+    expect(emptyRead.approval).toMatchObject({ provider: "codex", code: "TEST-CODE" });
+    expect(wakingStatusLine(emptyRead, STARTED + 153_000)).toBe("One thing from you.");
+    expect(emptyRead.signedInAt ?? null).toBeNull();
+  });
+
+  it("says the sign-in worked and starts a fresh estimate for the rest", () => {
+    const asked = applyWakingStatus(session(), { agent: { provider: "codex" }, setupState: signInStep("waiting"), pairing: CODEX_PAIRING }, STARTED + 150_000);
+    // Ten minutes of the person being away moves nothing.
+    const stillAsked = applyWakingStatus(asked, { agent: { provider: "codex" }, setupState: signInStep("waiting"), pairing: CODEX_PAIRING }, STARTED + 750_000);
+    expect(stillAsked.progress).toBe(asked.progress);
+
+    const signedIn = applyWakingStatus(stillAsked, { setupState: signInStep("done"), pairing: null }, STARTED + 760_000);
+    expect(signedIn.approval).toBeNull();
+    expect(signedIn.signedInAt).toBe(STARTED + 760_000);
+    expect(wakingStatusLine(signedIn, STARTED + 760_000)).toBe("You're signed in. Finishing up. About 2 minutes left.");
+    expect(wakingStatusLine(signedIn, STARTED + 830_000)).toBe("You're signed in. Finishing up. About a minute left.");
+    expect(wakingStatusLine(signedIn, STARTED + 760_000)).not.toMatch(/taking longer/i);
+    expect(signedIn.progress).toBeGreaterThan(stillAsked.progress);
+    expect(signedIn.progress).toBeLessThan(100);
+  });
+
+  it("does not claim a sign-in the person never did", () => {
+    const signedIn = applyWakingStatus(session(), { setupState: signInStep("done") }, STARTED + 140_000);
+    expect(wakingStatusLine(signedIn, STARTED + 140_000)).toBe("Finishing up. About 2 minutes left.");
   });
 
   it("lets fixtures set their own estimate", () => {

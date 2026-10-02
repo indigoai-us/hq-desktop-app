@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 
 import NewBotWakingScreen from "./NewBotWakingScreen.svelte";
-import { beginWakingSession, recordWakingCheckFailure, WAKING_POLL_MS } from "./waking-model";
+import { beginWakingSession, recordWakingCheckFailure, WAKING_NUDGE_MS, WAKING_POLL_MS } from "./waking-model";
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -25,7 +25,6 @@ function render(
   const onclose = vi.fn();
   const onretry = vi.fn();
   const retryAgent = vi.fn(async () => ({ ok: true }));
-  const onopenchat = vi.fn();
   component = mount(NewBotWakingScreen, {
     target: host,
     props: {
@@ -35,11 +34,10 @@ function render(
       onupdate,
       onclose,
       onretry,
-      onopenchat,
       ...overrides,
     },
   });
-  return { onupdate, onclose, onretry, onopenchat, retryAgent };
+  return { onupdate, onclose, onretry, retryAgent };
 }
 
 afterEach(async () => {
@@ -65,13 +63,65 @@ describe("NewBotWakingScreen", () => {
     expect(status?.getAttribute("aria-atomic")).toBe("true");
   });
 
-  it("offers a quiet close and early chat route while the bot wakes", async () => {
-    const { onclose, onopenchat } = render();
+  it("offers one way out and no chat link before the bot can chat", async () => {
+    // Owner walkthrough 2026-10-02: "Open chat now" beside "Close" made no
+    // sense for a bot that had not been signed in to its brain yet.
+    const { onclose } = render();
     await settle();
-    document.querySelector<HTMLButtonElement>('[data-testid="new-bot-waking-open-chat"]')!.click();
-    document.querySelector<HTMLButtonElement>('[data-testid="new-bot-waking-close"]')!.click();
-    expect(onopenchat).toHaveBeenCalledOnce();
+    expect(document.querySelector('[data-testid="new-bot-waking-open-chat"]')).toBeNull();
+    expect(document.querySelector('[data-testid="new-bot-waking-screen"]')?.textContent).not.toMatch(/open chat/i);
+    const close = document.querySelector<HTMLButtonElement>('[data-testid="new-bot-waking-close"]')!;
+    expect(close.textContent?.trim()).toBe("Close and keep working");
+    close.click();
     expect(onclose).toHaveBeenCalledOnce();
+  });
+
+  it("asks the server to re-check setup while the screen is open", async () => {
+    // Regression (owner walkthrough 2026-10-02): after the sign-in the screen
+    // only watched, and setup waited for the server's once-a-minute pass.
+    vi.useFakeTimers();
+    const { retryAgent } = render();
+    await settle();
+    expect(retryAgent).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(WAKING_NUDGE_MS + WAKING_POLL_MS);
+    expect(retryAgent).toHaveBeenCalledWith("agt_nova");
+    const calls = retryAgent.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(WAKING_POLL_MS);
+    expect(retryAgent.mock.calls.length).toBe(calls);
+  });
+
+  it("shows the Codex code large with a copy button before anything is clicked", async () => {
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    render({
+      ...beginWakingSession({ agentUid: "agt_nova", channelId: "chn_nova", companyUid: "cmp_acme", name: "Nova" }),
+      approval: { provider: "codex", url: "https://auth.openai.com/codex/device", code: "TEST-CODE", capturedAt: new Date().toISOString() },
+    }, { getStatus: null });
+    await settle();
+    expect(document.querySelector('[data-testid="new-bot-codex-code"]')?.textContent).toBe("TEST-CODE");
+    const copy = document.querySelector<HTMLButtonElement>('[data-testid="new-bot-codex-copy"]')!;
+    expect(copy.getAttribute("aria-label")).toBe("Copy code");
+    copy.click();
+    await settle();
+    expect(writeText).toHaveBeenCalledWith("TEST-CODE");
+    expect(copy.textContent).toContain("Copied");
+  });
+
+  it("lets the person say they signed in, and re-checks at once", async () => {
+    const openExternal = vi.fn();
+    const { retryAgent } = render({
+      ...beginWakingSession({ agentUid: "agt_nova", channelId: "chn_nova", companyUid: "cmp_acme", name: "Nova" }),
+      approval: { provider: "grok", url: "https://accounts.x.ai/device", code: "TEST-CODE", capturedAt: new Date().toISOString() },
+    }, { openExternal, getStatus: null });
+    await settle();
+    expect(document.querySelector('[data-testid="new-bot-approval-done"]')).toBeNull();
+    document.querySelector<HTMLButtonElement>('[data-testid="new-bot-approval-open"]')!.click();
+    await settle();
+    await new Promise((resolve) => setTimeout(resolve, 2_050));
+    document.querySelector<HTMLButtonElement>('[data-testid="new-bot-approval-done"]')!.click();
+    await settle();
+    expect(retryAgent).toHaveBeenCalledWith("agt_nova");
+    expect(document.querySelector('[data-testid="new-bot-approval-message"]')?.textContent).toBe("Checking your sign-in.");
   });
 
   it("shows a single-sentence failure with Try again", async () => {
@@ -226,7 +276,7 @@ describe("NewBotWakingScreen", () => {
     render(resumed, { getStatus: null });
     await settle();
     expect(document.querySelector('[data-testid="new-bot-approval-open"]')).toBeNull();
-    expect(document.querySelector('[data-testid="new-bot-waking-status"]')?.textContent).not.toBe("One thing from you.");
+    expect(document.querySelector('[data-testid="new-bot-waking-status"]')?.textContent).toMatch(/^You're signed in\. Finishing up\./);
   });
 
   it("offers a fresh approval after ten minutes", async () => {

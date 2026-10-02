@@ -17,13 +17,22 @@ import { brainApprovalFromStatus, type BrainApproval, type BrainProvider } from 
  */
 export const US001_MEDIAN_WAKING_ESTIMATE_MS = 1_244_000;
 /**
- * Default estimate of the machine work, used in production; fixtures can
- * override per session. The first bot created through this flow (2026-10-02)
- * reached the approval step 49 seconds after the create request. Time the bot
- * spends waiting on the person's approval does not count against it.
+ * Default estimate for the first stretch: from the create request until the
+ * bot's computer is up and can ask for the sign-in. Fixtures can override it
+ * per session. Measured 2026-10-02 on the first bot created through this
+ * flow: the computer finished starting 134 seconds after the create request.
  */
-export const WAKING_ESTIMATE_MS = 120_000;
+export const WAKING_ESTIMATE_MS = 180_000;
+/** Default estimate for the second stretch: from the sign-in to a live bot. */
+export const WAKING_FINISH_ESTIMATE_MS = 120_000;
 export const WAKING_POLL_MS = 3_000;
+/**
+ * Setup only moves forward when something asks the server to re-check the
+ * current step. The server does that once a minute on its own; the web
+ * console's wizard asks every 12 seconds while it is open. This screen does
+ * the same, so a finished sign-in is noticed in seconds.
+ */
+export const WAKING_NUDGE_MS = 12_000;
 export const WAKING_RECONNECT_AFTER_FAILURES = 3;
 
 export type WakingPhase = "waking" | "ready" | "failed";
@@ -41,16 +50,45 @@ export interface WakingBotSession {
   progress: number;
   consecutiveCheckFailures: number;
   approval: BrainApproval | null;
-  /**
-   * When the current approval request first appeared. While it is set the
-   * clock is stopped: the bot is waiting on the person, not the reverse.
-   */
+  /** When the current approval request first appeared. */
   approvalSince?: number | null;
+  /** When the brain sign-in was seen complete. The second stretch starts here. */
+  signedInAt?: number | null;
+  /** True once this session has asked the person to approve the brain. */
+  askedApproval?: boolean;
+  finishEstimateMs?: number;
 }
 
-/** The moment the estimate is measured against: frozen while an approval is open. */
-function wakingClock(session: WakingBotSession, now: number): number {
-  return session.approvalSince ?? now;
+/**
+ * Whether the brain sign-in step is finished, read from the setup steps.
+ * null when the payload carries no step list (older deployments).
+ */
+function signInStepDone(payload: unknown): boolean | null {
+  const root = record(payload);
+  const agent = record(root?.agent) ?? root;
+  const setup = record(root?.setupState) ?? record(agent?.setupState);
+  const steps = setup?.steps;
+  if (!Array.isArray(steps)) return null;
+  const step = steps.map(record).find((entry) => text(entry?.name) === "codex-auth");
+  return step ? text(step.status) === "done" : null;
+}
+
+function finishEstimate(session: WakingBotSession): number {
+  return Math.max(1, session.finishEstimateMs ?? WAKING_FINISH_ESTIMATE_MS);
+}
+
+/**
+ * Progress for the sunrise, in three bands so it never runs ahead of the
+ * person: starting (8 to 50), waiting on the sign-in (held at 55), finishing
+ * (60 to 94). 100 is reserved for a status that says the bot is ready.
+ */
+function stageProgress(session: WakingBotSession, now: number): number {
+  if (session.signedInAt != null) {
+    const elapsed = Math.max(0, now - session.signedInAt);
+    return 60 + Math.min(34, Math.round((elapsed / finishEstimate(session)) * 34));
+  }
+  if (session.approval) return 55;
+  return wakingProgress(session.startedAt, now, session.estimateMs);
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -79,9 +117,9 @@ export function wakingProgress(
   estimateMs: number = WAKING_ESTIMATE_MS,
 ): number {
   const elapsed = Math.max(0, now - startedAt);
-  // A ring that reaches 100% while work still continues falsely signals that
-  // the bot is ready. Leave a visible final segment until the status says so.
-  return Math.min(94, Math.max(8, Math.round((elapsed / estimateMs) * 94)));
+  // The first stretch stops at 50: the sign-in and the finishing work are
+  // still ahead, and a sun that is already up would say otherwise.
+  return Math.min(50, Math.max(8, 8 + Math.round((elapsed / estimateMs) * 42)));
 }
 
 export function beginWakingSession(input: {
@@ -108,6 +146,8 @@ export function beginWakingSession(input: {
     consecutiveCheckFailures: 0,
     approval: null,
     approvalSince: null,
+    signedInAt: null,
+    askedApproval: false,
   };
 }
 
@@ -117,25 +157,35 @@ export function applyWakingStatus(
   now: number = Date.now(),
 ): WakingBotSession {
   const phase = phaseFromStatus(payload);
-  const approval = phase === "ready" ? null : brainApprovalFromStatus(payload);
-  let startedAt = session.startedAt;
-  let approvalSince = session.approvalSince ?? null;
-  if (approval && approvalSince === null) {
-    approvalSince = now;
-  } else if (!approval && approvalSince !== null) {
-    // Approved: take the time spent waiting on the person out of the elapsed
-    // time, so the rest of the work is measured against the same estimate.
-    startedAt += Math.max(0, now - approvalSince);
-    approvalSince = null;
+  const stepDone = signInStepDone(payload);
+  let signedInAt = session.signedInAt ?? null;
+  let approval = phase === "waking" ? brainApprovalFromStatus(payload) : null;
+  if (phase === "waking") {
+    if (stepDone === true) {
+      approval = null;
+      signedInAt ??= now;
+    } else if (!approval && session.approval) {
+      if (stepDone === false) {
+        // The server reads the code from the bot's computer on a best-effort
+        // basis and answers "none" when that read fails. The sign-in is not
+        // finished, so the request stays on screen.
+        approval = session.approval;
+      } else {
+        // No step list to check against: a request that went away was approved.
+        signedInAt ??= now;
+      }
+    }
   }
-  const next = { ...session, startedAt, approvalSince };
-  return {
-    ...next,
+  const next: WakingBotSession = {
+    ...session,
     phase,
-    progress: phase === "ready" ? 100 : wakingProgress(startedAt, wakingClock(next, now), session.estimateMs),
-    consecutiveCheckFailures: 0,
     approval,
+    approvalSince: approval ? session.approvalSince ?? now : null,
+    signedInAt,
+    askedApproval: session.askedApproval === true || session.approval !== null || approval !== null,
+    consecutiveCheckFailures: 0,
   };
+  return { ...next, progress: phase === "ready" ? 100 : stageProgress(next, now) };
 }
 
 export function recordWakingCheckFailure(
@@ -144,7 +194,7 @@ export function recordWakingCheckFailure(
 ): WakingBotSession {
   return {
     ...session,
-    progress: wakingProgress(session.startedAt, wakingClock(session, now), session.estimateMs),
+    progress: stageProgress(session, now),
     consecutiveCheckFailures: session.consecutiveCheckFailures + 1,
   };
 }
@@ -159,12 +209,18 @@ export function wakingStatusLine(
   if (session.consecutiveCheckFailures >= WAKING_RECONNECT_AFTER_FAILURES) {
     return "Reconnecting. Your bot is still waking up.";
   }
-  if (now - session.startedAt > session.estimateMs) {
-    return "This is taking longer than usual. You can close this and come back anytime.";
+  const signedIn = session.signedInAt != null;
+  const since = signedIn ? session.signedInAt! : session.startedAt;
+  const estimateMs = signedIn ? finishEstimate(session) : session.estimateMs;
+  const lead = signedIn ? (session.askedApproval ? "You're signed in. " : "") + "Finishing up." : "Starting up.";
+  if (now - since > estimateMs) {
+    return signedIn
+      ? `${lead} This is taking longer than usual. You can leave and come back anytime.`
+      : "This is taking longer than usual. You can leave and come back anytime.";
   }
-  const remainingSeconds = Math.max(1, Math.ceil((session.estimateMs - (now - session.startedAt)) / 1000));
+  const remainingSeconds = Math.max(1, Math.ceil((estimateMs - (now - since)) / 1000));
   const minutes = Math.ceil(remainingSeconds / 60);
-  return minutes > 1 ? `About ${minutes} minutes left.` : "About a minute left.";
+  return `${lead} ${minutes > 1 ? `About ${minutes} minutes left.` : "About a minute left."}`;
 }
 
 /** Resume polling the same agent after the server accepts a retry request. */
@@ -176,8 +232,9 @@ export function resumeWakingSession(
     ...session,
     startedAt: now,
     phase: "waking",
-    progress: wakingProgress(now, now, session.estimateMs),
+    progress: session.signedInAt != null ? 60 : wakingProgress(now, now, session.estimateMs),
     consecutiveCheckFailures: 0,
     approvalSince: null,
+    signedInAt: session.signedInAt != null ? now : null,
   };
 }
