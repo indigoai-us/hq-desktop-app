@@ -40,6 +40,7 @@
   import LazyDoor from "./LazyDoor.svelte";
   import {
     brainPageDoor,
+    filesConnectDoor,
     moreCompaniesDoor,
     notificationsPopoverDoor,
     preloadDoorsWhenIdle,
@@ -9660,6 +9661,25 @@
           >
             {#snippet skeleton()}
               <div class="rail-placeholder" data-testid="brain-door-skeleton" aria-busy="true">
+                <h1>{railPlaceholder.title}</h1>
+                <p>{railPlaceholder.summary}</p>
+              </div>
+            {/snippet}
+          </LazyDoor>
+        {:else if (railPlaceholder?.id === "vault" || railPlaceholder?.id === "integrations" || railPlaceholder?.id === "secrets" || railPlaceholder?.id === "deployments") && companyPaneCompany}
+          <LazyDoor
+            door={filesConnectDoor}
+            props={{
+              page: railPlaceholder.id,
+              slug: companyPaneCompany.slug ?? "",
+              files: adapter.files ?? null,
+              shell: adapter.shell ?? null,
+              settings: adapter.settings ?? null,
+              openExternal: onopenurl,
+            }}
+          >
+            {#snippet skeleton()}
+              <div class="rail-placeholder" data-testid="files-connect-door-skeleton" aria-busy="true">
                 <h1>{railPlaceholder.title}</h1>
                 <p>{railPlaceholder.summary}</p>
               </div>
