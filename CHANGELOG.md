@@ -10,6 +10,7 @@ The release moves it under the version it ships in.
 
 - First-run onboarding events now use the same installation identifier as launch and sign-in receipts, so those steps can be joined without adding personal data.
 - Log in with Microsoft now works for work and school Microsoft accounts, not only personal Microsoft accounts.
+- Fresh desktop installs show the welcome window before startup checks finish.
 
 
 
