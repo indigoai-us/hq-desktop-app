@@ -13,6 +13,8 @@
   import "../../home/tokens.css";
   import "../../chat/chat-tokens.css";
   import { companyStore } from "../company-store.svelte.js";
+  import ShowMoreRow from "../../shell/ShowMoreRow.svelte";
+  import { countLabel, pageRows } from "../../shell/list-paging.js";
   import {
     ACCESS_LEVELS,
     acceptSecretKey,
@@ -91,7 +93,7 @@
     try {
       const listed = files ? await files.listDir(`companies/${slug}`) : null;
       if (listed && listed.ok && Array.isArray(listed.value) && listed.value.length > 0) {
-        const nodes: VaultNode[] = listed.value.slice(0, 40).map((entry, index) => {
+        const nodes: VaultNode[] = listed.value.map((entry, index) => {
           const rec = entry as { name?: string; path?: string; kind?: string };
           const name = rec.name ?? `file-${index}`;
           return {
@@ -151,6 +153,20 @@
 
   const vaultRows = $derived(filterVault(data.nodes, vaultTab, query));
 
+  // Every list shows all rows, in pages of 50 with a Show more row.
+  let vaultPages = $state(1);
+  let integrationPages = $state(1);
+  let secretPages = $state(1);
+  let deployPages = $state(1);
+  $effect(() => {
+    void page;
+    void query;
+    void vaultTab;
+    void integrationTab;
+    void secretTab;
+    vaultPages = integrationPages = secretPages = deployPages = 1;
+  });
+
   // Vault tree (All tab): the same lazy, cached tree as the project Files
   // tab, so a reopened folder paints from cache in the click frame.
   const vaultRoot = $derived(`companies/${slug}`);
@@ -202,6 +218,10 @@
   const showVaultTree = $derived(files !== null && vaultTab === "all");
   const integrationRows = $derived(filterIntegrations(data.integrations, integrationTab, query));
   const secretRows = $derived(filterSecrets(data.secrets, secretTab, query));
+  const vaultPage = $derived(pageRows(vaultRows, vaultPages));
+  const integrationPage = $derived(pageRows(integrationRows, integrationPages));
+  const secretPage = $derived(pageRows(secretRows, secretPages));
+  const deployPage = $derived(pageRows(data.deployments, deployPages));
   const vaultCurrent = $derived(data.nodes.find((node) => node.id === selectedVault) ?? data.nodes[0]);
   const integrationCurrent = $derived(
     data.integrations.find((row) => row.id === selectedIntegration) ?? data.integrations[0],
@@ -282,7 +302,7 @@
         </div>
       {:else}
       <div class="list" data-testid="vault-list">
-        {#each vaultRows as node (node.id)}
+        {#each vaultPage.rows as node (node.id)}
           <button
             class="row"
             type="button"
@@ -294,6 +314,9 @@
             <span class="meta">{node.editedBy}</span>
           </button>
         {/each}
+        {#if vaultPage.remaining > 0}
+          <ShowMoreRow shown={vaultPage.rows.length} total={vaultPage.total} next={vaultPage.next} noun="files" testid="vault-show-more" onmore={() => (vaultPages += 1)} />
+        {/if}
       </div>
       {/if}
       {#if showVaultTree}
@@ -334,6 +357,7 @@
   {:else if page === "integrations"}
     <header class="toolbar">
       <h1>Integrations</h1>
+      <span class="chip" data-testid="integrations-count">{countLabel("Integrations", integrationRows.length)}</span>
       <span class="grow"></span>
       <div class="tabs" role="tablist">
         <button class="tab" role="tab" aria-selected={integrationTab === "connected"} onclick={() => (integrationTab = "connected")}>Connected</button>
@@ -345,7 +369,7 @@
     </header>
     <div class="split">
       <div class="list">
-        {#each integrationRows as row (row.id)}
+        {#each integrationPage.rows as row (row.id)}
           <button class="row" type="button" aria-current={row.id === integrationCurrent?.id} onclick={() => (selectedIntegration = row.id)}>
             <span class="mark">{row.mark}</span>
             <span class="nm">{row.name}</span>
@@ -353,6 +377,9 @@
             <span class="chip" data-status={row.status}>{row.status}</span>
           </button>
         {/each}
+        {#if integrationPage.remaining > 0}
+          <ShowMoreRow shown={integrationPage.rows.length} total={integrationPage.total} next={integrationPage.next} noun="integrations" testid="integrations-show-more" onmore={() => (integrationPages += 1)} />
+        {/if}
       </div>
       <aside class="inspector">
         {#if integrationCurrent}
@@ -368,7 +395,7 @@
   {:else if page === "secrets"}
     <header class="toolbar">
       <h1>Secrets</h1>
-      <span class="chip">{data.secrets.length} secrets</span>
+      <span class="chip" data-testid="secrets-count">{countLabel("Secrets", secretRows.length)}</span>
       <span class="chip">values never shown</span>
       <span class="grow"></span>
       <input class="search" placeholder="Search secrets" bind:value={query} />
@@ -381,7 +408,7 @@
     </header>
     <div class="split">
       <div class="list" data-testid="secrets-list">
-        {#each secretRows as row (row.id)}
+        {#each secretPage.rows as row (row.id)}
           <button class="row" type="button" aria-current={row.id === secretCurrent?.id} onclick={() => (selectedSecret = row.id)}>
             <span class="nm mono">{row.name}</span>
             <span class="meta">{row.kind} · {row.version}{row.host ? ` · ${row.host}` : ""}</span>
@@ -391,6 +418,9 @@
             <span class="meta">{row.readers}</span>
           </button>
         {/each}
+        {#if secretPage.remaining > 0}
+          <ShowMoreRow shown={secretPage.rows.length} total={secretPage.total} next={secretPage.next} noun="secrets" testid="secrets-show-more" onmore={() => (secretPages += 1)} />
+        {/if}
       </div>
       <aside class="inspector" data-testid="secret-inspector">
         {#if secretCurrent && shareView}
@@ -407,6 +437,7 @@
   {:else}
     <header class="toolbar">
       <h1>Deployments</h1>
+      <span class="chip" data-testid="deployments-count">{countLabel("Deployments", data.deployments.length)}</span>
       <span class="grow"></span>
       <button class="btn primary" type="button" data-testid="deploy-from-project" onclick={() => (sheet = "deploy")}>Deploy</button>
     </header>
@@ -417,14 +448,17 @@
       </div>
     {:else}
       <div class="split">
-        <div class="list">
-          {#each data.deployments as row (row.id)}
+        <div class="list" data-testid="deployments-list">
+          {#each deployPage.rows as row (row.id)}
             <button class="row" type="button" aria-current={row.id === deployCurrent?.id} onclick={() => (selectedDeploy = row.id)}>
               <span class="nm">{row.name}</span>
               <span class="meta">{row.project}</span>
               <span class="chip" data-status={row.status}>{row.status}</span>
             </button>
           {/each}
+          {#if deployPage.remaining > 0}
+            <ShowMoreRow shown={deployPage.rows.length} total={deployPage.total} next={deployPage.next} noun="deployments" testid="deployments-show-more" onmore={() => (deployPages += 1)} />
+          {/if}
         </div>
         <aside class="inspector">
           {#if deployCurrent}

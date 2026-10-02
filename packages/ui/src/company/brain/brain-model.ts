@@ -18,7 +18,6 @@ export const metadata = {
 
 /** Rows past this count window on scroll instead of mounting every node. */
 export const VIRTUAL_AFTER = 200;
-export const PREVIEW_CAP = 12;
 const ROW_HEIGHT = 62;
 
 export type BrainPageId = "knowledge" | "policies" | "skills" | "workers";
@@ -120,11 +119,6 @@ export function virtualWindow(
     padTop: start * ROW_HEIGHT,
     padBottom: Math.max(0, count - end) * ROW_HEIGHT,
   };
-}
-
-export function previewRows<T>(rows: readonly T[], expanded: boolean): T[] {
-  if (expanded || rows.length <= PREVIEW_CAP) return [...rows];
-  return rows.slice(0, PREVIEW_CAP);
 }
 
 export function slugify(title: string): string {

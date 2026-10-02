@@ -80,6 +80,42 @@ describe("US-029 FilesConnectPage", () => {
     expect(target.querySelector("[data-testid='share-no-value']")?.textContent).toContain("No secret value");
   });
 
+  it("shows every secret and deployment, paging past 50 with a Show more row", async () => {
+    const { companyStore } = await import("../company-store.svelte.js");
+    const secrets = Array.from({ length: 60 }, (_, i) => ({ name: `SECRET_${i}`, kind: "standard" }));
+    const deployments = Array.from({ length: 7 }, (_, i) => ({ name: `deploy-${i}`, url: `https://d${i}.example` }));
+    vi.mocked(companyStore.loadSecrets).mockResolvedValue(secrets as never);
+    vi.mocked(companyStore.loadDeployments).mockResolvedValue(deployments as never);
+    try {
+      let target = mountPage("secrets");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      const list = () => target.querySelector("[data-testid='secrets-list']") as HTMLElement;
+      expect(target.querySelector("[data-testid='secrets-count']")?.textContent).toBe("Secrets · 60");
+      expect(list().querySelectorAll("button.row")).toHaveLength(50);
+      const more = target.querySelector("[data-testid='secrets-show-more']") as HTMLButtonElement;
+      expect(more.textContent).toContain("Show 10 more");
+      more.click();
+      flushSync();
+      expect(list().querySelectorAll("button.row")).toHaveLength(60);
+      expect(list().textContent).toContain("SECRET_59");
+      expect(target.querySelector("[data-testid='secrets-show-more']")).toBeNull();
+
+      if (component) await unmount(component);
+      target = mountPage("deployments");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      expect(target.querySelector("[data-testid='deployments-count']")?.textContent).toBe("Deployments · 7");
+      expect(target.querySelectorAll("[data-testid='deployments-list'] button.row")).toHaveLength(7);
+      expect(target.querySelector("[data-testid='deployments-show-more']")).toBeNull();
+    } finally {
+      vi.mocked(companyStore.loadSecrets).mockResolvedValue([
+        { name: "ATTIO_API_KEY", value: "sk-live-do-not-render", kind: "standard" },
+      ] as never);
+      vi.mocked(companyStore.loadDeployments).mockResolvedValue([] as never);
+    }
+  });
+
   it("asks before redeploy and then calls the deploy workflow", async () => {
     const target = mountPage("deployments");
     const redeploy = target.querySelector("[data-testid='redeploy']") as HTMLButtonElement;

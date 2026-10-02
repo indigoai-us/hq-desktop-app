@@ -30,6 +30,22 @@ describe("US-033 PersonalRailPage", () => {
     return target;
   }
 
+  it("shows every personal secret, paging past 50 with a Show more row", async () => {
+    const { companyStore } = await import("../company/company-store.svelte.js");
+    const rows = Array.from({ length: 55 }, (_, i) => ({ name: `TOKEN_${i}`, scope: "Personal", kind: "standard" }));
+    vi.mocked(companyStore.loadSecrets).mockResolvedValueOnce(rows as never);
+    const target = mountPage("secrets");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+    const list = target.querySelector("[data-testid='personal-secrets-list']") as HTMLElement;
+    expect(target.querySelector("[data-testid='personal-secrets-count']")?.textContent).toBe("Secrets · 55");
+    expect(list.querySelectorAll("button.srow")).toHaveLength(50);
+    (target.querySelector("[data-testid='personal-secrets-show-more']") as HTMLButtonElement).click();
+    flushSync();
+    expect(list.querySelectorAll("button.srow")).toHaveLength(55);
+    expect(target.querySelector("[data-testid='personal-secrets-show-more']")).toBeNull();
+  });
+
   it("opens on personal-scope secrets and never renders a value", async () => {
     const target = mountPage("secrets");
     await new Promise((resolve) => setTimeout(resolve, 0));

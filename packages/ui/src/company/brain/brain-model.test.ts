@@ -6,7 +6,6 @@ import {
   metadata,
   policyCreatePrompt,
   policyFromFile,
-  previewRows,
   skillCreatePrompt,
   skillRunPrompt,
   virtualWindow,
@@ -29,7 +28,6 @@ describe("US-028 brain model", () => {
     const windowed = virtualWindow(VIRTUAL_AFTER + 40, 62 * 20, 400);
     expect(windowed.start).toBeGreaterThan(0);
     expect(windowed.end).toBeLessThan(VIRTUAL_AFTER + 40);
-    expect(previewRows([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13], false)).toHaveLength(12);
   });
 
   it("prefills Run with the skill slash and the worker run command", () => {

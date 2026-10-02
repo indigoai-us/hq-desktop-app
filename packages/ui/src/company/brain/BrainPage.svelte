@@ -8,6 +8,8 @@
   import { openAgentWorkflow } from "../agent-workflow.js";
   import { loadLibraryCompany } from "../../library/library.js";
   import type { DirEntry } from "../../files/file-tree.js";
+  import ShowMoreRow from "../../shell/ShowMoreRow.svelte";
+  import { pageRows } from "../../shell/list-paging.js";
   import "../../home/tokens.css";
   import "../../chat/chat-tokens.css";
   import {
@@ -20,7 +22,6 @@
     knowledgeFromFile,
     policyCreatePrompt,
     policyFromFile,
-    previewRows,
     readBrainCache,
     skillCreatePrompt,
     skillRowFromLibrary,
@@ -81,7 +82,8 @@
   let usageRange = $state<"7d" | "30d" | "90d">("30d");
   let workerScope = $state<WorkerScopeFilter>("all");
   let workerFilter = $state<WorkerFilter>("active");
-  let expanded = $state(false);
+  // Every list shows all rows, in pages of 50 with a Show more row.
+  let pages = $state(1);
   let scrollTop = $state(0);
   let selected = $state<string | null>(null);
   let sheet = $state<"policy" | "skill" | "worker" | "picker" | null>(null);
@@ -119,12 +121,17 @@
   const activeList = $derived(
     page === "knowledge" ? knowledgeRows : page === "policies" ? policyRows : page === "skills" ? skillRows : workerRows,
   );
-  const shown = $derived.by(() => {
-    if (page === "knowledge") return previewRows(knowledgeRows, expanded);
-    if (page === "policies") return previewRows(policyRows, expanded);
-    if (page === "skills") return previewRows(skillRows, expanded);
-    return previewRows(workerRows, expanded);
+  $effect(() => {
+    void page;
+    void query;
+    void policyFilter;
+    void skillFilter;
+    pages = 1;
   });
+  const listPage = $derived(
+    pageRows<KnowledgeFile | PolicyDoc | SkillRow | WorkerRow>(activeList, pages),
+  );
+  const shown = $derived(listPage.rows);
   const windowed = $derived(virtualWindow(shown.length, scrollTop, 640));
   const slice = $derived(shown.slice(windowed.start, windowed.end));
   const policyGroups = $derived(groupPolicies(policyRows));
@@ -139,7 +146,7 @@
     const hit = readBrainCache(key);
     query = "";
     selected = null;
-    expanded = false;
+    pages = 1;
     sheet = null;
     if (hit) {
       cache = hit;
@@ -177,7 +184,7 @@
   async function readKnowledge(api: FilesApi, root: string): Promise<KnowledgeFile[]> {
     const paths = await collectFiles(api, root, 0);
     const out: KnowledgeFile[] = [];
-    for (const path of paths.slice(0, 400)) {
+    for (const path of paths) {
       const res = await api.getFileContent(path);
       const text = res.ok ? res.value : "";
       out.push(knowledgeFromFile(path, text));
@@ -188,7 +195,7 @@
   async function readPolicies(api: FilesApi, root: string): Promise<PolicyDoc[]> {
     const paths = await collectFiles(api, root, 0);
     const out: PolicyDoc[] = [];
-    for (const path of paths.slice(0, 400)) {
+    for (const path of paths) {
       const res = await api.getFileContent(path);
       out.push(policyFromFile(path, res.ok ? res.value : ""));
     }
@@ -345,7 +352,7 @@
         <span class="meta">Sort · runs</span>
       </div>
       <div class="head usage-grid"><span>Skill</span><span>Runs</span><span>Last run</span></div>
-      {#each previewRows(skillRows, expanded) as row (row.path)}
+      {#each pageRows(skillRows, pages).rows as row (row.path)}
         <div class="row usage-grid">
           <span class="name">{row.name}</span>
           <span class="meta">{row.runs}</span>
@@ -374,7 +381,7 @@
           {/each}
         {:else if page === "knowledge" && lens === "fresh"}
           <div class="sec">Recent</div>
-          {#each previewRows(knowledgeRows, expanded) as row (row.path)}
+          {#each pageRows(knowledgeRows, pages).rows as row (row.path)}
             <button type="button" class="item" aria-current={selectedFile?.path === row.path} onclick={() => (selected = row.path)}>
               <span class="name">{row.title}</span>
               {#if row.mark}<span class="badge" class:hard={row.mark === "new"}>{row.mark}</span>{/if}
@@ -408,10 +415,8 @@
           {/each}
           <div style:height={`${windowed.padBottom}px`}></div>
         {/if}
-        {#if activeList.length > 12}
-          <p class="foot">{Math.min(12, shown.length)} of {activeList.length} ·
-            <button type="button" class="tab" onclick={() => (expanded = !expanded)}>{expanded ? "Show less" : "Show all"}</button>
-          </p>
+        {#if page !== "policies" && listPage.remaining > 0}
+          <ShowMoreRow shown={listPage.rows.length} total={listPage.total} next={listPage.next} noun={title.toLowerCase()} testid="brain-show-more" onmore={() => (pages += 1)} />
         {/if}
         {#if activeList.length === 0}
           <p class="empty">Nothing in this {title.toLowerCase()} listing yet.</p>
@@ -651,7 +656,7 @@
     gap: 2px;
   }
   .name { color: var(--v4-text-1); }
-  .meta, .path, .kind, .foot, .status, .empty {
+  .meta, .path, .kind, .status, .empty {
     color: var(--v4-text-3);
     font-size: var(--type-metadata);
   }

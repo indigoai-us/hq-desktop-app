@@ -26,6 +26,8 @@
     type TokenStack,
   } from "./telemetry-model.js";
   import { TELEMETRY_SCOPES } from "./telemetry-smoke.js";
+  import ShowMoreRow from "../shell/ShowMoreRow.svelte";
+  import { pageRows } from "../shell/list-paging.js";
 
   interface Props {
     cache: TelemetryCache;
@@ -69,7 +71,7 @@
 
   const pages: { id: TelemetryPage; label: string; meta?: string }[] = [
     { id: "overview", label: "Overview" },
-    { id: "sessions", label: "Sessions", meta: "128" },
+    { id: "sessions", label: "Sessions", meta: "…" },
     { id: "tokens", label: "Tokens" },
     { id: "outcomes", label: "Outcomes" },
   ];
@@ -111,9 +113,18 @@
     if (page === "overview") page = "sessions";
   }
 
+  // Sessions show every row, in pages of 50 with a Show more row.
+  let sessionPages = $state(1);
+  $effect(() => {
+    void sessionFilter;
+    void page;
+    sessionPages = 1;
+  });
+  const sessionPage = $derived(pageRows(sessionRows, sessionPages));
+
   let sessionDays = $derived.by(() => {
     const groups: { day: string; rows: TelemetrySession[] }[] = [];
-    for (const row of sessionRows) {
+    for (const row of sessionPage.rows) {
       const last = groups[groups.length - 1];
       if (!last || last.day !== row.day) groups.push({ day: row.day, rows: [row] });
       else last.rows.push(row);
@@ -133,7 +144,7 @@
           onclick={() => (page = item.id)}
         >
           <span>{item.label}</span>
-          {#if item.meta}<span class="meta">{snapshot ? String(snapshot.sessions) : item.meta}</span>{/if}
+          {#if item.meta}<span class="meta" data-testid="telemetry-sessions-count">{snapshot ? String(snapshot.sessionsRows.length) : item.meta}</span>{/if}
         </button>
       {/each}
       <button class="row" onclick={() => onskills?.()}>
@@ -222,7 +233,7 @@
         <div class="two">
           <div>
             <div class="sech">Sessions <span class="grow"></span>
-              <button class="lnk" onclick={() => (page = "sessions")}>Show all {snapshot.sessions}</button>
+              <button class="lnk" onclick={() => (page = "sessions")}>Show all {snapshot.sessionsRows.length}</button>
             </div>
             <div class="srow hd"><span>When</span><span>Company</span><span>Project</span><span class="n">Length</span><span class="n">Tokens</span><span>Outcome</span></div>
             <div class="scroll">
@@ -275,7 +286,7 @@
             <span class="grow"></span>
             <span class="chip live">1 in progress</span>
           </div>
-          <div class="srow hd wide"><span>When</span><span>Company</span><span>Project</span><span>Host</span><span class="n">Length</span><span class="n">Tokens</span><span>Outcome</span></div>
+          <div class="srow hd wide" data-testid="telemetry-sessions-head"><span>When</span><span>Company</span><span>Project</span><span>Host</span><span class="n">Length</span><span class="n">Tokens</span><span>Outcome</span></div>
           <div class="scroll">
             {#each sessionDays as group (group.day)}
               <div class="day">{group.day}</div>
@@ -291,6 +302,9 @@
                 </button>
               {/each}
             {/each}
+            {#if sessionPage.remaining > 0}
+              <ShowMoreRow shown={sessionPage.rows.length} total={sessionPage.total} next={sessionPage.next} noun="sessions" testid="telemetry-sessions-show-more" onmore={() => (sessionPages += 1)} />
+            {/if}
           </div>
         </div>
         {#if selected}

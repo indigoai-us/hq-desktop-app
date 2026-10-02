@@ -7,6 +7,8 @@
   import "../home/tokens.css";
   import "../chat/chat-tokens.css";
   import { companyStore } from "../company/company-store.svelte.js";
+  import ShowMoreRow from "../shell/ShowMoreRow.svelte";
+  import { countLabel, pageRows } from "../shell/list-paging.js";
   import {
     acceptSecretKey,
     applyDeepLink,
@@ -88,6 +90,18 @@
       query,
     ),
   );
+  // Every list shows all rows, in pages of 50 with a Show more row.
+  let secretPages = $state(1);
+  let connectionPages = $state(1);
+  $effect(() => {
+    void page;
+    void query;
+    void secretTab;
+    void connectionTab;
+    secretPages = connectionPages = 1;
+  });
+  const secretPage = $derived(pageRows(secretRows, secretPages));
+  const connectionPage = $derived(pageRows(connectionRows, connectionPages));
   const secretCurrent = $derived(
     data.secrets.find((row) => row.id === selectedSecret) ?? secretRows[0] ?? data.secrets[0],
   );
@@ -155,7 +169,7 @@
     {#if page === "secrets"}
       <header class="toolbar">
         <h1>Secrets</h1>
-        <span class="chip">{data.secrets.length} secrets</span>
+        <span class="chip" data-testid="personal-secrets-count">{countLabel("Secrets", secretRows.length)}</span>
         <span class="chip">values never shown</span>
         <span class="grow"></span>
         <input class="search" placeholder="Search by name" bind:value={query} />
@@ -168,7 +182,7 @@
         <div class="list" data-testid="personal-secrets-list">
           <div class="head"><span>Name</span><span>Scope</span><span>Mode</span><span>Last rotated</span><span>Bound apps</span></div>
           <p class="sec">Personal</p>
-          {#each secretRows as row (row.id)}
+          {#each secretPage.rows as row (row.id)}
             <button class="srow" type="button" aria-current={row.id === secretCurrent?.id} onclick={() => (selectedSecret = row.id)}>
               <span>
                 <span class="nm mono">{row.name}</span>
@@ -180,6 +194,9 @@
               <span>{row.apps}</span>
             </button>
           {/each}
+          {#if secretPage.remaining > 0}
+            <ShowMoreRow shown={secretPage.rows.length} total={secretPage.total} next={secretPage.next} noun="secrets" testid="personal-secrets-show-more" onmore={() => (secretPages += 1)} />
+          {/if}
           <p class="foot">Personal secrets live in your vault and never cross into a company.</p>
         </div>
         <aside class="inspector" data-testid="secret-inspector">
@@ -216,7 +233,7 @@
         <div class="list" data-testid="connections-list">
           {#if connectionTab === "agents"}
             <div class="head agents"><span>Connection</span><span>MCP server</span><span>Tools</span><span>Bot policy</span></div>
-            {#each connectionRows as row (row.id)}
+            {#each connectionPage.rows as row (row.id)}
               <div class="agent" data-off={row.status === "available" ? "true" : undefined}>
                 <div class="srow agent-row" role="button" tabindex="0" aria-current={row.id === connectionCurrent?.id} onclick={() => (selectedConnection = row.id)} onkeydown={(event) => { if (event.key === "Enter") selectedConnection = row.id; }}>
                   <span><span class="mark">{row.mark}</span> <span class="nm">{row.name}</span><span class="meta">{row.detail}</span></span>
@@ -238,10 +255,13 @@
                 {/each}
               </div>
             {/each}
+            {#if connectionPage.remaining > 0}
+              <ShowMoreRow shown={connectionPage.rows.length} total={connectionPage.total} next={connectionPage.next} noun="connections" testid="connections-show-more" onmore={() => (connectionPages += 1)} />
+            {/if}
             <p class="foot">Personal connections act as you. Policy here overrides the company default for your bots.</p>
           {:else}
             <div class="head"><span>App</span><span>Status</span><span>Scopes</span><span>Last used</span><span></span></div>
-            {#each connectionRows as row (row.id)}
+            {#each connectionPage.rows as row (row.id)}
               <button class="srow" type="button" aria-current={row.id === connectionCurrent?.id} data-off={row.status === "available" ? "true" : undefined} onclick={() => (selectedConnection = row.id)}>
                 <span><span class="mark">{row.mark}</span> <span class="nm">{row.name}</span><span class="meta">{row.detail}</span></span>
                 <span class="chip" data-status={row.status}>{row.status === "connected" ? "Connected" : row.status === "reconnect" ? "Reconnect" : "Not connected"}</span>
@@ -250,6 +270,9 @@
                 <span class="btn tiny" role="presentation">{row.status === "available" ? "Connect" : row.status === "reconnect" ? "Reconnect" : "Disconnect"}</span>
               </button>
             {/each}
+            {#if connectionPage.remaining > 0}
+              <ShowMoreRow shown={connectionPage.rows.length} total={connectionPage.total} next={connectionPage.next} noun="connections" testid="connections-show-more" onmore={() => (connectionPages += 1)} />
+            {/if}
             <p class="foot">Personal connections act as you. Company-level apps stay inside each company pane.</p>
           {/if}
         </div>
