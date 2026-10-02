@@ -2,7 +2,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { mount, tick, unmount } from "svelte";
-import { ok, type LocalBotRow, type PlatformAdapter, type Workspace } from "@hq/platform";
+import { ok, type LocalBotRow, type PlatformAdapter } from "@hq/platform";
 
 import DesktopApp from "./DesktopApp.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
@@ -11,6 +11,7 @@ import { createChatWakeBus } from "../chat/chat-api.js";
 import { buildAgentHelloRequest } from "../chat/agent-channel.js";
 import { BOT_CONNECTION_CARDS_STORAGE_KEY, CONNECT_MORE_REQUEST } from "../chat/messaging/connection-card-model.js";
 import type { ConversationRow } from "../chat/sidebar-model.js";
+import type { Workspace } from "../chat/workspaces.js";
 
 /**
  * "Connect more": the app adds one button to the suggested replies under a

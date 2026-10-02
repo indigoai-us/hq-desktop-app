@@ -109,6 +109,7 @@
     type ToolConnection,
   } from "../chat/messaging/connection-card-model.js";
   import { connectionCardArt } from "../chat/messaging/connection-card-art.js";
+  import { slackStatusDenied } from "../chat/messaging/slack-connect-model.js";
   import {
     cardModalContentFor,
     cardModalTargets,
@@ -4608,6 +4609,8 @@
     connections: unknown | null;
     companyUid: string | null;
     slackFailed: boolean;
+    /** The status was refused because this person may not manage the bot. */
+    slackDenied: boolean;
     toolsFailed: boolean;
   }
   let botConnectionFacts = $state.raw<Record<string, BotConnectionFacts>>({});
@@ -4641,10 +4644,14 @@
     const before = botConnectionFacts[agentUid] ?? null;
     let status = before?.status ?? null;
     let slackFailed = false;
+    let slackDenied = false;
     try {
       const result = await adapter.agents.getStatus(agentUid);
       if (result.ok) status = result.value;
-      else slackFailed = true;
+      else {
+        slackFailed = true;
+        slackDenied = slackStatusDenied(result);
+      }
     } catch {
       slackFailed = true;
     }
@@ -4660,7 +4667,7 @@
     }
     botConnectionFacts = {
       ...botConnectionFacts,
-      [agentUid]: { status, connections, companyUid, slackFailed, toolsFailed },
+      [agentUid]: { status, connections, companyUid, slackFailed, slackDenied, toolsFailed },
     };
   }
 
@@ -4683,6 +4690,18 @@
   }
   function closeConnectionModal(): void {
     openCardModal = null;
+  }
+  /**
+   * The person started or moved on a connection inside a card's modal. For
+   * Slack this is what "pressed Connect" was for the old page in the browser:
+   * the card shows the setup as started, and the bot is told once when Slack
+   * is connected.
+   */
+  function markConnectionStarted(agentUid: string, target: ConnectTarget): void {
+    if (target !== "slack") return;
+    const now = Date.now();
+    setBotConnectionRecord(agentUid, markConnecting(connectionRecords[agentUid] ?? null, "slack", now));
+    connectionClock = now;
   }
   // Leaving the bot's conversation closes its modal.
   $effect(() => {
@@ -4747,6 +4766,8 @@
     const { agentUid, target } = modal;
     const art = connectionCardArt(target);
     const rowCompanyUid = selectedRow?.companyUid?.trim() || null;
+    const facts = botConnectionFacts[agentUid] ?? null;
+    const companyUid = facts?.companyUid ?? rowCompanyUid;
     return {
       key: `${agentUid}:${target}`,
       Content,
@@ -4762,10 +4783,16 @@
         agentUid,
         target,
         botName: input.botName,
-        companyUid: botConnectionFacts[agentUid]?.companyUid ?? rowCompanyUid,
+        companyUid,
+        companySlug: companySlugForUid(companyUid),
+        status: facts?.status ?? null,
+        statusDenied: facts?.slackDenied === true,
+        // The cards' clock: it moves on every check while the modal is open.
+        checkedAt: input.now,
         adapter,
         openUrl: openConnectionUrl,
         refresh: () => refreshBotConnectionFacts(agentUid, rowCompanyUid),
+        started: () => markConnectionStarted(agentUid, target),
       },
     };
   });

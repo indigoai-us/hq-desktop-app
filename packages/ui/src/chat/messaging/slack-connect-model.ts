@@ -66,6 +66,7 @@ export const SLACK_TOKEN_REJECTED_SENTENCE =
 export const SLACK_TOKEN_RETRY_SENTENCE = "Could not check the token with Slack. Try again.";
 export const SLACK_TOKEN_SHAPE_SENTENCE = "That does not look like the right token. It starts with xapp-.";
 export const SLACK_APPROVE_DETAIL = "Slack opens in your browser. Come back here when you have approved.";
+export const SLACK_APPROVE_NO_LINK_DETAIL = "Waiting for the link from Slack. This screen updates by itself.";
 export const SLACK_TOKEN_CHECKING = "Checking the token with Slack.";
 export const SLACK_STARTING = "Setting things up in Slack.";
 

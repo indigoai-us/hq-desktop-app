@@ -2,7 +2,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { mount, tick, unmount } from "svelte";
-import { ok, type PlatformAdapter, type Workspace } from "@hq/platform";
+import { ok, type PlatformAdapter } from "@hq/platform";
 
 import DesktopApp from "./DesktopApp.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
@@ -11,6 +11,7 @@ import { createChatWakeBus } from "../chat/chat-api.js";
 import { buildAgentHelloRequest } from "../chat/agent-channel.js";
 import { BOT_CONNECTION_CARDS_STORAGE_KEY } from "../chat/messaging/connection-card-model.js";
 import type { ConversationRow } from "../chat/sidebar-model.js";
+import type { Workspace } from "../chat/workspaces.js";
 
 /**
  * A new cloud bot's direct message: two cards under the bot's first message

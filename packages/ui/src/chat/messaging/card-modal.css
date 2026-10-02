@@ -476,6 +476,23 @@
   gap: 6px;
 }
 
+/* A step with more under its row: the row on top, the rest lined up with
+   the words. */
+.card-modal-step[data-more="true"] {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  column-gap: 10px;
+  row-gap: 10px;
+  padding-bottom: 14px;
+}
+
+.card-modal-step-more {
+  grid-column: 2 / -1;
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
 .card-modal-step[data-state="current"] .card-modal-step-num {
   border-color: rgba(255, 255, 255, 0.92);
   background: rgba(255, 255, 255, 0.92);
@@ -674,6 +691,19 @@
 
   .card-modal-step-action {
     margin-left: 32px;
+  }
+
+  .card-modal-step[data-more="true"] {
+    grid-template-columns: 22px minmax(0, 1fr);
+  }
+
+  .card-modal-step[data-more="true"] .card-modal-step-action {
+    grid-column: 2;
+    margin-left: 0;
+  }
+
+  .card-modal-step-more {
+    grid-column: 1 / -1;
   }
 
   .card-modal-foot .card-modal-btn {

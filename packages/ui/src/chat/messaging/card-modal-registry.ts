@@ -47,11 +47,34 @@ export interface CardModalContentProps {
   botName: string;
   /** The bot's company, once the server has said. */
   companyUid: string | null;
+  /**
+   * That company's slug, for a link to its pages on the web. Null when the
+   * app does not know it: link to the web's front page then, never to a page
+   * named by the company's uid.
+   */
+  companySlug: string | null;
+  /**
+   * The bot's latest status answer (`GET /v1/agents/{uid}/status`), or null
+   * while the app has none. The shell asks again every few seconds while the
+   * modal is open, and when the window comes back to the front: content reads
+   * this and keeps no timer of its own.
+   */
+  status: unknown | null;
+  /** The status could not be read because this person may not manage the bot. */
+  statusDenied: boolean;
+  /** When the shell last asked (ms). The content's clock for a long wait. */
+  checkedAt: number;
   adapter: PlatformAdapter;
   /** Open a page in the system browser, the way the cards do. */
   openUrl: (url: string) => void;
   /** Ask the server again about this bot's Slack and tools, so its cards update. */
   refresh: () => Promise<void>;
+  /**
+   * The person did something in the modal that starts the connection or
+   * moves it on. The shell remembers it on this device, so the card shows the
+   * setup as started and the bot is told once when it is connected.
+   */
+  started: () => void;
 }
 
 export type CardModalContent = Component<CardModalContentProps>;
