@@ -19,6 +19,8 @@ function webAdapter(): PlatformAdapter {
     capabilities: {},
     messaging: {
       listContacts: async () => ok({ contacts: [] }),
+      // The shell loads the open channel's timeline after mount.
+      fetchChannel: async () => ok({ messages: [], nextCursor: null }),
     },
   } as unknown as PlatformAdapter;
 }
