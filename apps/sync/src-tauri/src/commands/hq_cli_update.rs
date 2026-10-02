@@ -1804,6 +1804,7 @@ async fn probe_install_environment(
         // remedy's diagnostic (HQ-DESKTOP-5K) when that remedy ran.
         missing_target_state: MissingTargetState::Unknown,
         target_version: None,
+        running_cli_version: None,
         requested_spec_kind: RequestedSpecKind::Unknown,
         registry_serving_lag_recurred: false,
     }

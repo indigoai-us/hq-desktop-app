@@ -17349,6 +17349,7 @@ mod tests {
             lock_holder_diagnostic: None,
             missing_target_state: MissingTargetState::Unknown,
             target_version: None,
+            running_cli_version: None,
             requested_spec_kind: RequestedSpecKind::Unknown,
             registry_serving_lag_recurred: false,
         };
