@@ -2651,6 +2651,18 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
         // built with `Some(latest)`, a pinned spec — never the `@latest` dist-tag.
         // Tag-only: never a fingerprint/signature/episode-key component.
         install_env = install_env.with_pinned_target_version(&latest);
+        // Resolve the CLI version again after npm failed so the event records the
+        // version present at failure time, rather than the requested target or the
+        // earlier pre-install snapshot. The core reporter bounds this to SemVer or
+        // `unknown` before it reaches Sentry.
+        let hq_for_running_version = hq.clone();
+        let running_version = tauri::async_runtime::spawn_blocking(move || {
+            resolved_hq_version(&hq_for_running_version)
+        })
+        .await
+        .ok()
+        .flatten();
+        install_env = install_env.with_running_cli_version(running_version.as_deref());
         let failing_node_abi = install_env
             .node_abi
             .as_deref()

@@ -6871,6 +6871,34 @@ mod windows_busy_deferral_tests {
     }
 
     #[test]
+    fn running_cli_version_tag_is_bounded_semver_or_unknown_and_path_free() {
+        let events = sentry::test::with_captured_events(|| {
+            let path_value = InstallEnvironment::default()
+                .with_running_cli_version(Some(r"C:\Users\Alice\hq-cli\5.210.0"));
+            report_install_failure_with_environment(
+                Some(-4082),
+                DETAIL,
+                Some(PREFIX),
+                false,
+                &path_value,
+            );
+            let semver_value = InstallEnvironment::default()
+                .with_running_cli_version(Some("5.211.0-beta.1"));
+            report_install_failure_with_environment(
+                Some(-4082),
+                DETAIL,
+                Some(PREFIX),
+                false,
+                &semver_value,
+            );
+        });
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].tags["hq_cli_running_version"], "unknown");
+        assert_eq!(events[1].tags["hq_cli_running_version"], "5.211.0-beta.1");
+        assert!(!events[0].tags["hq_cli_running_version"].contains("Users"));
+    }
+
+    #[test]
     fn a_deferral_is_not_reported_but_exhaustion_remains_reportable() {
         let stderr = DETAIL;
         let deferred = InstallEnvironment::default()
@@ -7316,6 +7344,10 @@ pub struct InstallEnvironment {
     /// publishes most days and would make grouping unbounded. Defaults to `None`,
     /// emitted as NO tag, so every existing caller reproduces today's exact tag set.
     pub target_version: Option<String>,
+    /// The CLI version resolved when the updater observed failure. Tag-only,
+    /// never a grouping component. Opt-in callers with no readable version emit
+    /// `unknown`.
+    pub running_cli_version: Option<String>,
     /// Whether the failing install pinned an exact version or asked for the `latest`
     /// dist-tag. TAG ONLY, defaulting to [`RequestedSpecKind::Unknown`] (emitted as
     /// NO tag), so every existing caller's tag set is unchanged until it opts in.
@@ -7350,6 +7382,13 @@ impl InstallEnvironment {
     pub fn with_pinned_target_version(mut self, version: &str) -> Self {
         self.target_version = Some(version.to_string());
         self.requested_spec_kind = RequestedSpecKind::PinnedVersion;
+        self
+    }
+
+    /// Attach the CLI version that was running when the updater observed failure.
+    /// The report boundary reduces it to a bounded SemVer token or `unknown`.
+    pub fn with_running_cli_version(mut self, version: Option<&str>) -> Self {
+        self.running_cli_version = Some(version.unwrap_or("unknown").to_string());
         self
     }
 }
@@ -7541,6 +7580,10 @@ pub fn report_install_failure_with_environment(
         .target_version
         .as_deref()
         .map(|version| sanitized_target_version_token(Some(version)));
+    let hq_cli_running_version: Option<String> = env
+        .running_cli_version
+        .as_deref()
+        .map(|version| sanitized_target_version_token(Some(version)));
     let requested_spec_kind_tag = if env.requested_spec_kind != RequestedSpecKind::Unknown {
         Some(env.requested_spec_kind.tag_value())
     } else {
@@ -7704,6 +7747,9 @@ pub fn report_install_failure_with_environment(
             // keeps today's exact tag set.
             if let Some(target_version) = hq_cli_target_version.as_deref() {
                 scope.set_tag("hq_cli_target_version", target_version);
+            }
+            if let Some(running_version) = hq_cli_running_version.as_deref() {
+                scope.set_tag("hq_cli_running_version", running_version);
             }
             if let Some(spec_kind) = requested_spec_kind_tag {
                 scope.set_tag("npm_requested_spec_kind", spec_kind);
