@@ -50,7 +50,7 @@
     rosterSelected = null,
   }: Props = $props();
 
-  // Same wiring CompanyPage does, minus the poller: counts load once per
+  // Same wiring the old company Overview did, minus the poller: counts load once per
   // company from the shared cache and pick up any background refresh.
   $effect.pre(() => {
     if (companyApi) configureCompanyApi(companyApi);

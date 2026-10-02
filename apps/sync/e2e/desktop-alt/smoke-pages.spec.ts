@@ -6,7 +6,8 @@ describe('desktop-alt smoke pages', () => {
     // The legacy 'sync' route resolves to the V4 Home surface (US-002/US-003).
     ['sync', 'Home'],
     ['meetings', 'Meetings'],
-    ['company', 'New project'],
+    // A company tile lands on the Atlas landing (console-rail US-009).
+    ['company', 'Atlas'],
   ] as const)('renders %s without console errors', async (route, expectedMarker) => {
     const app = await createDesktopAltHarness('qa@getindigo.ai');
 

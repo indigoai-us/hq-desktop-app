@@ -218,12 +218,14 @@ export class DesktopAltHarness implements DesktopAltTestHarness {
       };
     }
 
+    // A company tile lands on the Atlas landing (console-rail US-009); the old
+    // company Overview page is deleted.
     return {
       route,
-      text: sourceText('../../packages/ui/src/company/CompanyPage.svelte', [
-        'aria-labelledby="company-page-title"',
-        'New project',
-        '<CompanyBoardPanel',
+      text: sourceText('../../packages/ui/src/shell/AtlasLandingHost.svelte', [
+        'data-testid="atlas-landing"',
+        '<h1>Atlas</h1>',
+        'data-testid="atlas-landing-skeleton"',
       ]),
       consoleErrors: [...this.consoleErrors],
     };
@@ -273,7 +275,7 @@ export class DesktopAltHarness implements DesktopAltTestHarness {
 
   private assertDesktopAppRouteContracts(): void {
     // The route-based page shell (getDesktopLandingRoute, route.kind, the
-    // CompanyPage mount) belonged to the desktop-alt DesktopApp tree, which
+    // old company Overview mount) belonged to the desktop-alt DesktopApp tree, which
     // had been unreachable for some time and went with the in-app Sessions
     // removal. The live desktop window mounts HqWorkWorkShell -> the @hq/ui
     // chat-first shell, which has no equivalent route table, so there is no

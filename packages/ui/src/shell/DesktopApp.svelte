@@ -1365,7 +1365,7 @@
     try {
       // Scoped to the company the banner names — an unscoped call is
       // SyncRunScope::All, which syncs every workspace on the machine and is
-      // not what "pull it onto this machine" promises. Matches CompanyPage.
+      // not what "pull it onto this machine" promises. Matches the old company Overview.
       const result = await adapter.sync.startSync(target.slug);
       if (!result.ok) {
         console.error("membership sync failed:", result.reason, result.message);

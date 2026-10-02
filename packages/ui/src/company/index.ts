@@ -1,5 +1,4 @@
 /** Company area barrel — desktop-alt company surface, platform-pure. */
-export { default as CompanyPage } from "./CompanyPage.svelte";
 export { default as CompanyBoardPanel } from "./CompanyBoardPanel.svelte";
 export { default as CompanyOperationsPanel } from "./CompanyOperationsPanel.svelte";
 export { default as CompanyKnowledgePanel } from "./CompanyKnowledgePanel.svelte";
