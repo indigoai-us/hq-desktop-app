@@ -297,6 +297,22 @@ describe("DesktopApp connection cards in a cloud bot's direct message", () => {
     expect(threadText()).not.toContain("Automatic message from HQ");
   });
 
+  it("a teammate's connection is never offered: only the person's own gets an allow button", async () => {
+    const w = world();
+    w.connections = [
+      connection({ id: "acct_gmail_theirs", createdBy: "prs_teammate", installation: { displayName: "Gmail (Hassaan)" } }),
+      connection({ id: "acct_anon", createdBy: undefined, installation: { displayName: "Notion (unknown)" } }),
+      connection(),
+    ];
+    await mountNewBotDm(w);
+    await vi.waitFor(() => expect(allowButtons()).toHaveLength(1));
+    const rows = [...card("tools").querySelectorAll<HTMLElement>('[data-testid="connection-card-row"]')];
+    expect(rows.map((row) => row.dataset.connectionId)).toEqual(["acct_linear"]);
+    expect(card("tools").textContent).not.toContain("Hassaan");
+    expect(card("tools").textContent).not.toContain("Notion");
+    expect(card("tools").querySelector('[data-testid="connection-card-more"]')).toBeNull();
+  });
+
   it("says in one sentence why a share failed, and tells the bot nothing", async () => {
     const w = world({ connections: [connection()] });
     await mountNewBotDm(w);

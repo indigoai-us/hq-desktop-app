@@ -223,10 +223,10 @@ describe("a connection card", () => {
   it("offers each waiting connection with its own allow button", () => {
     const facts = toolFacts(
       {
-        viewer: { canManageIntegrations: true },
+        viewer: { canManageIntegrations: true, personUid: "prs_me" },
         connections: [
-          { id: "acct_linear", provider: "factory:linear", status: "connected", createdAt: "2026-10-02T14:00:00.000Z", access: { mode: "private" }, installation: { displayName: "Linear" } },
-          { id: "acct_notion", provider: "factory:notion", status: "connected", createdAt: "2026-10-01T14:00:00.000Z", access: { mode: "shared" }, installation: null },
+          { id: "acct_linear", provider: "factory:linear", status: "connected", createdBy: "prs_me", createdAt: "2026-10-02T14:00:00.000Z", access: { mode: "private" }, installation: { displayName: "Linear" } },
+          { id: "acct_notion", provider: "factory:notion", status: "connected", createdBy: "prs_me", createdAt: "2026-10-01T14:00:00.000Z", access: { mode: "shared" }, installation: null },
         ],
       },
       null,
@@ -245,6 +245,26 @@ describe("a connection card", () => {
     expect(allow[0].disabled).toBe(true);
     // The other row is its own press.
     expect(allow[1].disabled).toBe(false);
+  });
+
+  it("a teammate's connection is never offered: no row and no allow button for it", () => {
+    const facts = toolFacts(
+      {
+        viewer: { canManageIntegrations: true, personUid: "prs_me" },
+        connections: [
+          { id: "acct_gmail_theirs", provider: "factory:gmail", status: "connected", createdBy: "prs_teammate", createdAt: "2026-10-02T15:00:00.000Z", access: { mode: "private" }, installation: { displayName: "Gmail (Hassaan)" } },
+          { id: "acct_gmail_mine", provider: "factory:gmail", status: "connected", createdBy: "prs_me", createdAt: "2026-10-02T14:00:00.000Z", access: { mode: "private" }, installation: { displayName: "Gmail (Corey)" } },
+          { id: "acct_drive_theirs", provider: "factory:drive", status: "connected", createdBy: "prs_teammate", createdAt: "2026-10-01T14:00:00.000Z", access: { mode: "shared" }, installation: { displayName: "Drive (Hassaan)" } },
+        ],
+      },
+      null,
+    );
+    const el = renderCard(connectionCardView("tools", input({ tools: facts })));
+    const rows = [...el.querySelectorAll<HTMLElement>('[data-testid="connection-card-row"]')];
+    expect(rows.map((row) => row.dataset.connectionId)).toEqual(["acct_gmail_mine"]);
+    expect(el.querySelectorAll('[data-testid="connection-card-allow"]')).toHaveLength(1);
+    expect(el.textContent).not.toContain("Hassaan");
+    expect(el.querySelector('[data-testid="connection-card-more"]')).toBeNull();
   });
 });
 

@@ -304,6 +304,44 @@ describe("toolFacts", () => {
     expect(after.waiting.map((c) => c.id)).toEqual(["acct_mid", "acct_old"]);
   });
 
+  it("a teammate's connection is never offered", () => {
+    const facts = toolFacts(
+      list([
+        connection({ id: "acct_mine", access: { mode: "private", grantCount: 0 } }),
+        connection({ id: "acct_theirs_private", createdBy: "prs_teammate", access: { mode: "private", grantCount: 0 } }),
+        connection({ id: "acct_theirs_shared", createdBy: "prs_teammate", access: { mode: "shared", grantCount: 3 } }),
+        connection({ id: "acct_theirs_open", createdBy: "prs_teammate" }),
+      ]),
+      null,
+    );
+    expect(facts.waiting.map((c) => c.id)).toEqual(["acct_mine"]);
+    // What the bot can already use is unchanged, whoever connected it.
+    expect(facts.usable.map((c) => c.id)).toEqual(["acct_theirs_open"]);
+    // Every connected connection still counts for the baseline.
+    expect(facts.ids).toEqual(["acct_mine", "acct_theirs_private", "acct_theirs_shared", "acct_theirs_open"]);
+  });
+
+  it("does not offer a connection when the list does not say who is looking or who connected it", () => {
+    const mine = connection({ id: "acct_mine", access: { mode: "private", grantCount: 0 } });
+    const anon = connection({ id: "acct_anon", createdBy: undefined, access: { mode: "private", grantCount: 0 } });
+    const blank = connection({ id: "acct_blank", createdBy: "  ", access: { mode: "shared", grantCount: 0 } });
+    expect(toolFacts(list([mine, anon, blank]), null).waiting.map((c) => c.id)).toEqual(["acct_mine"]);
+    for (const personUid of [undefined, null, "", 7]) {
+      const facts = toolFacts(list([mine, anon, blank], { personUid }), null);
+      expect(facts.waiting).toEqual([]);
+      expect(facts.ids).toEqual(["acct_mine", "acct_anon", "acct_blank"]);
+    }
+    expect(toolFacts({ connections: [mine] }, null).waiting).toEqual([]);
+  });
+
+  it("keeps a teammate's connection usable once it was allowed from here", () => {
+    const json = list([connection({ id: "acct_theirs", createdBy: "prs_teammate", access: { mode: "shared", grantCount: 1 } })]);
+    expect(toolFacts(json, null).usable).toEqual([]);
+    const facts = toolFacts(json, recordGrant(null, "acct_theirs", "Linear", NOW));
+    expect(facts.usable.map((c) => c.id)).toEqual(["acct_theirs"]);
+    expect(facts.waiting).toEqual([]);
+  });
+
   it("marks nothing as new without a baseline", () => {
     const facts = toolFacts(list([connection(), connection({ id: "acct_p", access: { mode: "private", grantCount: 0 } })]), {});
     expect([...facts.usable, ...facts.waiting].some((c) => c.isNew)).toBe(false);
@@ -602,6 +640,26 @@ describe("connectionCardView: tools", () => {
     expect(view.waiting.map((row) => row.name)).toEqual(["App6", "App5", "App4", "App3"]);
     expect(view.moreWaiting).toBe("+3 more in HQ Integrations");
     expect(connectionCardView("tools", input({ tools: toolFacts(list(rows.slice(0, 4)), null) })).moreWaiting).toBeNull();
+  });
+
+  it("counts only the person's own waiting connections in +N more", () => {
+    const mine = Array.from({ length: 6 }, (_, i) => closed(`acct_mine_${i}`, `Mine${i}`, `2026-10-0${i + 1}T00:00:00.000Z`));
+    const theirs = Array.from({ length: 77 }, (_, i) => ({
+      ...closed(`acct_theirs_${i}`, `Gmail (Teammate ${i})`, "2026-10-09T00:00:00.000Z"),
+      createdBy: `prs_teammate_${i}`,
+    }));
+    const view = connectionCardView("tools", input({ tools: toolFacts(list([...theirs, ...mine]), null) }));
+    expect(view.waiting.map((row) => row.name)).toEqual(["Mine5", "Mine4", "Mine3", "Mine2"]);
+    expect(view.moreWaiting).toBe("+2 more in HQ Integrations");
+    // Four of the person's own and any number of a teammate's: nothing was left out.
+    const four = connectionCardView("tools", input({ tools: toolFacts(list([...theirs, ...mine.slice(0, 4)]), null) }));
+    expect(four.waiting).toHaveLength(4);
+    expect(four.moreWaiting).toBeNull();
+    // Only a teammate's connections: no rows and no count.
+    const none = connectionCardView("tools", input({ tools: toolFacts(list(theirs), null) }));
+    expect(none.waiting).toEqual([]);
+    expect(none.moreWaiting).toBeNull();
+    expect(none.state).toBe("offered");
   });
 
   it("moves an allowed connection from waiting to usable", () => {

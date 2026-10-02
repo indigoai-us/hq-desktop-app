@@ -323,7 +323,11 @@ export interface ToolConnection {
 export interface ToolFacts {
   /** Connections the bot can use. */
   usable: ToolConnection[];
-  /** Connected, but the bot may not use them until someone allows it. Newest first. */
+  /**
+   * Connected by the person looking at the card, but the bot may not use them
+   * until that person allows it. Newest first. A teammate's connection is
+   * never here: see {@link toolFacts}.
+   */
   waiting: ToolConnection[];
   /** Only owners and admins can add apps. */
   canConnect: boolean;
@@ -348,6 +352,14 @@ function connectionName(raw: Record<string, unknown>, slug: string): string {
  * because the list does not say who it is shared with. Anything else (a mode
  * this version does not know, a revoked or failing connection) is left out:
  * the card never claims a tool the bot may not be able to use.
+ *
+ * Only the person's own connections wait for a "Let the bot use it" press:
+ * the ones the list says they connected (`createdBy` is `viewer.personUid`).
+ * A teammate's mailbox is not this person's to hand to a bot, so a connection
+ * someone else made is not offered and not counted. When the list does not
+ * say who is looking, or who connected it, the connection is not offered
+ * either. This is stricter than `byViewer`, which gives the benefit of the
+ * doubt because it only decides whose name goes on a notice.
  */
 export function toolFacts(json: unknown, record: BotConnectionRecord | null | undefined): ToolFacts {
   const root = isRecord(json) ? json : null;
@@ -378,7 +390,9 @@ export function toolFacts(json: unknown, record: BotConnectionRecord | null | un
     };
     if (mode === "everyone" || mode === "legacy-open") usable.push({ ...connection, granted: false });
     else if (granted) usable.push(connection);
-    else if (mode === "private" || mode === "shared") waiting.push(connection);
+    else if ((mode === "private" || mode === "shared") && viewerUid !== "" && createdBy === viewerUid) {
+      waiting.push(connection);
+    }
   }
   waiting.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
   return { usable, waiting, canConnect, ids };
@@ -445,9 +459,9 @@ export interface ConnectionCardView {
   note: string | null;
   /** Tools: names of the connections the bot can use. */
   usable: string[];
-  /** Tools: connections the person can let the bot use, at most four. */
+  /** Tools: the person's own connections they can let the bot use, at most four. */
   waiting: ConnectionCardRow[];
-  /** Tools: "+N more in HQ Integrations" when rows were left out. */
+  /** Tools: "+N more in HQ Integrations" when rows of the person's own were left out. */
   moreWaiting: string | null;
 }
 
