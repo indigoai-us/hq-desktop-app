@@ -205,7 +205,7 @@
 }
 
 .cb-pill-dot.ready {
-  background: var(--v4-ok, #2e9e5b);
+  background: var(--t1);
 }
 
 .cb-pill-link {
@@ -333,9 +333,8 @@
 /* ── advanced ──────────────────────────────────────────────────────────── */
 
 .cb-advanced {
-  border: 1px solid var(--v4-hairline);
-  border-radius: 8px;
-  padding: 0 12px;
+  border-top: 1px solid var(--v4-hairline);
+  padding: 0;
 }
 
 .cb-advanced > summary {

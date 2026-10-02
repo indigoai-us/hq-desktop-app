@@ -137,6 +137,17 @@
     font-size: 13px;
     line-height: 17px;
   }
+  /* The shared kind chip reads as plain meta text inside the preview. */
+  .preview-name-row :global(.bot-kind-chip) {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--t3);
+    font-family: var(--font-ui);
+    font-size: 13px;
+    letter-spacing: 0;
+    text-transform: none;
+  }
   .preview-title {
     color: var(--t2);
     font-size: 13px;
