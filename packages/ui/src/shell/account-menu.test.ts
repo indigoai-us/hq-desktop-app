@@ -105,4 +105,16 @@ describe("account menu (US-010)", () => {
     });
     expect(ownLiveWork(snapshot, "prs_away").live).toBe(false);
   });
+
+  it("names the company open in the main pane over the first online company (QA-073)", () => {
+    const online = { status: "online" as const, actorType: "human" as const, at: "" };
+    const snapshot = new Map([["co_golden", new Map([["prs_me", online]])]]);
+    const labels = { co_golden: "Golden Thread", co_hpo: "hpo" };
+    expect(ownLiveWork(snapshot, "prs_me", labels, "co_hpo")).toEqual({
+      live: true,
+      work: "Working in hpo",
+    });
+    expect(ownLiveWork(snapshot, "prs_me", labels, null).work).toBe("Working in Golden Thread");
+    expect(ownLiveWork(snapshot, "prs_away", labels, "co_hpo")).toEqual({ live: false, work: "" });
+  });
 });

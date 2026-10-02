@@ -80,7 +80,10 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-async function mountShell(onsignout?: () => void): Promise<void> {
+async function mountShell(
+  onsignout?: () => void,
+  companies: Workspace[] = [company()],
+): Promise<void> {
   const store = new PresenceStore();
   store.applyMqtt("hq/co_indigo/presence/prs_test", {
     status: "online",
@@ -97,7 +100,7 @@ async function mountShell(onsignout?: () => void): Promise<void> {
       adapter: webAdapter(),
       sidebarApi: createFixtureChatSidebarApi(),
       notificationsApi: createEmptyNotificationsApi(),
-      companies: [company()],
+      companies,
       self: {
         uid: "prs_test",
         displayName: "Stefan Johnson",
@@ -118,6 +121,21 @@ async function settle(): Promise<void> {
 }
 
 describe("DesktopApp account menu (US-010)", () => {
+  it("names the company open in the main pane, not the first online company (QA-073)", async () => {
+    const hpo: Workspace = { ...company(), slug: "hpo", displayName: "HPO", cloudUid: "co_hpo" };
+    await mountShell(undefined, [company(), hpo]);
+    const tile = host.querySelector<HTMLButtonElement>('[data-testid="rail-company"][aria-label="HPO"]');
+    expect(tile).not.toBeNull();
+    tile!.click();
+    await settle();
+
+    host.querySelector<HTMLButtonElement>('[data-testid="rail-you"]')?.click();
+    await settle();
+    const menu = host.querySelector('[data-testid="account-menu"]');
+    expect(menu?.textContent).toContain("Working in HPO");
+    expect(menu?.textContent).not.toContain("Working in Indigo");
+  });
+
   it("shows a live dot, hides the sidepane account footer, and opens cached pages", async () => {
     await mountShell();
     expect(host.querySelector('[data-testid="chat-user-card"]')).toBeNull();

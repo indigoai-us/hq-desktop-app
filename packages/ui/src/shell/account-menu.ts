@@ -169,20 +169,31 @@ export interface OwnLiveWork {
 }
 
 /**
- * The signed-in person's live dot and hover line, from a PresenceStore
- * snapshot only. The first company where they are online wins.
+ * The signed-in person's live dot and hover line. The dot comes from a
+ * PresenceStore snapshot. "Working in" names the company shown in the main
+ * pane (`activeCompanyUid`) whenever one is open, so every company change
+ * (rail, More companies, Connections link, palette, deep link) updates it.
+ * With no company open it falls back to the first company where the person
+ * is online.
  */
 export function ownLiveWork(
   snapshot: PresenceSnapshot,
   selfUid: string,
   companyLabels: Readonly<Record<string, string>> = {},
+  activeCompanyUid: string | null = null,
 ): OwnLiveWork {
   const uid = selfUid.trim();
   if (!uid) return { live: false, work: "" };
+  let live = false;
+  let firstOnline: string | null = null;
   for (const [companyUid, actors] of snapshot) {
     if (actors.get(uid)?.status !== "online") continue;
-    const name = companyLabels[companyUid]?.trim() || "a company";
-    return { live: true, work: `Working in ${name}` };
+    live = true;
+    firstOnline ??= companyUid;
   }
-  return { live: false, work: "" };
+  if (!live) return { live: false, work: "" };
+  const active = activeCompanyUid?.trim() || null;
+  const companyUid = active ?? firstOnline;
+  const name = (companyUid && companyLabels[companyUid]?.trim()) || "a company";
+  return { live: true, work: `Working in ${name}` };
 }

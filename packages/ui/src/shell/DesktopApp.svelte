@@ -3967,7 +3967,7 @@
     selectedRow?.members?.find((m) => m.personUid.startsWith("agt_"))
       ?.personUid ??
       provisioning.agentUid ??
-      null,
+      tenantCompanyId,
   );
 
   $effect(() => {
@@ -8728,6 +8728,7 @@
       presenceSnapshot(),
       self?.uid ?? "",
       Object.fromEntries(railCompanyRoster.map((company) => [company.uid, company.label])),
+      tenantCompanyId,
     ),
   );
 
