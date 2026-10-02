@@ -3637,11 +3637,24 @@ mod tests {
             fs::set_permissions(&pre_commit, fs::Permissions::from_mode(0o755)).unwrap();
         }
         let global = home.path().join("gitconfig");
-        fs::write(
-            &global,
-            format!("[core]\n\thooksPath = {}\n", hooks.display()),
-        )
-        .unwrap();
+        // Git config treats a backslash as an escape, so a raw Windows path
+        // (C:\Users\...) makes the whole file unparseable. Other tests in this
+        // module call git without the serial lock and inherit
+        // GIT_CONFIG_GLOBAL while it is set here, so an invalid file fails them
+        // with "bad config line 2". Git for Windows accepts forward slashes.
+        let hooks_path = hooks.display().to_string().replace('\\', "/");
+        fs::write(&global, format!("[core]\n\thooksPath = {hooks_path}\n")).unwrap();
+        let parsed = Command::new("git")
+            .args(["config", "--file"])
+            .arg(&global)
+            .args(["--get", "core.hooksPath"])
+            .output()
+            .unwrap();
+        assert!(
+            parsed.status.success(),
+            "the stand-in global config must parse on every platform: {}",
+            String::from_utf8_lossy(&parsed.stderr)
+        );
 
         let previous = std::env::var_os("GIT_CONFIG_GLOBAL");
         std::env::set_var("GIT_CONFIG_GLOBAL", &global);

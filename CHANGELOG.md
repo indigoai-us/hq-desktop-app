@@ -7,6 +7,8 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+- The git mirror commits deletions from readable roots in the same sync pass; verified scope-quarantine moves remain preserved.
+
 - Log in with Microsoft now works for work and school Microsoft accounts, not only personal Microsoft accounts.
 - Daemon sync controls explain paused, disabled, and stopped states. Resume also re-enables sync for machines migrated from the older daemon setting. Instant Sync changes reach an existing daemon and require HQ CLI 5.312.0 or later. Sync actions wait briefly for host selection at launch, then use the legacy or daemon path. Company-specific Sync Now no longer starts a sync across every company when the daemon owns sync.
 
@@ -151,8 +153,6 @@ The release moves it under the version it ships in.
 - First-time setup shows when it is checking for AI tools instead of waiting silently.
 
 ## [0.10.364] — 2026-09-30
-
-- The git mirror commits deletions from readable roots in the same sync pass; verified scope-quarantine moves remain preserved.
 
 - The desktop app no longer checks which AI tools are installed every time it opens; it checks when you create a bot or run setup.
 
