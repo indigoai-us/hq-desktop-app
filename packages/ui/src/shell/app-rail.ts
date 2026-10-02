@@ -9,6 +9,7 @@
  */
 
 import type { NavigationDestination } from "./navigation-history.js";
+import { companyRowForPage } from "./company-pane.js";
 
 /** Pinned company tiles beyond this count live in More companies (US-004). */
 export const MAX_PINNED_COMPANY_TILES = 6;
@@ -216,7 +217,11 @@ export function activeRailItemId(state: RailSelectionState): RailItemId | null {
       return state.settingsSection === "profile" ? "you" : null;
     case "extra": {
       const placeholder = railPlaceholderForPage(state.extraPageId);
-      return placeholder ? placeholder.id : null;
+      if (placeholder) return placeholder.id;
+      // US-007: company sidepane pages keep their company tile selected.
+      return state.tenantCompanyId && companyRowForPage(state.extraPageId)
+        ? `company:${state.tenantCompanyId}`
+        : null;
     }
     case "conversation":
     case "notifications":

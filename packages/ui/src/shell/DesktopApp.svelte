@@ -42,6 +42,12 @@
   import TelemetryRailHost from "./TelemetryRailHost.svelte";
   import Sidepane from "./Sidepane.svelte";
   import { SidepaneScrollMemory, sidepaneModelKey } from "./sidepane-models.js";
+  import CompanySidepane from "./CompanySidepane.svelte";
+  import {
+    companyPagePlaceholderForPage,
+    companyRowDestination,
+    companyRowForPage,
+  } from "./company-pane.js";
   import {
     RAIL_SHORTCUT_COUNT,
     activeRailItemId,
@@ -6593,7 +6599,10 @@
       };
     }
     if (destination.kind === "extra") {
-      if (railPlaceholderForPage(destination.page)) {
+      if (
+        railPlaceholderForPage(destination.page) ||
+        companyPagePlaceholderForPage(destination.page)
+      ) {
         return { status: "ready", destination };
       }
       if (!extraPages?.[destination.page]) {
@@ -8313,8 +8322,32 @@
     activeRailItemId({ view, tenantCompanyId, extraPageId, settingsSection }),
   );
   const railPlaceholder = $derived(
-    view === "extra" ? railPlaceholderForPage(extraPageId) : null,
+    view === "extra"
+      ? (railPlaceholderForPage(extraPageId) ?? companyPagePlaceholderForPage(extraPageId))
+      : null,
   );
+
+  // US-007: a company tile opens the company sidepane; Home returns to chat.
+  let companyPaneOpen = $state(false);
+  const companyPaneCompany = $derived.by(() => {
+    if (!companyPaneOpen || !tenantCompanyId) return null;
+    return (
+      railCompanyRoster.find((company) => company.uid === tenantCompanyId) ?? {
+        uid: tenantCompanyId,
+        label: tenantCompanyId,
+        slug: null,
+        iconUrl: null,
+      }
+    );
+  });
+  const companyPaneSelectedId = $derived(
+    view === "extra" ? companyRowForPage(extraPageId) : null,
+  );
+
+  function selectCompanyPaneRow(rowId: string): void {
+    if (!tenantCompanyId) return;
+    void navigate(companyRowDestination(rowId, tenantCompanyId));
+  }
 
   function placeMoreCompanies(): void {
     const button = document.querySelector("[data-testid='rail-more-companies']");
@@ -8338,6 +8371,7 @@
     const nextRecent = rememberCompanyId(companyRecentIds, company.uid);
     companyRecentIds = nextRecent;
     writeSettingsPrefs({ companyRecentIds: nextRecent });
+    companyPaneOpen = true;
     changeTenantCompany(company.uid);
     void navigate({ kind: "messages" });
     moreCompaniesOpen = false;
@@ -8356,6 +8390,7 @@
       return;
     }
     moreCompaniesOpen = false;
+    companyPaneOpen = item.kind === "company";
     if (item.kind === "home") changeTenantCompany(null);
     else if (item.kind === "company") {
       const nextRecent = rememberCompanyId(companyRecentIds, item.companyUid);
@@ -9221,6 +9256,17 @@
            loading and the #setup fallback, so unmounting it leaves the phone
            with nothing selected. -->
       {#if !sidebarCollapsed || phoneViewport}
+        {#if companyPaneCompany}
+          <CompanySidepane
+            company={companyPaneCompany}
+            selectedId={companyPaneSelectedId}
+            onselect={selectCompanyPaneRow}
+            memory={sidepaneScrollMemory}
+            companyApi={adapter.company ?? null}
+          />
+        {/if}
+        <!-- Chat stays mounted under the company pane: it owns roster loading. -->
+        <div class="chat-pane-slot" style:display={companyPaneCompany ? "none" : "contents"}>
         <Sidepane
           modelKey={sidepaneModelKey({ tenantCompanyId })}
           scrollSelector=".chat-scroll"
@@ -9317,6 +9363,7 @@
         </ChatSidebar>
         {/key}
         </Sidepane>
+        </div>
         {#if !phoneViewport}<SidebarResizeHandle bind:width={sidebarWidth} />{/if}
       {/if}
 
