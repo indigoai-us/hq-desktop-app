@@ -1,7 +1,8 @@
 <script lang="ts">
   /**
-   * 340 px bot profile. Atlas inspector grammar: mono section labels, hairline
-   * groups, background selection only. Paints from the cached snapshot.
+   * 340 px bot profile. Follows the Messages profile pane rhythm
+   * (MemberProfilePanel): 12px 14px header with a hairline, 13px text,
+   * sentence-case labels, a 20px name. Paints from the cached snapshot.
    *
    * This pane owns every bot control: UID with Copy, runtime chip, scheduled
    * jobs, 30-day usage, Pause / Resume, Open session, Edit (each section's
@@ -88,10 +89,8 @@
   data-live={snapshot?.live ? "true" : "false"}
 >
   <header class="phead">
-    <span class="mark" aria-hidden="true">⌁</span>
-    <b>{snapshot?.name ?? "Profile"}</b>
-    <span>Profile</span>
-    <button type="button" class="icon" data-testid="bot-profile-close" aria-label="Close profile" onclick={() => onclose?.()}>✕</button>
+    <span class="pp-title">Profile</span>
+    <button type="button" class="icon" data-testid="bot-profile-close" aria-label="Close profile" onclick={() => onclose?.()}>×</button>
   </header>
   {#if phase === "shimmer" || !snapshot}
     <div class="body" data-testid="bot-profile-shimmer" aria-busy="true">
@@ -103,12 +102,12 @@
   {:else}
     <div class="body">
       <div class="top">
-        <span class="mark lg" aria-hidden="true">⌁{#if snapshot.live}<i class="ld"></i>{/if}</span>
+        <span class="mark lg" aria-hidden="true">{snapshot.name.slice(0, 1).toUpperCase()}{#if snapshot.live}<i class="ld"></i>{/if}</span>
         <div>
           <div class="nm">{snapshot.name}</div>
           <div class="hd">{snapshot.handle} · {snapshot.email}</div>
           <div class="hd">
-            <b>bot</b> · owned by {snapshot.owner}
+            Bot · owned by {snapshot.owner}
             {#if runtimeKind}<span class="chip rt" data-testid="bot-profile-runtime-chip">{runtimeKind === "cloud" ? "Cloud" : "Local"}</span>{/if}
           </div>
         </div>
@@ -120,8 +119,8 @@
           <button type="button" class="link" data-testid="bot-profile-copy-uid" onclick={() => void copyUid()}>{copied ? "Copied" : "Copy"}</button>
         </div>
       {/if}
+      <button type="button" class="btn primary" data-testid="bot-profile-message" onclick={() => onmessage?.()}>Message</button>
       <div class="act">
-        <button type="button" class="btn primary" data-testid="bot-profile-message" onclick={() => onmessage?.()}>Message</button>
         <button
           type="button"
           class="btn"
@@ -130,7 +129,7 @@
           onclick={() => (paused ? onresume?.() : onpause?.())}
         >{paused ? "Resume" : "Pause"}</button>
         <button type="button" class="btn" data-testid="bot-profile-session" onclick={() => onsession?.()}>Open session</button>
-        <button type="button" class="btn" data-testid="bot-profile-edit" onclick={() => onedit?.("identity")}>Edit bot</button>
+        <button type="button" class="btn" data-testid="bot-profile-edit" onclick={() => onedit?.("identity")}>Edit</button>
         <button type="button" class="btn" data-testid="bot-profile-stop" disabled={busy} onclick={() => onstop?.()}>Stop</button>
       </div>
       {#if actionError}
@@ -225,102 +224,122 @@
     min-height: 0;
     height: 100%;
     display: grid;
-    grid-template-rows: 52px minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
     background: var(--v4-secondary-sidebar, var(--side-bg));
     color: var(--v4-text-2);
-    font-size: var(--type-metadata, 12px);
+    font: 400 13px/1.45 var(--font-ui, var(--font-sans));
   }
   .phead {
-    height: 52px;
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 0 14px 0 18px;
+    justify-content: space-between;
+    padding: 12px 14px;
     border-bottom: 1px solid var(--v4-rowline, var(--line));
-    color: var(--v4-text-3);
   }
-  .phead b { font-weight: 600; color: var(--v4-text-1); font-size: var(--type-body, 14px); }
+  .pp-title { color: var(--v4-text-1); font-size: 13px; font-weight: 500; }
   .icon {
-    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     width: 24px;
     height: 24px;
+    padding: 0;
     border: 0;
+    border-radius: 6px;
     background: transparent;
-    color: var(--v4-text-3);
+    color: var(--v4-text-2);
+    font-size: 13px;
     cursor: pointer;
   }
-  .body { min-height: 0; overflow: auto; padding: 14px 18px 20px; display: flex; flex-direction: column; gap: 14px; }
-  .top { display: flex; gap: 12px; align-items: flex-start; }
+  .icon:hover { background: var(--hover, var(--v4-hover)); color: var(--v4-text-1); }
+  .body { min-height: 0; overflow: auto; padding: 24px 20px; display: flex; flex-direction: column; gap: 16px; }
+  .top { display: flex; gap: 12px; align-items: center; }
   .mark {
     width: 20px; height: 20px; border-radius: 6px; display: grid; place-items: center;
-    background: var(--v4-control-bg); color: var(--v4-text-1); font-size: 11px; flex: none;
+    background: var(--v4-control-bg); color: var(--v4-text-1); font-size: 13px; flex: none;
   }
-  .mark.lg { width: 44px; height: 44px; border-radius: 12px; font-size: 18px; position: relative; }
+  .mark.lg { width: 44px; height: 44px; border-radius: 10px; position: relative; }
   .ld {
     position: absolute; right: -2px; bottom: -2px; width: 10px; height: 10px; border-radius: 50%;
     background: var(--v4-ok); border: 2px solid var(--v4-secondary-sidebar, var(--side-bg));
   }
-  .nm { font-size: var(--type-section, 15px); font-weight: 600; color: var(--v4-text-1); }
-  .hd { color: var(--v4-text-3); margin-top: 3px; }
-  .hd b { font-weight: 500; color: var(--v4-text-2); }
-  .act { display: flex; gap: 4px; flex-wrap: wrap; }
+  .nm { font-size: 20px; line-height: 1.25; font-weight: 500; color: var(--v4-text-1); }
+  .hd { color: var(--v4-text-3); margin-top: 2px; }
+  .act { display: flex; gap: 6px; }
   .btn {
-    border: 1px solid var(--v4-control-border, var(--line));
-    background: var(--v4-control-faint, transparent);
+    flex: 1 1 0;
+    min-width: 0;
+    height: 28px;
+    padding: 0 8px;
+    border: 1px solid var(--v4-control-border, var(--line2));
+    background: transparent;
     color: var(--v4-text-1);
     border-radius: var(--v4-radius-button, 6px);
-    padding: 4px 8px;
     font: inherit;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
     cursor: pointer;
   }
-  .btn.primary { background: var(--v4-primary-bg); color: var(--v4-primary-fg); border-color: transparent; }
-  .g { border-top: 1px solid var(--v4-rowline, var(--line)); padding-top: 10px; }
+  .btn:hover:not(:disabled) { background: var(--hover, var(--v4-hover)); }
+  .btn.primary {
+    flex: none;
+    width: 100%;
+    height: 32px;
+    border-radius: 8px;
+    border-color: transparent;
+    background: var(--v4-primary-bg, var(--t1));
+    color: var(--v4-primary-fg, var(--v4-bg));
+    font-weight: 500;
+  }
+  .btn.primary:hover { background: var(--v4-primary-bg, var(--t1)); filter: brightness(1.08); }
+  .g { border-top: 1px solid var(--v4-rowline, var(--line)); padding-top: 12px; }
   .k {
-    font-family: var(--font-mono, "Geist Mono", monospace);
-    font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--v4-text-3);
+    color: var(--v4-text-2);
+    font-weight: 500;
     display: flex; align-items: center; gap: 6px; margin-bottom: 6px;
   }
-  .count, .link {
-    margin-left: auto; letter-spacing: 0; text-transform: none;
-    font-family: var(--font-sans, Geist, sans-serif); font-size: 11px; font-weight: 400;
+  .count { color: var(--v4-text-3); font-weight: 400; font-variant-numeric: tabular-nums; }
+  .link {
+    margin-left: auto; padding: 0; border: 0; background: none;
+    color: var(--v4-text-3); font: inherit; font-weight: 400; cursor: pointer;
   }
-  .link { border: 0; background: none; color: var(--v4-text-3); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
-  .now { color: var(--v4-text-1); font-size: var(--type-secondary, 13px); line-height: 1.45; }
-  .st { display: flex; gap: 6px; color: var(--v4-text-3); font-size: var(--type-metadata, 12px); margin-bottom: 3px; }
-  .st.live { color: var(--v4-ok); font-weight: 500; }
-  .m { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 3px; color: var(--v4-text-3); font-size: var(--type-metadata, 12px); }
-  .kv { display: grid; grid-template-columns: 76px 1fr; gap: 5px 10px; color: var(--v4-text-1); }
+  .link:hover { color: var(--v4-text-1); }
+  .now { color: var(--v4-text-1); }
+  .st { display: flex; gap: 6px; align-items: center; color: var(--v4-text-2); margin-bottom: 2px; }
+  .st.live::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--v4-ok); }
+  .m { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 2px; color: var(--v4-text-3); }
+  .kv { display: grid; grid-template-columns: 96px 1fr; gap: 6px 12px; color: var(--v4-text-1); }
   .kv b { font-weight: 400; color: var(--v4-text-3); }
-  .co { display: flex; align-items: center; gap: 8px; padding: 5px 0; color: var(--v4-text-1); }
+  .co { display: flex; align-items: center; gap: 8px; min-height: 28px; color: var(--v4-text-1); }
   .tile {
     width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center;
     background: var(--v4-control-bg); font-size: 9px;
   }
   .r { margin-left: auto; color: var(--v4-text-3); }
   .chips { display: flex; flex-wrap: wrap; gap: 4px; }
-  .chip { padding: 2px 7px; border-radius: var(--v4-radius-pill, 999px); background: var(--v4-control-bg); color: var(--v4-text-2); font-size: 11px; }
-  .run { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: start; padding: 5px 0; border-bottom: 1px solid var(--v4-rowline, var(--line)); color: var(--v4-text-1); }
+  .chip { padding: 1px 7px; border-radius: var(--v4-radius-pill, 999px); background: var(--v4-control-bg); color: var(--v4-text-2); }
+  .run { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: start; padding: 6px 0; border-bottom: 1px solid var(--v4-rowline, var(--line)); color: var(--v4-text-1); }
   .run:last-child { border-bottom: 0; }
-  .mk { width: 6px; height: 6px; border-radius: 50%; background: var(--v4-text-3); margin-top: 6px; }
+  .mk { width: 6px; height: 6px; border-radius: 50%; background: var(--v4-text-3); margin-top: 7px; }
   .mk.live { background: var(--v4-ok); }
   .mk.err { background: var(--v4-error); }
   .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .meta, .trail { font-family: var(--font-mono, "Geist Mono", monospace); font-size: 10px; color: var(--v4-text-3); }
-  .meta { display: block; margin-top: 2px; }
+  .meta, .trail { color: var(--v4-text-3); font-variant-numeric: tabular-nums; }
+  .meta { display: block; }
   .trail.err { color: var(--v4-error); }
-  .va { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; font-family: var(--font-mono, "Geist Mono", monospace); font-size: 11px; }
-  .va .d { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--v4-text-3); }
+  .va { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; }
+  .va .d { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--v4-text-2); font-family: var(--font-mono, "Geist Mono", monospace); }
   .va .w { color: var(--v4-text-1); }
-  .uid { display: flex; align-items: center; gap: 8px; font-family: var(--font-mono, "Geist Mono", monospace); font-size: 11px; color: var(--v4-text-3); }
-  .uid .k0 { font-size: 10px; letter-spacing: 0.1em; }
-  .uid .v { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--v4-text-2); }
-  .uid .link { margin-left: auto; }
+  .uid { display: flex; align-items: center; gap: 8px; color: var(--v4-text-3); }
+  .uid .k0 { flex: none; }
+  .uid .v { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--v4-text-2); font-family: var(--font-mono, "Geist Mono", monospace); }
   .chip.rt { margin-left: 6px; }
   .btn:disabled { opacity: 0.5; cursor: default; }
-  .err { margin: 0; color: var(--v4-error); font-size: var(--type-metadata, 12px); }
+  .err { margin: 0; color: var(--v4-error); }
   .spark { display: flex; align-items: flex-end; gap: 2px; height: 28px; margin-top: 8px; }
   .spark i { flex: 1; min-width: 2px; border-radius: 1px; background: var(--v4-control-bg); }
-  .shimmer { border-radius: 6px; background: var(--v4-control-faint, rgba(255,255,255,0.06)); }
+  .shimmer { border-radius: 6px; background: var(--v4-control-faint, var(--line)); }
   .shimmer.id { height: 44px; }
   .shimmer.row { height: 14px; }
   .shimmer.block { height: 72px; }
