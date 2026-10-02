@@ -3,6 +3,7 @@ import {
   POST_READY_ACTIONS,
   createPostReadyActionTelemetry,
   markPostReadyActionReady,
+  type PostReadyActionEvent,
   type PostReadyActionStorage,
 } from './post-ready-action-telemetry';
 
@@ -14,7 +15,7 @@ class MemoryStorage implements PostReadyActionStorage {
 }
 
 function makeTracker(storage = new MemoryStorage(), flagEnabled = true) {
-  const emit = vi.fn(async () => {});
+  const emit = vi.fn<(event: PostReadyActionEvent) => Promise<void>>(async () => {});
   const tracker = createPostReadyActionTelemetry({
     storage,
     isFlagEnabled: async () => flagEnabled,
