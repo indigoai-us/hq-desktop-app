@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, tick, unmount } from "svelte";
 
 import AtlasLandingHost from "./AtlasLandingHost.svelte";
+import { loadAtlas } from "./atlas-lazy.js";
 import { createAtlasCache } from "../atlas/atlas-cache.js";
 import { smokeAtlasGraph } from "../atlas/atlas-model.js";
 
@@ -14,6 +15,9 @@ afterEach(() => {
 });
 
 async function settle(target: HTMLElement): Promise<void> {
+  // The Atlas chunk is a dynamic import; under a cold transform it can take
+  // longer than the macrotask loop below, so wait for the module first.
+  await loadAtlas();
   for (let i = 0; i < 50; i += 1) {
     await new Promise((resolve) => setTimeout(resolve, 0));
     await tick();

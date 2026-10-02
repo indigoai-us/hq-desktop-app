@@ -146,13 +146,13 @@ describe("DesktopApp app rail (console-rail US-003)", () => {
     expect(host.querySelector('[data-testid="meetings-dek"]')).not.toBeNull();
   });
 
-  it("opens a placeholder that names the story for personal pages not built yet", async () => {
+  it("opens the Outpost page through its lazy host instead of the placeholder", async () => {
     await mountShell();
     click("rail-outpost");
     await settle();
-    const placeholder = host.querySelector('[data-testid="rail-placeholder"]');
-    expect(placeholder?.getAttribute("data-story")).toBe("US-034");
-    expect(placeholder?.textContent).toContain("Built in US-034");
+    // US-034 replaced the placeholder; US-039 points this test at the real host.
+    expect(host.querySelector('[data-testid="outpost-rail-host"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="rail-placeholder"]')).toBeNull();
     expect(current()).toBe("outpost");
   });
 

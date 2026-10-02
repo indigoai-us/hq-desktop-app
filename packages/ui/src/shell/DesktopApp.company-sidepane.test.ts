@@ -143,8 +143,10 @@ describe("DesktopApp company sidepane (console-rail US-007)", () => {
 
     host.querySelector<HTMLButtonElement>('[data-row-id="workers"]')!.click();
     await settle();
-    const placeholder = host.querySelector('[data-testid="rail-placeholder"]');
-    expect(placeholder?.querySelector("h1")?.textContent).toBe("Workers");
+    // US-028 Brain pages replaced the placeholder; the lazy door paints its
+    // skeleton with the row title in the first frame.
+    const skeleton = host.querySelector('[data-testid="brain-door-skeleton"]');
+    expect(skeleton?.querySelector("h1")?.textContent).toBe("Workers");
     expect(host.querySelector('[data-row-id="workers"]')?.getAttribute("aria-current")).toBe("page");
     expect(
       host.querySelector('[data-testid="rail-company"]')?.getAttribute("aria-current"),

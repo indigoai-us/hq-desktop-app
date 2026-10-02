@@ -92,9 +92,10 @@ describe("DesktopApp settings on web", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     await tick();
 
-    const placeholder = host.querySelector('[data-testid="rail-placeholder"]');
-    expect(placeholder?.getAttribute("data-story")).toBe("US-035");
-    expect(placeholder?.textContent).toContain("Settings");
+    // US-035 replaced the placeholder with the account host.
+    const account = host.querySelector('[data-testid="account-host"]');
+    expect(account?.getAttribute("data-page")).toBe("settings");
+    expect(host.querySelector('[data-testid="rail-placeholder"]')).toBeNull();
     expect(host.querySelector('[data-testid="settings-host"]')).toBeNull();
   });
 
