@@ -491,9 +491,30 @@
   overflow: hidden;
 }
 
+.new-bot-takeover-stage {
+  grid-template-rows: minmax(0, 1fr);
+}
+
+/* The card is content-box, so its padding and border come off the available height. */
 .new-bot-takeover-card {
-  max-height: 100%;
+  --new-bot-card-pad: clamp(30px, 7vw, 42px);
+  padding: var(--new-bot-card-pad);
+  max-height: calc(100% - 2 * var(--new-bot-card-pad) - 2px);
   overflow-y: auto;
+}
+
+@media (max-height: 780px) {
+  .new-bot-takeover-stage {
+    padding-block: 14px;
+  }
+
+  .new-bot-takeover-card {
+    --new-bot-card-pad: 26px;
+  }
+
+  .new-bot-company {
+    min-height: 46px;
+  }
 }
 
 .new-bot-takeover-card:has(.new-bot-create) {
