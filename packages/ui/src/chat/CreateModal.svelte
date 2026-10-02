@@ -177,6 +177,12 @@
     onrequestaitools?: () => void;
     /** Workers a bot can be created from (the flow offers company workers only; none → blank bot only). */
     botWorkers?: readonly LocalBotWorkerOption[] | null;
+    /**
+     * Open the six-step New agent sheet (Runtime through Verify) instead of
+     * the three-step wizard. Off by default so hosts that still walk the
+     * wizard keep that path. The console rail turns this on.
+     */
+    agentStepper?: boolean;
     /** Names the user's local bots already use (availability check). */
     existingBotNames?: readonly string[] | null;
     /** The owner's companies (slugs) a Local company bot can belong to. */
@@ -230,6 +236,7 @@
     onassistedinstall,
     onrequestaitools,
     botWorkers = null,
+    agentStepper = false,
     existingBotNames = null,
     botCompanies = null,
     botSignIn = null,
@@ -2533,6 +2540,22 @@
           </button>
         {/if}
       </div>
+    {:else if step === "bot" && agentStepper}
+      {#await import("../agents/NewAgentStepper.svelte")}
+        <div class="nas-skel" data-testid="new-agent-stepper-pending" aria-hidden="true"></div>
+      {:then mod}
+        <mod.default
+          companyLabel={scopeCompanies.find((company) => company.companyUid === activeScope)?.label ?? "Personal"}
+          ownerLabel={self?.displayName ?? "You"}
+          companies={(agentCompanies ?? []).map((company) => ({ id: company.companyUid, label: company.label }))}
+          existingNames={existingBotNames ?? []}
+          instantProbe
+          oncancel={() => onclose()}
+          oncreate={canCreateLocalBot ? submitLocalBot : null}
+          onCloudCreate={canCreateCloudBot ? async (companyUid, cloudDraft) => { await newAgentFor(companyUid, cloudDraft); } : null}
+          ondone={() => onclose()}
+        />
+      {/await}
     {:else if step === "bot"}
       <CreateBotFlow
         {botRuntimeReady}

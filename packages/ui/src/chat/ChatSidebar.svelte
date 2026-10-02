@@ -311,6 +311,8 @@
     /** Ask the host to (re-)probe `detect_ai_tools` lazily when CreateModal opens. */
     onrequestaitools?: () => void;
     botWorkers?: readonly LocalBotWorkerOption[] | null;
+    /** Six-step New agent sheet inside the create modal. */
+    agentStepper?: boolean;
     /** New bot flow extras (see CreateModal): taken names, sign-in, avatars. */
     existingBotNames?: readonly string[] | null;
     botSignIn?: RuntimeSignInApi | null;
@@ -445,6 +447,7 @@
     loadClaudeProviderFlag = null,
     loadCloudProvisionOptions = null,
     oncreatebot = null,
+    agentStepper = false,
     botRuntimeReady = null,
     botRuntimeStatus = null,
     onrecheckruntimes = null,
@@ -3813,6 +3816,7 @@
       {onassistedinstall}
       {onrequestaitools}
       {botWorkers}
+      {agentStepper}
       {existingBotNames}
       {botCompanies}
       {botSignIn}
