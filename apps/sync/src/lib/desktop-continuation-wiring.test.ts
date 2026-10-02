@@ -196,6 +196,10 @@ describe('the first-run wizard never opens the browser on its own', () => {
     expect(record).toContain('onboardingTelemetry.recordFirstLaunch()');
     expect(record).toContain('recordReceipt(deps, launchReceipt(deps))');
     expect(record).toContain('flushReceipts(deps)');
+    expect(record).toContain('onboardingTelemetry.setInstallAttemptId(context.installAttemptId)');
+    expect(record.indexOf('setInstallAttemptId(')).toBeLessThan(
+      record.lastIndexOf('onboardingTelemetry.recordFirstLaunch()'),
+    );
   });
 });
 
