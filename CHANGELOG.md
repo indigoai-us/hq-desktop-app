@@ -9,6 +9,62 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 - Log in with Microsoft now works for work and school Microsoft accounts, not only personal Microsoft accounts.
 
+- Fixes the sidebar order shipped in 0.10.373 and 0.10.374, which listed
+  conversations by unread count and then by name within each day instead of
+  by time. The order and the day headings now both follow the latest message
+  a person typed, where the server reports it: a channel that only bots
+  posted in today is listed under the day a person last typed in it. A
+  channel or group conversation the server reports as having no typed
+  message is placed by when it was created, so a channel made today appears
+  under Today. A direct message with no typed message yet is placed by its
+  latest activity for now, so a new teammate's or a bot's first direct
+  message appears under Today. A conversation the server has not classified
+  yet is still placed by its latest activity, bot and session activity
+  included, until a one-time server fill-in has run.
+
+- Channels and direct messages that hide bot and session activity now ask the
+  server for the filtered history. When a conversation opens on a long run of
+  hidden activity, the app continues loading earlier history automatically,
+  up to a limit of eight requests, and then offers "Look further back",
+  instead of showing an empty pane with a "load earlier" button. With an
+  older server the app filters on its side, as before.
+
+- On refresh, HQ Desktop can show the existing plan-limit notice when a free company is nearing or over a resource limit.
+
+- Desktop now uses the current cloud company name for workspace rows and
+  home-channel labels before falling back to cached names or slugs.
+
+## [0.10.374] — 2026-10-02
+
+- On a fresh install, HQ now shows its logo and "Starting HQ..." right away instead of a blank, frozen window while it starts up.
+- Sign-in and workspace-selection receipts reach HQ again. Since late September the app could not read the `email_verified` claim on Cognito access tokens (it arrives as text, not true/false), so every receipt was held on disk instead of sent. Receipts already held on your machine are sent on the next signed-in start.
+- A first-ever sign-in's receipt is no longer discarded when HQ has not created the person record yet. The app keeps it and resends it once the record exists (HQ stops accepting it after 30 days).
+- First run now sets up your company. After the install finishes, someone
+  with no company names one (with an optional website and teammate invites),
+  then picks Starter or Workforce. Workforce opens checkout in your browser
+  and HQ picks up when you come back. Someone who was invited can join that
+  company instead.
+- Sync health no longer counts runner diagnostics as failed syncs. The runner
+  pin now starts at hq-cloud 6.18.31 and accepts later 6.18 patch releases.
+- Automatic Core updates wait for sync to finish after 10 deferrals or 6 hours.
+  The wait ends after 15 minutes, and a failed update backs off before retrying.
+  Updates also report when Git 2.19.0 or newer is required.
+- Desktop sign-in can open the website first to link the new account to the native app; if that check fails, it opens Cognito directly as before.
+- Library Back now leaves internal Library tab history and returns to the prior app screen.
+
+- Setup diagnostics now identify the resolved CLI copy and settings PATH source using path-free values.
+
+## [0.10.373] — 2026-10-01
+
+- Setting up a coding tool after onboarding is smoother. You can choose
+  Claude Code or Codex, and one button ("Install Claude" or "Install Codex")
+  installs it and opens its sign-in page, with no second Sign in click.
+  HQ notices by itself when a coding tool is already signed in, or when you
+  finish signing in in your browser, and shows one Continue button instead of
+  "Sign in above, then Retry". It no longer says "Sign-in did not complete"
+  while your browser sign-in is still open, and if a sign-in does fail you
+  can try again, switch tools, or reopen the sign-in page.
+
 - Core Drift ignores setup PATH changes and generated wrapper markers while retaining raw-hash fallback when settings JSON cannot be parsed.
 - Core Drift ignores the desktop-generated `env.PATH` in `.claude/settings.json` and the company skill-wrapper marker, while continuing to report other settings edits.
 

@@ -1088,6 +1088,12 @@ pub struct IdTokenClaims {
     pub sub: Option<String>,
     pub email: Option<String>,
     /// Whether Cognito verified the email address on this identity.
+    ///
+    /// ID tokens carry this as a JSON bool. Access tokens minted since the
+    /// hq-pro pre-token-generation change carry it as the string `"true"` /
+    /// `"false"`, so accept both; a strict `bool` here made every
+    /// access-token decode fail and held sign-in receipts forever.
+    #[serde(default, deserialize_with = "deserialize_bool_or_string")]
     pub email_verified: Option<bool>,
     pub name: Option<String>,
     pub given_name: Option<String>,
@@ -1223,6 +1229,31 @@ impl IdTokenClaims {
 
 /// Decode the middle segment of a JWT and parse it as the claims struct.
 /// JWT format: `header.payload.signature` (base64url-encoded segments).
+/// Deserialize a claim that Cognito emits either as a JSON bool or as the
+/// string `"true"` / `"false"` (custom-attribute style). Any other value is a
+/// parse error so a malformed token still fails loudly.
+fn deserialize_bool_or_string<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error as _;
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    match value {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::Bool(flag)) => Ok(Some(flag)),
+        Some(serde_json::Value::String(text)) => match text.trim() {
+            "true" => Ok(Some(true)),
+            "false" => Ok(Some(false)),
+            other => Err(D::Error::custom(format!(
+                "expected \"true\" or \"false\", got {other:?}"
+            ))),
+        },
+        Some(other) => Err(D::Error::custom(format!(
+            "expected bool or bool-string, got {other}"
+        ))),
+    }
+}
+
 pub fn decode_id_token_claims(id_token: &str) -> Result<IdTokenClaims, String> {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     let payload = id_token
@@ -1609,6 +1640,57 @@ mod tests {
         .expect("valid claims");
 
         assert_eq!(claims.email_verified, Some(false));
+    }
+
+    #[test]
+    fn decode_claims_accepts_access_token_email_verified_string_true() {
+        // Cognito access tokens (post hq-pro pre-token-generation change)
+        // carry `email_verified` as the string "true", not a JSON bool.
+        let claims = decode_id_token_claims(&claims_jwt(serde_json::json!({
+            "sub": "person-a",
+            "email_verified": "true"
+        })))
+        .expect("string-form email_verified must decode");
+
+        assert_eq!(claims.sub.as_deref(), Some("person-a"));
+        assert_eq!(claims.email_verified, Some(true));
+    }
+
+    #[test]
+    fn decode_claims_accepts_access_token_email_verified_string_false() {
+        let claims = decode_id_token_claims(&claims_jwt(serde_json::json!({
+            "sub": "person-a",
+            "email_verified": "false"
+        })))
+        .expect("string-form email_verified must decode");
+
+        assert_eq!(claims.email_verified, Some(false));
+    }
+
+    #[test]
+    fn decode_claims_still_accepts_bool_and_absent_email_verified() {
+        let claims = decode_id_token_claims(&claims_jwt(serde_json::json!({
+            "sub": "person-a",
+            "email_verified": true
+        })))
+        .expect("bool email_verified must decode");
+        assert_eq!(claims.email_verified, Some(true));
+
+        let claims = decode_id_token_claims(&claims_jwt(serde_json::json!({
+            "sub": "person-a"
+        })))
+        .expect("absent email_verified must decode");
+        assert_eq!(claims.email_verified, None);
+    }
+
+    #[test]
+    fn decode_claims_rejects_non_bool_email_verified() {
+        let error = decode_id_token_claims(&claims_jwt(serde_json::json!({
+            "sub": "person-a",
+            "email_verified": "yes"
+        })))
+        .expect_err("unrecognised email_verified string must fail");
+        assert!(error.contains("claims json parse failed"), "{error}");
     }
 
     #[tokio::test]

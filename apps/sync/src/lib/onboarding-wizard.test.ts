@@ -7,6 +7,7 @@ import {
   INVITE_TEAMMATE_STEP_INDEX,
   __resetWizardRouterCompletionForTests,
   AUTH_GATED_STEPS,
+  COMPANY_STEP_INDEX,
   createWizardRouter,
   getStepValidity,
   initialStepForLifecycle,
@@ -30,16 +31,17 @@ describe('onboarding wizard step contract', () => {
       { index: 0, id: 'welcome-signin', label: 'Welcome' },
       { index: 1, id: 'directory', label: 'Location' },
       { index: 2, id: 'setup', label: 'Setup' },
-      { index: 3, id: 'first-folder-sync', label: 'Sync your first folder' },
-      { index: 4, id: 'invite-teammate', label: 'Invite a teammate' },
-      { index: 5, id: 'consent', label: 'Consent' },
-      { index: 6, id: 'connector-import', label: 'Import connectors' },
-      { index: 7, id: 'ready', label: 'Ready' },
-      { index: 8, id: 'trust', label: 'Trust workspace' },
-      { index: 9, id: 'settings', label: 'Settings' },
-      { index: 10, id: 'run-setup', label: 'Run setup' },
-      { index: 11, id: 'handoff', label: 'Handoff' },
-      { index: 12, id: 'build', label: 'Build' },
+      { index: 3, id: 'company', label: 'Your company' },
+      { index: 4, id: 'first-folder-sync', label: 'Sync your first folder' },
+      { index: 5, id: 'invite-teammate', label: 'Invite a teammate' },
+      { index: 6, id: 'consent', label: 'Consent' },
+      { index: 7, id: 'connector-import', label: 'Import connectors' },
+      { index: 8, id: 'ready', label: 'Ready' },
+      { index: 9, id: 'trust', label: 'Trust workspace' },
+      { index: 10, id: 'settings', label: 'Settings' },
+      { index: 11, id: 'run-setup', label: 'Run setup' },
+      { index: 12, id: 'handoff', label: 'Handoff' },
+      { index: 13, id: 'build', label: 'Build' },
     ]);
     expect(WIZARD_STEPS.find((step) => step.id === 'ready')?.index).toBe(
       WIZARD_STEPS.findIndex((step) => step.id === 'ready'),
@@ -48,7 +50,8 @@ describe('onboarding wizard step contract', () => {
       WIZARD_STEPS.length,
     );
     expect(AUTH_GATED_STEPS).toEqual([2]);
-    expect(INVITE_TEAMMATE_STEP_INDEX).toBe(4);
+    expect(COMPANY_STEP_INDEX).toBe(3);
+    expect(INVITE_TEAMMATE_STEP_INDEX).toBe(5);
   });
 });
 

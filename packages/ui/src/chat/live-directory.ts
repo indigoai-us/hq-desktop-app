@@ -55,6 +55,29 @@ function pickActivity(...values: unknown[]): string | null {
 }
 
 /**
+ * Read `lastHumanMessageAt` / `hasHumanMessage` from a list row or its nested
+ * `directoryRow` (the server mirrors both at each level). A time wins over a
+ * stray `hasHumanMessage: false`. Only an explicit `false` counts as "none".
+ */
+function humanRecencyFromWire(
+  rec: Record<string, unknown>,
+  nested: Record<string, unknown> | null,
+): Pick<ChannelDirectoryRow, "lastHumanMessageAt" | "hasHumanMessage"> {
+  const at = pickActivity(
+    rec.lastHumanMessageAt ?? rec.last_human_message_at,
+    nested?.lastHumanMessageAt ?? nested?.last_human_message_at,
+  );
+  if (at) return { lastHumanMessageAt: at };
+  const flags = [
+    rec.hasHumanMessage,
+    rec.has_human_message,
+    nested?.hasHumanMessage,
+    nested?.has_human_message,
+  ];
+  return flags.some((flag) => flag === false) ? { hasHumanMessage: false } : {};
+}
+
+/**
  * hq-pro list payloads nest the fabric row on `directoryRow` and leave the
  * top-level `name` / `lastActivityAt` / `type` empty for group DMs. Prefer
  * the nested row, then fill members + projectId from the parent.
@@ -118,17 +141,10 @@ function asRow(value: unknown): ChannelDirectoryRow | null {
       rec.lastActivityAt ?? rec.last_activity_at,
       nested?.lastActivityAt ?? nested?.last_activity_at,
     ),
-    ...(pickActivity(
-      rec.lastHumanMessageAt ?? rec.last_human_message_at,
-      nested?.lastHumanMessageAt ?? nested?.last_human_message_at,
-    )
-      ? {
-          lastHumanMessageAt: pickActivity(
-            rec.lastHumanMessageAt ?? rec.last_human_message_at,
-            nested?.lastHumanMessageAt ?? nested?.last_human_message_at,
-          ),
-        }
-      : {}),
+    // Three states. A time means known; `hasHumanMessage: false` means the
+    // channel is known to hold none; neither key means unknown, and the row
+    // then carries neither so reconciliation keeps what it already knew.
+    ...humanRecencyFromWire(rec, nested),
     createdAt: pickActivity(rec.createdAt ?? rec.created_at, nested?.createdAt),
     ...(asString(rec.createdBy ?? rec.created_by).trim()
       ? { createdBy: asString(rec.createdBy ?? rec.created_by).trim() }

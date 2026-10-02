@@ -8,6 +8,7 @@ export * from "./library-shelf.js";
 export * from "./plan-limit.js";
 export {
   CLAUDE_PROVIDER_FLAG,
+  DESKTOP_LIMIT_STATUS_PUSH_FLAG,
   FIRST_FOLDER_SYNC_STEP_FLAG,
   HUMAN_ONLY_CONVERSATIONS_FLAG,
   HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT,
@@ -17,14 +18,18 @@ export {
   SETUP_DIRECTORY_PARENT_FALLBACK_FLAG,
 } from "./flags.js";
 export {
+  compareHumanRecency,
   filterHumanMessages,
   humanRecencyKey,
+  humanRecencyState,
+  isUndatedNoHumanRow,
   isHumanMessage,
   orderChannelsForViewer,
 } from "./humanMessage.js";
 export type {
   HumanClassifiable,
   HumanRecencyChannel,
+  HumanRecencyState,
 } from "./humanMessage.js";
 
 // Shared 429 / Retry-After policy and the jittered background pollers (R2).

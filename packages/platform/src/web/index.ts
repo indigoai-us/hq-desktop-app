@@ -710,11 +710,12 @@ export class WebPlatformAdapter implements PlatformAdapter {
     searchMessages: (q, opts) => {
       return this.get(buildWebMessageSearchPath(q, opts));
     },
-    fetchChannel: ({ channelId, limit, cursor, since }) => {
+    fetchChannel: ({ channelId, limit, cursor, since, view }) => {
       const params = new URLSearchParams();
       if (limit != null) params.set("limit", String(limit));
       if (cursor) params.set("cursor", cursor);
       if (since) params.set("since", since);
+      if (view) params.set("view", view);
       const qs = params.toString();
       return this.get(
         `${WEB_PATHS.channelMessages(channelId)}${qs ? `?${qs}` : ""}`,
@@ -762,10 +763,12 @@ export class WebPlatformAdapter implements PlatformAdapter {
             ? crypto.randomUUID()
             : `tab-${Date.now()}`),
       }),
-    fetchDmThread: ({ withPersonUid, limit, since }) => {
+    fetchDmThread: ({ withPersonUid, limit, since, cursor, view }) => {
       const params = new URLSearchParams({ withPersonUid });
       if (limit != null) params.set("limit", String(limit));
       if (since) params.set("since", since);
+      if (cursor) params.set("cursor", cursor);
+      if (view) params.set("view", view);
       return this.get(`/v1/notify/thread?${params.toString()}`);
     },
     sendDm: (toPersonUid, body, extras) =>

@@ -32,6 +32,7 @@ import { TAURI_CAPABILITIES, type Capability } from '../capabilities.js';
 import { WEB_PATHS } from '../web/index.js';
 import {
   CLAUDE_PROVIDER_FLAG,
+  DESKTOP_LIMIT_STATUS_PUSH_FLAG,
   FIRST_FOLDER_SYNC_STEP_FLAG,
   HUMAN_ONLY_CONVERSATIONS_FLAG,
   HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT,
@@ -185,6 +186,10 @@ export function createSyncPlatformAdapter(
   });
 
   function hasFeatureLegacy(flag: string): AdapterPromise<boolean> {
+    if (flag === DESKTOP_LIMIT_STATUS_PUSH_FLAG) {
+      // Missing rows and registry outages preserve event-only behavior.
+      return Promise.resolve(ok(false));
+    }
     if (flag === SETUP_DIRECTORY_PARENT_FALLBACK_FLAG) {
       // This rollout is opt-in. A missing registry value or unavailable
       // registry stays off until the manager creates and enables it.
@@ -690,7 +695,7 @@ export function createSyncPlatformAdapter(
         if (!result.ok) return result;
         return ok(unwrapNamedArray(result.value, ['results', 'hits']));
       },
-      fetchChannel: ({ channelId, limit, cursor, since }) => {
+      fetchChannel: ({ channelId, limit, cursor, since, view }) => {
         if (since) {
           return hqProJson(
             'GET',
@@ -698,13 +703,19 @@ export function createSyncPlatformAdapter(
               limit,
               cursor,
               since,
+              view,
             }),
           );
         }
+        // `view` rides the same native command as every other history page,
+        // so an older server (which ignores it) answers exactly as before.
+        // The command forwards it and returns the echoed `view` and
+        // `viewScanTruncated`. The key is only sent when set.
         return call('fetch_channel', {
           channelId,
           limit,
           cursor: cursor ?? null,
+          ...(view ? { view } : {}),
         });
       },
       listChannelMembers: (channelId) =>
@@ -747,14 +758,27 @@ export function createSyncPlatformAdapter(
           values: args.values,
           idempotencyKey: args.idempotencyKey ?? null,
         }),
-      fetchDmThread: ({ withPersonUid, limit, since }) => {
+      fetchDmThread: ({ withPersonUid, limit, since, cursor, view }) => {
         if (since) {
           return hqProJson(
             'GET',
-            withQuery(WEB_PATHS.dmThread, { withPersonUid, limit, since }),
+            withQuery(WEB_PATHS.dmThread, {
+              withPersonUid,
+              limit,
+              since,
+              cursor,
+              view,
+            }),
           );
         }
-        return call('fetch_dm_thread', { withPersonUid, limit });
+        // As on fetchChannel: the native command forwards `cursor` and
+        // `view`, and both keys are only sent when set.
+        return call('fetch_dm_thread', {
+          withPersonUid,
+          limit,
+          ...(cursor ? { cursor } : {}),
+          ...(view ? { view } : {}),
+        });
       },
       sendDm: (toPersonUid, body, extras) => {
         const attachments = extras?.attachments;
