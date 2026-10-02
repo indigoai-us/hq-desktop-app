@@ -360,6 +360,8 @@ pub struct RawTelemetryEvent {
     pub session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub company_uid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub install_attempt_id: Option<String>,
     pub properties: serde_json::Value,
 }
 

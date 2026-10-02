@@ -11,6 +11,7 @@ import {
   MEETINGS_REGISTRY_KEY,
   PERSONAL_WORKSPACE_BOARD_FLAG,
   POST_READY_ACTION_TELEMETRY_FLAG,
+  READY_FIRST_ACTION_FLAG,
   SETUP_STAGE_TIMEOUT_FIX_FLAG,
   bearerTokenFromHeaders,
   createFeatureFlagGate,
@@ -108,6 +109,26 @@ describe("registry key mapping", () => {
   it("maps post-ready action telemetry through its default-off hq-flags key", () => {
     expect(POST_READY_ACTION_TELEMETRY_FLAG).toBe("desktop.post-ready-action-telemetry-v1");
     expect(registryKeyFor(POST_READY_ACTION_TELEMETRY_FLAG)).toBe(POST_READY_ACTION_TELEMETRY_FLAG);
+  });
+
+  it("maps the ready first action through its default-off hq-flags key", () => {
+    expect(READY_FIRST_ACTION_FLAG).toBe("desktop.ready-first-action-v1");
+    expect(registryKeyFor(READY_FIRST_ACTION_FLAG)).toBe(READY_FIRST_ACTION_FLAG);
+  });
+
+  it("keeps the ready first action off until hq-flags configures it", async () => {
+    const isEnabled = vi.fn(() => true);
+    const adapter = createSyncPlatformAdapter({
+      invoke: vi.fn(async () => undefined),
+      createFlagClient: () => fakeClient({
+        ready: async () => {},
+        snapshot: () => ({ version: 1, flags: {} }),
+        isEnabled,
+      }),
+    });
+
+    await expect(adapter.identity.hasFeature(READY_FIRST_ACTION_FLAG)).resolves.toEqual(ok(false));
+    expect(isEnabled).not.toHaveBeenCalled();
   });
 
   it("keeps post-ready action telemetry off until hq-flags configures it", async () => {

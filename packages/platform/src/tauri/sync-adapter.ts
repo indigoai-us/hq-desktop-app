@@ -40,6 +40,7 @@ import {
   LOGIN_RECEIPT_DURABILITY_FLAG,
   PERSONAL_WORKSPACE_BOARD_FLAG,
   POST_READY_ACTION_TELEMETRY_FLAG,
+  READY_FIRST_ACTION_FLAG,
   createFeatureFlagGate,
   createHqProFlagFetch,
   MIRROR_QUARANTINE_MOVE_NOT_DELETION_FLAG,
@@ -191,6 +192,11 @@ export function createSyncPlatformAdapter(
     if (flag === POST_READY_ACTION_TELEMETRY_FLAG) {
       // The measurement event is opt-in and stays off until the hq-flags
       // registry contains an explicit enabled value.
+      return Promise.resolve(ok(false));
+    }
+    if (flag === READY_FIRST_ACTION_FLAG) {
+      // The first real-use action is opt-in and stays off until the manager
+      // creates and enables its hq-flags value.
       return Promise.resolve(ok(false));
     }
     if (flag === DESKTOP_LIMIT_STATUS_PUSH_FLAG) {

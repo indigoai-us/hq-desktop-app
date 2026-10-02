@@ -9,10 +9,18 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Desktop usage uploads are limited to four requests and 4 MB per sync; remaining records resume on later syncs.
+- Desktop setup completion telemetry now carries the persisted install attempt ID so it can join to first launch.
 - Auto-sync watcher reports now identify launcher and runner exits and owner-lease
   outcomes. When a Node report is available, they add a safe error identifier and
   the top frame's file name for HQ's own scripts only; frames from other files
   report "external", so a user's file names are never sent.
+
+- Behind `desktop.ready-first-action-v1`, the post-setup welcome screen can offer a one-click first sync and record whether the action was shown and used.
+
+- Reinstalling HQ setup preserves files already present in your HQ folder.
+
+## [0.10.376] — 2026-10-02
+
 - Core update failures now report a specific snapshot failure class, such as
   insufficient space, a protected recovery snapshot, a permission error, a
   symlink, or a copy failure.
