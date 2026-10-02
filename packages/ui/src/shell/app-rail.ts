@@ -9,7 +9,7 @@
  */
 
 import type { NavigationDestination } from "./navigation-history.js";
-import { companyRowForPage } from "./company-pane.js";
+import { companyRowDestination, companyRowForPage } from "./company-pane.js";
 
 /** Pinned company tiles beyond this count live in More companies (US-004). */
 export const MAX_PINNED_COMPANY_TILES = 6;
@@ -169,8 +169,10 @@ export function railDestination(
 ): NavigationDestination {
   switch (item.kind) {
     case "home":
-    case "company":
       return { kind: "messages" };
+    case "company":
+      // US-009: Atlas is the company landing page.
+      return companyRowDestination("atlas", item.companyUid);
     case "meetings":
       return { kind: "meetings" };
     case "library":

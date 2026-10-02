@@ -40,6 +40,8 @@
   import MoreCompaniesPopover from "./MoreCompaniesPopover.svelte";
   import type { MoreCompany } from "./more-companies.js";
   import TelemetryRailHost from "./TelemetryRailHost.svelte";
+  import AtlasLandingHost from "./AtlasLandingHost.svelte";
+  import { atlasRoster, atlasWorkingNow, rosterNamesFromRows } from "./atlas-landing.js";
   import AccountMenu from "./AccountMenu.svelte";
   import {
     accountPageId,
@@ -8394,6 +8396,19 @@
   const companyPaneSelectedId = $derived(
     view === "extra" ? companyRowForPage(extraPageId) : null,
   );
+  // US-009: Atlas rosters derive from presence plus names the shell already
+  // loaded, so the landing paints from memory with no extra fetch.
+  const atlasRosterNames = $derived(rosterNamesFromRows(railRows));
+  const atlasCompanyRoster = $derived(
+    companyPaneCompany
+      ? atlasRoster(
+          presenceSnapshot(),
+          companyPaneCompany.uid,
+          atlasRosterNames,
+          self?.uid ?? null,
+        )
+      : [],
+  );
 
   function selectCompanyPaneRow(rowId: string): void {
     if (!tenantCompanyId) return;
@@ -8457,7 +8472,8 @@
     writeSettingsPrefs({ companyRecentIds: nextRecent });
     companyPaneOpen = true;
     changeTenantCompany(company.uid);
-    void navigate({ kind: "messages" });
+    // US-009: Atlas is the company landing page.
+    void navigate(companyRowDestination("atlas", company.uid));
     moreCompaniesOpen = false;
   }
 
@@ -9371,6 +9387,8 @@
             onselect={selectCompanyPaneRow}
             memory={sidepaneScrollMemory}
             companyApi={adapter.company ?? null}
+            roster={atlasCompanyRoster}
+            rosterLoading={!directorySettled}
           />
         {/if}
         <!-- Chat stays mounted under the company pane: it owns roster loading. -->
@@ -9511,6 +9529,16 @@
             {adapter}
             onback={() => {
               void leaveCurrentDestination();
+            }}
+          />
+        {:else if railPlaceholder?.id === "atlas" && companyPaneCompany}
+          <AtlasLandingHost
+            companyLabel={companyPaneCompany.label}
+            workingNow={atlasWorkingNow(atlasCompanyRoster)}
+            slug={companyPaneCompany.slug}
+            summaryEnabled={Boolean(adapter.company)}
+            onopenperson={(personUid) => {
+              void navigate({ kind: "dm", personUid });
             }}
           />
         {:else if railPlaceholder?.id === "telemetry"}

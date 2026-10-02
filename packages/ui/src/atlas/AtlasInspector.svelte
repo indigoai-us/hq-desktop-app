@@ -20,7 +20,8 @@
     related: AtlasNode[];
     presence: AtlasPresence[];
     company: string;
-    objectCount: number;
+    /** Null hides the objects chip (the US-009 landing has no map yet). */
+    objectCount: number | null;
     projectsInProgress: number;
     nowMs: number;
     onselect: (id: string) => void;
@@ -129,15 +130,15 @@
   {:else}
     <div class="kind">company</div>
     <h2>{company}</h2>
-    <div class="chips">
+    <div class="chips" data-testid="atlas-inspector-rollup">
       {#if presence.length}<span class="chip live"><i class="ldot"></i>{presence.length} live</span>{/if}
-      <span class="chip">{objectCount} objects</span>
+      {#if objectCount !== null}<span class="chip">{objectCount} objects</span>{/if}
       <span class="chip">{projectsInProgress} projects in progress</span>
     </div>
     <div class="hr"></div>
     <div class="kind">Working now</div>
     {#if presence.length}
-      <div class="list">
+      <div class="list" data-testid="atlas-inspector-working-now">
         {#each presence as who (`${who.name}:${who.nodeId}`)}
           <button type="button" class="li rowbtn" onclick={() => onselect(who.nodeId)}>
             <span class="mini" class:sq={who.bot}>{who.bot ? "⌁" : who.name.slice(0, 2).toUpperCase()}<span class="ld"></span></span>

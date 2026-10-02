@@ -149,9 +149,29 @@ describe("US-002 pending console-rail contracts", () => {
     "US-004: the rail shows at most six pinned company tiles",
   );
 
-  it.todo(
-    "US-009: opening a company lands on Atlas and does not mount the Overview page",
-  );
+  it("US-009: opening a company lands on Atlas and does not mount the Overview page", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { railDestination, railItems } = await import("./app-rail.js");
+    const { canonicalizeDestination } = await import("./navigation-history.js");
+    const tile = railItems([{ uid: "co_a", label: "Indigo" }], "You").find(
+      (item) => item.kind === "company",
+    )!;
+    expect(railDestination(tile)).toEqual({
+      kind: "extra",
+      page: "company-page-atlas",
+      companyUid: "co_a",
+    });
+    expect(
+      canonicalizeDestination({ kind: "extra", page: "company-page-overview", companyUid: "co_a" }),
+    ).toMatchObject({ page: "company-page-atlas" });
+    const shell = readFileSync(
+      join(REPO_ROOT, "packages/ui/src/shell/DesktopApp.svelte"),
+      "utf8",
+    );
+    expect(shell).not.toMatch(/<CompanyPage\b/);
+    expect(shell).not.toMatch(/CompanyBoardPanel/);
+    expect(shell).toMatch(/<AtlasLandingHost\b/);
+  });
 
   it.todo(
     "US-011: the notifications bell stays in the titlebar",

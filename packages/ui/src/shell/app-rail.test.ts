@@ -56,6 +56,23 @@ describe("app rail model (console-rail US-003)", () => {
     });
   });
 
+  it("lands a company tile on that company's Atlas (US-009)", () => {
+    const tile = railItems([{ uid: "co_a", label: "Indigo" }], "You").find(
+      (item) => item.kind === "company",
+    )!;
+    expect(railDestination(tile)).toEqual({
+      kind: "extra",
+      page: "company-page-atlas",
+      companyUid: "co_a",
+    });
+  });
+
+  it("redirects the removed Overview page to Atlas (US-009)", () => {
+    expect(
+      canonicalizeDestination({ kind: "extra", page: "company-page-overview", companyUid: "co_a" }),
+    ).toEqual({ kind: "extra", page: "company-page-atlas", param: null, companyUid: "co_a" });
+  });
+
   it("names the story that builds each placeholder page", () => {
     for (const placeholder of Object.values(RAIL_PLACEHOLDERS)) {
       expect(placeholder.story).toMatch(/^US-\d{3}$/);

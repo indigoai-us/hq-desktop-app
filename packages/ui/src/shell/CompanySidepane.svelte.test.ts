@@ -42,4 +42,38 @@ describe("CompanySidepane (console-rail US-007)", () => {
     (settings as HTMLButtonElement).click();
     expect(onselect.mock.calls).toEqual([["team"], ["company-settings"]]);
   });
+
+  it("adds Live now and Idle rosters on Atlas, with skeleton rows while names load (US-009)", () => {
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const props = $state({
+      company: { uid: "co_indigo", label: "Indigo", slug: null },
+      selectedId: "atlas" as string | null,
+      rosterLoading: true,
+      roster: [
+        { uid: "u_zed", name: "Zed", kind: "human" as const, live: true },
+        { uid: "b_scout", name: "Scout", kind: "bot" as const, live: false },
+      ],
+    });
+    mounted.push(mount(CompanySidepane, { target, props }));
+    flushSync();
+    // Loading: real nav rows plus a skeleton roster, no spinner.
+    expect(target.querySelectorAll("[data-testid='sidepane-body'] [data-testid='sidepane-row']")).toHaveLength(14);
+    expect(target.querySelector("[data-testid='company-sidepane-roster-skeleton']")).not.toBeNull();
+    expect(target.textContent).not.toContain("Live now");
+
+    props.rosterLoading = false;
+    flushSync();
+    expect(target.querySelector("[data-testid='company-sidepane-roster-skeleton']")).toBeNull();
+    expect(target.textContent).toContain("Live now");
+    expect(target.textContent).toContain("Idle");
+    expect(target.querySelector("[data-row-id='person:u_zed']")).not.toBeNull();
+    expect(target.querySelector("[data-row-id='person:b_scout']")).not.toBeNull();
+    expect(target.querySelector("[data-row-id='atlas']")?.getAttribute("aria-current")).toBe("page");
+
+    // Other company pages keep the plain sections.
+    props.selectedId = "projects";
+    flushSync();
+    expect(target.textContent).not.toContain("Live now");
+  });
 });

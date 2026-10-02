@@ -9,7 +9,12 @@
 <script lang="ts">
   import Sidepane from "./Sidepane.svelte";
   import SidepaneList from "./SidepaneList.svelte";
-  import { COMPANY_SETTINGS_ROW, type SidepaneScrollMemory } from "./sidepane-models.js";
+  import {
+    COMPANY_SETTINGS_ROW,
+    atlasSidepaneModel,
+    type SidepaneRosterEntry,
+    type SidepaneScrollMemory,
+  } from "./sidepane-models.js";
   import { companyPaneModel } from "./company-pane.js";
   import { companyLiveCount } from "./pinned-companies.js";
   import { presenceSnapshot } from "../chat/presence-store.svelte.js";
@@ -25,9 +30,21 @@
     memory?: SidepaneScrollMemory;
     /** Host company backend; without one the rows render without counts. */
     companyApi?: CompanyApi | null;
+    /** Atlas (US-009): Live now and Idle rosters follow the sections. */
+    roster?: readonly SidepaneRosterEntry[];
+    /** Atlas (US-009): names still loading; draw skeleton roster rows. */
+    rosterLoading?: boolean;
   }
 
-  let { company, selectedId = null, onselect, memory, companyApi = null }: Props = $props();
+  let {
+    company,
+    selectedId = null,
+    onselect,
+    memory,
+    companyApi = null,
+    roster = [],
+    rosterLoading = false,
+  }: Props = $props();
 
   // Same wiring CompanyPage does, minus the poller: counts load once per
   // company from the shared cache and pick up any background refresh.
@@ -41,13 +58,20 @@
   });
 
   const liveCount = $derived(companyLiveCount(presenceSnapshot(), company.uid));
-  const model = $derived(
-    companyPaneModel(
+  const atlasActive = $derived(selectedId === "atlas");
+  const model = $derived.by(() => {
+    const base = companyPaneModel(
       { uid: company.uid, label: company.label, liveCount },
       summary.summary,
       selectedId,
-    ),
-  );
+    );
+    if (!atlasActive || rosterLoading) return base;
+    // Same pane key either way, so landing on Atlas keeps scroll memory.
+    const rosterSections = atlasSidepaneModel(company, roster).sections.filter(
+      (s) => s.id === "live-now" || s.id === "idle",
+    );
+    return { ...base, sections: [...base.sections, ...rosterSections] };
+  });
   const iconSrc = $derived(companyIconSrc(company.iconUrl ?? null));
   const initial = $derived((model.title.trim()[0] ?? "?").toUpperCase());
 </script>
@@ -86,6 +110,14 @@
     selectedId={model.selectedId}
     onselect={(row) => onselect?.(row.id)}
   />
+  {#if atlasActive && rosterLoading}
+    <div class="roster-skeleton" data-testid="company-sidepane-roster-skeleton" aria-hidden="true">
+      <div class="sk-label">People</div>
+      {#each [78, 64, 58, 84, 60, 70] as width, i (i)}
+        <div class="sk-row"><span class="sk sk-mark"></span><span class="sk" style:width={`${width}px`}></span></div>
+      {/each}
+    </div>
+  {/if}
 </Sidepane>
 
 <style>
@@ -149,6 +181,56 @@
 
   .live-chip.is-live .live-dot {
     background: var(--ok);
+  }
+
+  .sk-label {
+    height: 30px;
+    box-sizing: border-box;
+    padding: 12px 8px 4px;
+    color: var(--t3);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .sk-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 30px;
+    padding: 0 8px;
+  }
+
+  .sk {
+    display: inline-block;
+    height: 10px;
+    border-radius: 4px;
+    background: var(--line);
+    animation: sidepane-sk 1.8s ease-in-out infinite;
+  }
+
+  .sk-mark {
+    flex: none;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+  }
+
+  @keyframes sidepane-sk {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.45;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .sk {
+      animation: none;
+    }
   }
 
   .footer-row {

@@ -248,6 +248,9 @@ export function assertSerializableNavigationEntry(entry: NavigationEntry): void 
   }
 }
 
+const COMPANY_OVERVIEW_PAGE = "company-page-overview";
+const COMPANY_ATLAS_PAGE = "company-page-atlas";
+
 export function canonicalizeDestination(
   destination: NavigationDestination,
 ): NavigationDestination {
@@ -309,9 +312,11 @@ export function canonicalizeDestination(
     case "extra": {
       const companyUid =
         trimId(destination.companyUid) ?? extraParamCompanyKey(destination.param);
+      const page = requireId(destination.page, "page");
       return {
         kind: "extra",
-        page: requireId(destination.page, "page"),
+        // US-009: Overview is gone; Atlas is the company landing page.
+        page: page === COMPANY_OVERVIEW_PAGE ? COMPANY_ATLAS_PAGE : page,
         param: trimId(destination.param),
         ...(companyUid ? { companyUid } : {}),
       };

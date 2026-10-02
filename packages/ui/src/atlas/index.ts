@@ -4,6 +4,7 @@
  * into the initial bundle and fails the US-001 guard.
  */
 export { default as AtlasView } from "./AtlasView.svelte";
+export { default as AtlasInspector } from "./AtlasInspector.svelte";
 export * from "./atlas-model.js";
 export * from "./atlas-cache.js";
 export * from "./atlas-layout.js";
