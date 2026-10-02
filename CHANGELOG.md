@@ -10,6 +10,10 @@ The release moves it under the version it ships in.
 
 - Automatic updates now install after the idle cap even when sync stays busy. HQ pauses new sync cycles and waits up to a minute for active transfers before installing. A meeting recording, transcript processing, or another core update can still delay installation.
 
+- Auto-sync watcher reports now identify launcher and runner exits and owner-lease
+  outcomes. When a Node report is available, they add a safe error identifier and
+  the top frame's file name for HQ's own scripts only; frames from other files
+  report "external", so a user's file names are never sent.
 - Core update failures now report a specific snapshot failure class, such as
   insufficient space, a protected recovery snapshot, a permission error, a
   symlink, or a copy failure.
