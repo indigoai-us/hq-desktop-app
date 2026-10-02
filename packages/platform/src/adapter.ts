@@ -43,6 +43,13 @@ export interface AdapterFailure {
    * every other failure.
    */
   upgradeUrl?: string;
+  /**
+   * The running machine named by a refused bot removal (code
+   * `AGENTS_V2_BOX_PROTECTED`). The server removes the bot only when the
+   * request names this machine; see `AgentDeprovisionOptions`. Absent on
+   * every other failure.
+   */
+  instanceId?: string;
 }
 
 export function ok<T>(value: T): AdapterResult<T> {
@@ -1103,8 +1110,13 @@ export const AGENT_PATHS = {
     `/v1/agents/${encodeURIComponent(agentUid)}/reauth`,
   loginCode: (agentUid: string) =>
     `/v1/agents/${encodeURIComponent(agentUid)}/login-code`,
-  deprovision: (agentUid: string) =>
-    `/v1/agents/${encodeURIComponent(agentUid)}`,
+  deprovision: (agentUid: string, confirmDestroyInstanceId?: string | null) => {
+    const path = `/v1/agents/${encodeURIComponent(agentUid)}`;
+    const confirm = (confirmDestroyInstanceId ?? "").trim();
+    return confirm
+      ? `${path}?confirmDestroyAgentsV2=${encodeURIComponent(confirm)}`
+      : path;
+  },
   mobileRoster: (companyUid?: string | null) => {
     const uid = (companyUid ?? "").trim();
     return uid
@@ -1138,6 +1150,16 @@ export interface AgentProvisionOptionsView {
   options: readonly AgentProvisionSizeOption[];
 }
 
+/**
+ * Options for removing a cloud bot. The server refuses to remove a bot whose
+ * machine is running unless the request names that machine. The refusal
+ * carries the machine id (`AdapterFailure.instanceId`); the caller repeats the
+ * request with it once the person has confirmed the removal.
+ */
+export interface AgentDeprovisionOptions {
+  confirmDestroyInstanceId?: string | null;
+}
+
 export interface AgentsApi {
   /** GET /v1/agents/provision-options?companyUid= — tenant-priced sizes. */
   getProvisionOptions(
@@ -1166,8 +1188,14 @@ export interface AgentsApi {
   start(agentUid: string): AdapterPromise<Json>;
   /** POST /v1/agents/{uid}/retry — resume a failed provisioning attempt. */
   retryProvisioning(agentUid: string): AdapterPromise<Json>;
-  /** DELETE /v1/agents/{uid} — reverse deprovision / remove. */
-  deprovision(agentUid: string): AdapterPromise<Json>;
+  /**
+   * DELETE /v1/agents/{uid}: reverse deprovision / remove. Safe to repeat:
+   * the answer carries `terminal: true` once nothing is left to remove.
+   */
+  deprovision(
+    agentUid: string,
+    options?: AgentDeprovisionOptions,
+  ): AdapterPromise<Json>;
   /** GET /v1/fleet/{companyUid}/agents/{uid}/owners. */
   listOwners(companyUid: string, agentUid: string): AdapterPromise<Json>;
   /** GET /v1/telemetry/company?companyUid=&from=&to= — owner/admin. */

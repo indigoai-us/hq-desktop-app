@@ -90,4 +90,40 @@ describe("WebPlatformAdapter agents", () => {
       },
     ]);
   });
+
+  it("names the running machine when a bot removal is confirmed", async () => {
+    const { adapter, calls } = makeAdapter();
+    await adapter.agents.deprovision("agt_1", {
+      confirmDestroyInstanceId: "i-0abc1234def567890",
+    });
+    expect(calls).toEqual([
+      {
+        method: "DELETE",
+        path: "/v1/agents/agt_1?confirmDestroyAgentsV2=i-0abc1234def567890",
+        body: undefined,
+      },
+    ]);
+  });
+
+  it("hands back the machine a refused bot removal names", async () => {
+    const adapter = new WebPlatformAdapter({
+      baseUrl: "https://api.test",
+      fetch: async () =>
+        new Response(
+          JSON.stringify({
+            error: "Nova is already on HQ Agents v2 (live box i-0abc1234def567890). Refused.",
+            code: "AGENTS_V2_BOX_PROTECTED",
+            agentUid: "agt_1",
+            instanceId: "i-0abc1234def567890",
+          }),
+          { status: 409 },
+        ),
+    });
+    const result = await adapter.agents.deprovision("agt_1");
+    expect(result).toMatchObject({
+      ok: false,
+      code: "AGENTS_V2_BOX_PROTECTED",
+      instanceId: "i-0abc1234def567890",
+    });
+  });
 });

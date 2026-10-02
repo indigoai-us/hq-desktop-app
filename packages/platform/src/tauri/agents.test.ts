@@ -120,3 +120,56 @@ describe("createSyncPlatformAdapter agents", () => {
     ]);
   });
 });
+
+describe("bot removal that names the running machine", () => {
+  const CONFIRMED = {
+    cmd: "hq_pro_fetch",
+    args: {
+      url: "/v1/agents/agt_1?confirmDestroyAgentsV2=i-0abc1234def567890",
+      method: "DELETE",
+      body: null,
+    },
+  };
+
+  it("TauriPlatformAdapter sends the machine id on the DELETE", async () => {
+    const { adapter, calls } = makeTauri();
+    await adapter.agents.deprovision("agt_1", {
+      confirmDestroyInstanceId: "i-0abc1234def567890",
+    });
+    expect(calls).toEqual([CONFIRMED]);
+  });
+
+  it("createSyncPlatformAdapter sends the machine id on the DELETE", async () => {
+    const calls: Invocation[] = [];
+    const adapter = createSyncPlatformAdapter({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args });
+        return { status: 200, body: JSON.stringify({ terminal: true }) };
+      },
+    });
+    await adapter.agents.deprovision("agt_1", {
+      confirmDestroyInstanceId: "i-0abc1234def567890",
+    });
+    expect(calls).toEqual([CONFIRMED]);
+  });
+
+  it("createSyncPlatformAdapter hands back the machine a refusal names", async () => {
+    const adapter = createSyncPlatformAdapter({
+      invoke: async () => ({
+        status: 409,
+        body: JSON.stringify({
+          error: "Refused.",
+          code: "AGENTS_V2_BOX_PROTECTED",
+          agentUid: "agt_1",
+          instanceId: "i-0abc1234def567890",
+        }),
+      }),
+    });
+    const result = await adapter.agents.deprovision("agt_1");
+    expect(result).toMatchObject({
+      ok: false,
+      code: "AGENTS_V2_BOX_PROTECTED",
+      instanceId: "i-0abc1234def567890",
+    });
+  });
+});

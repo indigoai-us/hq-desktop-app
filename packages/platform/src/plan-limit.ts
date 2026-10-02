@@ -181,6 +181,18 @@ export interface HqProErrorDetails {
   /** Present only when the body carried an approved upgrade link. */
   upgradeUrl?: string;
   planLimit: boolean;
+  /** Present only on a refused bot removal that names the running machine. */
+  instanceId?: string;
+}
+
+/** Server code for a bot removal refused because its machine is running. */
+export const AGENT_BOX_PROTECTED = "AGENTS_V2_BOX_PROTECTED";
+
+/** The machine id a refused bot removal names, when it is a plain EC2 id. */
+function protectedInstanceId(rec: Record<string, unknown>, code: string): string | null {
+  if (code !== AGENT_BOX_PROTECTED || typeof rec.instanceId !== "string") return null;
+  const id = rec.instanceId.trim();
+  return /^i-[0-9a-f]{8,32}$/.test(id) ? id : null;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -216,11 +228,13 @@ export function hqProErrorFromRecord(
   } else if (typeof rec.error === "string" && rec.error.trim()) {
     message = rec.error.trim();
   }
+  const instanceId = protectedInstanceId(rec, code);
   return {
     code,
     message,
     planLimit,
     ...(upgradeUrl ? { upgradeUrl } : {}),
+    ...(instanceId ? { instanceId } : {}),
   };
 }
 
@@ -257,5 +271,6 @@ export function hqProFailure(details: HqProErrorDetails): AdapterFailure {
     code: details.code,
     message: details.message,
     ...(details.upgradeUrl ? { upgradeUrl: details.upgradeUrl } : {}),
+    ...(details.instanceId ? { instanceId: details.instanceId } : {}),
   };
 }
