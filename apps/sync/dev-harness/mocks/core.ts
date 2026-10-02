@@ -659,7 +659,29 @@ function tourPreviewEnabled(): boolean {
   return new URLSearchParams(window.location.search).get('tour') === '1';
 }
 
+/**
+ * Local bots the preview created this session. `hq bot create` is mocked so
+ * the New bot modal can finish and land in the new bot's DM (console-rail
+ * e2e "Add agent"). Nothing is listed until something is created.
+ */
+const previewLocalBots: Array<Record<string, unknown>> = [];
+
 const handlers: Record<string, Handler> = {
+  local_bots_list: () => ({ bots: previewLocalBots }),
+  local_bots_workers: () => ({ workers: [] }),
+  local_bots_create: (args) => {
+    const name = String(args?.name ?? 'bot');
+    const agentUid = `agt_PREVIEW${name.toUpperCase().replace(/[^A-Z0-9]/g, '')}`;
+    previewLocalBots.push({
+      name,
+      displayName: args?.displayName ?? undefined,
+      agentUid,
+      ownerUid: 'prs_preview',
+      runtime: args?.runtime ?? 'claude',
+      hosting: 'local',
+    });
+    return { agentUid, name };
+  },
   get_setup_status: () =>
     tourPreviewEnabled()
       ? {
@@ -1532,6 +1554,8 @@ This final paragraph verifies spacing after a thematic break.
         latest: 'Orbit math notes are ready for review.',
       },
     };
+    // A bot the preview just created has no history yet.
+    if (peer.startsWith('agt_PREVIEW')) return { messages: [], nextCursor: null };
     const person = people[peer] ?? people.prs_ada;
     return {
       messages: [

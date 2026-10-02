@@ -80,22 +80,40 @@ test.describe('console rail: full user path', () => {
     await expect(page.getByTestId('rail-more-companies')).toBeFocused();
   });
 
-  test('Team Add agent opens the New agent stepper and reaches Verify', async ({ page }) => {
-    await openShell(page);
+  test('Team Add agent opens the New bot modal and lands in the bot thread', async ({ page }) => {
+    const errors = await openShell(page);
+    const shots = process.env.BOT_FLOW_SHOTS;
     await page.getByTestId('rail-company').click();
     await page.locator('[data-row-id="team"]').click();
     await page.getByTestId('team-add-agent').click();
-    const stepper = page.getByTestId('new-agent-stepper');
-    await expect(stepper).toBeVisible();
-    // Walk Runtime → Identity → Membership → Access → Capabilities → Verify.
-    for (let step = 1; step < 6; step += 1) {
-      await expect(stepper).toContainText(`step ${step} of 6`);
-      const name = page.getByTestId('new-agent-name');
-      if ((await name.count()) > 0 && !(await name.inputValue())) await name.fill('Scout');
-      await page.getByTestId('new-agent-next').click();
+    // The one bot-creation flow: the same three-step modal as Messages +.
+    const flow = page.getByTestId('chat-create-bot-step');
+    await expect(flow).toBeVisible();
+    await expect(page.getByTestId('new-agent-stepper')).toHaveCount(0);
+    await expect(page.getByTestId('create-bot-crumb-kind')).toBeVisible();
+    await page.getByTestId('create-bot-next').click();
+    await expect(flow).toHaveAttribute('data-step', 'home');
+    await expect(page.getByTestId('chat-bot-where-external')).toBeVisible();
+    await page.getByTestId('chat-bot-where-local').click();
+    await page.getByTestId('create-bot-next').click();
+    await expect(flow).toHaveAttribute('data-step', 'details');
+    await page.getByTestId('chat-bot-name').fill('Scout');
+    if (shots) await page.screenshot({ path: `${shots}/modal.png` });
+    await page.getByTestId('chat-bot-create').click();
+    // Lands in the new bot's DM, where the bot asks for the rest of setup.
+    await expect(flow).toHaveCount(0);
+    const access = page.getByTestId('share-request-card');
+    await expect(access).toBeVisible();
+    await expect(access).toHaveAttribute('data-kind', 'access_request');
+    await expect(page.getByText("Hi, I'm Scout.")).toBeVisible();
+    await expect(page.getByText('Pick my skills: open my profile')).toBeVisible();
+    if (shots) {
+      await page.screenshot({ path: `${shots}/bot-thread.png` });
+      await page.locator('.dm-msg-author', { hasText: 'Scout' }).first().click().catch(() => {});
+      const pane = page.getByTestId('bot-profile-pane');
+      if (await pane.isVisible().catch(() => false)) await pane.screenshot({ path: `${shots}/bot-sidepane.png` });
     }
-    await expect(stepper).toContainText('step 6 of 6');
-    await expect(stepper).toContainText('Verify');
+    expect(errors, errors.join('; ')).toEqual([]);
   });
 
   test('avatar menu signs out', async ({ page }) => {
