@@ -200,4 +200,16 @@ describe("US-029 FilesConnectPage", () => {
     flushSync();
     expect(target.querySelector("[data-testid='sheet-connect']")).toBeNull();
   });
+
+  it("closes the vault Share dialog on Escape (QA-024)", async () => {
+    const target = mountPage("vault");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+    (target.querySelector("[data-testid='vault-share']") as HTMLButtonElement).click();
+    flushSync();
+    expect(target.querySelector("[data-testid='sheet-share']")).not.toBeNull();
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    flushSync();
+    expect(target.querySelector("[data-testid='sheet-share']")).toBeNull();
+  });
 });
