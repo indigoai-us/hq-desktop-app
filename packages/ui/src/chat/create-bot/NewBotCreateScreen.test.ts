@@ -193,6 +193,55 @@ describe("NewBotCreateScreen", () => {
     await settle();
     expect(oncreate).toHaveBeenCalledTimes(2);
   });
+  it("turns a plan refusal from the create action into the upgrade step and lets the person pick another company", async () => {
+    const oncreate = vi.fn(async () => ({
+      ok: false as const,
+      blocked: true,
+      reason: "This company's plan doesn't include cloud bots yet.",
+      upgrade: { channelId: "chn_company", cardId: "upgrade_plan" },
+    }));
+    const onupgrade = vi.fn();
+    const { oncomplete } = render({ oncreate, onupgrade });
+    await openCompanyStep();
+    document
+      .querySelector<HTMLButtonElement>("[data-testid='new-bot-create-submit']")!
+      .click();
+    await settle();
+    const step = document.querySelector("[data-testid='new-bot-upgrade']")!;
+    expect(step.textContent).toContain("Current company is on the Starter plan");
+    expect(document.querySelector("[data-testid='new-bot-create-screen']")).toBeNull();
+    expect(oncomplete).not.toHaveBeenCalled();
+    step.querySelector<HTMLButtonElement>("[data-testid='new-bot-upgrade-open']")!.click();
+    expect(onupgrade).toHaveBeenCalledWith({
+      companyUid: "cmp_current",
+      channelId: "chn_company",
+      cardId: "upgrade_plan",
+    });
+    const back = step.querySelector<HTMLButtonElement>("[data-testid='new-bot-upgrade-back']")!;
+    expect(back.textContent).toBe("Choose another company");
+    back.click();
+    await settle();
+    expect(document.querySelector("[data-testid='new-bot-upgrade']")).toBeNull();
+    expect(document.querySelector("[data-testid='new-bot-step-3']")).toBeTruthy();
+    expect(document.querySelector("[role='alert']")).toBeNull();
+  });
+  it("keeps a plan refusal as an inline message when the host offers no upgrade route", async () => {
+    const oncreate = vi.fn(async () => ({
+      ok: true as const,
+      target: { channelId: "chn_company", cardId: "upgrade_plan", cardKind: null },
+    }));
+    const { oncomplete } = render({ oncreate });
+    await openCompanyStep();
+    document
+      .querySelector<HTMLButtonElement>("[data-testid='new-bot-create-submit']")!
+      .click();
+    await settle();
+    expect(oncomplete).not.toHaveBeenCalled();
+    expect(document.querySelector("[data-testid='new-bot-upgrade']")).toBeNull();
+    expect(document.querySelector("[role='alert']")?.textContent).toContain(
+      "plan doesn't include cloud bots",
+    );
+  });
   it("replaces the form with the creating view while the request is in flight", async () => {
     let finish: (value: unknown) => void = () => {};
     const oncreate = vi.fn(

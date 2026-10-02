@@ -55,6 +55,11 @@ export type EntryPointResult =
       reason: string;
       /** True when the server refused (permission / plan), not a transport error. */
       blocked: boolean;
+      /**
+       * Set when the refusal is the company's plan: where the upgrade card
+       * lives, so the caller can offer the way forward instead of a dead end.
+       */
+      upgrade?: { channelId: string; cardId: string };
     };
 
 export type EntryPointApi = Pick<ConversationApi, "runCardAction">;
@@ -170,6 +175,8 @@ export const CLOUD_BOT_NAME_INVALID_REASON =
   "That name can't be used for a bot. Try letters and numbers.";
 
 const CREATE_AGENT_CARD_ID = "create_agent";
+/** The card the server resurfaces in the company channel on a plan refusal. */
+export const UPGRADE_PLAN_CARD_ID = "upgrade_plan";
 const CREATE_ACTION_ID = "create";
 
 export interface CloudBotDraft {
@@ -403,10 +410,18 @@ export async function runCreateCloudBotEntry(
     };
   }
   if (result.state === "blocked") {
-    logCloudBotExit(api, "create-blocked", {
-      why: resultFields(result).find((field) => field.id === "blocked_reason")?.value ?? "",
-    });
-    return { ok: false, reason: blockedReason(result), blocked: true };
+    const why =
+      resultFields(result).find((field) => field.id === "blocked_reason")?.value ?? "";
+    logCloudBotExit(api, "create-blocked", { why });
+    return {
+      ok: false,
+      reason: blockedReason(result),
+      blocked: true,
+      // A plan refusal resurfaces the upgrade card in this same channel.
+      ...(why === "plan"
+        ? { upgrade: { channelId, cardId: UPGRADE_PLAN_CARD_ID } }
+        : {}),
+    };
   }
   const refused = resultFields(result).find((field) => field.error);
   if (refused) {

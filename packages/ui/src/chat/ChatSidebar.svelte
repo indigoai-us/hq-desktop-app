@@ -1663,6 +1663,15 @@
     });
   }
 
+  /** The company's plan cannot host a cloud bot: open its channel on the upgrade card. */
+  function openUpgradeFromTakeover(target: { companyUid: string; channelId: string; cardId: string }): void {
+    newBotOpen = false;
+    requestChannelOpen(target.channelId, {
+      companyUid: target.companyUid,
+      focusCardId: target.cardId,
+    });
+  }
+
   async function cancelNewBotTakeover(): Promise<void> {
     newBotOpen = false;
     createStep = "find";
@@ -3819,6 +3828,7 @@
       onwakingchange={updateWakingBot}
       onopenchat={openWakingBotChat}
       onclosewaking={() => { newBotOpen = false; }}
+      onupgrade={openUpgradeFromTakeover}
     />
   {/if}
 </aside>

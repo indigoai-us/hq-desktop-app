@@ -6,7 +6,7 @@
   import { focusOnMount, portal } from "../portal.js";
   import type { AdapterPromise, AgentProvisionOptionsView } from "@hq/platform";
   import type { CloudBotDraft, EntryPointResult } from "../lifecycle-entry-points.js";
-  import NewBotCreateScreen, { type NewBotCreated } from "./NewBotCreateScreen.svelte";
+  import NewBotCreateScreen, { type NewBotCreated, type NewBotUpgradeTarget } from "./NewBotCreateScreen.svelte";
   import NewBotWakingScreen from "./NewBotWakingScreen.svelte";
   import { beginWakingSession, resumeWakingSession, type WakingBotSession } from "./waking-model.js";
   import type { BrainProvider } from "./bot-brain-approval.js";
@@ -31,6 +31,8 @@
     onwakingchange?: ((session: WakingBotSession | null) => void) | null;
     onopenchat?: ((session: WakingBotSession) => void) | null;
     onclosewaking?: (() => void) | null;
+    /** Leave the takeover for the company channel's upgrade card. */
+    onupgrade?: ((target: NewBotUpgradeTarget) => void) | null;
     /** Test seam. Production starts on the first clean bundled wallpaper. */
     wallpaperIndex?: number;
   }
@@ -54,6 +56,7 @@
     onwakingchange = null,
     onopenchat = null,
     onclosewaking = null,
+    onupgrade = null,
     wallpaperIndex = 0,
   }: Props = $props();
 
@@ -208,6 +211,7 @@
           loadProvisionOptions={loadProvisionOptions}
           oncreate={oncreate}
           oncomplete={startWaking}
+          {onupgrade}
           onopenlocal={canCreateLocalBot ? onopenlocal : null}
         />
       {:else}

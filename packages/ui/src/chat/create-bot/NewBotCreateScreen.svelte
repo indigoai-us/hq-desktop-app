@@ -7,13 +7,19 @@
 
   type Company = { companyUid: string; label: string };
   export interface NewBotCreated { name: string; companyUid: string; brain: BotRuntime; target: EntryPointTarget; }
+  export interface NewBotUpgradeTarget { companyUid: string; channelId: string; cardId: string; }
   interface Props {
     companies: readonly Company[]; currentCompanyUid?: string | null; runtimeReady?: Record<string, boolean> | null;
     loadProvisionOptions: (companyUid: string) => AdapterPromise<AgentProvisionOptionsView>;
     oncreate: (companyUid: string, draft: CloudBotDraft) => Promise<EntryPointResult>;
     oncomplete: (created: NewBotCreated) => void; onopenlocal?: (() => void) | null;
+    /** Open the company channel on its upgrade card. Without it the plan refusal stays an inline message. */
+    onupgrade?: ((target: NewBotUpgradeTarget) => void) | null;
   }
-  let { companies, currentCompanyUid = null, runtimeReady = null, loadProvisionOptions, oncreate, oncomplete, onopenlocal = null }: Props = $props();
+  let { companies, currentCompanyUid = null, runtimeReady = null, loadProvisionOptions, oncreate, oncomplete, onopenlocal = null, onupgrade = null }: Props = $props();
+  // A company whose plan cannot host a cloud bot: where its upgrade card lives.
+  let upgrade = $state<NewBotUpgradeTarget | null>(null);
+  const upgradeCompany = $derived(companies.find((company) => company.companyUid === upgrade?.companyUid)?.label ?? "This company");
   const initialCompany = (companies.find((company) => company.companyUid === currentCompanyUid) ?? companies[0])?.companyUid ?? "";
   let companyUid = $state(initialCompany); let name = $state(""); let runtime = $state<BotRuntime>(firstSignedInCloudRuntime(runtimeReady));
   let options = $state<AgentProvisionOptionsView | null>(null); let quoteStatus = $state<"loading" | "ready" | "error">("loading");
@@ -34,6 +40,7 @@
   function continueName(): void { attempted = true; if (!nameIssue) go(2); }
   function chooseSizeAfterLoad(value: AgentProvisionOptionsView): void { const preferred = value.options.find((option) => option.default && option.selectable && option.netMonthlyCents !== null) ?? value.options.find((option) => option.selectable && option.netMonthlyCents !== null); selectedSize = preferred?.key ?? ""; }
   function selectCompany(next: string): void { if (busy) return; companyUid = next; companyFocusUid = next; }
+  function leaveUpgrade(): void { upgrade = null; refusal = null; focusStep(); }
   function companyColumns(): number { return window.matchMedia("(max-width: 420px)").matches ? 1 : window.matchMedia("(max-width: 620px)").matches ? 2 : 3; }
   function focusCompanyAt(index: number): void { const radios = [...document.querySelectorAll<HTMLButtonElement>("[data-testid='new-bot-company-grid'] [role='radio']")]; const next = radios[(index + radios.length) % radios.length]; next?.focus(); companyFocusUid = next?.dataset.companyUid ?? companyFocusUid; }
   function onCompanyKeydown(event: KeyboardEvent): void {
@@ -56,7 +63,13 @@
   // Waking up screen takes over from the same low position.
   let creatingProgress = $state(2);
   $effect(() => { if (!busy) { creatingProgress = 2; return; } const timer = setInterval(() => { creatingProgress = Math.min(8, creatingProgress + 0.5); }, 400); return () => clearInterval(timer); });
-  async function submit(): Promise<void> { attempted = true; refusal = null; if (!canCreate || busy) return; busy = true; const result = await oncreate(companyUid, { name: name.trim(), handle: derivedHandle, runtime, size: selectedSize as "basic" | "power" | "dev", authMode: "subscription" }).catch((): EntryPointResult => ({ ok: false, blocked: false, reason: "We couldn't create this bot. Try again in a moment." })); busy = false; if (result.ok) { oncomplete({ name: name.trim(), companyUid, brain: runtime, target: result.target }); return; } const message = result.reason.trim() || "We couldn't create this bot. Try again in a moment."; refusal = message.match(/^.*?[.!?](?:\s|$)/)?.[0].trim() || message; }
+  async function submit(): Promise<void> { attempted = true; refusal = null; if (!canCreate || busy) return; busy = true; const result = await oncreate(companyUid, { name: name.trim(), handle: derivedHandle, runtime, size: selectedSize as "basic" | "power" | "dev", authMode: "subscription" }).catch((): EntryPointResult => ({ ok: false, blocked: false, reason: "We couldn't create this bot. Try again in a moment." })); busy = false;
+    // A bot answers with its own channel and no card. A card in the answer is
+    // the upgrade card: the plan cannot host a bot, and nothing was created.
+    if (result.ok && result.target.cardId) { if (onupgrade) upgrade = { companyUid, channelId: result.target.channelId, cardId: result.target.cardId }; else refusal = "This company's plan doesn't include cloud bots yet."; return; }
+    if (result.ok) { oncomplete({ name: name.trim(), companyUid, brain: runtime, target: result.target }); return; }
+    if (result.upgrade && onupgrade) { upgrade = { companyUid, ...result.upgrade }; return; }
+    const message = result.reason.trim() || "We couldn't create this bot. Try again in a moment."; refusal = message.match(/^.*?[.!?](?:\s|$)/)?.[0].trim() || message; }
   function onKeydown(event: KeyboardEvent): void { if (event.key !== "Enter" || busy) return; const target = event.target as HTMLElement; if (target.tagName === "BUTTON") return; event.preventDefault(); if (step === 1) continueName(); else if (step < finalStep) go((step + 1) as 2 | 3); else void submit(); }
 </script>
 
@@ -68,6 +81,17 @@
   <p class="new-bot-takeover-kicker">A new teammate</p>
   <h1 id="new-bot-takeover-title">Waking up <em>{name.trim()}</em></h1>
   <p class="new-bot-waking-status" data-testid="new-bot-creating-status" aria-live="polite">Getting things ready.</p>
+</section>
+{:else if upgrade}
+<!-- The company's plan cannot host a cloud bot. Say so plainly and offer the
+     way forward: its upgrade card, another company, or a local bot. -->
+<section class="new-bot-waking new-bot-upgrade" data-testid="new-bot-upgrade">
+  <p class="new-bot-takeover-kicker">One step first</p>
+  <h1 id="new-bot-takeover-title">Upgrade to add <em>cloud bots.</em></h1>
+  <p class="new-bot-waking-status" data-testid="new-bot-upgrade-copy">{upgradeCompany} is on the Starter plan. Cloud bots are part of HQ Workforce. Upgrade from the company's channel, then come back to create {name.trim()}.</p>
+  <button type="button" class="new-bot-create-submit" data-testid="new-bot-upgrade-open" onclick={() => { if (upgrade) onupgrade?.(upgrade); }}>See upgrade options</button>
+  <button type="button" class="new-bot-waking-link" data-testid="new-bot-upgrade-back" onclick={leaveUpgrade}>{singleCompany ? "Back" : "Choose another company"}</button>
+  {#if onopenlocal}<button type="button" class="new-bot-takeover-local" data-testid="new-bot-upgrade-local" onclick={onopenlocal}>Create a local bot instead</button>{/if}
 </section>
 {:else}
 <div class="new-bot-create" data-testid="new-bot-create-screen" role="group" onkeydown={onKeydown}>

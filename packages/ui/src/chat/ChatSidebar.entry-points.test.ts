@@ -202,6 +202,57 @@ describe("ChatSidebar lifecycle entry points", () => {
     expect(oncreateagent).not.toHaveBeenCalled();
   });
 
+  it("offers the upgrade card instead of a waking screen when the company's plan cannot host a bot", async () => {
+    // Regression: the upgrade destination (a card, no bot) used to start the
+    // Waking up screen for a bot that was never created.
+    const oncreateagent = vi.fn(
+      async (): Promise<EntryPointResult> => ({
+        ok: true,
+        target: { channelId: "chn_indigo", cardId: "upgrade_plan", cardKind: null },
+      }),
+    );
+    const opened: Array<Record<string, unknown>> = [];
+    const onOpen = (event: Event) => {
+      opened.push((event as CustomEvent).detail as Record<string, unknown>);
+    };
+    window.addEventListener("hq:open-channel", onOpen);
+    try {
+      mountSidebar({ companies: [INDIGO], oncreateagent });
+      await settle();
+      await openModal();
+      click('[data-testid="chat-create-new-bot"]');
+      await settle();
+      const name = q<HTMLInputElement>('[data-testid="new-bot-name"]')!;
+      name.value = "Nova";
+      name.dispatchEvent(new Event("input", { bubbles: true }));
+      await settle();
+      click('[data-testid="new-bot-continue-name"]');
+      await settle();
+      click('[data-testid="new-bot-create-submit"]');
+      await settle();
+
+      expect(q('[data-testid="new-bot-waking-screen"]')).toBeNull();
+      expect(q('[data-testid="chat-waking-bot-ring"]')).toBeNull();
+      const upgrade = q<HTMLElement>('[data-testid="new-bot-upgrade"]');
+      expect(upgrade?.textContent).toContain("Starter plan");
+      expect(upgrade?.textContent).toContain("create Nova");
+
+      click('[data-testid="new-bot-upgrade-open"]');
+      await settle();
+      expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
+      // The sidebar's own boot-time open is `automatic`; only the person's is not.
+      const asked = opened.filter((detail) => detail.automatic !== true);
+      expect(asked).toHaveLength(1);
+      expect(asked[0]).toMatchObject({
+        channelId: "chn_indigo",
+        companyUid: "cmp_indigo",
+        focusCardId: "upgrade_plan",
+      });
+    } finally {
+      window.removeEventListener("hq:open-channel", onOpen);
+    }
+  });
+
   it("reopens the current waking progress when its sidebar bot is clicked after close", async () => {
     const oncreateagent = vi.fn(
       async (): Promise<EntryPointResult> => ({

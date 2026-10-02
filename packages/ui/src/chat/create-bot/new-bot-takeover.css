@@ -702,3 +702,13 @@
     height: 136px;
   }
 }
+
+/* The plan refusal: one primary action, two quiet ways out. */
+.new-bot-upgrade {
+  gap: 14px;
+}
+
+.new-bot-upgrade .new-bot-create-submit {
+  justify-self: stretch;
+  margin-top: 6px;
+}

@@ -243,6 +243,7 @@ describe("runCreateCloudBotEntry", () => {
       ok: false,
       reason: "This company's plan doesn't include cloud bots yet.",
       blocked: true,
+      upgrade: { channelId: CHANNEL, cardId: "upgrade_plan" },
     });
     expect(logToFile).toHaveBeenCalledWith(
       "cloud-bot",
@@ -295,6 +296,25 @@ describe("runCreateCloudBotEntry", () => {
     // Ids and states only: nothing a person typed reaches the log.
     expect(line).not.toContain("Someone else");
     expect(line).not.toContain("Polar");
+  });
+
+  it("offers no upgrade path for a permission refusal", async () => {
+    const { api } = harness({
+      created: {
+        cardId: "create_agent",
+        state: "blocked",
+        fields: [
+          { id: "blocked_reason", value: "permission" },
+          { id: "owner", value: "Corey" },
+        ],
+      },
+    });
+    const result = await runCreateCloudBotEntry(api, "cmp_acme", DRAFT);
+    expect(result).toEqual({
+      ok: false,
+      reason: "You don't have permission to add bots here. Ask Corey.",
+      blocked: true,
+    });
   });
 
   it("stops before any server call when the draft is missing a size or brain", async () => {
