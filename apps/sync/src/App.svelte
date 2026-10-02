@@ -1,10 +1,15 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
-  import { createSyncPlatformAdapter } from '@hq/platform';
+  import {
+    createSyncPlatformAdapter,
+    POST_READY_ACTION_TELEMETRY_FLAG,
+    type Json,
+  } from '@hq/platform';
   import { startTraySync } from './lib/traySync';
   import { emit, listen } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
+  import { getVersion } from '@tauri-apps/api/app';
   import {
     isPermissionGranted as isNotifyPermissionGranted,
     sendNotification,
@@ -72,6 +77,7 @@
     type MeetingDetectedPayload,
   } from './lib/meetingDetection';
   import Onboarding from './components/Onboarding.svelte';
+  import { startupSplashFor } from './lib/startup-splash';
   import {
     armStopWatchdog,
     clearStopWatchdog,
@@ -79,12 +85,106 @@
   } from './lib/stopWatchdog';
   import { TELEMETRY_CONSENT_VERSION } from './lib/consent-version';
   import { markConsentRepromptShown } from './lib/onboarding-telemetry';
+  import {
+    createPostReadyActionTelemetry,
+    isPostReadyAction,
+    POST_READY_ACTION_EVENT,
+  } from './lib/post-ready-action-telemetry';
   import './styles/popover.css';
 
   const traySyncAdapter = createSyncPlatformAdapter({
     invoke: (command, args) => invoke(command, args),
     primeMirrorQuarantineGate: true,
   });
+  const postReadyTelemetry = getVersion()
+    .then((appVersion) => createPostReadyActionTelemetry({
+      appVersion,
+      os: desktopTelemetryOs(),
+      isFlagEnabled: async () => {
+        const result = await traySyncAdapter.identity.hasFeature(POST_READY_ACTION_TELEMETRY_FLAG);
+        return result.ok && result.value === true;
+      },
+      getIdentity: async (scope) => resolvePostReadyIdentity(scope),
+    }))
+    .catch((err) => {
+      console.warn('post-ready action telemetry initialization failed:', err);
+      return createPostReadyActionTelemetry({
+        appVersion: 'unknown',
+        os: desktopTelemetryOs(),
+        isFlagEnabled: async () => {
+          const result = await traySyncAdapter.identity.hasFeature(POST_READY_ACTION_TELEMETRY_FLAG);
+          return result.ok && result.value === true;
+        },
+        getIdentity: async (scope) => resolvePostReadyIdentity(scope),
+      });
+    });
+  function handlePostReadyAction(event: Event): void {
+    const detail = (
+      event as CustomEvent<{
+        action?: unknown;
+        companyUid?: unknown;
+        companySlug?: unknown;
+      }>
+    ).detail;
+    if (!detail || !isPostReadyAction(detail.action)) return;
+    const scope = {
+      ...(typeof detail.companyUid === 'string' ? { companyUid: detail.companyUid } : {}),
+      ...(typeof detail.companySlug === 'string' ? { companySlug: detail.companySlug } : {}),
+    };
+    void postReadyTelemetry.then((telemetry) =>
+      telemetry.record(
+        detail.action as Parameters<typeof telemetry.record>[0],
+        scope,
+      ),
+    );
+  }
+  window.addEventListener(POST_READY_ACTION_EVENT, handlePostReadyAction);
+  const postReadyCloseListener = getCurrentWindow().onCloseRequested(() => {
+    void postReadyTelemetry.then((telemetry) => telemetry.record('close_window'));
+  });
+  onDestroy(() => {
+    window.removeEventListener(POST_READY_ACTION_EVENT, handlePostReadyAction);
+    void postReadyCloseListener.then((unlisten) => unlisten());
+  });
+
+  async function resolvePostReadyIdentity(
+    scope?: { companyUid?: string; companySlug?: string },
+  ): Promise<{ personUid: string; companyUid: string | null } | null> {
+    const person = await traySyncAdapter.identity.whoami();
+    if (!person.ok) return null;
+    const workspaces = await traySyncAdapter.identity.listWorkspaces();
+    if (!workspaces.ok) return null;
+    let activeSlug = scope?.companySlug ?? config?.companySlug ?? '';
+    if (!activeSlug && !scope?.companyUid) {
+      activeSlug = (await invoke<string | null>('get_desktop_active_company').catch((err) => {
+        console.warn('active company lookup failed for post-ready telemetry:', err);
+        return null;
+      })) ?? '';
+    }
+    const memberships = workspaces.value as Json[];
+    const active = scope?.companyUid
+      ? memberships.find(
+          (workspace) => String(workspace.companyUid ?? workspace.uid ?? '') === scope.companyUid,
+        )
+      : scope?.companySlug
+        ? memberships.find(
+            (workspace) => String(workspace.slug ?? workspace.companySlug ?? '') === scope.companySlug,
+          )
+        : memberships.find(
+            (workspace) => activeSlug && String(workspace.slug ?? workspace.companySlug ?? '') === activeSlug,
+          ) ?? (memberships.length === 1 ? memberships[0] : undefined);
+    const companyUid = active && String(active.companyUid ?? active.uid ?? '').trim();
+    return { personUid: person.value.personUid, companyUid: companyUid || null };
+  }
+
+  function desktopTelemetryOs(): 'macos' | 'windows' | 'linux' {
+    const platform = typeof navigator === 'undefined'
+      ? ''
+      : `${navigator.platform} ${navigator.userAgent}`.toLowerCase();
+    if (platform.includes('mac')) return 'macos';
+    if (platform.includes('win')) return 'windows';
+    return 'linux';
+  }
   onDestroy(() => {
     void traySyncAdapter.dispose?.();
   });
@@ -122,6 +222,20 @@
   // are only ever shown from a resolved verdict — a failed probe holds the
   // neutral loading surface and re-probes (see `checkAuth`).
   let startupPhase = $state<StartupPhase>('loading');
+  // First launch: native setup gave `main` to the welcome flow (a transparent,
+  // work-area-sized window). Paint an opaque splash while the startup check
+  // runs so the window is visible from the first frame.
+  let welcomeWindowActive = $state(false);
+  void invoke<boolean>('get_welcome_window_active')
+    .then((active) => {
+      welcomeWindowActive = active === true;
+    })
+    .catch((err) => {
+      console.warn('get_welcome_window_active unavailable; using the compact spinner:', err);
+    });
+  const startupSplash = $derived(
+    startupSplashFor({ startupResolved: startupPhase === 'resolved', welcomeWindowActive }),
+  );
   let startupReprobeTimer: ReturnType<typeof setTimeout> | null = null;
   let lifecycleState = $state<string | null>(null);
   let startupSetupEvidence = $state<StartupSetupEvidence | null>(null);
@@ -899,6 +1013,27 @@
     unlisteners.push(
       await listen('tray:sync-now', () => {
         handleSyncNow();
+      })
+    );
+
+    unlisteners.push(
+      await listen<{
+        title?: unknown;
+        message?: unknown;
+      }>('hq-core-update:automatic-failed', async ({ payload }) => {
+        const title = typeof payload.title === 'string'
+          ? payload.title.slice(0, 80)
+          : 'Core update failed';
+        const body = typeof payload.message === 'string'
+          ? payload.message.slice(0, 240)
+          : 'Open the Core update log for details.';
+        try {
+          if (await isNotifyPermissionGranted()) {
+            sendNotification({ title, body });
+          }
+        } catch (err) {
+          console.error('core update failure notification failed:', err);
+        }
       })
     );
 
@@ -1981,7 +2116,15 @@
 </script>
 
 <main>
-  {#if startupPhase !== 'resolved'}
+  {#if startupSplash === 'welcome-splash'}
+    <div class="welcome-splash" data-testid="startup-welcome-splash" data-tauri-drag-region>
+      <svg class="welcome-splash-mark" viewBox="0 0 280 161" fill="currentColor" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="HQ">
+        <path d="M85.7251 3.66162H118.034V154.434H85.7251V89.8176H32.3085V154.434H0V3.66162H32.3085V57.5091H85.7251V3.66162Z"/>
+        <path d="M257.169 160.035L241.014 144.096C235.343 147.973 229.096 150.988 222.276 153.142C215.527 155.296 208.419 156.373 200.952 156.373C190.757 156.373 181.172 154.363 172.197 150.342C163.223 146.25 155.325 140.65 148.505 133.542C141.684 126.362 136.335 118.07 132.458 108.664C128.581 99.187 126.642 89.0278 126.642 78.1865C126.642 67.417 128.581 57.3296 132.458 47.9242C136.335 38.4471 141.684 30.1187 148.505 22.939C155.325 15.7593 163.223 10.1592 172.197 6.1386C181.172 2.0462 190.757 0 200.952 0C211.219 0 220.84 2.0462 229.814 6.1386C238.789 10.1592 246.686 15.7593 253.507 22.939C260.328 30.1187 265.641 38.4471 269.446 47.9242C273.323 57.3296 275.261 67.417 275.261 78.1865C275.261 86.0123 274.184 93.5151 272.031 100.695C269.948 107.803 267.077 114.444 263.415 120.618L280 137.203L257.169 160.035ZM200.952 124.065C203.896 124.065 206.732 123.741 209.46 123.095C212.26 122.449 214.952 121.552 217.537 120.403L208.491 111.357L231.322 88.5252L239.291 96.4946C240.512 93.6946 241.409 90.7509 241.984 87.6637C242.63 84.5764 242.953 81.4173 242.953 78.1865C242.953 71.8684 241.84 65.9452 239.614 60.4168C237.461 54.8885 234.445 50.0422 230.568 45.878C226.691 41.642 222.204 38.3394 217.106 35.9701C212.08 33.529 206.696 32.3085 200.952 32.3085C195.208 32.3085 189.788 33.529 184.69 35.9701C179.664 38.3394 175.213 41.642 171.336 45.878C167.459 50.0422 164.407 54.8885 162.182 60.4168C160.028 65.9452 158.951 71.8684 158.951 78.1865C158.951 84.5046 160.028 90.4637 162.182 96.0639C164.407 101.592 167.459 106.474 171.336 110.71C175.213 114.875 179.664 118.141 184.69 120.511C189.788 122.88 195.208 124.065 200.952 124.065Z"/>
+      </svg>
+      <p class="welcome-splash-line"><span class="dot-spinner"></span>Starting HQ…</p>
+    </div>
+  {:else if startupSplash === 'spinner'}
     <div class="loading">
       <span class="dot-spinner"></span>
     </div>
@@ -2059,6 +2202,38 @@
     align-items: center;
     justify-content: center;
     height: 100vh;
+  }
+
+  .welcome-splash {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 28px;
+    background: #0b0b0f;
+    color: #ffffff;
+  }
+
+  .welcome-splash-mark {
+    width: 96px;
+    height: auto;
+  }
+
+  .welcome-splash-line {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0;
+    font-size: 14px;
+    color: rgba(255, 255, 255, 0.72);
+  }
+
+  .welcome-splash-line .dot-spinner {
+    width: 14px;
+    height: 14px;
+    border-width: 2px;
   }
 
   .dot-spinner {

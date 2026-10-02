@@ -114,7 +114,7 @@ pub use hq_desktop_core::hq_cli_update::{
     should_retry_windows_busy_install_target, suppress_for_dismissal,
     unattributed_install_stderr_origin, user_prefix_aim_decision, version_from_hq_binary,
     version_if_hq_cli, windows_busy_cli_version_unchanged, windows_busy_deferral_decision,
-    windows_busy_install_target_retry_delay_for_recovery, windows_busy_install_target_retry_rung,
+    windows_busy_install_target_retry_delay, windows_busy_install_target_retry_rung,
     AsyncSingleFlight, DeliveredPrefixShim, ExecutedCopyAim, ExecutedCopyReaim,
     ExecutedCopyReaimGate, HqCliUpdateInfo, InstallEnvironment, InstallExecutor,
     InstallFailureEpisode, InstallFailureKind, InterpreterRecovery, LaunchCliCheck,
@@ -588,8 +588,6 @@ async fn run_npm_install(
 }
 
 const MAX_NPM_INSTALL_ATTEMPTS: usize = 4;
-pub(crate) const WINDOWS_HQ_CLI_CONTENTION_RECOVERY_FLAG: &str =
-    "desktop.windows-hq-cli-contention-recovery-v1";
 
 #[derive(Debug)]
 struct NpmInstallAttempt {
@@ -1047,7 +1045,6 @@ async fn run_npm_install_local_recovery_ladder(
     // Never terminate or signal the holder.
     if !output.status.success() {
         let mut retries_started = 0usize;
-        let mut extended_recovery_enabled = None;
         loop {
             let detail = npm_output_detail(&output);
             let is_locked_target =
@@ -1115,20 +1112,7 @@ async fn run_npm_install_local_recovery_ladder(
                 };
                 break;
             }
-            let extended = match extended_recovery_enabled {
-                Some(enabled) => enabled,
-                None => {
-                    let enabled = crate::commands::hq_pro::feature_flag_enabled(
-                        WINDOWS_HQ_CLI_CONTENTION_RECOVERY_FLAG,
-                    )
-                    .await;
-                    extended_recovery_enabled = Some(enabled);
-                    enabled
-                }
-            };
-            let Some(delay) =
-                windows_busy_install_target_retry_delay_for_recovery(retry_number, extended)
-            else {
+            let Some(delay) = windows_busy_install_target_retry_delay(retry_number) else {
                 *windows_busy_retry_attempts = Some(retries_started as u8);
                 *windows_busy_retry_outcome = if retries_started > 0 {
                     WindowsBusyRetryOutcome::Failed
@@ -3430,6 +3414,13 @@ async fn repair_managed_shadow_and_refinalize(
 
     let repair_outcome =
         managed_shadow_repair_outcome(action, install_converged(resolved.as_deref(), latest));
+    let executed_copy_aim = executed_copy_aim_for(
+        &post_install_hq,
+        Some(prefix),
+        installer_npm,
+        managed_roots,
+        paths::home_dir().as_deref(),
+    );
 
     let outcome = decide_post_install(
         &PostInstallContext::npm(
@@ -3444,7 +3435,12 @@ async fn repair_managed_shadow_and_refinalize(
             delivered_version.as_deref(),
         )
         .with_managed_roots(managed_roots)
-        .with_managed_shadow_repair(repair_outcome),
+        .with_managed_shadow_repair(repair_outcome)
+        .with_executed_copy_aim(executed_copy_aim)
+        .with_resolution_telemetry(
+            paths::resolution_source_of_bin(&post_install_hq),
+            delivered_prefix_shim_for(Some(prefix), delivered_version.as_deref()),
+        ),
     );
     log("hq-cli-update", &outcome.log_line);
     apply_post_install_with_app(app, &outcome)
@@ -3588,6 +3584,7 @@ async fn settings_path_repair_and_refinalize(
             &paths::settings_path_dirs_in(&hq_root),
             &managed_bin_dir,
         ),
+        ..SettingsPathTelemetry::default()
     };
 
     let outcome = decide_post_install(

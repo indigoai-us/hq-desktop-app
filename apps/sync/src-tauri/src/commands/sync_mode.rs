@@ -91,6 +91,21 @@ async fn resolve_membership_key(vault: &VaultClient, company_slug: &str) -> Resu
 /// (`isDefault: true` means no sync-config row exists yet → effective `all`).
 #[tauri::command]
 pub async fn get_sync_mode(company_slug: String) -> Result<MembershipSyncConfig, String> {
+    match crate::commands::hq_daemon_host::resolved_phase_for_command().await? {
+        crate::commands::hq_daemon_host::HostPhase::Daemon => {
+            let args = crate::commands::hq_daemon_host::daemon_sync_mode_args(&company_slug, None)
+                .into_iter()
+                .map(str::to_owned)
+                .collect();
+            let output =
+                crate::commands::hq_daemon_host::run_daemon_sync_command_blocking(args).await?;
+            return crate::commands::hq_daemon_host::parse_daemon_sync_mode(&output);
+        }
+        crate::commands::hq_daemon_host::HostPhase::Pending => {
+            unreachable!("pending phase is returned as a retry error")
+        }
+        crate::commands::hq_daemon_host::HostPhase::Legacy => {}
+    }
     let vault = vault_client().await?;
     let key = resolve_membership_key(&vault, &company_slug).await?;
     vault
@@ -109,6 +124,22 @@ pub async fn set_sync_mode(
     mode: String,
 ) -> Result<MembershipSyncConfig, String> {
     validate_toggle_mode(&mode)?;
+    match crate::commands::hq_daemon_host::resolved_phase_for_command().await? {
+        crate::commands::hq_daemon_host::HostPhase::Daemon => {
+            let args =
+                crate::commands::hq_daemon_host::daemon_sync_mode_args(&company_slug, Some(&mode))
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect();
+            let output =
+                crate::commands::hq_daemon_host::run_daemon_sync_command_blocking(args).await?;
+            return crate::commands::hq_daemon_host::parse_daemon_sync_mode(&output);
+        }
+        crate::commands::hq_daemon_host::HostPhase::Pending => {
+            unreachable!("pending phase is returned as a retry error")
+        }
+        crate::commands::hq_daemon_host::HostPhase::Legacy => {}
+    }
     let vault = vault_client().await?;
     let key = resolve_membership_key(&vault, &company_slug).await?;
     vault

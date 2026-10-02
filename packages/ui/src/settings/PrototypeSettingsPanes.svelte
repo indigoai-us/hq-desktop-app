@@ -1314,7 +1314,14 @@
       <div>
         <div class="sn">Sync daemon</div>
         <div class="sd">
-          The same hq-sync-runner v1 HQ Sync already supervises
+          {#if liveSync.daemonOwner}
+            Sync owner: {liveSync.daemonOwner}
+          {:else}
+            Background sync service
+          {/if}
+          {#if liveSync.daemonHealth}
+            · Health: {liveSync.daemonHealth}
+          {/if}
         </div>
       </div>
       <span class="mono" class:ok={liveSync.daemonRunning}
@@ -1337,6 +1344,19 @@
       </div>
       <span class="mono">{lastSyncLabelFromLive(liveSync) ?? "Never"}</span>
     </div>
+    {#if liveSync.daemonErrors.length > 0 || liveSync.daemonLogPath}
+      <div class="set-row">
+        <div>
+          <div class="sn">Sync status</div>
+          <div class="sd" role={liveSync.daemonErrors.length > 0 ? "alert" : undefined}>
+            {liveSync.daemonErrors.join(" ") || "No recent daemon errors"}
+          </div>
+          {#if liveSync.daemonLogPath}
+            <div class="sd mono-path">Log: {liveSync.daemonLogPath}</div>
+          {/if}
+        </div>
+      </div>
+    {/if}
     <div class="set-row">
       <div>
         <div class="sn">Sync on launch</div>

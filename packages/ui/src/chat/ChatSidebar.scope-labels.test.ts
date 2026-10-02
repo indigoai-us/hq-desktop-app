@@ -205,6 +205,37 @@ describe("ChatSidebar company / email labels", () => {
     expect(scopeOf("ch:hq-desktop")?.getAttribute("data-kind")).toBe("company");
   });
 
+  it("uses the company display name for its scope avatar and label", async () => {
+    const twoWordCompany: Workspace = {
+      ...INDIGO,
+      slug: "xy",
+      displayName: "Two Word",
+      cloudUid: "cmp_xy",
+    };
+    component = mountSidebar({
+      companies: [twoWordCompany],
+      scopeUid: "cmp_xy",
+    });
+
+    const pill = host.querySelector<HTMLButtonElement>(
+      '[data-testid="chat-scope-pill"]',
+    );
+    expect(pill).toBeTruthy();
+    pill?.click();
+
+    await vi.waitFor(() => {
+      expect(host.querySelector('[data-testid="chat-scope-menu"]')).toBeTruthy();
+    });
+    const option = host.querySelector<HTMLElement>(
+      '[data-testid="chat-scope-option"][data-scope="cmp_xy"]',
+    );
+    expect(option?.textContent).toContain("Two Word");
+    expect(
+      option?.querySelector(".chat-scope-avatar")?.textContent?.trim(),
+    ).toBe("TW");
+    expect(option?.textContent).not.toContain("XY");
+  });
+
   it("agent DMs in All scope show the company name", async () => {
     component = mountSidebar();
     await vi.waitFor(() => {

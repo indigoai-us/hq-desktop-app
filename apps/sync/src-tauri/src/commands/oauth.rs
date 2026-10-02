@@ -35,13 +35,16 @@
 //   Errors that the UI should show a friendly, specific message for are
 //   returned as a JSON string `{"code": "...", "message": "..."}` rather than
 //   a plain string, so the frontend can pattern-match on `code` instead of
-//   sniffing English text. Currently: `OAUTH_PORT_IN_USE`, `OAUTH_PROVIDER_ERROR`.
+//   sniffing English text. Currently: `OAUTH_PORT_IN_USE`, `OAUTH_PROVIDER_ERROR`,
+//   `MICROSOFT_EMAIL_REQUIRED`, `MICROSOFT_ENABLEMENT_REQUIRED`,
+//   `MICROSOFT_RESOLVE_FAILED`.
 
 use super::cognito::{AuthState, CognitoTokens};
+use hq_desktop_core::microsoft_org::identity_provider_for_sign_in;
 use hq_desktop_core::oauth::{
     bind_loopback_listeners, build_authorize_url_from_redirect, cognito_client_id,
-    cognito_identity_provider, cognito_token_url, compute_code_challenge, generate_code_verifier,
-    parse_callback, AuthorizeRequest, CallbackOutcome, CallbackRejection, REDIRECT_URI,
+    cognito_token_url, compute_code_challenge, generate_code_verifier, parse_callback,
+    AuthorizeRequest, CallbackOutcome, CallbackRejection, REDIRECT_URI,
 };
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
@@ -413,16 +416,28 @@ fn write_response(stream: &mut TcpStream, status: &str, body: &str) {
 /// It also surfaces a port-in-use conflict immediately, instead of after
 /// the user has already been sent to the provider's sign-in page.
 #[tauri::command]
-pub async fn start_oauth_login(app: AppHandle, provider: String) -> Result<OAuthFlowInit, String> {
-    let identity_provider = cognito_identity_provider(&provider)?;
+pub async fn start_oauth_login(
+    app: AppHandle,
+    provider: String,
+    email: Option<String>,
+) -> Result<OAuthFlowInit, String> {
+    let identity_provider = resolve_identity_provider(&provider, email.as_deref()).await?;
     // Explicit identity_provider tells Cognito Hosted UI to skip its own
     // username/password form and redirect straight to the selected provider.
     // No nonce: this path has no confirmation step to bind a token back to.
-    let armed = arm_oauth_flow(&app, Some(identity_provider), None)?;
+    let armed = arm_oauth_flow(&app, Some(&identity_provider), None)?;
     Ok(OAuthFlowInit {
         authorize_url: armed.authorize_url,
         state: armed.state,
     })
+}
+
+async fn resolve_identity_provider(provider: &str, email: Option<&str>) -> Result<String, String> {
+    let client = hq_desktop_core::client_info::build_client();
+    let api_base = hq_desktop_core::continuation_endpoints::api_base();
+    identity_provider_for_sign_in(provider, email, &client, &api_base)
+        .await
+        .map_err(|err| structured_error(err.code(), &err.message()))
 }
 
 /// An armed loopback listener and the values that identify its attempt.

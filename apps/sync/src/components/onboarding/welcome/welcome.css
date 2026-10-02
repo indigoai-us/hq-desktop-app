@@ -485,6 +485,37 @@
   opacity: 0.35;
   pointer-events: none;
 }
+.hq-welcome .signin .microsoft-email {
+  display: grid;
+  gap: 8px;
+  margin: 16px auto 0;
+  max-width: 320px;
+  text-align: left;
+}
+.hq-welcome .signin .microsoft-email label {
+  color: var(--w-muted);
+  font-size: 13px;
+  line-height: 18px;
+}
+.hq-welcome .signin .microsoft-email input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 40px;
+  padding: 9px 11px;
+  border: 1px solid var(--w-choose-border);
+  border-radius: var(--w-radius-button);
+  background: var(--w-choose-bg);
+  color: var(--w-text);
+  font: inherit;
+  font-size: 14px;
+}
+.hq-welcome .signin .microsoft-email input:focus-visible {
+  outline: 1.5px solid var(--w-text);
+  outline-offset: 2px;
+}
+.hq-welcome .signin .microsoft-email input:disabled {
+  opacity: 0.6;
+}
 .hq-welcome.replay .signin .body {
   margin-bottom: 0;
 }
