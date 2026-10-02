@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Cognito refresh failures now log the status and sanitized provider error details. HTTP 401, invalid client or grant responses, and Cognito NotAuthorizedException responses require sign-in; other failures retry and keep the session. The shared token lock uses the CLI-compatible PID-file protocol.
+- Core update failures now report the available snapshot disk space instead of the required snapshot size.
 
 ## [0.10.381] — 2026-10-02
 
