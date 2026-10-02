@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Desktop no longer shows your personal space in the Companies list, where clicking it looped between Setting up and Tap to retry.
+
 - Windows-visible copy now uses PC controls, the system tray, and file manager labels where older screens assumed a Mac, menu bar, or Finder.
 
 - Platform wording and keyboard hints now follow the visitor's or desktop's OS instead of assuming macOS.
@@ -15,6 +17,13 @@ The release moves it under the version it ships in.
 - Fixes a race in the agent sign-in test when reading the child process ID.
 
 - Desktop usage uploads are limited to four requests and 4 MB per sync; remaining records resume on later syncs.
+
+- Behind `desktop.sync-on-launch-reconcile-v1`, the desktop app honors the existing Sync on launch preference with a one-shot sync when background Auto-sync is disabled.
+
+- When an HQ CLI update fails partway through installing, the desktop app now
+  puts the previous HQ CLI back instead of leaving a broken or missing `hq`
+  command. Before this, a failed update could leave sync unable to run until
+  the CLI was reinstalled by hand.
 
 ## [0.10.377] — 2026-10-02
 
