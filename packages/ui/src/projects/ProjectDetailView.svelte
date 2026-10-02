@@ -979,6 +979,7 @@
             {onselectDependency}
             {onStoryPassesChange}
             {sessions}
+            {stories}
             {now}
             embedded
           />

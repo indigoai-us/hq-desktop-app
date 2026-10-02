@@ -18,6 +18,7 @@
   import {
     projectDisplayName,
     storyLiveRunView,
+    taskPaneStatus,
     type PortfolioSessionRef,
     type Project,
     type Story,
@@ -51,6 +52,9 @@
     sessions?: readonly PortfolioSessionRef[];
     /** Compact relative "now" for elapsed / last-signal labels. */
     now?: number;
+    /** All stories in the project, so the pane status uses the same task
+     *  column rule as the task list (QA-036). */
+    stories?: readonly Story[];
   }
 
   let {
@@ -64,6 +68,7 @@
     embedded = true,
     sessions = [],
     now = Date.now(),
+    stories = [],
   }: Props = $props();
 
   let passesOverride = $state<boolean | null>(null);
@@ -128,11 +133,19 @@
   const liveRun = $derived(
     story ? storyLiveRunView(story, sessions, now) : null,
   );
-  const statusLabel = $derived(
-    currentPasses ? "Complete" : liveRun ? "Active" : "To do",
+  // Same task-column rule as the task list rows (QA-036): one source of truth.
+  const paneStatus = $derived(
+    story ? taskPaneStatus(story, stories, sessions, passesOverride) : null,
   );
+  const statusLabel = $derived(paneStatus?.label ?? "To do");
   const statusTone = $derived(
-    currentPasses ? "complete" : liveRun ? "active" : "todo",
+    paneStatus?.column === "complete"
+      ? "complete"
+      : paneStatus?.column === "active"
+        ? "active"
+        : paneStatus?.column === "in-progress"
+          ? "progress"
+          : "todo",
   );
 
   async function setPasses(next: boolean) {
@@ -714,6 +727,10 @@
 
   .status-pill.tone-active::before {
     background: var(--v4-ok);
+  }
+
+  .status-pill.tone-progress::before {
+    background: var(--v4-text-2);
   }
 
   .status-pill.tone-todo {

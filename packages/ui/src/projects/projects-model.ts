@@ -1208,6 +1208,39 @@ export function taskColumn(
   return "not-started";
 }
 
+/** Task pane status label for each task column (pane copy; To do = not started). */
+export const TASK_PANE_STATUS_LABEL: Record<TaskColumn, string> = {
+  "not-started": "To do",
+  "in-progress": "In progress",
+  active: "Active",
+  complete: "Complete",
+};
+
+/**
+ * Status shown in the task pane. Uses the same `taskColumn` rule as the task
+ * list so the row group and the pane can never disagree (QA-036). The pane's
+ * To do / Done control writes `story.passes`; pass the pending value as
+ * `passesOverride` so the badge follows an in-flight write.
+ */
+export function taskPaneStatus(
+  story: Story,
+  allStories: readonly Story[],
+  sessions: readonly PortfolioSessionRef[],
+  passesOverride: boolean | null = null,
+): { column: TaskColumn; label: string } {
+  const passes = passesOverride ?? story.passes;
+  const effective = passes === story.passes ? story : { ...story, passes };
+  const pool = allStories.some((entry) => entry.id === story.id)
+    ? allStories.map((entry) => (entry.id === story.id ? effective : entry))
+    : [...allStories, effective];
+  const column = taskColumn(
+    effective,
+    pool,
+    storyHasLiveSignal(effective, sessions),
+  );
+  return { column, label: TASK_PANE_STATUS_LABEL[column] };
+}
+
 /** Classify all stories into task columns (empty columns kept by group helper). */
 export function classifyTasks(
   stories: Story[],
