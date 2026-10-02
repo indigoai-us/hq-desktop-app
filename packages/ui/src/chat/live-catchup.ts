@@ -47,6 +47,46 @@ export interface InboxDmActivity {
   personUid: string;
   lastMessageAt: string;
   displayName?: string;
+  /**
+   * Last message a person typed in this pair, from GET /v1/notify/dm-threads.
+   * Present only when the server knows it.
+   */
+  lastHumanMessageAt?: string;
+  /**
+   * `false` when the server knows the pair holds no human message. Absent
+   * with no `lastHumanMessageAt` means unknown, never "none".
+   */
+  hasHumanMessage?: false;
+}
+
+/** The human-recency fields of one activity entry, when it carries any. */
+function humanRecencyOf(
+  entry: Pick<InboxDmActivity, "lastHumanMessageAt" | "hasHumanMessage">,
+): Pick<InboxDmActivity, "lastHumanMessageAt" | "hasHumanMessage"> {
+  if (entry.lastHumanMessageAt) {
+    return { lastHumanMessageAt: entry.lastHumanMessageAt };
+  }
+  return entry.hasHumanMessage === false ? { hasHumanMessage: false } : {};
+}
+
+/**
+ * True when a DM thread listing page reports human recency for at least one
+ * pair. An older server sends neither field on any row.
+ */
+export function dmThreadsPageCarriesHumanRecency(page: unknown): boolean {
+  const rec =
+    page && typeof page === "object" && !Array.isArray(page)
+      ? (page as Record<string, unknown>)
+      : null;
+  const threads = Array.isArray(rec?.threads) ? rec.threads : [];
+  return threads.some((item) => {
+    if (!item || typeof item !== "object") return false;
+    const row = item as Record<string, unknown>;
+    return (
+      (typeof row.lastHumanMessageAt === "string" && row.lastHumanMessageAt) ||
+      row.hasHumanMessage === false
+    );
+  });
 }
 
 /**
@@ -165,6 +205,10 @@ export function channelActivityFromTimeline<
  * the inbox this index is written for BOTH directions of every DM, so a pair
  * where the owner sent last (and one whose history fell out of the capped
  * inbox window) still yields a stamp. Rows carry no names or content.
+ *
+ * A row may also carry `lastHumanMessageAt`, or `hasHumanMessage: false` when
+ * the pair is known to hold no human message. Both are copied through; a row
+ * with neither stays without them (unknown).
  */
 export function dmActivityFromThreadsPage(
   page: unknown,
@@ -187,7 +231,17 @@ export function dmActivityFromThreadsPage(
     if (typeof at !== "string" || !at) continue;
     const prev = latest.get(uid);
     if (prev && at <= prev.lastMessageAt) continue;
-    latest.set(uid, { personUid: uid, lastMessageAt: at });
+    const humanAt =
+      typeof row.lastHumanMessageAt === "string" ? row.lastHumanMessageAt : "";
+    latest.set(uid, {
+      personUid: uid,
+      lastMessageAt: at,
+      ...(humanAt
+        ? { lastHumanMessageAt: humanAt }
+        : row.hasHumanMessage === false
+          ? { hasHumanMessage: false as const }
+          : {}),
+    });
   }
   return [...latest.values()];
 }
@@ -207,12 +261,18 @@ export function mergeDmActivity(
         continue;
       }
       const newer = entry.lastMessageAt > prev.lastMessageAt ? entry : prev;
+      // Only the thread listing reports human recency. Keep it from
+      // whichever entry carries it; the later list wins when both do.
+      const entryHuman = humanRecencyOf(entry);
+      const human =
+        Object.keys(entryHuman).length > 0 ? entryHuman : humanRecencyOf(prev);
       byUid.set(uid, {
         personUid: uid,
         lastMessageAt: newer.lastMessageAt,
         ...(prev.displayName || entry.displayName
           ? { displayName: prev.displayName || entry.displayName }
           : {}),
+        ...human,
       });
     }
   }

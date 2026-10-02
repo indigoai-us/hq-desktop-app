@@ -852,6 +852,12 @@ const ALLOWED_DESKTOP_PROPERTY_KEYS: &[&str] = &[
     "errorOperation",
     "errorIoKind",
     "errorCode",
+    "deferralCount",
+    "firstDeferralAgeSeconds",
+    "lockTimeoutSeconds",
+    "holdReason",
+    "requiredGitVersion",
+    "detectedGitVersion",
 ];
 
 const SYMLINK_ERROR_OPERATION_VALUES: &[&str] = &[
@@ -1074,6 +1080,38 @@ fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
     Value::Object(out)
 }
 
+fn sanitize_post_ready_action_properties(properties: Option<Value>) -> Value {
+    let Some(Value::Object(input)) = properties else {
+        return Value::Object(Map::new());
+    };
+    let mut out = Map::new();
+    for (key, prefix) in [
+        ("personUid", "prs_"),
+        ("companyUid", "cmp_"),
+        ("idempotencyKey", "post-ready."),
+    ] {
+        let Some(value) = input.get(key).and_then(Value::as_str) else {
+            continue;
+        };
+        if value.starts_with(prefix) && is_safe_label_value(value) {
+            out.insert(key.to_string(), Value::String(value.to_string()));
+        }
+    }
+    if let Some(action) = input
+        .get("action")
+        .and_then(Value::as_str)
+        .filter(|action| {
+            matches!(
+                *action,
+                "open_folder" | "start_sync" | "open_cli" | "invite" | "close_window"
+            )
+        })
+    {
+        out.insert("action".to_string(), Value::String(action.to_string()));
+    }
+    Value::Object(out)
+}
+
 fn build_desktop_telemetry_event(
     event_name: String,
     properties: Option<Value>,
@@ -1091,7 +1129,35 @@ fn build_desktop_telemetry_event(
                     && input.get("component").and_then(Value::as_str) == Some("content")
             })
             .unwrap_or(false);
-    let mut properties = sanitize_desktop_properties(properties);
+    let is_post_ready_action = event_name == "desktop_post_ready_action";
+    let mut properties = if is_post_ready_action {
+        sanitize_post_ready_action_properties(properties)
+    } else {
+        sanitize_desktop_properties(properties)
+    };
+    let company_uid = if is_post_ready_action {
+        properties
+            .get("companyUid")
+            .and_then(Value::as_str)
+            .filter(|value| value.starts_with("cmp_") && value.len() <= 128)
+            .map(str::to_string)
+    } else {
+        None
+    };
+    let idempotency_key = if is_post_ready_action {
+        properties
+            .get("idempotencyKey")
+            .and_then(Value::as_str)
+            .filter(|value| is_safe_label_value(value))
+            .map(str::to_string)
+    } else {
+        None
+    };
+    if is_post_ready_action {
+        if let Some(properties) = properties.as_object_mut() {
+            properties.remove("idempotencyKey");
+        }
+    }
     if !is_content_setup_failure {
         if let Some(properties) = properties.as_object_mut() {
             properties.remove("errorOperation");
@@ -1111,10 +1177,16 @@ fn build_desktop_telemetry_event(
     }
     if matches!(
         event_name.as_str(),
-        "desktop_onboarding_step" | "desktop_setup_completed"
+        "desktop_onboarding_step" | "desktop_setup_completed" | "desktop_post_ready_action"
     ) {
         properties["appVersion"] = Value::String(crate::app_version::current().to_string());
     }
+    if is_post_ready_action {
+        properties["os"] = Value::String(std::env::consts::OS.to_string());
+    }
+    let install_attempt_id = (event_name == "desktop_setup_completed")
+        .then(crate::commands::first_run::install_attempt_id)
+        .flatten();
     RawTelemetryEvent {
         event_name,
         app: "hq-desktop-app".to_string(),
@@ -1131,8 +1203,10 @@ fn build_desktop_telemetry_event(
             }),
         consent_basis: consent_basis.to_string(),
         schema_version: 1,
-        idempotency_key: None,
+        idempotency_key,
         session_id: session_id.filter(|value| is_safe_label_value(value)),
+        company_uid,
+        install_attempt_id,
         properties,
     }
 }
@@ -1215,6 +1289,7 @@ async fn emit_desktop_operational_telemetry_with_vault(
 const OPERATIONAL_DESKTOP_EVENT_NAMES: &[&str] = &[
     "desktop_app_daily_active",
     "desktop_onboarding_step",
+    "desktop_post_ready_action",
     "desktop_setup_completed",
     "oauth_signin_succeeded",
     "telemetry_preference_changed",
@@ -1281,6 +1356,8 @@ fn build_daily_active_event(utc_day: chrono::NaiveDate) -> RawTelemetryEvent {
         schema_version: 1,
         idempotency_key: Some(format!("hq-desktop-app:daily-active:{day}")),
         session_id: None,
+        company_uid: None,
+        install_attempt_id: None,
         properties: json!({
             "platform": crate::commands::version_gate::platform_tag(),
             "appVersion": crate::app_version::current(),
@@ -2614,6 +2691,40 @@ mod codex_telemetry_tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
+    fn post_ready_action_event_keeps_only_join_fields_and_server_environment() {
+        let event = build_desktop_telemetry_event(
+            "desktop_post_ready_action".to_string(),
+            Some(json!({
+                "action": "open_folder",
+                "personUid": "prs_person-1",
+                "companyUid": "cmp_company-1",
+                "idempotencyKey": "post-ready.session-1.open_folder",
+                "folderName": "Private Project",
+                "path": "/Users/ada/Private Project",
+            })),
+            Some("session-1".to_string()),
+            None,
+            "no-consent",
+        );
+
+        assert_eq!(event.company_uid.as_deref(), Some("cmp_company-1"));
+        assert_eq!(
+            event.idempotency_key.as_deref(),
+            Some("post-ready.session-1.open_folder")
+        );
+        assert_eq!(event.properties["action"], "open_folder");
+        assert_eq!(event.properties["personUid"], "prs_person-1");
+        assert_eq!(event.properties["companyUid"], "cmp_company-1");
+        assert_eq!(
+            event.properties["appVersion"],
+            crate::app_version::current()
+        );
+        assert_eq!(event.properties["os"], std::env::consts::OS);
+        assert!(event.properties.get("folderName").is_none());
+        assert!(event.properties.get("path").is_none());
+    }
+
+    #[test]
     fn core_update_lifecycle_properties_survive_sanitization_without_paths_or_errors() {
         let sanitized = sanitize_desktop_properties(Some(json!({
             "source": "automatic",
@@ -2631,6 +2742,12 @@ mod codex_telemetry_tests {
             "skipReason": "automatic_updates_disabled",
             "platform": "macos-aarch64",
             "errorCategory": "dns",
+            "deferralCount": 10,
+            "firstDeferralAgeSeconds": 21600,
+            "lockTimeoutSeconds": 900,
+            "holdReason": "timeout",
+            "requiredGitVersion": "2.19.0",
+            "detectedGitVersion": "2.15.0",
             "npxResolved": false,
             "npxResolution": "not_resolved",
             "logPath": "/Users/alice/private/core-update.log",
@@ -2652,6 +2769,12 @@ mod codex_telemetry_tests {
         assert_eq!(sanitized["skipReason"], "automatic_updates_disabled");
         assert_eq!(sanitized["platform"], "macos-aarch64");
         assert_eq!(sanitized["errorCategory"], "dns");
+        assert_eq!(sanitized["deferralCount"], 10);
+        assert_eq!(sanitized["firstDeferralAgeSeconds"], 21600);
+        assert_eq!(sanitized["lockTimeoutSeconds"], 900);
+        assert_eq!(sanitized["holdReason"], "timeout");
+        assert_eq!(sanitized["requiredGitVersion"], "2.19.0");
+        assert_eq!(sanitized["detectedGitVersion"], "2.15.0");
         assert_eq!(sanitized["npxResolved"], false);
         assert_eq!(sanitized["npxResolution"], "not_resolved");
         assert!(sanitized.get("logPath").is_none());
@@ -2832,6 +2955,12 @@ mod codex_telemetry_tests {
                 "errorOperation",
                 "errorIoKind",
                 "errorCode",
+                "deferralCount",
+                "firstDeferralAgeSeconds",
+                "lockTimeoutSeconds",
+                "holdReason",
+                "requiredGitVersion",
+                "detectedGitVersion",
             ]
         );
         for key in ALLOWED_DESKTOP_PROPERTY_KEYS {
@@ -2880,6 +3009,13 @@ mod codex_telemetry_tests {
 
     #[test]
     fn onboarding_events_attach_the_trusted_build_version_after_property_redaction() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
+        let home = setup_home();
+        write_menubar(home.path(), "{}");
+        let _home = scoped_home(home.path());
+        let install_attempt_id = crate::commands::first_run::install_attempt_id()
+            .expect("the persisted install attempt id is available");
+
         let event = build_desktop_telemetry_event(
             "desktop_onboarding_step".to_string(),
             Some(json!({
@@ -2907,6 +3043,10 @@ mod codex_telemetry_tests {
         assert_eq!(
             completed.properties["appVersion"],
             crate::app_version::current()
+        );
+        assert_eq!(
+            serde_json::to_value(&completed).unwrap()["installAttemptId"],
+            install_attempt_id
         );
     }
 

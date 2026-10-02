@@ -52,11 +52,11 @@ use crate::util::logfile::log;
 
 #[allow(unused_imports)]
 pub use hq_desktop_core::messages::{
-    apply_contact_preview_filter, build_channel_messages_url, build_create_payload,
-    build_create_payload_with_project, build_ensure_project_channel_payload, build_group_payload,
-    build_reaction_payload, build_reactions_url, esc_query, esc_seg, invite_member_payload,
-    Channel, ChannelDetail, ChannelMember, ChannelMembersResponse, ChannelMessage,
-    ChannelParticipant, ChannelsResponse, Contact, ContactsResponse,
+    apply_contact_preview_filter, build_channel_history_url, build_channel_messages_url,
+    build_create_payload, build_create_payload_with_project, build_ensure_project_channel_payload,
+    build_group_payload, build_reaction_payload, build_reactions_url, esc_query, esc_seg,
+    invite_member_payload, Channel, ChannelDetail, ChannelMember, ChannelMembersResponse,
+    ChannelMessage, ChannelParticipant, ChannelsResponse, Contact, ContactsResponse,
     EnsureProjectChannelResponse, MessageReactions, ReactionAggregate, RequestsResponse,
     UnreadSummary,
 };
@@ -602,26 +602,24 @@ pub async fn ensure_project_channel(
 /// `GET /v1/notify/channels/{id}/messages`. Opening a channel also marks it
 /// read server-side (the page read advances the caller's cursor), but the
 /// caller should still call `mark_channel_read` to zero the local unread.
+///
+/// `view: "human"` asks the server for the human view of the history. A
+/// server that implements it echoes `view` in the response (carried through
+/// `ChannelDetail`); an older one ignores the parameter. Absent, the request
+/// is unchanged.
 #[tauri::command]
 pub async fn fetch_channel(
     channel_id: String,
     limit: Option<u32>,
     cursor: Option<String>,
+    view: Option<String>,
 ) -> Result<ChannelDetail, String> {
     let id = channel_id.trim();
     if id.is_empty() {
         return Err("channelId must not be empty".to_string());
     }
     let (base, token) = auth_and_base("MESSAGES_CHANNEL_FETCH").await?;
-    let mut url = format!("{base}/v1/notify/channels/{}/messages", esc_seg(id));
-    let mut sep = '?';
-    if let Some(n) = limit {
-        url.push_str(&format!("{sep}limit={n}"));
-        sep = '&';
-    }
-    if let Some(c) = cursor.as_deref().filter(|c| !c.is_empty()) {
-        url.push_str(&format!("{sep}cursor={}", esc_seg(c)));
-    }
+    let url = build_channel_history_url(&base, id, limit, cursor.as_deref(), view.as_deref());
     let out: ChannelDetail = get_json(&url, &token, "MESSAGES_CHANNEL_FETCH").await?;
     log(
         LOG_TAG,

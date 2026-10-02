@@ -85,10 +85,18 @@ pub fn cognito_token_url() -> String {
     )
 }
 
+/// Map a desktop provider button to a static Cognito `identity_provider`.
+///
+/// Google is 1:1. Microsoft is not: work/school accounts live on per-tenant
+/// `MsOrg*` providers, and sending them to `MicrosoftPersonal` is the consumer
+/// login that tells work users their username does not exist. Resolve Microsoft
+/// through [`crate::microsoft_org::identity_provider_for_sign_in`].
 pub fn cognito_identity_provider(provider: &str) -> Result<&'static str, String> {
     match provider {
         "Google" => Ok("Google"),
-        "Microsoft" => Ok("MicrosoftPersonal"),
+        "Microsoft" => {
+            Err("Microsoft sign-in needs an email so HQ can pick the right Microsoft tenant".into())
+        }
         _ => Err(format!("Unsupported sign-in provider: {provider}")),
     }
 }
@@ -619,12 +627,9 @@ mod tests {
     }
 
     #[test]
-    fn maps_microsoft_to_personal_cognito_provider() {
+    fn maps_google_and_refuses_unresolved_microsoft() {
         assert_eq!(cognito_identity_provider("Google").unwrap(), "Google");
-        assert_eq!(
-            cognito_identity_provider("Microsoft").unwrap(),
-            "MicrosoftPersonal"
-        );
+        assert!(cognito_identity_provider("Microsoft").is_err());
         assert!(cognito_identity_provider("MicrosoftWork").is_err());
     }
 
@@ -699,6 +704,19 @@ mod tests {
             assert!(url.contains("identity_provider=MicrosoftPersonal"));
             assert!(url.contains("state=state-123"));
             assert!(url.contains("code_challenge=challenge-123"));
+        });
+    }
+
+    #[test]
+    fn authorize_url_supports_microsoft_work_provider() {
+        with_default_cognito_env(|| {
+            let url = build_authorize_url(
+                "state-123",
+                "challenge-123",
+                "MsOrg87489d4600af47338b7bafe9bd",
+            );
+            assert!(url.contains("identity_provider=MsOrg87489d4600af47338b7bafe9bd"));
+            assert!(!url.contains("identity_provider=MicrosoftPersonal"));
         });
     }
 }

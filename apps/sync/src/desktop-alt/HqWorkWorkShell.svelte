@@ -14,6 +14,7 @@
   import {
     approvedPlanUpgradeUrl,
     createSyncPlatformAdapter,
+    DESKTOP_LIMIT_STATUS_PUSH_FLAG,
     type SyncInvokeFn,
   } from '@hq/platform';
   import { createSetupInstallGuideCallbacks } from './lib/install-guide-adapter';
@@ -43,6 +44,7 @@
   import { flushSync, onDestroy, onMount, tick, untrack, type ComponentProps } from 'svelte';
   import { safeUnlisten } from '../lib/listener-registry';
   import { emitPlanLimitPromptTelemetry } from '../lib/desktop-telemetry';
+  import { isPostReadyActionReady } from '../lib/post-ready-action-telemetry';
   import type { DmRequestContact } from '../lib/dmRequests';
   import { dismissBootLoader } from './boot-loader';
   import SignInPrompt from '../components/SignInPrompt.svelte';
@@ -142,6 +144,10 @@
   let companies = $state<Workspace[] | null>(null);
   let capabilities = $state<NativeWorkShellCapabilities | null>(null);
   let version = $state('0.0.0');
+  // Use the same persisted marker that admits post-ready telemetry. The work
+  // window normally opens after onboarding, but refresh once on mount for a
+  // late handoff.
+  let postReadyActionReady = $state(isPostReadyActionReady());
   let uiVersion = $state<string | null>(null);
   type Lifecycle =
     | 'loading'
@@ -176,6 +182,8 @@
     exposureId: string;
     /** Approved, attributed upgrade link; null → no upgrade action. */
     upgradeUrl: string | null;
+    /** Notice inferred from hq-pro usage status rather than a native sync event. */
+    statusPush?: boolean;
   }
   let planLimitNotices = $state<PlanLimitNotice[]>([]);
   // Notices the person dismissed while the pause is still in effect. A
@@ -202,7 +210,7 @@
    */
   function applyUploadsPausedSnapshot(raw: unknown): void {
     if (!Array.isArray(raw)) return;
-    const next: PlanLimitNotice[] = [];
+    const next: PlanLimitNotice[] = planLimitNotices.filter((notice) => notice.statusPush);
     const seen = new Set<string>();
     for (const entry of raw) {
       if (!entry || typeof entry !== 'object') continue;
@@ -210,6 +218,9 @@
       const company = typeof rec.company === 'string' ? rec.company.trim() : '';
       if (!company || seen.has(company)) continue;
       seen.add(company);
+      for (let index = next.length - 1; index >= 0; index -= 1) {
+        if (next[index].company === company) next.splice(index, 1);
+      }
       next.push({
         company,
         companyUid: resolvePlanLimitCompanyUid(company),
@@ -375,9 +386,125 @@
    * left to retry) and `false` when the fetch failed for the session that asked.
    */
   let workspaceRequest = 0;
+  const PLAN_LIMIT_WARNING_PCT = 80;
+  const PLAN_LIMIT_STATUS_RESOURCES = [
+    'users',
+    'secrets',
+    'deployments',
+    'storageBytes',
+    'integrations',
+    'agents',
+  ] as const;
+
+  function removeStatusPushNotice(company: string): void {
+    const existing = planLimitNotices.filter(
+      (notice) => notice.company === company && notice.statusPush,
+    );
+    for (const notice of existing) dismissedPlanLimitKeys.delete(planLimitKey(notice));
+    planLimitNotices = planLimitNotices.filter(
+      (notice) => notice.company !== company || !notice.statusPush,
+    );
+  }
+
+  function applyStatusPlanLimitNotice(company: string, upgradeUrl: string | null): void {
+    const currentNotice = planLimitNotices.find(
+      (notice) => notice.company === company && notice.upgradeUrl === upgradeUrl,
+    );
+    const notice: PlanLimitNotice = currentNotice
+      ? { ...currentNotice, statusPush: true }
+      : {
+          company,
+          companyUid: resolvePlanLimitCompanyUid(company),
+          exposureId: `exposure:${crypto.randomUUID()}`,
+          upgradeUrl,
+          statusPush: true,
+        };
+    if (dismissedPlanLimitKeys.has(planLimitKey(notice))) return;
+    planLimitNotices = [
+      ...planLimitNotices.filter((current) => current.company !== company),
+      notice,
+    ];
+    planLimitOpenError = null;
+  }
+
+  async function refreshPlanLimitStatus(
+    workspaces: Workspace[],
+    isCurrent: () => boolean,
+  ): Promise<void> {
+    try {
+      const flag = await adapter.identity.hasFeature(DESKTOP_LIMIT_STATUS_PUSH_FLAG);
+      if (!isCurrent()) return;
+      if (!flag.ok || !flag.value || !capabilities?.fetch) {
+        for (const notice of planLimitNotices.filter((item) => item.statusPush)) {
+          removeStatusPushNotice(notice.company);
+        }
+        return;
+      }
+
+      const companyWorkspaces = workspaces.filter(
+        (workspace) => workspace.kind === 'company' && /^cmp_[A-Za-z0-9_-]+$/.test(workspace.cloudUid ?? ''),
+      );
+      const present = new Set(companyWorkspaces.map((workspace) => workspace.slug));
+      for (const notice of planLimitNotices.filter((item) => item.statusPush && !present.has(item.company))) {
+        removeStatusPushNotice(notice.company);
+      }
+
+      for (const workspace of companyWorkspaces) {
+        if (!isCurrent()) return;
+        const companyUid = workspace.cloudUid!.trim();
+        try {
+          const response = await capabilities.fetch(
+            `/v1/billing/usage-limits?companyUid=${encodeURIComponent(companyUid)}`,
+            { method: 'GET' },
+          );
+          if (!response.ok) throw new Error(`usage-limits returned HTTP ${response.status}`);
+          const status = (await response.json()) as Record<string, unknown>;
+          if (!isCurrent()) return;
+          const plan = status.planLimits && typeof status.planLimits === 'object'
+            ? (status.planLimits as Record<string, unknown>)
+            : status;
+          if (
+            plan.plan !== 'free' ||
+            plan.cohort !== 'enforceable' ||
+            plan.planLimitsExempt === true
+          ) {
+            removeStatusPushNotice(workspace.slug);
+            continue;
+          }
+          const hasWarning = PLAN_LIMIT_STATUS_RESOURCES.some((resource) => {
+            if (resource === 'agents' && plan.agentsGrandfathered === true) return false;
+            const value = plan[resource];
+            if (!value || typeof value !== 'object') return false;
+            const row = value as Record<string, unknown>;
+            return row.over === true || (
+              typeof row.pctUsed === 'number' &&
+              Number.isFinite(row.pctUsed) &&
+              row.pctUsed >= PLAN_LIMIT_WARNING_PCT
+            );
+          });
+          if (!hasWarning) {
+            removeStatusPushNotice(workspace.slug);
+            continue;
+          }
+          const upgradeUrl = planLimitUpgradeLink(plan.upgradeUrl ?? status.upgradeUrl);
+          applyStatusPlanLimitNotice(workspace.slug, upgradeUrl);
+        } catch (error) {
+          console.error(`Could not refresh plan-limit status for ${workspace.slug}.`, error);
+        }
+      }
+    } catch (error) {
+      console.error('Could not resolve the desktop plan-limit status flag.', error);
+    }
+  }
   async function refreshWorkspaces(request: number, generation = authGeneration): Promise<boolean> {
     const sequence = ++workspaceRequest;
     const isCurrent = () => sequence === workspaceRequest && request === hydration && generation === authGeneration && lifecycle === 'ready';
+    let planLimitStatusStarted = false;
+    const startPlanLimitStatusRefresh = () => {
+      if (planLimitStatusStarted || !companies) return;
+      planLimitStatusStarted = true;
+      void refreshPlanLimitStatus(companies, isCurrent);
+    };
     try {
       // The native request keeps running after the UI deadline. Accept a late
       // success while it still belongs to this account and newest request.
@@ -385,6 +512,7 @@
         if (isCurrent() && result.ok) {
           companies = workspacesFromMembershipRows(result.value);
           resolvePendingPlanLimitNoticeCompanies();
+          startPlanLimitStatusRefresh();
           workspaceError = null;
         }
         return result;
@@ -401,6 +529,7 @@
       }
       companies = workspacesFromMembershipRows(result.value);
       resolvePendingPlanLimitNoticeCompanies();
+      startPlanLimitStatusRefresh();
       workspaceError = null;
       return true;
     } catch (error) {
@@ -626,6 +755,7 @@
   const IDENTITY_SETTLE_TIMEOUT_MS = 4000;
 
   onMount(() => {
+    postReadyActionReady = isPostReadyActionReady();
     let cancelled = false;
     let latestLiveNavigation: 'meetings' | 'other' | null = null;
     let receivedLiveMeetingFocus = false;
@@ -742,12 +872,14 @@
       const currentNotice = planLimitNotices.find(
         (notice) => notice.company === company && notice.upgradeUrl === upgradeUrl,
       );
-      const notice: PlanLimitNotice = currentNotice ?? {
+      const notice: PlanLimitNotice = currentNotice
+        ? { ...currentNotice, statusPush: false }
+        : {
         company,
         companyUid: resolvePlanLimitCompanyUid(company),
         exposureId: `exposure:${crypto.randomUUID()}`,
         upgradeUrl,
-      };
+        };
       if (dismissedPlanLimitKeys.has(planLimitKey(notice))) return;
       planLimitNotices = [
         ...planLimitNotices.filter((current) => current.company !== company),
@@ -1152,6 +1284,7 @@
         {notificationWakeSeq}
         onactivethreadchange={setActiveReplyThread}
         {extraPages}
+        {postReadyActionReady}
         {setupInstallGuide}
         aiTools={installChoiceAiTools}
         onrequestaitools={requestInstallChoiceAiTools}

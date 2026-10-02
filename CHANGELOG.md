@@ -9,10 +9,103 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Internal: startup diagnostics now label observed CLI resolver candidates, managed package state, and bundled CLI source.
+
+- Desktop setup completion telemetry now carries the persisted install attempt ID so it can join to first launch.
+- Auto-sync watcher reports now identify launcher and runner exits and owner-lease
+  outcomes. When a Node report is available, they add a safe error identifier and
+  the top frame's file name for HQ's own scripts only; frames from other files
+  report "external", so a user's file names are never sent.
+
+- Behind `desktop.ready-first-action-v1`, the post-setup welcome screen can offer a one-click first sync and record whether the action was shown and used.
+
+- Reinstalling HQ setup preserves files already present in your HQ folder.
+
+## [0.10.376] — 2026-10-02
+
+- Core update failures now report a specific snapshot failure class, such as
+  insufficient space, a protected recovery snapshot, a permission error, a
+  symlink, or a copy failure.
+
+- First-run onboarding events now use the same installation identifier as launch and sign-in receipts, so those steps can be joined without adding personal data.
+- Log in with Microsoft now works for work and school Microsoft accounts, not only personal Microsoft accounts.
+- Fresh desktop installs show the welcome window before startup checks finish.
+
+
+
+- When someone takes their first action after desktop setup, HQ can now record which action they took without sending folder details.
+
+## [0.10.375] — 2026-10-02
+
+- Daemon sync controls explain paused, disabled, and stopped states. Resume also re-enables sync for machines migrated from the older daemon setting. Instant Sync changes reach an existing daemon and require HQ CLI 5.312.0 or later. Sync actions wait briefly for host selection at launch, then use the legacy or daemon path. Company-specific Sync Now no longer starts a sync across every company when the daemon owns sync.
+
+- Fixes the sidebar order shipped in 0.10.373 and 0.10.374, which listed
+  conversations by unread count and then by name within each day instead of
+  by time. The order and the day headings now both follow the latest message
+  a person typed, where the server reports it: a channel that only bots
+  posted in today is listed under the day a person last typed in it. A
+  channel or group conversation the server reports as having no typed
+  message is placed by when it was created, so a channel made today appears
+  under Today. A direct message with no typed message yet is placed by its
+  latest activity for now, so a new teammate's or a bot's first direct
+  message appears under Today. A conversation the server has not classified
+  yet is still placed by its latest activity, bot and session activity
+  included, until a one-time server fill-in has run.
+
+- Channels and direct messages that hide bot and session activity now ask the
+  server for the filtered history. When a conversation opens on a long run of
+  hidden activity, the app continues loading earlier history automatically,
+  up to a limit of eight requests, and then offers "Look further back",
+  instead of showing an empty pane with a "load earlier" button. With an
+  older server the app filters on its side, as before.
+
+- On refresh, HQ Desktop can show the existing plan-limit notice when a free company is nearing or over a resource limit.
+
+- Desktop now uses the current cloud company name for workspace rows and
+  home-channel labels before falling back to cached names or slugs.
+
+## [0.10.374] — 2026-10-02
+
+- On a fresh install, HQ now shows its logo and "Starting HQ..." right away instead of a blank, frozen window while it starts up.
+- Sign-in and workspace-selection receipts reach HQ again. Since late September the app could not read the `email_verified` claim on Cognito access tokens (it arrives as text, not true/false), so every receipt was held on disk instead of sent. Receipts already held on your machine are sent on the next signed-in start.
+- A first-ever sign-in's receipt is no longer discarded when HQ has not created the person record yet. The app keeps it and resends it once the record exists (HQ stops accepting it after 30 days).
+- First run now sets up your company. After the install finishes, someone
+  with no company names one (with an optional website and teammate invites),
+  then picks Starter or Workforce. Workforce opens checkout in your browser
+  and HQ picks up when you come back. Someone who was invited can join that
+  company instead.
+- Sync health no longer counts runner diagnostics as failed syncs. The runner
+  pin now starts at hq-cloud 6.18.31 and accepts later 6.18 patch releases.
+- Automatic Core updates wait for sync to finish after 10 deferrals or 6 hours.
+  The wait ends after 15 minutes, and a failed update backs off before retrying.
+  Updates also report when Git 2.19.0 or newer is required.
+- Desktop sign-in can open the website first to link the new account to the native app; if that check fails, it opens Cognito directly as before.
+- Library Back now leaves internal Library tab history and returns to the prior app screen.
+
+- Setup diagnostics now identify the resolved CLI copy and settings PATH source using path-free values.
+
+## [0.10.373] — 2026-10-01
+
+- Setting up a coding tool after onboarding is smoother. You can choose
+  Claude Code or Codex, and one button ("Install Claude" or "Install Codex")
+  installs it and opens its sign-in page, with no second Sign in click.
+  HQ notices by itself when a coding tool is already signed in, or when you
+  finish signing in in your browser, and shows one Continue button instead of
+  "Sign in above, then Retry". It no longer says "Sign-in did not complete"
+  while your browser sign-in is still open, and if a sign-in does fail you
+  can try again, switch tools, or reopen the sign-in page.
+- Core Drift ignores setup PATH changes and generated wrapper markers while retaining raw-hash fallback when settings JSON cannot be parsed.
+- Core Drift ignores the desktop-generated `env.PATH` in `.claude/settings.json` and the company skill-wrapper marker, while continuing to report other settings edits.
+
+- Desktop company-creation invites identify the desktop surface in the hq-pro team invite action.
+- Windows setup now detects Claude Code from the current user PATH and
+  Anthropic's user-local install directory, including on Retry.
 - The sidebar orders DMs and channels by the latest message a person typed.
 
 - HQ no longer restarts for an update, or at support's request, while a meeting
   is being recorded; it waits until the recording finishes.
+
+- When HQ daemon owns sync, Sync Now, pause/resume, and company sync modes go through the daemon. Instant Sync follows its setting, and sync help points to the daemon log while preserving the old log for history.
+- On macOS 26.2 and later, the installer window shows its background artwork again instead of a plain white window behind the HQ and Applications icons.
 
 - Internal: removed two unused packages/ui helpers and made three module-only helpers private (TD-60, #1198). No user-visible change.
 

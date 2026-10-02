@@ -127,6 +127,7 @@
   } from '../../lib/onboarding-step-telemetry';
   import {
     BUILD_STEP_INDEX,
+    COMPANY_STEP_INDEX,
     CONNECTOR_IMPORT_STEP_INDEX,
     CONSENT_STEP_INDEX,
     FIRST_FOLDER_SYNC_STEP_INDEX,
@@ -147,14 +148,21 @@
   import { TELEMETRY_CONSENT_VERSION } from '../../lib/consent-version';
   import { startTraySync } from '../../lib/traySync';
   import ConnectorImportStep from './ConnectorImportStep.svelte';
+  import CompanyStep, { type CompanyStepEvent, type CompanyStepResult } from './CompanyStep.svelte';
+  import {
+    resolveFirstRunCompanyPath,
+    type FirstRunCompanyPath,
+  } from '../../lib/first-run-company';
   import {
     createSyncPlatformAdapter,
+    dispatchPostReadyAction,
     FIRST_FOLDER_SYNC_STEP_FLAG,
     INVITE_TEAMMATE_STEP_FLAG,
     retryThrottled,
     SETUP_DIRECTORY_PARENT_FALLBACK_FLAG,
     SETUP_STAGE_TIMEOUT_FIX_FLAG,
   } from '@hq/platform';
+  import { markPostReadyActionReady } from '../../lib/post-ready-action-telemetry';
 
   interface Props {
     initialStep: number;
@@ -330,6 +338,8 @@
   let consentFailure = $state<ConsentFailure | null>(null);
   let loadingProvider = $state<SignInProvider | null>(null);
   let signInError = $state('');
+  let microsoftEmail = $state('');
+  let microsoftEmailPrompt = $state(false);
   let currentSignInCall = 0;
   let mounted = true;
 
@@ -359,6 +369,14 @@
   let setupStarted = $state(false);
   let showFirstFolderSyncStep = $state(false);
   let showInviteTeammateStep = $state(false);
+  /**
+   * The company screen this person needs, read once setup completes: `create`
+   * or `join` for someone with no company (the website no longer makes one),
+   * `existing` or null (lookup failed) to skip it.
+   */
+  let companyPath = $state<FirstRunCompanyPath | null>(null);
+  let companyStepVisited = false;
+  let companyStepCompanyUid: string | null = null;
   let inviteTeammateContext: { companyUid: string; personUid: string } | null = null;
   let inviteCreatedForEmail: string | null = null;
   let inviteEmail = $state('');
@@ -449,6 +467,7 @@
     currentStep = step;
     currentStepVisibleAt = Date.now();
     if (step === CONNECTOR_IMPORT_STEP_INDEX) connectorImportVisited = true;
+    if (step === COMPANY_STEP_INDEX) companyStepVisited = true;
     if (step === FIRST_FOLDER_SYNC_STEP_INDEX) firstFolderSyncVisited = true;
     if (step === INVITE_TEAMMATE_STEP_INDEX) inviteTeammateVisited = true;
   }
@@ -460,10 +479,13 @@
     flow?: OnboardingFlow,
   ): void {
     if (consentOnly || replay) return;
+    const stepId = stepIdFor(step);
     const companyUid =
-      stepIdFor(step) === 'invite-teammate'
+      stepId === 'invite-teammate'
         ? inviteTeammateContext?.companyUid
-        : undefined;
+        : stepId === 'company'
+          ? (companyStepCompanyUid ?? undefined)
+          : undefined;
     onboardingTelemetry.record({
       properties: {
         step: stepIdFor(step),
@@ -848,6 +870,12 @@
   }
 
   async function handleSignIn(provider: SignInProvider, stateRecoveryAttempt = false) {
+    if (provider === 'Microsoft' && microsoftEmail.trim() === '') {
+      microsoftEmailPrompt = true;
+      signInError = '';
+      return;
+    }
+
     const call = ++currentSignInCall;
     loadingProvider = provider;
     signInError = '';
@@ -858,7 +886,10 @@
       const { authorizeUrl, state } = await invokeCommand<{
         authorizeUrl: string;
         state: string;
-      }>('start_oauth_login', { provider });
+      }>('start_oauth_login', {
+        provider,
+        ...(provider === 'Microsoft' ? { email: microsoftEmail.trim() } : {}),
+      });
       if (!isCurrentSignInCall(call)) return;
 
       if (typeof openExternal !== 'function') {
@@ -923,6 +954,9 @@
       if (firstLaunch) onboardingTelemetry.recordFirstLaunch();
       return;
     }
+    // The anonymous launch receipt and later authenticated desktop auth events
+    // share this opaque id. Use it as the onboarding session join key too.
+    onboardingTelemetry.setInstallAttemptId(context.installAttemptId);
     const deps = continuationDeps(context);
     void flushReceipts(deps).catch(() => undefined);
     // `firstLaunchRecorded` is the existing durable first-installation gate.
@@ -1094,6 +1128,29 @@
     return payload;
   }
 
+  /**
+   * One `/membership/me` read shared by the company step and the invite step,
+   * so finishing setup costs one membership lookup, not two.
+   */
+  let membershipMeRead: Promise<Record<string, unknown>> | null = null;
+  function readMembershipMe(): Promise<Record<string, unknown>> {
+    if (!membershipMeRead) {
+      membershipMeRead = onboardingHqProJson('GET', '/membership/me');
+      // A failed read is not cached; the next caller asks again.
+      membershipMeRead.catch(() => (membershipMeRead = null));
+    }
+    return membershipMeRead;
+  }
+
+  function companyStepHqProJson(
+    method: 'GET' | 'POST',
+    url: string,
+    body?: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    if (method === 'GET' && url === '/membership/me') return readMembershipMe();
+    return onboardingHqProJson(method, url, body);
+  }
+
   async function resolveInviteTeammateContext(): Promise<{
     companyUid: string;
     personUid: string;
@@ -1105,7 +1162,7 @@
       );
       if (!flag.ok || flag.value !== true) return null;
 
-      const membershipPayload = await onboardingHqProJson('GET', '/membership/me');
+      const membershipPayload = await readMembershipMe();
       const rawMemberships = membershipPayload.memberships;
       if (!Array.isArray(rawMemberships) || !rawMemberships.every(isRecord)) {
         return null;
@@ -2047,11 +2104,13 @@
       });
       // Both follow-on steps are optional and manager-gated. The invite path
       // checks its flag before reading memberships, and every lookup fails closed.
-      const [firstFolderEnabled, inviteContext] = await Promise.all([
+      const [firstFolderEnabled, inviteContext, firstRunCompanyPath] = await Promise.all([
         resolveFirstFolderSyncStepFlag(),
         resolveInviteTeammateContext(),
+        resolveFirstRunCompanyPath({ hqProJson: companyStepHqProJson, invoke: invokeCommand }),
       ]);
       if (!isCurrentRun(runId) || !mounted) return;
+      companyPath = firstRunCompanyPath;
       showFirstFolderSyncStep = firstFolderEnabled;
       inviteTeammateContext = inviteContext;
       showInviteTeammateStep = inviteContext !== null;
@@ -2397,6 +2456,7 @@
         launched = true;
       } else if (tools.claude_cli && installPath) {
         await invoke('launch_claude_code', { path: installPath });
+        dispatchPostReadyAction('open_cli');
         launched = true;
       } else {
         launchEscape = escapeForLaunch('claude', 'Claude Code was not detected');
@@ -2429,6 +2489,7 @@
           path: installPath,
           prompt: '/setup',
         });
+        dispatchPostReadyAction('open_cli');
         launched = true;
       } else if (tools.codex_desktop) {
         await invoke('launch_codex_desktop');
@@ -2461,6 +2522,7 @@
           path: installPath,
           tool: 'grok',
         });
+        dispatchPostReadyAction('open_cli');
         launched = true;
       } else {
         launchEscape = escapeForLaunch('grok', 'Grok CLI was not detected');
@@ -2806,7 +2868,7 @@
         ),
       );
     }
-    for (const id of ['first-folder', 'invite', 'connectors', 'trust', 'settings', 'run-setup', 'handoff', 'build']) {
+    for (const id of ['company', 'first-folder', 'invite', 'connectors', 'trust', 'settings', 'run-setup', 'handoff', 'build']) {
       const block = refs[`panel:${id}`];
       if (block) controller.register(id, createPanelEngine(block, { reveal: revealNav }));
     }
@@ -2863,7 +2925,10 @@
   // The ready screen carries the usage-data checkbox: once it has been on
   // show, finishing records the answer.
   $effect(() => {
-    if (scene === 'ready' && consentOnReady) readyConsentShown = true;
+    if (scene === 'ready' && consentOnReady) {
+      readyConsentShown = true;
+      markPostReadyActionReady();
+    }
   });
 
   // Content that changes height re-lays the screen out, so the button under it
@@ -2919,6 +2984,10 @@
   $effect(() => {
     if (consentOnly || replay || !setupCompleted || !postSetupStepsResolved) return;
     if (currentStep !== READY_STEP_INDEX) return;
+    if (companyPath && companyPath.kind !== 'existing' && !companyStepVisited) {
+      advanceTo(COMPANY_STEP_INDEX, null);
+      return;
+    }
     if (showFirstFolderSyncStep && !firstFolderSyncVisited) {
       advanceTo(FIRST_FOLDER_SYNC_STEP_INDEX, null);
       return;
@@ -2930,6 +2999,33 @@
     if (connectorImportVisited) return;
     advanceTo(CONNECTOR_IMPORT_STEP_INDEX, null);
   });
+
+  /** Telemetry for the company step. Never carries names, handles or emails. */
+  function recordCompanyStep(event: CompanyStepEvent): void {
+    if ('companyUid' in event) companyStepCompanyUid = event.companyUid;
+    const failed =
+      event.action === 'company_create_failed' ||
+      event.action === 'invite_join_failed' ||
+      event.action === 'checkout_failed';
+    const outcome = event.action === 'plan_chosen' ? `plan_${event.plan}` : event.action;
+    recordStep(COMPANY_STEP_INDEX, failed ? 'failed' : 'started', { outcome });
+  }
+
+  /** Leave the company step: made, joined, or skipped. Back to ready for the rest. */
+  function leaveCompanyStep(result: CompanyStepResult): void {
+    const outcome =
+      result.outcome === 'created'
+        ? result.paid
+          ? 'workforce_paid'
+          : `created_${result.plan}`
+        : result.outcome;
+    advanceTo(
+      READY_STEP_INDEX,
+      result.outcome === 'skipped' ? 'skipped' : 'completed',
+      { outcome },
+      'ready',
+    );
+  }
 
   /** Leave the teammate invite: sent (Continue) or skipped. */
   function leaveInviteTeammate(): void {
@@ -3005,6 +3101,34 @@
                   onclick={() => handleSignIn('Microsoft')}
                 >{@render MicrosoftMark()}Continue with Microsoft</button>
               </div>
+              {#if microsoftEmailPrompt}
+                <form
+                  class="microsoft-email"
+                  data-testid="microsoft-email-form"
+                  onsubmit={(event) => {
+                    event.preventDefault();
+                    void handleSignIn('Microsoft');
+                  }}
+                >
+                  <label for="onboarding-microsoft-email">Enter the Microsoft email you use with HQ</label>
+                  <input
+                    id="onboarding-microsoft-email"
+                    data-testid="microsoft-email"
+                    type="email"
+                    autocomplete="username"
+                    autocapitalize="none"
+                    spellcheck="false"
+                    bind:value={microsoftEmail}
+                    disabled={loadingProvider !== null}
+                  />
+                  <button
+                    class="btn btn-secondary"
+                    type="submit"
+                    data-testid="microsoft-email-continue"
+                    disabled={loadingProvider !== null || microsoftEmail.trim() === ''}
+                  >Continue</button>
+                </form>
+              {/if}
             {/if}
           </div>
           {#if signInError}
@@ -3340,6 +3464,28 @@
       </div>
     </section>
     {/if}
+
+    <!-- Name a company (or join an invite) and pick a plan, offered once the
+         install is done to anyone with no company yet. -->
+    <section
+      class="scene s-follow-on s-company"
+      class:on={scene === 'company'}
+      data-scene="company"
+      aria-labelledby="onboarding-title-company"
+    >
+      <div class="panel-block" bind:this={refs['panel:company']}>
+        {#if currentStep === COMPANY_STEP_INDEX && companyPath && companyPath.kind !== 'existing'}
+          <CompanyStep
+            path={companyPath}
+            invoke={invokeCommand}
+            openUrl={(url) => openExternal(url)}
+            listen={(event, handler) => listen(event, (message) => handler(message.payload))}
+            onTelemetry={recordCompanyStep}
+            oncomplete={leaveCompanyStep}
+          />
+        {/if}
+      </div>
+    </section>
 
     <!-- Optional, flag-gated: sync the HQ folder, offered once the install is
          done. The section is always there so its panel engine can register;
