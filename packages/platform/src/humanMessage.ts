@@ -83,7 +83,8 @@ export interface HumanRecencyChannel {
   hasHumanMessage?: boolean | null;
   /**
    * Creation time. The recency key of a row known to hold no human message,
-   * on the same timeline as human times.
+   * on the same timeline as human times. A known-none row without one is
+   * placed by its activity instead.
    */
   createdAt?: string | number | null;
 }
@@ -118,11 +119,19 @@ export function humanRecencyState(row: HumanRecencyChannel): HumanRecencyState {
  * In `humanOnly` mode there are three states (see `humanRecencyState`):
  *
  *  - `known`: the key is `lastHumanMessageAt`.
- *  - `none`: the key is the creation time, on the same timeline as human
- *    times. A conversation created today sits where "today" puts it, and one
- *    created a month ago that only bots post in sits a month back. Bot and
- *    session activity never moves such a row. Without a creation time the
- *    key is 0 and `compareHumanRecency` places the row below every other.
+ *  - `none` with a creation time: the key is the creation time, on the same
+ *    timeline as human times. A conversation created today sits where
+ *    "today" puts it, and one created a month ago that only bots post in
+ *    sits a month back. Bot and session activity never moves such a row.
+ *  - `none` without a creation time: the key is `lastActivityAt` /
+ *    `lastMessageAt`, exactly like an unknown row. Today that is every 1:1
+ *    DM, because the DM thread listing carries no creation time. A new
+ *    teammate's DM on the day they join, or an agent's first DM, must be
+ *    visible under Today and not buried in a collapsed older section. This
+ *    is an interim rule (owner decision, 2026-10-02) until the server
+ *    supplies a creation time for DM rows. With no activity time either,
+ *    the key is 0 and `compareHumanRecency` places the row below every
+ *    other.
  *  - `unknown`: the key falls back to `lastActivityAt` / `lastMessageAt`.
  *    An older server sends no human fields at all, and a current server
  *    sends none for a conversation it has not examined, so treating absent
@@ -137,7 +146,11 @@ export function humanRecencyKey<T extends HumanRecencyChannel>(
   if (humanOnly) {
     const state = humanRecencyState(row);
     if (state === "known") return toStamp(row.lastHumanMessageAt);
-    if (state === "none") return toStamp(row.createdAt);
+    if (state === "none") {
+      const created = toStamp(row.createdAt);
+      if (created > 0) return created;
+      // No creation time: placed like an unknown row, below.
+    }
   }
   const activity = toStamp(row.lastActivityAt);
   if (activity > 0) return activity;
@@ -146,8 +159,9 @@ export function humanRecencyKey<T extends HumanRecencyChannel>(
 
 /**
  * True for a row that has no place on the timeline in `humanOnly` mode: it
- * is known to hold no human message and carries no creation time. Such rows
- * form the bottom tier.
+ * is known to hold no human message and carries neither a creation time nor
+ * an activity time. Such rows form the bottom tier. A known-none row that
+ * has an activity time is not in it (see `humanRecencyKey`).
  */
 export function isUndatedNoHumanRow(
   row: HumanRecencyChannel,
@@ -156,7 +170,9 @@ export function isUndatedNoHumanRow(
   return (
     humanOnly &&
     humanRecencyState(row) === "none" &&
-    toStamp(row.createdAt) <= 0
+    toStamp(row.createdAt) <= 0 &&
+    toStamp(row.lastActivityAt) <= 0 &&
+    toStamp(row.lastMessageAt) <= 0
   );
 }
 
@@ -165,9 +181,9 @@ export function isUndatedNoHumanRow(
  * the two rows tie (the caller applies its own tie-break).
  *
  * Rows are ordered by `humanRecencyKey`, newest first. In `humanOnly` mode a
- * row known to hold no human message that also has no creation time sorts
- * below every other row; such rows tie among themselves, which leaves them
- * in the caller's tie-break order (title).
+ * row known to hold no human message that has neither a creation time nor
+ * an activity time sorts below every other row; such rows tie among
+ * themselves, which leaves them in the caller's tie-break order (title).
  */
 export function compareHumanRecency(
   a: HumanRecencyChannel,

@@ -156,18 +156,43 @@ describe("humanRecencyKey", () => {
     expect(key).toBe(Date.parse("2026-09-02T08:00:00Z"));
   });
 
-  it("none without a creation time: the key is 0, never bot or session activity", () => {
+  it("none without a creation time: the key is the activity time, like an unknown row", () => {
     const row = {
       lastActivityAt: "2026-09-29T10:00:00Z",
       lastMessageAt: "2026-09-29T10:00:00Z",
       hasHumanMessage: false,
     };
+    const at = Date.parse("2026-09-29T10:00:00Z");
+    expect(humanRecencyKey(row, true)).toBe(at);
+    expect(humanRecencyKey({ lastActivityAt: row.lastActivityAt }, true)).toBe(at);
+    // lastMessageAt stands in when lastActivityAt is absent, as for unknown.
+    expect(
+      humanRecencyKey(
+        { lastMessageAt: "2026-09-29T10:00:00Z", hasHumanMessage: false },
+        true,
+      ),
+    ).toBe(at);
+    // It has a place on the timeline, so it is not in the bottom tier.
+    expect(isUndatedNoHumanRow(row, true)).toBe(false);
+    // A creation time, when present, still wins over activity.
+    expect(
+      humanRecencyKey({ ...row, createdAt: "2026-09-02T08:00:00Z" }, true),
+    ).toBe(Date.parse("2026-09-02T08:00:00Z"));
+  });
+
+  it("none with neither a creation time nor an activity time: key 0, the bottom tier", () => {
+    const row = { hasHumanMessage: false, lastActivityAt: null };
     expect(humanRecencyKey(row, true)).toBe(0);
     expect(isUndatedNoHumanRow(row, true)).toBe(true);
+    expect(isUndatedNoHumanRow({ hasHumanMessage: false }, true)).toBe(true);
     expect(isUndatedNoHumanRow(row, false)).toBe(false);
     expect(
       isUndatedNoHumanRow({ ...row, createdAt: "2026-09-02T08:00:00Z" }, true),
     ).toBe(false);
+    expect(
+      isUndatedNoHumanRow({ ...row, lastMessageAt: "2026-09-02T08:00:00Z" }, true),
+    ).toBe(false);
+    // An unknown row with no times is not in the tier: it is not known-none.
     expect(isUndatedNoHumanRow({ lastActivityAt: null }, true)).toBe(false);
   });
 
@@ -223,18 +248,43 @@ describe("compareHumanRecency", () => {
     expect(compareHumanRecency(newer, older, true)).toBeLessThan(0);
   });
 
-  it("humanOnly: a known-none row without a creation time is the bottom tier", () => {
+  it("humanOnly: a known-none row without a creation time is placed by its activity, like an unknown row", () => {
+    // Activity on the 30th: above a message typed on the 20th and above
+    // unknown activity on the 10th.
     const undated = { hasHumanMessage: false, lastActivityAt: "2026-09-30T09:00:00Z" };
+    expect(compareHumanRecency(undated, known, true)).toBeLessThan(0);
+    expect(compareHumanRecency(undated, unknown, true)).toBeLessThan(0);
+    // Same activity as an unknown row: a tie, so the caller's tie-break
+    // (unread, then title) treats the two alike.
+    expect(
+      compareHumanRecency(undated, { lastActivityAt: "2026-09-30T09:00:00Z" }, true),
+    ).toBe(0);
+    // Older activity sorts below newer, whichever state the other row is in.
+    const undatedOld = { hasHumanMessage: false, lastActivityAt: "2026-09-05T09:00:00Z" };
+    expect(compareHumanRecency(undatedOld, unknown, true)).toBeGreaterThan(0);
+    expect(compareHumanRecency(undatedOld, undated, true)).toBeGreaterThan(0);
+  });
+
+  it("humanOnly: a known-none row with a creation time still ignores its bot activity", () => {
+    // `none` was created on the 15th and has bot activity on the 30th. A
+    // known-none row without a creation time, active on the 20th, sorts
+    // above it: the first is placed by creation, the second by activity.
+    const undated = { hasHumanMessage: false, lastActivityAt: "2026-09-20T09:00:00Z" };
+    expect(compareHumanRecency(undated, none, true)).toBeLessThan(0);
+  });
+
+  it("humanOnly: a known-none row with neither time is the bottom tier", () => {
+    const timeless = { hasHumanMessage: false, lastActivityAt: null };
     const ancient = { hasHumanMessage: false, createdAt: "2020-01-01T00:00:00Z" };
     const neverActive = { lastActivityAt: null };
-    expect(compareHumanRecency(undated, ancient, true)).toBeGreaterThan(0);
-    expect(compareHumanRecency(undated, known, true)).toBeGreaterThan(0);
-    expect(compareHumanRecency(undated, unknown, true)).toBeGreaterThan(0);
-    // Below even a row with no activity at all.
-    expect(compareHumanRecency(undated, neverActive, true)).toBeGreaterThan(0);
-    expect(compareHumanRecency(neverActive, undated, true)).toBeLessThan(0);
+    expect(compareHumanRecency(timeless, ancient, true)).toBeGreaterThan(0);
+    expect(compareHumanRecency(timeless, known, true)).toBeGreaterThan(0);
+    expect(compareHumanRecency(timeless, unknown, true)).toBeGreaterThan(0);
+    // Below even an unknown row with no activity at all.
+    expect(compareHumanRecency(timeless, neverActive, true)).toBeGreaterThan(0);
+    expect(compareHumanRecency(neverActive, timeless, true)).toBeLessThan(0);
     // Two such rows tie: the caller's tie-break (title) orders them.
-    expect(compareHumanRecency(undated, { hasHumanMessage: false }, true)).toBe(0);
+    expect(compareHumanRecency(timeless, { hasHumanMessage: false }, true)).toBe(0);
   });
 
   it("flag off: hasHumanMessage and createdAt are ignored", () => {
@@ -342,15 +392,17 @@ describe("orderChannelsForViewer", () => {
       { id: "none-undated", hasHumanMessage: false, lastActivityAt: "2026-09-30T22:00:00Z" },
       { id: "known-new", lastHumanMessageAt: "2026-09-30T08:00:00Z", lastActivityAt: "2026-09-30T08:00:00Z" },
       { id: "none-new", hasHumanMessage: false, createdAt: "2026-09-15T00:00:00Z" },
+      { id: "none-timeless", hasHumanMessage: false, lastActivityAt: null },
       { id: "known-old", lastHumanMessageAt: "2026-09-01T08:00:00Z", lastActivityAt: "2026-09-30T21:00:00Z" },
     ];
     expect(orderChannelsForViewer(mixed, true).map((r) => r.id)).toEqual([
-      "known-new", // typed 30 September
+      "none-undated", // known none, no creation time: activity 30 September
+      "known-new", // typed 30 September, earlier that day
       "unknown-dm", // no fields: activity 29 September
       "none-new", // known none: created 15 September
       "known-old", // typed 1 September; its later bot activity is ignored
-      "none-old", // known none: created 1 July
-      "none-undated", // known none, no creation time: bottom tier
+      "none-old", // known none: created 1 July; its bot activity is ignored
+      "none-timeless", // known none, no creation or activity time: bottom tier
     ]);
   });
 });

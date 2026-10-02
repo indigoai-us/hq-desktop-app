@@ -1385,11 +1385,18 @@ export function rowHumanRecencyState(row: ConversationRow): RowHumanRecencyState
  *
  * In `humanOnly` mode:
  *  - `known`: the last-human-message time.
- *  - `none`: the creation time, on the same timeline as human times. A
- *    conversation created today sits where "today" puts it, and one created
- *    a month ago that only bots post in sits a month back. Bot and session
- *    activity never moves such a row. Without a creation time the key is 0
- *    and `compareRowRecency` places the row below every other.
+ *  - `none` with a creation time: the creation time, on the same timeline
+ *    as human times. A conversation created today sits where "today" puts
+ *    it, and one created a month ago that only bots post in sits a month
+ *    back. Bot and session activity never moves such a row.
+ *  - `none` without a creation time: `lastActivityAt`, exactly like an
+ *    unknown row. Today that is every 1:1 DM, because the DM thread listing
+ *    carries no creation time. A new teammate's DM on the day they join, or
+ *    an agent's first DM, must be visible under Today and not buried in a
+ *    collapsed older section. This is an interim rule (owner decision,
+ *    2026-10-02) until the server supplies a creation time for DM rows.
+ *    With no activity time either, the key is 0 and `compareRowRecency`
+ *    places the row below every other.
  *  - `unknown`: `lastActivityAt`, so a row the server has not reported on
  *    keeps its place instead of sinking to the bottom in title order.
  *
@@ -1402,16 +1409,20 @@ export function rowRecencyKey(
   if (humanOnly) {
     const state = rowHumanRecencyState(row);
     if (state === "known") return row.lastHumanMessageAt ?? 0;
-    if (state === "none") return Math.max(0, row.createdAt ?? 0);
+    if (state === "none" && (row.createdAt ?? 0) > 0) {
+      return row.createdAt ?? 0;
+    }
+    // `none` without a creation time is placed like `unknown`, below.
   }
   return row.lastActivityAt;
 }
 
 /**
  * True for a row that has no place on the timeline in `humanOnly` mode: it
- * is known to hold no human message and carries no creation time (a 1:1 DM
- * today: the DM thread listing sends none). Such rows form the bottom tier.
- * Match `isUndatedNoHumanRow` in `@hq/platform`.
+ * is known to hold no human message and carries neither a creation time nor
+ * an activity time. Such rows form the bottom tier, ordered by title. A
+ * known-none row that has an activity time is not in it (see
+ * `rowRecencyKey`). Match `isUndatedNoHumanRow` in `@hq/platform`.
  */
 export function isUndatedNoHumanRow(
   row: ConversationRow,
@@ -1420,7 +1431,8 @@ export function isUndatedNoHumanRow(
   return (
     humanOnly &&
     rowHumanRecencyState(row) === "none" &&
-    !((row.createdAt ?? 0) > 0)
+    !((row.createdAt ?? 0) > 0) &&
+    !(row.lastActivityAt > 0)
   );
 }
 
@@ -1428,9 +1440,10 @@ export function isUndatedNoHumanRow(
  * Order two rows by recency: negative when `a` sorts first, 0 on a tie (the
  * caller then applies its own tie-break). Rows are ordered by
  * `rowRecencyKey`, newest first. In `humanOnly` mode a row known to hold no
- * human message that also has no creation time sorts below every other row;
- * such rows tie, which leaves them in title order under the caller's
- * tie-break. Match `compareHumanRecency` in `@hq/platform`.
+ * human message that has neither a creation time nor an activity time sorts
+ * below every other row; such rows tie, which leaves them in title order
+ * under the caller's tie-break. Match `compareHumanRecency` in
+ * `@hq/platform`.
  */
 export function compareRowRecency(
   a: ConversationRow,
@@ -1469,10 +1482,10 @@ export function sortConversations(
   copy.sort((a, b) => {
     const recency = compareRowRecency(a, b, humanOnly);
     if (recency !== 0) return recency;
-    // Unread breaks a tie, as it always has. The one exception is the
-    // bottom tier (known to hold no human message, no creation time): those
-    // rows are ordered by title, since their unread is bot or session
-    // activity and nothing else places them.
+    // Unread breaks a tie, as it always has, including for a known-none row
+    // placed by its activity. The one exception is the bottom tier (known to
+    // hold no human message, with no creation time and no activity time):
+    // those rows are ordered by title, since nothing else places them.
     const bottomTier = isUndatedNoHumanRow(a, humanOnly);
     if (!bottomTier) {
       const aUnread = a.unreadCount ?? (a.unreadDot ? 1 : 0);
@@ -1523,8 +1536,9 @@ export function applySidebarFilters(
     personUid?: string | null;
     /**
      * When true, sort by the last human message, in three states: a known
-     * time, a known "none" (by creation time, on the same timeline), or
-     * unknown (falls back to `lastActivityAt`). See `compareRowRecency`.
+     * time, a known "none" (by creation time, on the same timeline, or by
+     * `lastActivityAt` when the row has no creation time), or unknown
+     * (falls back to `lastActivityAt`). See `compareRowRecency`.
      */
     humanOnly?: boolean;
   } = {},
@@ -1548,10 +1562,11 @@ export function applySidebarFilters(
  *
  * A row is bucketed by `rowRecencyKey`, the same key the order uses. With
  * `humanOnly` on that is the last human message for a row that has one, the
- * creation time for a row known to hold none (never a day its bot or
- * session activity fell on; without a creation time the key is 0 and the
- * row lands in `lastWeek`), and `lastActivityAt` for a row the server has
- * not reported on. With it off the key is `lastActivityAt`.
+ * creation time for a row known to hold none that has one (never a day its
+ * bot or session activity fell on), and `lastActivityAt` for a known-none
+ * row without a creation time and for a row the server has not reported on.
+ * A row whose key is 0 lands in `lastWeek`. With it off the key is
+ * `lastActivityAt`.
  * Rows keep their input order inside a bucket, so rows sorted with the same
  * `humanOnly` come out in that order, section after section.
  */

@@ -264,8 +264,108 @@ describe("ChatSidebar human-only order: 1:1 DM fields from the DM thread listing
     await wait(20);
     expect(railOrder(ids)).toEqual(["dm:prs_bob", "dm:prs_ann"]);
   });
+});
 
-  it("a DM known to hold no human message has no creation time, so it sorts last, and moves up once a person types", async () => {
+describe("ChatSidebar human-only order: a 1:1 DM known to hold no human message", () => {
+  // The DM thread listing carries no creation time, so such a DM is placed
+  // by its latest activity, like a DM the server has not reported on.
+  beforeEach(() => {
+    // Local noon, so "minutes ago" is always today. Only `Date` is faked:
+    // timers stay real for the rail's async work.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 8, 16, 12, 0, 0));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("with activity today it sits under TODAY in activity order, and unread breaks a tie as for an unknown row", async () => {
+    const wakes = createChatWakeBus();
+    const tie = today(20);
+    const stub = stubApi([], [
+      { personUid: "prs_ann", displayName: "Ann", lastMessageAt: today(60) },
+      { personUid: "prs_newbie", displayName: "Newbie", lastMessageAt: today(2) },
+      { personUid: "prs_abe", displayName: "Abe", lastMessageAt: tie },
+      { personUid: "prs_zed", displayName: "Zed", lastMessageAt: tie },
+    ]);
+    component = mount(ChatSidebar, {
+      target: host,
+      props: { api: stub.api, wakes, humanOnly: true, self: { uid: "prs_me" } },
+    });
+    const ids = ["dm:prs_ann", "dm:prs_newbie", "dm:prs_abe", "dm:prs_zed"];
+    await waitForRows(ids);
+    // Unknown for all four: activity order, the tie by title.
+    expect(railOrder(ids)).toEqual([
+      "dm:prs_newbie",
+      "dm:prs_abe",
+      "dm:prs_zed",
+      "dm:prs_ann",
+    ]);
+
+    // The listing reports that Newbie and Zed hold no typed message (a new
+    // teammate's join notice, an agent's first DM). Zed has two unread.
+    wakes.emit("dm:pair-unreads", {
+      pairUnreads: [{ withPersonUid: "prs_zed", unreadCount: 2 }],
+      activity: [
+        { personUid: "prs_newbie", lastMessageAt: today(2), hasHumanMessage: false },
+        { personUid: "prs_zed", lastMessageAt: tie, hasHumanMessage: false },
+      ],
+    });
+    await tick();
+    await vi.waitFor(() => {
+      expect(railOrder(ids)).toEqual([
+        "dm:prs_newbie", // known none: activity two minutes ago
+        "dm:prs_zed", // known none: same activity as Abe, unread wins the tie
+        "dm:prs_abe", // unknown
+        "dm:prs_ann", // unknown: activity an hour ago
+      ]);
+    });
+    for (const id of ids) expect(sectionOf(id)).toBe("TODAY");
+
+    // Abe's unread now exceeds Zed's: the unknown row wins the same tie.
+    wakes.emit("dm:pair-unreads", {
+      pairUnreads: [{ withPersonUid: "prs_abe", unreadCount: 5 }],
+    });
+    await vi.waitFor(() => {
+      expect(railOrder(ids)).toEqual([
+        "dm:prs_newbie",
+        "dm:prs_abe",
+        "dm:prs_zed",
+        "dm:prs_ann",
+      ]);
+    });
+  });
+
+  it("with old activity it sits in the last section, in activity order with the rows around it", async () => {
+    const wakes = createChatWakeBus();
+    const stub = stubApi([], [
+      { personUid: "prs_ann", displayName: "Ann", lastMessageAt: daysAgo(20) },
+      { personUid: "prs_notices", displayName: "Notices", lastMessageAt: daysAgo(15) },
+      { personUid: "prs_bob", displayName: "Bob", lastMessageAt: today(5) },
+    ]);
+    component = mount(ChatSidebar, {
+      target: host,
+      props: { api: stub.api, wakes, humanOnly: true, self: { uid: "prs_me" } },
+    });
+    const ids = ["dm:prs_ann", "dm:prs_notices", "dm:prs_bob"];
+    await expandLastSection();
+    await waitForRows(ids);
+
+    wakes.emit("dm:pair-unreads", {
+      activity: [
+        { personUid: "prs_notices", lastMessageAt: daysAgo(15), hasHumanMessage: false },
+      ],
+    });
+    await tick();
+    await wait(20);
+    expect(railOrder(ids)).toEqual(["dm:prs_bob", "dm:prs_notices", "dm:prs_ann"]);
+    expect(sectionOf("dm:prs_bob")).toBe("TODAY");
+    expect(sectionOf("dm:prs_notices")).toBe("LAST");
+    expect(sectionOf("dm:prs_ann")).toBe("LAST");
+  });
+
+  it("once a person types, the row follows the human time and no longer its activity", async () => {
     const wakes = createChatWakeBus();
     const stub = stubApi([], [
       { personUid: "prs_ann", displayName: "Ann", lastMessageAt: today(60) },
@@ -277,32 +377,29 @@ describe("ChatSidebar human-only order: 1:1 DM fields from the DM thread listing
     });
     const ids = ["dm:prs_ann", "dm:prs_notices"];
     await waitForRows(ids);
-    expect(railOrder(ids)).toEqual(["dm:prs_notices", "dm:prs_ann"]);
 
     wakes.emit("dm:pair-unreads", {
       activity: [
         { personUid: "prs_notices", lastMessageAt: today(2), hasHumanMessage: false },
       ],
     });
-    // It leaves its day section for the collapsed last section.
-    await vi.waitFor(() => {
-      expect(railOrder(ids)).toEqual(["dm:prs_ann"]);
-    });
-    await expandLastSection();
-    await vi.waitFor(() => {
-      expect(railOrder(ids)).toEqual(["dm:prs_ann", "dm:prs_notices"]);
-    });
-    expect(sectionOf("dm:prs_notices")).toBe("LAST");
+    await tick();
+    await wait(20);
+    // Known none, no creation time: still first, by its activity.
+    expect(railOrder(ids)).toEqual(["dm:prs_notices", "dm:prs_ann"]);
+    expect(sectionOf("dm:prs_notices")).toBe("TODAY");
 
+    // The server now reports a typed message from five hours ago, older than
+    // Ann's activity. The bot activity two minutes ago no longer places it.
     wakes.emit("dm:pair-unreads", {
       activity: [
-        { personUid: "prs_notices", lastMessageAt: today(0), lastHumanMessageAt: today(0) },
+        { personUid: "prs_notices", lastMessageAt: today(2), lastHumanMessageAt: today(300) },
       ],
     });
     await vi.waitFor(() => {
-      expect(railOrder(ids)).toEqual(["dm:prs_notices", "dm:prs_ann"]);
+      expect(railOrder(ids)).toEqual(["dm:prs_ann", "dm:prs_notices"]);
     });
-    expect(sectionOf("dm:prs_notices")).not.toBe("LAST");
+    expect(sectionOf("dm:prs_notices")).toBe("TODAY");
   });
 });
 

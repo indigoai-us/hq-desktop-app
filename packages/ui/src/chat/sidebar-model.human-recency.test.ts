@@ -2,10 +2,11 @@
  * Human-only sidebar order: the three states of "last human message".
  *
  *  - known:   the server sent `lastHumanMessageAt`. Sort by it.
- *  - none:    the server sent `hasHumanMessage: false`. Never sort by bot or
- *             session activity; sort by creation time, on the same timeline
- *             as human times. Without a creation time: the bottom tier, by
- *             title.
+ *  - none:    the server sent `hasHumanMessage: false`. With a creation
+ *             time: sort by it, on the same timeline as human times, never
+ *             by bot or session activity. Without one (every 1:1 DM today):
+ *             sort by `lastActivityAt`, like an unknown row, so a new DM is
+ *             under Today. With neither time: the bottom tier, by title.
  *  - unknown: the server sent neither field. Fall back to `lastActivityAt`.
  *
  * Unknown is what an older server sends for every row, and what today's
@@ -96,12 +97,24 @@ describe("rowHumanRecencyState / rowRecencyKey", () => {
     expect(isUndatedNoHumanRow(r, true)).toBe(false);
   });
 
-  it("none without a creation time: the key is 0 and the row is in the bottom tier", () => {
+  it("none without a creation time: the key is lastActivityAt, like an unknown row", () => {
     const r = row("dm", "a", 900, { none: true });
-    expect(rowRecencyKey(r, true)).toBe(0);
+    expect(rowHumanRecencyState(r)).toBe("none");
+    expect(rowRecencyKey(r, true)).toBe(900);
+    expect(rowRecencyKey(r, true)).toBe(
+      rowRecencyKey(row("dm", "a", 900, { unknown: true }), true),
+    );
     expect(rowRecencyKey(r, false)).toBe(900);
+    // It has a place on the timeline, so it is not in the bottom tier.
+    expect(isUndatedNoHumanRow(r, true)).toBe(false);
+  });
+
+  it("none with neither a creation time nor an activity time: key 0, the bottom tier", () => {
+    const r = row("dm", "a", 0, { none: true });
+    expect(rowRecencyKey(r, true)).toBe(0);
     expect(isUndatedNoHumanRow(r, true)).toBe(true);
     expect(isUndatedNoHumanRow(r, false)).toBe(false);
+    // An unknown row with no activity is not in the tier: it is not known-none.
     expect(isUndatedNoHumanRow(row("dm", "b", 0, { unknown: true }), true)).toBe(false);
   });
 
@@ -130,7 +143,10 @@ describe.each(KINDS)("sortConversations(humanOnly): %s rows", (kind) => {
   const noneOld = row(kind, "none-old", 999, { none: true, createdAt: 200 });
   const noneUndatedB = row(kind, "none-undated-b", 970, { none: true });
   const noneUndatedA = row(kind, "none-undated-a", 10, { none: true });
+  const noneTimelessB = row(kind, "none-timeless-b", 0, { none: true });
+  const noneTimelessA = row(kind, "none-timeless-a", 0, { none: true });
   const all = [
+    noneTimelessB,
     noneUndatedB,
     noneOld,
     unknownIdle,
@@ -138,18 +154,21 @@ describe.each(KINDS)("sortConversations(humanOnly): %s rows", (kind) => {
     noneNew,
     unknownMid,
     noneUndatedA,
+    noneTimelessA,
     knownNew,
   ];
   const prefix = kind === "dm" ? "dm" : "ch";
   const expected = [
+    "none-undated-b", // known none, no creation time: lastActivityAt 970
     "known-new", // human time 800
     "unknown-mid", // no fields: lastActivityAt 600
     "none-new", // known none: created 400, although its bot activity is 990
     "known-old", // human time 300, although its bot activity is 950
-    "none-old", // known none: created 200
+    "none-old", // known none: created 200, although its bot activity is 999
+    "none-undated-a", // known none, no creation time: lastActivityAt 10
     "unknown-idle", // no fields and no activity: key 0
-    "none-undated-a", // known none, no creation time: bottom tier, by title
-    "none-undated-b",
+    "none-timeless-a", // known none, neither time: bottom tier, by title
+    "none-timeless-b",
   ].map((name) => `${prefix}:${name}`);
 
   it("recent mode: known by human time, unknown by activity, known-none by creation time on the same timeline", () => {
@@ -169,6 +188,8 @@ describe.each(KINDS)("sortConversations(humanOnly): %s rows", (kind) => {
       "unknown-mid", // 600
       "known-new", // 100
       "none-undated-a", // 10
+      "none-timeless-a", // 0: these three tie and fall back to title
+      "none-timeless-b", // 0
       "unknown-idle", // 0
     ].map((name) => `${prefix}:${name}`);
     expect(ids(sortConversations(all, "recent", false))).toEqual(byActivity);
@@ -218,10 +239,63 @@ describe.each(KINDS)("sortConversations(humanOnly): %s rows", (kind) => {
     ]);
   });
 
-  it("bottom tier (known none, no creation time): by title, and unread does not reorder it", () => {
-    const b = row(kind, "b", 9_999, { none: true }, { unreadCount: 9 });
-    const a = row(kind, "a", 1, { none: true });
-    expect(ids(sortConversations([b, a], "recent", true))).toEqual([
+  it("known none without a creation time: ordered by activity, with unread as the tie-break, exactly like an unknown row", () => {
+    const newest = row(kind, "a-newest", 900, { none: true });
+    const tieRead = row(kind, "b-tie-read", 500, { none: true });
+    const tieUnread = row(kind, "c-tie-unread", 500, { none: true }, { unreadCount: 3 });
+    const unknownTieDot = row(kind, "d-unknown-tie-dot", 500, { unknown: true }, {
+      unreadDot: true,
+    });
+    const unknownTieRead = row(kind, "e-unknown-tie-read", 500, { unknown: true });
+    const oldest = row(kind, "f-oldest", 100, { none: true }, { unreadCount: 9 });
+    const sorted = ids(
+      sortConversations(
+        [oldest, unknownTieRead, tieRead, unknownTieDot, tieUnread, newest],
+        "recent",
+        true,
+      ),
+    );
+    expect(sorted).toEqual([
+      `${prefix}:a-newest`, // activity 900
+      `${prefix}:c-tie-unread`, // activity 500, 3 unread
+      `${prefix}:d-unknown-tie-dot`, // activity 500, a dot counts as 1
+      `${prefix}:b-tie-read`, // activity 500, read: then title
+      `${prefix}:e-unknown-tie-read`,
+      `${prefix}:f-oldest`, // activity 100: unread does not lift it past newer rows
+    ]);
+    // The same rows with every known-none row turned into an unknown row
+    // sort identically.
+    const asUnknown = [oldest, unknownTieRead, tieRead, unknownTieDot, tieUnread, newest].map(
+      (r): ConversationRow => ({ ...r, hasHumanMessage: undefined }),
+    );
+    expect(asUnknown.map(rowHumanRecencyState)).toEqual(asUnknown.map(() => "unknown"));
+    expect(ids(sortConversations(asUnknown, "recent", true))).toEqual(sorted);
+  });
+
+  it("known none with a creation time still ignores bot activity, next to one without", () => {
+    // Both rows are known-none and both have bot activity at 9,000. The one
+    // with a creation time stays at it (100); the one without is placed by
+    // its activity.
+    const dated = row(kind, "dated", 9_000, { none: true, createdAt: 100 }, {
+      unreadCount: 5,
+    });
+    const undated = row(kind, "undated", 9_000, { none: true });
+    const typed = row(kind, "typed", 2, { human: 300 });
+    for (const mode of ["recent", "type"] as const) {
+      expect(ids(sortConversations([dated, typed, undated], mode, true))).toEqual([
+        `${prefix}:undated`,
+        `${prefix}:typed`,
+        `${prefix}:dated`,
+      ]);
+    }
+  });
+
+  it("bottom tier (known none, neither time): last, by title, and unread does not reorder it", () => {
+    const b = row(kind, "b", 0, { none: true }, { unreadCount: 9 });
+    const a = row(kind, "a", 0, { none: true });
+    const idle = row(kind, "idle", 0, { unknown: true });
+    expect(ids(sortConversations([b, a, idle], "recent", true))).toEqual([
+      `${prefix}:idle`,
       `${prefix}:a`,
       `${prefix}:b`,
     ]);
@@ -252,15 +326,15 @@ describe("sortConversations(humanOnly): kinds together", () => {
   const dmNone = row("dm", "d-none", 990, { none: true });
   const all = [dmNone, channelNone, groupNone, dmUnknown, channelKnown, groupUnknown, dmKnown];
 
-  it("recent mode interleaves kinds; a known-none row sits at its creation time, an undated one last", () => {
+  it("recent mode interleaves kinds; a known-none row sits at its creation time, one without at its activity", () => {
     expect(ids(sortConversations(all, "recent", true))).toEqual([
+      "dm:d-none", // none, no creation time: 990 (activity)
       "ch:g-unknown", // 700 (activity)
       "dm:d-known", // 650 (human)
       "dm:d-unknown", // 600 (activity)
       "ch:c-known", // 500 (human)
       "ch:g-none", // none, created 60
       "ch:c-none", // none, created 50
-      "dm:d-none", // none, no creation time: bottom tier
     ]);
   });
 
@@ -270,23 +344,32 @@ describe("sortConversations(humanOnly): kinds together", () => {
       "ch:c-none",
       "ch:g-unknown",
       "ch:g-none",
+      "dm:d-none",
       "dm:d-known",
       "dm:d-unknown",
-      "dm:d-none",
     ]);
   });
 
-  it("an undated known-none row sorts below a row with no activity at all", () => {
+  it("a known-none row with neither time sorts below a row with no activity at all; one with activity does not", () => {
+    const timeless = row("dm", "timeless", 0, { none: true });
     const undated = row("dm", "undated", 999, { none: true });
     const idle = row("channel", "idle", 0, { unknown: true });
-    expect(compareRowRecency(undated, idle, true)).toBeGreaterThan(0);
-    expect(compareRowRecency(idle, undated, true)).toBeLessThan(0);
+    expect(compareRowRecency(timeless, idle, true)).toBeGreaterThan(0);
+    expect(compareRowRecency(idle, timeless, true)).toBeLessThan(0);
+    expect(compareRowRecency(undated, idle, true)).toBeLessThan(0);
+    expect(compareRowRecency(undated, timeless, true)).toBeLessThan(0);
   });
 
-  it("compareRowRecency reports a tie for two undated known-none rows", () => {
+  it("compareRowRecency: two known-none rows without a creation time compare by activity, and tie only with neither time", () => {
     const a = row("dm", "a", 1, { none: true });
     const b = row("dm", "b", 2, { none: true });
-    expect(compareRowRecency(a, b, true)).toBe(0);
+    expect(compareRowRecency(a, b, true)).toBeGreaterThan(0);
+    expect(compareRowRecency(b, a, true)).toBeLessThan(0);
+    expect(
+      compareRowRecency(row("dm", "a", 0, { none: true }), row("dm", "b", 0, { none: true }), true),
+    ).toBe(0);
+    // Against an unknown row with the same activity: a tie.
+    expect(compareRowRecency(b, row("dm", "c", 2, { unknown: true }), true)).toBe(0);
   });
 });
 
@@ -749,13 +832,25 @@ describe("day sections follow the same key as the order", () => {
         expect(sectionOf(grouped, createdSunday.id)).toBe("SUNDAY");
       });
 
-      it("none without a creation time: the last section, after every other row there", () => {
-        const undated = row(kind, "undated", NOW - HOUR, { none: true });
+      it("none without a creation time: bucketed by its activity, like an unknown row", () => {
+        const today = row(kind, "today", NOW - HOUR, { none: true });
+        const yesterday = row(kind, "yesterday", NOW - DAY, { none: true });
+        const old = row(kind, "old", NOW - 20 * DAY, { unknown: true });
+        const older = row(kind, "older", NOW - 21 * DAY, { none: true });
+        const grouped = group([older, yesterday, old, today], true);
+        expect(sectionOf(grouped, today.id)).toBe("TODAY");
+        expect(sectionOf(grouped, yesterday.id)).toBe("YESTERDAY");
+        // Old activity: the last section, in activity order with unknown rows.
+        expect(ids(grouped.lastWeek)).toEqual([old.id, older.id]);
+      });
+
+      it("none with neither time: the last section, after every other row there", () => {
+        const timeless = row(kind, "timeless", 0, { none: true });
         const old = row(kind, "old", NOW - 20 * DAY, { unknown: true });
         const idle = row(kind, "idle", 0, { unknown: true });
-        const grouped = group([undated, idle, old], true);
+        const grouped = group([timeless, idle, old], true);
         expect(grouped.sections).toEqual([]);
-        expect(ids(grouped.lastWeek)).toEqual([old.id, idle.id, undated.id]);
+        expect(ids(grouped.lastWeek)).toEqual([old.id, idle.id, timeless.id]);
       });
 
       it("unknown: the row is bucketed by its activity", () => {
@@ -798,6 +893,8 @@ describe("day sections follow the same key as the order", () => {
       row("dm", "empty", 0, { unknown: true }),
       row("channel", "new-empty", 0, { none: true, createdAt: NOW - HOUR }),
       row("channel", "old-bot-only", NOW - HOUR, { none: true, createdAt: NOW - 40 * DAY }),
+      row("dm", "timeless", 0, { none: true }),
+      row("dm", "old-notices", NOW - 10 * DAY, { none: true }),
     ];
     const sorted = sortConversations(rows, "recent", true);
     const grouped = groupByDay(sorted, NOW, { humanOnly: true });
@@ -806,28 +903,31 @@ describe("day sections follow the same key as the order", () => {
     expect(ids(sorted)).toEqual([
       "ch:new-empty", // none, created an hour ago
       "dm:ann", // unknown: activity two hours ago
+      "dm:notices", // none, no creation time: activity five hours ago
       "ch:typed", // typed six hours ago
       "ch:trio", // typed yesterday
       "ch:busy", // typed three days ago
       "ch:mesh-only", // none, created five days ago
       "ch:quiet", // unknown: activity nine days ago
+      "dm:old-notices", // none, no creation time: activity ten days ago
       "ch:ancient", // typed thirty days ago
       "ch:old-bot-only", // none, created forty days ago
       "dm:empty", // unknown, no activity
-      "dm:notices", // none, no creation time: bottom tier
+      "dm:timeless", // none, neither time: bottom tier
     ]);
     expect(grouped.sections.map((s) => [s.label.split(" · ")[0], ids(s.rows)])).toEqual([
-      ["TODAY", ["ch:new-empty", "dm:ann", "ch:typed"]],
+      ["TODAY", ["ch:new-empty", "dm:ann", "dm:notices", "ch:typed"]],
       ["YESTERDAY", ["ch:trio"]],
       ["SUNDAY", ["ch:busy"]],
       ["FRIDAY", ["ch:mesh-only"]],
     ]);
     expect(ids(grouped.lastWeek)).toEqual([
       "ch:quiet",
+      "dm:old-notices",
       "ch:ancient",
       "ch:old-bot-only",
       "dm:empty",
-      "dm:notices",
+      "dm:timeless",
     ]);
 
     // Every row's section is the day of the key it is ordered by.
@@ -918,22 +1018,27 @@ describe("history view: order and day labels follow the same key", () => {
     row("channel", "typed", now - 4 * HOUR, { human: now - DAY }),
   ];
 
-  it("humanOnly: a mesh-busy row is listed under its human day, a known-none row under its creation day", () => {
-    const withUndated = [...rows, row("dm", "notices", now - HOUR, { none: true })];
+  it("humanOnly: a mesh-busy row is listed under its human day, a known-none row under its creation day or, without one, its activity day", () => {
+    const withUndated = [
+      ...rows,
+      row("dm", "notices", now - HOUR, { none: true }),
+      row("dm", "timeless", 0, { none: true }),
+    ];
     const ordered = searchHistory(withUndated, "", true);
     expect(ids(ordered)).toEqual([
+      "dm:notices", // none, no creation time: activity an hour ago
       "dm:ann",
       "ch:typed", // typed a day ago
       "ch:mesh-only", // created an hour before that
       "ch:busy",
-      "dm:notices",
+      "dm:timeless", // none, neither time
     ]);
     const groups = historyDayGroups(ordered, NOW, true);
     expect(groups.map((g) => [g.label, ids(g.rows)])).toEqual([
-      ["Today", ["dm:ann"]],
+      ["Today", ["dm:notices", "dm:ann"]],
       ["Yesterday", ["ch:typed", "ch:mesh-only"]],
       ["Sep 13", ["ch:busy"]],
-      ["Older", ["dm:notices"]],
+      ["Older", ["dm:timeless"]],
     ]);
   });
 
@@ -966,13 +1071,26 @@ describe("boot pick follows the same key", () => {
     );
   });
 
-  it("humanOnly: a known-none row is picked by its creation time, and an undated one only when nothing else can be", () => {
+  it("humanOnly: a known-none row is picked by its creation time, or by its activity when it has no creation time", () => {
     const created = row("channel", "created", 1, { none: true, createdAt: 600 });
     expect(pickAutoOpenConversation([...rows, created], null, true)?.id).toBe("ch:created");
+    // No creation time: its activity (999) is the key, newer than every
+    // other row's, so it is the pick, as an unknown row would be.
     const undated = row("dm", "undated", 999, { none: true });
-    expect(pickAutoOpenConversation([undated], null, true)?.id).toBe(undated.id);
+    expect(pickAutoOpenConversation([...rows, created, undated], null, true)?.id).toBe(
+      undated.id,
+    );
+    expect(pickSettledBootConversation([...rows, undated], null, true)?.id).toBe(undated.id);
+    // Older activity than another row's key: not the pick.
+    const undatedOld = row("dm", "undated-old", 450, { none: true });
+    expect(pickAutoOpenConversation([...rows, undatedOld], null, true)?.id).toBe("dm:ann");
+  });
+
+  it("humanOnly: a known-none row with neither time is picked only when nothing else can be", () => {
+    const timeless = row("dm", "timeless", 0, { none: true });
+    expect(pickAutoOpenConversation([timeless], null, true)?.id).toBe(timeless.id);
     expect(
-      pickAutoOpenConversation([undated, row("dm", "idle", 0, { unknown: true })], null, true)?.id,
+      pickAutoOpenConversation([timeless, row("dm", "idle", 0, { unknown: true })], null, true)?.id,
     ).toBe("dm:idle");
   });
 

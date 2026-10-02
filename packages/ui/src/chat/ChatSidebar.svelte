@@ -407,8 +407,9 @@
      * ordered and sectioned by the last message a person typed, in three
      * states: a known `lastHumanMessageAt` places the row at that time; a
      * row the server knows holds no human message is placed at its creation
-     * time (last when it has none); a row the server sent neither field for
-     * falls back to `lastActivityAt`. Default off preserves legacy ordering.
+     * time (by `lastActivityAt` when it has none, as a 1:1 DM does today); a
+     * row the server sent neither field for falls back to `lastActivityAt`.
+     * Default off preserves legacy ordering.
      */
     humanOnly?: boolean;
   }
