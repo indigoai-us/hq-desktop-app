@@ -141,6 +141,8 @@ export function createFirstRunCompanyApi(invoke: InvokeFn): CreateCompanyApi {
       };
     },
     checkCompanySlug: (slug) => invoke<unknown>('check_company_slug', { slug }),
+    activateCompanyCloud: (companyUid) =>
+      invoke<unknown>('activate_company_cloud', { companyUid }),
     runCompanyTabAction: async (args) =>
       invoke('run_company_tab_action', {
         companyUid: args.companyUid,

@@ -175,10 +175,13 @@
       inviteCount: invites.valid.length,
       inviteFailureCount: result.company.inviteFailures.length,
     });
-    note =
+    const inviteNote =
       result.company.inviteFailures.length > 0
         ? `Some invites did not go out: ${result.company.inviteFailures.map((failure) => failure.email).join(', ')}. You can invite them again from the Team tab.`
         : null;
+    // The company exists but its cloud vault is not set up yet; the desktop
+    // window's sync banner retries provisioning on Try again.
+    note = [result.company.cloudError, inviteNote].filter(Boolean).join(' ') || null;
     phase = 'plan';
   }
 
