@@ -1036,7 +1036,7 @@
   const companySectionRows = $derived<CompanySectionRow[]>(
     resolveCompanySectionRows(
       (companies ?? [])
-        .filter((c) => (c.cloudUid ?? "").trim())
+        .filter((c) => c.kind === "company" && (c.cloudUid ?? "").trim())
         .map((c) => ({
           companyUid: (c.cloudUid as string).trim(),
           label: c.displayName || c.slug || c.cloudUid!,
