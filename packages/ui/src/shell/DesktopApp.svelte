@@ -250,6 +250,11 @@
   import PageHeader from "./PageHeader.svelte";
   import ProjectsHome from "../projects/ProjectsHome.svelte";
   import CompanyProjectsPage from "../projects/CompanyProjectsPage.svelte";
+  import {
+    configureProjectsApi,
+    loadLocalProjects,
+  } from "../projects/local-projects.js";
+  import type { Project } from "../projects/projects-model.js";
   import CommandPalette, {
     type CommandPaletteItem,
   } from "../common/CommandPalette.svelte";
@@ -686,6 +691,7 @@
   import {
     mergePaletteRows,
     paletteConversationItems,
+    paletteProjectItems,
   } from "./palette-rows.js";
   import {
     joinableMemberships,
@@ -3515,6 +3521,46 @@
    */
   const paletteRows = $derived(mergePaletteRows(railRows, searchRows));
 
+  /**
+   * Projects the palette indexes (QA-079): the same local list the Projects
+   * page loads. Cache-first — the last list stays searchable while a refresh
+   * runs on each palette open, so an open project is never missing.
+   */
+  let paletteProjects = $state<Project[]>([]);
+  let paletteProjectsLoading = false;
+  async function refreshPaletteProjects(): Promise<void> {
+    if (adapter.kind === "web" || paletteProjectsLoading) return;
+    paletteProjectsLoading = true;
+    try {
+      configureProjectsApi(adapter.projects);
+      paletteProjects = await loadLocalProjects();
+    } catch (err) {
+      console.warn("Palette project index refresh failed:", err);
+    } finally {
+      paletteProjectsLoading = false;
+    }
+  }
+  $effect(() => {
+    if (paletteOpen) untrack(() => void refreshPaletteProjects());
+  });
+
+  /** Personal + member companies: the Projects page's company set. */
+  const paletteProjectCompanies = $derived([
+    ...(companies ?? [])
+      .filter((w) => w.kind === "personal")
+      .map((w) => ({
+        slug: w.slug,
+        companyUid: (w.cloudUid ?? "").trim() || null,
+        label: w.displayName?.trim() || w.slug,
+        personal: true,
+      })),
+    ...memberCompanies(companies).map((w) => ({
+      slug: w.slug,
+      companyUid: (w.cloudUid ?? "").trim() || null,
+      label: w.displayName?.trim() || w.slug,
+    })),
+  ]);
+
   /** Palette `shortcut` label for a registered binding id. */
   function shortcutLabel(id: string): string | undefined {
     const binding = shellShortcuts.find((b) => b.id === id);
@@ -3672,7 +3718,26 @@
         (item.row.channelScope ?? "").trim() === "company",
       action: () => handleSelect(item.row),
     }));
-    return [...nav, ...conversations];
+    const projectItems: CommandPaletteItem[] = paletteProjectItems(
+      paletteProjects,
+      paletteProjectCompanies,
+    ).map((item) => ({
+      id: item.id,
+      label: item.label,
+      detail: item.detail,
+      keywords: item.keywords,
+      section: item.section,
+      companyUid: item.companyUid,
+      personal: item.personal,
+      action: () => {
+        void navigate({
+          kind: "projects",
+          company: item.companySlug,
+          project: item.projectId,
+        });
+      },
+    }));
+    return [...projectItems, ...nav, ...conversations];
   });
 
   /**

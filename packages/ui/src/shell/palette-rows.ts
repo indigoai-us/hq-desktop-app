@@ -471,3 +471,79 @@ export function paletteConversationItems(
       (row.kind !== "channel" && !(row.companyUid ?? "").trim()),
   }));
 }
+
+/** Minimal project shape the palette indexes (same list the Projects page loads). */
+export interface PaletteProjectSource {
+  id: string;
+  name?: string | null;
+  title?: string | null;
+  company: string;
+  prdPath?: string | null;
+}
+
+/** Member company used to map a project's company slug to its uid and name. */
+export interface PaletteProjectCompany {
+  slug: string;
+  companyUid?: string | null;
+  label?: string | null;
+  personal?: boolean;
+}
+
+export interface PaletteProjectItem {
+  id: string;
+  label: string;
+  detail: string;
+  keywords: string;
+  section: "projects";
+  companyUid: string | null;
+  personal: boolean;
+  companySlug: string;
+  projectId: string;
+}
+
+/** Folder that holds the project's prd.json (`…/projects/<folder>/prd.json`). */
+function projectFolderName(prdPath: string | null | undefined): string {
+  const parts = (prdPath ?? "").split(/[\\/]+/).filter(Boolean);
+  if (parts.length === 0) return "";
+  const last = parts[parts.length - 1];
+  return /\.json$/i.test(last) ? (parts[parts.length - 2] ?? "") : last;
+}
+
+/**
+ * PROJECTS rows for the palette (QA-079). Indexes the projects the Projects
+ * page lists, for member companies only, so a project is findable by display
+ * name, id, or folder name. Scope filtering uses the owning company's uid.
+ */
+export function paletteProjectItems(
+  projects: readonly PaletteProjectSource[],
+  companies: readonly PaletteProjectCompany[],
+): PaletteProjectItem[] {
+  const bySlug = new Map(companies.map((c) => [c.slug.trim(), c]));
+  const seen = new Set<string>();
+  const items: PaletteProjectItem[] = [];
+  for (const project of projects) {
+    const slug = (project.company ?? "").trim();
+    const projectId = (project.id ?? "").trim();
+    const company = bySlug.get(slug);
+    if (!company || !projectId) continue;
+    const key = `${slug}:${projectId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const name =
+      (project.name ?? "").trim() || (project.title ?? "").trim() || projectId;
+    const folder = projectFolderName(project.prdPath);
+    const companyLabel = (company.label ?? "").trim() || slug;
+    items.push({
+      id: `project-${slug}-${projectId}`,
+      label: name,
+      detail: `${companyLabel} · project`,
+      keywords: [projectId, folder, slug].filter(Boolean).join(" "),
+      section: "projects",
+      companyUid: (company.companyUid ?? "").trim() || null,
+      personal: company.personal === true,
+      companySlug: slug,
+      projectId,
+    });
+  }
+  return items;
+}
