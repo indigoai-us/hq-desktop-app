@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Desktop setup completion telemetry now carries the persisted install attempt ID so it can join to first launch.
 - Auto-sync watcher reports now identify launcher and runner exits and owner-lease
   outcomes. When a Node report is available, they add a safe error identifier and
   the top frame's file name for HQ's own scripts only; frames from other files

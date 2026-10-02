@@ -1184,6 +1184,9 @@ fn build_desktop_telemetry_event(
     if is_post_ready_action {
         properties["os"] = Value::String(std::env::consts::OS.to_string());
     }
+    let install_attempt_id = (event_name == "desktop_setup_completed")
+        .then(crate::commands::first_run::install_attempt_id)
+        .flatten();
     RawTelemetryEvent {
         event_name,
         app: "hq-desktop-app".to_string(),
@@ -1203,6 +1206,7 @@ fn build_desktop_telemetry_event(
         idempotency_key,
         session_id: session_id.filter(|value| is_safe_label_value(value)),
         company_uid,
+        install_attempt_id,
         properties,
     }
 }
@@ -1353,6 +1357,7 @@ fn build_daily_active_event(utc_day: chrono::NaiveDate) -> RawTelemetryEvent {
         idempotency_key: Some(format!("hq-desktop-app:daily-active:{day}")),
         session_id: None,
         company_uid: None,
+        install_attempt_id: None,
         properties: json!({
             "platform": crate::commands::version_gate::platform_tag(),
             "appVersion": crate::app_version::current(),
@@ -3004,6 +3009,13 @@ mod codex_telemetry_tests {
 
     #[test]
     fn onboarding_events_attach_the_trusted_build_version_after_property_redaction() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
+        let home = setup_home();
+        write_menubar(home.path(), "{}");
+        let _home = scoped_home(home.path());
+        let install_attempt_id = crate::commands::first_run::install_attempt_id()
+            .expect("the persisted install attempt id is available");
+
         let event = build_desktop_telemetry_event(
             "desktop_onboarding_step".to_string(),
             Some(json!({
@@ -3031,6 +3043,10 @@ mod codex_telemetry_tests {
         assert_eq!(
             completed.properties["appVersion"],
             crate::app_version::current()
+        );
+        assert_eq!(
+            serde_json::to_value(&completed).unwrap()["installAttemptId"],
+            install_attempt_id
         );
     }
 
