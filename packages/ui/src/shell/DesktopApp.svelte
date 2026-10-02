@@ -48,6 +48,7 @@
   } from "./lazy-doors.js";
   import type { MoreCompany } from "./more-companies.js";
   import TelemetryRailHost from "./TelemetryRailHost.svelte";
+  import PersonalRailHost from "./PersonalRailHost.svelte";
   import AtlasLandingHost from "./AtlasLandingHost.svelte";
   import ActivityRailHost from "./ActivityRailHost.svelte";
   import GoalsRailHost from "./GoalsRailHost.svelte";
@@ -9687,6 +9688,8 @@
           </LazyDoor>
         {:else if railPlaceholder?.id === "telemetry"}
           <TelemetryRailHost />
+        {:else if railPlaceholder?.id === "secrets" || railPlaceholder?.id === "connections"}
+          <PersonalRailHost page={railPlaceholder.id} />
         {:else if railPlaceholder}
           <section
             class="rail-placeholder"
