@@ -566,6 +566,25 @@ describe('onboarding step telemetry', () => {
     expect(pings[0]?.installSessionId).toBe(emitted[0]?.sessionId);
   });
 
+  it('uses the shared installAttemptId for first-run onboarding event session identity', async () => {
+    const telemetry = createTelemetry({
+      newSessionId: () => '11111111-1111-4111-8111-111111111111',
+    });
+    const installAttemptId = '22222222-2222-4222-8222-222222222222';
+
+    telemetry.setInstallAttemptId(installAttemptId);
+    telemetry.recordFirstLaunch();
+    await Promise.resolve();
+
+    expect(emitted).toMatchObject([
+      {
+        sessionId: installAttemptId,
+        properties: { step: 'welcome-signin', action: 'entered' },
+      },
+    ]);
+    expect(pings.every((ping) => ping.installSessionId === installAttemptId)).toBe(true);
+  });
+
   it('omits personUid before sign-in and includes it on later pings', async () => {
     const telemetry = createTelemetry({
       newSessionId: () => 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
