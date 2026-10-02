@@ -7,8 +7,12 @@
    * The last payload for this slug paints on the first frame; a refresh
    * runs after that. Pending invites revoke only through the confirm sheet.
    */
-  import type { CompanyApi, MessagingApi } from "@hq/platform";
+  import type { AgentsApi, CompanyApi, MessagingApi } from "@hq/platform";
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
+  import LazyDoor from "../shell/LazyDoor.svelte";
+  import ShowMoreRow from "../shell/ShowMoreRow.svelte";
+  import { profilePaneDoor } from "../shell/lazy-doors.js";
+  import { pageRows } from "../shell/list-paging.js";
   import {
     normalizeCompanyTeamTelemetry,
     type TeamMember,
@@ -43,7 +47,12 @@
     company: CompanyApi | null;
     messaging?: MessagingApi | null;
     senderName?: string;
+    /** Bot controls in the profile pane (jobs, usage, pause). */
+    agents?: AgentsApi | null;
+    /** Bumped by the sidepane Invite a teammate row; opens the invite sheet. */
+    inviteSeq?: number;
     onaddagent?: () => void;
+    onmessage?: (uid: string) => void;
   }
 
   let {
@@ -52,7 +61,10 @@
     company,
     messaging = null,
     senderName = "you",
+    agents = null,
+    inviteSeq = 0,
     onaddagent,
+    onmessage,
   }: Props = $props();
 
   const emptyView: TeamTelemetryView = {
@@ -73,12 +85,31 @@
   let menuFor = $state<string | null>(null);
   let removeId = $state<string | null>(null);
   let groupQuery = $state("");
+  let openId = $state<string | null>(null);
+  let humanPages = $state(1);
+  let botPages = $state(1);
+  let invitePages = $state(1);
+  let seenInviteSeq = 0;
+
+  // The sidepane Invite a teammate row lands here with the sheet open.
+  $effect(() => {
+    if (inviteSeq > seenInviteSeq) {
+      seenInviteSeq = inviteSeq;
+      inviteOpen = true;
+    }
+  });
 
   const fields = $derived(inviteRoleFields(draft.role));
   const humans = $derived(view.humans);
   const bots = $derived(view.agents);
   const showHumans = $derived(filter === "all" || filter === "humans");
   const showBots = $derived(filter === "all" || filter === "bots");
+  const humanPage = $derived(pageRows(humans, humanPages));
+  const botPage = $derived(pageRows(bots, botPages));
+  const invitePage = $derived(pageRows(invites, invitePages));
+  const openMember = $derived(
+    openId ? ([...humans, ...bots].find((member) => member.id === openId) ?? null) : null,
+  );
   const seatLine = $derived.by(() => {
     const settings = readSettingsCache(slug);
     const used = humans.length + bots.length;
@@ -187,6 +218,11 @@
     return Boolean(companyUid) && presenceStatus(companyUid!, member.id) === "online";
   }
 
+  function openProfile(member: TeamMember): void {
+    menuFor = null;
+    openId = openId === member.id ? null : member.id;
+  }
+
   function setRole(member: TeamMember, role: string): void {
     const apply = (row: TeamMember) => (row.id === member.id ? { ...row, role } : row);
     view = {
@@ -258,10 +294,10 @@
       {/each}
     </div>
     <span class="grow"></span>
-    <span class="chip" class:live={liveMembers > 0} data-testid="team-live-chip">
-      <i class="ldot"></i>{liveMembers} live
+    <span class="stat" data-testid="team-live-chip">
+      <i class="dot" class:live={liveMembers > 0}></i>{liveMembers} live
     </span>
-    <span class="chip" data-testid="team-seat-chip">{seatLine}</span>
+    <span class="stat" data-testid="team-seat-chip">{seatLine}</span>
     <button type="button" class="btn" data-testid="invite-teammate" onclick={() => (inviteOpen = true)}>
       Invite teammate
     </button>
@@ -270,11 +306,12 @@
     </button>
   </div>
 
+  <div class="body">
   <div class="canvas">
     {#if phase === "shimmer"}
       <div class="shimmer" data-testid="team-shimmer" aria-hidden="true">
         {#each [0, 1, 2, 3] as row (row)}
-          <div class="shimmer-row"></div>
+          <div class="shimmer-row"><span class="sk sk-av"></span><span class="sk"></span></div>
         {/each}
       </div>
     {:else}
@@ -282,68 +319,43 @@
         <p class="note" role="alert">{view.error}</p>
       {/if}
       {#if showHumans}
-        <div class="sech">Humans · {humans.length}</div>
-        <table class="tbl">
-          <thead>
-            <tr><th>Member</th><th>Role</th><th>Working on</th><th class="r">Joined</th><th class="act"></th></tr>
-          </thead>
-          <tbody>
-            {#each humans as member (member.id)}
-              <tr>
-                <td>
-                  <span class="who">
-                    <span class="mini">{initials(member.displayName)}<span class="ld" class:pulse={live(member)}></span></span>
-                    <span>
-                      <span class="nm">{member.displayName}</span>
-                      {#if member.email}<span class="em">{member.email}</span>{/if}
-                    </span>
-                  </span>
-                </td>
-                <td>{roleLine(member)}</td>
-                <td class="wk">{working(member)}</td>
-                <td class="r">{member.joined ?? "—"}</td>
-                <td class="act">{@render rowMenu(member, false)}</td>
-              </tr>
-            {:else}
-              <tr><td colspan="5" class="em">No people yet.</td></tr>
-            {/each}
-          </tbody>
-        </table>
+        <div class="sech" data-testid="team-section-label">Humans · {humans.length}</div>
+        <div class="cols" aria-hidden="true">
+          <span>Member</span><span>Role</span><span>Working on</span><span class="r">Joined</span><span></span>
+        </div>
+        <div class="list" role="list">
+          {#each humanPage.rows as member (member.id)}
+            {@render memberRow(member, false)}
+          {:else}
+            <p class="empty">No people yet.</p>
+          {/each}
+          {#if humanPage.remaining > 0}
+            <ShowMoreRow shown={humanPage.rows.length} total={humanPage.total} next={humanPage.next} noun="people" onmore={() => (humanPages += 1)} testid="team-humans-more" />
+          {/if}
+        </div>
       {/if}
       {#if showBots}
-        <div class="sech">Bots · {bots.length}</div>
-        <table class="tbl">
-          <thead>
-            <tr><th>Agent</th><th>Role</th><th>Working on</th><th class="r">Enrolled</th><th class="act"></th></tr>
-          </thead>
-          <tbody>
-            {#each bots as member (member.id)}
-              <tr>
-                <td>
-                  <span class="who">
-                    <span class="mini sq">⌁<span class="ld" class:pulse={live(member)}></span></span>
-                    <span class="nm">{member.displayName}</span>
-                  </span>
-                </td>
-                <td>{roleLine(member)}</td>
-                <td class="wk">{working(member)}</td>
-                <td class="r">{member.joined ?? "—"}</td>
-                <td class="act">{@render rowMenu(member, true)}</td>
-              </tr>
-            {:else}
-              <tr><td colspan="5" class="em">No bots yet.</td></tr>
-            {/each}
-          </tbody>
-        </table>
+        <div class="sech" data-testid="team-section-label">Bots · {bots.length}</div>
+        <div class="cols" aria-hidden="true">
+          <span>Agent</span><span>Role</span><span>Working on</span><span class="r">Enrolled</span><span></span>
+        </div>
+        <div class="list" role="list">
+          {#each botPage.rows as member (member.id)}
+            {@render memberRow(member, true)}
+          {:else}
+            <p class="empty">No bots yet.</p>
+          {/each}
+          {#if botPage.remaining > 0}
+            <ShowMoreRow shown={botPage.rows.length} total={botPage.total} next={botPage.next} noun="bots" onmore={() => (botPages += 1)} testid="team-bots-more" />
+          {/if}
+        </div>
       {/if}
-      <div class="sech">Pending invites · {invites.length} waiting</div>
+      <div class="sech" data-testid="team-section-label">Pending invites · {invites.length}</div>
       <ul class="inv" data-testid="pending-invites">
-        {#each invites as invite (invite.id)}
+        {#each invitePage.rows as invite (invite.id)}
           <li>
-            <div>
-              <div class="nm">{invite.email}</div>
-              <div class="em">{inviteSummary(invite)}</div>
-            </div>
+            <span class="nm">{invite.email}</span>
+            <span class="meta">{inviteSummary(invite)}</span>
             <button
               type="button"
               class="btn"
@@ -358,19 +370,51 @@
               onclick={() => (revokeId = invite.id)}>Revoke</button>
           </li>
         {:else}
-          <li class="em">No pending invites.</li>
+          <li class="empty">No pending invites.</li>
         {/each}
       </ul>
+      {#if invitePage.remaining > 0}
+        <ShowMoreRow shown={invitePage.rows.length} total={invitePage.total} next={invitePage.next} noun="invites" onmore={() => (invitePages += 1)} testid="team-invites-more" />
+      {/if}
       <p class="note">Invites go through the request-access funnel. Recipients confirm their email and appear here until they sign in.</p>
     {/if}
+  </div>
+
+  {#if openMember}
+    <div class="profile" data-testid="team-profile-pane">
+      <LazyDoor
+        door={profilePaneDoor}
+        props={{
+          kind: openMember.kind === "agent" ? "bot" : "person",
+          name: openMember.displayName,
+          email: openMember.email ?? null,
+          role: roleLine(openMember),
+          company: slug,
+          live: live(openMember),
+          agentUid: openMember.kind === "agent" ? openMember.id : null,
+          runtimeKind: openMember.kind === "agent" ? "cloud" : null,
+          companyUid,
+          agents,
+          onclose: () => (openId = null),
+          onmessage: () => onmessage?.(openMember.id),
+        }}
+      >
+        {#snippet skeleton()}
+          <div class="profile-skeleton" data-testid="team-profile-skeleton" aria-busy="true"></div>
+        {/snippet}
+      </LazyDoor>
+    </div>
+  {/if}
   </div>
 
   {#if inviteOpen}
     <div class="scrim" data-testid="invite-sheet" data-scene="invite-teammate">
       <div class="sheet" role="dialog" aria-label="Invite teammate" use:dismissable={{ onclose: () => (inviteOpen = false), outside: true }}>
         <header class="sh">
-          Invite teammate
-          <button type="button" class="icon" aria-label="Close" onclick={() => (inviteOpen = false)}>✕</button>
+          <span class="sh-title">Invite teammate</span>
+          <button type="button" class="icon" aria-label="Close" onclick={() => (inviteOpen = false)}>
+            <svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true"><path d="M3.5 3.5l7 7M10.5 3.5l-7 7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" fill="none" /></svg>
+          </button>
         </header>
         <div class="fr">
           <label for="invite-email">Email</label>
@@ -412,6 +456,35 @@
   {/if}
 </section>
 
+{#snippet memberRow(member: TeamMember, bot: boolean)}
+  <div class="row" class:is-selected={openId === member.id} role="listitem" data-testid="team-row" data-member-id={member.id}>
+    <button
+      type="button"
+      class="row-main"
+      aria-label={`Open ${member.displayName} profile`}
+      data-testid={`team-open-${member.id}`}
+      onclick={() => openProfile(member)}
+    >
+      <span class="who">
+        <span class="mini" class:sq={bot} aria-hidden="true">
+          {#if bot}
+            <svg viewBox="0 0 14 14" width="12" height="12"><rect x="2.5" y="4" width="9" height="7" rx="2" stroke="currentColor" stroke-width="1.3" fill="none" /><path d="M7 2v2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" /></svg>
+          {:else}
+            {initials(member.displayName)}
+          {/if}
+          <span class="ld" class:pulse={live(member)}></span>
+        </span>
+        <span class="nm">{member.displayName}</span>
+        {#if member.email}<span class="meta em">{member.email}</span>{/if}
+      </span>
+      <span class="cell">{roleLine(member)}</span>
+      <span class="cell meta">{working(member)}</span>
+      <span class="cell meta r">{member.joined ?? ""}</span>
+    </button>
+    <span class="act">{@render rowMenu(member, bot)}</span>
+  </div>
+{/snippet}
+
 {#snippet rowMenu(member: TeamMember, bot: boolean)}
   <div class="menu-wrap">
     <button
@@ -421,7 +494,7 @@
       aria-expanded={menuFor === member.id}
       data-testid={`team-menu-${member.id}`}
       onclick={() => (menuFor = menuFor === member.id ? null : member.id)}
-    >…</button>
+    ><svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true"><circle cx="3" cy="7" r="1" fill="currentColor" /><circle cx="7" cy="7" r="1" fill="currentColor" /><circle cx="11" cy="7" r="1" fill="currentColor" /></svg></button>
     {#if menuFor === member.id}
       <div class="menu" role="menu" data-testid="team-row-menu">
         <span class="menu-note">Change role</span>
@@ -457,172 +530,210 @@
 
 <style>
   .team-page {
+    position: relative;
     display: flex;
     flex-direction: column;
     min-height: 0;
     flex: 1;
-    color: var(--v4-text-1);
+    color: var(--t1);
+    font-size: 13px;
     background: transparent;
   }
+  /* Console-rail page chrome, measured from Messages (docs/design-standard-console-rail.md):
+     one 20px/500 title, 13px everywhere else, 31px rows, background-only selection. */
   .toolbar {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 10px 16px;
-    border-bottom: 1px solid var(--v4-hairline);
+    height: 52px;
+    flex: none;
+    box-sizing: border-box;
+    padding: 0 20px;
+    border-bottom: 1px solid var(--line);
   }
-  h1 { margin: 0; font-size: 15px; font-weight: 600; }
-  .tabs, .seg { display: inline-flex; gap: 2px; }
-  .tab {
-    border: 0;
-    background: transparent;
-    color: var(--v4-text-2);
-    border-radius: 6px;
-    padding: 3px 8px;
-    font: inherit;
-    font-size: 12px;
+  h1 {
+    margin: 0 8px 0 0;
+    font-size: var(--type-title, 20px);
+    font-weight: var(--type-title-weight, 500);
+    line-height: var(--type-title-line, 1.25);
+    color: var(--t1);
   }
-  .tab[aria-selected="true"] { background: var(--v4-active-row); color: var(--v4-text-1); }
   .grow { flex: 1; }
-  .btn {
-    border: 1px solid var(--v4-control-border);
-    background: var(--v4-control-faint);
-    color: var(--v4-text-1);
+  .tabs, .seg { display: inline-flex; gap: 2px; }
+  .seg { padding: 2px; border: 1px solid var(--panel-border); border-radius: 6px; background: var(--hover); }
+  .tab {
+    height: 26px;
+    border: 0;
     border-radius: 6px;
-    padding: 4px 10px;
-    font: inherit;
-    font-size: 12px;
-  }
-  .btn.primary { background: var(--v4-primary-bg); color: var(--v4-primary-fg); border-color: transparent; }
-  .canvas { flex: 1; min-height: 0; overflow: auto; padding: 16px 20px 24px; }
-  .sech {
-    font-family: var(--font-mono, ui-monospace, monospace);
-    font-size: 10px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--v4-text-3);
-    margin: 16px 0 8px;
-  }
-  .tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
-  .tbl th {
-    font-family: var(--font-mono, ui-monospace, monospace);
-    font-size: 10px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    font-weight: 400;
-    color: var(--v4-text-3);
-    text-align: left;
-    padding: 0 12px 6px 0;
-    border-bottom: 1px solid var(--v4-rowline);
-  }
-  .tbl td { padding: 8px 12px 8px 0; border-bottom: 1px solid var(--v4-rowline); color: var(--v4-text-2); vertical-align: middle; }
-  .chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    height: 22px;
     padding: 0 8px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: 999px;
-    color: var(--v4-text-2);
-    font-size: 12px;
+    background: transparent;
+    color: var(--t2);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .seg .tab { height: auto; padding: 4px 8px; border-radius: 4px; }
+  .tab:hover { background: var(--hover); color: var(--t1); }
+  .tab[aria-selected="true"] { background: var(--sel); color: var(--t1); }
+  .btn {
+    height: 26px;
+    box-sizing: border-box;
+    border: 1px solid var(--line2);
+    border-radius: 6px;
+    padding: 0 10px;
+    background: var(--btn-bg);
+    color: var(--t1);
+    font: inherit;
+    font-size: 13px;
     white-space: nowrap;
+    cursor: pointer;
   }
-  .ldot, .ld {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--v4-text-3);
-  }
-  .chip.live .ldot, .ld.pulse { background: var(--ok); }
-  .who { display: flex; align-items: center; gap: 10px; }
-  .mini {
-    position: relative;
+  .btn:hover { background: var(--hover); }
+  .btn.primary { background: var(--t1); color: var(--badge-fg); border-color: transparent; }
+  .btn:disabled { opacity: 0.5; cursor: default; }
+  .icon {
     display: inline-grid;
     place-items: center;
-    width: 28px;
-    height: 28px;
-    border-radius: 50%;
-    background: var(--v4-control-faint);
-    color: var(--v4-text-1);
-    font-size: 10px;
-    font-weight: 600;
-    flex: 0 0 28px;
-  }
-  .mini.sq { border-radius: 6px; }
-  .mini .ld { position: absolute; right: -1px; bottom: -1px; box-shadow: 0 0 0 1.5px var(--v4-ground, #111); }
-  .r { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .act { width: 36px; text-align: right; position: relative; }
-  .menu-wrap { position: relative; display: inline-flex; }
-  .menu {
-    position: absolute;
-    right: 0;
-    top: 22px;
-    z-index: 5;
-    min-width: 140px;
-    padding: 4px;
-    background: var(--v4-popover);
-    border: 1px solid var(--v4-hairline);
-    border-radius: 8px;
-    box-shadow: var(--v4-shadow-popover);
-  }
-  .menu button {
-    display: block;
-    width: 100%;
-    text-align: left;
+    width: 24px;
+    height: 24px;
+    padding: 0;
     border: 0;
+    border-radius: 6px;
     background: transparent;
-    color: var(--v4-text-1);
-    padding: 6px 8px;
-    border-radius: 6px;
-    font: inherit;
-    font-size: 12px;
+    color: var(--t2);
+    cursor: pointer;
   }
-  .menu button:hover { background: var(--v4-active-row); }
-  .menu-note { display: block; padding: 4px 8px; color: var(--v4-text-3); font-size: 11px; }
-  .nm { color: var(--v4-text-1); display: block; }
-  .em, .note, .wk { color: var(--v4-text-3); font-size: 12px; }
-  .inv { list-style: none; margin: 0; padding: 0; }
-  .inv li { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--v4-rowline); }
-  .inv li div { flex: 1; min-width: 0; }
-  .shimmer-row {
-    height: 28px;
-    margin: 8px 0;
-    border-radius: 6px;
-    background: var(--v4-control-faint);
-  }
-  .scrim {
-    position: absolute;
-    inset: 0;
-    display: grid;
-    place-items: center;
-    background: rgba(0, 0, 0, 0.45);
-    z-index: 20;
-  }
-  .team-page { position: relative; }
+  .icon:hover { background: var(--hover); color: var(--t1); }
+  .stat { display: inline-flex; align-items: center; gap: 6px; color: var(--t2); font-size: 13px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--t3); flex: none; }
+  .dot.live { background: var(--ok); }
+  .sech { margin: 20px 0 4px; padding: 0 8px; color: var(--t2); font-size: 13px; font-weight: 500; }
+  .sech:first-child { margin-top: 0; }
+  .meta { color: var(--t3); font-size: 13px; }
+  .empty { margin: 0; padding: 7px 8px; color: var(--t3); font-size: 13px; line-height: 17px; }
+  .note { margin: 16px 8px 0; color: var(--t3); font-size: 13px; }
+  .scrim { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(0, 0, 0, 0.45); z-index: 20; }
   .sheet {
     width: 480px;
     max-width: calc(100% - 32px);
-    background: var(--v4-popover);
-    border: 1px solid var(--v4-hairline);
+    background: var(--panel-bg);
+    border: 1px solid var(--panel-border);
     border-radius: 8px;
-    box-shadow: var(--v4-shadow-popover);
-    color: var(--v4-text-1);
+    box-shadow: var(--panel-shadow);
+    color: var(--t1);
   }
-  .sh, .sf { display: flex; align-items: center; gap: 8px; padding: 0 16px; height: 52px; }
-  .sh { border-bottom: 1px solid var(--v4-hairline); font-weight: 600; }
-  .sf { border-top: 1px solid var(--v4-hairline); }
-  .icon { margin-left: auto; border: 0; background: transparent; color: var(--v4-text-3); font: inherit; }
-  .fr { display: grid; grid-template-columns: 120px 1fr; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--v4-rowline); align-items: start; }
+  .sh { display: flex; align-items: center; gap: 8px; height: 52px; padding: 0 10px 0 20px; border-bottom: 1px solid var(--line); }
+  .sh-title { flex: 1; font-size: 13px; font-weight: 500; }
+  .sf { display: flex; align-items: center; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--line); }
+  .fr { display: grid; grid-template-columns: 120px 1fr; gap: 12px; padding: 10px 20px; align-items: center; font-size: 13px; color: var(--t2); }
   .fld {
     width: 100%;
     box-sizing: border-box;
     min-height: 28px;
     border-radius: 6px;
-    border: 1px solid var(--v4-control-border);
-    background: var(--v4-control-faint);
-    color: var(--v4-text-1);
+    border: 1px solid var(--line2);
+    background: var(--btn-bg);
+    color: var(--t1);
     font: inherit;
+    font-size: 13px;
     padding: 4px 8px;
   }
+  .body { flex: 1; min-height: 0; display: flex; }
+  .canvas { flex: 1; min-width: 0; min-height: 0; overflow: auto; padding: 16px 12px 24px; }
+  .profile { flex: 0 0 340px; width: 340px; min-height: 0; border-left: 1px solid var(--line); display: flex; flex-direction: column; }
+  .profile-skeleton { height: 100%; }
+  .cols, .row-main {
+    display: grid;
+    grid-template-columns: minmax(180px, 2fr) minmax(90px, 1fr) minmax(120px, 2fr) 96px;
+    gap: 12px;
+    align-items: center;
+  }
+  .cols { padding: 0 44px 4px 8px; color: var(--t3); font-size: 13px; }
+  .list { display: flex; flex-direction: column; }
+  .row { position: relative; display: flex; align-items: center; border-radius: 8px; }
+  .row:hover { background: var(--hover); }
+  .row.is-selected { background: var(--sel); }
+  .row-main {
+    flex: 1;
+    min-width: 0;
+    height: 31px;
+    box-sizing: border-box;
+    padding: 7px 8px;
+    border: 0;
+    background: transparent;
+    color: var(--t2);
+    font: inherit;
+    font-size: 13px;
+    line-height: 17px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .row-main > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .who { display: flex; align-items: center; gap: 8px; }
+  .nm { color: var(--t1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .em { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mini {
+    position: relative;
+    display: inline-grid;
+    place-items: center;
+    flex: 0 0 20px;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: var(--line2);
+    color: var(--t1);
+    font-size: 9px;
+    font-weight: 500;
+  }
+  .mini.sq { border-radius: 5px; color: var(--t2); }
+  .ld {
+    position: absolute;
+    right: -2px;
+    bottom: -2px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--t3);
+    box-shadow: 0 0 0 1.5px var(--side-bg, transparent);
+  }
+  .ld.pulse { background: var(--ok); }
+  .r { text-align: right; font-variant-numeric: tabular-nums; }
+  .act { flex: 0 0 36px; display: inline-flex; justify-content: center; }
+  .menu-wrap { position: relative; display: inline-flex; }
+  .menu {
+    position: absolute;
+    right: 0;
+    top: 26px;
+    z-index: 5;
+    min-width: 160px;
+    padding: 4px;
+    background: var(--panel-bg);
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    box-shadow: var(--panel-shadow);
+  }
+  .menu button {
+    display: block;
+    width: 100%;
+    height: 28px;
+    text-align: left;
+    border: 0;
+    background: transparent;
+    color: var(--t1);
+    padding: 0 8px;
+    border-radius: 6px;
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .menu button:hover { background: var(--hover); }
+  .menu-note { display: block; padding: 4px 8px; color: var(--t3); font-size: 13px; }
+  .inv { list-style: none; margin: 0; padding: 0; }
+  .inv li { display: flex; align-items: center; gap: 8px; min-height: 31px; box-sizing: border-box; padding: 2px 8px; border-radius: 8px; }
+  .inv li:hover { background: var(--hover); }
+  .inv li .meta { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .inv li.empty:hover { background: transparent; }
+  .shimmer-row { display: flex; align-items: center; gap: 8px; height: 31px; padding: 0 8px; }
+  .sk { display: inline-block; width: 160px; height: 10px; border-radius: 4px; background: var(--line); }
+  .sk-av { width: 20px; height: 20px; border-radius: 50%; }
 </style>

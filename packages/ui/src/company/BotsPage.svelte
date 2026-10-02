@@ -1,29 +1,27 @@
 <script lang="ts">
-  import { dismissable } from "../common/dismissable.js";
   /**
    * Company Bots page (console-rail US-027).
    *
    * Local rows come from the shell's already-loaded bot list (the same
    * records BotsSettingsPane reads). Cloud rows use adapter.agents
    * listMobileRoster, the BotsSettingsPane source, refreshed after first
-   * paint. Pause calls agents.stop only after confirmation.
+   * paint. The detail is the shared bot profile pane (the Messages one):
+   * Open session, Edit bot, Pause and scheduled jobs all live there.
    */
   import { onMount } from "svelte";
   import type { LocalBotRow, PlatformAdapter } from "@hq/platform";
   import type { Workspace } from "../chat/workspaces.js";
-  import ConfirmDialog from "../common/ConfirmDialog.svelte";
+  import LazyDoor from "../shell/LazyDoor.svelte";
+  import ShowMoreRow from "../shell/ShowMoreRow.svelte";
+  import { profilePaneDoor } from "../shell/lazy-doors.js";
+  import { pageRows } from "../shell/list-paging.js";
   import { cloudBotsFromRoster } from "../settings/cloud-bots.js";
   import {
     BOT_FILTERS,
-    JOB_ALERTS,
-    emptyJobDraft,
     filterBots,
     metadata,
-    pauseAllowed,
     type BotFilter,
     type BotListRow,
-    type JobAlert,
-    type ScheduledJob,
   } from "./team-bots-pages.js";
   import "../home/tokens.css";
   import "../chat/chat-tokens.css";
@@ -33,9 +31,11 @@
     adapter?: PlatformAdapter | null;
     companies?: Workspace[] | null;
     localBots?: ReadonlyArray<LocalBotRow> | null;
+    companyLabel?: string | null;
+    ownerName?: string | null;
     onmessage?: (uid: string) => void;
-    onopensession?: (uid: string) => void;
-    onsettings?: () => void;
+    /** Opens the shared 3-step New bot sheet. */
+    onaddbot?: () => void;
   }
 
   let {
@@ -43,20 +43,17 @@
     adapter = null,
     companies = null,
     localBots = null,
+    companyLabel = null,
+    ownerName = null,
     onmessage,
-    onopensession,
-    onsettings,
+    onaddbot,
   }: Props = $props();
 
   let cloud = $state<BotListRow[]>([]);
   let cloudPhase = $state<"shimmer" | "ready">("shimmer");
   let filter = $state<BotFilter>("all");
   let selected = $state<string | null>(null);
-  let pauseUid = $state<string | null>(null);
-  let paused = $state<Set<string>>(new Set());
-  let jobOpen = $state(false);
-  let job = $state<ScheduledJob>(emptyJobDraft());
-  let jobs = $state<ScheduledJob[]>([]);
+  let pages = $state(1);
 
   function localRows(): BotListRow[] {
     return (localBots ?? [])
@@ -73,6 +70,7 @@
   }
 
   const rows = $derived(filterBots([...localRows(), ...cloud], filter));
+  const page = $derived(pageRows(rows, pages));
   const current = $derived(rows.find((row) => row.uid === selected) ?? rows[0] ?? null);
   const empty = $derived(cloudPhase === "ready" && localRows().length === 0 && cloud.length === 0);
 
@@ -111,19 +109,8 @@
     if (current && selected !== current.uid) selected = current.uid;
   });
 
-  async function confirmPause(): Promise<void> {
-    const uid = pauseUid;
-    pauseUid = null;
-    if (!uid || !pauseAllowed(true)) return;
-    const agents = adapter?.agents;
-    if (agents?.stop) await agents.stop(uid);
-    paused = new Set([...paused, uid]);
-  }
-
-  function saveJob(): void {
-    const next = { ...job, id: job.id || `job-${job.name}` };
-    jobs = [next, ...jobs.filter((row) => row.id !== next.id)];
-    jobOpen = false;
+  function kindLabel(row: BotListRow): string {
+    return row.kind === "local" ? "Local" : "Cloud";
   }
 </script>
 
@@ -148,131 +135,71 @@
       {/each}
     </div>
     <span class="grow"></span>
-    <span class="chip">{rows.length} bots</span>
+    <span class="stat" data-testid="bots-count">{rows.length === 1 ? "1 bot" : `${rows.length} bots`}</span>
+    <button type="button" class="btn primary" data-testid="bots-new" onclick={() => onaddbot?.()}>New bot</button>
   </div>
 
   {#if empty}
-    <div class="empty" data-testid="bots-empty">
-      <div class="card">
-        <strong>New agent</strong>
-        <p>A rounded-square mark. Six steps, then a probe. An agent inherits only the access you grant.</p>
-      </div>
-      <p class="sech">Where an agent can run</p>
-      <p class="line"><b>Local</b> <code>hq bot</code> · Free</p>
-      <p class="line"><b>Hosted fleet agent</b> HQ Workforce · <code>/new-agent</code></p>
-      <p class="line"><b>External</b> <code>hq agent enroll</code> · Paid plans</p>
-    </div>
+    <p class="empty-state" data-testid="bots-empty">No bots in this company yet.</p>
   {:else}
     <div class="split">
-      <div class="roster">
+      <div class="roster" role="list">
         {#if cloudPhase === "shimmer" && rows.length === 0}
-          <div class="shimmer" data-testid="bots-shimmer" aria-hidden="true"></div>
+          <div class="shimmer" data-testid="bots-shimmer" aria-hidden="true">
+            {#each [0, 1, 2] as i (i)}<div class="shimmer-row"><span class="sk sk-av"></span><span class="sk"></span></div>{/each}
+          </div>
         {/if}
-        {#each rows as row (row.uid)}
+        {#each page.rows as row (row.uid)}
           <button
             type="button"
             class="bot-row"
+            class:is-selected={current?.uid === row.uid}
             aria-current={current?.uid === row.uid}
+            data-testid="bot-row"
             onclick={() => (selected = row.uid)}
           >
-            <span class="sq" aria-hidden="true">⌁</span>
-            <span class="nm">{row.name}</span>
-            <span class="kind">{row.kind}</span>
-            <span class="detail">{row.detail}</span>
-            <span class:live={row.live && !paused.has(row.uid)} class="state">
-              {paused.has(row.uid) ? "paused" : row.live ? "live" : row.status}
+            <span class="sq" aria-hidden="true">
+              <svg viewBox="0 0 14 14" width="12" height="12"><rect x="2.5" y="4" width="9" height="7" rx="2" stroke="currentColor" stroke-width="1.3" fill="none" /><path d="M7 2v2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" /></svg>
             </span>
+            <span class="nm">{row.name}</span>
+            <span class="meta">{kindLabel(row)}</span>
+            <span class="meta detail">{row.detail}</span>
+            <span class="state"><i class="dot" class:live={row.live}></i>{row.live ? "Live" : row.status}</span>
           </button>
         {/each}
+        {#if page.remaining > 0}
+          <ShowMoreRow shown={page.rows.length} total={page.total} next={page.next} noun="bots" onmore={() => (pages += 1)} testid="bots-more" />
+        {/if}
       </div>
       {#if current}
         <aside class="inspector" data-testid="bot-inspector">
-          <header class="head">
-            <span class="sq lg" aria-hidden="true">⌁</span>
-            <h2>{current.name}</h2>
-          </header>
-          <div class="kv">
-            <b>Kind</b><span>{current.kind}</span>
-            <b>Status</b><span>{paused.has(current.uid) ? "paused" : current.status}</span>
-            <b>Detail</b><span>{current.detail}</span>
-          </div>
-          <div class="sech">Scheduled jobs <span class="count">{jobs.length}</span></div>
-          {#each jobs as item (item.id)}
-            <div class="run">
-              <span>{item.name}</span>
-              <span class="em">{item.cadence} · {item.alert === "dm" ? "DM" : "No alert"}</span>
-              <button type="button" class="btn" onclick={() => { job = { ...item }; jobOpen = true; }}>Edit</button>
-            </div>
-          {/each}
-          <button
-            type="button"
-            class="btn"
-            data-testid="edit-job"
-            onclick={() => { job = emptyJobDraft("New job"); jobOpen = true; }}
-          >Edit job</button>
-          <div class="act">
-            <button type="button" class="btn primary" data-testid="bot-message" onclick={() => onmessage?.(current.uid)}>Message</button>
-            <button type="button" class="btn" data-testid="bot-session" onclick={() => onopensession?.(current.uid)}>Open session</button>
-            <button type="button" class="btn" data-testid="bot-settings" onclick={() => onsettings?.()}>Settings</button>
-            <button
-              type="button"
-              class="btn"
-              data-testid="bot-pause"
-              disabled={!current.canPause || paused.has(current.uid)}
-              onclick={() => (pauseUid = current.uid)}
-            >Pause</button>
-          </div>
+          {#key current.uid}
+            <LazyDoor
+              door={profilePaneDoor}
+              props={{
+                kind: "bot",
+                name: current.name,
+                owner: ownerName,
+                company: companyLabel,
+                live: current.live,
+                agentUid: current.uid,
+                runtimeKind: current.kind,
+                companyUid,
+                agents: adapter?.agents ?? null,
+                onclose: () => (selected = null),
+                onmessage: () => onmessage?.(current.uid),
+              }}
+            >
+              {#snippet skeleton()}
+                <div class="profile-skeleton" data-testid="bot-profile-skeleton" aria-busy="true"></div>
+              {/snippet}
+            </LazyDoor>
+          {/key}
         </aside>
       {/if}
     </div>
   {/if}
-
-  {#if jobOpen}
-    <div class="scrim" data-testid="edit-job-sheet" data-scene="edit-job">
-      <div class="sheet" role="dialog" aria-label="Edit job" use:dismissable={{ onclose: () => (jobOpen = false), outside: true }}>
-        <header class="sh">
-          Edit job
-          <button type="button" class="icon" aria-label="Close" onclick={() => (jobOpen = false)}>✕</button>
-        </header>
-        <div class="fr">
-          <label for="job-name">Name</label>
-          <input id="job-name" class="fld" bind:value={job.name} />
-        </div>
-        <div class="fr">
-          <label for="job-cadence">Cadence</label>
-          <input id="job-cadence" class="fld" bind:value={job.cadence} />
-        </div>
-        <div class="fr">
-          <span>Alerts</span>
-          <div class="seg">
-            {#each JOB_ALERTS as alert (alert)}
-              <button
-                type="button"
-                class="tab"
-                aria-selected={job.alert === alert}
-                onclick={() => (job.alert = alert as JobAlert)}
-              >{alert === "dm" ? "DM" : "None"}</button>
-            {/each}
-          </div>
-        </div>
-        <footer class="sf">
-          <span class="grow"></span>
-          <button type="button" class="btn" onclick={() => (jobOpen = false)}>Cancel</button>
-          <button type="button" class="btn primary" onclick={saveJob}>Save</button>
-        </footer>
-      </div>
-    </div>
-  {/if}
 </section>
-
-<ConfirmDialog
-  open={pauseUid != null}
-  title="Pause this bot?"
-  message="The bot stops taking new work until you resume it from Settings."
-  confirmLabel="Pause"
-  oncancel={() => (pauseUid = null)}
-  onconfirm={() => void confirmPause()}
-/>
 
 <style>
   .bots-page {
@@ -281,102 +208,148 @@
     flex-direction: column;
     min-height: 0;
     flex: 1;
-    color: var(--v4-text-1);
-  }
-  .toolbar, .head, .act, .sh, .sf { display: flex; align-items: center; gap: 8px; }
-  .toolbar, .sh, .sf { padding: 0 16px; height: 52px; }
-  .toolbar, .sh { border-bottom: 1px solid var(--v4-hairline); }
-  .sf { border-top: 1px solid var(--v4-hairline); }
-  h1, h2 { margin: 0; font-size: 15px; font-weight: 600; }
-  .grow { flex: 1; }
-  .tabs, .seg { display: inline-flex; gap: 2px; }
-  .tab, .btn, .icon {
-    border: 0;
-    background: transparent;
-    color: var(--v4-text-2);
-    font: inherit;
-    font-size: 12px;
-    border-radius: 6px;
-    padding: 3px 8px;
-  }
-  .tab[aria-selected="true"] { background: var(--v4-active-row); color: var(--v4-text-1); }
-  .btn { border: 1px solid var(--v4-control-border); background: var(--v4-control-faint); color: var(--v4-text-1); }
-  .btn.primary { background: var(--v4-primary-bg); color: var(--v4-primary-fg); border-color: transparent; }
-  .btn:disabled { opacity: 0.5; }
-  .chip, .em, .sech, .kind, .detail { color: var(--v4-text-3); font-size: 12px; }
-  .sech {
-    font-family: var(--font-mono, ui-monospace, monospace);
-    font-size: 10px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    margin: 12px 0 6px;
-  }
-  .split { display: grid; grid-template-columns: 1fr 340px; min-height: 0; flex: 1; }
-  .roster, .inspector { min-height: 0; overflow: auto; padding: 12px 16px 24px; }
-  .inspector { border-left: 1px solid var(--v4-hairline); }
-  .bot-row {
-    display: grid;
-    grid-template-columns: 26px 1fr auto auto auto;
-    gap: 12px;
-    align-items: center;
-    width: 100%;
-    text-align: left;
-    padding: 8px;
-    border: 0;
-    border-bottom: 1px solid var(--v4-rowline);
-    border-radius: 6px;
-    background: transparent;
-    color: var(--v4-text-2);
-    font: inherit;
+    color: var(--t1);
     font-size: 13px;
   }
-  .bot-row[aria-current="true"] { background: var(--v4-active-row); color: var(--v4-text-1); }
-  .sq {
-    width: 26px;
+  /* Console-rail page chrome, measured from Messages (docs/design-standard-console-rail.md):
+     one 20px/500 title, 13px everywhere else, 31px rows, background-only selection. */
+  .toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 52px;
+    flex: none;
+    box-sizing: border-box;
+    padding: 0 20px;
+    border-bottom: 1px solid var(--line);
+  }
+  h1 {
+    margin: 0 8px 0 0;
+    font-size: var(--type-title, 20px);
+    font-weight: var(--type-title-weight, 500);
+    line-height: var(--type-title-line, 1.25);
+    color: var(--t1);
+  }
+  .grow { flex: 1; }
+  .tabs, .seg { display: inline-flex; gap: 2px; }
+  .seg { padding: 2px; border: 1px solid var(--panel-border); border-radius: 6px; background: var(--hover); }
+  .tab {
     height: 26px;
-    border-radius: 7px;
-    display: grid;
+    border: 0;
+    border-radius: 6px;
+    padding: 0 8px;
+    background: transparent;
+    color: var(--t2);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .seg .tab { height: auto; padding: 4px 8px; border-radius: 4px; }
+  .tab:hover { background: var(--hover); color: var(--t1); }
+  .tab[aria-selected="true"] { background: var(--sel); color: var(--t1); }
+  .btn {
+    height: 26px;
+    box-sizing: border-box;
+    border: 1px solid var(--line2);
+    border-radius: 6px;
+    padding: 0 10px;
+    background: var(--btn-bg);
+    color: var(--t1);
+    font: inherit;
+    font-size: 13px;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .btn:hover { background: var(--hover); }
+  .btn.primary { background: var(--t1); color: var(--badge-fg); border-color: transparent; }
+  .btn:disabled { opacity: 0.5; cursor: default; }
+  .icon {
+    display: inline-grid;
     place-items: center;
-    background: var(--v4-control-faint);
-    color: var(--v4-text-2);
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--t2);
+    cursor: pointer;
   }
-  .sq.lg { width: 34px; height: 34px; border-radius: 9px; }
-  .nm { color: var(--v4-text-1); font-weight: 500; }
-  .state.live { color: var(--v4-ok); }
-  .kv { display: grid; grid-template-columns: 72px 1fr; gap: 4px 10px; font-size: 12px; color: var(--v4-text-2); }
-  .kv b { font-weight: 500; color: var(--v4-text-3); }
-  .run { display: flex; gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--v4-rowline); font-size: 12px; }
-  .empty { max-width: 560px; margin: 24px auto; display: flex; flex-direction: column; gap: 12px; }
-  .card {
-    padding: 16px;
-    border: 1px dashed var(--v4-control-border);
-    border-radius: var(--v4-radius-card);
-    background: var(--v4-control-faint);
-  }
-  .line { margin: 0; padding: 10px 0; border-top: 1px solid var(--v4-rowline); font-size: 12px; color: var(--v4-text-2); }
-  .line code { font-family: var(--font-mono, ui-monospace, monospace); font-size: 11px; }
-  .shimmer { height: 72px; border-radius: 6px; background: var(--v4-control-faint); }
+  .icon:hover { background: var(--hover); color: var(--t1); }
+  .stat { display: inline-flex; align-items: center; gap: 6px; color: var(--t2); font-size: 13px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--t3); flex: none; }
+  .dot.live { background: var(--ok); }
+  .sech { margin: 20px 0 4px; padding: 0 8px; color: var(--t2); font-size: 13px; font-weight: 500; }
+  .sech:first-child { margin-top: 0; }
+  .meta { color: var(--t3); font-size: 13px; }
+  .empty { margin: 0; padding: 7px 8px; color: var(--t3); font-size: 13px; line-height: 17px; }
+  .note { margin: 16px 8px 0; color: var(--t3); font-size: 13px; }
   .scrim { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(0, 0, 0, 0.45); z-index: 20; }
   .sheet {
     width: 480px;
     max-width: calc(100% - 32px);
-    background: var(--v4-popover);
-    border: 1px solid var(--v4-hairline);
+    background: var(--panel-bg);
+    border: 1px solid var(--panel-border);
     border-radius: 8px;
-    box-shadow: var(--v4-shadow-popover);
+    box-shadow: var(--panel-shadow);
+    color: var(--t1);
   }
-  .icon { margin-left: auto; }
-  .fr { display: grid; grid-template-columns: 120px 1fr; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--v4-rowline); }
+  .sh { display: flex; align-items: center; gap: 8px; height: 52px; padding: 0 10px 0 20px; border-bottom: 1px solid var(--line); }
+  .sh-title { flex: 1; font-size: 13px; font-weight: 500; }
+  .sf { display: flex; align-items: center; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--line); }
+  .fr { display: grid; grid-template-columns: 120px 1fr; gap: 12px; padding: 10px 20px; align-items: center; font-size: 13px; color: var(--t2); }
   .fld {
     width: 100%;
     box-sizing: border-box;
     min-height: 28px;
     border-radius: 6px;
-    border: 1px solid var(--v4-control-border);
-    background: var(--v4-control-faint);
-    color: var(--v4-text-1);
+    border: 1px solid var(--line2);
+    background: var(--btn-bg);
+    color: var(--t1);
     font: inherit;
+    font-size: 13px;
     padding: 4px 8px;
   }
-  .act { margin-top: 12px; flex-wrap: wrap; }
+  .empty-state { margin: 0; padding: 48px 16px; text-align: center; color: var(--t3); font-size: 13px; }
+  .split { display: flex; min-height: 0; flex: 1; }
+  .roster { flex: 1; min-width: 0; min-height: 0; overflow: auto; padding: 12px; display: flex; flex-direction: column; }
+  .inspector { flex: 0 0 340px; width: 340px; min-height: 0; border-left: 1px solid var(--line); display: flex; flex-direction: column; }
+  .profile-skeleton { height: 100%; }
+  .bot-row {
+    display: grid;
+    grid-template-columns: 20px minmax(120px, 2fr) 56px minmax(80px, 2fr) minmax(70px, 1fr);
+    gap: 8px;
+    align-items: center;
+    width: 100%;
+    height: 31px;
+    flex: none;
+    box-sizing: border-box;
+    text-align: left;
+    padding: 7px 8px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--t2);
+    font: inherit;
+    font-size: 13px;
+    line-height: 17px;
+    cursor: pointer;
+  }
+  .bot-row > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bot-row:hover { background: var(--hover); }
+  .bot-row.is-selected { background: var(--sel); }
+  .sq {
+    display: grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 5px;
+    background: var(--line2);
+    color: var(--t2);
+  }
+  .nm { color: var(--t1); }
+  .state { display: inline-flex; align-items: center; gap: 6px; color: var(--t2); justify-content: flex-end; }
+  .shimmer-row { display: flex; align-items: center; gap: 8px; height: 31px; padding: 0 8px; }
+  .sk { display: inline-block; width: 160px; height: 10px; border-radius: 4px; background: var(--line); }
+  .sk-av { width: 20px; height: 20px; border-radius: 5px; }
 </style>

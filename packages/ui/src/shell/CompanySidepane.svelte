@@ -11,7 +11,6 @@
   import SidepaneList from "./SidepaneList.svelte";
   import {
     COMPANY_SETTINGS_ROW,
-    INVITE_TEAMMATE_ROW,
     atlasSidepaneModel,
     type SidepaneRosterEntry,
     type SidepaneScrollMemory,
@@ -118,7 +117,7 @@
   <SidepaneList
     sections={model.sections}
     selectedId={model.selectedId}
-    onselect={(row) => onselect?.(row.id === INVITE_TEAMMATE_ROW.id ? "team" : row.id)}
+    onselect={(row) => onselect?.(row.id)}
   />
   {#if atlasActive && rosterLoading}
     <div class="roster-skeleton" data-testid="company-sidepane-roster-skeleton" aria-hidden="true">
@@ -150,7 +149,7 @@
     background: var(--line2);
     color: var(--t1);
     font-size: 10px;
-    font-weight: 600;
+    font-weight: 500;
   }
 
   .company-mark img {
@@ -163,8 +162,8 @@
     flex: 1 1 auto;
     min-width: 0;
     overflow: hidden;
-    font-size: 14px;
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -172,14 +171,10 @@
   .live-chip {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
-    height: 20px;
-    padding: 0 7px;
-    border: 1px solid var(--line);
-    border-radius: 999px;
+    gap: 6px;
     color: var(--t2);
-    font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
   }
 
   .live-dot {
@@ -208,7 +203,7 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    height: 30px;
+    height: 31px;
     padding: 0 8px;
   }
 
@@ -247,15 +242,16 @@
     display: flex;
     align-items: center;
     width: 100%;
-    height: 30px;
+    height: 31px;
     box-sizing: border-box;
-    padding: 6px 8px;
+    padding: 7px 8px;
     border: 0;
     border-radius: 8px;
     background: transparent;
     color: var(--t1);
     font: inherit;
-    font-size: 14px;
+    font-size: 13px;
+    line-height: 17px;
     text-align: left;
     cursor: pointer;
   }

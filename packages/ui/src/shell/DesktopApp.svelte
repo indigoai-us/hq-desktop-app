@@ -8625,8 +8625,16 @@
       return;
     }
     atlasFilterActor = null;
+    if (rowId === "invite-teammate") {
+      // Land on Team with its invite sheet open.
+      teamInviteSeq += 1;
+      void navigate(companyRowDestination("team", tenantCompanyId));
+      return;
+    }
     void navigate(companyRowDestination(rowId, tenantCompanyId));
   }
+  /** Bumped by the sidepane Invite a teammate row; TeamPage opens its sheet. */
+  let teamInviteSeq = $state(0);
 
   function placeMoreCompanies(): void {
     const button = document.querySelector("[data-testid='rail-more-companies']");
@@ -8988,16 +8996,13 @@
   }
 
   /**
-   * Team page Add agent (US-039): leave the company pane for Messages, keep
-   * the company scope, and open the one New bot modal (the Messages + flow).
-   * Creating lands in the bot's thread, where it asks for the rest.
+   * Team page Add agent (US-039): open the one New bot modal (the Messages +
+   * flow) over the Team page. The modal portals to the shell root, so the
+   * company pane stays put behind it. Creating lands in the bot's thread,
+   * where it asks for the rest.
    */
   function addAgentFromTeam(): void {
-    companyPaneOpen = false;
-    void Promise.resolve(navigate({ kind: "messages" })).then(async () => {
-      await svelteTick();
-      withSidebar((actions) => actions.openNewAgent());
-    });
+    withSidebar((actions) => actions.openNewAgent());
   }
 
   function openNewChat(): void {
@@ -9881,7 +9886,12 @@
             company={adapter.company ?? null}
             messaging={adapter.messaging ?? null}
             senderName={resolvedAccountLabel ?? "you"}
+            agents={adapter.agents ?? null}
+            inviteSeq={teamInviteSeq}
             onaddagent={addAgentFromTeam}
+            onmessage={(uid) => {
+              void navigate({ kind: "dm", personUid: uid });
+            }}
           />
         {:else if railPlaceholder?.id === "projects" && companyPaneCompany}
           <!-- US-039: the sidepane Projects row opens the US-023 board for
@@ -9909,13 +9919,12 @@
             {adapter}
             companies={effectiveCompanies}
             {localBots}
+            companyLabel={companyPaneCompany.label}
+            ownerName={self?.displayName ?? null}
             onmessage={(uid) => {
               void navigate({ kind: "dm", personUid: uid });
             }}
-            onopensession={(uid) => {
-              void navigate({ kind: "dm", personUid: uid });
-            }}
-            onsettings={() => openSettings("bots")}
+            onaddbot={addAgentFromTeam}
           />
         {:else if railPlaceholder?.id === "activity" && companyPaneCompany}
           <ActivityRailHost
