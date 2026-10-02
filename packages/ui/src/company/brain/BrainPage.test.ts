@@ -137,6 +137,38 @@ describe("US-028 BrainPage", () => {
     expect(document.body.textContent).toContain("2 hard · 1 soft");
   });
 
+  it("QA-056: knowledge list rows show wiki-link aliases, not raw link syntax", async () => {
+    const root = "companies/qa056-co/knowledge";
+    const files = {
+      listDir: vi.fn(async (path: string) =>
+        ok(path === root ? [{ name: "agi.md", path: `${root}/agi.md`, isDir: false, hasChildren: false }] : []),
+      ),
+      getFileContent: vi.fn(async () =>
+        ok(
+          "---\ntitle: Build Your Own AGI — Print [[ontology/entities/project/content-production-workflow|Production Pipeline]]\n---\nbody",
+        ),
+      ),
+    };
+    component = mount(BrainPage, {
+      target: document.body,
+      props: {
+        page: "knowledge",
+        slug: "qa056-co",
+        files: files as never,
+        library: null,
+        shell: null,
+        settings: null,
+      },
+    });
+    await vi.waitFor(() => {
+      expect(document.querySelector("[data-testid='brain-page'] .item .name")).toBeTruthy();
+    });
+    flushSync();
+    const name = document.querySelector("[data-testid='brain-page'] .item .name")?.textContent;
+    expect(name).toBe("Build Your Own AGI — Print Production Pipeline");
+    expect(document.body.textContent).not.toContain("[[");
+  });
+
   it("QA-010: the worker count, the collapsed list and the full list agree", async () => {
     const workers = Array.from({ length: 27 }, (_, i) => ({
       id: `w${i}`,

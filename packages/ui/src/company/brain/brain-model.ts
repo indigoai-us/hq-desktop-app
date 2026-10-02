@@ -8,6 +8,7 @@
  */
 
 import type { LibrarySkill, LibraryWorker } from "../../library/library.js";
+import { displayTitle } from "../../common/display-title.js";
 
 export const metadata = {
   performanceBudget: {
@@ -165,7 +166,7 @@ export function knowledgeFromFile(path: string, text: string): KnowledgeFile {
   return {
     path,
     name: path.split("/").pop() ?? path,
-    title: meta.title || titleFrom(path, text),
+    title: displayTitle(meta.title || titleFrom(path, text)),
     folder,
     mark,
     body: bodyAfterFm(text),
@@ -178,7 +179,7 @@ export function policyFromFile(path: string, text: string): PolicyDoc {
     (meta.enforcement ?? "").toLowerCase() === "hard" ? "hard" : "soft";
   return {
     path,
-    title: meta.title || titleFrom(path, text),
+    title: displayTitle(meta.title || titleFrom(path, text)),
     enforcement,
     when: meta.when ?? "",
     scope: meta.scope ?? "company",
