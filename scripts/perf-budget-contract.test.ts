@@ -793,6 +793,17 @@ const h = setInterval(tick, options.pollMs);`;
     ]);
   });
 
+  it("static heavy imports: ignores type-only imports, which build away", () => {
+    const content = `
+      import type { MyTelemetryApi } from "../telemetry/telemetry-me.js";
+      export type { Row } from "../atlas/atlas-build.js";
+      import { type Snap, load } from "../telemetry/telemetry-lazy-value.js";
+    `;
+    expect(staticSpecifiers(content)).toEqual([
+      "../telemetry/telemetry-lazy-value.js",
+    ]);
+  });
+
   it("visibility gate: detects both the listener and the state read", () => {
     expect(
       pausesOnVisibility('document.addEventListener("visibilitychange", f);'),

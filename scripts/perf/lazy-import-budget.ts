@@ -18,8 +18,11 @@ export interface StaticImportFinding {
   kind: "atlas" | "telemetry";
 }
 
+// `import type` / `export type` statements are erased at build time and add
+// no runtime bytes, so they are not static bindings. Inline `{ type X }`
+// specifiers inside a value import still count: the statement survives.
 const STATIC_FROM =
-  /\b(?:import|export)\s+(?:type\s+)?(?:[^'"\n]*?\s+from\s+)?["']([^"']+)["']/g;
+  /\b(?:import|export)\s+(?!type[\s{*])(?:[^'"\n]*?\s+from\s+)?["']([^"']+)["']/g;
 
 const HEAVY = [
   { kind: "atlas" as const, needle: "/atlas/" },
