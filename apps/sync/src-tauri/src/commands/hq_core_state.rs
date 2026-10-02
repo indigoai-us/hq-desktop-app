@@ -503,6 +503,13 @@ impl CoreUpdateRescueTelemetry {
         attempt_number: u32,
         probe_results: CoreUpdateToolProbeResults,
     ) -> Self {
+        let terminal_failure_marker_class = core_update_last_failure_context(raw)
+            .and_then(|context| context.lines().next())
+            .and_then(core_update_rescue_error_class);
+        let terminal_diagnostics = core_update_last_failure_context(raw)
+            .or_else(|| core_update_last_clone_failure_context(raw))
+            .or_else(|| core_update_last_error_context(raw))
+            .unwrap_or(raw);
         let is_explicit_disk_full = raw.lines().any(|line| {
             line.trim() == "HQ_RESCUE_FAILURE_KIND=disk_full"
                 || core_update_is_disk_full_diagnostic_line(line)
@@ -512,8 +519,9 @@ impl CoreUpdateRescueTelemetry {
         {
             "insufficient-space"
         } else {
-            raw.lines()
-                .find_map(core_update_rescue_error_class)
+            terminal_failure_marker_class
+                .or_else(|| core_update_snapshot_error_class(raw))
+                .or_else(|| terminal_diagnostics.lines().find_map(core_update_rescue_error_class))
                 .unwrap_or("unknown")
         };
         let stage_markers = core_update_stage_markers(raw);
@@ -537,9 +545,11 @@ impl CoreUpdateRescueTelemetry {
             raw.lines()
                 .find_map(core_update_redact_snapshot_capacity_line)
         } else {
-            raw.lines().find_map(|line| {
-                core_update_rescue_error_class(line)
-                    .map(|_| line.trim().chars().take(240).collect())
+            core_update_snapshot_failure_reason(raw, rescue_error_class).or_else(|| {
+                raw.lines().find_map(|line| {
+                    core_update_rescue_error_class(line)
+                        .map(|_| line.trim().chars().take(240).collect())
+                })
             })
         };
         let (snapshot_required_gib_bucket, snapshot_available_gib_bucket) =
@@ -804,6 +814,14 @@ fn core_update_rescue_step_from_marker(stage: &str) -> &'static str {
 
 fn core_update_rescue_step_from_raw(raw: &str, error_class: &str) -> &'static str {
     match error_class {
+        "snapshot_disk_full"
+        | "snapshot_capacity_check_failed"
+        | "snapshot_recovery_required"
+        | "snapshot_permission_denied"
+        | "snapshot_symlink_invalid"
+        | "snapshot_copy_unreadable"
+        | "snapshot_copy_failed"
+        | "snapshot_failed" => return "snapshot",
         "rsync_missing" | "rsync_failed" | "rsync_partial" => return "rsync",
         "npx_resolve_failed" | "npm_enoent" => return "npm-install",
         "restore_symlink_race" => return "restore",
@@ -831,6 +849,178 @@ fn core_update_rescue_step_from_raw(raw: &str, error_class: &str) -> &'static st
     } else {
         "unknown"
     }
+}
+
+fn core_update_last_failure_context(raw: &str) -> Option<&str> {
+    let prefix = "hq_rescue_failure_kind=";
+    let mut offset = 0;
+    let mut last_marker_offset = None;
+    for line in raw.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if trimmed
+            .get(..prefix.len())
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(prefix))
+        {
+            last_marker_offset = Some(offset);
+        }
+        offset += line.len();
+    }
+    last_marker_offset.map(|start| &raw[start..])
+}
+
+fn core_update_last_clone_failure_context(raw: &str) -> Option<&str> {
+    let prefix = "hq_rescue_clone_failure_class=";
+    let mut offset = 0;
+    let mut last_marker_offset = None;
+    for line in raw.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if trimmed
+            .get(..prefix.len())
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(prefix))
+        {
+            last_marker_offset = Some(offset);
+        }
+        offset += line.len();
+    }
+    last_marker_offset.map(|start| &raw[start..])
+}
+
+fn core_update_last_error_context(raw: &str) -> Option<&str> {
+    let mut offset = 0;
+    let mut last_error_offset = None;
+    for line in raw.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if ["error:", "fatal:"].iter().any(|prefix| {
+            trimmed
+                .get(..prefix.len())
+                .is_some_and(|candidate| candidate.eq_ignore_ascii_case(prefix))
+        }) {
+            last_error_offset = Some(offset);
+        }
+        offset += line.len();
+    }
+    last_error_offset.map(|start| &raw[start..])
+}
+
+fn core_update_snapshot_error_class(raw: &str) -> Option<&'static str> {
+    let terminal = core_update_last_failure_context(raw)
+        .or_else(|| core_update_last_error_context(raw))
+        .unwrap_or(raw);
+    let lower = terminal.to_ascii_lowercase();
+    let failure_kind = lower.lines().find_map(|line| {
+        line.trim_start()
+            .strip_prefix("hq_rescue_failure_kind=")
+            .map(str::trim)
+    });
+    if failure_kind.is_some_and(|kind| {
+        !kind.starts_with("snapshot-")
+            && !matches!(kind, "disk_full" | "backup-capacity-check-failed")
+    }) {
+        return None;
+    }
+    let copy_code = lower.lines().find_map(|line| {
+        line.trim_start()
+            .strip_prefix("hq_rescue_snapshot_copy_code=")
+            .map(str::trim)
+    });
+    let last_stage = raw.lines().rev().find_map(|line| {
+        let marker = line.trim().strip_prefix("==>")?.trim();
+        let stage = core_update_stage_token(marker);
+        (stage != "unknown").then_some(stage)
+    });
+    let has_error_line = lower.lines().rev().any(|line| {
+        let line = line.trim_start();
+        line.starts_with("error:") || line.starts_with("fatal:")
+    });
+    let snapshot_error_message = lower.lines().any(|line| {
+        let line = line.trim_start();
+        line.starts_with("error:")
+            && (line.contains("safety snapshot")
+                || line.contains("cannot write the paths rescue would rename or delete")
+                || line.contains("insufficient free space")
+                || line.contains("could not measure snapshot"))
+    });
+    let snapshot_context = failure_kind.is_some_and(|kind| {
+        kind.starts_with("snapshot-")
+            || matches!(kind, "disk_full" | "backup-capacity-check-failed")
+    }) || snapshot_error_message
+        || last_stage == Some("snapshot") && has_error_line;
+    if !snapshot_context {
+        return None;
+    }
+
+    if failure_kind == Some("snapshot-recovery-circuit-breaker") {
+        return Some("snapshot_recovery_required");
+    }
+    if failure_kind == Some("backup-capacity-check-failed") {
+        return Some("snapshot_capacity_check_failed");
+    }
+    if failure_kind == Some("disk_full")
+        || matches!(copy_code, Some("enospc" | "edquot"))
+        || lower.contains("enospc")
+        || lower.contains("edquot")
+        || lower.contains("no space left on device")
+        || lower.contains("disk quota exceeded")
+    {
+        return Some("snapshot_disk_full");
+    }
+    if lower.contains("resolves outside the hq root")
+        || lower.contains("invalid symbolic link")
+        || copy_code == Some("eloop")
+        || lower.contains("eloop")
+    {
+        return Some("snapshot_symlink_invalid");
+    }
+    if lower.contains("cannot write the paths rescue would rename or delete")
+        || matches!(copy_code, Some("eacces" | "eperm"))
+        || lower.contains("eacces")
+        || lower.contains("eperm")
+        || lower.contains("permission denied")
+        || lower.contains("operation not permitted")
+    {
+        return Some("snapshot_permission_denied");
+    }
+    if lower.contains("safety snapshot could not read") {
+        return Some("snapshot_copy_unreadable");
+    }
+    if lower.contains("safety snapshot could not") {
+        return Some("snapshot_copy_failed");
+    }
+    match failure_kind {
+        Some("snapshot-copy-unreadable") => return Some("snapshot_copy_unreadable"),
+        Some("snapshot-copy-failed") => return Some("snapshot_copy_failed"),
+        _ => {}
+    }
+
+    // A raw filesystem exception can lack a producer marker. The last rescue
+    // stage is still present in the captured tail for allocation/manifest
+    // failures, so keep those distinct from unrelated update failures.
+    (last_stage == Some("snapshot") && has_error_line).then_some("snapshot_failed")
+}
+
+fn core_update_snapshot_failure_reason(raw: &str, error_class: &str) -> Option<String> {
+    if !error_class.starts_with("snapshot_") {
+        return None;
+    }
+    let specific = raw.lines().rev().find_map(|line| {
+        let lower = line.to_ascii_lowercase();
+        let is_snapshot_reason = lower.starts_with("error:")
+            && (lower.contains("safety snapshot")
+                || lower.contains("insufficient free space")
+                || lower.contains("could not measure snapshot")
+                || lower.contains("cannot write the paths rescue would rename or delete")
+                || lower.contains("no space left on device")
+                || lower.contains("disk quota exceeded")
+                || lower.contains("permission denied")
+                || lower.contains("operation not permitted"));
+        is_snapshot_reason.then(|| line.trim().chars().take(240).collect())
+    });
+    specific.or_else(|| {
+        raw.lines()
+            .rev()
+            .find(|line| line.trim_start().to_ascii_lowercase().starts_with("error:"))
+            .map(|line| line.trim().chars().take(240).collect())
+    })
 }
 
 fn core_update_rescue_error_class(line: &str) -> Option<&'static str> {
@@ -1405,7 +1595,12 @@ fn classify_rescue_stderr_failure(stderr: &str) -> RescueFailureCategory {
     if let Some(category) = stderr.lines().find_map(|line| {
         match line.strip_prefix("hq_rescue_failure_kind=").map(str::trim) {
             Some("snapshot-copy-unreadable") => Some(RescueFailureCategory::SnapshotUnreadable),
+            Some("snapshot-copy-failed") if stderr.contains("resolves outside the hq root") => {
+                Some(RescueFailureCategory::SnapshotExternalSymlink)
+            }
             Some("snapshot-copy-failed") => Some(RescueFailureCategory::SnapshotFailed),
+            Some("disk_full") => Some(RescueFailureCategory::DiskFull),
+            Some("backup-capacity-check-failed") => Some(RescueFailureCategory::SnapshotFailed),
             Some("snapshot-recovery-circuit-breaker") => {
                 Some(RescueFailureCategory::SnapshotRecoveryRequired)
             }
@@ -2694,13 +2889,17 @@ fn core_update_rescue_step_for_category(category: RescueFailureCategory) -> &'st
 
 fn core_update_rescue_error_class_for_category(category: RescueFailureCategory) -> &'static str {
     match category {
+        RescueFailureCategory::SnapshotUnreadable => "snapshot_copy_unreadable",
+        RescueFailureCategory::SnapshotExternalSymlink => "snapshot_symlink_invalid",
+        RescueFailureCategory::SnapshotFailed => "snapshot_copy_failed",
+        RescueFailureCategory::SnapshotRecoveryRequired => "snapshot_recovery_required",
+        RescueFailureCategory::DiskFull => "insufficient-space",
         RescueFailureCategory::RsyncBroken => "rsync_failed",
         RescueFailureCategory::RsyncPartialTransfer => "rsync_partial",
         RescueFailureCategory::UpdateDeferredHqChange => "update_deferred_hq_change",
         RescueFailureCategory::CloneFailed => "clone_failed",
         RescueFailureCategory::NpxResolveFailed => "npx_resolve_failed",
         RescueFailureCategory::RestoreSymlinkRace => "restore_symlink_race",
-        RescueFailureCategory::DiskFull => "insufficient-space",
         _ => "unknown",
     }
 }
@@ -7509,6 +7708,157 @@ error: clone failed";
         assert_eq!(
             classify_rescue_stderr_failure(&redacted),
             RescueFailureCategory::SnapshotRecoveryRequired
+        );
+    }
+
+    #[test]
+    fn snapshot_failure_markers_set_specific_rescue_error_classes() {
+        let cases = [
+            (
+                "HQ_RESCUE_FAILURE_KIND=disk_full\nerror: insufficient free space for safety snapshot.",
+                "insufficient-space",
+            ),
+            (
+                "HQ_RESCUE_FAILURE_KIND=backup-capacity-check-failed\nerror: could not measure snapshot size/free space.",
+                "snapshot_capacity_check_failed",
+            ),
+            (
+                "HQ_RESCUE_FAILURE_KIND=snapshot-recovery-circuit-breaker\nerror: safety snapshot circuit breaker is open.",
+                "snapshot_recovery_required",
+            ),
+            (
+                "HQ_RESCUE_FAILURE_KIND=snapshot-copy-unreadable\nHQ_RESCUE_SNAPSHOT_COPY_CODE=EIO\nerror: safety snapshot could not read <source> (EIO).",
+                "snapshot_copy_unreadable",
+            ),
+            (
+                "HQ_RESCUE_FAILURE_KIND=snapshot-copy-failed\nHQ_RESCUE_SNAPSHOT_COPY_CODE=EACCES\nerror: safety snapshot could not write <snapshot> (EACCES).",
+                "snapshot_permission_denied",
+            ),
+            (
+                "HQ_RESCUE_FAILURE_KIND=snapshot-copy-failed\nHQ_RESCUE_SNAPSHOT_COPY_CODE=UNKNOWN\nerror: safety snapshot could not safely record <link> (UNKNOWN): target resolves outside the HQ root.",
+                "snapshot_symlink_invalid",
+            ),
+            (
+                "HQ_RESCUE_FAILURE_KIND=snapshot-copy-failed\nHQ_RESCUE_SNAPSHOT_COPY_CODE=EIO\nerror: safety snapshot could not write <snapshot> (EIO).",
+                "snapshot_copy_failed",
+            ),
+            (
+                "error: safety snapshot could not read <source> (EIO).",
+                "snapshot_copy_unreadable",
+            ),
+            (
+                "error: safety snapshot could not write <snapshot> (EIO).",
+                "snapshot_copy_failed",
+            ),
+            (
+                "==> Safety snapshot -> <backup>\nError: EACCES while creating snapshot manifest",
+                "snapshot_permission_denied",
+            ),
+            (
+                "==> Safety snapshot -> <backup>\nError: snapshot manifest could not be written",
+                "snapshot_failed",
+            ),
+            (
+                "error: cannot write the paths rescue would rename or delete (permission denied).",
+                "snapshot_permission_denied",
+            ),
+        ];
+
+        for (raw, expected_class) in cases {
+            let error = CoreUpdateError::new(CoreUpdateErrorKind::RescueSpawn, raw);
+            let report = report_for_core_update_error(&error);
+            assert_eq!(
+                report.rescue_telemetry.rescue_error_class, expected_class,
+                "raw diagnostic: {raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn snapshot_failure_markers_classify_capacity_and_symlink_causes() {
+        assert_eq!(
+            classify_rescue_stderr_failure(
+                "HQ_RESCUE_FAILURE_KIND=disk_full\nerror: insufficient free space for safety snapshot."
+            ),
+            RescueFailureCategory::DiskFull
+        );
+        assert_eq!(
+            classify_rescue_stderr_failure(
+                "HQ_RESCUE_FAILURE_KIND=backup-capacity-check-failed\nerror: could not measure snapshot size/free space."
+            ),
+            RescueFailureCategory::SnapshotFailed
+        );
+        assert_eq!(
+            classify_rescue_stderr_failure(
+                "HQ_RESCUE_FAILURE_KIND=snapshot-copy-failed\nerror: target resolves outside the HQ root."
+            ),
+            RescueFailureCategory::SnapshotExternalSymlink
+        );
+    }
+
+    #[test]
+    fn later_definitive_failure_marker_overrides_earlier_snapshot_diagnostic() {
+        let raw = concat!(
+            "error: no space left on device while allocating the safety snapshot\n",
+            "HQ_RESCUE_FAILURE_KIND=rsync-found-but-broken\r\n",
+        );
+        let error = CoreUpdateError::new(CoreUpdateErrorKind::RescueSpawn, raw);
+        let report = report_for_core_update_error(&error);
+
+        assert_eq!(report.rescue_telemetry.rescue_step, "rsync");
+        assert_eq!(report.rescue_telemetry.rescue_error_class, "rsync_failed");
+    }
+
+    #[test]
+    fn tolerated_snapshot_skip_code_does_not_classify_terminal_copy_failure() {
+        let raw = concat!(
+            "HQ_RESCUE_SKIPPED_KIND=snapshot-copy-failed\n",
+            "HQ_RESCUE_SNAPSHOT_COPY_CODE=EACCES\n",
+            "warning: snapshot skipped <path>. It was not backed up and was left untouched. The update continued.\n",
+            "HQ_RESCUE_FAILURE_KIND=snapshot-copy-failed\n",
+            "HQ_RESCUE_SNAPSHOT_COPY_CODE=EIO\n",
+            "error: safety snapshot could not write <snapshot> (EIO).\n",
+        );
+        let error = CoreUpdateError::new(CoreUpdateErrorKind::RescueSpawn, raw);
+        let report = report_for_core_update_error(&error);
+
+        assert_eq!(
+            report.rescue_telemetry.rescue_error_class,
+            "snapshot_copy_failed"
+        );
+    }
+
+    #[test]
+    fn snapshot_terminal_failure_stays_in_the_captured_tail() {
+        let temp = TempDir::new().unwrap();
+        let log_path = temp.path().join("rescue.log");
+        let terminal = concat!(
+            "HQ_RESCUE_FAILURE_KIND=snapshot-copy-failed\n",
+            "HQ_RESCUE_SNAPSHOT_COPY_CODE=EIO\n",
+            "error: safety snapshot could not write snapshot (EIO).\n",
+        );
+        let log = format!(
+            "{}{}",
+            "progress ".repeat(hq_telemetry::SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES),
+            terminal,
+        );
+        std::fs::write(&log_path, log).unwrap();
+
+        let captured = crate::commands::hq_core_staging::read_raw_rescue_diagnostic_tail(&log_path)
+            .expect("desktop reads the terminal diagnostic window");
+
+        assert!(captured.ends_with(terminal));
+        assert!(captured.len() <= hq_telemetry::SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES);
+        let error = CoreUpdateError::new(CoreUpdateErrorKind::RescueSpawn, captured);
+        let report = report_for_core_update_error(&error);
+        assert_eq!(
+            report.rescue_telemetry.rescue_error_class,
+            "snapshot_copy_failed"
+        );
+        assert_eq!(report.rescue_telemetry.rescue_step, "snapshot");
+        assert_eq!(
+            report.rescue_telemetry.first_error_line.as_deref(),
+            Some("error: safety snapshot could not write snapshot (EIO).")
         );
     }
 

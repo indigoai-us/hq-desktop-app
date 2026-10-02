@@ -104,6 +104,16 @@ pub fn install_attempt_id() -> Option<String> {
 /// process even after `machineId` gets written this launch.
 pub struct LaunchKindState(pub LaunchKind);
 
+/// Cheap, side-effect-free launch hint for painting the first-run surface
+/// before lifecycle probes. The final, managed classification still happens
+/// after lifecycle has had a chance to backfill older setup markers.
+pub fn early_launch_hint() -> LaunchKind {
+    match paths::menubar_json_path() {
+        Ok(path) => classify_from_menubar_read(&read_menubar(&path)),
+        Err(_) => LaunchKind::Normal,
+    }
+}
+
 /// Classify this launch and stash the verdict in managed state. MUST be called
 /// at the top of `.setup()`, before `config::ensure_machine_id` populates
 /// `machineId`.
