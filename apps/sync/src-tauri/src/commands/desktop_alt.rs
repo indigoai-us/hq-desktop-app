@@ -632,6 +632,70 @@ pub async fn list_deploy_apps(scope: String) -> Result<serde_json::Value, String
     Ok(serde_json::json!({ "scope": scope, "callerSub": caller_sub, "apps": apps }))
 }
 
+/// One hq-deploy access call for the Deployments Access form: read or change
+/// an app's access policy, mode, or email allowlist. `path` is validated by
+/// `deploy_access_url` so only access routes are reachable. The ID token rides
+/// in `x-hq-pro-authorization` because company/selected policies are checked
+/// against hq-pro membership. Bodies (which may carry a new password) and
+/// tokens never reach the log.
+#[tauri::command]
+pub async fn deploy_access_request(
+    scope: String,
+    method: String,
+    path: String,
+    body: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    let scope = normalize_slug(&scope)?;
+    let method = method.to_ascii_uppercase();
+    let url = hq_desktop_core::desktop_alt::deploy_access_url(HQ_DEPLOY_API_BASE, &method, &path)?;
+    let tokens = cognito::get_valid_tokens()
+        .await
+        .map_err(|e| format!("auth: {e}"))?;
+    let verb = reqwest::Method::from_bytes(method.as_bytes())
+        .map_err(|_| "deploy access: invalid method".to_string())?;
+    let mut req = build_client()
+        .request(verb, &url)
+        .header("authorization", format!("Bearer {}", tokens.access_token));
+    if let Some(id_token) = tokens.id_token.as_deref() {
+        req = req.header("x-hq-pro-authorization", format!("Bearer {id_token}"));
+    }
+    req = if scope == "personal" {
+        req.header("x-hq-deploy-scope", "personal")
+    } else {
+        req.header("x-org-slug", &scope)
+    };
+    if let Some(body) = body {
+        req = req.json(&body);
+    }
+    let res = req
+        .send()
+        .await
+        .map_err(|e| format!("deploy access fetch: {e}"))?;
+    let status = res.status();
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("deploy access read: {e}"))?;
+    eprintln!("[desktop-alt] deploy access {method} {path} -> HTTP {status}");
+    if !status.is_success() {
+        let detail = serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|v| {
+                v.get("message")
+                    .or_else(|| v.get("error"))
+                    .and_then(|m| m.as_str())
+                    .map(str::to_string)
+            })
+            .unwrap_or_default();
+        return Err(format!("deploy access HTTP {}: {detail}", status.as_u16()));
+    }
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(serde_json::Value::Null);
+    }
+    serde_json::from_str(text).map_err(|e| format!("deploy access parse: {e}"))
+}
+
 #[tauri::command]
 pub async fn get_company_secrets(slug: String) -> Result<Vec<SecretEnv>, String> {
     let slug = normalize_slug(&slug)?;

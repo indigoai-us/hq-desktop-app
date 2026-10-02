@@ -83,6 +83,8 @@ export interface DeploymentRowModel {
   status: "live" | "error" | "off";
   access: AccessLevel;
   updated: string;
+  /** hq-deploy gate flags from the app row, for the Access form (QA-059). */
+  accessHint?: { privateMode?: boolean; passwordProtected?: boolean; accessMode?: string | null };
 }
 
 export interface FilesConnectCache {
@@ -206,9 +208,19 @@ export function companyDeploymentRows(page: DeployAppsPage, slug: string): Deplo
       status: row.status === "failed" ? "error" : row.status === "active" || row.status === "building" || row.status === "deploying" ? "live" : "off",
       access: "read",
       updated: row.lastVisit ? `visited ${row.lastVisit}` : row.detail,
+      accessHint: accessHintFrom(raw),
     });
   }
   return rows;
+}
+
+function accessHintFrom(raw: unknown): DeploymentRowModel["accessHint"] {
+  const rec = (raw ?? {}) as Record<string, unknown>;
+  return {
+    privateMode: rec.privateMode === true,
+    passwordProtected: rec.passwordProtected === true,
+    accessMode: typeof rec.accessMode === "string" ? rec.accessMode : null,
+  };
 }
 
 /** Legacy `get_company_deployments` rows carry the subdomain in `sub`. */
@@ -432,6 +444,8 @@ export function availableIntegrations(): IntegrationRow[] {
 export interface MemberOption {
   email: string;
   label: string;
+  /** HQ person uid, when the roster carries one (selected-people access). */
+  id: string;
 }
 
 /** Recipients for a vault grant, from the company member list. */
@@ -444,7 +458,8 @@ export function memberOptions(list: readonly unknown[]): MemberOption[] {
     if (!email || seen.has(email.toLowerCase())) continue;
     seen.add(email.toLowerCase());
     const name = typeof rec.displayName === "string" && rec.displayName.trim() ? rec.displayName.trim() : "";
-    out.push({ email, label: name ? `${name} · ${email}` : email });
+    const id = typeof rec.personUid === "string" ? rec.personUid.trim() : "";
+    out.push({ email, label: name ? `${name} · ${email}` : email, id });
   }
   return out.sort((a, b) => a.label.localeCompare(b.label));
 }

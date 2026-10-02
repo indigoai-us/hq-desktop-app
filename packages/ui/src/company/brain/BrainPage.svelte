@@ -10,6 +10,7 @@
   import { loadLibraryCompany } from "../../library/library.js";
   import type { DirEntry } from "../../files/file-tree.js";
   import ShowMoreRow from "../../shell/ShowMoreRow.svelte";
+  import ListEmptyState from "../../common/ListEmptyState.svelte";
   import { publishCompanyPageCount } from "../../shell/company-page-counts.svelte.js";
   import { pageRows } from "../../shell/list-paging.js";
   import "../../home/tokens.css";
@@ -160,6 +161,23 @@
   const selectedPolicy = $derived(cache.policies.find((row) => row.path === selected) ?? cache.policies[0] ?? null);
   const selectedFile = $derived(cache.knowledge.find((row) => row.path === selected) ?? cache.knowledge[0] ?? null);
   const title = $derived(page === "knowledge" ? "Knowledge" : page === "policies" ? "Policies" : page === "skills" ? "Skills" : "Workers");
+  // QA-058: the unfiltered total and filter state behind the shared empty state.
+  const sourceTotal = $derived(
+    page === "knowledge" ? cache.knowledge.length : page === "policies" ? cache.policies.length : page === "skills" ? cache.skills.length : cache.workers.length,
+  );
+  const filterActive = $derived(
+    page === "policies" ? policyFilter !== "all" : page === "skills" ? skillFilter !== "all" : page === "workers" ? workerScope !== "all" || workerFilter !== "all" : false,
+  );
+  const listNoun = $derived<readonly [string, string]>(
+    page === "knowledge" ? ["file", "files"] : page === "policies" ? ["policy", "policies"] : page === "skills" ? ["skill", "skills"] : ["worker", "workers"],
+  );
+  function clearListFilters(): void {
+    query = "";
+    policyFilter = "all";
+    skillFilter = "all";
+    workerScope = "all";
+    workerFilter = "all";
+  }
 
   $effect(() => {
     const key = slug;
@@ -459,7 +477,16 @@
           <ShowMoreRow shown={listPage.rows.length} total={listPage.total} next={listPage.next} noun={title.toLowerCase()} testid="brain-show-more" onmore={() => (pages += 1)} />
         {/if}
         {#if activeList.length === 0}
-          <p class="empty">Nothing in this {title.toLowerCase()} listing yet.</p>
+          <ListEmptyState
+            total={sourceTotal}
+            shown={activeList.length}
+            {query}
+            filtered={filterActive}
+            noun={listNoun}
+            emptyCopy={`Nothing in this ${title.toLowerCase()} listing yet.`}
+            onclear={clearListFilters}
+            testid="brain-empty"
+          />
         {/if}
       </div>
 

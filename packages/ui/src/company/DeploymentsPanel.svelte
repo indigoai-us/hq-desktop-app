@@ -7,6 +7,7 @@
     type DeploymentState,
   } from "./DeploymentRow.svelte";
   import UnavailableNote from "../common/UnavailableNote.svelte";
+  import ListEmptyState from "../common/ListEmptyState.svelte";
 
   interface Props {
     slug: string;
@@ -315,14 +316,16 @@
             <DeploymentRow {deployment} {openExternal} />
           {/each}
         </div>
-      {:else if deployments.length > 0}
-        <div class="empty-state" data-testid="filtered-deployments-empty-state">
-          No deployments match that search.
-        </div>
       {:else}
-        <div class="empty-state">
-          No provisioned subdomains for this company.
-        </div>
+        <ListEmptyState
+          total={deployments.length}
+          shown={0}
+          query={deploymentQuery}
+          noun={["deployment", "deployments"]}
+          emptyCopy="No provisioned subdomains for this company."
+          onclear={() => (deploymentQuery = "")}
+          testid={deployments.length > 0 ? "filtered-deployments-empty-state" : "deployments-empty-state"}
+        />
       {/if}
     </div>
   </section>

@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 // --type-* tokens, no floating corner cards, no backdrop-filter.
 const FILES = [
   "./FilesConnectPage.svelte",
+  "./DeployAccessForm.svelte",
   "../../files/CompanyFileTree.svelte",
 ];
 

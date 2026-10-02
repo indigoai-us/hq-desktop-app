@@ -993,6 +993,17 @@ export interface CompanyApi {
    * `personal`): `{ scope, callerSub, apps }`. Desktop only.
    */
   listDeployApps?(scope: string): AdapterPromise<Json>;
+  /**
+   * One hq-deploy access call (`access-policy`, `access-mode`,
+   * `allowed-emails` under `/api/apps/:id`) for a scope. Desktop only; the
+   * host refuses any other route.
+   */
+  deployAccessRequest?(
+    scope: string,
+    method: "GET" | "PUT" | "POST" | "DELETE",
+    path: string,
+    body?: Json,
+  ): AdapterPromise<Json>;
   getSecrets(slug: string): AdapterPromise<Json[]>;
   listMembers(slug: string): AdapterPromise<Json[]>;
   getTeamTelemetry(slug: string): AdapterPromise<Json>;

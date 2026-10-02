@@ -169,6 +169,37 @@ describe("US-028 BrainPage", () => {
     expect(document.body.textContent).not.toContain("[[");
   });
 
+  it("QA-058: a knowledge search with no hits says no matches, keeps the total, and clears", async () => {
+    const root = "companies/qa058-co/knowledge";
+    const names = ["alpha.md", "beta.md", "gamma.md"];
+    const files = {
+      listDir: vi.fn(async (path: string) =>
+        ok(path === root ? names.map((name) => ({ name, path: `${root}/${name}`, isDir: false, hasChildren: false })) : []),
+      ),
+      getFileContent: vi.fn(async () => ok("body")),
+    };
+    component = mount(BrainPage, {
+      target: document.body,
+      props: { page: "knowledge", slug: "qa058-co", files: files as never, library: null, shell: null, settings: null },
+    });
+    await vi.waitFor(() => {
+      expect(document.querySelectorAll("[data-testid='brain-list'] .item").length).toBe(3);
+    });
+    const search = document.querySelector("[data-testid='brain-page'] input.search") as HTMLInputElement;
+    search.value = "zzz-no-such-file";
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+    const empty = document.querySelector("[data-testid='brain-empty']") as HTMLElement;
+    expect(empty.dataset.kind).toBe("no-matches");
+    expect(empty.textContent).toContain("No matches for 'zzz-no-such-file'");
+    expect(empty.textContent).toContain("3 files");
+    expect(document.body.textContent).not.toContain("listing yet");
+    (document.querySelector("[data-testid='brain-empty-clear']") as HTMLButtonElement).click();
+    flushSync();
+    expect(document.querySelectorAll("[data-testid='brain-list'] .item").length).toBe(3);
+    expect(document.querySelector("[data-testid='brain-empty']")).toBeNull();
+  });
+
   it("QA-010: the worker count, the collapsed list and the full list agree", async () => {
     const workers = Array.from({ length: 27 }, (_, i) => ({
       id: `w${i}`,

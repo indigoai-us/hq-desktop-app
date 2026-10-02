@@ -133,6 +133,7 @@
           {loadChildren}
           {selectedPath}
           filterQuery={searchQuery}
+          onclearfilter={() => (searchQuery = "")}
           onselect={handleSelect}
         />
       {/key}

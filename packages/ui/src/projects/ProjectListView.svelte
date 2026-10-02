@@ -24,6 +24,7 @@
     progressiveWindow,
   } from "../common/progressive-collection.js";
   import ProjectRow from "./ProjectRow.svelte";
+  import ListEmptyState from "../common/ListEmptyState.svelte";
 
   interface Props {
     projects: Project[];
@@ -171,12 +172,15 @@
         </p>
       </div>
     {:else if noResults}
-      <div class="list-empty">
-        <p class="empty-title">No projects match your filters</p>
-        <button type="button" class="link-button" onclick={clearFilters}>
-          Clear all filters
-        </button>
-      </div>
+      <ListEmptyState
+        total={projects.length}
+        shown={0}
+        query={debouncedQuery}
+        filtered={statusFilter !== "all"}
+        noun={["project", "projects"]}
+        onclear={clearFilters}
+        testid="project-list-no-matches"
+      />
     {:else}
       {#each sections as section (section.key)}
         {@const renderWindow = progressiveWindow(

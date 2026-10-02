@@ -305,7 +305,7 @@
         {/each}
       </div>
     {:else}
-      <LibraryList items={scopedItems} {query} onselect={selectItem} />
+      <LibraryList items={scopedItems} {query} onselect={selectItem} onclear={() => (query = "")} />
     {/if}
 
     <LibraryDetailPanel

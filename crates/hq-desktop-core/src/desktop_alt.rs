@@ -552,6 +552,39 @@ pub fn deployments_url(base: &str) -> String {
     format!("{}/api/apps", base.trim_end_matches('/'))
 }
 
+/// Validate one hq-deploy access request from the Deployments Access form and
+/// return its full URL. Only the access routes are reachable: `access-policy`
+/// (GET/PUT), `access-mode` (POST) and `allowed-emails` (GET/POST, DELETE with
+/// one URL-encoded pattern key). Anything else is refused before the network.
+pub fn deploy_access_url(base: &str, method: &str, path: &str) -> Result<String, String> {
+    let rest = path
+        .strip_prefix("/api/apps/")
+        .ok_or_else(|| "deploy access: path must start with /api/apps/".to_string())?;
+    let mut parts = rest.splitn(3, '/');
+    let app_id = parts.next().unwrap_or("");
+    let route = parts.next().unwrap_or("");
+    let key = parts.next();
+    if app_id.is_empty() || !is_url_safe_id(app_id) {
+        return Err("deploy access: invalid app id".to_string());
+    }
+    let allowed = match (method, route, key) {
+        ("GET" | "PUT", "access-policy", None) => true,
+        ("POST", "access-mode", None) => true,
+        ("GET" | "POST", "allowed-emails", None) => true,
+        ("DELETE", "allowed-emails", Some(k)) => {
+            !k.is_empty()
+                && k.bytes().all(|b| {
+                    b.is_ascii_alphanumeric() || matches!(b, b'%' | b'-' | b'_' | b'.' | b'~')
+                })
+        }
+        _ => false,
+    };
+    if !allowed {
+        return Err(format!("deploy access: {method} {path} is not an access route"));
+    }
+    Ok(format!("{}{}", base.trim_end_matches('/'), path))
+}
+
 pub fn secrets_url(base: &str, company_uid: &str) -> Result<String, String> {
     if !is_url_safe_id(company_uid) {
         return Err(format!(
@@ -2802,6 +2835,26 @@ pub fn dir_has_visible_children(abs: &Path) -> bool {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn deploy_access_url_allows_only_access_routes() {
+        use super::deploy_access_url;
+        let base = "https://api.example.test/";
+        assert_eq!(
+            deploy_access_url(base, "GET", "/api/apps/app_1/access-policy").unwrap(),
+            "https://api.example.test/api/apps/app_1/access-policy"
+        );
+        assert!(deploy_access_url(base, "PUT", "/api/apps/app_1/access-policy").is_ok());
+        assert!(deploy_access_url(base, "POST", "/api/apps/app_1/access-mode").is_ok());
+        assert!(deploy_access_url(base, "GET", "/api/apps/app_1/allowed-emails").is_ok());
+        assert!(deploy_access_url(base, "POST", "/api/apps/app_1/allowed-emails").is_ok());
+        assert!(deploy_access_url(base, "DELETE", "/api/apps/app_1/allowed-emails/a%40b.co").is_ok());
+        assert!(deploy_access_url(base, "DELETE", "/api/apps/app_1").is_err());
+        assert!(deploy_access_url(base, "PATCH", "/api/apps/app_1/access-policy").is_err());
+        assert!(deploy_access_url(base, "DELETE", "/api/apps/app_1/allowed-emails/../x").is_err());
+        assert!(deploy_access_url(base, "GET", "/api/apps/a b/access-policy").is_err());
+        assert!(deploy_access_url(base, "GET", "/api/orgs/x").is_err());
+    }
+
     use chrono::TimeZone;
 
     use crate::feature_gate::email_present;

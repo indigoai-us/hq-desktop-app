@@ -10,6 +10,7 @@
     type SecretItem,
   } from "./SecretEnvRow.svelte";
   import UnavailableNote from "../common/UnavailableNote.svelte";
+  import ListEmptyState from "../common/ListEmptyState.svelte";
 
   interface Props {
     slug: string;
@@ -343,7 +344,7 @@
         {/each}
       </div>
     {:else}
-      <div class="empty-state">No secrets yet</div>
+      <ListEmptyState total={0} shown={0} noun={["secret", "secrets"]} emptyCopy="No secrets yet" testid="secrets-empty" />
     {/if}
   </section>
 </section>

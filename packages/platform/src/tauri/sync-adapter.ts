@@ -1084,6 +1084,8 @@ export function createSyncPlatformAdapter(
     company: {
       getDeployments: (slug) => call('get_company_deployments', { slug }),
       listDeployApps: (scope) => call('list_deploy_apps', { scope }),
+      deployAccessRequest: (scope, method, path, body) =>
+        call('deploy_access_request', { scope, method, path, body: body ?? null }),
       getSecrets: (slug) => call('get_company_secrets', { slug }),
       listMembers: (slug) =>
         call('list_company_members', { companyUid: slug }),

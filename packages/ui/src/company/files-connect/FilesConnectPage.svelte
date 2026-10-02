@@ -22,6 +22,8 @@
   import "../../home/tokens.css";
   import "../../chat/chat-tokens.css";
   import { companyStore } from "../company-store.svelte.js";
+  import DeployAccessForm from "./DeployAccessForm.svelte";
+  import type { DeployAccessRequest } from "./deploy-access.js";
   import {
     ACCESS_LEVELS,
     applyDeepLink,
@@ -74,9 +76,11 @@
     companyUid?: string | null;
     /** hq-deploy apps for one scope; the same client as personal Deployments. */
     listDeployApps?: (scope: string) => AdapterPromise<Json>;
+    /** hq-deploy access routes for the Access sheet (QA-059). */
+    deployAccessRequest?: DeployAccessRequest;
   }
 
-  let { page, slug, files, shell, settings, openExternal, adapter = null, companyUid = null, listDeployApps }: Props = $props();
+  let { page, slug, files, shell, settings, openExternal, adapter = null, companyUid = null, listDeployApps, deployAccessRequest }: Props = $props();
 
   const workflow = $derived({ settings, shell } as AgentWorkflowApi);
 
@@ -282,6 +286,19 @@
   function openGrant(): void {
     grantRecipient = "";
     sheet = "grant";
+    loadMembers();
+  }
+
+  function openDeployAccess(): void {
+    sheet = "deploy-access";
+    loadMembers();
+  }
+
+  const accessRequest = $derived<DeployAccessRequest | null>(
+    deployAccessRequest ?? (adapter?.company?.deployAccessRequest as DeployAccessRequest | undefined) ?? null,
+  );
+
+  function loadMembers(): void {
     const s = slug;
     const list = adapter?.company?.listMembers;
     if (!list || membersFor === s) return;
@@ -555,6 +572,7 @@
               loadChildren={loadVaultChildren}
               selectedPath={vaultFile}
               filterQuery={query}
+              onclearfilter={() => (query = "")}
               onselect={(path) => (vaultFile = path)}
             />
           {/key}
@@ -752,7 +770,7 @@
               <div class="actions">
                 <button class="btn" type="button" disabled={!deployCurrent.url} onclick={() => openExternal?.(deployCurrent.url)}>Open</button>
                 <button class="btn" type="button" data-testid="redeploy" onclick={() => askRedeploy(deployCurrent)}>Redeploy</button>
-                <button class="btn" type="button" data-testid="deploy-access" onclick={() => (sheet = "deploy-access")}>Access</button>
+                <button class="btn" type="button" data-testid="deploy-access" onclick={openDeployAccess}>Access</button>
               </div>
             </div>
           {/if}
@@ -774,6 +792,19 @@
         <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M3.5 3.5l7 7M10.5 3.5l-7 7" /></svg>
       </button>
     </header>
+    {#if sheet === "deploy-access" && deployCurrent}
+      <DeployAccessForm
+        appId={deployCurrent.id}
+        appName={deployCurrent.name}
+        scope={slug}
+        request={accessRequest}
+        {companyUid}
+        hint={deployCurrent.accessHint}
+        members={members}
+        onclose={closeSheet}
+        ondone={(message) => (status = message)}
+      />
+    {:else}
     <div class="sb">
       {#if sheet === "share" || sheet === "share-secret"}
         <div class="fr"><span class="lb">Item</span><span class={sheet === "share-secret" ? "mono" : ""}>{sheet === "share-secret" ? shareView?.name : vaultFile ?? vaultRoot}</span></div>
@@ -842,16 +873,6 @@
         <p class="hint">Runs the hq-deploy command and returns the link.</p>
       {:else if sheet === "deploy-allowlist"}
         <p class="hint">Company members with read access can open the link.</p>
-      {:else if sheet === "deploy-access"}
-        <div class="fr"><span class="lb">Deployment</span><span>{deployCurrent?.name}</span></div>
-        <div class="fr">
-          <span class="lb">Access</span>
-          <div class="fc-seg" role="tablist">
-            {#each ACCESS_LEVELS as level (level)}
-              <button class="fc-seg-tab" type="button" role="tab" aria-selected={grantLevel === level} onclick={() => (grantLevel = level)}>{level === "read" ? "Read" : "Write"}</button>
-            {/each}
-          </div>
-        </div>
       {:else if sheet === "confirm-redeploy"}
         <p class="hint">This runs the existing hq-deploy command again.</p>
       {:else if sheet === "upload"}
@@ -910,9 +931,6 @@
         <button class="btn primary" type="button" data-testid="run-deploy" disabled={busy || !deploySourceCurrent} onclick={() => void runDeploy(deploySourceCurrent?.path ?? "")}>Deploy</button>
       {:else if sheet === "deploy-allowlist"}
         <button class="btn primary" type="button" onclick={() => (sheet = "deploy")}>Back to deploy</button>
-      {:else if sheet === "deploy-access"}
-        <button class="btn" type="button" onclick={closeSheet}>Cancel</button>
-        <button class="btn primary" type="button" disabled={busy} onclick={() => void handOff(shareAccessPrompt(slug, deployCurrent?.url || deployCurrent?.name || "", grantLevel), "access change")}>Save</button>
       {:else if sheet === "confirm-redeploy"}
         <button class="btn" type="button" onclick={closeSheet}>Cancel</button>
         <button class="btn primary" type="button" data-testid="confirm-redeploy" disabled={busy} onclick={() => void runRedeploy()}>Redeploy</button>
@@ -923,6 +941,7 @@
         <button class="btn primary" type="button" onclick={closeSheet}>Done</button>
       {/if}
     </footer>
+    {/if}
   </div>
 {/if}
 

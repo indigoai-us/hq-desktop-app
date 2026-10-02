@@ -35,6 +35,7 @@
   } from "./file-tree.js";
   import "../chat/tokens.css";
   import { fileTreeErrorReason } from "./company-read-scope.js";
+  import ListEmptyState from "../common/ListEmptyState.svelte";
 
   interface Props {
     /**
@@ -51,6 +52,8 @@
     selectedPath?: string | null;
     /** Optional case-insensitive name filter over loaded nodes (DESKTOP-008). */
     filterQuery?: string;
+    /** Clears the name filter from the empty state (QA-058). */
+    onclearfilter?: () => void;
     /** Last editor / live-edit mark for a row (US-025). */
     rowNote?: (path: string) => { label: string; live: boolean } | null;
     /** Plain-language reason shown under a failed root read. */
@@ -63,6 +66,7 @@
     onselect,
     selectedPath = null,
     filterQuery = "",
+    onclearfilter,
     rowNote,
     errorReason,
   }: Props = $props();
@@ -347,9 +351,15 @@
       </button>
     </div>
   {:else if rows.length === 0}
-    <div class="ft-status" data-testid="file-tree-empty">
-      {filtering ? "No matching files" : "No files"}
-    </div>
+    <ListEmptyState
+      total={roots.length}
+      shown={0}
+      query={filterQuery}
+      noun={["item", "items"]}
+      emptyCopy="No files"
+      onclear={onclearfilter}
+      testid="file-tree-empty"
+    />
   {:else}
     {#each rows as { node, depth } (node.path)}
       {@const meta = fileTreeRowMeta(node, rootPath)}

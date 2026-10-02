@@ -5,6 +5,7 @@
    * the first ever load), then refreshes. A deploying row keeps its previous
    * build serving until swap.
    */
+  import ListEmptyState from "../common/ListEmptyState.svelte";
   import "../home/tokens.css";
   import "../chat/chat-tokens.css";
   import type { AdapterPromise, Json } from "@hq/platform";
@@ -180,7 +181,19 @@
             </div>
           {/if}
         {:else if rows.length === 0}
-          <p class="empty">No deployments match.</p>
+          <ListEmptyState
+            total={allRows.length}
+            shown={0}
+            {query}
+            filtered={filter !== "all"}
+            noun={["deployment", "deployments"]}
+            emptyCopy="No deployments yet."
+            onclear={() => {
+              query = "";
+              filter = "all";
+            }}
+            testid="personal-deploy-empty"
+          />
         {:else}
           {#each shown as row (row.id)}
             <button
