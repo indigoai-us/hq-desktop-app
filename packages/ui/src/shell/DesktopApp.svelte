@@ -9994,6 +9994,7 @@
             <ProjectsHome
               {adapter}
               {companies}
+              pickerCompanies={companyPickerSlugs(effectiveCompanies)}
               slug={projectsCompany}
               preferredSlug={selectedCompanySlug || null}
               onslugchange={(slug) => {
@@ -10048,6 +10049,7 @@
             <ProjectsHome
               {adapter}
               {companies}
+              pickerCompanies={companyPickerSlugs(effectiveCompanies)}
               slug={companyPaneCompany.slug ?? null}
               preferredSlug={companyPaneCompany.slug ?? null}
               onslugchange={(slug) => {

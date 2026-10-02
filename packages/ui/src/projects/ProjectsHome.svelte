@@ -9,6 +9,7 @@
   import { hostComputerNoun, subscribeHostComputerNoun, type PlatformAdapter } from "@hq/platform";
   import type { Workspace } from "../chat/workspaces.js";
   import CompanyProjectsPage from "./CompanyProjectsPage.svelte";
+  import { companyPickerSlugs } from "../shell/pinned-companies.js";
 
   interface Props {
     adapter: PlatformAdapter;
@@ -27,9 +28,25 @@
      * Defaults to true when the caller pins `slug` to the shell's company.
      */
     pinned?: boolean;
+    /**
+     * New project company tabs: the rail's member companies, Personal first
+     * (QA-050). Defaults to the member companies in `companies`; never the
+     * local folders, which can include companies the person is not in.
+     */
+    pickerCompanies?: readonly string[] | null;
   }
 
-  let { adapter, companies, slug = null, preferredSlug = null, onslugchange, pinned }: Props = $props();
+  let {
+    adapter,
+    companies,
+    slug = null,
+    preferredSlug = null,
+    onslugchange,
+    pinned,
+    pickerCompanies = null,
+  }: Props = $props();
+
+  const sheetRoster = $derived(pickerCompanies ?? companyPickerSlugs(companies));
 
   const showSwitcher = $derived(!(pinned ?? (slug != null && slug === preferredSlug)));
 
@@ -134,7 +151,12 @@
       </div>
       {/if}
       {#key current.slug}
-        <CompanyProjectsPage {adapter} slug={current.slug} companyUid={current.cloudUid ?? null} />
+        <CompanyProjectsPage
+          {adapter}
+          slug={current.slug}
+          companyUid={current.cloudUid ?? null}
+          pickerCompanies={sheetRoster}
+        />
       {/key}
     </div>
   {/if}

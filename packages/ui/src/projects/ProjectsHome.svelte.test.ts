@@ -68,6 +68,24 @@ async function render(props: Record<string, unknown>) {
 const shown = (el: HTMLElement) => el.querySelector('[data-testid="projects-stub"]')?.getAttribute("data-slug");
 
 describe("ProjectsHome", () => {
+  it("gives New project the rail's member companies, Personal first, not local folders (QA-050)", async () => {
+    const companies = [
+      ws({ slug: "zeta", displayName: "Zeta", cloudUid: "cmp_zeta" }),
+      ws({ slug: "magical-moments", displayName: "Magical Moments", cloudUid: null }),
+      ws({ slug: "getindigo", displayName: "Getindigo", cloudUid: "cmp_gi", hasLocalFolder: false }),
+      ws({ slug: "acme", displayName: "Acme" }),
+      ws({ slug: "personal", displayName: "Personal", kind: "personal" }),
+    ];
+    const el = await render({ companies });
+    const picker = el.querySelector('[data-testid="projects-stub"]')?.getAttribute("data-picker");
+    expect(picker?.split(",")).toEqual(["personal", "zeta", "getindigo", "acme"]);
+  });
+
+  it("uses the shell's roster when given one", async () => {
+    const el = await render({ pickerCompanies: ["personal", "indigo"] });
+    expect(el.querySelector('[data-testid="projects-stub"]')?.getAttribute("data-picker")).toBe("personal,indigo");
+  });
+
   it("shows the channel's company first and passes its cloud id to the board", async () => {
     const el = await render({ preferredSlug: "zeta" });
     expect(shown(el)).toBe("zeta");
