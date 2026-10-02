@@ -117,6 +117,10 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   applyPendingConversation: "push",
   changeTenantCompany: "push",
   openCompanyFromSetup: "push",
+  // More companies popover: opens a company through navigate(), or only
+  // toggles the popover.
+  openCompanyFromMore: "push",
+  toggleMoreCompanies: "none",
   // Core popover "Resolve conflicts" → Settings › Sync, through navigate().
   openConflictResolution: "push",
   // Hands the file to the OS editor; the shell stays where it is.
