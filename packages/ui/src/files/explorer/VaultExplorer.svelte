@@ -26,6 +26,7 @@
   import OpenFileInClaudeCode from "../OpenFileInClaudeCode.svelte";
   import NoteView from "./NoteView.svelte";
   import QuickSwitcher from "./QuickSwitcher.svelte";
+  import ShareFileSheet from "./ShareFileSheet.svelte";
   import VaultTree from "./VaultTree.svelte";
   import {
     PERSONAL_VAULT,
@@ -34,6 +35,7 @@
     noteTitle,
     pathInVault,
     plural,
+    shareTarget,
     vaultRelativePath,
     vaultsFor,
     type OutlineItem,
@@ -255,6 +257,7 @@
   }
 
   let copied = $state(false);
+  let sharePath = $state<string | null>(null);
   async function copyPath(p: string): Promise<void> {
     try {
       await navigator.clipboard.writeText(p);
@@ -363,8 +366,9 @@
             <span class="vx-crumb" class:is-leaf={i === breadcrumbs(vault, activePath).length - 1}>{c.label}</span>
           {/each}
         </nav>
-        {#if isMarkdownPath(activePath)}
-          <div class="vx-actions">
+        <div class="vx-actions">
+          <button type="button" class="vx-action" data-testid="vault-share" onclick={() => (sharePath = activePath)}>Share</button>
+          {#if isMarkdownPath(activePath)}
             {#if canLaunchClaude}
               <OpenFileInClaudeCode shell={adapter.shell} file={activePath} authorizedFile variant="compact" />
             {/if}
@@ -372,8 +376,8 @@
             {#if canReveal}
               <button type="button" class="vx-action" onclick={() => reveal(activePath)} title={revealError ?? `Show in ${fileManagerName}`}>{`Show in ${fileManagerName}`}</button>
             {/if}
-          </div>
-        {/if}
+          {/if}
+        </div>
         <button
           type="button"
           class="vx-icon"
@@ -538,6 +542,10 @@
       {/if}
     </div>
   </main>
+
+  {#if sharePath}
+    <ShareFileSheet target={shareTarget(vault, sharePath)} onclose={() => (sharePath = null)} />
+  {/if}
 
   {#if switcherOpen}
     <QuickSwitcher

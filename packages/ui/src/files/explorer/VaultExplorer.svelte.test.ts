@@ -272,4 +272,22 @@ describe("VaultExplorer", () => {
     const items = [...host.querySelectorAll('[role="menuitemradio"]')].map((i) => i.textContent?.replace(/\s+/g, " ").trim());
     expect(items).toEqual(["P Personal Just you", "A Acme Company"]);
   });
+
+  it("opens the Share sheet for the open file instead of doing nothing (QA-005)", async () => {
+    const { host } = await render();
+    host.querySelector<HTMLButtonElement>('[data-tree-path="companies/acme/knowledge"]')!.click();
+    await settle();
+    host.querySelector<HTMLButtonElement>('[data-tree-path="companies/acme/knowledge/pricing.md"]')!.click();
+    await settle();
+    host.querySelector<HTMLButtonElement>('[data-testid="vault-share"]')!.click();
+    await settle();
+    const sheet = host.querySelector('[data-testid="file-share-sheet"]')!;
+    expect(sheet).not.toBeNull();
+    expect(sheet.querySelector('[data-testid="file-share-path"]')?.textContent).toBe("knowledge/pricing.md");
+    expect(sheet.querySelector('[data-testid="file-share-unavailable"]')?.textContent).toContain("/hq-share");
+    expect(sheet.querySelector<HTMLButtonElement>('[data-testid="file-share-submit"]')!.disabled).toBe(true);
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await settle();
+    expect(host.querySelector('[data-testid="file-share-sheet"]')).toBeNull();
+  });
 });
