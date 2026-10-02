@@ -39,8 +39,8 @@ export function escapeForLaunch(
   if (tool === 'folder' || /reveal|finder|explorer/i.test(text)) {
     return {
       kind: 'reveal_failed',
-      title: 'Copy the path and open it from Finder',
-      body: 'HQ couldn’t show the folder automatically. Paste the path into Finder or your AI tool.',
+      title: 'Copy the path and open it from your file manager',
+      body: 'HQ couldn’t show the folder automatically. Paste the path into your file manager or your AI tool.',
     };
   }
 

@@ -55,6 +55,11 @@ type Handler = (args?: Record<string, unknown>) => unknown;
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
+const originalUserAgent = navigator.userAgent;
+
+function setUserAgent(userAgent: string): void {
+  Object.defineProperty(navigator, 'userAgent', { configurable: true, value: userAgent });
+}
 
 function deferred<T = void>() {
   let resolve!: (value: T) => void;
@@ -115,6 +120,7 @@ const byId = <T extends HTMLElement = HTMLElement>(id: string) =>
   host.querySelector<T>(`[data-testid="${id}"]`);
 
 beforeEach(() => {
+  setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36');
   host = document.createElement('div');
   document.body.appendChild(host);
   vi.stubGlobal(
@@ -140,6 +146,7 @@ afterEach(async () => {
     component = null;
   }
   host.remove();
+  setUserAgent(originalUserAgent);
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -152,6 +159,8 @@ describe('ready scene: AI-tool checking surface', () => {
 
     await flushUntil(() => Boolean(byId('onboarding-ai-tools-checking')), 'the checking line');
     expect(byId('onboarding-ai-tools-checking')!.textContent).toContain('Checking for AI tools');
+    expect(byId('onboarding-ai-tools-checking')!.textContent).toContain('this PC');
+    expect(byId('onboarding-ai-tools-checking')!.className).toContain('ai-tools-status-stack');
     expect(byId('onboarding-launch-claude')).toBeNull();
     // The rest of the step stays usable: the primary Open HQ Desktop card is
     // still there.
@@ -175,12 +184,26 @@ describe('ready scene: AI-tool checking surface', () => {
 
     await flushUntil(() => Boolean(byId('onboarding-ai-tools-recheck')), 'the recheck control');
     expect(byId('onboarding-ai-tools-recheck')!.textContent).toContain("couldn’t check");
+    expect(byId('onboarding-ai-tools-recheck')!.textContent).toContain('this PC');
+    expect(byId('onboarding-ai-tools-recheck')!.className).toContain('ai-tools-status-stack');
     expect(byId<HTMLButtonElement>('onboarding-ai-tools-recheck-button')).not.toBeNull();
 
     byId<HTMLButtonElement>('onboarding-ai-tools-recheck-button')!.click();
     await flushUntil(() => Boolean(byId('onboarding-launch-claude')), 'the recovered tool pill');
     expect(calls).toBe(2);
     expect(byId('onboarding-ai-tools-recheck')).toBeNull();
+  });
+
+  it('uses the Mac noun for the checking line on macOS', async () => {
+    setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 Safari/605.1.15');
+    const probe = deferred<typeof TOOLS_WITH_CLAUDE>();
+    stubInvoke({ detect_ai_tools: () => probe.promise });
+    mountAt(READY_STEP_INDEX);
+
+    await flushUntil(() => Boolean(byId('onboarding-ai-tools-checking')), 'the checking line');
+    expect(byId('onboarding-ai-tools-checking')!.textContent).toContain('this Mac');
+    expect(byId('onboarding-ai-tools-checking')!.className).toContain('ai-tools-status-stack');
+    probe.resolve(TOOLS_WITH_CLAUDE);
   });
 
   it('surfaces a Check again fallback when the probe outruns the ~10s timeout', async () => {

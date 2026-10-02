@@ -830,7 +830,10 @@ mod tests {
     }
     #[tokio::test]
     async fn repeated_clicks_are_single_flight_and_cancel_reaps_child() {
-        let (dir, program) = fake(SessionTool::Codex, "echo $$ > pid; sleep 60");
+        let (dir, program) = fake(
+            SessionTool::Codex,
+            ": > pid; sleep 0.05; echo $$ > pid; sleep 60",
+        );
         let attempts = Attempts::default();
         start_with(
             &attempts,
@@ -841,17 +844,18 @@ mod tests {
         )
         .await;
         start_with(&attempts, SessionTool::Codex, program, LOGIN_TIMEOUT, false).await;
-        for _ in 0..100 {
-            if dir.path().join("pid").exists() {
-                break;
+        let pid = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if let Ok(contents) = std::fs::read_to_string(dir.path().join("pid")) {
+                    if let Ok(pid) = contents.trim().parse::<i32>() {
+                        break pid;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        let pid: i32 = std::fs::read_to_string(dir.path().join("pid"))
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
+        })
+        .await
+        .expect("fake provider did not write a parseable pid within 1 second");
         assert_eq!(
             cancel_with(&attempts, SessionTool::Codex).await.state,
             "disconnected"

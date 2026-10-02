@@ -8,7 +8,30 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- The desktop setup funnel can now be followed end to end in the vyg CDP. When you sign in through the browser, hqforwork.com tells the app which website visitor downloaded it, and the app mirrors first launch, each onboarding step shown, sign-in, company creation, first sync, and a quit before sign-in to the CDP under that visitor, with app version, OS version, chip, and install source. Off by default; turned on remotely with the `desktop.cdp-mirror` flag. No email, name, or token is ever sent.
+
+- When hq-flags enables `desktop.setup-deps-timeout-retry-v1`, a dependency setup timeout gets one automatic retry before setup is marked passed with that step skipped.
+
+- Desktop no longer shows your personal space in the Companies list, where clicking it looped between Setting up and Tap to retry.
+
+- Windows-visible copy now uses PC controls, the system tray, and file manager labels where older screens assumed a Mac, menu bar, or Finder.
+
+- Platform wording and keyboard hints now follow the visitor's or desktop's OS instead of assuming macOS.
+
+- Fixes a race in the agent sign-in test when reading the child process ID.
+
+- Internal: startup diagnostics now label observed CLI resolver candidates, managed package state, and bundled CLI source.
+
 - Desktop usage uploads are limited to four requests and 4 MB per sync; remaining records resume on later syncs.
+
+- Behind `desktop.sync-on-launch-reconcile-v1`, the desktop app honors the existing Sync on launch preference with a one-shot sync when background Auto-sync is disabled.
+
+- When an HQ CLI update fails partway through installing, the desktop app now
+  puts the previous HQ CLI back instead of leaving a broken or missing `hq`
+  command. Before this, a failed update could leave sync unable to run until
+  the CLI was reinstalled by hand.
+
+- Behind `desktop.first-launch-sync-v1`, a fresh install schedules its first sync after the ready handoff when Auto-sync remains enabled.
 
 ## [0.10.377] — 2026-10-02
 
