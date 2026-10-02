@@ -251,4 +251,13 @@ describe('HqWorkWorkShell plan-limit notice placement (QA-075)', () => {
       expect(host.querySelectorAll('[data-testid="sync-plan-limit-notice"]')).toHaveLength(1);
     }
   });
+
+  // OWNER-002: the old build stacked every paused company's notice above the
+  // shell frame, on the see-through host, so they showed over other apps.
+  it('renders no notice outside the shell frame', async () => {
+    await mountShell({ uploadsPaused: many }, { uid: null, slug: 'delta' });
+    const all = [...host.querySelectorAll('[data-testid="sync-plan-limit-notice"]')];
+    expect(all).toHaveLength(1);
+    for (const el of all) expect(el.closest('.work-shell-frame')).toBeTruthy();
+  });
 });
