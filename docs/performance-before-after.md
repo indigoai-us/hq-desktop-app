@@ -291,7 +291,9 @@ change has to reach a painted frame. A key press that changes nothing measures
 animations did not change the number. The 13.2 ms reference for this metric is
 below that refresh floor for a key press that changes the screen.
 
-The remaining 8–12 ms over budget is filed as a follow-up with the measured
-numbers. The owner decides whether the 20 ms line is measured differently
-(for example time to first painted frame instead of two frames) or whether the
-beta waits on further work.
+The remaining 8–12 ms over the old two-frame sample was the wait for the frame
+after the paint. The owner kept the 20 ms budget and defined it as time to the
+palette's first painted frame (the frame in which the input is visible). The
+harness now stops on that frame. The trace above still stands: app work on the
+open is about 3 ms. A sample that misses 20 ms under this definition is an app
+bug, not a budget change.
