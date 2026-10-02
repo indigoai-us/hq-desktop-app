@@ -18,6 +18,8 @@ The release moves it under the version it ships in.
 
 - Fixes a race in the agent sign-in test when reading the child process ID.
 
+- Internal: startup diagnostics now label observed CLI resolver candidates, managed package state, and bundled CLI source.
+
 - Desktop usage uploads are limited to four requests and 4 MB per sync; remaining records resume on later syncs.
 
 - Behind `desktop.sync-on-launch-reconcile-v1`, the desktop app honors the existing Sync on launch preference with a one-shot sync when background Auto-sync is disabled.
