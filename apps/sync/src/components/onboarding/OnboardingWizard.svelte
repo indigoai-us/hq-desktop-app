@@ -155,12 +155,14 @@
   } from '../../lib/first-run-company';
   import {
     createSyncPlatformAdapter,
+    dispatchPostReadyAction,
     FIRST_FOLDER_SYNC_STEP_FLAG,
     INVITE_TEAMMATE_STEP_FLAG,
     retryThrottled,
     SETUP_DIRECTORY_PARENT_FALLBACK_FLAG,
     SETUP_STAGE_TIMEOUT_FIX_FLAG,
   } from '@hq/platform';
+  import { markPostReadyActionReady } from '../../lib/post-ready-action-telemetry';
 
   interface Props {
     initialStep: number;
@@ -2440,6 +2442,7 @@
         launched = true;
       } else if (tools.claude_cli && installPath) {
         await invoke('launch_claude_code', { path: installPath });
+        dispatchPostReadyAction('open_cli');
         launched = true;
       } else {
         launchEscape = escapeForLaunch('claude', 'Claude Code was not detected');
@@ -2472,6 +2475,7 @@
           path: installPath,
           prompt: '/setup',
         });
+        dispatchPostReadyAction('open_cli');
         launched = true;
       } else if (tools.codex_desktop) {
         await invoke('launch_codex_desktop');
@@ -2504,6 +2508,7 @@
           path: installPath,
           tool: 'grok',
         });
+        dispatchPostReadyAction('open_cli');
         launched = true;
       } else {
         launchEscape = escapeForLaunch('grok', 'Grok CLI was not detected');
@@ -2906,7 +2911,10 @@
   // The ready screen carries the usage-data checkbox: once it has been on
   // show, finishing records the answer.
   $effect(() => {
-    if (scene === 'ready' && consentOnReady) readyConsentShown = true;
+    if (scene === 'ready' && consentOnReady) {
+      readyConsentShown = true;
+      markPostReadyActionReady();
+    }
   });
 
   // Content that changes height re-lays the screen out, so the button under it

@@ -38,6 +38,7 @@ import {
   INVITE_TEAMMATE_STEP_FLAG,
   LOGIN_RECEIPT_DURABILITY_FLAG,
   PERSONAL_WORKSPACE_BOARD_FLAG,
+  POST_READY_ACTION_TELEMETRY_FLAG,
   createFeatureFlagGate,
   createHqProFlagFetch,
   MIRROR_QUARANTINE_MOVE_NOT_DELETION_FLAG,
@@ -53,6 +54,7 @@ import {
   type RequestPolicyOptions,
 } from '../request-policy.js';
 import { hqProFailure, parseHqProErrorBody } from '../plan-limit.js';
+import { dispatchPostReadyAction } from '../post-ready-actions.js';
 
 export type SyncInvokeFn = (
   cmd: string,
@@ -185,6 +187,11 @@ export function createSyncPlatformAdapter(
   });
 
   function hasFeatureLegacy(flag: string): AdapterPromise<boolean> {
+    if (flag === POST_READY_ACTION_TELEMETRY_FLAG) {
+      // The measurement event is opt-in and stays off until the hq-flags
+      // registry contains an explicit enabled value.
+      return Promise.resolve(ok(false));
+    }
     if (flag === SETUP_DIRECTORY_PARENT_FALLBACK_FLAG) {
       // This rollout is opt-in. A missing registry value or unavailable
       // registry stays off until the manager creates and enables it.
@@ -1210,7 +1217,9 @@ export function createSyncPlatformAdapter(
       startSync: async (slug) => {
         const configured = await updateMirrorQuarantineFlag();
         if (!configured.ok) return configured;
-        return call('start_sync', slug ? { companySlug: slug } : undefined);
+        const result = await call('start_sync', slug ? { companySlug: slug } : undefined);
+        if (result.ok) dispatchPostReadyAction('start_sync', slug ? { slug } : undefined);
+        return result;
       },
       cancelSync: () => call('cancel_sync'),
       getSyncStatus: () => call('get_sync_status'),
@@ -1240,9 +1249,19 @@ export function createSyncPlatformAdapter(
       openCodexDeepLink: (url) => call('open_codex_deep_link', { url }),
       openFileInClaude: (path) =>
         call('open_authorized_file_in_claude', { path }),
-      launchClaudeCode: (path) => call('launch_claude_code', { path }),
-      launchCodexWorkspace: (path, prompt) =>
-        call('launch_codex_workspace', { path, prompt: prompt ?? null }),
+      launchClaudeCode: async (path) => {
+        const result = await call('launch_claude_code', { path });
+        if (result.ok) dispatchPostReadyAction('open_cli');
+        return result;
+      },
+      launchCodexWorkspace: async (path, prompt) => {
+        const result = await call('launch_codex_workspace', {
+          path,
+          prompt: prompt ?? null,
+        });
+        if (result.ok) dispatchPostReadyAction('open_cli');
+        return result;
+      },
       launchCliInTerminal: async (args) => {
         const rec = asRecord(args) ?? {};
         const path = String(rec.path ?? '');
@@ -1250,10 +1269,16 @@ export function createSyncPlatformAdapter(
         if (!path || !tool) {
           return failure('invalid-argument', 'launch payload needs path and tool');
         }
-        return call('launch_cli_in_terminal', { path, tool });
+        const result = await call('launch_cli_in_terminal', { path, tool });
+        if (result.ok) dispatchPostReadyAction('open_cli');
+        return result;
       },
       detectAiTools: () => call('detect_ai_tools'),
-      pickFolder: () => call('pick_folder'),
+      pickFolder: async () => {
+        const result = await call('pick_folder');
+        if (result.ok && result.value) dispatchPostReadyAction('open_folder');
+        return result;
+      },
       pickFile: (kind) =>
         kind === 'image'
           ? call('pick_avatar_file')

@@ -1074,6 +1074,38 @@ fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
     Value::Object(out)
 }
 
+fn sanitize_post_ready_action_properties(properties: Option<Value>) -> Value {
+    let Some(Value::Object(input)) = properties else {
+        return Value::Object(Map::new());
+    };
+    let mut out = Map::new();
+    for (key, prefix) in [
+        ("personUid", "prs_"),
+        ("companyUid", "cmp_"),
+        ("idempotencyKey", "post-ready."),
+    ] {
+        let Some(value) = input.get(key).and_then(Value::as_str) else {
+            continue;
+        };
+        if value.starts_with(prefix) && is_safe_label_value(value) {
+            out.insert(key.to_string(), Value::String(value.to_string()));
+        }
+    }
+    if let Some(action) = input
+        .get("action")
+        .and_then(Value::as_str)
+        .filter(|action| {
+            matches!(
+                *action,
+                "open_folder" | "start_sync" | "open_cli" | "invite" | "close_window"
+            )
+        })
+    {
+        out.insert("action".to_string(), Value::String(action.to_string()));
+    }
+    Value::Object(out)
+}
+
 fn build_desktop_telemetry_event(
     event_name: String,
     properties: Option<Value>,
@@ -1091,7 +1123,35 @@ fn build_desktop_telemetry_event(
                     && input.get("component").and_then(Value::as_str) == Some("content")
             })
             .unwrap_or(false);
-    let mut properties = sanitize_desktop_properties(properties);
+    let is_post_ready_action = event_name == "desktop_post_ready_action";
+    let mut properties = if is_post_ready_action {
+        sanitize_post_ready_action_properties(properties)
+    } else {
+        sanitize_desktop_properties(properties)
+    };
+    let company_uid = if is_post_ready_action {
+        properties
+            .get("companyUid")
+            .and_then(Value::as_str)
+            .filter(|value| value.starts_with("cmp_") && value.len() <= 128)
+            .map(str::to_string)
+    } else {
+        None
+    };
+    let idempotency_key = if is_post_ready_action {
+        properties
+            .get("idempotencyKey")
+            .and_then(Value::as_str)
+            .filter(|value| is_safe_label_value(value))
+            .map(str::to_string)
+    } else {
+        None
+    };
+    if is_post_ready_action {
+        if let Some(properties) = properties.as_object_mut() {
+            properties.remove("idempotencyKey");
+        }
+    }
     if !is_content_setup_failure {
         if let Some(properties) = properties.as_object_mut() {
             properties.remove("errorOperation");
@@ -1111,9 +1171,12 @@ fn build_desktop_telemetry_event(
     }
     if matches!(
         event_name.as_str(),
-        "desktop_onboarding_step" | "desktop_setup_completed"
+        "desktop_onboarding_step" | "desktop_setup_completed" | "desktop_post_ready_action"
     ) {
         properties["appVersion"] = Value::String(crate::app_version::current().to_string());
+    }
+    if is_post_ready_action {
+        properties["os"] = Value::String(std::env::consts::OS.to_string());
     }
     RawTelemetryEvent {
         event_name,
@@ -1131,8 +1194,9 @@ fn build_desktop_telemetry_event(
             }),
         consent_basis: consent_basis.to_string(),
         schema_version: 1,
-        idempotency_key: None,
+        idempotency_key,
         session_id: session_id.filter(|value| is_safe_label_value(value)),
+        company_uid,
         properties,
     }
 }
@@ -1215,6 +1279,7 @@ async fn emit_desktop_operational_telemetry_with_vault(
 const OPERATIONAL_DESKTOP_EVENT_NAMES: &[&str] = &[
     "desktop_app_daily_active",
     "desktop_onboarding_step",
+    "desktop_post_ready_action",
     "desktop_setup_completed",
     "oauth_signin_succeeded",
     "telemetry_preference_changed",
@@ -1281,6 +1346,7 @@ fn build_daily_active_event(utc_day: chrono::NaiveDate) -> RawTelemetryEvent {
         schema_version: 1,
         idempotency_key: Some(format!("hq-desktop-app:daily-active:{day}")),
         session_id: None,
+        company_uid: None,
         properties: json!({
             "platform": crate::commands::version_gate::platform_tag(),
             "appVersion": crate::app_version::current(),
@@ -2612,6 +2678,40 @@ mod codex_telemetry_tests {
     use tempfile::TempDir;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn post_ready_action_event_keeps_only_join_fields_and_server_environment() {
+        let event = build_desktop_telemetry_event(
+            "desktop_post_ready_action".to_string(),
+            Some(json!({
+                "action": "open_folder",
+                "personUid": "prs_person-1",
+                "companyUid": "cmp_company-1",
+                "idempotencyKey": "post-ready.session-1.open_folder",
+                "folderName": "Private Project",
+                "path": "/Users/ada/Private Project",
+            })),
+            Some("session-1".to_string()),
+            None,
+            "no-consent",
+        );
+
+        assert_eq!(event.company_uid.as_deref(), Some("cmp_company-1"));
+        assert_eq!(
+            event.idempotency_key.as_deref(),
+            Some("post-ready.session-1.open_folder")
+        );
+        assert_eq!(event.properties["action"], "open_folder");
+        assert_eq!(event.properties["personUid"], "prs_person-1");
+        assert_eq!(event.properties["companyUid"], "cmp_company-1");
+        assert_eq!(
+            event.properties["appVersion"],
+            crate::app_version::current()
+        );
+        assert_eq!(event.properties["os"], std::env::consts::OS);
+        assert!(event.properties.get("folderName").is_none());
+        assert!(event.properties.get("path").is_none());
+    }
 
     #[test]
     fn core_update_lifecycle_properties_survive_sanitization_without_paths_or_errors() {

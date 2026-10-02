@@ -358,6 +358,8 @@ pub struct RawTelemetryEvent {
     pub idempotency_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub company_uid: Option<String>,
     pub properties: serde_json::Value,
 }
 
