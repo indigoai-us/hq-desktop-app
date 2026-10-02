@@ -82,6 +82,8 @@ static PHASE: AtomicU8 = AtomicU8::new(if cfg!(test) { 1 } else { 0 });
 static PHASE_WAIT_LOCK: Mutex<()> = Mutex::new(());
 static PHASE_CHANGED: Condvar = Condvar::new();
 static HOST_TRANSITION_LOCK: Mutex<()> = Mutex::new(());
+static DAEMON_HOST_LOOP_ACTIVE: AtomicBool = AtomicBool::new(false);
+static DAEMON_HOST_HELPERS_STARTED: AtomicBool = AtomicBool::new(false);
 /// Pid of the running daemon child, 0 when none.
 static CHILD_PID: AtomicU32 = AtomicU32::new(0);
 /// Set to relaunch the child at once (its environment changed).
@@ -167,6 +169,49 @@ fn queue_auth_session_reresolve(sender: &tokio::sync::mpsc::UnboundedSender<()>)
     let _ = sender.send(());
 }
 
+fn choose_sync_host_for_cli_probe(
+    flag_enabled: bool,
+    cli_installed_locally: bool,
+    cli_version: Option<&str>,
+) -> Option<SyncHostMode> {
+    if !flag_enabled || !cli_installed_locally {
+        return Some(choose_sync_host(flag_enabled, cli_installed_locally, None));
+    }
+    cli_version.map(|version| choose_sync_host(true, true, Some(version)))
+}
+
+fn pause_daemon_if_running<PauseDaemon>(
+    daemon_running: bool,
+    pause_daemon: PauseDaemon,
+) -> Result<(), String>
+where
+    PauseDaemon: FnOnce() -> Result<(), String>,
+{
+    if daemon_running {
+        pause_daemon()
+    } else {
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DaemonHostAction {
+    Start,
+    Reuse,
+}
+
+fn daemon_host_action(worker_active: bool) -> DaemonHostAction {
+    if worker_active {
+        DaemonHostAction::Reuse
+    } else {
+        DaemonHostAction::Start
+    }
+}
+
+fn launch_reconcile_for_host_selection(initial_selection: bool, configured: bool) -> bool {
+    initial_selection && configured
+}
+
 fn next_host_flag_retry_delay(current: Duration, read_failed: bool, sign_in: bool) -> Duration {
     if !read_failed {
         HOST_FLAG_REFRESH_INTERVAL
@@ -229,13 +274,13 @@ where
     StopLegacy: FnOnce() -> Result<(), String>,
     PauseDaemon: FnOnce() -> Result<(), String>,
     StartLegacy: FnOnce(),
-    StartDaemon: FnOnce(),
+    StartDaemon: FnOnce() -> Result<(), String>,
 {
     match (from, to) {
         (current, next) if current == next => Ok(()),
         (HostPhase::Legacy, HostPhase::Daemon) => {
             stop_legacy()?;
-            start_daemon();
+            start_daemon()?;
             Ok(())
         }
         (HostPhase::Daemon, HostPhase::Legacy) => {
@@ -248,7 +293,7 @@ where
             Ok(())
         }
         (_, HostPhase::Daemon) => {
-            start_daemon();
+            start_daemon()?;
             Ok(())
         }
         (_, HostPhase::Pending) => Ok(()),
@@ -736,12 +781,17 @@ pub fn setup_sync_host(app: &AppHandle) {
             crate::commands::hq_pro::feature_flag_enabled(SYNC_ON_LAUNCH_RECONCILE_FLAG),
         );
         log_host_flag_resolution(flag_resolution);
-        apply_host_mode(
-            handle.clone(),
-            mode,
-            flag_resolution,
-            launch_reconcile_enabled,
-        );
+        if let Some(mode) = mode {
+            apply_host_mode(
+                handle.clone(),
+                mode,
+                flag_resolution,
+                launch_reconcile_enabled,
+                true,
+            );
+        } else {
+            start_initial_legacy_after_cli_probe_failure(handle.clone(), launch_reconcile_enabled);
+        }
 
         let mut retry_delay = HOST_FLAG_RETRY_INITIAL;
         loop {
@@ -754,7 +804,20 @@ pub fn setup_sync_host(app: &AppHandle) {
             }
             let (mode, resolution) = resolve_mode(cache_path.as_deref()).await;
             log_host_flag_resolution(resolution);
-            apply_host_mode(handle.clone(), mode, resolution, launch_reconcile_enabled);
+            if let Some(mode) = mode {
+                apply_host_mode(
+                    handle.clone(),
+                    mode,
+                    resolution,
+                    launch_reconcile_enabled,
+                    false,
+                );
+            } else {
+                log(
+                    LOG_TAG,
+                    "HQ CLI version is unreadable; keeping the current sync host",
+                );
+            }
             let read_failed = matches!(
                 resolution.reason,
                 HostFlagReason::CachedAfterReadFailure | HostFlagReason::UnreadableUsingDefault
@@ -789,11 +852,30 @@ fn log_host_flag_resolution(resolution: HostFlagResolution) {
     }
 }
 
+fn start_initial_legacy_after_cli_probe_failure(handle: AppHandle, launch_reconcile_enabled: bool) {
+    let _transition = HOST_TRANSITION_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if current_phase() != HostPhase::Pending {
+        return;
+    }
+    log(
+        LOG_TAG,
+        "HQ CLI version is unreadable at startup; using the legacy sync host and retrying",
+    );
+    set_phase(HostPhase::Legacy);
+    start_legacy_services(
+        handle,
+        launch_reconcile_for_host_selection(true, launch_reconcile_enabled),
+    );
+}
+
 fn apply_host_mode(
     handle: AppHandle,
     mode: SyncHostMode,
     resolution: HostFlagResolution,
     launch_reconcile_enabled: bool,
+    initial_selection: bool,
 ) {
     let (next, mode_reason) = match mode {
         SyncHostMode::Legacy(reason) => {
@@ -834,21 +916,27 @@ fn apply_host_mode(
                 .map(|_| ())
                 .map_err(|error| format!("could not stop the legacy watch runner: {error}"))
         },
-        || set_daemon_sync(false),
+        || pause_daemon_if_running(hosted_daemon_status().running, || set_daemon_sync(false)),
         || {
             set_phase(HostPhase::Legacy);
-            start_legacy_services(handle.clone(), launch_reconcile_enabled);
+            start_legacy_services(
+                handle.clone(),
+                launch_reconcile_for_host_selection(initial_selection, launch_reconcile_enabled),
+            );
         },
         || {
             set_phase(HostPhase::Daemon);
             let daemon_handle = handle.clone();
-            let launch_sync = hq_desktop_core::daemon::should_run_sync_on_launch(
-                launch_reconcile_enabled,
-                sync_on_launch_enabled(),
-                is_realtime_sync_enabled(),
-                is_autostart_enabled(),
+            let launch_sync = launch_reconcile_for_host_selection(
+                initial_selection,
+                hq_desktop_core::daemon::should_run_sync_on_launch(
+                    launch_reconcile_enabled,
+                    sync_on_launch_enabled(),
+                    is_realtime_sync_enabled(),
+                    is_autostart_enabled(),
+                ),
             );
-            std::thread::spawn(move || enter_daemon_mode(daemon_handle, launch_sync));
+            start_or_resume_daemon_host(daemon_handle, launch_sync)
         },
     );
     if let Err(error) = result {
@@ -857,7 +945,7 @@ fn apply_host_mode(
     }
 }
 
-async fn resolve_mode(cache_path: Option<&Path>) -> (SyncHostMode, HostFlagResolution) {
+async fn resolve_mode(cache_path: Option<&Path>) -> (Option<SyncHostMode>, HostFlagResolution) {
     let cached = match read_host_flag_cache(cache_path) {
         Ok(cached) => cached,
         Err(error) => {
@@ -878,7 +966,7 @@ async fn resolve_mode(cache_path: Option<&Path>) -> (SyncHostMode, HostFlagResol
     let flag_on = resolution.enabled;
     if !flag_on {
         return (
-            host_mode_for_flag_resolution(resolution, false, None),
+            Some(host_mode_for_flag_resolution(resolution, false, None)),
             resolution,
         );
     }
@@ -889,12 +977,16 @@ async fn resolve_mode(cache_path: Option<&Path>) -> (SyncHostMode, HostFlagResol
     } else {
         None
     };
-    INSTANT_SYNC_CLI_SUPPORTED.store(
-        cli_supports_daemon_instant_sync(version.as_deref()),
-        Ordering::Release,
-    );
+    match (local, version.as_deref()) {
+        (true, Some(version)) => INSTANT_SYNC_CLI_SUPPORTED.store(
+            cli_supports_daemon_instant_sync(Some(version)),
+            Ordering::Release,
+        ),
+        (false, _) => INSTANT_SYNC_CLI_SUPPORTED.store(false, Ordering::Release),
+        (true, None) => {}
+    }
     (
-        host_mode_for_flag_resolution(resolution, local, version.as_deref()),
+        choose_sync_host_for_cli_probe(flag_on, local, version.as_deref()),
         resolution,
     )
 }
@@ -953,6 +1045,34 @@ fn sync_wanted() -> bool {
         && (is_autostart_enabled() || is_realtime_sync_enabled())
 }
 
+struct DaemonHostLoopActiveGuard;
+
+impl Drop for DaemonHostLoopActiveGuard {
+    fn drop(&mut self) {
+        DAEMON_HOST_LOOP_ACTIVE.store(false, Ordering::Release);
+    }
+}
+
+fn start_or_resume_daemon_host(handle: AppHandle, launch_sync: bool) -> Result<(), String> {
+    match daemon_host_action(DAEMON_HOST_LOOP_ACTIVE.load(Ordering::Acquire)) {
+        DaemonHostAction::Reuse => set_daemon_sync(sync_wanted()),
+        DaemonHostAction::Start => {
+            if DAEMON_HOST_LOOP_ACTIVE
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                std::thread::spawn(move || {
+                    let _active = DaemonHostLoopActiveGuard;
+                    enter_daemon_mode(handle, launch_sync);
+                });
+                Ok(())
+            } else {
+                set_daemon_sync(sync_wanted())
+            }
+        }
+    }
+}
+
 fn enter_daemon_mode(handle: AppHandle, launch_sync: bool) {
     // A watch runner from an earlier session would sync the same folder twice.
     if let Err(e) = crate::commands::daemon::stop_watch_runner() {
@@ -961,14 +1081,21 @@ fn enter_daemon_mode(handle: AppHandle, launch_sync: bool) {
             &format!("could not stop an earlier watch runner: {e}"),
         );
     }
-    // The mesh LaunchAgent this app installed keeps the daemon's mesh waiting.
-    if let Err(e) =
-        tauri::async_runtime::block_on(crate::commands::install_stages::retire_work_mesh_unit())
+    if DAEMON_HOST_HELPERS_STARTED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
     {
-        log(
-            LOG_TAG,
-            &format!("could not remove the separate Work Mesh unit: {e}"),
-        );
+        // The mesh LaunchAgent this app installed keeps the daemon's mesh waiting.
+        if let Err(e) =
+            tauri::async_runtime::block_on(crate::commands::install_stages::retire_work_mesh_unit())
+        {
+            log(
+                LOG_TAG,
+                &format!("could not remove the separate Work Mesh unit: {e}"),
+            );
+        }
+        std::thread::spawn(watch_env_changes);
+        crate::commands::sync_progress_watch::setup_last_pass_watch(&handle);
     }
     if let Err(e) = set_daemon_sync(sync_wanted()) {
         log(
@@ -976,8 +1103,6 @@ fn enter_daemon_mode(handle: AppHandle, launch_sync: bool) {
             &format!("could not apply the Auto-sync setting: {e}"),
         );
     }
-    std::thread::spawn(watch_env_changes);
-    crate::commands::sync_progress_watch::setup_last_pass_watch(&handle);
     if launch_sync {
         schedule_sync_on_launch(handle.clone());
     }
@@ -1364,7 +1489,10 @@ mod tests {
                 Ok(())
             },
             || legacy_events.lock().unwrap().push("start-legacy"),
-            || daemon_events.lock().unwrap().push("start-daemon-sync"),
+            || {
+                daemon_events.lock().unwrap().push("start-daemon-sync");
+                Ok(())
+            },
         );
 
         assert!(result.is_ok());
@@ -1385,7 +1513,10 @@ mod tests {
             || Err("runner still active".to_string()),
             || Ok(()),
             || start_events.lock().unwrap().push("start-legacy"),
-            || stop_events.lock().unwrap().push("start-daemon"),
+            || {
+                stop_events.lock().unwrap().push("start-daemon");
+                Ok(())
+            },
         );
         assert_eq!(stopped, Err("runner still active".to_string()));
         assert!(events.lock().unwrap().is_empty());
@@ -1406,6 +1537,47 @@ mod tests {
         .unwrap();
         assert_eq!(*events.lock().unwrap(), ["pause-daemon", "start-legacy"]);
     }
+    #[test]
+    fn unreadable_cli_version_keeps_the_current_mode_for_retry() {
+        assert_eq!(choose_sync_host_for_cli_probe(true, true, None), None);
+        assert_eq!(
+            choose_sync_host_for_cli_probe(true, false, None),
+            Some(SyncHostMode::Legacy(
+                hq_desktop_core::hq_daemon::LegacyReason::CliNotInstalled
+            ))
+        );
+    }
+
+    #[test]
+    fn legacy_transition_skips_pause_when_daemon_is_not_running() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let pause_events = events.clone();
+        let legacy_events = events.clone();
+        run_host_transition(
+            HostPhase::Daemon,
+            HostPhase::Legacy,
+            || Ok(()),
+            || {
+                pause_daemon_if_running(false, || {
+                    pause_events.lock().unwrap().push("pause-daemon");
+                    Ok(())
+                })
+            },
+            || legacy_events.lock().unwrap().push("start-legacy"),
+            || Ok(()),
+        )
+        .unwrap();
+        assert_eq!(*events.lock().unwrap(), ["start-legacy"]);
+    }
+
+    #[test]
+    fn active_daemon_worker_is_reused_and_later_switches_skip_launch_reconcile() {
+        assert_eq!(daemon_host_action(true), DaemonHostAction::Reuse);
+        assert_eq!(daemon_host_action(false), DaemonHostAction::Start);
+        assert!(launch_reconcile_for_host_selection(true, true));
+        assert!(!launch_reconcile_for_host_selection(false, true));
+    }
+
     // ── settings toggles change the daemon's saved config ────────────────
 
     #[test]
