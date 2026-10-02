@@ -590,6 +590,10 @@ async fn run_npm_install(
 const MAX_NPM_INSTALL_ATTEMPTS: usize = 4;
 const CLI_PACKAGE_USE_LEASE_TIMEOUT: Duration = Duration::from_secs(30);
 
+fn remaining_cli_package_use_lease_budget(elapsed: Duration) -> Duration {
+    CLI_PACKAGE_USE_LEASE_TIMEOUT.saturating_sub(elapsed)
+}
+
 #[derive(Debug)]
 struct NpmInstallAttempt {
     rung: &'static str,
@@ -1254,13 +1258,14 @@ async fn acquire_cli_package_update_lease(
     // hand off. Close this app's child admission as well, so no controlled CLI
     // work can start while the updater waits for the package's shared lease.
     #[cfg(target_os = "windows")]
-    let process_guard =
-        crate::commands::process::wait_for_cli_install_quiescence(CLI_PACKAGE_USE_LEASE_TIMEOUT)
-            .await?;
+    let process_guard = crate::commands::process::wait_for_cli_install_quiescence(
+        remaining_cli_package_use_lease_budget(started.elapsed()),
+    )
+    .await?;
     #[cfg(not(target_os = "windows"))]
     let process_guard = crate::commands::process::close_cli_process_admission_for_update()?;
 
-    let remaining = CLI_PACKAGE_USE_LEASE_TIMEOUT.saturating_sub(started.elapsed());
+    let remaining = remaining_cli_package_use_lease_budget(started.elapsed());
     let package_guard = request.wait(remaining).await?;
     Ok((package_guard, process_guard))
 }
@@ -4665,6 +4670,24 @@ mod tests {
     use std::process::{Command, Stdio};
     #[cfg(unix)]
     use std::sync::{Mutex, OnceLock};
+
+    #[test]
+    fn remaining_cli_package_use_lease_budget_subtracts_elapsed_and_saturates() {
+        assert_eq!(
+            remaining_cli_package_use_lease_budget(Duration::from_secs(10)),
+            Duration::from_secs(20)
+        );
+        assert_eq!(
+            remaining_cli_package_use_lease_budget(CLI_PACKAGE_USE_LEASE_TIMEOUT),
+            Duration::ZERO
+        );
+        assert_eq!(
+            remaining_cli_package_use_lease_budget(
+                CLI_PACKAGE_USE_LEASE_TIMEOUT + Duration::from_secs(1)
+            ),
+            Duration::ZERO
+        );
+    }
 
     // Serialize HOME mutation against every other test that reads or writes
     // the process-global HOME (launch.rs reveal-target tests, telemetry) by
