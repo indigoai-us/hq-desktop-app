@@ -141,6 +141,7 @@ export function createFirstRunCompanyApi(invoke: InvokeFn): CreateCompanyApi {
       };
     },
     checkCompanySlug: (slug) => invoke<unknown>('check_company_slug', { slug }),
+    readCompanyProvisioned: (companyUid) => readCompanyProvisioned(invoke, companyUid),
     runCompanyTabAction: async (args) =>
       invoke('run_company_tab_action', {
         companyUid: args.companyUid,
@@ -151,6 +152,40 @@ export function createFirstRunCompanyApi(invoke: InvokeFn): CreateCompanyApi {
         idempotencyKey: args.idempotencyKey ?? null,
       }),
   };
+}
+
+/**
+ * Whether a `GET /entity/{uid}` payload describes a provisioned company: the
+ * provisioning Lambda sets `bucketName` and moves `status` off "provisioning".
+ */
+export function isProvisionedCompanyEntity(payload: unknown): boolean {
+  if (!isRecord(payload) || !isRecord(payload.entity)) return false;
+  const entity = payload.entity;
+  return (
+    typeof entity.bucketName === 'string' &&
+    entity.bucketName.trim().length > 0 &&
+    entity.status !== 'provisioning' &&
+    entity.deleted !== true
+  );
+}
+
+/** Read the company entity and report whether its cloud vault is provisioned. */
+export async function readCompanyProvisioned(invoke: InvokeFn, companyUid: string): Promise<boolean> {
+  const response = await invoke<unknown>('hq_pro_fetch', {
+    url: `/entity/${encodeURIComponent(companyUid)}`,
+    method: 'GET',
+    body: null,
+  });
+  if (!isRecord(response) || typeof response.status !== 'number') {
+    throw new Error('hq-pro returned an invalid response');
+  }
+  // 404 right after creation is "not visible yet", not an error.
+  if (response.status === 404) return false;
+  if (response.status < 200 || response.status >= 300) {
+    throw new Error(`hq-pro entity read failed with status ${response.status}`);
+  }
+  const body = typeof response.body === 'string' && response.body.trim() ? JSON.parse(response.body) : null;
+  return isProvisionedCompanyEntity(body);
 }
 
 /**
