@@ -60,16 +60,17 @@
 <p class="note">Meetings reads events and video links only. Disconnecting removes upcoming events from this list; recaps stay.</p>
 
 <style>
-  .lbl { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--t3); margin: 0 0 8px; }
+  .lbl { font-size: 13px; font-weight: 500; line-height: 17px; color: var(--t2); margin: 0 0 8px; }
   .row { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 6px 0; }
-  .mk { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 6px; background: var(--v4-control-bg, var(--hover)); font-size: 11px; color: var(--t2); }
+  .mk { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 6px; background: var(--v4-control-bg, var(--hover)); font-size: 13px; color: var(--t2); }
   .tx { min-width: 0; }
   .tt { display: block; font-size: 13px; color: var(--t1); }
-  .mm { display: block; font-size: 12px; color: var(--t3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .btn { height: 26px; padding: 0 10px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--t1); font: inherit; font-size: 12px; cursor: pointer; }
-  .btn:disabled, .link:disabled { opacity: 0.45; cursor: default; }
+  .mm { display: block; font-size: 13px; color: var(--t3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .btn { height: 28px; padding: 0 10px; border: 1px solid var(--panel-border, var(--line)); border-radius: 6px; background: transparent; color: var(--t1); font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; }
+  .btn:hover:not(:disabled) { background: var(--hover); }
+  .btn:disabled, .link:disabled { color: var(--t3); cursor: default; }
   .rule { height: 1px; background: var(--line); margin: 8px 0; }
-  .link { display: block; width: 100%; padding: 6px 0; border: 0; background: transparent; color: var(--t1); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+  .link { display: block; width: 100%; min-height: 28px; padding: 4px 0; border: 0; background: transparent; color: var(--t1); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
   .link.danger { color: var(--popover-danger, var(--v4-error)); }
-  .note { margin: 6px 0 0; font-size: 12px; line-height: 1.45; color: var(--t3); }
+  .note { margin: 6px 0 0; font-size: 13px; line-height: 1.45; color: var(--t3); }
 </style>

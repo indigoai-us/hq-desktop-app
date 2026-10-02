@@ -103,16 +103,18 @@
 
 <style>
   .ctl { position: relative; display: flex; align-items: center; gap: 6px; }
-  .calchip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--v4-control-faint, transparent); color: var(--t2); font: inherit; font-size: 12px; cursor: pointer; }
+  /* Messages header controls: 28px, no border, hover fill only. */
+  .calchip { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px; border-radius: 8px; border: 0; background: transparent; color: var(--t2); font: inherit; font-size: 13px; cursor: pointer; }
+  .calchip:hover, .icon-btn:hover { background: var(--hover); color: var(--t1); }
   .calchip[aria-expanded="true"], .icon-btn[aria-expanded="true"] { background: var(--sel, var(--hover)); }
   .ct { color: var(--t3); }
-  .icon-btn { display: inline-grid; place-items: center; width: 26px; height: 26px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--t2); cursor: pointer; }
+  .icon-btn { display: inline-grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--t2); cursor: pointer; }
   .scrim { position: fixed; inset: 0; z-index: 4; }
-  .pop { position: absolute; top: 32px; right: 0; z-index: 5; width: 340px; padding: 12px; background: var(--v4-popover, var(--side-bg)); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25); }
+  .pop { position: absolute; top: 32px; right: 0; z-index: 5; width: 340px; padding: 12px; background: var(--v4-popover, var(--side-bg)); border: 1px solid var(--panel-border, var(--line)); border-radius: 8px; box-shadow: var(--panel-shadow, 0 8px 24px rgba(0, 0, 0, 0.25)); font-size: 13px; }
   .pop.wide { width: 380px; }
   .sk { padding: 2px 0; }
   .bar, .line { height: 10px; margin: 8px 0; border-radius: 6px; background: var(--hover); }
   .bar { width: 35%; }
   .line.short { width: 55%; }
-  .sk p { color: var(--t2); font-size: 12px; margin: 8px 0 0; }
+  .sk p { color: var(--t2); font-size: 13px; margin: 8px 0 0; }
 </style>

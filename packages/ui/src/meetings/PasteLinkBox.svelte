@@ -103,19 +103,21 @@
 {/if}
 
 <style>
-  .lbl { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--t3); margin: 0 0 8px; }
+  .lbl { font-size: 13px; font-weight: 500; line-height: 17px; color: var(--t2); margin: 0 0 8px; }
   .field { width: 100%; height: 28px; padding: 0 8px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--t1); font: inherit; font-size: 13px; box-sizing: border-box; }
   .det { display: flex; align-items: center; gap: 8px; margin-top: 8px; min-width: 0; }
-  .chip { height: 20px; padding: 0 7px; border-radius: 999px; border: 1px solid var(--line); font-size: 12px; color: var(--t2); line-height: 18px; white-space: nowrap; }
-  .mm { font-size: 12px; color: var(--t3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chip { font-size: 13px; color: var(--t2); white-space: nowrap; }
+  .mm { font-size: 13px; color: var(--t3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .actions { display: flex; gap: 6px; margin-top: 12px; }
-  .btn { height: 26px; padding: 0 10px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--t1); font: inherit; font-size: 12px; cursor: pointer; }
+  .btn { height: 28px; padding: 0 10px; border: 1px solid var(--panel-border, var(--line)); border-radius: 6px; background: transparent; color: var(--t1); font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; }
+  .btn:hover:not(:disabled) { background: var(--hover); }
   .btn.primary { border-color: transparent; background: var(--v4-primary-bg, var(--t1)); color: var(--v4-primary-fg, var(--side-bg)); }
-  .btn:disabled { opacity: 0.45; cursor: default; }
+  /* Disabled reads as quiet text, not a grey block beside an enabled Cancel. */
+  .btn:disabled, .btn.primary:disabled { border-color: var(--line); background: transparent; color: var(--t3); cursor: default; }
   .rule { height: 1px; background: var(--line); margin: 12px 0; }
   .list { display: flex; flex-direction: column; }
-  .opt { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 6px; border: 0; border-radius: 6px; background: transparent; color: var(--t1); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+  .opt { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; gap: 8px; align-items: center; min-height: 28px; padding: 4px 6px; border: 0; border-radius: 6px; background: transparent; color: var(--t1); font: inherit; font-size: 13px; line-height: 17px; text-align: left; cursor: pointer; }
   .opt:hover { background: var(--hover); }
-  .tm { font-family: var(--font-mono); font-size: 12px; color: var(--t3); }
+  .tm { font-size: 13px; color: var(--t3); font-variant-numeric: tabular-nums; }
   .tt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>
