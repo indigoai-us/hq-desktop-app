@@ -335,6 +335,7 @@ fn a_rewritten_settings_path_shadow_persists_no_marker() {
         repair: SettingsPathRepair::Rewritten,
         file: hq_desktop_core::paths::SettingsPathFile::Local,
         managed_bin: ManagedBinInSettingsPath::Present,
+        ..SettingsPathTelemetry::default()
     });
     assert_eq!(
         decide_post_install(&ctx).non_convergence_kind,
@@ -377,6 +378,7 @@ fn a_refused_settings_path_shadow_still_persists_its_marker() {
         repair: SettingsPathRepair::RefusedNotStale,
         file: hq_desktop_core::paths::SettingsPathFile::Local,
         managed_bin: ManagedBinInSettingsPath::Absent,
+        ..SettingsPathTelemetry::default()
     });
     assert_eq!(
         decide_post_install(&ctx).non_convergence_kind,
