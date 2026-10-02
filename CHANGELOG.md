@@ -10,6 +10,8 @@ The release moves it under the version it ships in.
 
 - When hq-flags enables `desktop.setup-deps-timeout-retry-v1`, a dependency setup timeout gets one automatic retry before setup is marked passed with that step skipped.
 
+- Sync reports when another HQ process holds the operation lock, bounds the wait to ten minutes, retries lock timeouts with backoff, and restarts watchers that have not started a pass after thirty minutes.
+
 
 
 
@@ -28,7 +30,6 @@ The release moves it under the version it ships in.
 
 - Fixes a race in the agent sign-in test when reading the child process ID.
 
-- Sync reports when another HQ process holds the operation lock, bounds the wait to ten minutes, retries lock timeouts with backoff, and restarts watchers that have not started a pass after thirty minutes.
 - Desktop usage uploads are limited to four requests and 4 MB per sync; remaining records resume on later syncs.
 
 - Behind `desktop.sync-on-launch-reconcile-v1`, the desktop app honors the existing Sync on launch preference with a one-shot sync when background Auto-sync is disabled.
