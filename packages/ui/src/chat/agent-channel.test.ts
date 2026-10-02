@@ -205,6 +205,21 @@ describe("the new bot's first message", () => {
     expect(text).toContain("Never ask for a password or a token in chat.");
   });
 
+  it("tells the bot the app shows the cards by itself when the person asks to connect more", () => {
+    const text = buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: false });
+    expect(text).toContain(
+      'When Stefan writes "Connect more tools", answer in one short sentence: the app shows the connection cards under your answer by itself.',
+    );
+  });
+
+  it("stays well under the direct message body limit, even with a long name", () => {
+    const name = "Bartholomew-Maximilian Featherstonehaugh";
+    expect(name).toHaveLength(40);
+    const text = buildAgentHelloRequest({ personName: name, filesStillDownloading: true });
+    expect(text).toContain(`${name} cannot see this message`);
+    expect(text.length).toBeLessThan(3500);
+  });
+
   it("keeps the files sentence and the ask not to mention the request, with no long dash", () => {
     const text = buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: true });
     expect(text).toContain("Your company files are still downloading in the background");

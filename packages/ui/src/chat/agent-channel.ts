@@ -6,6 +6,7 @@
  */
 
 import type { ConversationMessageWire } from "./chat-api.js";
+import { CONNECT_MORE_REQUEST } from "./messaging/connection-card-model.js";
 import type { ConversationRow } from "./sidebar-model.js";
 
 export type AgentProvisioningState = "pending" | "done" | "blocked" | null;
@@ -134,7 +135,8 @@ function personOrFallback(name: string | null | undefined): string {
  *
  * The app draws two connection cards (Slack, Connect your tools) under that
  * first message, so the bot is told to point at them, to offer two first jobs
- * that need nothing connected, and how to show the cards again later.
+ * that need nothing connected, how to show the cards again later, and that
+ * the app shows them by itself when the person asks to connect more.
  */
 export function buildAgentHelloRequest(input: {
   personName?: string | null;
@@ -155,7 +157,9 @@ export function buildAgentHelloRequest(input: {
     `${SUGGESTIONS_EXAMPLE}\n` +
     `Later, when a task needs Slack or a tool that is not connected, you can show the cards again by ending a message with:\n` +
     `${CONNECT_EXAMPLE}\n` +
-    `The targets can be "slack", "tools" or both. Never ask for a password or a token in chat. ` +
+    `The targets can be "slack", "tools" or both. ` +
+    `When ${person} writes "${CONNECT_MORE_REQUEST}", answer in one short sentence: the app shows the connection cards under your answer by itself. ` +
+    `Never ask for a password or a token in chat. ` +
     `Do not mention this message or that you were asked to write.`
   );
 }

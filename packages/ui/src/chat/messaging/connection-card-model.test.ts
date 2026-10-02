@@ -3,6 +3,13 @@ import { describe, expect, it } from "vitest";
 import {
   BOT_CONNECTION_CARDS_STORAGE_KEY,
   CONNECTING_TIMEOUT_MS,
+  CONNECT_FIRST_LABEL,
+  CONNECT_MORE_LABEL,
+  CONNECT_MORE_REQUEST,
+  connectMoreAnswerIds,
+  connectMoreLabel,
+  isConnectMoreRequest,
+  newestBotMessage,
   MAX_BOT_CONNECTION_RECORDS,
   MAX_WAITING_ROWS,
   SLACK_TIMEOUT_NOTE,
@@ -761,5 +768,93 @@ describe("connectionCardView: tools", () => {
     ];
     const copy = JSON.stringify(views);
     expect(copy).not.toMatch(/\u2014|OAuth|ACL|grant/i);
+  });
+});
+
+describe("asking for the cards again", () => {
+  const facts = (connections: unknown[]) => toolFacts(list(connections), null);
+  const usable = connection({ id: "acct_open", access: { mode: "everyone", grantCount: 0 } });
+  const waiting = connection({ id: "acct_mine", access: { mode: "private", grantCount: 0 } });
+
+  it("words the button for nothing connected yet", () => {
+    expect(CONNECT_FIRST_LABEL).toBe("Connect Slack or tools");
+    expect(connectMoreLabel({ state: "none" }, facts([]))).toBe("Connect Slack or tools");
+    // Slack set up but not working, and a connection the bot may not use yet: still nothing connected.
+    expect(connectMoreLabel({ state: "pending", note: "Waiting." }, facts([waiting]))).toBe("Connect Slack or tools");
+  });
+
+  it("words the button for something connected, or not known yet", () => {
+    expect(CONNECT_MORE_LABEL).toBe("Connect more");
+    expect(connectMoreLabel({ state: "connected" }, facts([]))).toBe("Connect more");
+    expect(connectMoreLabel({ state: "none" }, facts([usable]))).toBe("Connect more");
+    expect(connectMoreLabel({ state: "connected" }, facts([usable]))).toBe("Connect more");
+    // Either answer missing: it does not claim that nothing is connected.
+    expect(connectMoreLabel(null, facts([]))).toBe("Connect more");
+    expect(connectMoreLabel({ state: "none" }, null)).toBe("Connect more");
+    expect(connectMoreLabel(undefined, undefined)).toBe("Connect more");
+  });
+
+  it("recognises the request whatever its case, spaces or full stop", () => {
+    expect(CONNECT_MORE_REQUEST).toBe("Connect more tools");
+    for (const text of ["Connect more tools", "connect more tools", "CONNECT MORE TOOLS", "  Connect more tools  ", "Connect more tools.", "connect more tools . ", "\nConnect more tools\n"]) {
+      expect(isConnectMoreRequest(text)).toBe(true);
+    }
+  });
+
+  it("does not take a longer sentence that only contains the phrase", () => {
+    for (const text of [
+      "Please connect more tools",
+      "Connect more tools for the sales team",
+      "Connect more tools?",
+      "Connect more tools..",
+      "Connect more",
+      "Connect  more tools",
+      "",
+      null,
+      undefined,
+    ]) {
+      expect(isConnectMoreRequest(text)).toBe(false);
+    }
+  });
+
+  type Msg = { eventId: string; fromPersonUid: string; body: string; connect?: boolean };
+  const bot = (eventId: string, body: string, connect = false): Msg => ({ eventId, fromPersonUid: BOT, body, connect });
+  const me = (eventId: string, body: string): Msg => ({ eventId, fromPersonUid: "prs_me", body });
+  const is = { visible: (m: Msg) => m.body.trim() !== "", ownCards: (m: Msg) => m.connect === true };
+
+  it("finds the bot's newest message only while nobody has written after it", () => {
+    const visible = is.visible;
+    expect(newestBotMessage([bot("b1", "Hello")], BOT, visible)?.eventId).toBe("b1");
+    expect(newestBotMessage([bot("b1", "Hello"), me("p1", "Hi"), bot("b2", "Sure")], BOT, visible)?.eventId).toBe("b2");
+    // A bot row with nothing to read is skipped.
+    expect(newestBotMessage([bot("b1", "Hello"), bot("b2", "  ")], BOT, visible)?.eventId).toBe("b1");
+    expect(newestBotMessage([bot("b1", "Hello"), me("p1", "Hi")], BOT, visible)).toBeNull();
+    expect(newestBotMessage([], BOT, visible)).toBeNull();
+    expect(newestBotMessage([bot("b1", "Hello")], " ", visible)).toBeNull();
+  });
+
+  it("attaches the cards to the bot's first answer after each request", () => {
+    const timeline = [
+      bot("b1", "Hello"),
+      me("p1", "What do you know?"),
+      bot("b2", "A few things."),
+      me("p2", "connect more tools."),
+      bot("b3", " "),
+      bot("b4", "Here you go."),
+      bot("b5", "Anything else?"),
+      me("p3", "Connect more tools"),
+      me("p4", "and thanks"),
+      bot("b6", "Of course."),
+    ];
+    expect(connectMoreAnswerIds(timeline, BOT, is)).toEqual(["b4", "b6"]);
+  });
+
+  it("attaches nothing before the bot answers, to an answer with its own cards, or for a longer sentence", () => {
+    expect(connectMoreAnswerIds([bot("b1", "Hello"), me("p1", "Connect more tools")], BOT, is)).toEqual([]);
+    expect(connectMoreAnswerIds([me("p1", "Connect more tools"), bot("b1", "Here.", true), bot("b2", "And more.")], BOT, is)).toEqual([]);
+    expect(connectMoreAnswerIds([me("p1", "Can you connect more tools for me"), bot("b1", "Sure.")], BOT, is)).toEqual([]);
+    // The bot saying the phrase is not the person asking.
+    expect(connectMoreAnswerIds([bot("b1", "Connect more tools"), bot("b2", "Hm.")], BOT, is)).toEqual([]);
+    expect(connectMoreAnswerIds([me("p1", "Connect more tools"), bot("b1", "Sure.")], "", is)).toEqual([]);
   });
 });

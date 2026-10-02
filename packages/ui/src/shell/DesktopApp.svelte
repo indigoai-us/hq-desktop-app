@@ -82,6 +82,10 @@
     type RichBlock,
   } from "../chat/messaging/richMessageContent.js";
   import {
+    CONNECT_MORE_REQUEST,
+    connectMoreAnswerIds,
+    connectMoreLabel,
+    newestBotMessage,
     companyUidFromStatus,
     connectionActionKey,
     connectionCardView,
@@ -4568,10 +4572,27 @@
   const cloudBotHelloCardsAt = $derived(
     dmCloudBotUid && !cloudBotShowsOwnCards ? (connectionRecords[dmCloudBotUid]?.helloEventId ?? null) : null,
   );
-  const cloudBotCardsShown = $derived(cloudBotShowsOwnCards || cloudBotHelloCardsAt !== null);
-  const cloudBotExtraBlocks = $derived.by((): Record<string, RichBlock[]> | null =>
-    cloudBotHelloCardsAt ? { [cloudBotHelloCardsAt]: [{ kind: "connect", targets: ["slack", "tools"] }] } : null,
+  /**
+   * The bot's answers to the person's "Connect more tools": the app puts both
+   * cards under each. Read from the conversation every time, never stored, so
+   * it holds for a typed request, a reloaded conversation and a bot that has
+   * no record on this device.
+   */
+  const cloudBotConnectMoreAt = $derived.by((): string[] => {
+    const uid = dmCloudBotUid;
+    if (!uid) return [];
+    return connectMoreAnswerIds(timeline, uid, { visible: messageHasVisibleContent, ownCards: messageHasConnectBlock });
+  });
+  const cloudBotCardsShown = $derived(
+    cloudBotShowsOwnCards || cloudBotHelloCardsAt !== null || cloudBotConnectMoreAt.length > 0,
   );
+  const cloudBotExtraBlocks = $derived.by((): Record<string, RichBlock[]> | null => {
+    const ids = [...(cloudBotHelloCardsAt ? [cloudBotHelloCardsAt] : []), ...cloudBotConnectMoreAt];
+    if (ids.length === 0) return null;
+    const out: Record<string, RichBlock[]> = {};
+    for (const id of ids) out[id] = [{ kind: "connect", targets: ["slack", "tools"] }];
+    return out;
+  });
 
   /** What the server last said about one bot: its status and its company's connections. */
   interface BotConnectionFacts {
@@ -4903,11 +4924,47 @@
    * the conversation as the person sees it: a notice the app sent the bot is
    * not the person writing, so it does not put the suggestions away.
    */
-  const cloudBotSuggestedReplies = $derived.by((): string[] => {
+  const cloudBotOwnSuggestedReplies = $derived.by((): string[] => {
     const uid = dmCloudBotUid;
     if (!uid) return [];
     return setupSuggestionsDue(timeline, uid, messageHasVisibleContent, suggestionsForMessage);
   });
+  /**
+   * The app's own follow-up under the bot's newest message: a way to get the
+   * connection cards back without scrolling up to the first message. Wanted
+   * after any bot answer, until the person writes, unless that answer already
+   * carries the cards.
+   */
+  const cloudBotConnectChipWanted = $derived.by((): boolean => {
+    const uid = dmCloudBotUid;
+    if (!uid) return false;
+    const newest = newestBotMessage(timeline, uid, messageHasVisibleContent);
+    if (!newest) return false;
+    return !messageHasConnectBlock(newest) && !cloudBotExtraBlocks?.[newest.eventId];
+  });
+  /**
+   * The extra button's words, or null while it is not shown. The words depend
+   * on what is connected, which is only asked while a bot's cards are on
+   * screen. Then the button waits for that first answer, so its words do not
+   * change under the cursor. A bot whose cards were never on screen is not
+   * asked just for this: its button says "Connect more".
+   */
+  const cloudBotConnectChip = $derived.by((): string | null => {
+    const input = cloudBotCardInput;
+    if (!input || !cloudBotConnectChipWanted) return null;
+    if (cloudBotCardsShown && !botConnectionFacts[input.uid]) return null;
+    return connectMoreLabel(input.slack, input.tools);
+  });
+  /** The bot's own suggestions, then the app's button, last in the row. */
+  const cloudBotSuggestedReplies = $derived.by((): string[] => {
+    const chip = cloudBotConnectChip;
+    if (!chip) return cloudBotOwnSuggestedReplies;
+    return [...cloudBotOwnSuggestedReplies.filter((label) => label !== chip), chip];
+  });
+  /** The button sends the request for the cards, not its own words. */
+  const cloudBotSuggestedReplyText = $derived.by((): Record<string, string> | null =>
+    cloudBotConnectChip ? { [cloudBotConnectChip]: CONNECT_MORE_REQUEST } : null,
+  );
   /**
    * The person sent something to a bot that cannot run on this Mac and
    * nothing has come back. The conversation says that plainly — the message
@@ -10559,6 +10616,7 @@
                         : undefined}
                   belowMessages={agentThinkingBelow}
                   suggestedReplies={setupSuggestedReplies.length > 0 ? setupSuggestedReplies : cloudBotSuggestedReplies}
+                  suggestedReplyText={setupSuggestedReplies.length > 0 ? null : cloudBotSuggestedReplyText}
                   connections={cloudBotConnections}
                   extraBlocksByEventId={cloudBotExtraBlocks}
                   draftKey={selectedRow.id}

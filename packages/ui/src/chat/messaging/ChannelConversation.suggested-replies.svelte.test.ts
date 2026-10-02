@@ -100,6 +100,49 @@ describe("ChannelConversation suggested replies", () => {
     expect(composer.placeholder).toBe(before);
   });
 
+  it("sends the host's text for a button whose label is not the message", async () => {
+    const onsend = vi.fn(async () => {});
+    const { root } = await mountWith({
+      onsend,
+      suggestedReplies: ["List our open projects", "Connect more"],
+      suggestedReplyText: { "Connect more": "Connect more tools" },
+    });
+    expect(buttons(root).map((b) => b.textContent?.trim())).toEqual(["List our open projects", "Connect more"]);
+    buttons(root)[1].click();
+    buttons(root)[1]?.click();
+    await tick();
+    await tick();
+    flushSync();
+    expect(onsend).toHaveBeenCalledTimes(1);
+    expect((onsend.mock.calls[0] as unknown[])[0]).toBe("Connect more tools");
+    expect(root.querySelector('[data-testid="suggested-replies"]')).toBeNull();
+  });
+
+  it("shows the same button again under a later message, once the first set was put away", async () => {
+    const onsend = vi.fn(async () => {});
+    const { root, state } = await mountWith({
+      onsend,
+      suggestedReplies: ["Connect more"],
+      suggestedReplyText: { "Connect more": "Connect more tools" },
+    });
+    buttons(root)[0].click();
+    await tick();
+    flushSync();
+    expect(root.querySelector('[data-testid="suggested-replies"]')).toBeNull();
+    // The reply landed: the host puts the set away. Then the bot writes again.
+    state.suggestedReplies = [];
+    flushSync();
+    await tick();
+    state.suggestedReplies = ["Connect more"];
+    flushSync();
+    await tick();
+    expect(buttons(root).map((b) => b.textContent?.trim())).toEqual(["Connect more"]);
+    buttons(root)[0].click();
+    await tick();
+    await tick();
+    expect(onsend).toHaveBeenCalledTimes(2);
+  });
+
   it("shows nothing while the composer is locked", async () => {
     const { root } = await mountWith({ suggestedReplies: ["Yes"], composerLocked: true });
     expect(root.querySelector('[data-testid="suggested-replies"]')).toBeNull();

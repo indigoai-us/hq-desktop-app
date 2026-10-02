@@ -260,6 +260,11 @@
      */
     suggestedReplies?: readonly string[];
     /**
+     * What a suggested reply sends when it is not its own label (label → the
+     * message). A label that is not here sends itself.
+     */
+    suggestedReplyText?: Readonly<Record<string, string>> | null;
+    /**
      * Connection cards (Slack, Connect your tools) for `connect` blocks in
      * this conversation: the host builds each card and handles each press.
      * Omitted everywhere but a cloud bot's direct message, where a `connect`
@@ -342,6 +347,7 @@
     header,
     belowMessages,
     suggestedReplies = [],
+    suggestedReplyText = null,
     connections = null,
     extraBlocksByEventId = null,
     draftKey = null,
@@ -822,6 +828,11 @@
   const visibleSuggestions = $derived(
     suggestionKey && suggestionKey !== usedSuggestionKey ? suggestedReplies : [],
   );
+  // Once the host has put a set away (the reply landed), the same words under
+  // a later message are a new set and show again.
+  $effect(() => {
+    if (!suggestionKey && untrack(() => usedSuggestionKey) !== null) usedSuggestionKey = null;
+  });
 
   // Suggested replies are a shortcut, not the only answers: the last chip says
   // so, and pressing it puts the cursor in the composer with a prompt to type.
@@ -840,10 +851,12 @@
   }
 
   async function sendSuggestion(label: string): Promise<void> {
-    if (composerLocked) return;
+    // A second press before the row has been redrawn sends nothing.
+    if (composerLocked || usedSuggestionKey === suggestionKey) return;
     usedSuggestionKey = suggestionKey;
-    if (replyInputEl) replyInputEl.value = label;
-    replyText = label;
+    const text = suggestedReplyText?.[label] ?? label;
+    if (replyInputEl) replyInputEl.value = text;
+    replyText = text;
     await send();
   }
 
