@@ -5,6 +5,11 @@
  * the opener on close.
  *
  * Usage: `<div role="dialog" use:dismissable={{ onclose }}>`.
+ *
+ * QA-088: one document-level keydown handler serves the whole overlay stack.
+ * Escape goes to the topmost surface only and stops there, so a nested picker
+ * never dismisses the form that hosts it, and window-level Escape handlers on
+ * the page underneath do not fire while a stacked surface is open.
  */
 
 export interface DismissableOptions {
@@ -21,8 +26,28 @@ export interface DismissableOptions {
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
+interface Entry {
+  node: HTMLElement;
+  keydown: (event: KeyboardEvent) => void;
+}
+
 // Open surfaces, innermost last. Only the top one answers Escape.
-const stack: HTMLElement[] = [];
+const stack: Entry[] = [];
+
+function onDocumentKeydown(event: KeyboardEvent): void {
+  const top = stack[stack.length - 1];
+  if (top) top.keydown(event);
+}
+
+// Keys dispatched straight at the window never pass through the document.
+function onWindowKeydown(event: KeyboardEvent): void {
+  if (!(event.target instanceof Node)) onDocumentKeydown(event);
+}
+
+/** Number of open stacked surfaces (tests and diagnostics). */
+export function overlayDepth(): number {
+  return stack.length;
+}
 
 function focusables(node: HTMLElement): HTMLElement[] {
   return Array.from(node.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
@@ -33,7 +58,6 @@ function focusables(node: HTMLElement): HTMLElement[] {
 export function dismissable(node: HTMLElement, initial: DismissableOptions = {}) {
   let opts = initial;
   const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-  stack.push(node);
 
   if (opts.autofocus !== false && !node.contains(document.activeElement)) {
     if (!node.hasAttribute("tabindex")) node.tabIndex = -1;
@@ -42,11 +66,11 @@ export function dismissable(node: HTMLElement, initial: DismissableOptions = {})
   }
 
   function isTop(): boolean {
-    return stack[stack.length - 1] === node;
+    return stack[stack.length - 1]?.node === node;
   }
 
   function onKeydown(event: KeyboardEvent): void {
-    if (!isTop() || event.defaultPrevented) return;
+    if (event.defaultPrevented) return;
     if (event.key === "Escape" && opts.onclose) {
       event.preventDefault();
       event.stopPropagation();
@@ -79,7 +103,12 @@ export function dismissable(node: HTMLElement, initial: DismissableOptions = {})
     if (target instanceof Node && !node.contains(target)) opts.onclose();
   }
 
-  window.addEventListener("keydown", onKeydown);
+  const entry: Entry = { node, keydown: onKeydown };
+  if (stack.length === 0) {
+    document.addEventListener("keydown", onDocumentKeydown);
+    window.addEventListener("keydown", onWindowKeydown);
+  }
+  stack.push(entry);
   document.addEventListener("pointerdown", onPointerdown, true);
 
   return {
@@ -87,10 +116,13 @@ export function dismissable(node: HTMLElement, initial: DismissableOptions = {})
       opts = next;
     },
     destroy() {
-      window.removeEventListener("keydown", onKeydown);
       document.removeEventListener("pointerdown", onPointerdown, true);
-      const index = stack.lastIndexOf(node);
+      const index = stack.lastIndexOf(entry);
       if (index >= 0) stack.splice(index, 1);
+      if (stack.length === 0) {
+        document.removeEventListener("keydown", onDocumentKeydown);
+        window.removeEventListener("keydown", onWindowKeydown);
+      }
       if (opener && opener.isConnected && node.contains(document.activeElement)) {
         opener.focus({ preventScroll: true });
       } else if (opener && opener.isConnected && document.activeElement === document.body) {

@@ -5,6 +5,7 @@
    * goal sections with their KRs. Selection is a background highlight.
    */
   import Caret from "../common/Caret.svelte";
+  import { dismissable } from "../common/dismissable.js";
   import type { Objective } from "./local-projects.js";
   import { linkPickerOptions, type LinkPickerOption } from "./new-project.js";
 
@@ -21,6 +22,11 @@
   let open = $state(false);
   let query = $state("");
   const options = $derived(linkPickerOptions(objectives, query));
+
+  function close(): void {
+    open = false;
+    query = "";
+  }
 
   function pick(option: LinkPickerOption | null): void {
     onchange(option);
@@ -42,7 +48,14 @@
     <span class="caret" aria-hidden="true"><Caret open={open} /></span>
   </button>
   {#if open}
-    <div class="pick" role="listbox" aria-label="Link a goal">
+    <div
+      class="pick"
+      role="listbox"
+      aria-label="Link a goal"
+      tabindex="-1"
+      data-testid="link-picker-list"
+      use:dismissable={{ onclose: close, trap: false }}
+    >
       <input
         class="q"
         placeholder="Search goals and key results"
@@ -66,7 +79,7 @@
           {#if option.kind === "goal"}<span class="meta">Goal</span>{/if}
         </button>
       {:else}
-        <div class="empty">{objectives.length === 0 ? "No goals synced yet" : "No matches"}</div>
+        <div class="empty">{objectives.length === 0 ? "No goals yet · Add one in Goals" : "No matches"}</div>
       {/each}
     </div>
   {/if}

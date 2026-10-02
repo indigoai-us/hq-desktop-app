@@ -65,6 +65,7 @@
   import ProjectRow from "./ProjectRow.svelte";
   import BoardFaces from "./BoardFaces.svelte";
   import NewProjectSheet from "./NewProjectSheet.svelte";
+  import { mergeGoalsWithCache, readGoalsCache } from "../goals/goals-model.js";
   import TaskViewDoor from "./TaskViewDoor.svelte";
   import { setStoryPasses } from "./projects-store.svelte.js";
   import { pushToast } from "../shell/toast-stack.svelte.js";
@@ -116,6 +117,7 @@
   });
 
   let objectives = $state<Objective[]>([]);
+  const goalsStorage = typeof localStorage === "undefined" ? null : localStorage;
   let projects = $state<Project[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
@@ -525,7 +527,8 @@
 
     if (companyChanged) {
       invalidateStoryLoad();
-      objectives = [];
+      // QA-089: paint the Goals page cache first, then refresh from the board.
+      objectives = readGoalsCache(goalsStorage, activeSlug)?.objectives ?? [];
       projects = [];
       selected = null;
       stories = [];
@@ -570,11 +573,18 @@
     void (async () => {
       try {
         const [goals, allProjects] = await Promise.all([
-          loadCompanyGoals(activeSlug),
+          // A goals read failure keeps the cached goals; it never blanks the board.
+          loadCompanyGoals(activeSlug).catch((err: unknown) => {
+            console.warn(`loadCompanyGoals(${activeSlug}) failed:`, err);
+            return null;
+          }),
           loadLocalProjects(),
         ]);
         if (cancelled) return;
-        objectives = goals.objectives;
+        const cachedGoals = readGoalsCache(goalsStorage, activeSlug);
+        objectives = goals
+          ? mergeGoalsWithCache(goals.objectives, cachedGoals)
+          : (cachedGoals?.objectives ?? []);
         projects = allProjects;
         if (!companyChanged && selected) {
           const selectedIdentity = projectIdentity(selected);
@@ -595,7 +605,7 @@
         console.error("CompanyProjectsPage load failed:", err);
         if (!cancelled) {
           error = "Projects unavailable. Try again after a sync.";
-          objectives = [];
+          objectives = readGoalsCache(goalsStorage, activeSlug)?.objectives ?? [];
           projects = [];
         }
       } finally {

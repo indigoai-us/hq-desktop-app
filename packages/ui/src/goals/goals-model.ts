@@ -151,6 +151,24 @@ export function readGoalsCache(storage: Storage | null, slug: string): GoalsCach
   }
 }
 
+/**
+ * Board objectives plus what this app added locally (cached `local-*`
+ * objectives and `local-kr-*` key results). The Goals page and the New
+ * project link picker both read goals through this, so they list the same
+ * objectives and key results (QA-089).
+ */
+export function mergeGoalsWithCache(board: readonly Objective[], cached: GoalsCache | null): Objective[] {
+  const localOnly = (cached?.objectives ?? []).filter(
+    (objective) => objective.id.startsWith("local-") && !board.some((row) => row.id === objective.id),
+  );
+  const merged = board.map((objective) => {
+    const local =
+      cached?.objectives.find((row) => row.id === objective.id)?.keyResults.filter((kr) => kr.id?.startsWith("local-kr-")) ?? [];
+    return local.length ? { ...objective, keyResults: [...objective.keyResults, ...local] } : objective;
+  });
+  return [...merged, ...localOnly];
+}
+
 export function writeGoalsCache(storage: Storage | null, slug: string, cache: GoalsCache): void {
   if (!storage || !slug) return;
   try {

@@ -48,3 +48,19 @@ describe("goals model", () => {
     expect(metadata.performanceBudget.scrollDroppedFramesPct).toBeLessThanOrEqual(0.01);
   });
 });
+
+describe("mergeGoalsWithCache (QA-089)", () => {
+  it("keeps board key results and adds locally created ones", async () => {
+    const { mergeGoalsWithCache } = await import("./goals-model.js");
+    const board = [{ id: "o1", title: "Grow", description: "", keyResults: [{ id: "kr1" }, { id: "kr2" }], initiativeIds: [] }];
+    const merged = mergeGoalsWithCache(board as never, {
+      objectives: [
+        { id: "o1", title: "Grow", description: "", keyResults: [{ id: "local-kr-3" }], initiativeIds: [] },
+        { id: "local-9", title: "Local", description: "", keyResults: [], initiativeIds: [] },
+      ] as never,
+      links: [],
+    });
+    expect(merged.map((o) => o.id)).toEqual(["o1", "local-9"]);
+    expect(merged[0].keyResults.map((kr) => kr.id)).toEqual(["kr1", "kr2", "local-kr-3"]);
+  });
+});

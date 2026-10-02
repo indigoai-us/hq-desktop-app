@@ -5,6 +5,8 @@
    * Brainstorm, or PRD. Create hands the request to Claude Code via `oncreate`.
    */
   import LinkPicker from "./LinkPicker.svelte";
+  import { dismissable } from "../common/dismissable.js";
+  import { clearFormDraft, readFormDraft, saveFormDraft } from "../common/form-drafts.js";
   import type { Objective } from "./local-projects.js";
   import {
     NEW_PROJECT_START_LABEL,
@@ -33,16 +35,22 @@
     oncreate: (draft: NewProjectDraft) => Promise<void>;
   } = $props();
 
-  let name = $state("");
-  let company = $state("");
+  // QA-088: an unsubmitted draft survives a close for the session.
+  const DRAFT_KEY = "new-project";
+  const restored = readFormDraft<Omit<NewProjectDraft, "company"> & { company: string }>(DRAFT_KEY);
+  let draftRestored = $state(restored !== null);
+  let confirmingDiscard = $state(false);
+
+  let name = $state(restored?.name ?? "");
+  let company = $state(restored?.company ?? "");
   $effect.pre(() => {
     if (!company) company = initialCompany;
   });
-  let location = $state<NewProjectLocation>("vault");
-  let repo = $state("");
-  let owner = $state("");
-  let link = $state<LinkPickerOption | null>(null);
-  let start = $state<NewProjectStart>("brainstorm");
+  let location = $state<NewProjectLocation>(restored?.location ?? "vault");
+  let repo = $state(restored?.repo ?? "");
+  let owner = $state(restored?.owner ?? "");
+  let link = $state<LinkPickerOption | null>(restored?.link ?? null);
+  let start = $state<NewProjectStart>(restored?.start ?? "brainstorm");
   let creating = $state(false);
   let error = $state<string | null>(null);
 
@@ -50,12 +58,45 @@
   const command = $derived(startHint(start, id));
   const STARTS: NewProjectStart[] = ["blank", "brainstorm", "prd"];
 
+  const dirty = $derived(name.trim() !== "" || repo.trim() !== "" || owner.trim() !== "" || link !== null);
+
+  /** Close and keep the draft for the next open. */
+  function close(): void {
+    if (dirty) saveFormDraft(DRAFT_KEY, { name, company, location, repo, owner, link, start });
+    else clearFormDraft(DRAFT_KEY);
+    onclose();
+  }
+
+  /** Escape on the form itself: ask before discarding a non-empty draft. */
+  function escape(): void {
+    if (dirty) confirmingDiscard = true;
+    else close();
+  }
+
+  function discard(): void {
+    clearFormDraft(DRAFT_KEY);
+    onclose();
+  }
+
+  function clearDraft(): void {
+    clearFormDraft(DRAFT_KEY);
+    name = "";
+    company = initialCompany;
+    location = "vault";
+    repo = "";
+    owner = "";
+    link = null;
+    start = "brainstorm";
+    draftRestored = false;
+  }
+
   async function create(): Promise<void> {
     if (creating || !id) return;
     creating = true;
     error = null;
     try {
       await oncreate({ name, company, location, repo, owner, link, start });
+      clearFormDraft(DRAFT_KEY);
       onclose();
     } catch (err) {
       console.error("new project failed:", err);
@@ -65,23 +106,25 @@
   }
 </script>
 
-<svelte:window
-  onkeydown={(event) => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      onclose();
-    }
-  }}
-/>
-
-<div class="scrim" role="presentation" onclick={() => onclose()}></div>
-<div class="sheet" role="dialog" aria-label="New project" data-testid="new-project-sheet">
+<div class="scrim" role="presentation" onclick={() => close()}></div>
+<div
+  class="sheet"
+  role="dialog"
+  aria-label="New project"
+  data-testid="new-project-sheet"
+  use:dismissable={{ onclose: escape, autofocus: false }}
+>
   <header class="sh">
     New project
     <span class="sub">{company} · board</span>
     <span class="grow"></span>
-    <button type="button" class="icon" aria-label="Close" onclick={() => onclose()}>✕</button>
+    <button type="button" class="icon" aria-label="Close" onclick={() => close()}>✕</button>
   </header>
+  {#if draftRestored}
+    <div class="restored" data-testid="new-project-draft-restored">
+      Draft restored · <button type="button" class="link" onclick={clearDraft}>Clear</button>
+    </div>
+  {/if}
   <div class="sb">
     <div class="fr">
       <div class="lb">Name</div>
@@ -188,7 +231,7 @@
     <span class="hint">
       {#if error}{error}{:else}Creates the folder, the board card{#if command}, and the {start === "prd" ? "PRD" : "brainstorm"} session{/if}{/if}
     </span>
-    <button type="button" class="btn" onclick={() => onclose()}>Cancel</button>
+    <button type="button" class="btn" onclick={() => close()}>Cancel</button>
     <button
       type="button"
       class="btn primary"
@@ -197,6 +240,20 @@
       onclick={() => void create()}>{creating ? "Creating…" : "Create project"}</button
     >
   </footer>
+  {#if confirmingDiscard}
+    <div
+      class="confirm"
+      role="alertdialog"
+      aria-label="Discard draft?"
+      data-testid="new-project-discard"
+      use:dismissable={{ onclose: () => (confirmingDiscard = false) }}
+    >
+      <span>Discard draft?</span>
+      <span class="grow"></span>
+      <button type="button" class="btn" onclick={() => (confirmingDiscard = false)}>Keep editing</button>
+      <button type="button" class="btn primary" data-testid="new-project-discard-confirm" onclick={discard}>Discard</button>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -260,4 +317,14 @@
   }
   .btn.primary { background: var(--v4-primary-bg); color: var(--v4-primary-fg); border-color: transparent; }
   .btn:disabled { opacity: 0.45; }
+  .restored {
+    display: flex; align-items: center; gap: 4px; padding: 6px 20px; font-size: 13px;
+    color: var(--v4-text-3); border-bottom: 1px solid var(--v4-hairline);
+  }
+  .link { border: 0; padding: 0; background: transparent; color: var(--v4-text-1); font: inherit; text-decoration: underline; }
+  .confirm {
+    flex: none; display: flex; align-items: center; gap: 8px; padding: 10px 20px;
+    border-top: 1px solid var(--v4-hairline); background: var(--v4-control-faint); font-size: 13px;
+  }
+  .confirm .grow { flex: 1; }
 </style>

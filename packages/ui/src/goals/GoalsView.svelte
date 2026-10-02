@@ -30,6 +30,7 @@
     matchesPeriod,
     objectiveProgress,
     readGoalsCache,
+    mergeGoalsWithCache,
     tallyGlyphs,
     unlinkedProjects,
     writeGoalsCache,
@@ -134,15 +135,8 @@
       const goals = await loadCompanyGoals(active);
       if (slug !== active) return;
       const cached = readGoalsCache(storage, active);
-      const localOnly = (cached?.objectives ?? []).filter(
-        (objective) => objective.id.startsWith("local-") && !goals.objectives.some((row) => row.id === objective.id),
-      );
       // Key results added in this app stay on their board objective after a refresh.
-      const merged = goals.objectives.map((objective) => {
-        const local = cached?.objectives.find((row) => row.id === objective.id)?.keyResults.filter((kr) => kr.id?.startsWith("local-kr-")) ?? [];
-        return local.length ? { ...objective, keyResults: [...objective.keyResults, ...local] } : objective;
-      });
-      objectives = [...merged, ...localOnly];
+      objectives = mergeGoalsWithCache(goals.objectives, cached);
       links = cached?.links ?? links;
       remember(active);
     } catch (err) {
