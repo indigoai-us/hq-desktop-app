@@ -6,10 +6,11 @@
 //! decides (flag, queue, sender) what leaves the machine. Nothing here blocks
 //! the caller: `record` is a mutex push + notify, the sender is a tokio task.
 //!
-//! Visitor id: resolved by the website handshake on first launch, stored in
-//! `~/.hq/menubar.json` next to `installAttemptId`, and retried once after a
-//! sign-in that went through the #1211 sign-in link (its nonce is passed so
-//! the website can resolve the visitor from the claimed link).
+//! Visitor id: returned by the #1211 sign-in link completion
+//! (`POST /api/desktop/signin-link` answers `{"anonId"}`) and stored in
+//! `~/.hq/menubar.json` next to `installAttemptId`. The browser hop through
+//! `/api/desktop/signin-start?install=<id>` is what carries the website's
+//! install cookie; the app makes no handshake request of its own.
 
 use hq_desktop_core::cdp_mirror::{
     Endpoints, Mirror, MirrorContext, EVENT_APP_FIRST_LAUNCH, EVENT_COMPANY_CREATED,
@@ -19,8 +20,7 @@ use hq_desktop_core::cdp_mirror::{
 use hq_desktop_core::first_run::{merge_menubar_flags, read_menubar_obj};
 use hq_desktop_core::lifecycle::LifecycleState;
 use serde_json::{json, Map, Value};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tauri::AppHandle;
 
@@ -35,10 +35,6 @@ pub const FIRST_LAUNCH_AT_KEY: &str = "cdpFirstLaunchAtMs";
 pub const EXIT_FLUSH_BUDGET: Duration = Duration::from_millis(1500);
 
 static MIRROR: OnceLock<Arc<Mirror>> = OnceLock::new();
-/// The sign-in link nonce claimed by the website during the last sign-in.
-static CLAIMED_SIGNIN_LINK: Mutex<Option<String>> = Mutex::new(None);
-/// The one post-sign-in handshake retry.
-static SIGNIN_RETRY_DONE: AtomicBool = AtomicBool::new(false);
 
 fn mirror() -> Option<&'static Arc<Mirror>> {
     MIRROR.get()
@@ -168,35 +164,21 @@ pub fn note_operational_event(event_name: &str, properties: Option<&Value>) {
     }
 }
 
-/// Hook for `record_desktop_login_completed_inner`. Also runs the one
-/// post-sign-in handshake retry, carrying the claimed sign-in link nonce.
+/// Hook for `record_desktop_login_completed_inner`.
 pub fn note_login_completed(provider: &str) {
     let mut props = Map::new();
     props.insert("provider".into(), json!(provider));
     record(EVENT_LOGIN_COMPLETED, props);
-    retry_handshake_after_signin();
 }
 
-/// Hook for the sign-in link claim (`post_signin_link_best_effort`).
-pub fn note_signin_link_claimed(link: &str) {
-    *CLAIMED_SIGNIN_LINK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(link.to_string());
-}
-
-fn retry_handshake_after_signin() {
-    if SIGNIN_RETRY_DONE.swap(true, Ordering::SeqCst) {
-        return;
-    }
+/// Hook for the sign-in link completion (`post_signin_link_best_effort`):
+/// adopt the visitor id the website returned and send what is queued.
+pub fn note_signin_link_visitor(anon_id: &str) {
     let Some(mirror) = mirror().cloned() else {
         return;
     };
-    let link = CLAIMED_SIGNIN_LINK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .take();
+    mirror.adopt_visitor(anon_id, None);
     tauri::async_runtime::spawn(async move {
-        let _ = mirror.handshake(link.as_deref()).await;
         mirror.flush_now().await;
     });
 }
@@ -396,14 +378,27 @@ mod tests {
             login_body.contains("cdp_mirror::note_login_completed("),
             "login_completed: the receipt builder must call the mirror"
         );
-        let claim = auth
-            .split("if let Some(link) = take_signin_link_attempt(&attempt_id) {")
+        let post = auth
+            .split("fn post_signin_link_best_effort(")
             .nth(1)
-            .expect("sign-in link claim");
-        let claim_block = claim.split("\n    }\n").next().unwrap();
+            .expect("sign-in link post");
+        let post_body = post.split("\n}\n").next().unwrap();
         assert!(
-            claim_block.contains("cdp_mirror::note_signin_link_claimed(&link);"),
-            "install_linked: the claimed link nonce must reach the mirror"
+            post_body.contains("parse_link_anon_id(")
+                && post_body.contains("cdp_mirror::note_signin_link_visitor(&anon_id);"),
+            "install_linked: the anonId from the link completion must reach the mirror"
+        );
+        let start = auth
+            .split("select_browser_url(")
+            .nth(1)
+            .expect("sign-in start URL selection");
+        assert!(
+            start
+                .split(',')
+                .nth(1)
+                .unwrap()
+                .contains("install_attempt_id"),
+            "the sign-in start URL must carry the install id"
         );
 
         let first_push = include_str!("first_push.rs");

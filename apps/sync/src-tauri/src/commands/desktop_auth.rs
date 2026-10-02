@@ -177,16 +177,25 @@ fn clear_signin_link_attempt(attempt_id: &str) {
     }
 }
 
+/// A claimed link answers `{"anonId"}`, the website visitor that downloaded
+/// this install; the CDP mirror tags its events with it.
 fn post_signin_link_best_effort(link: String, bearer: String) {
     let client = build_client();
     hq_desktop_core::desktop_signin_link::spawn_best_effort(async move {
-        client
+        let response = client
             .post(hq_desktop_core::desktop_signin_link::SIGNIN_LINK_URL)
             .bearer_auth(bearer)
             .json(&serde_json::json!({ "link": link }))
             .send()
-            .await
-            .map(|_| ())
+            .await?;
+        let status = response.status().as_u16();
+        let body = response.text().await?;
+        if let Some(anon_id) =
+            hq_desktop_core::desktop_signin_link::parse_link_anon_id(status, &body)
+        {
+            crate::commands::cdp_mirror::note_signin_link_visitor(&anon_id);
+        }
+        Ok::<(), reqwest::Error>(())
     });
 }
 
@@ -364,8 +373,10 @@ pub async fn desktop_continuation_start(app: AppHandle) -> Result<ContinuationSt
 
     // A missing, malformed, slow, or unreachable marketing response preserves
     // today's direct Cognito URL. Only an explicit true can add the web join.
-    let (browser_url, link_nonce) =
-        hq_desktop_core::desktop_signin_link::select_browser_url(&armed.authorize_url, || async {
+    let (browser_url, link_nonce) = hq_desktop_core::desktop_signin_link::select_browser_url(
+        &armed.authorize_url,
+        super::first_run::install_attempt_id().as_deref(),
+        || async {
             let response = reqwest::Client::new()
                 .get(hq_desktop_core::desktop_signin_link::SIGNIN_CONFIG_URL)
                 .send()
@@ -373,8 +384,9 @@ pub async fn desktop_continuation_start(app: AppHandle) -> Result<ContinuationSt
             let status = response.status().as_u16();
             let body = response.text().await?;
             Ok::<_, reqwest::Error>((status, body))
-        })
-        .await;
+        },
+    )
+    .await;
     set_signin_link_attempt(attempt_id.clone(), link_nonce);
 
     with_custody(|custody| {
@@ -439,7 +451,6 @@ pub async fn desktop_continuation_await_identity(
     // Link attribution is best-effort and detached: it never waits on the
     // network and no bearer is added to either browser URL.
     if let Some(link) = take_signin_link_attempt(&attempt_id) {
-        crate::commands::cdp_mirror::note_signin_link_claimed(&link);
         post_signin_link_best_effort(link, tokens.access_token.clone());
     }
 

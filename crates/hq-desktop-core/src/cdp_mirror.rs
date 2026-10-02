@@ -13,8 +13,11 @@
 //!   tenancy-bearing `scope` is `hqforwork.com`, exactly like the website pixel.
 //! - The visitor id is the pixel's `__vyg_aid` (`vyg-<uuid>`), carried in
 //!   `profileId`, `properties.ids.{vyg_aid,vygAid}`, and
-//!   `target.properties.vygAid`. The desktop learns it from the website's
-//!   visitor handshake (`GET /api/desktop/visitor-handshake?install=<id>`).
+//!   `target.properties.vygAid`. The desktop learns it from the sign-in link
+//!   completion (`POST /api/desktop/signin-link` answers `{"anonId"}`): the
+//!   browser hop through `/api/desktop/signin-start?install=<id>` is the only
+//!   request that carries the website's `hq_install_aid` cookie, so the app
+//!   makes no handshake request of its own.
 //!
 //! Contract: fail silent, bounded in-memory queue (drops oldest), one retry at
 //! most, 2 s per request, never on the UI thread, and nothing leaves the
@@ -34,8 +37,6 @@ pub const INGEST_URL: &str = "https://cdp.vyg.app/cdp/ingest";
 pub const SITE_KEY: &str = "hqforwork.com";
 /// The ingest proxy binds `scope` to the requesting Origin.
 pub const ORIGIN: &str = "https://hqforwork.com";
-/// Website route that resolves the visitor id for an install id.
-pub const HANDSHAKE_URL: &str = "https://hqforwork.com/api/desktop/visitor-handshake";
 /// hq-pro's anonymous flag resolver (the same one the website uses for
 /// `welcome.desktop-signin-link` on behalf of hq-desktop-app #1211).
 pub const FLAG_RESOLVE_URL: &str = "https://hqapi.hq.computer/v1/flags/resolve-public";
@@ -60,7 +61,7 @@ pub const EVENT_SETUP_ABANDONED: &str = "setup_abandoned";
 pub const EVENT_INSTALL_LINKED: &str = "install_linked";
 
 /// What every mirrored event carries. Assembled once at startup by the app and
-/// updated when the handshake or sign-in link learns the visitor id.
+/// updated when the sign-in link completion returns the visitor id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MirrorContext {
     pub app_version: String,
@@ -70,7 +71,7 @@ pub struct MirrorContext {
     /// The installation attempt id (UUID v4) shared with hq-pro receipts.
     pub install_id: String,
     /// `welcome-install-arm | welcome-signin | email-link | direct`, from the
-    /// handshake. Unknown until then.
+    /// website when it reports one. Unknown until then.
     pub install_source: Option<String>,
     /// Unix milliseconds of the first launch, persisted so
     /// `secondsSinceFirstLaunch` survives a relaunch.
@@ -291,55 +292,6 @@ pub fn chunk_payloads(
     out
 }
 
-/// Outcome of the website visitor handshake.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Handshake {
-    /// The website resolved the visitor behind this install.
-    Known {
-        anon_id: String,
-        install_source: Option<String>,
-    },
-    /// 204, 404, non-JSON, or a body without an `anonId`: nothing to link yet.
-    Unknown,
-}
-
-const INSTALL_SOURCES: &[&str] = &[
-    "welcome-install-arm",
-    "welcome-signin",
-    "email-link",
-    "direct",
-];
-
-/// Parse `GET /api/desktop/visitor-handshake`. Only a 200 with a JSON object
-/// carrying a non-empty string `anonId` counts; `installSource` is kept only
-/// when it is one of the documented values.
-pub fn parse_handshake(status: u16, body: &str) -> Handshake {
-    if status != 200 {
-        return Handshake::Unknown;
-    }
-    let Ok(Value::Object(object)) = serde_json::from_str::<Value>(body) else {
-        return Handshake::Unknown;
-    };
-    let anon_id = object
-        .get("anonId")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty() && s.len() <= 128)
-        .map(str::to_owned);
-    let Some(anon_id) = anon_id else {
-        return Handshake::Unknown;
-    };
-    let install_source = object
-        .get("installSource")
-        .and_then(Value::as_str)
-        .filter(|s| INSTALL_SOURCES.contains(s))
-        .map(str::to_owned);
-    Handshake::Known {
-        anon_id,
-        install_source,
-    }
-}
-
 /// Parse hq-pro's public flag resolver. Mirrors the website's
 /// `resolveDesktopSigninBounceForInstall`: only an HTTP 200 whose JSON body
 /// has `enabled: true` turns the mirror on. An unregistered key answers 404
@@ -365,26 +317,10 @@ pub fn flag_resolve_url(base: &str, install_id: &str) -> String {
     url.into()
 }
 
-/// Build the handshake URL. `link` is the sign-in link nonce from
-/// `desktop_signin_link` when the retry runs after a linked sign-in.
-pub fn handshake_url(base: &str, install_id: &str, link: Option<&str>) -> String {
-    let mut url = url::Url::parse(base)
-        .unwrap_or_else(|_| url::Url::parse(HANDSHAKE_URL).expect("constant handshake URL parses"));
-    {
-        let mut pairs = url.query_pairs_mut();
-        pairs.append_pair("install", install_id);
-        if let Some(link) = link.filter(|l| !l.is_empty()) {
-            pairs.append_pair("link", link);
-        }
-    }
-    url.into()
-}
-
 /// Endpoints, overridable for tests.
 #[derive(Debug, Clone)]
 pub struct Endpoints {
     pub ingest: String,
-    pub handshake: String,
     pub flag_resolve: String,
 }
 
@@ -392,7 +328,6 @@ impl Default for Endpoints {
     fn default() -> Self {
         Self {
             ingest: INGEST_URL.to_string(),
-            handshake: HANDSHAKE_URL.to_string(),
             flag_resolve: FLAG_RESOLVE_URL.to_string(),
         }
     }
@@ -416,7 +351,6 @@ pub struct Mirror {
     endpoints: Endpoints,
     session_id: String,
     persist: Box<PersistVisitor>,
-    handshake_attempted: Mutex<bool>,
 }
 
 impl Mirror {
@@ -439,7 +373,6 @@ impl Mirror {
             endpoints,
             session_id: uuid::Uuid::new_v4().to_string(),
             persist,
-            handshake_attempted: Mutex::new(false),
         })
     }
 
@@ -517,44 +450,8 @@ impl Mirror {
         enabled
     }
 
-    /// Ask the website who this install is. On success the visitor id is
-    /// stored, persisted, and an `install_linked` row is queued. No-op while
-    /// the gate is off or the id is already known.
-    pub async fn handshake(&self, link: Option<&str>) -> Handshake {
-        if !self.is_enabled() {
-            return Handshake::Unknown;
-        }
-        let ctx = self.context();
-        if ctx.anon_id.is_some() {
-            return Handshake::Known {
-                anon_id: ctx.anon_id.unwrap_or_default(),
-                install_source: ctx.install_source,
-            };
-        }
-        *self
-            .handshake_attempted
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
-        let url = handshake_url(&self.endpoints.handshake, &ctx.install_id, link);
-        let outcome = match self.client.get(url).send().await {
-            Ok(response) => {
-                let status = response.status().as_u16();
-                let body = response.text().await.unwrap_or_default();
-                parse_handshake(status, &body)
-            }
-            Err(_) => Handshake::Unknown,
-        };
-        if let Handshake::Known {
-            anon_id,
-            install_source,
-        } = &outcome
-        {
-            self.adopt_visitor(anon_id, install_source.as_deref());
-        }
-        outcome
-    }
-
-    /// Accept a visitor id learned elsewhere (handshake or sign-in link).
+    /// Accept the visitor id returned by the sign-in link completion. Stores and
+    /// persists it and queues one `install_linked` row; a repeat is a no-op.
     pub fn adopt_visitor(&self, anon_id: &str, install_source: Option<&str>) {
         let anon_id = anon_id.trim();
         if anon_id.is_empty() {
@@ -575,13 +472,6 @@ impl Mirror {
         }
         (self.persist)(anon_id, install_source);
         self.record(EVENT_INSTALL_LINKED, Map::new());
-    }
-
-    pub fn handshake_was_attempted(&self) -> bool {
-        *self
-            .handshake_attempted
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     async fn post_once(&self, body: &str) -> Result<u16, ()> {
@@ -629,13 +519,12 @@ impl Mirror {
         }
     }
 
-    /// The background sender: resolve the flag, run the first handshake, then
-    /// drain whenever something is queued. Returns when the gate is off.
+    /// The background sender: resolve the flag, then drain whenever something
+    /// is queued. Returns when the gate is off.
     pub async fn run(self: Arc<Self>) {
         if !self.resolve_gate().await {
             return;
         }
-        let _ = self.handshake(None).await;
         loop {
             self.flush_now().await;
             self.notify.notified().await;
@@ -806,32 +695,6 @@ mod tests {
     }
 
     #[test]
-    fn handshake_parsing() {
-        assert_eq!(
-            parse_handshake(200, r#"{"anonId":"vyg-1","installSource":"email-link"}"#),
-            Handshake::Known {
-                anon_id: "vyg-1".into(),
-                install_source: Some("email-link".into())
-            }
-        );
-        assert_eq!(
-            parse_handshake(200, r#"{"anonId":"vyg-1","installSource":"bogus"}"#),
-            Handshake::Known {
-                anon_id: "vyg-1".into(),
-                install_source: None
-            }
-        );
-        assert_eq!(parse_handshake(204, ""), Handshake::Unknown);
-        assert_eq!(
-            parse_handshake(404, r#"{"anonId":"vyg-1"}"#),
-            Handshake::Unknown
-        );
-        assert_eq!(parse_handshake(200, r#"{"anonId":""}"#), Handshake::Unknown);
-        assert_eq!(parse_handshake(200, "not json"), Handshake::Unknown);
-        assert_eq!(parse_handshake(200, "[]"), Handshake::Unknown);
-    }
-
-    #[test]
     fn flag_parsing_only_accepts_200_enabled_true() {
         assert!(parse_flag(
             200,
@@ -850,20 +713,15 @@ mod tests {
     }
 
     #[test]
-    fn urls_carry_install_and_optional_link() {
+    fn flag_url_carries_key_and_install() {
         let flag = flag_resolve_url(FLAG_RESOLVE_URL, "inst");
         assert!(flag.contains("key=desktop.cdp-mirror"));
         assert!(flag.contains("visitorId=inst"));
-        let hs = handshake_url(HANDSHAKE_URL, "inst", None);
-        assert!(hs.ends_with("?install=inst"));
-        let hs = handshake_url(HANDSHAKE_URL, "inst", Some("nonce"));
-        assert!(hs.contains("install=inst") && hs.contains("link=nonce"));
     }
 
     fn endpoints(server: &MockServer) -> Endpoints {
         Endpoints {
             ingest: format!("{}/cdp/ingest", server.uri()),
-            handshake: format!("{}/api/desktop/visitor-handshake", server.uri()),
             flag_resolve: format!("{}/v1/flags/resolve-public", server.uri()),
         }
     }
@@ -879,12 +737,6 @@ mod tests {
                     .set_body_string(r#"{"key":"desktop.cdp-mirror","enabled":false}"#),
             )
             .expect(1)
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/api/desktop/visitor-handshake"))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(0)
             .mount(&server)
             .await;
         Mock::given(method("POST"))
@@ -908,30 +760,57 @@ mod tests {
             "events are dropped at the door once off"
         );
         mirror.flush_now().await;
-        assert_eq!(mirror.handshake(None).await, Handshake::Unknown);
+        mirror.adopt_visitor("vyg-late", None);
+        assert_eq!(mirror.queued(), 0, "install_linked is dropped while off");
         server.verify().await;
     }
 
     #[tokio::test]
-    async fn flag_on_runs_handshake_then_posts_pixel_shaped_batch_with_origin() {
+    async fn run_makes_no_handshake_request_and_sends_without_visitor() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/v1/flags/resolve-public"))
             .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"enabled":true}"#))
+            .expect(1)
             .mount(&server)
             .await;
+        Mock::given(method("POST"))
+            .and(path("/cdp/ingest"))
+            .respond_with(ResponseTemplate::new(202))
+            .mount(&server)
+            .await;
+        let mut c = ctx();
+        c.anon_id = None;
+        let mirror = Mirror::new(c, endpoints(&server), Box::new(|_, _| {}));
+        mirror.record(EVENT_APP_FIRST_LAUNCH, Map::new());
+        let sender = tokio::spawn(mirror.clone().run());
+        for _ in 0..50 {
+            if mirror.queued() == 0 && mirror.is_enabled() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        sender.abort();
+        let requests = server.received_requests().await.unwrap();
+        assert!(
+            requests
+                .iter()
+                .all(|r| r.url.path() != "/api/desktop/visitor-handshake"),
+            "the app never asks the handshake route directly"
+        );
+        let post = requests.iter().find(|r| r.method == "POST").unwrap();
+        let body: Value = serde_json::from_slice(&post.body).unwrap();
+        assert!(body.get("profileId").is_none());
+        assert_eq!(body["events"][0]["eventType"], EVENT_APP_FIRST_LAUNCH);
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn signin_link_visitor_is_adopted_persisted_and_posted_with_origin() {
+        let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/api/desktop/visitor-handshake"))
-            .and(query_param(
-                "install",
-                "1b4e28ba-2fa1-4d01-8a1c-9c1c0d2b3e4f",
-            ))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_string(
-                    r#"{"anonId":"vyg-abc","installSource":"welcome-install-arm"}"#,
-                ),
-            )
-            .expect(1)
+            .and(path("/v1/flags/resolve-public"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"enabled":true}"#))
             .mount(&server)
             .await;
         Mock::given(method("POST"))
@@ -953,27 +832,19 @@ mod tests {
                 *sink.lock().unwrap() = Some((anon.to_string(), source.map(str::to_owned)));
             }),
         );
-        mirror.record(EVENT_APP_FIRST_LAUNCH, Map::new());
+        mirror.record(EVENT_LOGIN_COMPLETED, Map::new());
         assert!(mirror.resolve_gate().await);
-        assert_eq!(
-            mirror.handshake(None).await,
-            Handshake::Known {
-                anon_id: "vyg-abc".into(),
-                install_source: Some("welcome-install-arm".into())
-            }
-        );
-        assert_eq!(
-            *persisted.lock().unwrap(),
-            Some(("vyg-abc".into(), Some("welcome-install-arm".into())))
-        );
-        assert_eq!(mirror.queued(), 2, "first launch + install_linked");
+        mirror.adopt_visitor(" vyg-abc ", None);
+        assert_eq!(*persisted.lock().unwrap(), Some(("vyg-abc".into(), None)));
+        assert_eq!(mirror.context().anon_id.as_deref(), Some("vyg-abc"));
+        assert_eq!(mirror.queued(), 2, "login + install_linked");
+        // A repeat of the same id is a no-op; an empty one is ignored.
+        mirror.adopt_visitor("vyg-abc", None);
+        mirror.adopt_visitor("  ", None);
+        assert_eq!(mirror.queued(), 2);
         mirror.flush_now().await;
-        assert_eq!(mirror.queued(), 0);
         let requests = server.received_requests().await.unwrap();
-        let post = requests
-            .iter()
-            .find(|r| r.method == "POST")
-            .expect("one ingest post");
+        let post = requests.iter().find(|r| r.method == "POST").unwrap();
         let body: Value = serde_json::from_slice(&post.body).unwrap();
         assert_eq!(body["profileId"], "vyg-abc");
         let names: Vec<_> = body["events"]
@@ -982,56 +853,10 @@ mod tests {
             .iter()
             .map(|e| e["eventType"].as_str().unwrap().to_string())
             .collect();
-        assert_eq!(names, vec![EVENT_APP_FIRST_LAUNCH, EVENT_INSTALL_LINKED]);
+        assert_eq!(names, vec![EVENT_LOGIN_COMPLETED, EVENT_INSTALL_LINKED]);
         for e in body["events"].as_array().unwrap() {
             assert_eq!(e["properties"]["anonId"], "vyg-abc");
-            assert_eq!(e["properties"]["installSource"], "welcome-install-arm");
         }
-        // A second handshake is a no-op once the visitor is known.
-        assert!(matches!(
-            mirror.handshake(Some("nonce")).await,
-            Handshake::Known { .. }
-        ));
-        server.verify().await;
-    }
-
-    #[tokio::test]
-    async fn unknown_handshake_still_sends_events_without_visitor() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/v1/flags/resolve-public"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"enabled":true}"#))
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/api/desktop/visitor-handshake"))
-            .respond_with(ResponseTemplate::new(404))
-            .expect(2)
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/cdp/ingest"))
-            .respond_with(ResponseTemplate::new(202))
-            .expect(1)
-            .mount(&server)
-            .await;
-        let mut c = ctx();
-        c.anon_id = None;
-        let mirror = Mirror::new(c, endpoints(&server), Box::new(|_, _| {}));
-        assert!(mirror.resolve_gate().await);
-        assert_eq!(mirror.handshake(None).await, Handshake::Unknown);
-        mirror.record(EVENT_LOGIN_COMPLETED, Map::new());
-        mirror.flush_now().await;
-        // Retry once after sign-in, with the link nonce.
-        assert_eq!(mirror.handshake(Some("nonce")).await, Handshake::Unknown);
-        let requests = server.received_requests().await.unwrap();
-        let post = requests.iter().find(|r| r.method == "POST").unwrap();
-        let body: Value = serde_json::from_slice(&post.body).unwrap();
-        assert!(body.get("profileId").is_none());
-        assert_eq!(body["events"][0]["eventType"], EVENT_LOGIN_COMPLETED);
-        assert!(requests
-            .iter()
-            .any(|r| r.method == "GET" && r.url.query().unwrap_or("").contains("link=nonce")));
         server.verify().await;
     }
 
