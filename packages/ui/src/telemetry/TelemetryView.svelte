@@ -293,7 +293,7 @@
               </div>
             {/each}
             <div class="sech gap">Bots acting on your behalf <span class="grow"></span>
-              <span class="status"><span class="dot live"></span>{snapshot.bots.filter((b) => b.live).length} live</span>
+              <span class="status"><span class="dot" class:live={snapshot.bots.some((b) => b.live)}></span>{snapshot.bots.filter((b) => b.live).length} live</span>
             </div>
             {#each snapshot.bots as bot (bot.name)}
               <div class="bot">
@@ -592,6 +592,7 @@
   .trow { grid-template-columns: minmax(0, 1.4fr) 64px minmax(60px, 1fr) 40px 72px; }
   .srow > *, .trow > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .hd { color: var(--t3, var(--v4-text-3)); cursor: default; }
+  .hd .n { color: inherit; }
   .hd:hover { background: transparent; }
   .mono { font-family: var(--font-mono, "Geist Mono", ui-monospace, monospace); }
   .n { font-variant-numeric: tabular-nums; text-align: right; color: var(--t1, var(--v4-text-1)); }
@@ -641,6 +642,11 @@
   .nm { display: flex; align-items: center; gap: 6px; color: var(--t1, var(--v4-text-1)); }
   .nm i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
   .host { color: var(--t2, var(--v4-text-2)); }
+  /* Below ~1180px the Sessions table and the Top skills column no longer fit
+     side by side, so the right column stacks under the table. */
+  @media (max-width: 1180px) {
+    .two { grid-template-columns: minmax(0, 1fr); }
+  }
   @media (max-width: 900px) {
     .telemetry { flex-direction: column; }
     .pane { width: auto; border-right: 0; border-bottom: 1px solid var(--line, var(--v4-rowline)); }

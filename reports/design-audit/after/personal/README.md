@@ -20,3 +20,13 @@ Before shots are copied from the audit branch (`reports/design-audit/personal/`)
 | Profile / Billing / Settings | `before/profile.png`, `before/billing.png`, `before/settings.png` | `profile.png`, `billing.png`, `settings.png` |
 
 Measured after the change: inside these pages the only text above 13px is the 20px/500 page title, no weight is above 500, and nothing is uppercase. The remaining 15-16px and 600-weight text in the captures belongs to the shared Messages sidebar, which this lane does not own.
+
+## Narrow windows and filtered counts (QA-038, QA-039, QA-040)
+
+| Issue | After |
+|---|---|
+| QA-039 Telemetry at 1000px: Top skills stacks under Sessions | `telemetry-1000px.png` |
+| QA-040 Deployments at 1000px: app names keep a 140px column, lesser columns drop | `deployments-1000px.png` |
+| QA-038 Deployments header shows "N of M apps" under a filter | `deployments-filtered-count.png` |
+
+After the rebase onto the real-data lane, Telemetry and Connections show real (empty) data in the harness, so the 1000px Telemetry shot has no session rows.

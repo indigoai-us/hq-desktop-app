@@ -87,6 +87,16 @@ describe("personal pages type scale contract", () => {
     expect(styleOf("personal/PersonalRailPage.svelte")).toMatch(/\.cell \{[^}]*gap: 8px/);
   });
 
+  it("stacks Telemetry's right column under the sessions table on narrow windows (QA-039)", () => {
+    expect(styleOf("telemetry/TelemetryView.svelte")).toMatch(/@media \(max-width: 1180px\) \{\s*\.two \{ grid-template-columns: minmax\(0, 1fr\); \}/);
+  });
+
+  it("never collapses the Deployments app name; narrow windows drop lesser columns (QA-040)", () => {
+    const css = styleOf("library/PersonalDeploymentsPage.svelte");
+    expect(css).toMatch(/\.drow, \.hd \{[^}]*grid-template-columns: minmax\(140px, 1fr\) 96px 96px 104px/);
+    expect(css).toMatch(/@media \(max-width: 1180px\) \{[^@]*:nth-child\(n \+ 4\)[^}]*display: none/);
+  });
+
   it("renders telemetry stat numbers in 13px sans, not mono", () => {
     const css = styleOf("telemetry/TelemetryView.svelte");
     expect(css).toMatch(/\.stat \.n \{[^}]*font-size: 13px/);

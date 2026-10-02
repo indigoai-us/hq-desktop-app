@@ -100,7 +100,13 @@
   const progress = $derived(selected && (selected.status === "deploying" || selected.status === "building")
     ? progressFor(selected)
     : null);
-  const activeCount = $derived(allRows.filter((row) => row.status === "active").length);
+  // The header counts what the list shows: "N of M apps" while a filter or search narrows it.
+  const countLabel = $derived(
+    rows.length === allRows.length
+      ? `${allRows.length.toLocaleString()} apps`
+      : `${rows.length.toLocaleString()} of ${allRows.length.toLocaleString()} apps`,
+  );
+  const activeCount = $derived(rows.filter((row) => row.status === "active").length);
   const deployingCount = $derived(allRows.filter((row) => row.status === "deploying" || row.status === "building").length);
   const failedLabels = $derived(
     failedScopes.map((id) => scopes.find((s) => s.id === id)?.label ?? id).join(", "),
@@ -151,8 +157,8 @@
     <div class="toolbar">
       <h1>Deployments</h1>
       {#if cache}
-        <span class="chip" data-testid="deploy-count">{allRows.length.toLocaleString()} apps</span>
-        <span class="chip live">{activeCount.toLocaleString()} active</span>
+        <span class="chip" data-testid="deploy-count">{countLabel}</span>
+        <span class="chip status"><span class="dot live"></span>{activeCount.toLocaleString()} active</span>
         {#if deployingCount > 0}<span class="chip">{deployingCount} deploying</span>{/if}
       {/if}
       {#if refreshing}<span class="chip" aria-live="polite">Refreshing…</span>{/if}
@@ -281,7 +287,9 @@
   h1 { font-size: var(--type-title, 20px); line-height: var(--type-title-line, 1.25); margin: 0; font-weight: var(--type-title-weight, 500); }
   .grow { flex: 1; }
   .chip { color: var(--t3); }
-  .chip.live { color: var(--ok-ink); }
+  .status { display: inline-flex; align-items: center; gap: 6px; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--t3); flex: none; }
+  .dot.live { background: var(--ok, var(--ok-ink)); }
   .search {
     width: 200px; height: 28px; box-sizing: border-box; border: 1px solid var(--line2); border-radius: 8px;
     background: var(--btn-bg); color: var(--t1); padding: 0 10px; font: inherit;
@@ -293,8 +301,13 @@
   .table { overflow: auto; padding: 0 8px 16px; }
   .drow, .hd {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 96px 96px 104px 72px 72px;
+    grid-template-columns: minmax(140px, 1fr) 96px 96px 104px 72px 72px;
     gap: 8px;
+  }
+  /* Narrow windows drop the lesser columns first; the app name never collapses. */
+  @media (max-width: 1180px) {
+    .drow, .hd { grid-template-columns: minmax(140px, 1fr) 96px 96px; }
+    .drow > :nth-child(n + 4), .hd > :nth-child(n + 4) { display: none; }
   }
   .drow { contain: content; content-visibility: auto; contain-intrinsic-size: auto 48px; }
   .hd { padding: 4px 8px; color: var(--t3); font-size: 13px; }

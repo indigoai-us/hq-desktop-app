@@ -99,6 +99,26 @@ describe("US-031 personal library and deployments", () => {
     expect(first.textContent).not.toMatch(/\b0\b/);
   });
 
+  it("counts the filtered rows in the header as N of M (QA-038)", async () => {
+    localStorage.clear();
+    const apps = [
+      { id: "a1", name: "awake", subdomain: "awake", url: "https://awake.indigo-hq.com", status: "active", active: true, ownerId: "me", views30d: 1 },
+      { id: "a2", name: "napping", subdomain: "napping", url: "https://napping.indigo-hq.com", status: "sleeping", active: true, ownerId: "me", views30d: 1 },
+      { id: "a3", name: "dozing", subdomain: "dozing", url: "https://dozing.indigo-hq.com", status: "sleeping", active: true, ownerId: "me", views30d: 1 },
+    ];
+    const listDeployApps = async () => ({ ok: true as const, value: { callerSub: "me", apps } });
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(PersonalDeploymentsPage, { target: host, props: { accountId: "acct-qa038", listDeployApps, companies: [] } });
+    flushSync();
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="deploy-count"]')?.textContent).toBe("3 apps"));
+    const sleeping = [...host.querySelectorAll<HTMLButtonElement>(".pane .row")].find((b) => b.textContent?.trim() === "Sleeping")!;
+    sleeping.click();
+    flushSync();
+    expect(host.querySelector('[data-testid="deploy-count"]')?.textContent).toBe("2 of 3 apps");
+    expect(host.querySelectorAll('[data-testid="deploy-row"]').length).toBe(2);
+  });
+
   it("paints the cached list first and says redeploy is not wired", async () => {
     localStorage.clear();
     const rows = [{ id: "personal:c1", name: "cached-app", url: "https://cached-app.indigo-hq.com", host: ".indigo-hq.com", project: "", detail: "", scope: "personal", scopeLabel: "Personal", scopeMark: "PE", status: "building", access: "Public", views30d: 4, lastVisit: "", step: 2, liveVersion: "v1", nextVersion: "v2", byYou: true, byBot: false, log: [] }];
