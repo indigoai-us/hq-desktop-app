@@ -5,6 +5,8 @@ import {
   companyConsoleUrl,
   companySettingsUrl,
   companyInviteUrl,
+  companyIntegrationsUrl,
+  agentSlackSettingsUrl,
   HQ_CONSOLE_INTEGRATIONS_URL,
   HQ_CONSOLE_CREATORS_URL,
   creatorProfileUrl,
@@ -48,6 +50,28 @@ describe("hq-console URLs", () => {
     );
     expect(companyInviteUrl("a/b c")).toBe(
       `${HQ_CONSOLE_BASE}/companies/a%2Fb%20c/team/invites`,
+    );
+  });
+
+  it("integrations link points to the company's HQ Integrations page", () => {
+    expect(companyIntegrationsUrl("indigo")).toBe(
+      `${HQ_CONSOLE_BASE}/companies/indigo/integrations`,
+    );
+    // A company uid works in the slug position.
+    expect(companyIntegrationsUrl("cmp_01ABC")).toBe(
+      `${HQ_CONSOLE_BASE}/companies/cmp_01ABC/integrations`,
+    );
+    expect(companyIntegrationsUrl("a b/c")).toBe(
+      `${HQ_CONSOLE_BASE}/companies/a%20b%2Fc/integrations`,
+    );
+  });
+
+  it("Slack setup link opens the bot's settings on the company's bots page", () => {
+    expect(agentSlackSettingsUrl("cmp_01ABC", "agt_01XYZ")).toBe(
+      `${HQ_CONSOLE_BASE}/companies/cmp_01ABC/agents?settings=agt_01XYZ`,
+    );
+    expect(agentSlackSettingsUrl("a b", "agt_x&y=1")).toBe(
+      `${HQ_CONSOLE_BASE}/companies/a%20b/agents?settings=agt_x%26y%3D1`,
     );
   });
 

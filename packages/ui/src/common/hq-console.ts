@@ -45,6 +45,23 @@ export function companyInviteUrl(slug: string): string {
   return `${companyConsoleUrl(slug)}/team/invites`;
 }
 
+/**
+ * A company's HQ Integrations page in the console, where apps are connected
+ * (route `companies/[slug]/integrations`). The console also resolves a company
+ * uid in the slug position, so either works here.
+ */
+export function companyIntegrationsUrl(slugOrUid: string): string {
+  return `${companyConsoleUrl(slugOrUid)}/integrations`;
+}
+
+/**
+ * One bot's settings in the console, where it is connected to Slack: the
+ * company's bots page with `?settings={agentUid}` naming the bot to open.
+ */
+export function agentSlackSettingsUrl(slugOrUid: string, agentUid: string): string {
+  return `${companyConsoleUrl(slugOrUid)}/agents?settings=${encodeURIComponent(agentUid)}`;
+}
+
 /** Personal Console Integrations (calendar / meeting-bot connect). */
 export const HQ_CONSOLE_INTEGRATIONS_URL = `${HQ_CONSOLE_BASE}/personal/integrations`;
 
