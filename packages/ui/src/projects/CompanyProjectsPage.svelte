@@ -17,6 +17,7 @@
     loadCompanyGoals,
     loadCompanyProjectProvenance,
     loadLocalProjects,
+    loadLocalProjectPrd,
     loadLocalProjectStories,
     projectIdentity,
     type ProjectProvenanceIndex,
@@ -63,6 +64,9 @@
   import ProjectRow from "./ProjectRow.svelte";
   import BoardFaces from "./BoardFaces.svelte";
   import NewProjectSheet from "./NewProjectSheet.svelte";
+  import TaskViewDoor from "./TaskViewDoor.svelte";
+  import { setStoryPasses } from "./projects-store.svelte.js";
+  import { pushToast } from "../shell/toast-stack.svelte.js";
   import { boardFaces } from "./board-faces.js";
   import { newProjectPrompt, type NewProjectDraft } from "./new-project.js";
   import ProvenanceLine from "../common/ProvenanceLine.svelte";
@@ -113,6 +117,21 @@
   let storiesLoading = $state(false);
   let storiesError = $state<string | null>(null);
   let selectedStoryId = $state<string | null>(null);
+  /**
+   * US-024 task view pane. A board card click opens the 360 px pane beside
+   * the board. Stories are cached per project so a reopen paints in the click
+   * frame; every open refreshes them in the background.
+   */
+  let peek = $state<Project | null>(null);
+  let peekStories = $state<Story[]>([]);
+  let peekBranch = $state<string | null>(null);
+  let peekLoading = $state(false);
+  let peekError = $state<string | null>(null);
+  let peekGeneration = 0;
+  const peekCache = new Map<
+    string,
+    { stories: Story[]; branch: string | null }
+  >();
   /**
    * Project story reads are independent native requests. A user can return to
    * the portfolio and open another project before the first request settles,
@@ -461,6 +480,8 @@
       stories = [];
       storiesError = null;
       selectedStoryId = null;
+      closePeek();
+      peekCache.clear();
       cloudProvenance = emptyProjectProvenanceIndex();
       provenanceUnavailable = false;
     }
@@ -678,6 +699,123 @@
         storiesLoading = false;
       }
     }
+  }
+
+  function openPeek(project: Project): void {
+    const identity = projectIdentity(project);
+    const generation = ++peekGeneration;
+    const cached = peekCache.get(identity);
+    peek = project;
+    peekStories = cached?.stories ?? [];
+    peekBranch = cached?.branch ?? null;
+    peekError = null;
+    if (!project.prdPath) {
+      peekLoading = false;
+      return;
+    }
+    peekLoading = true;
+    void (async () => {
+      try {
+        const [nextStories, prd] = await Promise.all([
+          storiesForSelected(project),
+          loadLocalProjectPrd(project.prdPath).catch((err) => {
+            console.error("get_local_project_prd failed:", err);
+            return null;
+          }),
+        ]);
+        const branch = prd?.branchName ?? null;
+        peekCache.set(identity, { stories: nextStories, branch });
+        if (generation !== peekGeneration) return;
+        peekStories = nextStories;
+        peekBranch = branch;
+      } catch (err) {
+        console.error("task view stories failed:", err);
+        if (generation !== peekGeneration) return;
+        const detail = err instanceof Error ? err.message : String(err);
+        peekError = `Could not load this project’s tasks — ${detail}`;
+      } finally {
+        if (generation === peekGeneration) peekLoading = false;
+      }
+    })();
+  }
+
+  function closePeek(): void {
+    peekGeneration += 1;
+    peek = null;
+    peekStories = [];
+    peekBranch = null;
+    peekLoading = false;
+    peekError = null;
+  }
+
+  function openPeekProject(storyId: string | null): void {
+    const project = peek;
+    if (!project) return;
+    const cached = peekStories;
+    closePeek();
+    const load = openProject(project);
+    // openProject clears stories synchronously; paint the cached ones now.
+    if (cached.length > 0) stories = cached;
+    if (storyId) selectedStoryId = storyId;
+    void load.then(() => {
+      if (storyId) selectStoryById(storyId);
+    });
+  }
+
+  function applyPeekPasses(
+    project: Project,
+    storyId: string,
+    passes: boolean,
+  ): void {
+    const identity = projectIdentity(project);
+    const update = (list: Story[]) =>
+      list.map((story) => (story.id === storyId ? { ...story, passes } : story));
+    const cached = peekCache.get(identity);
+    if (cached) peekCache.set(identity, { ...cached, stories: update(cached.stories) });
+    if (peek && projectIdentity(peek) === identity) {
+      peekStories = update(peekStories);
+    }
+    const complete = (peekCache.get(identity)?.stories ?? peekStories).filter(
+      (story) => story.passes,
+    ).length;
+    projects = projects.map((p) =>
+      projectIdentity(p) === identity ? { ...p, storiesComplete: complete } : p,
+    );
+  }
+
+  async function writePeekPasses(
+    project: Project,
+    story: Story,
+    passes: boolean,
+  ): Promise<boolean> {
+    applyPeekPasses(project, story.id, passes);
+    const result = await setStoryPasses(
+      project.prdPath,
+      story.id,
+      !passes,
+      passes,
+    );
+    if (result.ok) return true;
+    applyPeekPasses(project, story.id, !passes);
+    pushToast({
+      title: passes ? "Could not mark done" : "Could not undo",
+      detail: result.error ?? "",
+      tone: "err",
+    });
+    return false;
+  }
+
+  async function markPeekDone(story: Story): Promise<void> {
+    const project = peek;
+    if (!project?.prdPath || story.passes) return;
+    if (!(await writePeekPasses(project, story, true))) return;
+    pushToast({
+      title: "Marked done",
+      detail: `${story.id} · ${story.title}`,
+      tone: "ok",
+      actionLabel: "Undo",
+      onAction: () => void writePeekPasses(project, story, false),
+    });
   }
 
   function retrySelectedStories(): Promise<void> | void {
@@ -968,6 +1106,7 @@
           </p>
         </div>
       {:else if viewMode === "board"}
+        <div class="board-split" class:has-pane={peek !== null}>
         <div
           class="kanban-board"
           data-testid="portfolio-kanban"
@@ -1032,7 +1171,7 @@
                       liveRun={column === "active" ? liveRun : null}
                       stateContext={portfolioStateContext(column, project)}
                       {now}
-                      onselect={(p) => void openProject(p)}
+                      onselect={(p) => openPeek(p)}
                       onlinkgoal={!goal ? requestLinkProject : undefined}
                       linkBusy={actionBusy ===
                         `link-${projectIdentity(project)}`}
@@ -1054,6 +1193,24 @@
               </div>
             </section>
           {/each}
+        </div>
+          {#if peek}
+            <div class="tpane-slot">
+              <TaskViewDoor
+                project={peek}
+                stories={peekStories}
+                loading={peekLoading}
+                error={peekError}
+                branch={peekBranch}
+                {sessions}
+                liveRun={projectLiveRunView(peek, sessions, now)}
+                lead={leadLabel(peek)}
+                onclose={closePeek}
+                onopenproject={openPeekProject}
+                onmarkdone={markPeekDone}
+              />
+            </div>
+          {/if}
         </div>
       {:else}
         <div
@@ -1444,6 +1601,27 @@
   /* Naked board canvas — four columns that share the width. No inner
      scrollers: columns take their natural height and the page scrolls, which
      is also what lets the column headers stick. */
+  /* US-024: board plus the 360 px task view pane. */
+  .board-split {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0 12px;
+    align-items: start;
+    min-width: 0;
+  }
+
+  .board-split.has-pane {
+    grid-template-columns: minmax(0, 1fr) 360px;
+  }
+
+  .tpane-slot {
+    position: sticky;
+    top: 0;
+    display: flex;
+    height: calc(100vh - 140px);
+    min-height: 320px;
+  }
+
   .kanban-board {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));

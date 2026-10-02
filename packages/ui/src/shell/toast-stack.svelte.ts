@@ -11,6 +11,8 @@ export interface ToastItem {
   detail: string;
   tone: ToastTone;
   actionLabel?: string;
+  /** Runs when the action button is pressed; the toast then dismisses. */
+  onAction?: () => void;
 }
 
 let items = $state<ToastItem[]>([]);

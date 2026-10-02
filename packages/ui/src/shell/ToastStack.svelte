@@ -23,6 +23,17 @@
           <b>{toast.title}</b>
           {#if toast.detail}<span class="ts-m">{toast.detail}</span>{/if}
         </div>
+        {#if toast.actionLabel && toast.onAction}
+          <button
+            type="button"
+            class="ts-act"
+            data-testid="toast-action"
+            onclick={() => {
+              toast.onAction?.();
+              dismissToast(toast.id);
+            }}>{toast.actionLabel}</button
+          >
+        {/if}
         <button
           type="button"
           class="ts-x"
@@ -51,7 +62,7 @@
   .ts-toast {
     pointer-events: auto;
     display: grid;
-    grid-template-columns: 14px minmax(0, 1fr) auto;
+    grid-template-columns: 14px minmax(0, 1fr) auto auto;
     gap: 10px;
     align-items: center;
     padding: 10px 8px 10px 12px;
@@ -123,6 +134,18 @@
     cursor: default;
   }
 
+  .ts-act {
+    height: 22px;
+    padding: 0 8px;
+    border: 1px solid var(--v4-control-border);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--v4-text-1);
+    font: 600 12px/1 var(--font-ui);
+    cursor: default;
+  }
+
+  .ts-act:hover,
   .ts-x:hover {
     background: var(--v4-hover, var(--v4-active-row));
   }
