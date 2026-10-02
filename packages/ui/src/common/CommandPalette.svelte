@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import CompanyIcon from "../company/CompanyIcon.svelte";
+  import { formatShortcut } from "./keyboard-shortcuts";
 
   export interface CommandPaletteItem {
     id: string;
@@ -275,7 +276,7 @@
     onclick={(event) => event.stopPropagation()}
   >
     <div class="command-input-row">
-      <span class="command-glyph" aria-hidden="true">⌘K</span>
+      <span class="command-glyph" aria-hidden="true">{formatShortcut("Mod+K")}</span>
       <input
         bind:this={inputEl}
         bind:value={query}

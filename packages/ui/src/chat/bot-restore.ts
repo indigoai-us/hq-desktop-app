@@ -24,6 +24,7 @@
  */
 
 import type { BotRestoreResult, BotRestoreRow, LocalBotRow, RemoteBotRow } from "@hq/platform";
+import { hostComputerNoun } from "@hq/platform";
 
 import { plainBotFailure } from "./local-bots.js";
 import { botRunsHere, localBotsTracedButGone, type LocalBotTrace } from "./bot-runnability.js";
@@ -210,8 +211,10 @@ export const BOT_START_HERE_BUSY = "Starting…";
 export const BOT_START_HERE_EXPLAINER =
   "It keeps its name, its memory and this conversation — only the part that runs it is rebuilt here.";
 
-/** A bot whose identity lives in HQ Cloud: nothing on this Mac can run it. */
-export const BOT_RUNS_IN_CLOUD_NOT_HERE = "This bot runs in HQ Cloud, not on this Mac.";
+/** A bot whose identity lives in HQ Cloud: nothing on this computer can run it. */
+export function botRunsInCloudNotHereLine(): string {
+  return `This bot runs in HQ Cloud, not on this ${hostComputerNoun()}.`;
+}
 
 /**
  * The `reason` out of the CLI's failure document, lower-cased, or null.
@@ -289,7 +292,7 @@ export function botStoppedReasonFor(
 export function botStoppedRemedy(reason: BotStoppedReason, runtimeLabel: string): string {
   switch (reason) {
     case "not-runnable-here":
-      return `${BOT_RUNS_IN_CLOUD_NOT_HERE} Removing it here is safe — it keeps running in HQ Cloud.`;
+      return `${botRunsInCloudNotHereLine()} Removing it here is safe — it keeps running in HQ Cloud.`;
     case "runtime-sign-in":
       return `The bot stopped after repeated errors. Check that ${runtimeLabel} is signed in, then start it again.`;
     default:
@@ -362,7 +365,7 @@ export function rememberBotRestoreDismissed(store: RestorePromptMemory | null | 
 
 /** A row the CLI refused because the bot cannot run on a personal Mac. */
 export function botStaysInCloudLine(name: string): string {
-  return `${name} runs in HQ Cloud, so there is nothing to bring back to this Mac.`;
+  return `${name} runs in HQ Cloud, so there is nothing to bring back to this ${hostComputerNoun()}.`;
 }
 
 /** What happened to one bot, in a person's words. */

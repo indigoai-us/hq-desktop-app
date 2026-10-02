@@ -1,3 +1,5 @@
+import { hostComputerNoun } from '@hq/platform';
+
 /**
  * The welcome flow's motion, ported from the designer prototype
  * (`workspace/prototypes/hq-welcome-flow/index.html`). Each screen is a small
@@ -790,13 +792,16 @@ export interface KeyDef {
 /** KEYBOARD_ROWS from intro-sequence.ts: a compact ANSI Mac layout, widths in key units. */
 export const KEYBOARD_ROWS: KeyDef[][] = (() => {
   const L = (str: string): KeyDef[] => str.split('').map((k) => ({ id: k.toLowerCase(), label: k }));
+  const mac = hostComputerNoun() === 'Mac';
   return [
     [{ id: 'esc', label: 'esc', w: 1.5 }, ...['F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12'].map((f) => ({ id: f.toLowerCase(), label: f }))],
     [{ id: 'grave', label: '`' }, ...L('1234567890'), { id: 'minus', label: '-' }, { id: 'equal', label: '=' }, { id: 'backspace', label: 'delete', w: 1.5 }],
     [{ id: 'tab', label: 'tab', w: 1.5 }, ...L('QWERTYUIOP'), { id: 'lbracket', label: '[' }, { id: 'rbracket', label: ']' }, { id: 'backslash', label: '\\' }],
     [{ id: 'caps', label: 'caps lock', w: 1.85 }, ...L('ASDFGHJKL'), { id: 'semicolon', label: ';' }, { id: 'quote', label: "'" }, { id: 'return', label: 'return', w: 1.65 }],
     [{ id: 'shift', label: 'shift', w: 2.35, glyph: '⇧' }, ...L('ZXCVBNM'), { id: 'comma', label: ',' }, { id: 'period', label: '.' }, { id: 'slash', label: '/' }, { id: 'rshift', label: 'shift', w: 2.15, glyph: '⇧' }],
-    [{ id: 'fn', label: 'fn' }, { id: 'ctrl', label: 'control', glyph: '⌃' }, { id: 'alt', label: 'option', glyph: '⌥' }, { id: 'cmd', label: 'command', w: 1.25, glyph: '⌘' }, { id: 'space', label: '', w: 5.5 }, { id: 'rcmd', label: 'command', w: 1.25, glyph: '⌘' }, { id: 'ralt', label: 'option', glyph: '⌥' }, { id: 'left', label: '◂' }, { id: 'updown', label: '▴▾' }, { id: 'right', label: '▸' }],
+    mac
+      ? [{ id: 'fn', label: 'fn' }, { id: 'ctrl', label: 'control', glyph: '⌃' }, { id: 'alt', label: 'option', glyph: '⌥' }, { id: 'cmd', label: 'command', w: 1.25, glyph: '⌘' }, { id: 'space', label: '', w: 5.5 }, { id: 'rcmd', label: 'command', w: 1.25, glyph: '⌘' }, { id: 'ralt', label: 'option', glyph: '⌥' }, { id: 'left', label: '◂' }, { id: 'updown', label: '▴▾' }, { id: 'right', label: '▸' }]
+      : [{ id: 'fn', label: 'fn' }, { id: 'ctrl', label: 'control', glyph: '⌃' }, { id: 'cmd', label: 'Windows', w: 1.25, glyph: '⊞' }, { id: 'alt', label: 'Alt' }, { id: 'space', label: '', w: 5.5 }, { id: 'ralt', label: 'Alt' }, { id: 'rcmd', label: 'Windows', w: 1.25, glyph: '⊞' }, { id: 'left', label: '◂' }, { id: 'updown', label: '▴▾' }, { id: 'right', label: '▸' }],
   ];
 })();
 

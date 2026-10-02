@@ -115,6 +115,7 @@
   import {
     readOnboardingHostOs,
     setupExpectationCopy,
+    thisComputerNounFor,
     yourComputerNounFor,
   } from '../../lib/onboarding-platform';
   import { postOptIn, markConsentRepromptShown } from '../../lib/onboarding-telemetry';
@@ -562,6 +563,7 @@
     readOnboardingHostOs(typeof navigator === 'undefined' ? null : navigator.userAgent),
   );
   const setupExpectation = $derived(setupExpectationCopy(setupHostOs));
+  const thisComputer = $derived(thisComputerNounFor(setupHostOs));
   // The global shortcut is Option-Shift-O on a Mac and Alt+Shift+O elsewhere.
   const yourComputer = $derived(yourComputerNounFor(setupHostOs));
   const chordKeys = $derived(setupHostOs === 'windows' ? ['Alt', 'Shift', 'O'] : ['⌥', '⇧', 'O']);
@@ -3563,7 +3565,7 @@
           {installPending ? 'Almost ready.' : 'HQ is ready.'}
         </h2>
         <p class="body">
-          HQ lives in your menu bar now and keeps everything in sync.<br />Open HQ Desktop and your setup bot will walk you through the rest.
+          HQ lives in your {setupHostOs === 'macos' ? 'menu bar' : 'system tray'} now and keeps everything in sync.<br />Open HQ Desktop and your setup bot will walk you through the rest.
         </p>
       </div>
       <div class="prog" class:done={!installPending} bind:this={refs.readyProg}>
@@ -3598,23 +3600,23 @@
         </button>
         {#if probeInFlight && !probeTimedOut && !detectionFailed && installedToolSlots.length === 0}
           <div
-            class="tool-pills tool-pills-status"
+            class="tool-pills tool-pills-status ai-tools-status-stack"
             data-testid="onboarding-ai-tools-checking"
             role="status"
             aria-live="polite"
           >
             <span class="ai-tools-checking">
               <span class="ai-tools-spinner" aria-hidden="true"></span>
-              <span>Checking for AI tools on this Mac…</span>
+              <span>Checking for AI tools on {thisComputer}…</span>
             </span>
           </div>
         {:else if (probeTimedOut || detectionFailed) && installedToolSlots.length === 0}
           <div
-            class="tool-pills tool-pills-status"
+            class="tool-pills tool-pills-status ai-tools-status-stack"
             data-testid="onboarding-ai-tools-recheck"
             role="status"
           >
-            <span class="ai-tools-checking failed">We couldn’t check for AI tools on this Mac.</span>
+            <span class="ai-tools-checking failed">We couldn’t check for AI tools on {thisComputer}.</span>
             <button
               class="tool-pill"
               type="button"

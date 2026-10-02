@@ -40,6 +40,7 @@ vi.mock('@tauri-apps/api/app', () => ({ getVersion: app.getVersion }));
 vi.mock('@tauri-apps/plugin-shell', () => ({ open: tauri.open }));
 vi.mock('@tauri-apps/plugin-http', () => ({ fetch: httpFetch }));
 vi.mock('@hq/platform', () => ({
+  hostComputerNoun: () => 'computer',
   FIRST_FOLDER_SYNC_STEP_FLAG: 'desktop.first-folder-sync-step-v1',
   retryThrottled: async <T>(
     attempt: (attemptIndex: number) => Promise<T>,
