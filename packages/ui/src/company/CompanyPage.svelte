@@ -2,6 +2,7 @@
   import {
     PERSONAL_WORKSPACE_BOARD_FLAG,
     approvedPlanUpgradeUrl,
+    hostComputerNoun,
     isPlanLimitCode,
     type PlatformAdapter,
   } from "@hq/platform";
@@ -416,7 +417,7 @@
       <h2 id="pending-invite-title">Join {company.displayName}</h2>
       <p>
         Accept before HQ loads this company’s projects, goals, files, activity,
-        members, or settings on this Mac.
+        members, or settings on this {hostComputerNoun()}.
       </p>
       <dl>
         {#if company.invitedBy}

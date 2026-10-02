@@ -24,6 +24,7 @@
     LocalBotWorkerOption,
   } from "@hq/platform";
   import { hostComputerNoun } from "@hq/platform";
+  import { formatShortcut } from "../common/keyboard-shortcuts";
   import type { LocalBotEntryResult } from "./local-bots.js";
   import type { AvatarPack } from "../avatars/types.js";
   import CreateBotFlow, { type CreateBotExtras } from "./create-bot/CreateBotFlow.svelte";
@@ -2614,7 +2615,7 @@
           </p>
         {/if}
         <div class="create-footer">
-          <span class="create-hint" aria-hidden="true">⌘↵ TO SEND</span>
+          <span class="create-hint" aria-hidden="true">{formatShortcut("Mod+Enter")} TO SEND</span>
           <button
             type="button"
             class="create-submit"
@@ -2980,7 +2981,7 @@
             >{blockReason}</span
           >
         {:else}
-          <span class="create-hint" aria-hidden="true">⌘↵ TO CREATE</span>
+          <span class="create-hint" aria-hidden="true">{formatShortcut("Mod+Enter")} TO CREATE</span>
         {/if}
         <button
           type="button"

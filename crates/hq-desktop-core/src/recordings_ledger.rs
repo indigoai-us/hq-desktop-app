@@ -303,8 +303,28 @@ pub fn record_ended(window_id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Apply a local SDK event to the reconciliation ledger. A clean `ended`
+/// event is authoritative for the client-side recording lifetime; an SDK
+/// `error` is not proof that the server failed to save/process the recording,
+/// so leave its entry for the next hq-pro status reconciliation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordingLedgerEvent {
+    Ended,
+    Error,
+}
+
+pub fn record_local_event(
+    window_id: &str,
+    event: RecordingLedgerEvent,
+) -> Result<(), String> {
+    match event {
+        RecordingLedgerEvent::Ended => record_ended(window_id),
+        RecordingLedgerEvent::Error => Ok(()),
+    }
+}
+
 /// Snapshot the `windowId`s currently in flight (one per still-open recording).
-/// Read-only; used by the bridge-death terminal-event path to learn which rows
+/// Read-only; used by the bridge-death notification path to learn which rows
 /// need a synthesized `recording:error`. Order is unspecified (HashMap). Returns
 /// an empty Vec on a missing ledger; a read error propagates so the caller can
 /// log it.
@@ -312,21 +332,12 @@ pub fn open_window_ids() -> Result<Vec<String>, String> {
     Ok(read_ledger()?.keys().cloned().collect())
 }
 
-/// Clear *every* in-flight entry and persist the now-empty ledger. Called when
-/// the SDK sidecar dies unexpectedly: each open recording is resolved on the
-/// spot via a synthesized terminal `recording:error`, so the entries must not
-/// also linger and re-surface through the launch reconcile (that would
-/// double-report the same death). Idempotent — no write when the ledger is
-/// already empty. Returns the windowIds that were cleared.
+/// Snapshot every in-flight entry when the SDK sidecar dies unexpectedly.
+/// A synthesized `recording:error` is a local notification, not a server-side
+/// terminal status; preserve entries so launch reconciliation can query hq-pro.
+/// Returns the windowIds that remain in the ledger.
 pub fn record_bridge_died() -> Result<Vec<String>, String> {
-    let mut ledger = read_ledger()?;
-    if ledger.is_empty() {
-        return Ok(Vec::new());
-    }
-    let cleared: Vec<String> = ledger.keys().cloned().collect();
-    ledger.clear();
-    write_ledger(&ledger)?;
-    Ok(cleared)
+    open_window_ids()
 }
 
 // ── Reconcile ───────────────────────────────────────────────────────────────────

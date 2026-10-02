@@ -11,6 +11,8 @@
  */
 
 import { SETUP_ROW_ID } from "../chat/setup-channel.js";
+import { thisComputerNoun } from "@hq/platform";
+import { formatShortcut } from "../common/keyboard-shortcuts.js";
 
 export type TourStepId =
   | "setup-bot"
@@ -55,7 +57,7 @@ export interface TourContext {
   setupBotDmOpen?: boolean;
   /** Agent uid of the setup bot, when one exists. */
   setupBotUid?: string | null;
-  /** A company vault exists on this Mac (else the tour shows Personal). */
+  /** A company vault exists on this computer (else the tour shows Personal). */
   hasCompanyVault?: boolean;
   /** The account belongs to at least one company (else invites wait for setup). */
   hasCompany?: boolean;
@@ -103,8 +105,8 @@ export function tourSteps(ctx: TourContext = {}): TourStep[] {
       id: "company-vault",
       title: company ? "Your company's files" : "Your files",
       body: company
-        ? "Click here to open your files. Everything HQ knows about your company lives there, synced to this Mac and shared with your team."
-        : "Click here to open your files, synced to this Mac. Your company's files appear there once setup creates it.",
+        ? `Click here to open your files. Everything HQ knows about your company lives there, synced to ${thisComputerNoun()} and shared with your team.`
+        : `Click here to open your files, synced to ${thisComputerNoun()}. Your company's files appear there once setup creates it.`,
       // Hidden on the web host: the card centers.
       targets: ['[data-testid="titlebar-files"]'],
       placement: "bottom",
@@ -161,7 +163,7 @@ export function tourSteps(ctx: TourContext = {}): TourStep[] {
     },
     {
       id: "command-palette",
-      title: "Find anything with ⌘K",
+      title: `Find anything with ${formatShortcut("Mod+K")}`,
       body: "Jump to files, people, bots and settings. You can replay this tour from here too.",
       targets: ['[data-testid="command-palette"]'],
       placement: "bottom",

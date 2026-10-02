@@ -537,7 +537,9 @@ describe("the one sentence under a bot that stopped", () => {
     await settle(14);
 
     const sentence = q('[data-testid="settings-bot-cobot-stopped"]')?.textContent ?? "";
-    expect(sentence).toContain("This bot runs in HQ Cloud, not on this Mac.");
+    expect(sentence).toContain(
+      "This bot runs in HQ Cloud, not on this computer. Removing it here is safe — it keeps running in HQ Cloud.",
+    );
     expect(sentence).not.toContain("signed in");
   });
 

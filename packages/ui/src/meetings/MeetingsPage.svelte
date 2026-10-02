@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { hostComputerNoun } from "@hq/platform";
   import type {
     MeetingPermissionsSnapshot,
     PlatformAdapter,
@@ -789,7 +790,7 @@
         <div class="detect-copy">
           <div class="detect-title">Meeting detection is off</div>
           <div class="detect-meta">
-            HQ needs {detectionMissing.join(" and ")} to spot Zoom, Teams, and Meet calls on this Mac
+            HQ needs {detectionMissing.join(" and ")} to spot Zoom, Teams, and Meet calls on this {hostComputerNoun()}
           </div>
         </div>
         <button

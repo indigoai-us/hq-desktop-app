@@ -40,6 +40,7 @@ vi.mock('@tauri-apps/api/app', () => ({ getVersion: app.getVersion }));
 vi.mock('@tauri-apps/plugin-shell', () => ({ open: tauri.open }));
 vi.mock('@tauri-apps/plugin-http', () => ({ fetch: httpFetch }));
 vi.mock('@hq/platform', () => ({
+  hostComputerNoun: () => 'computer',
   FIRST_FOLDER_SYNC_STEP_FLAG: 'desktop.first-folder-sync-step-v1',
   retryThrottled: async <T>(
     attempt: (attemptIndex: number) => Promise<T>,
@@ -3437,6 +3438,25 @@ describe('company onboarding step', () => {
     });
     expect(host.querySelector('[data-testid="onboarding-company"]')).toBeNull();
     expect(tauri.invoke.mock.calls.some(([command]) => command === 'run_card_action')).toBe(false);
+  });
+
+  it('does not double "(optional)" when the server label already includes it', async () => {
+    const website = createCompanyCard.fields[2];
+    const original = website.label;
+    website.label = "Website (optional) — we'll use its icon for your company";
+    try {
+      await reachCompanyScenario();
+      await flushUntil(() =>
+        Boolean(host.querySelector('[data-testid="onboarding-company-field-website"]')),
+      );
+      const websiteLabel = host.querySelector('label[for="onboarding-company-website"]')?.textContent?.trim();
+      expect(websiteLabel).toBe("Website (optional) — we'll use its icon for your company");
+      expect(websiteLabel?.match(/\(optional\)/g)).toHaveLength(1);
+      const inviteLabel = host.querySelector('label[for="onboarding-company-invites"]')?.textContent?.trim();
+      expect(inviteLabel).toBe('Invite teammates (optional)');
+    } finally {
+      website.label = original;
+    }
   });
 
   it('names a company, invites a teammate, and starts on Starter', async () => {

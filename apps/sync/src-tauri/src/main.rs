@@ -1184,6 +1184,10 @@ fn main() {
 
             commands::lifecycle::setup_lifecycle(app.handle());
             let launch_kind = commands::first_run::classify_launch(app.handle());
+            commands::cdp_mirror::init(
+                app.handle(),
+                launch_kind == hq_desktop_core::first_run::LaunchKind::FirstRun,
+            );
 
             // US-104: cold-start hqwork:// on argv (if the OS delivered one).
             // Not an OS-scheme registration — only handle what we were given.
@@ -1639,6 +1643,9 @@ fn main() {
                     _app_handle,
                     commands::calls::DISPOSE_WAIT,
                 );
+                // Funnel mirror: queue setup_abandoned when quitting before
+                // sign-in/install and give the sender a bounded window.
+                commands::cdp_mirror::on_exit_requested(_app_handle);
                 commands::process::terminate_all_for_exit(std::time::Duration::from_millis(500));
             }
 
