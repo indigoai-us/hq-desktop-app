@@ -260,6 +260,35 @@ pub fn startup_token_store_status(read_failed: bool) -> AuthSessionStatus {
     }
 }
 
+/// Classify a startup refresh failure using the initial token read and the
+/// resolver's refresh outcome. A filtered read can hide a token whose rejection
+/// marker triggered the resolver, so a terminal reauthentication result takes
+/// precedence over an initially absent token.
+pub fn classify_startup_refresh_failure(
+    before_present: bool,
+    first_read_failed: bool,
+    requires_reauth: bool,
+    after_present: bool,
+    refresh_failure_class: Option<CognitoRefreshFailureClass>,
+) -> AuthSessionStatus {
+    if requires_reauth {
+        return AuthSessionStatus::CredentialsInvalid;
+    }
+    if refresh_failure_class.is_some() || (before_present && after_present) {
+        return AuthSessionStatus::RefreshTemporarilyUnavailable;
+    }
+    if first_read_failed {
+        return AuthSessionStatus::CredentialsReadError;
+    }
+    if before_present {
+        return AuthSessionStatus::CredentialsInvalid;
+    }
+    if after_present {
+        return AuthSessionStatus::RefreshTemporarilyUnavailable;
+    }
+    AuthSessionStatus::CredentialsAbsent
+}
+
 /// Convert the authoritative native session classification into the startup
 /// command result. Only a transient refresh failure is unresolved; a
 /// definitively invalid credential remains a signed-out verdict.
@@ -1474,6 +1503,43 @@ mod tests {
         .expect("invalid credentials must route to sign-in");
 
         assert!(!result.authenticated);
+    }
+
+    #[test]
+    fn startup_refresh_failure_with_hidden_rejected_token_is_invalid() {
+        assert_eq!(
+            classify_startup_refresh_failure(
+                false,
+                false,
+                true,
+                false,
+                Some(CognitoRefreshFailureClass::Http4xx),
+            ),
+            AuthSessionStatus::CredentialsInvalid,
+            "a terminal refresh rejection must not be mistaken for an empty token store"
+        );
+    }
+
+    #[test]
+    fn startup_refresh_failure_with_retryable_class_is_temporary() {
+        assert_eq!(
+            classify_startup_refresh_failure(
+                false,
+                false,
+                false,
+                false,
+                Some(CognitoRefreshFailureClass::Http4xx),
+            ),
+            AuthSessionStatus::RefreshTemporarilyUnavailable
+        );
+    }
+
+    #[test]
+    fn startup_refresh_failure_without_any_token_remains_absent() {
+        assert_eq!(
+            classify_startup_refresh_failure(false, false, false, false, None),
+            AuthSessionStatus::CredentialsAbsent
+        );
     }
 
     #[test]
