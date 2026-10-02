@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Desktop sign-in can open the website first to link the new account to the native app; if that check fails, it opens Cognito directly as before.
+
 ## [0.10.373] — 2026-10-01
 
 - Setting up a coding tool after onboarding is smoother. You can choose
