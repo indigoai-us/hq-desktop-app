@@ -2950,13 +2950,13 @@
           role="menu"
           aria-label="Create"
           data-testid="chat-create-menu"
-          use:menuPortal={{ anchor: plusBtnEl, placement: "bottom-end" }}
+          use:menuPortal={{ anchor: plusBtnEl, placement: "bottom-start" }}
         >
           <div class="chat-create-sec">Create</div>
           {#each CREATE_MENU_ITEMS as item (item.id)}
             <button
               type="button"
-              class="chat-popover-row"
+              class="chat-popover-row chat-create-row"
               role="menuitem"
               data-testid={"chat-create-menu-" + item.id}
               onclick={() => openCreateAction(item.id)}
@@ -3058,7 +3058,7 @@
                 aria-pressed={sortMode === "recent"}
                 onclick={() => (sortMode = "recent")}
               >
-                <span class="chat-sort-ic" aria-hidden="true">🕐</span>
+                <span class="chat-sort-ic" aria-hidden="true">{@render filterIcon("clock")}</span>
                 Recent
               </button>
               <button
@@ -3068,7 +3068,7 @@
                 aria-pressed={sortMode === "type"}
                 onclick={() => (sortMode = "type")}
               >
-                <span class="chat-sort-ic" aria-hidden="true">≣</span>
+                <span class="chat-sort-ic" aria-hidden="true">{@render filterIcon("list")}</span>
                 Type
               </button>
             </div>
@@ -3081,10 +3081,10 @@
               data-testid="chat-filter-mine"
               onclick={() => setShowFilter("mine")}
             >
-              <span class="chat-filter-lead" aria-hidden="true">⌂</span>
+              <span class="chat-filter-lead" aria-hidden="true">{@render filterIcon("home")}</span>
               <span class="chat-filter-text">My projects</span>
               {#if showFilter === "mine"}
-                <span class="chat-filter-check" aria-hidden="true">✓</span>
+                <span class="chat-filter-check" aria-hidden="true">{@render filterIcon("check")}</span>
               {/if}
             </button>
             <button
@@ -3096,10 +3096,10 @@
                 setShowFilter("all");
               }}
             >
-              <span class="chat-filter-lead" aria-hidden="true">≣</span>
+              <span class="chat-filter-lead" aria-hidden="true">{@render filterIcon("list")}</span>
               <span class="chat-filter-text">All</span>
               {#if showFilter === "all"}
-                <span class="chat-filter-check" aria-hidden="true">✓</span>
+                <span class="chat-filter-check" aria-hidden="true">{@render filterIcon("check")}</span>
               {/if}
             </button>
             <button
@@ -3111,10 +3111,10 @@
                 setShowFilter("projects");
               }}
             >
-              <span class="chat-filter-lead" aria-hidden="true">#</span>
+              <span class="chat-filter-lead" aria-hidden="true">{@render filterIcon("hash")}</span>
               <span class="chat-filter-text">Project channels</span>
               {#if showFilter === "projects"}
-                <span class="chat-filter-check" aria-hidden="true">✓</span>
+                <span class="chat-filter-check" aria-hidden="true">{@render filterIcon("check")}</span>
               {/if}
             </button>
             <button
@@ -3126,10 +3126,10 @@
                 setShowFilter("dms");
               }}
             >
-              <span class="chat-filter-lead" aria-hidden="true">💬</span>
+              <span class="chat-filter-lead" aria-hidden="true">{@render filterIcon("bubble")}</span>
               <span class="chat-filter-text">DMs &amp; groups</span>
               {#if showFilter === "dms"}
-                <span class="chat-filter-check" aria-hidden="true">✓</span>
+                <span class="chat-filter-check" aria-hidden="true">{@render filterIcon("check")}</span>
               {/if}
             </button>
             {#if canSeeCompanyProjects}
@@ -3146,10 +3146,10 @@
                   setShowFilter("company-projects");
                 }}
               >
-                <span class="chat-filter-lead" aria-hidden="true">⌾</span>
+                <span class="chat-filter-lead" aria-hidden="true">{@render filterIcon("target")}</span>
                 <span class="chat-filter-text">Company projects</span>
                 {#if showFilter === "company-projects"}
-                  <span class="chat-filter-check" aria-hidden="true">✓</span>
+                  <span class="chat-filter-check" aria-hidden="true">{@render filterIcon("check")}</span>
                 {/if}
               </button>
             {/if}
@@ -3162,7 +3162,7 @@
               aria-pressed={showArchived}
               onclick={() => setShowArchived(!showArchived)}
             >
-              <span class="chat-filter-lead" aria-hidden="true">🗄</span>
+              <span class="chat-filter-lead" aria-hidden="true">{@render filterIcon("archive")}</span>
               <span class="chat-filter-text">Show archived</span>
               {#if archivedVisibleCount > 0 && !showArchived}
                 <span
@@ -3171,7 +3171,7 @@
                 >
               {/if}
               {#if showArchived}
-                <span class="chat-filter-check" aria-hidden="true">✓</span>
+                <span class="chat-filter-check" aria-hidden="true">{@render filterIcon("check")}</span>
               {/if}
             </button>
 
@@ -3281,7 +3281,7 @@
         aria-label={`Connection requests, ${pendingRequestCount} pending`}
         onclick={openConnectionRequests}
       >
-        <span class="chat-glyph requests" aria-hidden="true">·</span>
+        <span class="chat-glyph requests" aria-hidden="true">{@render filterIcon("requests")}</span>
         <span class="chat-row-title">Connection requests</span>
         <span
           class="chat-unread-badge"
@@ -4031,6 +4031,21 @@
 <!-- Slack-style pencil shown before a row title when it has an unsent draft.
      Shared by the rail row and the search-hit row; colour comes from
      `.chat-row-draft` (`var(--t3)`). -->
+{#snippet filterIcon(name: string)}
+  <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+    {#if name === "clock"}<circle cx="8" cy="8" r="5.5" /><path d="M8 5v3l2 1.5" />
+    {:else if name === "list"}<path d="M3 4.5h10M3 8h10M3 11.5h10" />
+    {:else if name === "home"}<path d="M3 7.5 8 3.5l5 4v5H3z" />
+    {:else if name === "hash"}<path d="M6.5 3 5.5 13M10.5 3l-1 10M3.5 6.5h9.5M3 9.5h9.5" />
+    {:else if name === "bubble"}<path d="M3 4h10v6.5H7.5L4.5 13v-2.5H3z" />
+    {:else if name === "target"}<circle cx="8" cy="8" r="5.5" /><circle cx="8" cy="8" r="2" />
+    {:else if name === "archive"}<path d="M2.5 4h11v2.5h-11zM3.5 6.5v6h9v-6M6.5 9h3" />
+    {:else if name === "check"}<path d="M3.5 8.5l3 3 6-7" />
+    {:else if name === "requests"}<circle cx="6.5" cy="5.5" r="2.5" /><path d="M2 13c.6-2.4 2.3-3.5 4.5-3.5s3.9 1.1 4.5 3.5M12.5 5v4M10.5 7h4" />
+    {/if}
+  </svg>
+{/snippet}
+
 {#snippet draftMark()}
   <span
     class="chat-row-draft"
@@ -4944,10 +4959,11 @@
     cursor: pointer;
   }
 
+  /* Direct child of the column scroller: `.chat-row`'s flex-grow would
+     stretch it to fill the empty list and float its label mid-panel. */
   .chat-requests-row {
-    color: var(--t3);
-    font-size: 12px;
-    font-weight: 500;
+    flex: 0 0 auto;
+    color: var(--t2);
   }
 
   .chat-row:hover {
@@ -5328,20 +5344,20 @@
     padding: 6px;
     border: 1px solid var(--panel-border);
     border-radius: 12px;
-    background: var(--panel-bg);
+    /* Near-opaque popover tier: without a backdrop blur the translucent
+       --panel-bg let the timeline read straight through the menu. */
+    background: var(--v4-popover-strong, var(--panel-bg));
     box-shadow: var(--panel-shadow);
-    backdrop-filter: blur(40px) saturate(1.5);
-    -webkit-backdrop-filter: blur(40px) saturate(1.5);
   }
 
   :global(:root[data-force-theme="dark"]) .chat-popover,
   :global(.dark) .chat-popover {
-    background: var(--panel-bg);
+    background: var(--v4-popover-strong, var(--panel-bg));
   }
 
   @media (prefers-color-scheme: dark) {
     :global(:root:not([data-force-theme="light"])) .chat-popover {
-      background: var(--panel-bg);
+      background: var(--v4-popover-strong, var(--panel-bg));
     }
   }
 
@@ -5528,10 +5544,8 @@
     padding: 6px;
     border: 1px solid var(--panel-border);
     border-radius: 12px;
-    background: var(--panel-bg);
+    background: var(--v4-popover-strong, var(--panel-bg));
     box-shadow: var(--panel-shadow);
-    backdrop-filter: blur(40px) saturate(1.5);
-    -webkit-backdrop-filter: blur(40px) saturate(1.5);
   }
 
   .chat-popover-row {
@@ -5543,10 +5557,45 @@
     background: transparent;
     color: var(--t1);
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 400;
     text-align: left;
     cursor: pointer;
+  }
+
+  /* + Create menu: header, rows, and footer share the 8px row indent;
+     shortcuts sit right-aligned like the scope menu. */
+  .chat-create-menu {
+    min-width: 240px;
+    max-height: none;
+  }
+
+  .chat-create-sec {
+    padding: 4px 8px 6px;
+    color: var(--t2);
+    font-size: 13px;
+    font-weight: 500;
+  }
+
+  .chat-popover-row.chat-create-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 32px;
+    padding: 0 8px;
+  }
+
+  .chat-create-row .chat-scope-shortcut {
+    margin-left: auto;
+  }
+
+  .chat-create-foot {
+    margin: 4px 0 0;
+    padding: 6px 8px 2px;
+    border-top: 1px solid var(--line, var(--panel-border));
+    color: var(--t3);
+    font-size: 13px;
+    line-height: 17px;
   }
 
   .chat-scope-sep {
@@ -5754,12 +5803,9 @@
   .chat-filter-caption {
     margin: 0;
     padding: 2px 6px 4px;
-    color: var(--t3);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
+    color: var(--t2);
+    font-size: 13px;
+    font-weight: 500;
   }
 
   .chat-filter-caption.pad-top {
@@ -5805,7 +5851,8 @@
   }
 
   .chat-sort-ic {
-    font-size: 11px;
+    display: inline-grid;
+    place-items: center;
     line-height: 1;
   }
 
@@ -5834,9 +5881,8 @@
   .chat-filter-lead {
     display: inline-grid;
     place-items: center;
-    width: 18px;
+    width: 16px;
     color: var(--t2);
-    font-size: 12px;
     line-height: 1;
   }
 
@@ -5846,8 +5892,9 @@
   }
 
   .chat-filter-check {
+    display: inline-grid;
+    place-items: center;
     color: var(--t2);
-    font-size: 12px;
     line-height: 1;
   }
 
