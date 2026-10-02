@@ -17,6 +17,8 @@ const FILES = [
   "PasteLinkBox.svelte",
   "CalendarPanel.svelte",
   "MeetingsAgenda.svelte",
+  "LiveTranscriptBody.svelte",
+  "LiveTranscriptDoor.svelte",
   "../../../../apps/sync/src/components/MeetingsWindow.svelte",
 ].map((f) => [f, resolve(here, f)] as const);
 

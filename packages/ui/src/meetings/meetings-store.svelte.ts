@@ -93,6 +93,16 @@ function requireApi(): MeetingsStoreApi {
   return api;
 }
 
+/**
+ * The live-transcript fetch of the configured platform, or null when the
+ * host has none (web, unconfigured). Read by the lazy live-transcript body.
+ */
+export function liveTranscriptFetcher(): import("./live-transcript.svelte").LiveTranscriptFetch | null {
+  const meetings = api?.meetings;
+  const fetch = meetings?.fetchLiveTranscript;
+  return fetch ? (req) => fetch.call(meetings, req) : null;
+}
+
 function unwrap<T>(res: AdapterResult<T>): T {
   if (res.ok) return res.value;
   const parts = [res.code ?? res.reason, res.message].filter(Boolean);

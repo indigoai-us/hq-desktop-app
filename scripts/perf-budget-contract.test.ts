@@ -418,6 +418,13 @@ const FAST_POLLER_ALLOWLIST = new Map<string, string>([
     "3s connect-provider poll, active only during the OAuth connect flow " +
       "(the steady-state meetings poll is POLL_INTERVAL_MS = 120s).",
   ],
+  [
+    "packages/ui/src/meetings/live-transcript.svelte.ts",
+    "3s live-transcript poll (a chained setTimeout, never overlapping), " +
+      "active only while a live meeting's Transcript tab is mounted. It backs " +
+      "off to 10s while the window is hidden, stops when the meeting ends, and " +
+      "an unchanged transcript answers 304 with no state write.",
+  ],
 ]);
 
 describe("poll-interval floors", () => {
@@ -855,6 +862,8 @@ describe("first-frame-of-Home budget: lazy doors stay lazy", () => {
     "packages/ui/src/telemetry/index.ts",
     "packages/ui/src/meetings/MeetingsStatesBody.svelte",
     "packages/ui/src/meetings/MeetingCanvas.svelte",
+    "packages/ui/src/meetings/LiveTranscriptBody.svelte",
+    "packages/ui/src/meetings/live-transcript.svelte.ts",
     "packages/ui/src/meetings/MeetingsSidepane.svelte",
     "packages/ui/src/shell/new-company/NewCompanySheet.svelte",
     "packages/ui/src/company/brain/BrainPage.svelte",

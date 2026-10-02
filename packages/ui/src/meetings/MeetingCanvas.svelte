@@ -33,6 +33,7 @@
     type MeetingEvent,
     type ScheduledBot,
   } from "./meetings-model";
+  import LiveTranscriptDoor from "./LiveTranscriptDoor.svelte";
 
   interface Props {
     event: MeetingEvent;
@@ -177,7 +178,18 @@
         <button type="button" class="tab" aria-pressed={tab === "transcript"} onclick={() => (tab = "transcript")}>Transcript</button>
       </div>
       {#if tab === "transcript"}
-        <p class="empty">{bot?.sourceLanded ? "The transcript is saved to the company vault under sources/meetings." : "The transcript appears here once the notetaker saves it."}</p>
+        {#if !bot}
+          <p class="empty" data-testid="live-transcript-no-bot">No notetaker in this meeting.</p>
+        {:else if bot.sourceLanded}
+          <p class="empty">The transcript is saved to the company vault under sources/meetings.</p>
+        {:else}
+          <LiveTranscriptDoor
+            recallBotId={bot.botId}
+            companyId={bot.companyId ?? event.sourceCompanyUid ?? null}
+            {live}
+            botStatus={bot.status}
+          />
+        {/if}
       {:else if notes.length}
         <div class="notes">
           {#each notes as n (n.id)}
