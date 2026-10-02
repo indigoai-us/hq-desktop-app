@@ -76,7 +76,7 @@
 </script>
 
 <div class="host" data-testid="profile-pane-host" data-kind={kind} data-mode={mode}>
-  {#if kind === "bot" && mode === "session"}
+  {#if kind === "bot" && mode === "session" && botView}
     <BotSessionPane
       {name}
       context={botView.nowTitle}
