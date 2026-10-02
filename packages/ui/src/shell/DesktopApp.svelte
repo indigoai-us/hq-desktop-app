@@ -72,11 +72,37 @@
   import SetupFinale from "../chat/SetupFinale.svelte";
   import SetupBotFinale from "../chat/SetupBotFinale.svelte";
   import {
+    messageHasConnectBlock,
     messageHasVisibleContent,
     messageMarksSetupDone,
     messageOffersSlackAgent,
     suggestionsForMessage,
+    type ConnectTarget,
+    type RichBlock,
   } from "../chat/messaging/richMessageContent.js";
+  import {
+    companyUidFromStatus,
+    connectionActionKey,
+    connectionCardView,
+    loadConnectionRecords,
+    markConnecting,
+    markDeclined,
+    markSlackAnnounced,
+    markToolAnnounced,
+    pendingAnnouncements,
+    recordGrant,
+    saveConnectionRecords,
+    slackFactsFromStatus,
+    toolFacts,
+    withBotRecord,
+    withoutBotRecord,
+    type BotConnectionRecord,
+    type BotConnectionRecords,
+    type ConnectionCardActionDetail,
+    type ConnectionCardView,
+    type ConversationConnectionCards,
+    type ToolConnection,
+  } from "../chat/messaging/connection-card-model.js";
   import { SETUP_FAILURE_COPY } from "../chat/setup-run";
   import type { SetupRunApi } from "../chat/setup-run.js";
   import { SetupAgent, SETUP_AGENT_NAME, SETUP_AGENT_UID } from "../chat/setup-agent.svelte";
@@ -137,7 +163,10 @@
   import {
     agentCatchingUpLine,
     agentHelloArrived,
+    agentHelloEventId,
     buildAgentHelloRequest,
+    buildAgentSlackConnectedNotice,
+    buildAgentToolConnectedNotice,
     agentChatReadiness,
     agentComposerPlaceholder,
     isAgentConversationRow,
@@ -337,7 +366,11 @@
     rosterStatusForRow,
     type LiveChannelTabs,
   } from "./live-channel-tabs.js";
-  import { HQ_CONSOLE_BASE } from "../common/hq-console.js";
+  import {
+    HQ_CONSOLE_BASE,
+    agentSlackSettingsUrl,
+    companyIntegrationsUrl,
+  } from "../common/hq-console.js";
   import LinkContextMenu from "../common/LinkContextMenu.svelte";
   import {
     handleLinkActivate,
@@ -3834,6 +3867,7 @@
       const { [uid]: _state, ...rest } = agentChatByUid;
       agentChatByUid = rest;
     }
+    forgetBotConnections(uid);
   }
   /**
    * Ask a new cloud bot to write its first message. The request travels on
@@ -3865,10 +3899,12 @@
     if (!uid) return false;
     const result = await adapter.messaging.fetchDmThread({ withPersonUid: uid, limit: 30 });
     if (!result.ok) return false;
-    const arrived = agentHelloArrived(normalizeConversationMessages(result.value), {
+    const rows = normalizeConversationMessages(result.value);
+    const arrived = agentHelloArrived(rows, {
       agentUid: uid,
       askedAtMs: session.helloAskedAt ?? null,
     });
+    if (arrived) rememberCloudBotHello(uid, rows, session.helloAskedAt ?? null);
     if (arrived && cloudBotHelloPending[uid]) {
       const { [uid]: _seen, ...rest } = cloudBotHelloPending;
       cloudBotHelloPending = rest;
@@ -4190,6 +4226,9 @@
           ok: res.ok,
           ms: Math.round(performance.now() - started),
         });
+        // The raw page still holds the app's hello request; the timeline
+        // built from it does not.
+        if (res.ok) rememberCloudBotHello(row.personUid, normalizeConversationMessages(res.value));
         return res.ok ? res.value : null;
       }
       if (row.channelId) {
@@ -4405,6 +4444,425 @@
         ? { ...msg, replyCount: replyCountOverride[msg.eventId] }
         : msg,
     );
+  });
+
+  // ── Connection cards in a cloud bot's direct message ────────────────────
+  //
+  // A new cloud bot's first message gets two cards under it, Slack and
+  // Connect your tools, and the bot can show them again later with a
+  // `connect` block. All of it applies only to a one-to-one conversation
+  // with a cloud bot: never a local bot, a person or a channel. What a card
+  // says is decided in connection-card-model.ts; this is the wiring.
+
+  /** The cloud bot on the other side of the open direct message, if any. */
+  const dmCloudBotUid = $derived(dmAgentUid && !selectedLocalBot ? dmAgentUid : null);
+
+  function connectionStorage(): Storage | null {
+    try {
+      return typeof window !== "undefined" ? window.localStorage : null;
+    } catch {
+      return null;
+    }
+  }
+  /** What this device remembers per bot: its first message and what was pressed. */
+  let connectionRecords = $state.raw<BotConnectionRecords>(loadConnectionRecords(connectionStorage()));
+  function setBotConnectionRecord(agentUid: string, record: BotConnectionRecord): void {
+    connectionRecords = withBotRecord(connectionRecords, agentUid, record);
+    saveConnectionRecords(connectionStorage(), connectionRecords);
+  }
+  /** A bot made in the New bot flow on this device gets the cards under its first message. */
+  function startBotConnections(agentUid: string): void {
+    if (!connectionRecords[agentUid]) setBotConnectionRecord(agentUid, {});
+  }
+  function forgetBotConnections(agentUid: string): void {
+    const next = withoutBotRecord(connectionRecords, agentUid);
+    if (next === connectionRecords) return;
+    connectionRecords = next;
+    saveConnectionRecords(connectionStorage(), connectionRecords);
+  }
+  // A bot still in the new-bots list was made here before its record existed.
+  $effect(() => {
+    const uid = dmNewCloudBotUid;
+    if (uid) untrack(() => startBotConnections(uid));
+  });
+  /**
+   * Find the bot's first message in a page of its direct message and remember
+   * it. Looked up once per bot, and only for a bot made on this device: the
+   * page must still hold the app's hello request (or the time it was sent).
+   */
+  function rememberCloudBotHello(
+    agentUid: string | null | undefined,
+    rows: ReadonlyArray<ConversationMessageWire>,
+    askedAtMs: number | null = null,
+  ): void {
+    const uid = (agentUid ?? "").trim();
+    const record = uid ? connectionRecords[uid] : undefined;
+    if (!record || record.helloEventId) return;
+    const helloEventId = agentHelloEventId(rows, { agentUid: uid, askedAtMs });
+    if (helloEventId) setBotConnectionRecord(uid, { ...record, helloEventId });
+  }
+  // The host's stored thread can carry the hello request too.
+  $effect(() => {
+    const uid = dmCloudBotUid;
+    const row = selectedRow;
+    if (!uid || !row) return;
+    const record = connectionRecords[uid];
+    if (!record || record.helloEventId) return;
+    const injected = messagesByRow?.(row) ?? [];
+    if (injected.length > 0) untrack(() => rememberCloudBotHello(uid, injected));
+  });
+
+  /** A message of the open bot already carries a `connect` block of its own. */
+  const cloudBotShowsOwnCards = $derived.by(() => {
+    const uid = dmCloudBotUid;
+    return uid ? timeline.some((message) => message.fromPersonUid === uid && messageHasConnectBlock(message)) : false;
+  });
+  /**
+   * The message the app puts both cards under: the bot's first message,
+   * unless the bot already shows the cards itself.
+   */
+  const cloudBotHelloCardsAt = $derived(
+    dmCloudBotUid && !cloudBotShowsOwnCards ? (connectionRecords[dmCloudBotUid]?.helloEventId ?? null) : null,
+  );
+  const cloudBotCardsShown = $derived(cloudBotShowsOwnCards || cloudBotHelloCardsAt !== null);
+  const cloudBotExtraBlocks = $derived.by((): Record<string, RichBlock[]> | null =>
+    cloudBotHelloCardsAt ? { [cloudBotHelloCardsAt]: [{ kind: "connect", targets: ["slack", "tools"] }] } : null,
+  );
+
+  /** What the server last said about one bot: its status and its company's connections. */
+  interface BotConnectionFacts {
+    status: unknown | null;
+    connections: unknown | null;
+    companyUid: string | null;
+    slackFailed: boolean;
+    toolsFailed: boolean;
+  }
+  let botConnectionFacts = $state.raw<Record<string, BotConnectionFacts>>({});
+  /** A sentence under a card after a press that did not work, per bot. */
+  let connectionNotes = $state.raw<Record<string, Partial<Record<ConnectTarget, string>>>>({});
+  /** Presses on their way to the server, per bot. */
+  let connectionInFlight = $state.raw<Record<string, ReadonlySet<string>>>({});
+  /** The time the cards were last worked out, so a long wait can run out. */
+  let connectionClock = $state(Date.now());
+  const CONNECTION_RECHECK_MS = 5_000;
+
+  function setConnectionNote(agentUid: string, target: ConnectTarget, note: string | null): void {
+    const current = connectionNotes[agentUid] ?? {};
+    if ((current[target] ?? null) === note) return;
+    const { [target]: _old, ...rest } = current;
+    connectionNotes = { ...connectionNotes, [agentUid]: note ? { ...rest, [target]: note } : rest };
+  }
+  function setConnectionInFlight(agentUid: string, key: string, on: boolean): void {
+    const next = new Set(connectionInFlight[agentUid] ?? []);
+    if (on) next.add(key);
+    else next.delete(key);
+    connectionInFlight = { ...connectionInFlight, [agentUid]: next };
+  }
+
+  /**
+   * Ask the server about a bot's Slack and its company's connections. A
+   * failure keeps what was known and never reaches the conversation: the
+   * card says it could not check and stays usable.
+   */
+  async function refreshBotConnectionFacts(agentUid: string, rowCompanyUid: string | null): Promise<void> {
+    const before = botConnectionFacts[agentUid] ?? null;
+    let status = before?.status ?? null;
+    let slackFailed = false;
+    try {
+      const result = await adapter.agents.getStatus(agentUid);
+      if (result.ok) status = result.value;
+      else slackFailed = true;
+    } catch {
+      slackFailed = true;
+    }
+    const companyUid = companyUidFromStatus(status) ?? (rowCompanyUid?.trim() || before?.companyUid || null);
+    let connections = before?.connections ?? null;
+    let toolsFailed = false;
+    try {
+      const list = companyUid ? await adapter.integrations?.listConnections?.(companyUid) : null;
+      if (list?.ok) connections = list.value;
+      else toolsFailed = true;
+    } catch {
+      toolsFailed = true;
+    }
+    botConnectionFacts = {
+      ...botConnectionFacts,
+      [agentUid]: { status, connections, companyUid, slackFailed, toolsFailed },
+    };
+  }
+
+  /** Everything the open bot's cards are worked out from. */
+  const cloudBotCardInput = $derived.by(() => {
+    const uid = dmCloudBotUid;
+    if (!uid) return null;
+    const botName = headerTitle?.trim() || "your bot";
+    const record = connectionRecords[uid] ?? null;
+    const facts = botConnectionFacts[uid] ?? null;
+    const pressed = connectionNotes[uid] ?? {};
+    return {
+      uid,
+      botName,
+      record,
+      slack: facts?.status != null ? slackFactsFromStatus(facts.status, botName) : null,
+      tools: facts?.connections != null ? toolFacts(facts.connections, record) : null,
+      now: connectionClock,
+      inFlight: connectionInFlight[uid] ?? null,
+      notes: {
+        slack:
+          pressed.slack ??
+          (facts?.slackFailed && facts.status == null ? "Could not check Slack right now. You can still connect it." : null),
+        tools:
+          pressed.tools ??
+          (facts?.toolsFailed && facts.connections == null
+            ? "Could not check your connected apps right now. You can still connect one."
+            : null),
+      },
+    };
+  });
+
+  /** The cards the open conversation draws, or null where there are none. */
+  const cloudBotConnections = $derived.by((): ConversationConnectionCards | null => {
+    const input = cloudBotCardInput;
+    if (!input || !cloudBotCardsShown) return null;
+    return {
+      viewsFor: (message): Partial<Record<ConnectTarget, ConnectionCardView>> => {
+        const at = Date.parse(message.createdAt ?? "");
+        const messageAt = Number.isFinite(at) ? at : null;
+        return {
+          slack: connectionCardView("slack", { ...input, messageAt }),
+          tools: connectionCardView("tools", { ...input, messageAt }),
+        };
+      },
+      onaction: (detail) => handleConnectionAction(input.uid, detail),
+    };
+  });
+  const cloudBotConnecting = $derived.by(() => {
+    const input = cloudBotCardInput;
+    if (!input || !cloudBotCardsShown) return false;
+    return (
+      connectionCardView("slack", input).state === "connecting" ||
+      connectionCardView("tools", input).state === "connecting"
+    );
+  });
+
+  // Ask the server once when a bot's cards come on screen.
+  $effect(() => {
+    const uid = dmCloudBotUid;
+    if (!uid || !cloudBotCardsShown) return;
+    untrack(() => {
+      void refreshBotConnectionFacts(uid, selectedRow?.companyUid ?? null);
+    });
+  });
+  // While a card waits for the browser, ask again every few seconds and when
+  // the window comes back to the front. Nothing is polled otherwise.
+  $effect(() => {
+    const uid = dmCloudBotUid;
+    if (!uid || !cloudBotConnecting) return;
+    const rowCompanyUid = untrack(() => selectedRow?.companyUid ?? null);
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const recheck = async (): Promise<void> => {
+      await refreshBotConnectionFacts(uid, rowCompanyUid);
+      // A card that has waited too long goes back to offered on this tick.
+      if (!stopped) connectionClock = Date.now();
+    };
+    const schedule = (): void => {
+      timer = setTimeout(() => {
+        void recheck().then(() => {
+          if (!stopped) schedule();
+        });
+      }, CONNECTION_RECHECK_MS);
+    };
+    const onFocus = (): void => {
+      void recheck();
+    };
+    schedule();
+    window.addEventListener("focus", onFocus);
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      window.removeEventListener("focus", onFocus);
+    };
+  });
+
+  /** Notices on their way to a bot, so one is never sent twice at once. */
+  const connectionNoticesInFlight = new Set<string>();
+  /** Send the bot a notice the person never sees, the same way as the hello request. */
+  async function sendBotNotice(agentUid: string, body: string, idempotencyKey: string): Promise<boolean> {
+    try {
+      const result = await adapter.messaging.sendDm(agentUid, body, { audience: "agent", idempotencyKey });
+      if (!result.ok) return false;
+    } catch {
+      return false;
+    }
+    // The bot answers the notice: show it as working in its conversation.
+    const row = selectedRow;
+    if (row?.kind === "dm" && row.personUid === agentUid) {
+      thinkingByRow = startThinkingIn(
+        thinkingByRow,
+        row.id,
+        { agentUid, agentName: row.title?.trim() || "bot" },
+        Date.now(),
+      );
+    }
+    return true;
+  }
+  function noticePersonName(): string {
+    return (self?.displayName ?? "").trim().split(/\s+/)[0] ?? "";
+  }
+  /** Tell the bot, once, about a connection it can now use. */
+  async function announceToolToBot(agentUid: string, connection: ToolConnection): Promise<void> {
+    const key = `${agentUid}:${connection.id}`;
+    if (connectionNoticesInFlight.has(key) || connectionRecords[agentUid]?.announced?.includes(connection.id)) return;
+    connectionNoticesInFlight.add(key);
+    try {
+      const sent = await sendBotNotice(
+        agentUid,
+        buildAgentToolConnectedNotice({
+          personName: noticePersonName(),
+          name: connection.name,
+          provider: connection.provider,
+          connectionId: connection.id,
+        }),
+        `new-bot-conn-${agentUid}-${connection.id}`,
+      );
+      if (sent) setBotConnectionRecord(agentUid, markToolAnnounced(connectionRecords[agentUid], connection.id));
+    } finally {
+      connectionNoticesInFlight.delete(key);
+    }
+  }
+  /** Tell the bot, once, that it is in Slack now. */
+  async function announceSlackToBot(agentUid: string): Promise<void> {
+    const key = `${agentUid}:slack`;
+    if (connectionNoticesInFlight.has(key) || connectionRecords[agentUid]?.slack?.announced) return;
+    connectionNoticesInFlight.add(key);
+    try {
+      const sent = await sendBotNotice(
+        agentUid,
+        buildAgentSlackConnectedNotice({ personName: noticePersonName() }),
+        `new-bot-slack-${agentUid}`,
+      );
+      if (sent) setBotConnectionRecord(agentUid, markSlackAnnounced(connectionRecords[agentUid]));
+    } finally {
+      connectionNoticesInFlight.delete(key);
+    }
+  }
+  // What the server now shows that the bot has not been told: Slack that
+  // connected from its card, a tool the bot can use that is new.
+  $effect(() => {
+    const input = cloudBotCardInput;
+    if (!input) return;
+    const due = pendingAnnouncements(input.record, input.slack, input.tools);
+    if (!due.slack && due.tools.length === 0) return;
+    untrack(() => {
+      if (due.slack) void announceSlackToBot(input.uid);
+      for (const connection of due.tools) void announceToolToBot(input.uid, connection);
+    });
+  });
+
+  /** Open a page in the system browser, the way every other link here does. */
+  function openConnectionUrl(url: string): void {
+    if (onopenurl) onopenurl(url);
+    else window.open(url, "_blank", "noopener,noreferrer");
+  }
+  /** Connect (or Open again): open the right console page and start waiting. */
+  function connectFromCard(agentUid: string, target: ConnectTarget): void {
+    const facts = botConnectionFacts[agentUid] ?? null;
+    const row = selectedRow;
+    const rowCompanyUid = row?.kind === "dm" && row.personUid === agentUid ? (row.companyUid?.trim() ?? "") : "";
+    const companyUid = facts?.companyUid || rowCompanyUid || null;
+    if (!companyUid) {
+      // The link needs the bot's company, and the server has not said yet.
+      setConnectionNote(
+        agentUid,
+        target,
+        target === "slack"
+          ? "Could not open Slack setup. Try again in a moment."
+          : "Could not open HQ Integrations. Try again in a moment.",
+      );
+      void refreshBotConnectionFacts(agentUid, null);
+      return;
+    }
+    setConnectionNote(agentUid, target, null);
+    const now = Date.now();
+    const record = connectionRecords[agentUid] ?? null;
+    if (target === "slack") {
+      openConnectionUrl(agentSlackSettingsUrl(companyUid, agentUid));
+      setBotConnectionRecord(agentUid, markConnecting(record, "slack", now));
+    } else {
+      const tools = facts?.connections != null ? toolFacts(facts.connections, record) : null;
+      const waiting = connectionCardView("tools", { botName: "", record, tools, now }).state === "connecting";
+      openConnectionUrl(companyIntegrationsUrl(companyUid));
+      // What is connected now is the baseline: anything after it is new.
+      setBotConnectionRecord(
+        agentUid,
+        markConnecting(record, "tools", now, waiting ? "keep" : tools ? tools.ids : null),
+      );
+    }
+    connectionClock = now;
+  }
+  /** "Let {bot} use it": share one connection with the bot, then tell the bot. */
+  async function allowBotConnection(agentUid: string, connectionId: string): Promise<void> {
+    const facts = botConnectionFacts[agentUid] ?? null;
+    const companyUid = facts?.companyUid ?? null;
+    const connection =
+      facts?.connections != null
+        ? toolFacts(facts.connections, connectionRecords[agentUid]).waiting.find((c) => c.id === connectionId)
+        : undefined;
+    // Nothing to do for a connection that is not waiting (already shared).
+    if (!companyUid || !connection) return;
+    let failure: { code?: string } | null = null;
+    try {
+      const result = await adapter.integrations.grantConnectionAccess({ companyUid, connectionId, granteeUid: agentUid });
+      if (!result.ok) failure = result;
+    } catch {
+      failure = {};
+    }
+    if (failure) {
+      setConnectionNote(
+        agentUid,
+        "tools",
+        failure.code === "http-403"
+          ? `Only the person who connected ${connection.name} or a company admin can share it.`
+          : `Could not share ${connection.name}. Try again.`,
+      );
+      return;
+    }
+    setConnectionNote(agentUid, "tools", null);
+    setBotConnectionRecord(
+      agentUid,
+      recordGrant(connectionRecords[agentUid], connectionId, connection.name, Date.now()),
+    );
+    await announceToolToBot(agentUid, { ...connection, granted: true });
+  }
+  /** A button on a card was pressed. A press already under way is ignored. */
+  async function handleConnectionAction(agentUid: string, detail: ConnectionCardActionDetail): Promise<void> {
+    const key = connectionActionKey(detail.target, detail.action, detail.connectionId);
+    if (connectionInFlight[agentUid]?.has(key)) return;
+    setConnectionInFlight(agentUid, key, true);
+    try {
+      if (detail.action === "decline") {
+        setConnectionNote(agentUid, detail.target, null);
+        setBotConnectionRecord(agentUid, markDeclined(connectionRecords[agentUid], detail.target, Date.now()));
+      } else if (detail.action === "connect") {
+        connectFromCard(agentUid, detail.target);
+      } else if (detail.target === "tools" && detail.connectionId) {
+        await allowBotConnection(agentUid, detail.connectionId);
+      }
+    } finally {
+      setConnectionInFlight(agentUid, key, false);
+    }
+  }
+
+  /**
+   * A cloud bot's suggested replies for its newest message, worked out over
+   * the conversation as the person sees it: a notice the app sent the bot is
+   * not the person writing, so it does not put the suggestions away.
+   */
+  const cloudBotSuggestedReplies = $derived.by((): string[] => {
+    const uid = dmCloudBotUid;
+    if (!uid) return [];
+    return setupSuggestionsDue(timeline, uid, messageHasVisibleContent, suggestionsForMessage);
   });
   /**
    * The person sent something to a bot that cannot run on this Mac and
@@ -6000,6 +6458,7 @@
       const title = draft.title?.trim() ?? "";
       const agentUid = result.target.agentUid?.trim() ?? "";
       if (agentUid && !newCloudBotUids.includes(agentUid)) setNewCloudBots([agentUid, ...newCloudBotUids]);
+      if (agentUid) startBotConnections(agentUid);
       if (title && agentUid) {
         void saveNewBotProfile(agentUid, { title });
       } else if (title) {
@@ -10055,7 +10514,9 @@
                         ? botProgressHeader
                         : undefined}
                   belowMessages={agentThinkingBelow}
-                  suggestedReplies={setupSuggestedReplies}
+                  suggestedReplies={setupSuggestedReplies.length > 0 ? setupSuggestedReplies : cloudBotSuggestedReplies}
+                  connections={cloudBotConnections}
+                  extraBlocksByEventId={cloudBotExtraBlocks}
                   draftKey={selectedRow.id}
                   draftStorage={tenantStorage}
                 />

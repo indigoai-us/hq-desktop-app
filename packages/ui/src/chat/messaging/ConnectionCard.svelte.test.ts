@@ -298,7 +298,7 @@ describe("ChannelConversation with connection cards", () => {
     root.querySelector<HTMLElement>(`[data-testid="conversation-message"][data-event-id="${eventId}"]`)!;
 
   it("attaches the host's extra blocks to a message that carried none", () => {
-    const viewsFor = vi.fn(() => views());
+    const viewsFor = vi.fn((_message: { eventId: string }) => views());
     const root = mountConversation({
       connections: { viewsFor, onaction: () => {} },
       extraBlocksByEventId: { evt_hello: [{ kind: "connect", targets: ["slack", "tools"] }] },
@@ -309,7 +309,7 @@ describe("ChannelConversation with connection cards", () => {
     // A block the bot wrote itself draws the same way.
     expect(cards(message(root, "evt_offer")).map((el) => el.dataset.target)).toEqual(["slack"]);
     // The host builds the views per message.
-    expect(viewsFor.mock.calls.map(([msg]) => (msg as ConversationMessageWire).eventId)).toEqual(
+    expect(viewsFor.mock.calls.map(([msg]) => msg.eventId)).toEqual(
       expect.arrayContaining(["evt_hello", "evt_offer"]),
     );
   });
