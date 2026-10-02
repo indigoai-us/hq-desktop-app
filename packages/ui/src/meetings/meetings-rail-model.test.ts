@@ -15,7 +15,7 @@ const now = new Date(2026, 9, 1, 10, 14);
 const at = (d: number, h: number, m = 0) => new Date(2026, 9, d, h, m).toISOString();
 
 function ev(id: string, start: string, end: string, extra: Partial<MeetingEvent> = {}): MeetingEvent {
-  return { id, summary: id, status: "confirmed", start: { dateTime: start }, end: { dateTime: end }, ...extra };
+  return { id, summary: id, status: "confirmed", start: { dateTime: start }, end: { dateTime: end }, meetingUrl: `https://zoom.us/j/${id}`, ...extra };
 }
 
 const events: MeetingEvent[] = [

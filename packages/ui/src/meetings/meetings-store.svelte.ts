@@ -32,6 +32,7 @@ import {
   recurringSeriesId,
   resolveInviteCompanyId,
   urlInviteDestinationLabel,
+  isListableMeeting,
 } from "./meetings-model";
 import { takeAgendaWindow } from "./meetings-view-model";
 import type {
@@ -229,7 +230,7 @@ function hydrateFromCache() {
   >(storage);
   if (!snapshot) return;
   hydratedFromCache = true;
-  events = snapshot.events ?? [];
+  events = (snapshot.events ?? []).filter(isListableMeeting);
   botsByEventId = new Map(snapshot.botsByEventId ?? []);
   allBots =
     snapshot.scheduledBots ??

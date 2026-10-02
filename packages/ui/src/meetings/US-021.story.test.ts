@@ -38,6 +38,7 @@ const tomorrow: MeetingEvent = {
   status: "confirmed",
   start: { dateTime: new Date(2026, 9, 2, 9, 30).toISOString() },
   end: { dateTime: new Date(2026, 9, 2, 10).toISOString() },
+  meetingUrl: "https://meet.google.com/abc-defg-hij",
 };
 
 const mounted: Array<ReturnType<typeof mount>> = [];

@@ -13,6 +13,7 @@ import {
   eventEnd,
   eventStart,
   isActiveBotStatus,
+  isListableMeeting,
   type MeetingEvent,
   type ScheduledBot,
 } from "./meetings-model";
@@ -34,8 +35,6 @@ export interface MeetingsRailRow {
   /** Past row with a saved recap (notes mark). */
   hasRecap: boolean;
   hasRecording: boolean;
-  /** Free/busy-only "Busy" block from a shared calendar: rendered quiet, no mark. */
-  busy?: boolean;
 }
 
 export interface MeetingsRailSection {
@@ -89,21 +88,6 @@ export function elapsedLabel(start: Date | null, now: Date): string {
   const mins = Math.max(0, Math.floor((now.getTime() - start.getTime()) / 60_000));
   if (mins < 60) return `${mins}m`;
   return `${Math.floor(mins / 60)}h ${mins % 60}m`;
-}
-
-/**
- * Google "Busy" blocks: free/busy-only events from a shared calendar. They
- * carry no attendees, no join link, and the literal title "Busy".
- */
-export function isBusyBlock(
-  event: Pick<MeetingEvent, "summary" | "attendees" | "meetingUrl" | "hangoutLink">,
-): boolean {
-  return (
-    (event.summary ?? "").trim().toLowerCase() === "busy" &&
-    !event.attendees?.length &&
-    !event.meetingUrl &&
-    !event.hangoutLink
-  );
 }
 
 /** Two-letter mark from a company name ("LiveRecover" → "LR", "Indigo" → "IN"). */
@@ -167,6 +151,7 @@ export function meetingsRailSections(input: MeetingsRailInput): MeetingsRailSect
 
   for (const event of input.events) {
     if (event.status === "cancelled") continue;
+    if (!isListableMeeting(event)) continue;
     const start = eventStart(event);
     if (!start) continue;
     const end = eventEnd(event) ?? start;
@@ -179,16 +164,13 @@ export function meetingsRailSections(input: MeetingsRailInput): MeetingsRailSect
     if (filter.liveOnly && !isLive) continue;
     if (filter.hasRecap && !recap) continue;
     if (filter.hasRecording && !recording && !bot?.sourceLanded) continue;
-    const busy = isBusyBlock(event);
     const base = {
       id: event.id,
       title: event.summary?.trim() || "Untitled meeting",
       companyUid,
-      companyMark:
-        companyUid && !busy
-          ? companyMark(input.companyNamesByUid.get(companyUid) ?? null)
-          : null,
-      busy,
+      companyMark: companyUid
+        ? companyMark(input.companyNamesByUid.get(companyUid) ?? null)
+        : null,
       live: isLive,
       hasRecap: false,
       hasRecording: recording,
@@ -244,6 +226,7 @@ export function filterCompanies(
 ): Array<{ uid: string; label: string; mark: string; count: number }> {
   const counts = new Map<string, number>();
   for (const event of events) {
+    if (!isListableMeeting(event)) continue;
     const uid = event.sourceCompanyUid;
     if (uid) counts.set(uid, (counts.get(uid) ?? 0) + 1);
   }

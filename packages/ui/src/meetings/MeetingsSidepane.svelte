@@ -145,8 +145,6 @@
           data-testid="meetings-row"
           data-row-id={row.id}
           data-live={row.live ? "true" : undefined}
-          data-busy={row.busy ? "true" : undefined}
-          class:is-busy={row.busy}
           onclick={() => onselect?.(row.id)}
         >
           {#if row.live}
@@ -294,11 +292,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  .row.is-busy .t,
-  .row.is-busy .time {
-    color: var(--t3);
   }
 
   .meta,

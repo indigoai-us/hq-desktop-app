@@ -18,7 +18,9 @@ import {
   meetingJoinUrl,
   organizerLabel,
 } from "./meeting-details";
-import { isBusyBlock, meetingsRailSections } from "./meetings-rail-model";
+import { filterCompanies, meetingsRailSections } from "./meetings-rail-model";
+import { isListableMeeting } from "./meetings-model";
+import { takeAgendaWindow } from "./meetings-view-model";
 import type { MeetingEvent } from "./meetings-model";
 
 const now = new Date(2026, 9, 2, 8, 30);
@@ -116,32 +118,60 @@ describe("agenda column width", () => {
   });
 });
 
-describe("busy blocks", () => {
+describe("unlistable events are filtered out", () => {
+  const at = (h: number, m = 0) => new Date(2026, 9, 2, h, m).toISOString();
   const busy: MeetingEvent = {
     id: "busy-1",
     summary: "Busy",
     status: "confirmed",
     sourceCompanyUid: "cmp_1",
-    start: { dateTime: new Date(2026, 9, 2, 9).toISOString() },
-    end: { dateTime: new Date(2026, 9, 2, 9, 30).toISOString() },
+    start: { dateTime: at(9) },
+    end: { dateTime: at(9, 30) },
+  };
+  const untitled: MeetingEvent = { ...busy, id: "untitled", summary: "  ", meetingUrl: "https://zoom.us/j/1" };
+  const noVenue: MeetingEvent = { ...busy, id: "no-venue", summary: "Focus time" };
+  const office: MeetingEvent = { ...busy, id: "office", summary: "Lunch", location: "1 Main St, Denver" };
+  const conf: MeetingEvent = {
+    ...busy,
+    id: "conf",
+    summary: "Sync",
+    conferenceData: { entryPoints: [{ entryPointType: "video", uri: "https://meet.google.com/abc-defg-hij" }] },
   };
 
-  it("renders a free/busy block as a quiet row without a company mark", () => {
-    expect(isBusyBlock(busy)).toBe(true);
-    expect(isBusyBlock({ ...busy, meetingUrl: "https://zoom.us/j/1" })).toBe(false);
+  it("hides Busy, untitled, and venue-less events; keeps a physical location or a join link", () => {
+    expect(isListableMeeting(busy)).toBe(false);
+    expect(isListableMeeting({ ...busy, meetingUrl: "https://zoom.us/j/1" })).toBe(false);
+    expect(isListableMeeting(untitled)).toBe(false);
+    expect(isListableMeeting(noVenue)).toBe(false);
+    expect(isListableMeeting(office)).toBe(true);
+    expect(isListableMeeting(conf)).toBe(true);
+    expect(isListableMeeting({ ...noVenue, hangoutLink: "https://meet.google.com/x-y-z" })).toBe(true);
+  });
+
+  it("keeps hidden events out of rail sections, the live section, and filter counts", () => {
+    const liveBusy: MeetingEvent = { ...busy, id: "busy-live", start: { dateTime: at(8) }, end: { dateTime: at(9) } };
+    const events = [busy, liveBusy, untitled, noVenue, office, conf, { ...standup, sourceCompanyUid: "cmp_1" }];
     const sections = meetingsRailSections({
-      events: [busy, { ...standup, sourceCompanyUid: "cmp_1" }],
+      events,
       botsByEventId: new Map(),
       scheduledBots: [],
       companyNamesByUid: new Map([["cmp_1", "Indigo"]]),
       filter: { companyUid: null, hasRecording: false, hasRecap: false, liveOnly: false },
       now,
     } as never);
-    const rows = sections.flatMap((s) => s.rows);
-    const busyRow = rows.find((r) => r.id === "busy-1")!;
-    const realRow = rows.find((r) => r.id === "standup")!;
-    expect(busyRow).toMatchObject({ busy: true, companyMark: null });
-    expect(realRow.busy).toBe(false);
-    expect(realRow.companyMark).not.toBeNull();
+    const ids = sections.flatMap((s) => s.rows).map((r) => r.id);
+    expect(ids).not.toContain("busy-1");
+    expect(ids).not.toContain("busy-live");
+    expect(ids).not.toContain("untitled");
+    expect(ids).not.toContain("no-venue");
+    expect(ids).toEqual(expect.arrayContaining(["office", "conf", "standup"]));
+    const counts = filterCompanies(events, new Map([["cmp_1", "Indigo"]]));
+    expect(counts[0].count).toBe(3);
+  });
+
+  it("drops hidden events from the store agenda window and keeps venue through the cache slim", () => {
+    const kept = takeAgendaWindow([busy, untitled, noVenue, office, conf], new Date(2026, 9, 2, 8));
+    expect(kept.map((e) => e.id).sort()).toEqual(["conf", "office"]);
+    expect(kept.every(isListableMeeting)).toBe(true);
   });
 });

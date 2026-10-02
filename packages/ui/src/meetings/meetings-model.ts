@@ -757,6 +757,23 @@ export function eventMeetingUrl(e: MeetingEvent): string | null {
 }
 
 /**
+ * Whether a calendar event belongs in the Meetings list at all. Hidden:
+ * free/busy placeholders ("Busy") and untitled events, and anything with
+ * neither a location nor a join link. A physical address counts as a
+ * location. Every consumer (rail sections, live pick, toolbar counts, canvas
+ * next/previous) reads the store's already-filtered list, so they agree.
+ */
+export function isListableMeeting(
+  e: Pick<MeetingEvent, "summary" | "location" | "meetingUrl" | "hangoutLink" | "conferenceData">,
+): boolean {
+  const title = (e.summary ?? "").trim().toLowerCase();
+  if (!title || title === "busy") return false;
+  if ((e.location ?? "").trim()) return true;
+  if ((e.meetingUrl ?? "").trim() || (e.hangoutLink ?? "").trim()) return true;
+  return Boolean(e.conferenceData?.entryPoints?.some((p) => (p.uri ?? "").trim()));
+}
+
+/**
  * Human platform label for a meeting row — "Google Meet" / "Zoom" / "Teams" /
  * "Webex", else empty string when the URL is missing or unrecognized.
  */
