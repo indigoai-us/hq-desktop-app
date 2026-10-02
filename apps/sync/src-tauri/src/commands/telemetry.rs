@@ -2514,10 +2514,10 @@ fn commit_acknowledged_sources(
         let entry = CursorEntry {
             offset: src.end_offset,
             mtime: src.mtime,
-            context: src
-                .context
-                .as_ref()
-                .and_then(|context| serde_json::from_value(context.clone()).ok()),
+            context: src.context.as_ref().map(|context| {
+                serde_json::from_value(context.clone())
+                    .expect("Codex context from the rollout scanner must round-trip")
+            }),
         };
         max_per_file
             .entry(src.file_path.clone())

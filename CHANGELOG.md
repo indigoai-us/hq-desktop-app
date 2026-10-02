@@ -7,6 +7,7 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+- Desktop usage uploads are limited to four requests and 4 MB per sync; remaining records resume on later syncs.
 - Daemon sync controls explain paused, disabled, and stopped states. Resume also re-enables sync for machines migrated from the older daemon setting. Instant Sync changes reach an existing daemon and require HQ CLI 5.312.0 or later. Sync actions wait briefly for host selection at launch, then use the legacy or daemon path. Company-specific Sync Now no longer starts a sync across every company when the daemon owns sync.
 
 - Fixes the sidebar order shipped in 0.10.373 and 0.10.374, which listed

@@ -8,6 +8,11 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 
+// Match the existing Codex four-batch / four-MiB per-sync bounds. The Claude
+// backlog is retained and resumed later; this caps work in one sync cycle.
+const MAX_USAGE_REQUESTS_PER_SYNC: usize = 4;
+const MAX_USAGE_BYTES_PER_SYNC: usize = 4 * 1024 * 1024;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UsageUploadSource {
     pub file_path: String,
@@ -26,7 +31,10 @@ pub struct UsageUploadLimits {
 
 /// Sync-wide limits used by the shipped desktop usage collector.
 pub const fn desktop_usage_sync_limits() -> Option<UsageUploadLimits> {
-    None
+    Some(UsageUploadLimits {
+        max_requests: MAX_USAGE_REQUESTS_PER_SYNC,
+        max_bytes: MAX_USAGE_BYTES_PER_SYNC,
+    })
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -382,5 +390,17 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(all_sources.iter().any(|source| source.context.is_none()));
         assert!(all_sources.iter().any(|source| source.context.is_some()));
+    }
+
+    #[test]
+    fn sync_byte_budget_can_stop_before_request_budget() {
+        let limits = UsageUploadLimits {
+            max_requests: 10,
+            max_bytes: 2_000_000,
+        };
+        let mut planner = UsageUploadPlanner::new(BATCH_OVERHEAD, MAX_BATCH_BYTES, Some(limits));
+        let (batches, _) = drain_cycle(&mut planner, &rows(3, 900_000, None));
+        assert_eq!(batches.len(), 2, "byte budget should stop a third request");
+        assert!(batches.iter().map(|batch| batch.body_bytes).sum::<usize>() <= limits.max_bytes);
     }
 }
