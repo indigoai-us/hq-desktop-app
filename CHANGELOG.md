@@ -8,6 +8,11 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Auto-sync watcher reports now identify launcher and runner exits and owner-lease
+  outcomes. When a Node report is available, they add a safe error identifier and
+  the top frame's file name for HQ's own scripts only; frames from other files
+  report "external", so a user's file names are never sent.
+
 - First-run onboarding events now use the same installation identifier as launch and sign-in receipts, so those steps can be joined without adding personal data.
 - Log in with Microsoft now works for work and school Microsoft accounts, not only personal Microsoft accounts.
 
@@ -18,8 +23,6 @@ The release moves it under the version it ships in.
 ## [0.10.375] — 2026-10-02
 
 - Daemon sync controls explain paused, disabled, and stopped states. Resume also re-enables sync for machines migrated from the older daemon setting. Instant Sync changes reach an existing daemon and require HQ CLI 5.312.0 or later. Sync actions wait briefly for host selection at launch, then use the legacy or daemon path. Company-specific Sync Now no longer starts a sync across every company when the daemon owns sync.
-
-- Watcher exit diagnostics now report external Node frames without exposing a user's file name.
 
 - Fixes the sidebar order shipped in 0.10.373 and 0.10.374, which listed
   conversations by unread count and then by name within each day instead of
@@ -304,9 +307,6 @@ The release moves it under the version it ships in.
 - Auto-sync memory-ceiling reports now include the active sync phase and its
   elapsed-time bucket, so recurring memory failures can be compared across scan,
   pull, and push work.
-- Auto-sync watcher reports now identify launcher/runner exits and owner-lease
-  outcomes. When a Node report is available, it adds a safe error identifier and
-  basename-only top frame.
 
 ## [0.10.357] — 2026-09-29
 
