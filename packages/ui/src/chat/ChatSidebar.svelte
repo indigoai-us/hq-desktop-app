@@ -221,6 +221,8 @@
     openNewChannel: () => void;
     openSearch: () => void;
     openHistory: () => void;
+    /** Open the create modal on the New agent stepper (Team page Add agent). */
+    openNewAgent: () => void;
   }
 
   interface Props {
@@ -1524,7 +1526,7 @@
   $effect(() => {
     const emit = onactions;
     if (!emit) return;
-    emit({ openCreate, openNewChannel, openSearch, openHistory });
+    emit({ openCreate, openNewChannel, openSearch, openHistory, openNewAgent });
     return () => emit(null);
   });
   const historyHiddenCount = $derived(
@@ -1705,6 +1707,7 @@
     hint?: { title: string; companyUid: string | null },
   ): void {
     createOpen = false;
+    stepperRequested = false;
     plusBtnEl?.focus();
     if (!openChannelId) return;
     // A just-created channel is opened before the directory feed lists it, so
@@ -1762,6 +1765,17 @@
     closeAllOverlays();
     footerMenuOpen = next;
   }
+
+  /** Host entry point (Team page Add agent): open on the New agent step. */
+  function openNewAgent(): void {
+    createKind = "channel";
+    createStep = "bot";
+    // Team page entry uses the six-step stepper (US-018) even while the
+    // "+" menu keeps the three-step wizard.
+    stepperRequested = true;
+    openCreate();
+  }
+  let stepperRequested = $state(false);
 
   /** Failure reason from a switcher-triggered New company, shown inline. */
   let scopeEntryError = $state<string | null>(null);
@@ -3990,7 +4004,7 @@
       {onassistedinstall}
       {onrequestaitools}
       {botWorkers}
-      {agentStepper}
+      agentStepper={agentStepper || stepperRequested}
       {existingBotNames}
       {botCompanies}
       {botSignIn}

@@ -803,6 +803,7 @@
           type="button"
           class="tab"
           class:active={tab === "overview"}
+          aria-current={tab === "overview" ? "page" : undefined}
           data-testid="tab-overview"
           onclick={() => selectTab("overview")}
         >
@@ -812,6 +813,7 @@
           type="button"
           class="tab"
           class:active={boardTabActive}
+          aria-current={boardTabActive ? "page" : undefined}
           data-testid="tab-board"
           data-tab="tasks"
           onclick={() => selectTab("tasks")}
@@ -825,6 +827,7 @@
           type="button"
           class="tab"
           class:active={tab === "files"}
+          aria-current={tab === "files" ? "page" : undefined}
           data-testid="tab-files"
           onclick={() => selectTab("files")}
         >
@@ -834,6 +837,7 @@
           type="button"
           class="tab"
           class:active={tab === "activity"}
+          aria-current={tab === "activity" ? "page" : undefined}
           data-testid="tab-activity"
           onclick={() => selectTab("activity")}
         >

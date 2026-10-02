@@ -1934,7 +1934,7 @@
     if (!api) return;
     const result = await api.list();
     if (!result.ok) return;
-    const bots = result.value.bots ?? [];
+    const bots = result.value?.bots ?? [];
     // A BOT THAT DROPPED OFF THIS MAC'S LISTING IS THE WIPE, AS IT HAPPENS.
     // The account's own listing is what turns that into the honest notice,
     // and on the VM it was on a 120 s timer that had stopped — so the DM
@@ -2238,7 +2238,7 @@
     const workers = adapter.bots?.workers;
     if (!workers || localBotWorkers) return;
     const result = await workers();
-    if (result.ok) localBotWorkers = result.value.workers ?? [];
+    if (result.ok) localBotWorkers = result.value?.workers ?? [];
   }
   onMount(() => {
     if (!adapter.bots) return;
@@ -8874,6 +8874,18 @@
     });
   }
 
+  /**
+   * Team page Add agent (US-039): leave the company pane for Messages, keep
+   * the company scope, and open the create modal on the New agent stepper.
+   */
+  function addAgentFromTeam(): void {
+    companyPaneOpen = false;
+    void Promise.resolve(navigate({ kind: "messages" })).then(async () => {
+      await svelteTick();
+      withSidebar((actions) => actions.openNewAgent());
+    });
+  }
+
   function openNewChat(): void {
     paletteOpen = false;
     cheatSheetOpen = false;
@@ -9720,6 +9732,7 @@
             company={adapter.company ?? null}
             messaging={adapter.messaging ?? null}
             senderName={resolvedAccountLabel ?? "you"}
+            onaddagent={addAgentFromTeam}
           />
         {:else if railPlaceholder?.id === "projects" && companyPaneCompany}
           <!-- US-039: the sidepane Projects row opens the US-023 board for
