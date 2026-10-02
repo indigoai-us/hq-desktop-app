@@ -31,7 +31,10 @@ describe("US-029 FilesConnectPage", () => {
     openAgentWorkflow.mockClear();
   });
 
-  function mountPage(page: "vault" | "integrations" | "secrets" | "deployments") {
+  function mountPage(
+    page: "vault" | "integrations" | "secrets" | "deployments",
+    files: unknown = null,
+  ) {
     const target = document.createElement("div");
     document.body.appendChild(target);
     component = mount(FilesConnectPage, {
@@ -39,7 +42,7 @@ describe("US-029 FilesConnectPage", () => {
       props: {
         page,
         slug: "indigo",
-        files: null,
+        files: files as never,
         shell: {
           openInEditor: vi.fn(async () => ok(undefined)),
           openClaudeCodeLink: vi.fn(async () => ok(undefined)),
@@ -89,5 +92,39 @@ describe("US-029 FilesConnectPage", () => {
     expect(openAgentWorkflow).toHaveBeenCalled();
     const prompt = String((openAgentWorkflow.mock.calls[0] as unknown as unknown[] | undefined)?.[1] ?? "");
     expect(prompt).toContain("/deploy indigo");
+  });
+
+  it("shows the vault as a folder tree with a quiet preview until a file is picked", async () => {
+    const tree: Record<string, unknown[]> = {
+      "companies/indigo": [
+        { name: "knowledge", path: "companies/indigo/knowledge", isDir: true, hasChildren: true },
+        { name: "README.md", path: "companies/indigo/README.md", isDir: false, hasChildren: false },
+      ],
+      "companies/indigo/knowledge": [
+        { name: "gtm.md", path: "companies/indigo/knowledge/gtm.md", isDir: false, hasChildren: false },
+      ],
+    };
+    const files = {
+      listDir: vi.fn(async (path: string) => ok(tree[path] ?? [])),
+      getFileContent: vi.fn(async () => ok("# GTM")),
+    };
+    const target = mountPage("vault", files);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+    expect(target.querySelector("[data-testid='vault-tree']")).not.toBeNull();
+    expect(target.querySelector("[data-testid='vault-list']")).toBeNull();
+    expect(target.querySelector("[data-testid='vault-preview-empty']")?.textContent).toContain("Select a file");
+    expect(target.querySelector("[data-testid='vault-summary']")?.textContent).toBe("1 folder · 1 file");
+    const rowFor = (path: string) =>
+      target.querySelector<HTMLElement>(`[data-testid='file-tree-row'][data-path='${path}']`);
+    rowFor("companies/indigo/knowledge")!.click();
+    for (let i = 0; i < 5; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+    }
+    rowFor("companies/indigo/knowledge/gtm.md")!.click();
+    flushSync();
+    expect(target.querySelector("[data-testid='vault-preview-empty']")).toBeNull();
+    expect(target.querySelector("[data-testid='vault-access'] h2")?.textContent).toBe("knowledge");
   });
 });

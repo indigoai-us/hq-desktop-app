@@ -4,7 +4,11 @@
    * First frame is the cache or a shimmer. Refresh runs after paint.
    * Secret values are never written into the DOM.
    */
-  import type { FilesApi, SettingsApi, ShellApi } from "@hq/platform";
+  import type { FilesApi, PlatformAdapter, SettingsApi, ShellApi } from "@hq/platform";
+  import CompanyFileTree from "../../files/CompanyFileTree.svelte";
+  import FilePreviewPane from "../../files/FilePreviewPane.svelte";
+  import type { DirEntry } from "../../files/file-tree.js";
+  import { cachedChildren, folderSummary, rememberChildren } from "../../projects/project-files.js";
   import { openAgentWorkflow, type AgentWorkflowApi } from "../agent-workflow.js";
   import "../../home/tokens.css";
   import "../../chat/chat-tokens.css";
@@ -42,9 +46,12 @@
     shell: ShellApi | null;
     settings: SettingsApi | null;
     openExternal?: (url: string) => void;
+    /** Full platform adapter, when the host has one: turns on the desktop
+     *  Open and Reveal actions in the vault preview. */
+    adapter?: PlatformAdapter | null;
   }
 
-  let { page, slug, files, shell, settings, openExternal }: Props = $props();
+  let { page, slug, files, shell, settings, openExternal, adapter = null }: Props = $props();
 
   const workflow = $derived({ settings, shell } as AgentWorkflowApi);
 
@@ -143,6 +150,56 @@
   }
 
   const vaultRows = $derived(filterVault(data.nodes, vaultTab, query));
+
+  // Vault tree (All tab): the same lazy, cached tree as the project Files
+  // tab, so a reopened folder paints from cache in the click frame.
+  const vaultRoot = $derived(`companies/${slug}`);
+  let vaultFile = $state<string | null>(null);
+  let vaultRootSummary = $state<string | null>(null);
+
+  function loadVaultChildren(relPath: string): Promise<DirEntry[]> {
+    const api = files;
+    if (!api) return Promise.resolve([]);
+    const fresh = api.listDir(relPath).then((result) => {
+      if (!result.ok) throw new Error(result.message ?? "Could not list files");
+      const entries = result.value as unknown as DirEntry[];
+      rememberChildren(relPath, entries);
+      return entries;
+    });
+    const cached = cachedChildren(relPath);
+    if (!cached) return fresh;
+    void fresh.catch((err) => console.error("vault folder refresh failed:", err));
+    return Promise.resolve(cached);
+  }
+
+  $effect(() => {
+    const root = vaultRoot;
+    vaultFile = null;
+    const cached = cachedChildren(root);
+    vaultRootSummary = cached ? folderSummary(cached) : null;
+    if (!files) return;
+    let alive = true;
+    loadVaultChildren(root)
+      .then((entries) => {
+        if (alive) vaultRootSummary = folderSummary(entries);
+      })
+      .catch((err) => console.error("vault folder summary failed:", err));
+    return () => {
+      alive = false;
+    };
+  });
+
+  /** Preview seam: the host adapter when given, else files-only (no
+   *  desktop actions, so no dead buttons). */
+  const previewAdapter = $derived(
+    adapter ??
+      ({ files, shell, isAvailable: () => false } as unknown as PlatformAdapter),
+  );
+  /** Top-level vault folder of the picked file, for the Access header. */
+  const vaultFolder = $derived(
+    vaultFile ? (vaultFile.slice(vaultRoot.length + 1).split("/")[0] ?? null) : null,
+  );
+  const showVaultTree = $derived(files !== null && vaultTab === "all");
   const integrationRows = $derived(filterIntegrations(data.integrations, integrationTab, query));
   const secretRows = $derived(filterSecrets(data.secrets, secretTab, query));
   const vaultCurrent = $derived(data.nodes.find((node) => node.id === selectedVault) ?? data.nodes[0]);
@@ -209,7 +266,21 @@
       <button class="btn" type="button">Upload</button>
       <button class="btn" type="button" data-testid="vault-share" onclick={() => (sheet = "share")}>Share</button>
     </header>
-    <div class="split">
+    <div class="split vault-split" class:has-tree={showVaultTree}>
+      {#if showVaultTree}
+        <div class="vault-tree" data-testid="vault-tree">
+          <div class="vault-root mono" title={vaultRoot}>{vaultRoot}</div>
+          {#key vaultRoot}
+            <CompanyFileTree
+              rootPath={vaultRoot}
+              loadChildren={loadVaultChildren}
+              selectedPath={vaultFile}
+              filterQuery={query}
+              onselect={(path) => (vaultFile = path)}
+            />
+          {/key}
+        </div>
+      {:else}
       <div class="list" data-testid="vault-list">
         {#each vaultRows as node (node.id)}
           <button
@@ -224,10 +295,28 @@
           </button>
         {/each}
       </div>
+      {/if}
+      {#if showVaultTree}
+        <section class="vault-preview" aria-label="File preview" data-testid="vault-preview">
+          {#if vaultFile}
+            <FilePreviewPane adapter={previewAdapter} path={vaultFile} />
+          {:else}
+            <div class="vault-empty" data-testid="vault-preview-empty">
+              <span class="vault-empty-title">Select a file</span>
+              <p class="mono" title={vaultRoot}>{vaultRoot}</p>
+              <p data-testid="vault-summary">{vaultRootSummary ?? "Reading folder…"}</p>
+            </div>
+          {/if}
+        </section>
+      {/if}
       <aside class="inspector" data-testid="vault-access">
         <p class="kind">Access</p>
-        <h2>{vaultCurrent?.name}</h2>
-        <pre class="preview">{vaultCurrent?.preview}</pre>
+        {#if showVaultTree}
+          <h2>{vaultFolder ?? slug}</h2>
+        {:else}
+          <h2>{vaultCurrent?.name}</h2>
+          <pre class="preview">{vaultCurrent?.preview}</pre>
+        {/if}
         {#each data.grants as grant (grant.id)}
           <div class="grant">
             <span>{grant.name}</span>
@@ -429,6 +518,14 @@
   .btn.primary { background: var(--v4-primary-bg); color: var(--v4-primary-fg); border-color: transparent; }
   .split { display: grid; grid-template-columns: minmax(0, 1fr) 320px; min-height: 0; flex: 1; }
   .list, .inspector { min-height: 0; overflow: auto; }
+  /* Vault: tree · preview · access, matching the vault storyboard scene. */
+  .vault-split.has-tree { grid-template-columns: minmax(240px, 320px) minmax(0, 1fr) 280px; }
+  .vault-tree { min-height: 0; overflow: auto; padding: 8px 8px 16px; border-right: 1px solid var(--v4-rowline); }
+  .vault-root { padding: 4px 8px 6px; color: var(--v4-text-3); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .vault-preview { min-width: 0; min-height: 0; overflow: auto; }
+  .vault-empty { padding: 24px 16px; color: var(--v4-text-3); }
+  .vault-empty p { margin: 2px 0 0; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .vault-empty-title { display: block; margin-bottom: 4px; color: var(--v4-text-1); font-weight: 600; }
   .inspector { border-left: 1px solid var(--v4-rowline); background: var(--v4-secondary-sidebar); padding: 16px; display: flex; flex-direction: column; gap: 8px; }
   .row { display: flex; gap: 8px; align-items: center; width: 100%; text-align: left; padding: 8px; border: 0; border-bottom: 1px solid var(--v4-rowline); background: transparent; color: var(--v4-text-2); }
   .row[aria-current="true"] { background: var(--v4-active-row, var(--v4-hover)); color: var(--v4-text-1); }
