@@ -10,14 +10,16 @@ The release moves it under the version it ships in.
 
 - Fixes the sidebar order shipped in 0.10.373 and 0.10.374, which listed
   conversations by unread count and then by name within each day instead of
-  by time. The order and
-  the day headings now both follow the latest message a person typed, where
-  the server reports it: a channel that only bots posted in today is listed
-  under the day a person last typed in it. A conversation the server reports
-  as having no typed message is placed by when it was created, so a channel
-  made today appears under Today. A conversation the server has not
-  classified yet is still placed by its latest activity, bot and session
-  activity included, until a one-time server fill-in has run.
+  by time. The order and the day headings now both follow the latest message
+  a person typed, where the server reports it: a channel that only bots
+  posted in today is listed under the day a person last typed in it. A
+  channel or group conversation the server reports as having no typed
+  message is placed by when it was created, so a channel made today appears
+  under Today. A direct message with no typed message yet is placed by its
+  latest activity for now, so a new teammate's or a bot's first direct
+  message appears under Today. A conversation the server has not classified
+  yet is still placed by its latest activity, bot and session activity
+  included, until a one-time server fill-in has run.
 
 - Channels and direct messages that hide bot and session activity now ask the
   server for the filtered history. When a conversation opens on a long run of
