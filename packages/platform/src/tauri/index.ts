@@ -9,8 +9,10 @@
 import {
   AGENT_PATHS,
   DELETE_CHANNEL_UNSUPPORTED_MESSAGE,
+  INTEGRATION_PATHS,
   buildReplyThreadPath,
   buildSendReplyRequest,
+  connectionGrantBody,
   failure,
   normalizeReplyThreadValue,
   normalizeNotificationsFeed,
@@ -507,6 +509,13 @@ export class TauriPlatformAdapter implements PlatformAdapter {
       this.hqProJson("GET", AGENT_PATHS.owners(companyUid, agentUid)),
     getCompanyTelemetry: (companyUid, from, to) =>
       this.hqProJson("GET", AGENT_PATHS.companyTelemetry(companyUid, from, to)),
+  };
+
+  readonly integrations: PlatformAdapter["integrations"] = {
+    listConnections: (companyUid) =>
+      this.hqProJson("GET", INTEGRATION_PATHS.connections(companyUid)),
+    grantConnectionAccess: (input) =>
+      this.hqProJson("POST", INTEGRATION_PATHS.grantAccess, connectionGrantBody(input)),
   };
 
   readonly company: PlatformAdapter["company"] = {

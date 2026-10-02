@@ -1206,6 +1206,57 @@ export interface AgentsApi {
   ): AdapterPromise<Json>;
 }
 
+/**
+ * hq-pro routes for a company's connected apps. Served by the same API as the
+ * agent and messaging routes, so every adapter reaches them the way it
+ * reaches `AGENT_PATHS`.
+ */
+export const INTEGRATION_PATHS = {
+  connections: (companyUid: string) =>
+    `/v1/integrations/admin?companyUid=${encodeURIComponent(companyUid)}`,
+  grantAccess: "/v1/integrations/factory/access/grant",
+} as const;
+
+/** Who gets to use a connection. A bot's uid is granted as a person. */
+export interface ConnectionAccessGrant {
+  companyUid: string;
+  connectionId: string;
+  /** A person uid, or a bot's `agt_` uid. */
+  granteeUid: string;
+}
+
+/**
+ * The request body of a connection grant. `permission` is left out so the
+ * server applies its default.
+ */
+export function connectionGrantBody(input: ConnectionAccessGrant): {
+  companyUid: string;
+  connectionId: string;
+  granteeType: "person";
+  granteeId: string;
+} {
+  return {
+    companyUid: input.companyUid,
+    connectionId: input.connectionId,
+    granteeType: "person",
+    granteeId: input.granteeUid,
+  };
+}
+
+/** A company's connected apps (HQ Integrations). */
+export interface IntegrationsApi {
+  /**
+   * GET /v1/integrations/admin?companyUid=: the company's connections, each
+   * with its status and who may use it, plus what the caller may manage.
+   */
+  listConnections(companyUid: string): AdapterPromise<Json>;
+  /**
+   * POST /v1/integrations/factory/access/grant: let one person or bot use a
+   * connection. Only the person who connected it or a company admin may.
+   */
+  grantConnectionAccess(input: ConnectionAccessGrant): AdapterPromise<Json>;
+}
+
 export interface FeedbackApi {
   submitBugReport(title: string, body: string): AdapterPromise<Json>;
 }
@@ -1860,6 +1911,7 @@ export interface PlatformAdapter {
   readonly files: FilesApi;
   readonly agency: AgencyApi;
   readonly agents: AgentsApi;
+  readonly integrations: IntegrationsApi;
   readonly feedback: FeedbackApi;
   readonly sync: SyncApi;
   readonly shell: ShellApi;

@@ -10,8 +10,10 @@
 import {
   AGENT_PATHS,
   DELETE_CHANNEL_UNSUPPORTED_MESSAGE,
+  INTEGRATION_PATHS,
   buildReplyThreadPath,
   buildSendReplyRequest,
+  connectionGrantBody,
   failure,
   normalizeReplyThreadValue,
   normalizeNotificationsFeed,
@@ -990,6 +992,13 @@ export class WebPlatformAdapter implements PlatformAdapter {
       this.get(WEB_PATHS.agentOwners(companyUid, agentUid)),
     getCompanyTelemetry: (companyUid, from, to) =>
       this.get(WEB_PATHS.agentCompanyTelemetry(companyUid, from, to)),
+  };
+
+  readonly integrations: PlatformAdapter["integrations"] = {
+    listConnections: (companyUid) =>
+      this.get(INTEGRATION_PATHS.connections(companyUid)),
+    grantConnectionAccess: (input) =>
+      this.post(INTEGRATION_PATHS.grantAccess, connectionGrantBody(input)),
   };
 
   readonly company: PlatformAdapter["company"] = {

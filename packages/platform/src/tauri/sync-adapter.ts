@@ -18,7 +18,9 @@ import {
   type WhoAmI,
   type VersionInfo,
   AGENT_PATHS,
+  INTEGRATION_PATHS,
   buildSendReplyRequest,
+  connectionGrantBody,
   failure,
   normalizeReplyThreadValue,
   normalizeNotificationsFeed,
@@ -1063,6 +1065,13 @@ export function createSyncPlatformAdapter(
         hqProJson('GET', AGENT_PATHS.owners(companyUid, agentUid)),
       getCompanyTelemetry: (companyUid, from, to) =>
         hqProJson('GET', AGENT_PATHS.companyTelemetry(companyUid, from, to)),
+    },
+
+    integrations: {
+      listConnections: (companyUid) =>
+        hqProJson('GET', INTEGRATION_PATHS.connections(companyUid)),
+      grantConnectionAccess: (input) =>
+        hqProJson('POST', INTEGRATION_PATHS.grantAccess, connectionGrantBody(input)),
     },
 
     company: {
