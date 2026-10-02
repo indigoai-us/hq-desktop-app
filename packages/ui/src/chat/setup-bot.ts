@@ -206,7 +206,9 @@ export function setupBotCopy(opts: { noun?: string } = {}): typeof SETUP_BOT_COP
  */
 export function setupBotNoRuntime(opts: { noun?: string } = {}): string {
   const noun = opts.noun?.trim() || "computer";
-  return `HQ needs a coding tool signed in on this ${noun} to finish setup. Sign in above, then Retry.`;
+  // No "Sign in above, then Retry": the sign-in panel sits below this line,
+  // and it notices the sign-in by itself and offers Continue.
+  return `HQ needs a coding tool signed in on this ${noun} to finish setup.`;
 }
 
 /**

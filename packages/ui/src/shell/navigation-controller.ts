@@ -107,6 +107,7 @@ export interface NavigationController {
     generation: number,
   ): boolean;
   back(): NavigationNavigateResult | Promise<NavigationNavigateResult>;
+  backTo(index: number): NavigationNavigateResult | Promise<NavigationNavigateResult>;
   forward(): NavigationNavigateResult | Promise<NavigationNavigateResult>;
   noteAccount(accountId: string): void;
   clear(): void;
@@ -316,13 +317,17 @@ export function createNavigationController(
     return finishNavigate(resolved, mode, generation);
   }
 
-  function traverse(
+  function traverseTo(
+    targetIndex: number,
     direction: "back" | "forward",
   ): NavigationNavigateResult | Promise<NavigationNavigateResult> {
     const snap = history.snapshot();
-    const targetIndex =
-      direction === "back" ? snap.index - 1 : snap.index + 1;
-    if (targetIndex < 0 || targetIndex >= snap.entries.length) {
+    if (
+      targetIndex < 0 ||
+      targetIndex >= snap.entries.length ||
+      (direction === "back" && targetIndex >= snap.index) ||
+      (direction === "forward" && targetIndex <= snap.index)
+    ) {
       return {
         status: "rejected",
         reason: direction === "back" ? "no back" : "no forward",
@@ -350,8 +355,12 @@ export function createNavigationController(
       if (resolved.status === "account-changed") {
         return finishNavigate(resolved, "replace", generation);
       }
-      if (direction === "back") history.back();
-      else history.forward();
+      const currentIndex = history.snapshot().index;
+      const steps = Math.abs(currentIndex - targetIndex);
+      for (let step = 0; step < steps; step += 1) {
+        if (direction === "back") history.back();
+        else history.forward();
+      }
       lastCommit = history.current();
       lastAvailability =
         resolved.status === "unavailable" ? "unavailable" : "available";
@@ -375,6 +384,13 @@ export function createNavigationController(
     );
     if (isThenable(resolved)) return resolved.then(run);
     return run(resolved);
+  }
+
+  function traverse(
+    direction: "back" | "forward",
+  ): NavigationNavigateResult | Promise<NavigationNavigateResult> {
+    const index = history.snapshot().index;
+    return traverseTo(index + (direction === "back" ? -1 : 1), direction);
   }
 
   function noteAccount(accountId: string): void {
@@ -410,6 +426,7 @@ export function createNavigationController(
     resolveDestination,
     commitDestination,
     back: () => traverse("back"),
+    backTo: (index) => traverseTo(index, "back"),
     forward: () => traverse("forward"),
     noteAccount,
     clear: resetStack,

@@ -715,7 +715,7 @@
 /// the 6.18 minor line, so `RESCUE_CONTRACT_FLOOR` stays 6.18.0. Raising the
 /// lower bound moves npm's cache key so installed copies refresh their cached
 /// runner.
-pub const HQ_CLOUD_VERSION: &str = "~6.18.17";
+pub const HQ_CLOUD_VERSION: &str = "~6.18.31";
 
 /// First `@indigoai-us/hq-cloud` version that ships the post-sync
 /// manifest-upload pass (US-004, sync-reconciliation-audit).
@@ -843,7 +843,7 @@ mod tests {
     /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
     fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.18.17");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.18.31");
     }
 
     /// Root-`bin/` exclusion floor (hq-cloud#501). Below this floor a personal

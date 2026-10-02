@@ -70,6 +70,7 @@ export const INSTALLER_STEP_BY_WIZARD_STEP = {
   'welcome-signin': 'signin',
   directory: 'install',
   setup: 'setup',
+  company: null,
   'first-folder-sync': null,
   'invite-teammate': null,
   consent: 'consent',

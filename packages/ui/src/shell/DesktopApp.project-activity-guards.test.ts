@@ -1,19 +1,25 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-const here = dirname(fileURLToPath(import.meta.url));
-const clientSrc = readFileSync(
-  join(here, "../../../core/src/mesh/client.ts"),
-  "utf8",
-);
+import { topicsForBundle } from "../../../core/src/mesh/client.js";
 
-describe("project activity — component contracts", () => {
-  it("the realtime client still subscribes to the company thread topic", () => {
-    // Work-mesh thread events fan out on hq/{companyUid}/thread/#; without this
-    // subscription the timeline would only update on reopen.
-    expect(clientSrc).toContain("thread/#");
-    expect(clientSrc).toContain("presence/#");
+describe("project activity subscriptions", () => {
+  it("builds company thread and presence subscriptions for project activity", () => {
+    const topics = topicsForBundle({
+      credentials: {
+        accessKeyId: "AKIA_TEST",
+        secretAccessKey: "secret-test",
+        sessionToken: "session-test",
+      },
+      expiration: "2030-01-01T00:00:00.000Z",
+      iotEndpoint: "example-ats.iot.us-east-1.amazonaws.com",
+      region: "us-east-1",
+      personUid: "prs_test",
+      companyTopics: ["cmp_ramenbae"],
+      droppedCompanies: [],
+    });
+
+    expect(topics).toContain("hq/cmp_ramenbae/thread/#");
+    expect(topics).toContain("hq/cmp_ramenbae/presence/#");
+    expect(topics).toContain("hq/cmp_ramenbae/thread-directory");
   });
 });

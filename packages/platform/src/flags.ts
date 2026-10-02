@@ -85,6 +85,10 @@ export const PERSONAL_WORKSPACE_BOARD_FLAG =
   "desktop.personal-workspace-board-v1";
 export const LOGIN_RECEIPT_DURABILITY_FLAG =
   "desktop.login-receipt-durable-before-return-v1";
+export const POST_READY_ACTION_TELEMETRY_FLAG =
+  "desktop.post-ready-action-telemetry-v1";
+export const READY_FIRST_ACTION_FLAG = "desktop.ready-first-action-v1";
+export const DESKTOP_LIMIT_STATUS_PUSH_FLAG = "desktop.limit-status-push";
 export const HUMAN_ONLY_CONVERSATIONS_FLAG =
   "desktop.human-only-conversations";
 /**
@@ -105,6 +109,9 @@ export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
   [SETUP_STAGE_TIMEOUT_FIX_FLAG]: SETUP_STAGE_TIMEOUT_FIX_FLAG,
   [PERSONAL_WORKSPACE_BOARD_FLAG]: PERSONAL_WORKSPACE_BOARD_FLAG,
   [LOGIN_RECEIPT_DURABILITY_FLAG]: LOGIN_RECEIPT_DURABILITY_FLAG,
+  [POST_READY_ACTION_TELEMETRY_FLAG]: POST_READY_ACTION_TELEMETRY_FLAG,
+  [READY_FIRST_ACTION_FLAG]: READY_FIRST_ACTION_FLAG,
+  [DESKTOP_LIMIT_STATUS_PUSH_FLAG]: DESKTOP_LIMIT_STATUS_PUSH_FLAG,
   [HUMAN_ONLY_CONVERSATIONS_FLAG]: HUMAN_ONLY_CONVERSATIONS_FLAG,
   "desktop.mirror-quarantine-move-not-deletion":
     "desktop.mirror-quarantine-move-not-deletion",

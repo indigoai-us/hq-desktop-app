@@ -32,12 +32,15 @@ import { TAURI_CAPABILITIES, type Capability } from '../capabilities.js';
 import { WEB_PATHS } from '../web/index.js';
 import {
   CLAUDE_PROVIDER_FLAG,
+  DESKTOP_LIMIT_STATUS_PUSH_FLAG,
   FIRST_FOLDER_SYNC_STEP_FLAG,
   HUMAN_ONLY_CONVERSATIONS_FLAG,
   HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT,
   INVITE_TEAMMATE_STEP_FLAG,
   LOGIN_RECEIPT_DURABILITY_FLAG,
   PERSONAL_WORKSPACE_BOARD_FLAG,
+  POST_READY_ACTION_TELEMETRY_FLAG,
+  READY_FIRST_ACTION_FLAG,
   createFeatureFlagGate,
   createHqProFlagFetch,
   MIRROR_QUARANTINE_MOVE_NOT_DELETION_FLAG,
@@ -53,6 +56,7 @@ import {
   type RequestPolicyOptions,
 } from '../request-policy.js';
 import { hqProFailure, parseHqProErrorBody } from '../plan-limit.js';
+import { dispatchPostReadyAction } from '../post-ready-actions.js';
 
 export type SyncInvokeFn = (
   cmd: string,
@@ -185,6 +189,20 @@ export function createSyncPlatformAdapter(
   });
 
   function hasFeatureLegacy(flag: string): AdapterPromise<boolean> {
+    if (flag === POST_READY_ACTION_TELEMETRY_FLAG) {
+      // The measurement event is opt-in and stays off until the hq-flags
+      // registry contains an explicit enabled value.
+      return Promise.resolve(ok(false));
+    }
+    if (flag === READY_FIRST_ACTION_FLAG) {
+      // The first real-use action is opt-in and stays off until the manager
+      // creates and enables its hq-flags value.
+      return Promise.resolve(ok(false));
+    }
+    if (flag === DESKTOP_LIMIT_STATUS_PUSH_FLAG) {
+      // Missing rows and registry outages preserve event-only behavior.
+      return Promise.resolve(ok(false));
+    }
     if (flag === SETUP_DIRECTORY_PARENT_FALLBACK_FLAG) {
       // This rollout is opt-in. A missing registry value or unavailable
       // registry stays off until the manager creates and enables it.
@@ -690,7 +708,7 @@ export function createSyncPlatformAdapter(
         if (!result.ok) return result;
         return ok(unwrapNamedArray(result.value, ['results', 'hits']));
       },
-      fetchChannel: ({ channelId, limit, cursor, since }) => {
+      fetchChannel: ({ channelId, limit, cursor, since, view }) => {
         if (since) {
           return hqProJson(
             'GET',
@@ -698,13 +716,19 @@ export function createSyncPlatformAdapter(
               limit,
               cursor,
               since,
+              view,
             }),
           );
         }
+        // `view` rides the same native command as every other history page,
+        // so an older server (which ignores it) answers exactly as before.
+        // The command forwards it and returns the echoed `view` and
+        // `viewScanTruncated`. The key is only sent when set.
         return call('fetch_channel', {
           channelId,
           limit,
           cursor: cursor ?? null,
+          ...(view ? { view } : {}),
         });
       },
       listChannelMembers: (channelId) =>
@@ -747,14 +771,27 @@ export function createSyncPlatformAdapter(
           values: args.values,
           idempotencyKey: args.idempotencyKey ?? null,
         }),
-      fetchDmThread: ({ withPersonUid, limit, since }) => {
+      fetchDmThread: ({ withPersonUid, limit, since, cursor, view }) => {
         if (since) {
           return hqProJson(
             'GET',
-            withQuery(WEB_PATHS.dmThread, { withPersonUid, limit, since }),
+            withQuery(WEB_PATHS.dmThread, {
+              withPersonUid,
+              limit,
+              since,
+              cursor,
+              view,
+            }),
           );
         }
-        return call('fetch_dm_thread', { withPersonUid, limit });
+        // As on fetchChannel: the native command forwards `cursor` and
+        // `view`, and both keys are only sent when set.
+        return call('fetch_dm_thread', {
+          withPersonUid,
+          limit,
+          ...(cursor ? { cursor } : {}),
+          ...(view ? { view } : {}),
+        });
       },
       sendDm: (toPersonUid, body, extras) => {
         const attachments = extras?.attachments;
@@ -1207,10 +1244,13 @@ export function createSyncPlatformAdapter(
       },
       stopDaemon: () => call('stop_daemon'),
       daemonStatus: () => call('daemon_status'),
+      daemonSyncStatus: () => call('daemon_sync_status'),
       startSync: async (slug) => {
         const configured = await updateMirrorQuarantineFlag();
         if (!configured.ok) return configured;
-        return call('start_sync', slug ? { companySlug: slug } : undefined);
+        const result = await call<void>('start_sync', slug ? { companySlug: slug } : undefined);
+        if (result.ok) dispatchPostReadyAction('start_sync', slug ? { slug } : undefined);
+        return result;
       },
       cancelSync: () => call('cancel_sync'),
       getSyncStatus: () => call('get_sync_status'),
@@ -1240,9 +1280,19 @@ export function createSyncPlatformAdapter(
       openCodexDeepLink: (url) => call('open_codex_deep_link', { url }),
       openFileInClaude: (path) =>
         call('open_authorized_file_in_claude', { path }),
-      launchClaudeCode: (path) => call('launch_claude_code', { path }),
-      launchCodexWorkspace: (path, prompt) =>
-        call('launch_codex_workspace', { path, prompt: prompt ?? null }),
+      launchClaudeCode: async (path) => {
+        const result = await call<void>('launch_claude_code', { path });
+        if (result.ok) dispatchPostReadyAction('open_cli');
+        return result;
+      },
+      launchCodexWorkspace: async (path, prompt) => {
+        const result = await call<void>('launch_codex_workspace', {
+          path,
+          prompt: prompt ?? null,
+        });
+        if (result.ok) dispatchPostReadyAction('open_cli');
+        return result;
+      },
       launchCliInTerminal: async (args) => {
         const rec = asRecord(args) ?? {};
         const path = String(rec.path ?? '');
@@ -1250,10 +1300,16 @@ export function createSyncPlatformAdapter(
         if (!path || !tool) {
           return failure('invalid-argument', 'launch payload needs path and tool');
         }
-        return call('launch_cli_in_terminal', { path, tool });
+        const result = await call<void>('launch_cli_in_terminal', { path, tool });
+        if (result.ok) dispatchPostReadyAction('open_cli');
+        return result;
       },
       detectAiTools: () => call('detect_ai_tools'),
-      pickFolder: () => call('pick_folder'),
+      pickFolder: async () => {
+        const result = await call<string | null>('pick_folder');
+        if (result.ok && result.value) dispatchPostReadyAction('open_folder');
+        return result;
+      },
       pickFile: (kind) =>
         kind === 'image'
           ? call('pick_avatar_file')

@@ -290,15 +290,26 @@ where
             continue;
         }
 
-        let display_name = entry
-            .display_name
-            .clone()
-            .unwrap_or_else(|| humanize_slug(&entry.slug));
         let local_path_str = Some(entry.path.to_string_lossy().to_string());
 
         let cloud_entity_for_slug = entities_by_slug.get(entry.slug.as_str()).copied();
         let membership_for_slug = cloud_entity_for_slug
             .and_then(|ent| memberships.iter().find(|m| m.company_uid == ent.uid));
+        let display_name = cloud_entity_for_slug
+            .and_then(|entity| entity.name.clone())
+            .filter(|name| !name.trim().is_empty())
+            .or_else(|| {
+                membership_for_slug
+                    .and_then(|membership| membership.company_name.clone())
+                    .filter(|name| !name.trim().is_empty())
+            })
+            .or_else(|| {
+                entry
+                    .display_name
+                    .clone()
+                    .filter(|name| !name.trim().is_empty())
+            })
+            .unwrap_or_else(|| humanize_slug(&entry.slug));
         let membership_status = membership_for_slug.map(|m| m.status.clone());
         let role = membership_for_slug.and_then(|m| m.role.clone());
         let invited_by = membership_for_slug.and_then(|m| m.invited_by.clone());
@@ -2628,6 +2639,56 @@ mod tests {
             |_| None,
         );
         assert_eq!(result[1].display_name, "Acme From Manifest");
+    }
+
+    #[test]
+    fn local_workspace_prefers_cloud_company_name_over_slug_fallback() {
+        let tmp = TempDir::new().unwrap();
+        let p = person("prs_x", None);
+        let entries = vec![
+            local_full(
+                "xy",
+                tmp.path(),
+                true,
+                None,
+                Some("cmp_xy"),
+                None,
+            ),
+            local_full(
+                "ab",
+                tmp.path(),
+                true,
+                Some("Cached Manifest Name"),
+                Some("cmp_ab"),
+                None,
+            ),
+        ];
+        let mut entities = BTreeMap::new();
+        entities.insert(
+            "cmp_xy".to_string(),
+            company_entity("cmp_xy", "xy", Some("Two Word Company")),
+        );
+        entities.insert(
+            "cmp_ab".to_string(),
+            company_entity("cmp_ab", "ab", Some("Cloud Company Name")),
+        );
+
+        let result =
+            assemble_workspaces(tmp.path(), Some(&p), &[], &entities, &entries, true, |_| {
+                None
+            });
+
+        let company = result
+            .iter()
+            .find(|workspace| workspace.slug == "xy")
+            .unwrap();
+        assert_eq!(company.display_name, "Two Word Company");
+
+        let company = result
+            .iter()
+            .find(|workspace| workspace.slug == "ab")
+            .unwrap();
+        assert_eq!(company.display_name, "Cloud Company Name");
     }
 
     // ── prune_dangling_cloud_uids ───────────────────────────────────────

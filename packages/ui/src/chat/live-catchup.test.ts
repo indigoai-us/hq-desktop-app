@@ -4,6 +4,7 @@ import {
   channelActivityFromTimeline,
   dmActivityFromInboxPage,
   dmActivityFromThreadsPage,
+  dmThreadsPageCarriesHumanRecency,
   isMissingEndpointFailure,
   mergeDmActivity,
   dmActivityFromTimeline,
@@ -443,5 +444,111 @@ describe("isMissingEndpointFailure — feature-detecting dm-threads", () => {
     );
     expect(isMissingEndpointFailure(null)).toBe(false);
     expect(isMissingEndpointFailure(undefined)).toBe(false);
+  });
+});
+
+describe("DM thread listing: last human message (three states)", () => {
+  const page = {
+    threads: [
+      {
+        peerUid: "prs_typed",
+        lastActivityAt: "2026-10-01T12:00:00.000Z",
+        lastEventId: "evt_3",
+        lastHumanMessageAt: "2026-09-30T09:00:00.000Z",
+      },
+      {
+        peerUid: "agt_bot_only",
+        lastActivityAt: "2026-10-01T11:00:00.000Z",
+        lastEventId: "evt_2",
+        hasHumanMessage: false,
+      },
+      {
+        peerUid: "prs_unexamined",
+        lastActivityAt: "2026-10-01T10:00:00.000Z",
+        lastEventId: "evt_1",
+      },
+    ],
+  };
+
+  it("copies a known time, a known none, and leaves an unknown row without either", () => {
+    expect(dmActivityFromThreadsPage(page)).toEqual([
+      {
+        personUid: "prs_typed",
+        lastMessageAt: "2026-10-01T12:00:00.000Z",
+        lastHumanMessageAt: "2026-09-30T09:00:00.000Z",
+      },
+      {
+        personUid: "agt_bot_only",
+        lastMessageAt: "2026-10-01T11:00:00.000Z",
+        hasHumanMessage: false,
+      },
+      { personUid: "prs_unexamined", lastMessageAt: "2026-10-01T10:00:00.000Z" },
+    ]);
+  });
+
+  it("ignores hasHumanMessage true and non-string times", () => {
+    expect(
+      dmActivityFromThreadsPage({
+        threads: [
+          {
+            peerUid: "prs_a",
+            lastActivityAt: "2026-10-01T12:00:00.000Z",
+            hasHumanMessage: true,
+            lastHumanMessageAt: 12345,
+          },
+        ],
+      }),
+    ).toEqual([{ personUid: "prs_a", lastMessageAt: "2026-10-01T12:00:00.000Z" }]);
+  });
+
+  it("mergeDmActivity keeps the listing's human fields when the inbox stamp is newer", () => {
+    const inbox = [
+      {
+        personUid: "prs_typed",
+        lastMessageAt: "2026-10-01T13:00:00.000Z",
+        displayName: "Typed Person",
+      },
+      { personUid: "agt_bot_only", lastMessageAt: "2026-10-01T13:00:00.000Z" },
+    ];
+    const merged = mergeDmActivity(inbox, dmActivityFromThreadsPage(page));
+    expect(merged).toEqual([
+      {
+        personUid: "prs_typed",
+        lastMessageAt: "2026-10-01T13:00:00.000Z",
+        displayName: "Typed Person",
+        lastHumanMessageAt: "2026-09-30T09:00:00.000Z",
+      },
+      {
+        personUid: "agt_bot_only",
+        lastMessageAt: "2026-10-01T13:00:00.000Z",
+        hasHumanMessage: false,
+      },
+      { personUid: "prs_unexamined", lastMessageAt: "2026-10-01T10:00:00.000Z" },
+    ]);
+    // Source order does not matter.
+    expect(mergeDmActivity(dmActivityFromThreadsPage(page), inbox)).toEqual(
+      expect.arrayContaining(merged),
+    );
+  });
+
+  it("dmThreadsPageCarriesHumanRecency: true once any row reports a state", () => {
+    expect(dmThreadsPageCarriesHumanRecency(page)).toBe(true);
+    expect(
+      dmThreadsPageCarriesHumanRecency({
+        threads: [{ peerUid: "agt_x", lastActivityAt: "x", hasHumanMessage: false }],
+      }),
+    ).toBe(true);
+  });
+
+  it("dmThreadsPageCarriesHumanRecency: false for an older server's page", () => {
+    expect(
+      dmThreadsPageCarriesHumanRecency({
+        threads: [
+          { peerUid: "prs_a", lastActivityAt: "2026-10-01T12:00:00.000Z", lastEventId: "e" },
+        ],
+      }),
+    ).toBe(false);
+    expect(dmThreadsPageCarriesHumanRecency(null)).toBe(false);
+    expect(dmThreadsPageCarriesHumanRecency({ threads: [] })).toBe(false);
   });
 });
