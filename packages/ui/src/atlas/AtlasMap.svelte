@@ -56,8 +56,15 @@
 
   let hovered = $state<string | null>(null);
   let svgEl = $state<SVGSVGElement | null>(null);
-  let drag: { id: number; sx: number; sy: number; vx: number; vy: number; moved: boolean } | null =
-    null;
+  let drag: {
+    id: number;
+    sx: number;
+    sy: number;
+    vx: number;
+    vy: number;
+    moved: boolean;
+    node: string | null;
+  } | null = null;
 
   const byId = $derived(new Map(placed.map((p) => [p.id, p])));
   const related = $derived(atlasRelatedIds(selected ?? hovered, edges));
@@ -77,28 +84,66 @@
     onview(frameAll(placed, box?.width ?? 800, box?.height ?? 560));
   }
 
+  /**
+   * A press that ends within the drag threshold is a click: it activates the
+   * node it started on (same path as Return) or clears the selection on empty
+   * map. Move/up are tracked on window after pointerdown, since WKWebView does
+   * not reliably deliver pointer capture, and capture would retarget the
+   * release away from the node anyway.
+   */
+  const DRAG_THRESHOLD = 3;
+
+  function nodeIdAt(target: EventTarget | null): string | null {
+    const el = target instanceof Element ? target.closest("[data-atlas-node]") : null;
+    return el?.getAttribute("data-atlas-node") ?? null;
+  }
+
   function onpointerdown(event: PointerEvent): void {
     if (event.button !== 0) return;
-    drag = { id: event.pointerId, sx: event.clientX, sy: event.clientY, vx: view.x, vy: view.y, moved: false };
-    svgEl?.setPointerCapture?.(event.pointerId);
+    drag = {
+      id: event.pointerId,
+      sx: event.clientX,
+      sy: event.clientY,
+      vx: view.x,
+      vy: view.y,
+      moved: false,
+      node: nodeIdAt(event.target),
+    };
+    window.addEventListener("pointermove", onpointermove);
+    window.addEventListener("pointerup", onpointerup);
+    window.addEventListener("pointercancel", onpointercancel);
   }
 
   function onpointermove(event: PointerEvent): void {
     if (!drag || drag.id !== event.pointerId) return;
     const dx = event.clientX - drag.sx;
     const dy = event.clientY - drag.sy;
-    if (!drag.moved && Math.hypot(dx, dy) < 3) return;
+    if (!drag.moved && Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
     drag.moved = true;
     onview({ ...view, x: drag.vx + dx, y: drag.vy + dy });
   }
 
+  function endDrag(): void {
+    drag = null;
+    window.removeEventListener("pointermove", onpointermove);
+    window.removeEventListener("pointerup", onpointerup);
+    window.removeEventListener("pointercancel", onpointercancel);
+  }
+
   function onpointerup(event: PointerEvent): void {
     if (!drag || drag.id !== event.pointerId) return;
-    const wasDrag = drag.moved;
-    drag = null;
-    svgEl?.releasePointerCapture?.(event.pointerId);
-    if (!wasDrag && event.target === svgEl) onselect(null);
+    const moved =
+      drag.moved || Math.hypot(event.clientX - drag.sx, event.clientY - drag.sy) >= DRAG_THRESHOLD;
+    const node = drag.node;
+    endDrag();
+    if (!moved) onselect(node);
   }
+
+  function onpointercancel(event: PointerEvent): void {
+    if (drag && drag.id === event.pointerId) endDrag();
+  }
+
+  $effect(() => endDrag);
 
   function onwheel(event: WheelEvent): void {
     event.preventDefault();
@@ -120,9 +165,6 @@
     role="application"
     aria-label="Atlas map"
     onpointerdown={onpointerdown}
-    onpointermove={onpointermove}
-    onpointerup={onpointerup}
-    onpointercancel={onpointerup}
     ondblclick={frame}
     onwheel={onwheel}
   >
@@ -153,17 +195,13 @@
           style:--t={timeOpacity?.get(node.id) ?? null}
           data-testid={`atlas-node-${node.id}`}
           data-kind={node.type}
+          data-atlas-node={node.id}
           role="button"
           tabindex="-1"
           aria-label={node.label}
           aria-pressed={node.id === selected}
           onpointerenter={() => (hovered = node.id)}
           onpointerleave={() => (hovered = hovered === node.id ? null : hovered)}
-          onpointerup={(event) => {
-            if (drag?.moved) return;
-            event.stopPropagation();
-            onselect(node.id);
-          }}
           onkeydown={(event) => {
             if (event.key === "Enter") onselect(node.id);
           }}

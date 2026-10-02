@@ -49,7 +49,76 @@ function mountView(cache = createAtlasCache({ fetcher: async () => smokeAtlasGra
   return cache;
 }
 
+/**
+ * A real press: pointerdown on the node, pointerup delivered wherever the
+ * engine sends it (window here, since the map tracks the release on window).
+ */
+function press(target: Element, upTarget: EventTarget, dx = 0, dy = 0): void {
+  const at = (x: number, y: number) => ({ bubbles: true, button: 0, pointerId: 1, clientX: x, clientY: y });
+  flushSync(() => {
+    target.dispatchEvent(new PointerEvent("pointerdown", at(100, 100)));
+  });
+  if (dx || dy) {
+    flushSync(() => {
+      window.dispatchEvent(new PointerEvent("pointermove", at(100 + dx, 100 + dy)));
+    });
+  }
+  flushSync(() => {
+    upTarget.dispatchEvent(new PointerEvent("pointerup", at(100 + dx, 100 + dy)));
+  });
+}
+
+function inspectorPath(): string | null | undefined {
+  return host.querySelector(sel("atlas-inspector-path"))?.textContent;
+}
+
 describe("AtlasView", () => {
+  it("QA-064: a click on a node opens its inspector exactly like Return", async () => {
+    mountView();
+    await settle();
+    const svg = host.querySelector("svg")!;
+    const node = () => host.querySelector(sel(`atlas-node-${RAIL}`)) as SVGGElement;
+
+    // Release lands on the svg (the old pointer-capture retarget) — still a node click.
+    press(node(), svg);
+    await settle();
+    expect(inspectorPath()).toBe("projects/hq-desktop-console-rail/");
+    const viaClick = host.querySelector(sel("atlas-inspector"))?.textContent;
+
+    flushSync(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    });
+    expect(inspectorPath()).toBeUndefined();
+
+    flushSync(() => {
+      node().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    await settle();
+    expect(host.querySelector(sel("atlas-inspector"))?.textContent).toBe(viaClick);
+  });
+
+  it("QA-064: a drag that starts on a node pans and does not open it", async () => {
+    mountView();
+    await settle();
+    const world = host.querySelector(sel("atlas-world")) as SVGGElement;
+    const before = world.getAttribute("transform");
+    press(host.querySelector(sel(`atlas-node-${RAIL}`))!, window, 40, 0);
+    await settle();
+    expect(world.getAttribute("transform")).not.toBe(before);
+    expect(inspectorPath()).toBeUndefined();
+  });
+
+  it("QA-064: a click on empty map clears the selection", async () => {
+    mountView();
+    await settle();
+    press(host.querySelector(sel(`atlas-node-${RAIL}`))!, window);
+    await settle();
+    expect(inspectorPath()).toBe("projects/hq-desktop-console-rail/");
+    press(host.querySelector("svg")!, window);
+    await settle();
+    expect(inspectorPath()).toBeUndefined();
+  });
+
   it("shows a skeleton in the first frame with no cache, then paints the graph", async () => {
     mountView();
     expect(host.querySelector(sel("atlas-skeleton"))).not.toBeNull();
@@ -74,9 +143,7 @@ describe("AtlasView", () => {
     mountView();
     await settle();
     const node = host.querySelector(sel(`atlas-node-${RAIL}`)) as SVGGElement;
-    flushSync(() => {
-      node.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
-    });
+    press(node, window);
     await settle();
     expect(host.querySelectorAll('[data-testid="atlas-edge"]').length).toBe(3);
     expect(host.querySelector(sel("atlas-label-repo:repos/private/hq-desktop-app/"))).not.toBeNull();
