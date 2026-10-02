@@ -16,11 +16,13 @@
     type SidepaneScrollMemory,
   } from "./sidepane-models.js";
   import { companyPaneModel } from "./company-pane.js";
+  import { companyPageCounts } from "./company-page-counts.svelte.js";
   import { companyLiveCount } from "./pinned-companies.js";
   import { presenceSnapshot } from "../chat/presence-store.svelte.js";
   import { useCompanySummary } from "../company/company-summary.svelte.js";
   import { companyIconSrc } from "../avatars/csp-image-src.js";
-  import { configureCompanyApi } from "../company/company-store.svelte.js";
+  import { companyStore, configureCompanyApi } from "../company/company-store.svelte.js";
+  import { secretRowsFromSource } from "../company/files-connect/files-connect-model.js";
   import type { CompanyApi } from "@hq/platform";
 
   interface Props {
@@ -60,6 +62,23 @@
     enabled: () => Boolean(companyApi),
   });
 
+  // Secrets count from the same list the Secrets page reads (QA-014): the
+  // summary's secrets field counts env groups, not keys. Cache first, then a
+  // background load refreshes it; the page's own refresh lands here too.
+  const slugValue = $derived(company.slug?.trim() || null);
+  const storeCounts = $derived.by((): Record<string, number> => {
+    void companyStore.revision;
+    const list = slugValue && companyApi ? companyStore.secrets(slugValue) : null;
+    return Array.isArray(list) ? { secrets: secretRowsFromSource(list).length } : {};
+  });
+  $effect(() => {
+    const s = slugValue;
+    if (!s || !companyApi) return;
+    void companyStore.loadSecrets(s, false).catch((err: unknown) => {
+      console.warn("[company-sidepane] secrets count refresh failed", err);
+    });
+  });
+
   const liveCount = $derived(companyLiveCount(presenceSnapshot(), company.uid));
   const atlasActive = $derived(selectedId === "atlas");
   const model = $derived.by(() => {
@@ -67,6 +86,7 @@
       { uid: company.uid, label: company.label, liveCount },
       summary.summary,
       selectedId,
+      { ...storeCounts, ...companyPageCounts(company.slug, company.uid) },
     );
     if (!atlasActive || rosterLoading) return base;
     // Same pane key either way, so landing on Atlas keeps scroll memory.

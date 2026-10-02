@@ -10,6 +10,7 @@
   import type { DeployAppsPage } from "../../library/personal-deployments.js";
   import { dismissable } from "../../common/dismissable.js";
   import ShowMoreRow from "../../shell/ShowMoreRow.svelte";
+  import { publishCompanyPageCount } from "../../shell/company-page-counts.svelte.js";
   import { countLabel, pageRows } from "../../shell/list-paging.js";
   import CompanyFileTree from "../../files/CompanyFileTree.svelte";
   import FilePreviewPane from "../../files/FilePreviewPane.svelte";
@@ -169,6 +170,14 @@
   }
 
   const vaultRows = $derived(filterVault(data.nodes, vaultTab, query));
+
+  // The sidepane shows these same totals (QA-014): every row, before tabs and search.
+  $effect(() => {
+    if (secrets) publishCompanyPageCount(slug, "secrets", secrets.length);
+  });
+  $effect(() => {
+    if (deployments) publishCompanyPageCount(slug, "deployments", deployments.length);
+  });
 
   // Every list shows all rows, in pages of 50 with a Show more row.
   let vaultPages = $state(1);

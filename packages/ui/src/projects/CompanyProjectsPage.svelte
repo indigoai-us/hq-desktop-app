@@ -8,6 +8,7 @@
    * filter share one control row; New project remains the primary action.
    */
   import { onMount } from "svelte";
+  import { publishCompanyPageCount } from "../shell/company-page-counts.svelte.js";
   import type { PlatformAdapter } from "@hq/platform";
   import { buildClaudeCodeUrl } from "../files/claude-code-link.js";
   import {
@@ -331,6 +332,10 @@
   );
 
   const sessions = $derived(pushSessions);
+  // The sidepane Projects row shows this same total (QA-014).
+  $effect(() => {
+    if (!loading && !projectsUnavailable) publishCompanyPageCount(slug, "projects", companyProjects.length);
+  });
 
   function leadLabel(project: Project): string | null {
     const person = responsiblePerson(project.provenance, "project");

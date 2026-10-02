@@ -10,6 +10,7 @@
   import { loadLibraryCompany } from "../../library/library.js";
   import type { DirEntry } from "../../files/file-tree.js";
   import ShowMoreRow from "../../shell/ShowMoreRow.svelte";
+  import { publishCompanyPageCount } from "../../shell/company-page-counts.svelte.js";
   import { pageRows } from "../../shell/list-paging.js";
   import "../../home/tokens.css";
   import "../../chat/chat-tokens.css";
@@ -128,6 +129,15 @@
   const policyRows = $derived(filterPolicies(cache.policies, policyFilter, query));
   const skillRows = $derived(filterSkills(cache.skills, skillFilter, query));
   const workerRows = $derived(filterWorkers(cache.workers, workerScope, workerFilter, query));
+
+  // The sidepane shows these same totals (QA-014), published once the page is ready.
+  $effect(() => {
+    if (phase !== "ready") return;
+    publishCompanyPageCount(slug, "knowledge", cache.knowledge.length);
+    publishCompanyPageCount(slug, "policies", cache.policies.length);
+    publishCompanyPageCount(slug, "skills", cache.skills.length);
+    publishCompanyPageCount(slug, "workers", cache.workers.length);
+  });
   const activeList = $derived(
     page === "knowledge" ? knowledgeRows : page === "policies" ? policyRows : page === "skills" ? skillRows : workerRows,
   );

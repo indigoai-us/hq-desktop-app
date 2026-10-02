@@ -7,6 +7,7 @@
    * refresh keeps the cached snapshot and records that the read finished.
    */
   import { onMount } from "svelte";
+  import { publishCompanyPageCount } from "../shell/company-page-counts.svelte.js";
   import "../home/tokens.css";
   import "../chat/scroll-perf.css";
   import { loadTokenDayStrip } from "./activity-chart.js";
@@ -46,6 +47,10 @@
   );
   const weekendCount = $derived(bars.filter((bar) => bar.weekend).length);
   const liveCount = $derived(snapshot?.live.filter((row) => row.live).length ?? 0);
+  // The sidepane Activity row shows the team rows this page lists (QA-014).
+  $effect(() => {
+    if (snapshot) publishCompanyPageCount(slug, "activity", snapshot.members.length);
+  });
 
   function paintCache(activeSlug: string): void {
     snapshot = readActivityCache(storage, activeSlug) ?? EMPTY_ACTIVITY;

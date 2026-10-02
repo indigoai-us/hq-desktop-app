@@ -1,5 +1,6 @@
 <script lang="ts">
   import { dismissable } from "../common/dismissable.js";
+  import { publishCompanyPageCount } from "../shell/company-page-counts.svelte.js";
   /**
    * Company Team page (console-rail US-027).
    *
@@ -99,6 +100,10 @@
   const fields = $derived(inviteRoleFields(draft.role));
   const humans = $derived(view.humans);
   const bots = $derived(view.agents);
+  // The sidepane Team row shows this same total (QA-014).
+  $effect(() => {
+    if (phase === "ready") publishCompanyPageCount(slug, "team", humans.length + bots.length);
+  });
   const showHumans = $derived(filter === "all" || filter === "humans");
   const showBots = $derived(filter === "all" || filter === "bots");
   const humanPage = $derived(pageRows(humans, humanPages));

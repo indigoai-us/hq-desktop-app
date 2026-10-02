@@ -9,6 +9,7 @@
    * Open session, Edit bot, Pause and scheduled jobs all live there.
    */
   import { onMount } from "svelte";
+  import { publishCompanyPageCount } from "../shell/company-page-counts.svelte.js";
   import type { LocalBotRow, PlatformAdapter } from "@hq/platform";
   import type { Workspace } from "../chat/workspaces.js";
   import LazyDoor from "../shell/LazyDoor.svelte";
@@ -70,6 +71,10 @@
   }
 
   const rows = $derived(filterBots([...localRows(), ...cloud], filter));
+  // The sidepane Bots row shows this same total, before the filter (QA-014).
+  $effect(() => {
+    if (cloudPhase === "ready") publishCompanyPageCount(companyUid, "bots", localRows().length + cloud.length);
+  });
   const page = $derived(pageRows(rows, pages));
   const current = $derived(rows.find((row) => row.uid === selected) ?? rows[0] ?? null);
   const empty = $derived(cloudPhase === "ready" && localRows().length === 0 && cloud.length === 0);

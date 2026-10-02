@@ -108,24 +108,30 @@ export function companyPaneCounts(
 /**
  * Company model with counts filled in. Atlas carries the live count so the
  * header chip and the Atlas row agree.
+ *
+ * `pageCounts` are the totals each company page published for its own list
+ * (QA-014). They win over the cached summary, so a row always shows the same
+ * number its page does; the summary only fills rows whose page has not loaded.
  */
 export function companyPaneModel(
   company: SidepaneCompany,
   summary: CompanyPaneSummary | null | undefined,
   selectedId: string | null,
+  pageCounts: Readonly<Record<string, number>> = {},
 ): SidepaneListModel {
   const model = companySidepaneModel(company, selectedId);
-  const counts = companyPaneCounts(summary);
+  const counts = { ...companyPaneCounts(summary), ...pageCounts };
   for (const section of model.sections) {
     for (const row of section.rows) {
       if (row.id === "atlas") row.live = model.liveCount > 0;
       const n = counts[row.id];
       if (n && n > 0) row.count = n;
-      // The Projects page counts PRDs on this computer; the pane counts the
-      // shared company board. Name the scope so the two numbers never read as
-      // the same thing.
       if (row.id === "projects" && row.count) {
-        row.countScope = `${row.count} on the company board`;
+        // The page counts PRDs on this computer; before it loads the pane
+        // falls back to the shared board. Name whichever scope is showing.
+        row.countScope = "projects" in pageCounts
+          ? `${row.count} on this computer`
+          : `${row.count} on the company board`;
       }
       else if (row.id === "atlas" && model.liveCount > 0) row.count = model.liveCount;
     }
