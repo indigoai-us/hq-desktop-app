@@ -233,3 +233,22 @@ describe("New meeting sheet Escape (QA-017)", () => {
     expect(oncloseSheet).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("Later today rows (design lane 8 broken click)", () => {
+  it("selects the meeting when a Later today row is clicked", () => {
+    const row = (id: string, time: string, title: string) => ({
+      id, title, time, companyUid: null, companyMark: null, live: false, hasRecap: false, hasRecording: false,
+    });
+    const onselect = vi.fn();
+    const el = render(MeetingsStatesBody, {
+      mode: "empty",
+      now,
+      onselect,
+      sections: [{ id: "today", label: "Today", rows: [row("a", "11:00", "Creative review"), row("b", "15:30", "Standup")] }],
+    });
+    const later = el.querySelector<HTMLButtonElement>("button.later");
+    expect(later?.textContent).toContain("Standup");
+    later!.click();
+    expect(onselect).toHaveBeenCalledWith("b");
+  });
+});

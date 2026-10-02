@@ -184,7 +184,7 @@
   .title {
     flex: 1 1 auto;
     font-size: 14px;
-    font-weight: 600;
+    font-weight: 500;
   }
 
   .icon-btn {
@@ -266,8 +266,8 @@
   .time {
     flex: 0 0 38px;
     color: var(--t2);
-    font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
   }
 
   .time.live {
@@ -305,8 +305,8 @@
   .count {
     flex: 0 0 auto;
     color: var(--t2);
-    font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
   }
 
   .mark {
