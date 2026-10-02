@@ -8,6 +8,10 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Auto-sync watcher reports now identify launcher and runner exits and owner-lease
+  outcomes. When a Node report is available, they add a safe error identifier and
+  the top frame's file name for HQ's own scripts only; frames from other files
+  report "external", so a user's file names are never sent.
 - Core update failures now report a specific snapshot failure class, such as
   insufficient space, a protected recovery snapshot, a permission error, a
   symlink, or a copy failure.
