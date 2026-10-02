@@ -113,6 +113,11 @@ export interface ConversationRow {
     agentUid: string;
     progress: number;
   } | null;
+  /** A cancelled cloud bot that still exists: being removed, or not removed. */
+  removingBot?: {
+    agentUid: string;
+    phase: "removing" | "failed";
+  } | null;
 }
 
 export interface WakingSidebarBot {
@@ -175,6 +180,73 @@ export function withWakingBotRow(
     channelScope: "company",
     wakingBot,
   }, ...rows];
+}
+
+/** A cancelled bot, as the sidebar needs to know it. */
+export interface CancelledSidebarBot {
+  agentUid: string;
+  channelId: string;
+  name: string;
+  phase: "stopping" | "removing" | "removed" | "failed" | "not-created";
+  /** True when the bot had a row before Cancel. */
+  hadRow: boolean;
+  /** When Cancel was pressed. */
+  startedAt: number;
+}
+
+/**
+ * Rows for cancelled bots. The list never says more than the server did:
+ *
+ * - removed: the bot's rows are left out, even if an older directory answer
+ *   still lists them.
+ * - removing: a bot that already had a row keeps it, marked, until the server
+ *   says it is gone. A bot cancelled before it had a row gets none.
+ * - failed: the bot still exists, so it has a marked row either way.
+ */
+export function withCancelledBotRows(
+  rows: readonly ConversationRow[],
+  bots: readonly CancelledSidebarBot[],
+  removedAgentUids: readonly string[] = [],
+): ConversationRow[] {
+  const removed = new Set(removedAgentUids);
+  let next = removed.size
+    ? rows.filter((row) => !(row.kind === "dm" && row.personUid && removed.has(row.personUid)))
+    : [...rows];
+  for (const bot of bots) {
+    if (!bot.agentUid && !bot.channelId) continue;
+    const isBotRow = (row: ConversationRow): boolean =>
+      (!!bot.agentUid && row.kind === "dm" && row.personUid === bot.agentUid) ||
+      (!!bot.channelId && row.channelId === bot.channelId);
+    if (bot.phase === "removed") {
+      next = next.filter((row) => !isBotRow(row));
+      continue;
+    }
+    if (bot.phase !== "removing" && bot.phase !== "failed") continue;
+    const shown = !!bot.agentUid && (bot.phase === "failed" || bot.hadRow);
+    if (!shown) {
+      next = next.filter((row) => !isBotRow(row));
+      continue;
+    }
+    const removingBot = { agentUid: bot.agentUid, phase: bot.phase };
+    const visible = bot.channelId
+      ? next.filter((row) => row.channelId !== bot.channelId)
+      : next;
+    const known = visible.find((row) => row.kind === "dm" && row.personUid === bot.agentUid);
+    next = known
+      ? visible.map((row) => row === known ? { ...row, wakingBot: null, removingBot } : row)
+      : [{
+          id: `dm:${bot.agentUid}`,
+          kind: "dm",
+          title: bot.name || "Your bot",
+          companyUid: null,
+          unreadDot: false,
+          lastActivityAt: bot.startedAt,
+          pinned: false,
+          personUid: bot.agentUid,
+          removingBot,
+        }, ...visible];
+  }
+  return next;
 }
 
 export const BOT_SETUP_CHANNELS_STORAGE_KEY = "hq.chat.botSetupChannels.v1";

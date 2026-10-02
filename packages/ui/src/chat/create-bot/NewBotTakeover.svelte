@@ -9,6 +9,13 @@
   import NewBotCreateScreen, { type NewBotCreated, type NewBotUpgradeTarget } from "./NewBotCreateScreen.svelte";
   import NewBotWakingScreen from "./NewBotWakingScreen.svelte";
   import { beginWakingSession, resumeWakingSession, type WakingBotSession } from "./waking-model.js";
+  import {
+    botRemovalDismissLabel,
+    botRemovalLine,
+    canRetryBotRemoval,
+    cancelBotConfirmCopy,
+    type BotRemoval,
+  } from "./cancel-model.js";
   import type { BrainProvider } from "./bot-brain-approval.js";
   import "./new-bot-takeover.css";
 
@@ -33,6 +40,18 @@
     onwakingchange?: ((session: WakingBotSession | null) => void) | null;
     onopenchat?: ((session: WakingBotSession) => void) | null;
     onclosewaking?: (() => void) | null;
+    /** Cancel was pressed while the create request was still out. */
+    oncancelcreate?: (() => void) | null;
+    /**
+     * The person confirmed that a bot that exists should be removed. Without
+     * this the waiting screen offers only the way out that keeps the bot.
+     */
+    oncancelbot?: ((session: WakingBotSession) => void) | null;
+    /** Cancelled bots and where their removal stands. */
+    removals?: readonly BotRemoval[];
+    onretryremoval?: ((id: string) => void) | null;
+    /** Put a failed removal away. The bot stays. */
+    ondismissremoval?: ((id: string) => void) | null;
     /** Leave the takeover for the company channel's upgrade card. */
     onupgrade?: ((target: NewBotUpgradeTarget) => void) | null;
     /** Test seam. Production starts on the first clean bundled wallpaper. */
@@ -60,6 +79,11 @@
     onwakingchange = null,
     onopenchat = null,
     onclosewaking = null,
+    oncancelcreate = null,
+    oncancelbot = null,
+    removals = [],
+    onretryremoval = null,
+    ondismissremoval = null,
     onupgrade = null,
     wallpaperIndex = 0,
   }: Props = $props();
@@ -69,11 +93,43 @@
 
   let dialogEl = $state<HTMLDivElement | null>(null);
   let localWakingSession = $state<WakingBotSession | null>(null);
-  let ignoreExternalWakingSession = $state(false);
+  /**
+   * The host's session is shown only when the takeover opens on it (the
+   * person clicked a bot that is starting). A session that turns up while the
+   * create screen is open belongs to an earlier attempt, and it must not take
+   * the screen away from what the person is typing.
+   */
+  function opensWithoutSession(): boolean {
+    return wakingSession === null;
+  }
+  let ignoreExternalWakingSession = $state(opensWithoutSession());
   let readyHandoffTimer: ReturnType<typeof setTimeout> | null = null;
   const activeWakingSession = $derived(
     localWakingSession ?? (ignoreExternalWakingSession ? null : wakingSession),
   );
+
+  /** True from the press of Create bot until the create request answers. */
+  let creating = $state(false);
+  /** Each create request gets a number. Cancel moves it on, so a late answer no longer matches. */
+  let createTurn = 0;
+  /** Remounts the create screen so a cancelled attempt leaves nothing typed. */
+  let createScreenKey = $state(0);
+  /** The bot the confirmation dialog is asking about. */
+  let confirmSession = $state<WakingBotSession | null>(null);
+  let confirmEl = $state<HTMLDivElement | null>(null);
+  /** A hand-off to chat that arrived while the confirmation dialog was open. */
+  let heldReadySession: WakingBotSession | null = null;
+  const cancelsBot = $derived(!!oncancelbot);
+  const confirmCopy = $derived(
+    confirmSession
+      ? cancelBotConfirmCopy({
+          name: confirmSession.name,
+          companyLabel: companies.find((company) => company.companyUid === confirmSession?.companyUid)?.label ?? null,
+        })
+      : null,
+  );
+  /** The chat hand-off has begun: the bot is live and Cancel is no longer offered. */
+  const handingOff = $derived(activeWakingSession?.phase === "ready");
 
   const focusableSelector =
     'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])';
@@ -82,14 +138,19 @@
     if (event.key === "Escape") {
       event.preventDefault();
       event.stopPropagation();
-      if (activeWakingSession) closeWaking();
+      // Escape never removes a bot that exists: it backs out of the question,
+      // or leaves the waiting screen with the bot still starting.
+      if (confirmSession) keepBot();
+      else if (activeWakingSession) closeWaking();
+      else if (creating) cancelCreate();
       else oncancel();
       return;
     }
     if (event.key !== "Tab") return;
 
-    const focusable = dialogEl
-      ? [...dialogEl.querySelectorAll<HTMLElement>(focusableSelector)]
+    const scope = confirmEl ?? dialogEl;
+    const focusable = scope
+      ? [...scope.querySelectorAll<HTMLElement>(focusableSelector)]
       : [];
     if (focusable.length === 0) return;
 
@@ -103,6 +164,63 @@
       ? (index - 1 + focusable.length) % focusable.length
       : (index + 1) % focusable.length;
     focusable[nextIndex]?.focus();
+  }
+
+  /**
+   * The create request, watched. A request whose turn has passed was
+   * cancelled: its answer is reported as cancelled and never reaches the
+   * waiting screen. The host removes any bot that answer names.
+   */
+  async function createBot(companyUid: string, draft: CloudBotDraft): Promise<EntryPointResult> {
+    if (!oncreate) return { ok: false, blocked: false, reason: "" };
+    const turn = ++createTurn;
+    creating = true;
+    try {
+      const result = await oncreate(companyUid, draft);
+      return turn === createTurn ? result : { ok: false, blocked: false, reason: "", cancelled: true };
+    } finally {
+      if (turn === createTurn) creating = false;
+    }
+  }
+
+  /** Cancel while the create request is out: stop here and start clean. */
+  function cancelCreate(): void {
+    createTurn += 1;
+    creating = false;
+    createScreenKey += 1;
+    oncancelcreate?.();
+  }
+
+  function onHeaderCancel(): void {
+    if (activeWakingSession) {
+      if (cancelsBot) confirmSession = activeWakingSession;
+      else closeWaking();
+      return;
+    }
+    if (creating) cancelCreate();
+    else oncancel();
+  }
+
+  function keepBot(): void {
+    confirmSession = null;
+    const held = heldReadySession;
+    heldReadySession = null;
+    if (held) updateWaking(held);
+  }
+
+  function removeBot(): void {
+    const session = confirmSession;
+    confirmSession = null;
+    heldReadySession = null;
+    if (!session) return;
+    if (readyHandoffTimer) {
+      clearTimeout(readyHandoffTimer);
+      readyHandoffTimer = null;
+    }
+    localWakingSession = null;
+    ignoreExternalWakingSession = true;
+    createScreenKey += 1;
+    oncancelbot?.(session);
   }
 
   function startWaking(created: NewBotCreated): void {
@@ -119,6 +237,12 @@
   }
 
   function updateWaking(session: WakingBotSession): void {
+    if (session.phase === "ready" && confirmSession) {
+      // The person is deciding whether to remove this bot. Hold the hand-off
+      // until they answer.
+      heldReadySession = session;
+      return;
+    }
     if (session.phase === "ready") {
       localWakingSession = session;
       onwakingchange?.(session);
@@ -173,15 +297,17 @@
   <div class="new-bot-takeover-shade" aria-hidden="true"></div>
   <header class="new-bot-takeover-header">
     <span class="new-bot-takeover-wordmark">HQ</span>
-    <button
-      type="button"
-      class="new-bot-takeover-cancel"
-      data-testid="new-bot-takeover-cancel"
-      use:focusOnMount
-      onclick={activeWakingSession ? closeWaking : oncancel}
-    >
-      {activeWakingSession ? "Close" : "Cancel"}
-    </button>
+    {#if !handingOff}
+      <button
+        type="button"
+        class="new-bot-takeover-cancel"
+        data-testid="new-bot-takeover-cancel"
+        use:focusOnMount
+        onclick={onHeaderCancel}
+      >
+        {activeWakingSession && !cancelsBot ? "Close" : "Cancel"}
+      </button>
+    {/if}
   </header>
 
   <main class="new-bot-takeover-stage">
@@ -203,16 +329,18 @@
         />
         {/key}
       {:else if oncreate && loadProvisionOptions && companies.length}
+        {#key createScreenKey}
         <NewBotCreateScreen
           {companies}
           {currentCompanyUid}
           {runtimeReady}
           loadProvisionOptions={loadProvisionOptions}
-          oncreate={oncreate}
+          oncreate={createBot}
           oncomplete={startWaking}
           {onupgrade}
           onopenlocal={canCreateLocalBot ? onopenlocal : null}
         />
+        {/key}
       {:else}
         <p class="new-bot-takeover-kicker">A new teammate</p>
         <h1 id="new-bot-takeover-title">
@@ -236,4 +364,68 @@
       {/if}
     </div>
   </main>
+
+  {#if removals.length}
+    <!-- One calm line per cancelled bot: what is happening to it, then how it ended. -->
+    <footer class="new-bot-cancel-notices" data-testid="new-bot-cancel-notices" aria-live="polite">
+      {#each removals as removal (removal.id)}
+        <p class="new-bot-cancel-notice" data-testid="new-bot-cancel-notice" data-phase={removal.phase}>
+          <span>{botRemovalLine(removal)}</span>
+          {#if canRetryBotRemoval(removal) && onretryremoval}
+            <button
+              type="button"
+              class="new-bot-cancel-retry"
+              data-testid="new-bot-cancel-retry"
+              onclick={() => onretryremoval?.(removal.id)}
+            >Try again</button>
+          {/if}
+          {#if removal.phase === "failed" && ondismissremoval}
+            <button
+              type="button"
+              class="new-bot-cancel-retry"
+              data-testid="new-bot-cancel-dismiss"
+              onclick={() => ondismissremoval?.(removal.id)}
+            >{botRemovalDismissLabel(removal)}</button>
+          {/if}
+        </p>
+      {/each}
+    </footer>
+  {/if}
+
+  {#if confirmSession && confirmCopy}
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <div
+      class="new-bot-confirm-backdrop"
+      role="presentation"
+      onclick={(event) => { if (event.target === event.currentTarget) keepBot(); }}
+    >
+      <div
+        bind:this={confirmEl}
+        class="new-bot-confirm"
+        data-testid="new-bot-cancel-confirm"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="new-bot-confirm-title"
+        aria-describedby="new-bot-confirm-body"
+      >
+        <h2 id="new-bot-confirm-title">{confirmCopy.title}</h2>
+        <p id="new-bot-confirm-body">{confirmCopy.body}</p>
+        <div class="new-bot-confirm-actions">
+          <button
+            type="button"
+            class="new-bot-waking-secondary"
+            data-testid="new-bot-cancel-keep"
+            use:focusOnMount
+            onclick={keepBot}
+          >{confirmCopy.keep}</button>
+          <button
+            type="button"
+            class="new-bot-confirm-remove"
+            data-testid="new-bot-cancel-remove"
+            onclick={removeBot}
+          >{confirmCopy.confirm}</button>
+        </div>
+      </div>
+    </div>
+  {/if}
 </div>

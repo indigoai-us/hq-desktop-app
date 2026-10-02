@@ -1,0 +1,370 @@
+/**
+ * Cancel for the new cloud bot flow.
+ *
+ * Cancel stops a create and removes whatever the create already made. A bot
+ * that exists is removed by asking the server to decommission it. The request
+ * is safe to repeat, and the server answers in one of a few ways this module
+ * reads: finished, still working, busy, or refused until the request names the
+ * bot's running computer.
+ *
+ * Nothing here talks to the server directly. The caller passes the removal
+ * request in, so tests run against fakes.
+ */
+
+/** Where a cancelled bot stands. */
+export type BotRemovalPhase =
+  /** Cancel was pressed while the create request was still out. */
+  | "stopping"
+  /** The bot exists and the server is removing it. */
+  | "removing"
+  /** The server said nothing is left. */
+  | "removed"
+  /** The bot exists and the removal did not finish. */
+  | "failed"
+  /** The create request ended without making a bot. */
+  | "not-created";
+
+export interface BotRemoval {
+  /** Local id for this cancel. */
+  id: string;
+  name: string;
+  companyUid: string;
+  /** Empty until the create request names the bot. */
+  agentUid: string;
+  /** A channel an older server made for the bot. Usually empty. */
+  channelId: string;
+  /** The brain chosen at creation. Kept so a bot the person keeps can go on starting. */
+  brain: BotRemovalBrain | null;
+  phase: BotRemovalPhase;
+  /** True when the bot had a sidebar row before Cancel (it was already starting). */
+  hadRow: boolean;
+  /** When Cancel was pressed. */
+  startedAt: number;
+  /** Why a removal did not finish. Null unless the phase is "failed". */
+  problem: BotRemovalProblem | null;
+}
+
+export type BotRemovalBrain = "codex" | "claude" | "grok";
+
+export type BotRemovalProblem =
+  /** The request failed or the server kept working past the wait. Worth another try. */
+  | "error"
+  /** The server allows only an owner or admin of the company to remove a bot. */
+  | "not-allowed"
+  /** The bot is the one that comes with the company's plan. The server keeps it while the plan is active. */
+  | "plan-bot"
+  /** The create request named no bot id, so there is nothing to ask the server to remove. */
+  | "unknown-bot";
+
+export interface BotRemovalRequestOptions {
+  confirmDestroyInstanceId?: string | null;
+}
+
+/** The host's removal request. Mirrors `adapter.agents.deprovision`. */
+export type RemoveBotRequest = (
+  agentUid: string,
+  options?: BotRemovalRequestOptions,
+) => Promise<unknown>;
+
+/** Server codes this module acts on. Anything else is a plain failure. */
+export const REMOVAL_NEEDS_MACHINE_CODE = "AGENTS_V2_BOX_PROTECTED";
+export const REMOVAL_BUSY_CODE = "STEP_ALREADY_IN_PROGRESS";
+export const REMOVAL_PLAN_BOT_CODE = "TEAM_SETUP_AGENT_PROTECTED";
+/** The server's refusal for a caller who is not an owner or admin carries no code of its own. */
+export const REMOVAL_NOT_ALLOWED_CODE = "http-403";
+
+/** How long to wait before asking again while the server is still working. */
+export const BOT_REMOVAL_RETRY_MS = 5_000;
+/** Requests one removal run may make before it reports a failure. */
+export const BOT_REMOVAL_MAX_REQUESTS = 36;
+/** Failed requests in a row before the run reports a failure. */
+export const BOT_REMOVAL_MAX_FAILURES = 3;
+
+export type BotRemovalAnswer =
+  | { kind: "removed" }
+  /** Removal started and is not finished. Ask again. */
+  | { kind: "working" }
+  /** The server is in the middle of a setup step for this bot. Ask again. */
+  | { kind: "busy" }
+  /** The server wants the request to name the bot's running computer. */
+  | { kind: "name-machine"; instanceId: string }
+  /** The server will not remove this bot for this person. Asking again changes nothing. */
+  | { kind: "refused"; problem: "not-allowed" | "plan-bot" }
+  | { kind: "failed" };
+
+function record(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function text(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+/** Read one answer to a removal request. */
+export function readBotRemovalAnswer(result: unknown): BotRemovalAnswer {
+  const answer = record(result);
+  if (!answer) return { kind: "failed" };
+  if (answer.ok === true) {
+    const value = record(answer.value);
+    const phase = text(record(value?.setupState)?.phase).toLowerCase();
+    // Only the server's own word counts. A success with no such word means
+    // the removal has started, and the bot is not shown as removed.
+    if (value?.terminal === true || phase === "deprovisioned") return { kind: "removed" };
+    return { kind: "working" };
+  }
+  const code = text(answer.code);
+  if (code === REMOVAL_BUSY_CODE) return { kind: "busy" };
+  if (code === REMOVAL_NOT_ALLOWED_CODE) return { kind: "refused", problem: "not-allowed" };
+  if (code === REMOVAL_PLAN_BOT_CODE) return { kind: "refused", problem: "plan-bot" };
+  const instanceId = text(answer.instanceId);
+  if (code === REMOVAL_NEEDS_MACHINE_CODE && instanceId) {
+    return { kind: "name-machine", instanceId };
+  }
+  return { kind: "failed" };
+}
+
+export interface BotRemovalRunOptions {
+  /** Test seam. Production waits on a timer. */
+  sleep?: (ms: number) => Promise<void>;
+  retryMs?: number;
+  maxRequests?: number;
+  maxFailures?: number;
+}
+
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export type BotRemovalOutcome = "removed" | BotRemovalProblem;
+
+/**
+ * Ask the server to remove a bot and keep asking until it says the bot is
+ * gone, or until the run gives up. Resolves "removed" only on the server's
+ * word. Never throws.
+ */
+export async function runBotRemoval(
+  agentUid: string,
+  remove: RemoveBotRequest,
+  options: BotRemovalRunOptions = {},
+): Promise<BotRemovalOutcome> {
+  const uid = agentUid.trim();
+  if (!uid) return "unknown-bot";
+  const sleep = options.sleep ?? defaultSleep;
+  const retryMs = options.retryMs ?? BOT_REMOVAL_RETRY_MS;
+  const maxRequests = Math.max(1, options.maxRequests ?? BOT_REMOVAL_MAX_REQUESTS);
+  const maxFailures = Math.max(1, options.maxFailures ?? BOT_REMOVAL_MAX_FAILURES);
+  let machine: string | null = null;
+  let failures = 0;
+  for (let request = 0; request < maxRequests; request += 1) {
+    let answer: BotRemovalAnswer;
+    try {
+      answer = readBotRemovalAnswer(
+        await remove(uid, machine ? { confirmDestroyInstanceId: machine } : undefined),
+      );
+    } catch {
+      answer = { kind: "failed" };
+    }
+    if (answer.kind === "removed") return "removed";
+    if (answer.kind === "refused") return answer.problem;
+    if (answer.kind === "name-machine") {
+      // The same machine refused twice: naming it did not help.
+      if (machine === answer.instanceId) return "error";
+      machine = answer.instanceId;
+      continue;
+    }
+    if (answer.kind === "failed") {
+      failures += 1;
+      if (failures >= maxFailures) return "error";
+    } else {
+      failures = 0;
+    }
+    await sleep(retryMs);
+  }
+  return "error";
+}
+
+/** The one line the person reads about a cancelled bot. */
+export function botRemovalLine(removal: Pick<BotRemoval, "name" | "phase" | "problem">): string {
+  const name = removal.name.trim() || "Your bot";
+  switch (removal.phase) {
+    case "stopping":
+      return `Cancelling ${name}. Anything already set up for it will be removed.`;
+    case "removing":
+      return `Removing ${name}. This can take a minute.`;
+    case "removed":
+      return `${name} was removed.`;
+    case "not-created":
+      return `${name} was cancelled. Nothing was created.`;
+    case "failed":
+      if (removal.problem === "not-allowed") {
+        return `${name} was not removed. Only an owner or admin of this company can remove a bot. Ask one of them to remove ${name}.`;
+      }
+      if (removal.problem === "plan-bot") {
+        return `${name} was not removed. It is the bot that comes with this company's plan, and it stays while the plan is active.`;
+      }
+      if (removal.problem === "unknown-bot") {
+        return `We couldn't remove ${name}. It still exists. Remove it from Settings, under Bots.`;
+      }
+      return `We couldn't remove ${name}. It still exists.`;
+  }
+}
+
+/** Asking again can help only when the request itself failed. */
+export function canRetryBotRemoval(removal: Pick<BotRemoval, "phase" | "agentUid" | "problem">): boolean {
+  return (
+    removal.phase === "failed" &&
+    removal.agentUid.trim().length > 0 &&
+    (removal.problem ?? "error") === "error"
+  );
+}
+
+/**
+ * What the person presses to put a failed removal away. The bot stays either
+ * way. When asking again could still remove it, the button says the bot is kept.
+ */
+export function botRemovalDismissLabel(removal: Pick<BotRemoval, "name" | "phase" | "agentUid" | "problem">): string {
+  return canRetryBotRemoval(removal) ? `Keep ${removal.name.trim() || "it"}` : "OK";
+}
+
+/** True while the bot may still exist on the server. */
+export function botRemovalOpen(removal: Pick<BotRemoval, "phase">): boolean {
+  return removal.phase === "stopping" || removal.phase === "removing" || removal.phase === "failed";
+}
+
+const BRAINS: readonly BotRemovalBrain[] = ["codex", "claude", "grok"];
+
+let removalSequence = 0;
+
+export function beginBotRemoval(input: {
+  name: string;
+  companyUid: string;
+  agentUid?: string;
+  channelId?: string;
+  brain?: string | null;
+  hadRow?: boolean;
+  now?: number;
+}): BotRemoval {
+  removalSequence += 1;
+  const agentUid = (input.agentUid ?? "").trim();
+  return {
+    id: `removal-${removalSequence}`,
+    name: input.name.trim() || "Your bot",
+    companyUid: input.companyUid.trim(),
+    agentUid,
+    channelId: (input.channelId ?? "").trim(),
+    brain: BRAINS.find((value) => value === input.brain) ?? null,
+    phase: agentUid ? "removing" : "stopping",
+    hadRow: input.hadRow === true,
+    startedAt: input.now ?? Date.now(),
+    problem: null,
+  };
+}
+
+/** What the confirmation dialog says before a bot that exists is removed. */
+export function cancelBotConfirmCopy(input: { name: string; companyLabel?: string | null }): {
+  title: string;
+  body: string;
+  confirm: string;
+  keep: string;
+} {
+  const name = input.name.trim() || "this bot";
+  const company = (input.companyLabel ?? "").trim();
+  return {
+    title: `Cancel ${name}?`,
+    body: `${name} will be removed${company ? ` from ${company}` : ""}, along with its computer and its files. This can't be undone.`,
+    confirm: `Remove ${name}`,
+    keep: `Keep ${name}`,
+  };
+}
+
+export const OPEN_BOT_REMOVALS_STORAGE_KEY = "hq.chat.botRemovals.v1";
+export const REMOVED_BOTS_STORAGE_KEY = "hq.chat.removedBots.v1";
+
+const PROBLEMS: readonly BotRemovalProblem[] = ["error", "not-allowed", "plan-bot", "unknown-bot"];
+
+/**
+ * Cancelled bots that still exist, kept across restarts so a removal the app
+ * was in the middle of is asked again and a bot that was not removed stays
+ * visible. Only bots known by id are kept.
+ */
+export function loadOpenBotRemovals(
+  storage: Pick<Storage, "getItem"> | null | undefined,
+): BotRemoval[] {
+  if (!storage) return [];
+  try {
+    const parsed = JSON.parse(storage.getItem(OPEN_BOT_REMOVALS_STORAGE_KEY) ?? "[]") as unknown;
+    if (!Array.isArray(parsed)) return [];
+    const out: BotRemoval[] = [];
+    for (const entry of parsed) {
+      const item = record(entry);
+      const agentUid = text(item?.agentUid);
+      const phase = text(item?.phase);
+      if (!item || !agentUid || (phase !== "removing" && phase !== "failed")) continue;
+      const problem = PROBLEMS.find((value) => value === item.problem) ?? null;
+      out.push({
+        ...beginBotRemoval({
+          name: text(item.name),
+          companyUid: text(item.companyUid),
+          agentUid,
+          channelId: text(item.channelId),
+          brain: text(item.brain),
+          hadRow: item.hadRow === true,
+          now: typeof item.startedAt === "number" ? item.startedAt : undefined,
+        }),
+        phase,
+        problem: phase === "failed" ? problem ?? "error" : null,
+      });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+export function saveOpenBotRemovals(
+  removals: readonly BotRemoval[],
+  storage: Pick<Storage, "setItem"> | null | undefined,
+): void {
+  const open = removals
+    .filter((removal) => removal.agentUid && (removal.phase === "removing" || removal.phase === "failed"))
+    .slice(0, 50)
+    .map(({ name, companyUid, agentUid, channelId, brain, phase, hadRow, startedAt, problem }) => ({
+      name, companyUid, agentUid, channelId, brain, phase, hadRow, startedAt, problem,
+    }));
+  try {
+    storage?.setItem(OPEN_BOT_REMOVALS_STORAGE_KEY, JSON.stringify(open));
+  } catch {
+    // best-effort
+  }
+}
+
+/** Bots the server confirmed removed. Their conversation stays off the list. */
+export function loadRemovedBots(
+  storage: Pick<Storage, "getItem"> | null | undefined,
+): string[] {
+  if (!storage) return [];
+  try {
+    const parsed = JSON.parse(storage.getItem(REMOVED_BOTS_STORAGE_KEY) ?? "[]") as unknown;
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === "string" && v.length > 0) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function rememberRemovedBot(
+  agentUids: readonly string[],
+  agentUid: string,
+  storage: Pick<Storage, "setItem"> | null | undefined,
+): string[] {
+  const uid = agentUid.trim();
+  if (!uid || agentUids.includes(uid)) return [...agentUids];
+  const next = [uid, ...agentUids].slice(0, 200);
+  try {
+    storage?.setItem(REMOVED_BOTS_STORAGE_KEY, JSON.stringify(next));
+  } catch {
+    // best-effort
+  }
+  return next;
+}
