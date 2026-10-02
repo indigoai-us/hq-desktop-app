@@ -4,6 +4,7 @@
    * Paints from the cached identity and membership roster. Sign out confirms
    * through confirm-sign-out.ts before the host ends the session.
    */
+  import { focusReturn } from "./focus-return.js";
   import { confirmSignOut } from "../settings/confirm-sign-out.js";
   import type { AccountPageId, AccountRoleRow } from "./account-menu.js";
 
@@ -77,6 +78,7 @@
   tabindex="-1"
   aria-label="Account"
   data-testid="account-menu"
+  use:focusReturn
   style="left: {anchorLeft}px; bottom: {anchorBottom}px;"
 >
   <div class="who">

@@ -4,6 +4,7 @@
    * Paints from the cached roster. Pin and unpin show on hover. A seventh
    * pin opens an inline chooser instead of growing the rail past six.
    */
+  import { focusReturn } from "./focus-return.js";
   import CompanyIcon from "../company/CompanyIcon.svelte";
   import {
     moreCompaniesSections,
@@ -95,6 +96,7 @@
   tabindex="-1"
   aria-label="More companies"
   data-testid="more-companies-popover"
+  use:focusReturn
   style:top="{anchorTop}px"
   style:left="{anchorLeft}px"
 >

@@ -10765,7 +10765,7 @@
                       <div class="profile-pane-skeleton" data-testid="profile-pane-skeleton" aria-busy="true"></div>
                     {/snippet}
                   </LazyDoor>
-                  <div class="legacy-detail">
+                  <div class="legacy-detail" inert aria-hidden="true">
                   <LocalBotDetailPanel
                     companies={(companies ?? []).filter(c => c.cloudUid?.startsWith("cmp_")).map(c => ({ uid: c.cloudUid!, name: c.displayName || c.slug, slug: c.slug }))}
                     {onopenurl}
@@ -10804,7 +10804,7 @@
                       <div class="profile-pane-skeleton" data-testid="profile-pane-skeleton" aria-busy="true"></div>
                     {/snippet}
                   </LazyDoor>
-                  <div class="legacy-detail">
+                  <div class="legacy-detail" inert aria-hidden="true">
                   <AgentDetailPanel
                     agentUid={openAgentMember.personUid}
                     {localBots}
@@ -10852,7 +10852,7 @@
                       <div class="profile-pane-skeleton" data-testid="profile-pane-skeleton" aria-busy="true"></div>
                     {/snippet}
                   </LazyDoor>
-                  <div class="legacy-detail">
+                  <div class="legacy-detail" inert aria-hidden="true">
                   <MemberProfilePanel
                     member={openProfileMember}
                     {self}

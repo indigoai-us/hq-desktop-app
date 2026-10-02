@@ -397,7 +397,7 @@
       {:else if sheet === "deploy-allowlist"}
         <h2>Allowlist</h2>
         <p>Company members with read access can open the link.</p>
-        <button class="btn primary" type="button" onclick={() => (sheet = "deploy")}>Back</button>
+        <button class="btn primary" type="button" onclick={() => (sheet = "deploy")}>Back to deploy</button>
       {:else if sheet === "deploy-access"}
         <h2>Deploy access</h2>
         {#each ACCESS_LEVELS as level (level)}
