@@ -18,7 +18,10 @@ import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { createChatWakeBus } from "../chat/chat-api.js";
 import { takePendingConversation } from "../chat/pending-conversation.js";
-import { takePendingChannelOpen } from "../chat/open-target.js";
+import {
+  requestChannelOpen,
+  takePendingChannelOpen,
+} from "../chat/open-target.js";
 import type { ConversationRow } from "../chat/sidebar-model.js";
 
 interface HistoryCall {
@@ -42,6 +45,12 @@ interface Fixture {
   byCursor: Record<string, Page> | ((cursor: string) => Page);
   /** Served to `since` catch-up reads. */
   sincePage: Page;
+  /**
+   * Answers a request itself when it returns a page (or a promise of one,
+   * which keeps the request in flight until it settles). `undefined` falls
+   * through to `first` / `byCursor` / `sincePage`.
+   */
+  route?: (call: HistoryCall) => Page | Promise<Page> | undefined;
   calls: HistoryCall[];
 }
 
@@ -72,8 +81,10 @@ function mesh(n: number): Record<string, unknown> {
 }
 
 function adapter(fx: Fixture): PlatformAdapter {
-  const serve = (call: HistoryCall): Page => {
+  const serve = (call: HistoryCall): Page | Promise<Page> => {
     fx.calls.push(call);
+    const routed = fx.route?.(call);
+    if (routed !== undefined) return routed;
     if (call.since) return fx.sincePage;
     if (!call.cursor) return fx.first;
     return typeof fx.byCursor === "function"
@@ -95,9 +106,9 @@ function adapter(fx: Fixture): PlatformAdapter {
       listContacts: async () => ok({ contacts: [] }),
       listChannelMembers: async () => ok({ members: [] }),
       fetchChannel: async (args: Omit<HistoryCall, "route">) =>
-        ok(serve({ route: "channel", ...args })),
+        ok(await serve({ route: "channel", ...args })),
       fetchDmThread: async (args: Omit<HistoryCall, "route">) =>
-        ok(serve({ route: "dm", ...args })),
+        ok(await serve({ route: "dm", ...args })),
       sendChannelMessage: async () =>
         ok({ eventId: `evt_self_${Date.now()}`, createdAt: new Date().toISOString() }),
       sendDm: async () =>
@@ -377,6 +388,70 @@ describe("DesktopApp human view history: server that echoes view: \"human\"", ()
     expect(host.textContent).toContain("human-row-1-xyz");
     // The rail is told a person typed in this channel.
     expect(ownSends).toEqual(["chn_ops"]);
+  });
+});
+
+describe("DesktopApp human view history: a run of earlier requests ends with its conversation", () => {
+  it("switching conversations during a run: the old run asks for nothing more, and the new conversation gets only its own run", async () => {
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const emptyPage = (next: string): Page => ({
+      messages: [],
+      view: "human",
+      nextCursor: next,
+      viewScanTruncated: true,
+    });
+    // Both channels hold nothing a person typed, and the server always has
+    // a further cursor: every page is empty and truncated.
+    const fx = fixture({
+      route: (call) => {
+        if (call.since) return undefined;
+        const prefix = call.channelId === "chn_ops" ? "ops" : "design";
+        if (!call.cursor) return emptyPage(`${prefix}_1`);
+        const n = Number(call.cursor.split("_")[1]);
+        const page = emptyPage(`${prefix}_${n + 1}`);
+        // The first conversation's second earlier request stays in flight
+        // until the test releases it.
+        if (call.cursor === "ops_2") return held.then(() => page);
+        return page;
+      },
+    });
+    const cursorsFor = (channelId: string) =>
+      earlierCalls(fx)
+        .filter((call) => call.channelId === channelId)
+        .map((call) => call.cursor);
+    const ownRun = [1, 2, 3, 4, 5, 6, 7, 8].map((n) => `design_${n}`);
+
+    await mountApp(fx, CHANNEL_ROW);
+    // The open-time run for the first conversation is under way and waiting
+    // on its second request.
+    expect(cursorsFor("chn_ops")).toEqual(["ops_1", "ops_2"]);
+    expect(cursorsFor("chn_design")).toEqual([]);
+
+    requestChannelOpen("chn_design", { title: "design" });
+    await settle(40);
+
+    // The new conversation's own open-time run: eight requests, each for the
+    // next cursor, then the paused state.
+    expect(cursorsFor("chn_design")).toEqual(ownRun);
+    expect(q("conversation-scan-paused")).not.toBeNull();
+
+    // The first conversation's request now answers. Its run started for a
+    // conversation that is no longer open, so it must not ask again: the
+    // shell would apply the request to the conversation that is open now.
+    release();
+    await settle(40);
+
+    expect(cursorsFor("chn_ops")).toEqual(["ops_1", "ops_2"]);
+    expect(cursorsFor("chn_design")).toEqual(ownRun);
+    expect(
+      fx.calls.filter((call) => call.route === "dm"),
+      "no DM thread request",
+    ).toHaveLength(0);
+    expect(q("conversation-scan-paused")).not.toBeNull();
+    expect(loadEarlierButton()?.textContent).toContain("Look further back");
   });
 });
 
