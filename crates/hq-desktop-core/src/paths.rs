@@ -722,10 +722,9 @@ fn resolve_bin_with_diagnostics(
             let mut dirs = settings_path_dirs();
             dirs.extend(extended_search_dirs());
             let backing = |path: &Path| crate::hq_cli_update::hq_cli_backing(path);
-            let (found, observed) = select_hq_program_in_dirs_with_diagnostics(
+            let (found, observed) = select_hq_program_on_disk_with_diagnostics(
                 &dirs,
                 &candidates,
-                &|path: &Path| path.exists(),
                 &reject,
                 &backing,
             );
@@ -2107,8 +2106,8 @@ fn select_hq_program_in_dirs_with_diagnostics(
 }
 
 /// [`select_hq_program_in_dirs`] against the real filesystem, with the real
-/// backing oracle. This is the exact call the Windows `hq` arm of
-/// [`resolve_bin_with_kind`] makes, so the pure selection is compiled and
+/// backing oracle. The Windows `hq` arm of [`resolve_bin_with_kind`] uses the
+/// diagnostics companion below, so this pure selection remains compiled and
 /// exercised on every CI leg, not only on windows-latest.
 pub fn select_hq_program_on_disk(
     dirs: &[PathBuf],
@@ -2116,7 +2115,19 @@ pub fn select_hq_program_on_disk(
     reject: &dyn Fn(&Path) -> bool,
     backing: &dyn Fn(&Path) -> CandidateBacking,
 ) -> Option<ResolvedProgram> {
-    select_hq_program_in_dirs(
+    select_hq_program_on_disk_with_diagnostics(dirs, candidates, reject, backing).0
+}
+
+/// The exact on-disk helper called by the Windows `hq` resolver, returning
+/// diagnostics collected during the same traversal. It performs no extra
+/// filesystem probes beyond [`select_hq_program_in_dirs_with_diagnostics`].
+fn select_hq_program_on_disk_with_diagnostics(
+    dirs: &[PathBuf],
+    candidates: &[String],
+    reject: &dyn Fn(&Path) -> bool,
+    backing: &dyn Fn(&Path) -> CandidateBacking,
+) -> (Option<ResolvedProgram>, HqResolverDiagnostics) {
+    select_hq_program_in_dirs_with_diagnostics(
         dirs,
         candidates,
         &|path: &Path| path.exists(),
