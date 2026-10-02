@@ -563,3 +563,54 @@ export async function findDeploySources(
     reason: `${which} ${what} (a folder with index.html). Build one in a project, or ask the agent to /deploy a file directly.`,
   };
 }
+
+/** One row of the Vault "What's new" list (QA-070). */
+export interface RecentVaultFile {
+  /** Company-relative vault key. */
+  key: string;
+  name: string;
+  /** HQ-relative path, the same shape the All tree selects. */
+  path: string;
+  modified: number;
+  ago: string;
+}
+
+export const RECENT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+function agoLabel(ms: number): string {
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+/**
+ * Files changed in the last 7 days, newest first (QA-070). Folder markers and
+ * rows without a parseable timestamp are dropped; `query` filters by key.
+ */
+export function recentVaultFiles(
+  slug: string,
+  objects: readonly { key: string; lastModified?: string | null }[],
+  now: number,
+  query = "",
+): RecentVaultFile[] {
+  const q = query.trim().toLowerCase();
+  const rows: RecentVaultFile[] = [];
+  for (const obj of objects) {
+    if (!obj.key || obj.key.endsWith("/")) continue;
+    const modified = obj.lastModified ? Date.parse(obj.lastModified) : NaN;
+    if (!Number.isFinite(modified) || now - modified > RECENT_WINDOW_MS) continue;
+    const key = obj.key.replace(/^\/+/, "");
+    if (q && !key.toLowerCase().includes(q)) continue;
+    rows.push({
+      key,
+      name: key.split("/").pop() ?? key,
+      path: `companies/${slug}/${key}`,
+      modified,
+      ago: agoLabel(Math.max(0, now - modified)),
+    });
+  }
+  return rows.sort((a, b) => b.modified - a.modified);
+}

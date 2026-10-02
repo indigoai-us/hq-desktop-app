@@ -193,6 +193,100 @@ describe("US-029 FilesConnectPage", () => {
     expect(target.querySelector("[data-testid='vault-access'] h2")?.textContent).toBe("knowledge");
   });
 
+  describe("Vault What's new (QA-070)", () => {
+    const flush = async () => {
+      for (let i = 0; i < 5; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        flushSync();
+      }
+    };
+    const iso = (msAgo: number) => new Date(Date.now() - msAgo).toISOString();
+    const baseFiles = (listing: () => Promise<unknown>) => ({
+      listDir: vi.fn(async () => ok([])),
+      getFileContent: vi.fn(async () => ok("# hi")),
+      atlasLocal: { listing: vi.fn(listing), firstPage: vi.fn(), readText: vi.fn() },
+    });
+    const openNew = (target: HTMLElement) => {
+      (target.querySelector("[data-testid='vault-whats-new']") as HTMLButtonElement).click();
+      flushSync();
+    };
+
+    it("lists files changed in the last 7 days, newest first, never a blank body", async () => {
+      const files = baseFiles(async () => ok({
+        objects: [
+          { key: "knowledge/old.md", lastModified: iso(9 * 86_400_000) },
+          { key: "knowledge/gtm.md", lastModified: iso(2 * 3_600_000) },
+          { key: "projects/x/prd.json", lastModified: iso(60_000 * 5) },
+          { key: "projects/x/", lastModified: iso(1000) },
+        ],
+      }));
+      const target = mountPage("vault", files);
+      await flush();
+      openNew(target);
+      await flush();
+      const rows = [...target.querySelectorAll<HTMLElement>("[data-testid='vault-recent-row']")];
+      expect(rows.map((row) => row.dataset.path)).toEqual([
+        "companies/indigo/projects/x/prd.json",
+        "companies/indigo/knowledge/gtm.md",
+      ]);
+      expect(target.querySelector("[data-testid='vault-preview']")).not.toBeNull();
+      // No selection: Access is hidden, not headless.
+      expect(target.querySelector("[data-testid='vault-access']")).toBeNull();
+      rows[1]!.click();
+      flushSync();
+      expect(target.querySelector("[data-testid='vault-access'] h2")?.textContent).toBe("knowledge");
+      expect(target.querySelector("[data-testid='vault-preview-empty']")).toBeNull();
+    });
+
+    it("shows an explicit empty state when nothing changed in 7 days", async () => {
+      const files = baseFiles(async () => ok({ objects: [{ key: "a.md", lastModified: iso(30 * 86_400_000) }] }));
+      const target = mountPage("vault", files);
+      await flush();
+      openNew(target);
+      await flush();
+      expect(target.querySelector("[data-testid='vault-recent-empty']")?.textContent).toContain("No files changed in the last 7 days");
+      expect(target.querySelector("[data-testid='vault-access']")).toBeNull();
+    });
+
+    it("shows loading, then an error state with retry when the listing fails", async () => {
+      let fail = true;
+      let release: (() => void) | null = null;
+      const files = baseFiles(() => new Promise((resolve) => {
+        release = () => resolve(fail ? { ok: false, code: "io", reason: "boom" } : ok({ objects: [] }));
+      }));
+      const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const target = mountPage("vault", files);
+      await flush();
+      openNew(target);
+      await flush();
+      expect(target.querySelector("[data-testid='vault-recent-loading']")).not.toBeNull();
+      release!();
+      await flush();
+      const error = target.querySelector("[data-testid='vault-recent-error']");
+      expect(error?.textContent).toContain("Could not load recent files.");
+      expect(error?.textContent).not.toContain("boom");
+      fail = false;
+      (error!.querySelector("button") as HTMLButtonElement).click();
+      await flush();
+      release!();
+      await flush();
+      expect(target.querySelector("[data-testid='vault-recent-empty']")).not.toBeNull();
+      errSpy.mockRestore();
+    });
+
+    it("All restores the tree and its Access target", async () => {
+      const files = baseFiles(async () => ok({ objects: [] }));
+      const target = mountPage("vault", files);
+      await flush();
+      openNew(target);
+      await flush();
+      (target.querySelector("[aria-label='Vault view'] [role='tab']") as HTMLButtonElement).click();
+      await flush();
+      expect(target.querySelector("[data-testid='vault-tree']")).not.toBeNull();
+      expect(target.querySelector("[data-testid='vault-access'] h2")?.textContent).toBe("indigo");
+    });
+  });
+
   it("lists every secret from environment groups, not three sample rows (QA-014)", async () => {
     const store = (await import("../company-store.svelte.js")).companyStore as unknown as {
       loadSecrets: ReturnType<typeof vi.fn>;

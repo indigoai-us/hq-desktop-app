@@ -41,6 +41,7 @@
     filterSecrets,
     filterVault,
     readFilesConnectCache,
+    recentVaultFiles,
     redeployAllowed,
     redeployPrompt,
     secretBindPrompt,
@@ -61,6 +62,7 @@
     type MemberOption,
     type SecretRow,
   } from "./files-connect-model.js";
+  import { parseListPage, type AtlasListedObject } from "../../atlas/atlas-build.js";
 
   interface Props {
     page: FilesConnectPageId;
@@ -258,7 +260,64 @@
   const vaultFolder = $derived(
     vaultFile ? (vaultFile.slice(vaultRoot.length + 1).split("/")[0] ?? null) : null,
   );
-  const showVaultTree = $derived(files !== null && vaultTab === "all");
+  const hasExplorer = $derived(files !== null);
+  const showVaultTree = $derived(hasExplorer && vaultTab === "all");
+  const showRecent = $derived(hasExplorer && vaultTab === "new");
+
+  // ---- What's new (QA-070) --------------------------------------------------
+  // The recent-files list: the synced company listing when this machine has
+  // it, else the cloud vault listing. Always loading, error, empty or rows.
+  const RECENT_MAX_PAGES = 20;
+  let recentObjects = $state<AtlasListedObject[] | null>(null);
+  let recentError = $state<string | null>(null);
+  let recentNonce = $state(0);
+  const recentRows = $derived(recentObjects ? recentVaultFiles(slug, recentObjects, Date.now(), query) : []);
+  const recentPage = $derived(pageRows(recentRows, vaultPages));
+
+  async function loadRecentObjects(s: string): Promise<AtlasListedObject[]> {
+    const local = files?.atlasLocal;
+    if (local) {
+      const res = await local.listing(s);
+      if (!res.ok) throw new Error(`local listing ${res.code ?? res.reason}`);
+      if (res.value != null) return parseListPage(res.value).objects;
+    }
+    if (companyUid && files?.listVaultPrefix) {
+      const objects: AtlasListedObject[] = [];
+      let cursor: string | undefined;
+      for (let i = 0; i < RECENT_MAX_PAGES; i += 1) {
+        const res = await files.listVaultPrefix(companyUid, "", cursor);
+        if (!res.ok) throw new Error(`vault listing ${res.code ?? res.reason}`);
+        const pageResult = parseListPage(res.value);
+        objects.push(...pageResult.objects);
+        if (!pageResult.cursor) break;
+        cursor = pageResult.cursor;
+      }
+      return objects;
+    }
+    throw new Error("no recent-files source on this host");
+  }
+
+  $effect(() => {
+    const s = slug;
+    void recentNonce;
+    if (!showRecent) return;
+    recentObjects = null;
+    recentError = null;
+    vaultFile = null;
+    let alive = true;
+    loadRecentObjects(s)
+      .then((objects) => {
+        if (alive) recentObjects = objects;
+      })
+      .catch((err) => {
+        console.error("vault recent files failed:", err);
+        if (alive) recentError = "Could not load recent files.";
+      });
+    return () => {
+      alive = false;
+    };
+  });
+
   const integrationRows = $derived(filterIntegrations(data.integrations, integrationTab, query));
   const secretRows = $derived(filterSecrets(secrets ?? [], secretTab, query));
   const vaultPage = $derived(pageRows(vaultRows, vaultPages));
@@ -266,6 +325,10 @@
   const secretPage = $derived(pageRows(secretRows, secretPages));
   const deployPage = $derived(pageRows(deployments ?? [], deployPages));
   const vaultCurrent = $derived(data.nodes.find((node) => node.id === selectedVault) ?? data.nodes[0]);
+  /** The Access panel's target; null hides the panel rather than leave it headless. */
+  const accessTarget = $derived(
+    showVaultTree ? (vaultFolder ?? slug) : showRecent ? (vaultFolder ?? null) : (vaultCurrent?.name ?? null),
+  );
   const integrationCurrent = $derived(
     integrationRows.find((row) => row.id === selectedIntegration) ?? integrationRows[0],
   );
@@ -562,8 +625,33 @@
       <button class="btn" type="button" data-testid="vault-upload" onclick={openUpload}>Upload</button>
       <button class="btn" type="button" data-testid="vault-share" onclick={() => openShare("share")}>Share</button>
     </header>
-    <div class="split vault-split" class:has-tree={showVaultTree}>
-      {#if showVaultTree}
+    <div class="split vault-split" class:has-tree={hasExplorer} class:no-access={accessTarget === null}>
+      {#if showRecent}
+        <div class="vault-tree list" data-testid="vault-recent" aria-busy={recentObjects === null && recentError === null}>
+          {#if recentError}
+            <div class="empty" role="alert" data-testid="vault-recent-error">
+              <span class="empty-title">{recentError}</span>
+              <button class="btn" type="button" onclick={() => (recentNonce += 1)}>Try again</button>
+            </div>
+          {:else if recentObjects === null}
+            <div data-testid="vault-recent-loading">{@render skeletonRows()}</div>
+          {:else if recentRows.length === 0}
+            <div class="empty" data-testid="vault-recent-empty">
+              <span class="empty-title">{query.trim() ? "No recent files match this search" : "No files changed in the last 7 days"}</span>
+            </div>
+          {:else}
+            {#each recentPage.rows as row (row.key)}
+              <button class="row" type="button" data-testid="vault-recent-row" data-path={row.path} aria-current={row.path === vaultFile} title={row.key} onclick={() => (vaultFile = row.path)}>
+                <span class="nm">{row.name}</span>
+                <span class="meta">{row.ago}</span>
+              </button>
+            {/each}
+            {#if recentPage.remaining > 0}
+              <ShowMoreRow shown={recentPage.rows.length} total={recentPage.total} next={recentPage.next} noun="files" testid="vault-recent-show-more" onmore={() => (vaultPages += 1)} />
+            {/if}
+          {/if}
+        </div>
+      {:else if showVaultTree}
         <div class="vault-tree" data-testid="vault-tree">
           <div class="vault-root mono" title={vaultRoot}>{vaultRoot}</div>
           {#key `${vaultRoot}:${treeNonce}`}
@@ -579,6 +667,11 @@
         </div>
       {:else}
         <div class="list" data-testid="vault-list">
+          {#if vaultPage.rows.length === 0}
+            <div class="empty" data-testid="vault-list-empty">
+              <span class="empty-title">{vaultTab === "new" ? "No files changed in the last 7 days" : "No files to show"}</span>
+            </div>
+          {/if}
           {#each vaultPage.rows as node (node.id)}
             <button class="row" type="button" aria-current={node.id === vaultCurrent?.id} onclick={() => (selectedVault = node.id)}>
               <span class="nm" style:padding-left="{(node.depth - 1) * 12}px">{node.name}</span>
@@ -591,26 +684,29 @@
           {/if}
         </div>
       {/if}
-      {#if showVaultTree}
+      {#if hasExplorer}
         <section class="vault-preview" aria-label="File preview" data-testid="vault-preview">
           {#if vaultFile}
             <FilePreviewPane adapter={previewAdapter} path={vaultFile} />
           {:else}
             <div class="empty" data-testid="vault-preview-empty">
               <span class="empty-title">Select a file</span>
-              <p class="mono" title={vaultRoot}>{vaultRoot}</p>
-              <p data-testid="vault-summary">{vaultRootSummary ?? "Reading folder…"}</p>
+              {#if showVaultTree}
+                <p class="mono" title={vaultRoot}>{vaultRoot}</p>
+                <p data-testid="vault-summary">{vaultRootSummary ?? "Reading folder…"}</p>
+              {:else}
+                <p>Pick a recently changed file to preview it.</p>
+              {/if}
             </div>
           {/if}
         </section>
       {/if}
+      {#if accessTarget !== null}
       <aside class="pane" data-testid="vault-access">
         <header class="pane-h"><span class="pane-kind">Access</span></header>
         <div class="pane-b">
-          {#if showVaultTree}
-            <h2>{vaultFolder ?? slug}</h2>
-          {:else}
-            <h2>{vaultCurrent?.name}</h2>
+          <h2>{accessTarget}</h2>
+          {#if !hasExplorer}
             <pre class="preview">{vaultCurrent?.preview}</pre>
           {/if}
           <div class="grants">
@@ -632,6 +728,7 @@
           </div>
         </div>
       </aside>
+      {/if}
     </div>
   {:else if page === "integrations"}
     <header class="toolbar">
@@ -998,6 +1095,8 @@
   .preview { white-space: pre-wrap; color: var(--t2, var(--v4-text-2)); font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; margin: 0; }
   /* Vault: tree · preview · access. */
   .vault-split.has-tree { grid-template-columns: minmax(240px, 300px) minmax(0, 1fr) 280px; }
+  .vault-split.has-tree.no-access { grid-template-columns: minmax(240px, 300px) minmax(0, 1fr); }
+  .split.no-access:not(.has-tree) { grid-template-columns: minmax(0, 1fr); }
   .vault-tree { min-height: 0; overflow: auto; padding: 8px 8px 16px; border-right: 1px solid var(--line, var(--v4-rowline)); }
   .vault-root { padding: 4px 8px 6px; color: var(--t3, var(--v4-text-3)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .vault-preview { min-width: 280px; min-height: 0; overflow: auto; }
