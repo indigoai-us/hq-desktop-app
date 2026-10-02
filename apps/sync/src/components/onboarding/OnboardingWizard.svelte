@@ -941,6 +941,9 @@
       if (firstLaunch) onboardingTelemetry.recordFirstLaunch();
       return;
     }
+    // The anonymous launch receipt and later authenticated desktop auth events
+    // share this opaque id. Use it as the onboarding session join key too.
+    onboardingTelemetry.setInstallAttemptId(context.installAttemptId);
     const deps = continuationDeps(context);
     void flushReceipts(deps).catch(() => undefined);
     // `firstLaunchRecorded` is the existing durable first-installation gate.
