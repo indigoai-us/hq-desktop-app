@@ -576,6 +576,6 @@ describe("the words of the flow", () => {
       ...view({ status: WAITING_FOR_APPROVAL }).steps.map((step) => step.text),
       ...(view({ status: WAITING_FOR_APPROVAL }).indicator?.labels ?? []),
     ].join("\n");
-    expect(everything).not.toMatch(/—|–|OAuth|socket|manifest|webhook|API\b/i);
+    expect(everything).not.toMatch(/\u2014|\u2013|OAuth|socket|manifest|webhook|API\b/i);
   });
 });
