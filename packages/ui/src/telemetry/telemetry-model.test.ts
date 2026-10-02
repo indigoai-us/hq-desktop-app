@@ -7,6 +7,7 @@ import {
   listRateUsd,
   outcomesForFilter,
   sessionsForFilter,
+  snapshotForRange,
   type ModelUsage,
 } from "./telemetry-model.js";
 import { TELEMETRY_SMOKE } from "./telemetry-smoke.js";
@@ -56,5 +57,40 @@ describe("telemetry cache (US-032)", () => {
     expect(cache.cached()?.sessions).toBe(128);
     release({ ...TELEMETRY_SMOKE, sessions: 129 });
     await expect(pending).resolves.toMatchObject({ sessions: 129 });
+  });
+});
+
+describe("telemetry range (QA-002)", () => {
+  it("keeps the 30-day base for 30d and shows only its 30 days", () => {
+    const view = snapshotForRange(TELEMETRY_SMOKE, "30d");
+    expect(view.rangeLabel).toBe("Sep 2 – Oct 1");
+    expect(view.sessions).toBe(128);
+    expect(view.days).toHaveLength(30);
+  });
+
+  it("recomputes interval, totals, chart, sessions and skills for 7d", () => {
+    const view = snapshotForRange(TELEMETRY_SMOKE, "7d");
+    expect(view.rangeLabel).toBe("Sep 25 – Oct 1");
+    expect(view.days).toHaveLength(7);
+    expect(view.sessions).toBeLessThan(128);
+    expect(view.sessions).toBeGreaterThan(0);
+    expect(view.listCostUsd).toBeLessThan(TELEMETRY_SMOKE.listCostUsd);
+    expect(view.sessionsRows.every((r) => (r.daysAgo ?? 0) < 7)).toBe(true);
+    expect(view.sessionsRows.length).toBeLessThan(TELEMETRY_SMOKE.sessionsRows.length);
+    expect(view.skills[0].count).toBeLessThan(TELEMETRY_SMOKE.skills[0].count);
+    expect(view.dayLabels.at(-1)).toBe("today");
+  });
+
+  it("recomputes interval and totals for 90d", () => {
+    const view = snapshotForRange(TELEMETRY_SMOKE, "90d");
+    expect(view.rangeLabel).toBe("Jul 4 – Oct 1");
+    expect(view.days).toHaveLength(90);
+    expect(view.sessions).toBeGreaterThan(128);
+    expect(view.sessionsRows).toHaveLength(TELEMETRY_SMOKE.sessionsRows.length);
+  });
+
+  it("leaves a snapshot without an end date unchanged", () => {
+    const legacy = { ...TELEMETRY_SMOKE, endDate: undefined };
+    expect(snapshotForRange(legacy, "7d")).toBe(legacy);
   });
 });

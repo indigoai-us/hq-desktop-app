@@ -15,6 +15,7 @@
     outcomesForFilter,
     sessionsForFilter,
     sharePercent,
+    snapshotForRange,
     stackMax,
     toCsv,
     type OutcomeFilter,
@@ -38,10 +39,12 @@
 
   let { cache, scope = "all", onskills, onopen }: Props = $props();
 
-  let snapshot = $state<TelemetrySnapshot | null>(untrack(() => cache.cached()));
+  let base = $state<TelemetrySnapshot | null>(untrack(() => cache.cached()));
   let refreshing = $state(false);
   let page = $state<TelemetryPage>("overview");
   let range = $state<TelemetryRange>("30d");
+  // Every figure on screen reads the snapshot recomputed for the chosen range.
+  const snapshot = $derived(base ? snapshotForRange(base, range) : null);
   let activeScope = $state(untrack(() => scope));
   let sessionFilter = $state<SessionFilter>("all");
   let outcomeFilter = $state<OutcomeFilter>("all");
@@ -81,8 +84,7 @@
     cache
       .refresh()
       .then((next) => {
-        snapshot = next;
-        range = next.range;
+        base = next;
       })
       .catch((err) => {
         console.warn("[telemetry] refresh failed", err);
@@ -93,7 +95,7 @@
   }
 
   onMount(() => {
-    if (!snapshot) snapshot = cache.fallback;
+    if (!base) base = cache.fallback;
     refresh();
   });
 
@@ -228,7 +230,7 @@
               </div>
             {/each}
           </div>
-          <div class="spark-lb"><span>Sep 2</span><span>Sep 16</span><span>today</span></div>
+          <div class="spark-lb">{#each snapshot.dayLabels as label (label)}<span>{label}</span>{/each}</div>
         </div>
         <div class="two">
           <div>
@@ -284,7 +286,7 @@
               {/each}
             </div>
             <span class="grow"></span>
-            <span class="chip live">1 in progress</span>
+            <span class="chip live">{snapshot.outcomeCounts.live} in progress</span>
           </div>
           <div class="srow hd wide" data-testid="telemetry-sessions-head"><span>When</span><span>Company</span><span>Project</span><span>Host</span><span class="n">Length</span><span class="n">Tokens</span><span>Outcome</span></div>
           <div class="scroll">
@@ -355,7 +357,7 @@
     {:else if page === "tokens"}
       <div class="canvas">
         <div class="statline">
-          <div class="stat"><div class="n">{snapshot.tokensLabel}<small>{snapshot.tokensDelta}</small></div><div class="l">tokens, 30 days</div></div>
+          <div class="stat"><div class="n">{snapshot.tokensLabel}<small>{snapshot.tokensDelta}</small></div><div class="l">tokens, {snapshot.days.length} days</div></div>
           <div class="stat" data-testid="telemetry-list-cost"><div class="n">{formatUsd(snapshot.listCostUsd)}<small>est.</small></div><div class="l">cost at list price</div></div>
           <div class="stat"><div class="n">{snapshot.perDay}</div><div class="l">per day, average</div></div>
           <div class="stat"><div class="n">{snapshot.perSession}</div><div class="l">per session, median</div></div>

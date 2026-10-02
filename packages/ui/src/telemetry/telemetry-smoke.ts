@@ -50,9 +50,15 @@ function day(opus: number, sonnet: number, haiku: number, today = false) {
   return { label: "", opus, sonnet, haiku, today };
 }
 
+/** Jul 4 – Sep 1: the 60 days before the 30-day window, so 90d has real stacks. */
+const EARLIER_DAYS = Array.from({ length: 60 }, (_, i) =>
+  day(40 + ((i * 37) % 90), 35 + ((i * 53) % 80), 4 + ((i * 7) % 9)),
+);
+
 export const TELEMETRY_SMOKE: TelemetrySnapshot = {
   range: "30d",
   rangeLabel: "Sep 2 – Oct 1",
+  endDate: "2026-10-01",
   subtitle: "you and the bots acting as you",
   sessions: 128,
   sessionsDelta: "+12%",
@@ -70,6 +76,7 @@ export const TELEMETRY_SMOKE: TelemetrySnapshot = {
   peakLabel: "peak 412k · Sep 24",
   dayLabels: ["Sep 2", "Sep 9", "Sep 16", "Sep 23", "today"],
   days: [
+    ...EARLIER_DAYS,
     day(90, 58, 8),
     day(74, 78, 4),
     day(49, 41, 8),
@@ -147,6 +154,7 @@ export const TELEMETRY_SMOKE: TelemetrySnapshot = {
       id: "s1",
       when: "now",
       day: "Today",
+      daysAgo: 0,
       company: "Indigo",
       mark: "IN",
       project: "hq-desktop-console-rail",
@@ -179,6 +187,7 @@ export const TELEMETRY_SMOKE: TelemetrySnapshot = {
       id: "s2",
       when: "9:31 AM",
       day: "Today",
+      daysAgo: 0,
       company: "Indigo",
       mark: "IN",
       project: "hq-desktop-app",
@@ -205,6 +214,7 @@ export const TELEMETRY_SMOKE: TelemetrySnapshot = {
       id: "s3",
       when: "8:02 AM",
       day: "Today",
+      daysAgo: 0,
       company: "Personal",
       mark: "CE",
       project: "cut30",
@@ -231,6 +241,7 @@ export const TELEMETRY_SMOKE: TelemetrySnapshot = {
       id: "s4",
       when: "6:00 AM",
       day: "Today",
+      daysAgo: 0,
       company: "Indigo",
       mark: "IN",
       project: "daily-pulse",
@@ -257,6 +268,7 @@ export const TELEMETRY_SMOKE: TelemetrySnapshot = {
       id: "s5",
       when: "yesterday",
       day: "Yesterday",
+      daysAgo: 1,
       company: "LiveRecover",
       mark: "LR",
       project: "dunning-reconcile",
@@ -283,6 +295,7 @@ export const TELEMETRY_SMOKE: TelemetrySnapshot = {
       id: "s6",
       when: "yesterday",
       day: "Yesterday",
+      daysAgo: 1,
       company: "Indigo",
       mark: "IN",
       project: "standup-brief",
@@ -309,6 +322,7 @@ export const TELEMETRY_SMOKE: TelemetrySnapshot = {
       id: "s7",
       when: "Sep 29",
       day: "Sep 29",
+      daysAgo: 2,
       company: "Indigo",
       mark: "IN",
       project: "ontology",
@@ -335,6 +349,7 @@ export const TELEMETRY_SMOKE: TelemetrySnapshot = {
       id: "s8",
       when: "Sep 29",
       day: "Sep 29",
+      daysAgo: 2,
       company: "Indigo",
       mark: "IN",
       project: "crm-management",
@@ -361,6 +376,7 @@ export const TELEMETRY_SMOKE: TelemetrySnapshot = {
       id: "s9",
       when: "Sep 28",
       day: "Sep 28",
+      daysAgo: 3,
       company: "Personal",
       mark: "CE",
       project: "hq-sync-test-macos",
@@ -385,8 +401,9 @@ export const TELEMETRY_SMOKE: TelemetrySnapshot = {
     },
     {
       id: "s10",
-      when: "Sep 26",
-      day: "Sep 26",
+      when: "Sep 22",
+      day: "Sep 22",
+      daysAgo: 9,
       company: "LiveRecover",
       mark: "LR",
       project: "lr-meta-funnel-daily",

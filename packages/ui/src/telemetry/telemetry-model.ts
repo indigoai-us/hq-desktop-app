@@ -81,6 +81,8 @@ export interface TelemetrySession {
   skills: string[];
   timeline: { at: string; text: string; live?: boolean }[];
   modelSplit: { opus: number; sonnet: number; haiku: number };
+  /** Whole days before the snapshot end date; 0 is today. */
+  daysAgo?: number;
 }
 
 export interface SkillUse {
@@ -98,6 +100,8 @@ export interface BotActor {
 export interface TelemetrySnapshot {
   range: TelemetryRange;
   rangeLabel: string;
+  /** ISO date (YYYY-MM-DD) of the last day in `days`. */
+  endDate?: string;
   subtitle: string;
   sessions: number;
   sessionsDelta: string;
@@ -209,4 +213,105 @@ export function toCsv(snapshot: TelemetrySnapshot): string {
       .join(","),
   );
   return [header.join(","), ...lines].join("\n");
+}
+
+export const RANGE_DAYS: Record<TelemetryRange, number> = { "7d": 7, "30d": 30, "90d": 90 };
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function shiftDate(iso: string, days: number): Date {
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d - days));
+}
+
+function shortDate(date: Date): string {
+  return `${MONTHS[date.getUTCMonth()]} ${date.getUTCDate()}`;
+}
+
+function dayTotal(day: DayStack): number {
+  return day.opus + day.sonnet + day.haiku;
+}
+
+function scale(n: number, f: number): number {
+  return Math.round(n * f);
+}
+
+/**
+ * Recompute a snapshot for another range. The base totals describe
+ * `base.range`; the per-day stacks cover as many days as were captured, so
+ * totals for another range scale by that window's share of daily tokens.
+ * Session rows are filtered by age. Without `endDate` the base is returned unchanged.
+ */
+export function snapshotForRange(base: TelemetrySnapshot, range: TelemetryRange): TelemetrySnapshot {
+  if (!base.endDate) return base;
+  const span = RANGE_DAYS[range];
+  if (range === base.range) {
+    return base.days.length > span ? { ...base, days: base.days.slice(-span) } : base;
+  }
+  const baseSpan = RANGE_DAYS[base.range];
+  const days = base.days.slice(-span);
+  const baseTokens = base.days.slice(-baseSpan).reduce((sum, d) => sum + dayTotal(d), 0);
+  const windowTokens = days.reduce((sum, d) => sum + dayTotal(d), 0);
+  const f = baseTokens > 0 ? windowTokens / baseTokens : 0;
+  const end = base.endDate;
+  const start = shiftDate(end, days.length - 1);
+  const models = base.models.map((m) => ({
+    ...m,
+    input: scale(m.input, f),
+    output: scale(m.output, f),
+    cacheWrite: scale(m.cacheWrite, f),
+    cacheRead: scale(m.cacheRead, f),
+  }));
+  const tokens = models.reduce((sum, m) => sum + m.input + m.output + m.cacheWrite + m.cacheRead, 0);
+  const sessions = scale(base.sessions, f);
+  const sessionsRows = base.sessionsRows.filter((row) => (row.daysAgo ?? 0) < span);
+  const peak = days.reduce((best, d, i) => (dayTotal(d) > dayTotal(days[best]) ? i : best), 0);
+  const labelStep = Math.max(1, Math.floor((days.length - 1) / 4));
+  const dayLabels: string[] = [];
+  for (let i = 0; i < days.length - 1; i += labelStep) {
+    if (days.length - 1 - i >= labelStep / 2) dayLabels.push(shortDate(shiftDate(end, days.length - 1 - i)));
+  }
+  dayLabels.push("today");
+  const io = models.reduce(
+    (acc, m) => ({
+      input: acc.input + m.input,
+      cacheRead: acc.cacheRead + m.cacheRead,
+      cacheWrite: acc.cacheWrite + m.cacheWrite,
+      output: acc.output + m.output,
+    }),
+    { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 },
+  );
+  const mega = (n: number) => `${(n / 1_000_000).toFixed(2)}M`;
+  return {
+    ...base,
+    range,
+    rangeLabel: `${shortDate(start)} – ${shortDate(shiftDate(end, 0))}`,
+    sessions,
+    sessionsDelta: "",
+    tokensLabel: formatTokens(tokens),
+    tokensDelta: "",
+    storiesShipped: scale(base.storiesShipped, f),
+    deploys: scale(base.deploys, f),
+    perDay: formatTokens(Math.round(tokens / Math.max(1, days.length))),
+    listCostUsd: models.reduce((sum, m) => sum + listRateUsd(m), 0),
+    peakLabel: `peak ${formatTokens(Math.round((dayTotal(days[peak] ?? { label: "", opus: 0, sonnet: 0, haiku: 0 }) / Math.max(1, windowTokens)) * tokens))} · ${shortDate(shiftDate(end, days.length - 1 - peak))}`,
+    days,
+    dayLabels,
+    sessionsRows,
+    skills: base.skills
+      .map((s) => ({ ...s, count: scale(s.count, f) }))
+      .filter((s) => s.count > 0),
+    models,
+    byCompany: base.byCompany.map((r) => ({ ...r, tokens: scale(r.tokens, f), costUsd: r.costUsd * f })),
+    byActor: base.byActor.map((r) => ({ ...r, tokens: scale(r.tokens, f), costUsd: r.costUsd * f })),
+    io: { input: mega(io.input), cacheRead: mega(io.cacheRead), cacheWrite: mega(io.cacheWrite), output: mega(io.output) },
+    outcomeCounts: {
+      ...base.outcomeCounts,
+      all: sessions,
+      deployed: scale(base.outcomeCounts.deployed, f),
+      shipped: scale(base.outcomeCounts.shipped, f),
+      blocked: scale(base.outcomeCounts.blocked, f),
+      none: scale(base.outcomeCounts.none, f),
+    },
+  };
 }
