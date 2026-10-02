@@ -262,7 +262,7 @@ describe('embedded HQ Work authoritative settings', () => {
       },
     });
     await tick();
-    expect(host.querySelector('[data-testid="settings-company-sync-unavailable"]')?.textContent).toContain('not configurable');
+    expect(host.querySelector('[data-testid="settings-company-sync-unavailable"]')?.textContent).toContain('Company membership comes from your signed-in account');
     expect(host.querySelectorAll('[role="switch"]')).toHaveLength(0);
     expect(host.textContent).toContain('Acme');
     expect(host.textContent).not.toContain('Former company');
