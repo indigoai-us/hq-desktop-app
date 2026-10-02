@@ -30,6 +30,17 @@ export function mapSignInError(message: string, provider?: SignInProvider): stri
     return structured.message || 'Sign-in was cancelled or denied. Retry when you are ready.';
   }
 
+  if (
+    structured?.code === 'MICROSOFT_EMAIL_REQUIRED' ||
+    structured?.code === 'MICROSOFT_ENABLEMENT_REQUIRED' ||
+    structured?.code === 'MICROSOFT_RESOLVE_FAILED'
+  ) {
+    return (
+      structured.message ||
+      'We could not identify your Microsoft account. Check your connection and retry.'
+    );
+  }
+
   if (/state (mismatch|does not match)/i.test(message)) {
     return 'That sign-in attempt no longer matches. Choose a provider to start again.';
   }
