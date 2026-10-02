@@ -27,6 +27,7 @@ import {
   setupCompletionResult,
   setupProgressPercent,
   setupStageRecoveryAction,
+  resolveFlagWithTimeout,
   setupSubStatus,
   stageAutoRetryLimit,
   stageCreepAt,
@@ -647,6 +648,43 @@ describe('stage timeouts', () => {
     await vi.advanceTimersByTimeAsync(90_000);
     await assertion;
     expect(onTimeoutCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not return from an enabled dependency timeout until late cancellation finishes', async () => {
+    const hung = new Promise<void>(() => {});
+    let finishCancellation: (() => void) | undefined;
+    let retryStarted = false;
+    const guarded = withProgressTimeout(
+      hung,
+      100,
+      () => new StageTimeoutError('deps', 100),
+      () => () => {},
+      () =>
+        new Promise<void>((resolve) => {
+          finishCancellation = resolve;
+        }),
+      undefined,
+      true,
+    ).catch(() => {
+      retryStarted = true;
+    });
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(finishCancellation).toBeDefined();
+    expect(retryStarted).toBe(false);
+    finishCancellation?.();
+    await guarded;
+    expect(retryStarted).toBe(true);
+  });
+
+  it('fails closed when the setup flag lookup is slow or unavailable', async () => {
+    const unavailable = Promise.reject<boolean>(new Error('unreachable'));
+    await expect(resolveFlagWithTimeout(unavailable, 2_000)).resolves.toBe(false);
+
+    const slow = new Promise<boolean>(() => {});
+    const bounded = resolveFlagWithTimeout(slow, 2_000);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await expect(bounded).resolves.toBe(false);
   });
 
   it('renews the initial-sync inactivity timeout when the native push reports progress', async () => {

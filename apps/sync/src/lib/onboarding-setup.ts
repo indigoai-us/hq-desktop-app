@@ -727,6 +727,26 @@ export function setupAutoRetryDelayMs(retryNumber: number): number {
   );
 }
 
+export function resolveFlagWithTimeout(
+  flag: Promise<boolean>,
+  timeoutMs: number,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    flag.then(
+      (enabled) => finish(enabled === true),
+      () => finish(false),
+    );
+  });
+}
+
 export interface TransientSetupStageFailureInput {
   stageId: StageId;
   message: string | null | undefined;
@@ -869,6 +889,7 @@ export function withProgressTimeout<T>(
   subscribeToProgress: (onProgress: () => void) => () => void,
   onTimeoutCancel?: () => void | Promise<void>,
   maxElapsedMs?: number,
+  awaitTimeoutCancel = false,
 ): Promise<T> {
   if (!(ms > 0)) return promise;
   return new Promise<T>((resolve, reject) => {
@@ -892,11 +913,33 @@ export function withProgressTimeout<T>(
       timer = setTimeout(() => {
         if (settled) return;
         settled = true;
-        try {
-          void onTimeoutCancel?.();
-        } finally {
-          clear();
-          reject(onTimeout(reachedMaxElapsed ? maxElapsedMs : ms));
+        const timeoutError = onTimeout(reachedMaxElapsed ? maxElapsedMs : ms);
+        if (awaitTimeoutCancel && onTimeoutCancel) {
+          let cancellation: void | Promise<void>;
+          try {
+            cancellation = onTimeoutCancel();
+          } catch {
+            clear();
+            reject(timeoutError);
+            return;
+          }
+          Promise.resolve(cancellation).then(
+            () => {
+              clear();
+              reject(timeoutError);
+            },
+            () => {
+              clear();
+              reject(timeoutError);
+            },
+          );
+        } else {
+          try {
+            void onTimeoutCancel?.();
+          } finally {
+            clear();
+            reject(timeoutError);
+          }
         }
       }, timeoutMs);
     };
