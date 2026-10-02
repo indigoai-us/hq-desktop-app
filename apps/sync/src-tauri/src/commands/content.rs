@@ -1305,7 +1305,19 @@ fn copy_file_with_cancellation(
     destination: &Path,
     cancel: Option<&AtomicBool>,
 ) -> io::Result<()> {
-    if is_content_cancelled(cancel) {
+    copy_file_with_cancellation_check(source, destination, || is_content_cancelled(cancel))
+}
+
+#[cfg(any(windows, test))]
+fn copy_file_with_cancellation_check<C>(
+    source: &Path,
+    destination: &Path,
+    mut is_cancelled: C,
+) -> io::Result<()>
+where
+    C: FnMut() -> bool,
+{
+    if is_cancelled() {
         return Err(io::Error::new(
             io::ErrorKind::Interrupted,
             "content copy cancelled",
@@ -1325,9 +1337,7 @@ fn copy_file_with_cancellation(
         .write(true)
         .create_new(true)
         .open(destination)?;
-    copy_stream_with_cancellation(&mut source, &mut destination, || {
-        is_content_cancelled(cancel)
-    })
+    copy_stream_with_cancellation(&mut source, &mut destination, &mut is_cancelled)
 }
 
 /// Copy the bytes of `target` to `link_path` as a privilege-free substitute
@@ -1624,12 +1634,33 @@ fn extract_tarball_with_progress(
     cancel: Option<&AtomicBool>,
     failure_scope: Option<&OnboardingFailureScope>,
 ) -> Result<(), String> {
+    extract_tarball_with_progress_and_cancel_check(
+        compressed,
+        target_dir,
+        progress,
+        cancel,
+        failure_scope,
+        || is_content_cancelled(cancel),
+    )
+}
+
+fn extract_tarball_with_progress_and_cancel_check<C>(
+    compressed: &[u8],
+    target_dir: &Path,
+    progress: Option<&ContentProgressEmitter>,
+    cancel: Option<&AtomicBool>,
+    failure_scope: Option<&OnboardingFailureScope>,
+    mut is_cancelled: C,
+) -> Result<(), String>
+where
+    C: FnMut() -> bool,
+{
     std::fs::create_dir_all(target_dir).map_err(|e| {
         record_content_io_failure(failure_scope, &e);
         format!("failed to create HQ root {target_dir:?}: {e}")
     })?;
 
-    if is_content_cancelled(cancel) {
+    if is_cancelled() {
         return Err(content_cancelled_error(failure_scope));
     }
 
@@ -1663,7 +1694,7 @@ fn extract_tarball_with_progress(
 
     let mut symlink_relatives: Vec<String> = Vec::new();
     for entry in entries {
-        if is_content_cancelled(cancel) {
+        if is_cancelled() {
             return Err(content_cancelled_error(failure_scope));
         }
 
@@ -1826,7 +1857,7 @@ fn extract_tarball_with_progress(
                 };
                 let mut buf = [0_u8; EXTRACT_READ_CHUNK_BYTES];
                 loop {
-                    if is_content_cancelled(cancel) {
+                    if is_cancelled() {
                         return Err(content_cancelled_error(failure_scope));
                     }
                     let n = entry.read(&mut buf).map_err(|e| {
@@ -2355,6 +2386,58 @@ mod tests {
     }
 
     #[test]
+    fn extract_removes_partial_file_on_cancel_and_retry_preserves_user_file() {
+        let dir = tempdir().unwrap();
+        let existing = dir.path().join("core.yaml");
+        let partial = dir.path().join("large-template.bin");
+        let user_bytes = b"name: personal HQ settings\n";
+        std::fs::write(&existing, user_bytes).unwrap();
+
+        let template_bytes = vec![b't'; EXTRACT_READ_CHUNK_BYTES * 2];
+        let archive = build_test_tarball(&[
+            (
+                "indigoai-us-hq-core-deadbeef/core.yaml",
+                file_header(20, 0o644),
+                Some(b"name: defaults here\n".to_vec()),
+            ),
+            (
+                "indigoai-us-hq-core-deadbeef/large-template.bin",
+                file_header(template_bytes.len() as u64, 0o644),
+                Some(template_bytes.clone()),
+            ),
+        ]);
+
+        let mut cancellation_checks = 0;
+        let result = extract_tarball_with_progress_and_cancel_check(
+            &archive,
+            dir.path(),
+            None,
+            None,
+            None,
+            || {
+                cancellation_checks += 1;
+                cancellation_checks == 5
+            },
+        );
+
+        assert!(result.is_err(), "extraction should stop mid-file");
+        assert_eq!(
+            std::fs::read(&existing).unwrap(),
+            user_bytes,
+            "cancelling a later entry must preserve the existing user file"
+        );
+        assert!(
+            !partial.exists(),
+            "an incomplete file created by this attempt must be removed"
+        );
+
+        extract_tarball(&archive, dir.path()).expect("retry should complete extraction");
+
+        assert_eq!(std::fs::read(partial).unwrap(), template_bytes);
+        assert_eq!(std::fs::read(existing).unwrap(), user_bytes);
+    }
+
+    #[test]
     fn extract_writes_safe_entries_and_skips_malicious_ones() {
         let dir = tempdir().unwrap();
         let wrapper = "indigoai-us-hq-core-deadbeef";
@@ -2659,6 +2742,27 @@ mod windows_symlink_fallback_selection_tests {
 
         assert_eq!(error.kind(), io::ErrorKind::Interrupted);
         assert_eq!(writer.len(), EXTRACT_READ_CHUNK_BYTES);
+    }
+
+    #[test]
+    fn file_copy_removes_destination_when_cancelled_between_chunks() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let source = dir.path().join("source.md");
+        let destination = dir.path().join("copy.md");
+        fs::write(&source, vec![b'x'; EXTRACT_READ_CHUNK_BYTES * 2]).expect("write source");
+
+        let mut cancellation_checks = 0;
+        let error = copy_file_with_cancellation_check(&source, &destination, || {
+            cancellation_checks += 1;
+            cancellation_checks == 4
+        })
+        .expect_err("stop copying after the first chunk");
+
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert!(
+            !destination.exists(),
+            "an incomplete copy created by this attempt must be removed"
+        );
     }
 }
 
