@@ -188,8 +188,8 @@
     type SwitcherRow,
   } from "./sidebar-modal-fixtures";
   import CreateModal from "./CreateModal.svelte";
-  import NewMessageSheet from "./NewMessageSheet.svelte";
-  import NewChannelSheet from "./NewChannelSheet.svelte";
+  import LazyDoor from "../shell/LazyDoor.svelte";
+  import { newChannelSheetDoor, newMessageSheetDoor } from "../shell/lazy-doors.js";
   import { CREATE_MENU_ITEMS, type CreateMenuAction } from "./create-menu.js";
   import { formatShortcut } from "../common/keyboard-shortcuts";
   import type { CompanyCreateSeam } from "./create-company/create-company-flow.js";
@@ -3921,34 +3921,40 @@
   {/if}
 
   {#if messageSheetOpen}
-    <NewMessageSheet
-      {api}
-      rows={[...directoryRows, ...browseRows]}
-      contacts={localBotsAsContacts(contacts, localBots, botDisplayNames)}
-      companies={scopeCompanies}
-      activeCompanyUid={scope !== "all" && scope !== "personal" ? scope : null}
-      {scopeLabel}
-      onclose={() => {
-        messageSheetOpen = false;
-        plusBtnEl?.focus();
-      }}
-      onopen={(row) => {
-        messageSheetOpen = false;
-        plusBtnEl?.focus();
-        void openRow(row);
+    <LazyDoor
+      door={newMessageSheetDoor}
+      props={{
+        api,
+        rows: [...directoryRows, ...browseRows],
+        contacts: localBotsAsContacts(contacts, localBots, botDisplayNames),
+        companies: scopeCompanies,
+        activeCompanyUid: scope !== "all" && scope !== "personal" ? scope : null,
+        scopeLabel,
+        onclose: () => {
+          messageSheetOpen = false;
+          plusBtnEl?.focus();
+        },
+        onopen: (row: ConversationRow) => {
+          messageSheetOpen = false;
+          plusBtnEl?.focus();
+          void openRow(row);
+        },
       }}
     />
   {/if}
 
   {#if channelSheetOpen}
-    <NewChannelSheet
-      {api}
-      rows={[...directoryRows, ...browseRows]}
-      contacts={localBotsAsContacts(contacts, localBots, botDisplayNames)}
-      companies={createScopeCompanies}
-      activeCompanyUid={scope !== "all" && scope !== "personal" ? scope : null}
-      onclose={closeCreate}
-      aftercreate={onChannelCreated}
+    <LazyDoor
+      door={newChannelSheetDoor}
+      props={{
+        api,
+        rows: [...directoryRows, ...browseRows],
+        contacts: localBotsAsContacts(contacts, localBots, botDisplayNames),
+        companies: createScopeCompanies,
+        activeCompanyUid: scope !== "all" && scope !== "personal" ? scope : null,
+        onclose: closeCreate,
+        aftercreate: onChannelCreated,
+      }}
     />
   {/if}
 
