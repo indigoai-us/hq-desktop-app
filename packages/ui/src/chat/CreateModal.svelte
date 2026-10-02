@@ -2119,7 +2119,7 @@
               else backToFind();
             }}
           >
-            <span aria-hidden="true">‹</span>
+            <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8.5 3.5 5 7l3.5 3.5" /></svg>
           </button>
         {/if}
         <h2 id="create-modal-title" class="create-title">
@@ -2146,7 +2146,7 @@
         disabled={creating || emailSending}
         onclick={closeAll}
       >
-        <span aria-hidden="true">×</span>
+        <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 3.5l7 7M10.5 3.5l-7 7" /></svg>
       </button>
     </div>
 
@@ -2982,7 +2982,7 @@
             >{blockReason}</span
           >
         {:else}
-          <span class="create-hint" aria-hidden="true">{formatShortcut("Mod+Enter")} TO CREATE</span>
+          <span class="create-hint" aria-hidden="true">{formatShortcut("Mod+Enter")} to create</span>
         {/if}
         <button
           type="button"
@@ -3174,8 +3174,8 @@
   .create-title {
     margin: 0;
     color: var(--t1);
-    font-size: 14px;
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
   }
 
   .create-spacer {
@@ -3189,7 +3189,7 @@
     background: transparent;
     color: var(--t1);
     font: inherit;
-    font-size: 15px;
+    font-size: 13px;
     outline: none;
   }
 
@@ -3201,13 +3201,13 @@
   .create-close {
     display: grid;
     place-items: center;
-    width: 26px;
-    height: 26px;
+    width: 24px;
+    height: 24px;
+    padding: 0;
     border: none;
-    border-radius: 7px;
+    border-radius: 6px;
     background: transparent;
     color: var(--t2);
-    font-size: 18px;
     line-height: 1;
     cursor: pointer;
   }
@@ -3273,10 +3273,8 @@
 
   .create-group {
     padding: 10px 10px 4px;
-    color: var(--t3);
-    font: 500 10px/1 var(--font-mono);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    color: var(--t2);
+    font: 500 13px/17px var(--font-ui);
   }
 
   .create-row {
@@ -3313,7 +3311,7 @@
     place-items: center;
     width: 22px;
     color: var(--t3);
-    font-size: 14px;
+    font-size: 13px;
   }
 
   /* Round monogram = person. Square (6px) monogram = agent — that pairing
@@ -3326,8 +3324,8 @@
     border-radius: 999px;
     background: var(--v4-control-bg);
     color: var(--t2);
-    font-size: 9px;
-    font-weight: 600;
+    font-size: 10px;
+    font-weight: 500;
   }
 
   .create-mono.agent {
@@ -3348,7 +3346,7 @@
     flex: 0 0 auto;
     margin-left: auto;
     color: var(--t2);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .create-note {
@@ -3360,7 +3358,7 @@
 
   .create-email-note {
     padding: 14px 16px 0;
-    font-size: 12px;
+    font-size: 13px;
   }
 
   /* Lifecycle entry points: a hairline, a mono label, ghost rows. */
@@ -3411,13 +3409,13 @@
   .create-entry-hint {
     flex: 0 0 auto;
     color: var(--t3);
-    font-size: 11px;
+    font-size: 13px;
   }
 
   .create-entry-error {
     padding: 6px 10px 2px;
     color: var(--danger, #e5484d);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .create-field {
@@ -3463,7 +3461,7 @@
     background: transparent;
     color: var(--t1);
     font: inherit;
-    font-size: 14px;
+    font-size: 13px;
     outline: none;
   }
 
@@ -3489,7 +3487,7 @@
     margin: 0;
     padding: 0 16px 8px 96px;
     color: var(--t2);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .create-slug-echo {
@@ -3509,7 +3507,7 @@
     margin: 0;
     padding: 0 16px 8px 96px;
     color: var(--t2);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .create-slug-status[data-status="available"] {
@@ -3556,7 +3554,7 @@
     border-radius: 6px;
     background: transparent;
     color: var(--v4-text-2, inherit);
-    font: 500 12px/1 var(--font-ui, system-ui);
+    font: 500 13px/1 var(--font-ui, system-ui);
     cursor: pointer;
   }
 
@@ -3587,7 +3585,7 @@
     border-radius: 999px;
     background: var(--v4-control-bg);
     color: var(--t1);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .create-chip-mono {
@@ -3598,8 +3596,8 @@
     border-radius: 999px;
     background: var(--hover);
     color: var(--t2);
-    font-size: 7px;
-    font-weight: 600;
+    font-size: 8px;
+    font-weight: 500;
   }
 
   .create-chip-mono.agent {
@@ -3635,9 +3633,7 @@
      the 3:1 non-text floor. --t2 measures 5.29:1. */
   .create-tag {
     color: var(--t2);
-    font: 500 10px/1 var(--font-mono);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    font: 400 13px/1 var(--font-ui);
   }
 
   /* D10's primary signal — agent vs person — gets a pill and full contrast. */
@@ -3682,13 +3678,13 @@
     margin: 0 0 6px;
     color: var(--t1);
     font-size: 13px;
-    font-weight: 600;
+    font-weight: 500;
   }
 
   .create-confirm-body {
     margin: 0 0 6px;
     color: var(--t2);
-    font-size: 12px;
+    font-size: 13px;
     line-height: 1.5;
   }
 
@@ -3709,7 +3705,7 @@
     background: transparent;
     color: var(--t1);
     font: inherit;
-    font-size: 14px;
+    font-size: 13px;
     line-height: 1.4;
     outline: none;
     resize: none;
@@ -3724,7 +3720,7 @@
     margin: 0;
     padding: 6px 16px 0;
     color: var(--t2);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .create-footer {
@@ -3737,17 +3733,13 @@
 
   .create-hint {
     color: var(--t3);
-    font: 500 10px/1 var(--font-mono);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    font: 400 13px/1 var(--font-ui);
   }
 
   /* A disabled button with no explanation is a dead end — say why. */
   .create-hint-block {
     color: var(--t2);
-    font: 400 12px/1.4 var(--font-ui);
-    letter-spacing: 0;
-    text-transform: none;
+    font: 400 13px/1.4 var(--font-ui);
   }
 
   .create-submit {
@@ -3778,7 +3770,7 @@
     border: 0;
     background: transparent;
     color: var(--t1);
-    font: 500 12px/1.4 var(--font-ui);
+    font: 500 13px/1.4 var(--font-ui);
     text-decoration: underline;
     text-underline-offset: 2px;
     cursor: pointer;
@@ -3801,7 +3793,7 @@
   .create-summary-copy {
     flex: 1 1 auto;
     color: var(--t2);
-    font-size: 12px;
+    font-size: 13px;
     line-height: 1.5;
   }
 
@@ -3809,7 +3801,7 @@
     margin: 0;
     padding: 0 16px 10px;
     color: var(--t2);
-    font-size: 12px;
+    font-size: 13px;
     line-height: 1.5;
     white-space: pre-wrap;
     user-select: text;

@@ -163,19 +163,15 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--v4-text-3, var(--t3));
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--v4-text-2, var(--t2));
   }
 
   .share-lvl {
     margin-left: auto;
-    padding: 1px 6px;
-    border-radius: 4px;
-    border: 1px solid var(--v4-control-border);
-    letter-spacing: 0.08em;
+    font-weight: 400;
+    color: var(--v4-text-3, var(--t3));
   }
 
   .share-p {
@@ -221,7 +217,7 @@
 
   .share-m {
     margin-left: auto;
-    font-size: 12px;
+    font-size: 13px;
     color: var(--v4-text-3, var(--t3));
   }
 
@@ -234,7 +230,7 @@
     background: var(--v4-control-faint);
     color: var(--v4-text-1, var(--t1));
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
     cursor: pointer;
   }
 
@@ -245,8 +241,8 @@
 
   .share-btn.primary {
     border-color: transparent;
-    background: var(--ice);
-    color: #101014;
+    background: var(--v4-text-1, var(--t1));
+    color: var(--panel-bg, var(--v4-popover));
   }
 
   .share-seg {
@@ -264,7 +260,7 @@
 
   .share-btn:focus-visible,
   .share-seg-btn:focus-visible {
-    outline: 2px solid var(--ice);
+    outline: 2px solid var(--v4-text-3, var(--t3));
     outline-offset: 1px;
   }
 </style>

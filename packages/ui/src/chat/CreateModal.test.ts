@@ -315,7 +315,7 @@ describe("CreateModal create step", () => {
     open();
     await tick();
     await gotoCreate("Growth");
-    expect(host.querySelector(".create-hint")?.textContent).toContain("Ctrl+↵ TO CREATE");
+    expect(host.querySelector(".create-hint")?.textContent).toContain("Ctrl+↵ to create");
   });
 
   it("Escape returns to the find step with the name preserved in the query", async () => {

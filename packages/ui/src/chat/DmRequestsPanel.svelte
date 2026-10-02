@@ -317,8 +317,7 @@
     align-items: center;
     justify-content: center;
     font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.02em;
+    font-weight: 500;
     color: var(--t1);
     background: var(--v4-control-bg, rgba(127, 127, 127, 0.18));
   }
@@ -328,14 +327,14 @@
     min-width: 0;
   }
   .request-name {
-    font-weight: 600;
+    font-weight: 500;
     color: var(--t1);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
   .request-email {
-    font-size: 12px;
+    font-size: 13px;
     color: var(--t2);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -343,26 +342,27 @@
   }
   .request-hint {
     margin: 0;
-    font-size: 12px;
+    font-size: 13px;
     color: var(--t2);
   }
   .request-message {
     margin: 0;
     padding: 8px 12px;
-    border-left: 2px solid var(--line2);
+    border-radius: 6px;
+    background: var(--hover);
     color: var(--t1);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
   }
   .request-no-message {
     margin: 0;
-    font-size: 12px;
+    font-size: 13px;
     font-style: italic;
     color: var(--t2);
   }
   .request-error {
     margin: 0;
-    font-size: 12px;
+    font-size: 13px;
     color: var(--v4-error, #e5484d);
   }
   .request-actions {
@@ -380,7 +380,7 @@
     background: transparent;
     color: var(--t1);
     font-family: inherit;
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 500;
     line-height: 1;
     cursor: pointer;
