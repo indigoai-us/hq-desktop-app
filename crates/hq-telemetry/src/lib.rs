@@ -2280,7 +2280,7 @@ fn valid_node_error_name(value: &str) -> bool {
 }
 
 fn valid_node_top_frame(value: &str) -> bool {
-    if value == "unknown" {
+    if value == "unknown" || value == "external" {
         return true;
     }
     let mut parts = value.rsplitn(3, ':');
@@ -5174,7 +5174,10 @@ mod tests {
             ),
             ("node_error_code", vec!["ERR_MODULE_NOT_FOUND", "unknown"]),
             ("node_error_name", vec!["Error", "TypeError", "unknown"]),
-            ("node_top_frame", vec!["private-file.js:23:17", "unknown"]),
+            (
+                "node_top_frame",
+                vec!["sync-runner.js:23:17", "external", "unknown"],
+            ),
         ] {
             for value in values {
                 assert_eq!(
@@ -5209,7 +5212,7 @@ mod tests {
             ("stderr_cause", "already_owned"),
             ("node_error_code", "ERR_MODULE_NOT_FOUND"),
             ("node_error_name", "Error"),
-            ("node_top_frame", "private-file.js:23:17"),
+            ("node_top_frame", "external"),
         ] {
             event.tags.insert(key.to_string(), value.to_string());
         }
@@ -5219,7 +5222,7 @@ mod tests {
         assert_eq!(event.tags["stderr_cause"], "already_owned");
         assert_eq!(event.tags["node_error_code"], "ERR_MODULE_NOT_FOUND");
         assert_eq!(event.tags["node_error_name"], "Error");
-        assert_eq!(event.tags["node_top_frame"], "private-file.js:23:17");
+        assert_eq!(event.tags["node_top_frame"], "external");
     }
 
     #[test]

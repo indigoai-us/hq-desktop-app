@@ -390,10 +390,14 @@ fn node_top_frame(frame: &Value) -> String {
     } else {
         return "unknown".to_string();
     };
+    if file.is_empty() || line == 0 || column == 0 {
+        return "unknown".to_string();
+    }
+    if !is_trusted_node_script_path(file) {
+        return "external".to_string();
+    }
     let basename = file.rsplit(['/', '\\']).next().unwrap_or_default();
-    if line == 0
-        || column == 0
-        || basename.is_empty()
+    if basename.is_empty()
         || basename.len() > 128
         || !basename
             .bytes()
@@ -402,6 +406,21 @@ fn node_top_frame(frame: &Value) -> String {
         return "unknown".to_string();
     }
     format!("{basename}:{line}:{column}")
+}
+
+fn is_trusted_node_script_path(file: &str) -> bool {
+    if let Some(internal_path) = file.strip_prefix("node:") {
+        return internal_path == "internal"
+            || internal_path.starts_with("internal/")
+            || internal_path.starts_with("internal\\");
+    }
+
+    file.split(['/', '\\'])
+        .collect::<Vec<_>>()
+        .windows(3)
+        .any(|parts| {
+            parts[0] == "node_modules" && parts[1] == "@indigoai-us" && !parts[2].is_empty()
+        })
 }
 
 /// Hard cap on libuv handle entries counted from a report, so a hostile or runaway
@@ -606,7 +625,7 @@ mod tests {
             "exit_producer: \"runner\"",
             "node_error_code: \"ERR_MODULE_NOT_FOUND\"",
             "node_error_name: \"Error\"",
-            "node_top_frame: \"private-file.js:23:17\"",
+            "node_top_frame: \"external\"",
         ] {
             assert!(
                 rendered.contains(expected),
@@ -632,9 +651,44 @@ mod tests {
         let launcher_debug = format!("{launcher:?}");
         assert!(launcher_debug.contains("exit_producer: \"launcher\""));
         assert!(launcher_debug.contains("node_error_name: \"TypeError\""));
-        assert!(launcher_debug.contains("node_top_frame: \"private-launcher.js:7:4\""));
+        assert!(launcher_debug.contains("node_top_frame: \"external\""));
         assert!(!launcher_debug.contains("PRIVATE_MESSAGE_MARKER"));
         assert!(!launcher_debug.contains('/'));
+
+        let package_report = serde_json::json!({
+            "header": {
+                "trigger": "Exception",
+                "event": "Uncaught Error: PRIVATE_MESSAGE_MARKER",
+                "commandLine": ["/usr/local/bin/node", "sync-runner.js"]
+            },
+            "javascriptStack": {
+                "message": "Uncaught Error: PRIVATE_MESSAGE_MARKER",
+                "stack": [{
+                    "scriptName": r"C:\Users\user\AppData\Roaming\npm\node_modules\@indigoai-us\hq-cloud\dist\bin\sync-runner.js",
+                    "lineNumber": 23,
+                    "columnNumber": 17
+                }]
+            },
+            "nativeStack": []
+        });
+        let package_report = parse_runner_diagnostic_report(package_report.to_string().as_bytes());
+        assert_eq!(package_report.node_top_frame, "sync-runner.js:23:17");
+
+        let internal_report = serde_json::json!({
+            "header": {
+                "trigger": "Exception",
+                "event": "Uncaught Error: PRIVATE_MESSAGE_MARKER",
+                "commandLine": ["/usr/local/bin/node", "sync-runner.js"]
+            },
+            "javascriptStack": {
+                "message": "Uncaught Error: PRIVATE_MESSAGE_MARKER",
+                "stack": ["at ModuleLoader.moduleProvider (node:internal/modules/esm/loader:273:14)"]
+            },
+            "nativeStack": []
+        });
+        let internal_report =
+            parse_runner_diagnostic_report(internal_report.to_string().as_bytes());
+        assert_eq!(internal_report.node_top_frame, "loader:273:14");
     }
 
     #[test]
