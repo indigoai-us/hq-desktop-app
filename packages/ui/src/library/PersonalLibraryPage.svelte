@@ -7,6 +7,8 @@
   import type { LibraryApi, PlatformAdapter } from "@hq/platform";
   import CompanyLibraryPanel from "../company/CompanyLibraryPanel.svelte";
   import FilePreviewPane from "../files/FilePreviewPane.svelte";
+  import ShareFileSheet from "../files/explorer/ShareFileSheet.svelte";
+  import type { ShareTarget } from "../files/explorer/vault-model.js";
   import "../home/tokens.css";
   import "../chat/chat-tokens.css";
   import {
@@ -48,6 +50,25 @@
   }: Props = $props();
 
   let cache = $state<PersonalLibraryCache>(personalLibraryFixture());
+  let shareFor = $state<{ path: string; grant: SharedGrant | null } | null>(null);
+
+  function libraryShareTarget(path: string, grant: SharedGrant | null): ShareTarget {
+    if (grant) {
+      return {
+        path,
+        company: grant.company,
+        available: false,
+        reason: `${grant.owner} shared this path with you. Only the owner can share it further.`,
+      };
+    }
+    return {
+      path,
+      company: null,
+      available: false,
+      reason:
+        "Personal files live only in your HQ folder on this computer. Sharing grants access to a company vault path, so a personal file has to move into a company vault before anyone else can open it.",
+    };
+  }
   let section = $state<PersonalLibrarySection>("mine");
   let companySlug = $state<string | null>(null);
   let selectedFileId = $state("week-41");
@@ -177,6 +198,10 @@
   </main>
 </div>
 
+{#if shareFor}
+  <ShareFileSheet target={libraryShareTarget(shareFor.path, shareFor.grant)} onclose={() => (shareFor = null)} />
+{/if}
+
 {#snippet treeNodes(nodes: LibraryTreeNode[], depth: number)}
   {#each nodes as node (node.id)}
     {#if node.file}
@@ -209,21 +234,26 @@
 
 {#snippet preview(name: string, path: string, meta: string, text: string, grant: SharedGrant | null)}
   <div class="preview" data-testid="library-preview">
-    <div class="ph">
-      <div class="ph-copy">
-        <b data-testid="library-preview-name">{name}</b>
-        <span class="meta">{meta}</span>
-      </div>
-      <div class="act" data-testid="library-preview-actions">
-        <button type="button" class="btn">Open</button>
-        <button type="button" class="btn" onclick={() => void navigator.clipboard?.writeText(path)}>Copy path</button>
-        <button type="button" class="btn">Share</button>
-      </div>
-    </div>
     {#if adapter?.files && typeof adapter.files.getFileContent === "function"}
+      <!-- FilePreviewPane carries the name, path and its own Open / Copy path
+           / Reveal actions; repeating them here showed every action twice. -->
       <FilePreviewPane {adapter} {path} />
+      <div class="act solo" data-testid="library-preview-actions">
+        <button type="button" class="btn" data-testid="library-preview-share" onclick={() => (shareFor = { path, grant })}>Share</button>
+      </div>
+    {:else}
+      <div class="ph">
+        <div class="ph-copy">
+          <b data-testid="library-preview-name">{name}</b>
+          <span class="meta">{meta}</span>
+        </div>
+        <div class="act" data-testid="library-preview-actions">
+          <button type="button" class="btn" onclick={() => void navigator.clipboard?.writeText(path)}>Copy path</button>
+          <button type="button" class="btn" data-testid="library-preview-share" onclick={() => (shareFor = { path, grant })}>Share</button>
+        </div>
+      </div>
+      <pre data-testid="library-file-preview">{text}</pre>
     {/if}
-    <pre data-testid="library-file-preview">{text}</pre>
     {#if grant}
       <dl class="access" data-testid="library-your-access">
         <dt>Owner</dt><dd>{grant.owner} · {grant.company}</dd>
@@ -297,6 +327,7 @@
   .ph { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 8px; min-width: 0; }
   .ph-copy { min-width: 0; flex: 1 1 auto; }
   .ph-copy b, .ph-copy .meta { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .act.solo { justify-content: flex-start; margin-top: 12px; }
   .act { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; flex: 0 1 auto; max-width: 100%; }
   .btn {
     border: 1px solid var(--v4-control-border);

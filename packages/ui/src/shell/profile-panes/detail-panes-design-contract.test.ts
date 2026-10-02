@@ -40,7 +40,7 @@ describe("detail panes follow the Messages profile pane rhythm", () => {
       expect(css).not.toMatch(/font-weight:\s*(550|600|650|700|bold)/);
       expect(css).not.toMatch(/text-transform:\s*uppercase/);
       expect(css).not.toMatch(/letter-spacing:\s*0\.\d+em/);
-      expect(css).not.toMatch(/backdrop-filter/);
+      expect(css).not.toMatch(/backdrop-filter:(?!\s*none)/);
       expect(css).not.toMatch(/font:\s*(550|600|650|700)\s/);
     });
   }

@@ -423,9 +423,10 @@
     flex: 0 0 auto;
     align-items: flex-start;
     justify-content: space-between;
-    gap: var(--space-3, 10px);
+    flex-wrap: wrap;
+    gap: 8px 10px;
     min-width: 0;
-    padding: 11px 13px;
+    padding: 12px 14px;
     border-bottom: 1px solid var(--v4-hairline, var(--border));
     background: transparent;
   }
@@ -446,8 +447,8 @@
     margin: 0;
     overflow: hidden;
     color: var(--v4-text-1, var(--fg));
-    font-size: var(--type-section, var(--text-section, var(--text-base)));
-    font-weight: 600;
+    font-size: 20px;
+    font-weight: 500;
     line-height: 1.25;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -457,7 +458,7 @@
     min-width: 0;
     overflow: hidden;
     color: var(--v4-text-3, var(--muted));
-    font-size: var(--type-metadata, var(--text-micro));
+    font-size: 13px;
     font-weight: 400;
     line-height: 1.3;
     text-overflow: ellipsis;
@@ -466,8 +467,8 @@
 
   .preview-actions {
     display: flex;
-    flex: 0 0 auto;
-    flex-shrink: 0;
+    flex: 0 1 auto;
+    max-width: 100%;
     flex-wrap: wrap;
     align-items: center;
     gap: 6px;
@@ -483,14 +484,15 @@
     flex-shrink: 0;
     align-items: center;
     gap: var(--space-1, 4px);
-    padding: 2px 8px;
+    height: 26px;
+    padding: 0 10px;
     border: 1px solid var(--v4-control-border, var(--border));
     border-radius: var(--v4-radius-button, var(--radius-sm, 6px));
     background: var(--v4-control-faint, var(--row-active));
     color: var(--v4-text-2, var(--muted-2));
     font: inherit;
-    font-size: var(--type-secondary, var(--text-sm, var(--text-base)));
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     white-space: nowrap;
     cursor: pointer;
     transition:
@@ -617,14 +619,14 @@
 
   .preview-unsupported strong {
     color: var(--v4-text-1, var(--fg));
-    font-size: var(--type-body, var(--text-base));
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
   }
 
   .preview-unsupported span {
     max-width: 320px;
     color: var(--v4-text-2, var(--muted));
-    font-size: var(--type-secondary, var(--text-sm, var(--text-base)));
+    font-size: 13px;
     line-height: 1.35;
   }
 
@@ -632,7 +634,7 @@
     margin: 0;
     color: var(--v4-text-2, var(--muted));
     font-family: var(--font-mono);
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
     line-height: 1.55;
     white-space: pre;
     overflow-wrap: normal;
@@ -641,7 +643,7 @@
   /* ---- markdown typography (mirrors LibraryDetailPanel .markdown-body) ----- */
   .markdown-body {
     color: var(--v4-text-1, var(--fg));
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
     line-height: 1.6;
   }
 
@@ -653,20 +655,20 @@
   .markdown-body :global(h6) {
     margin: var(--space-5, 16px) 0 var(--space-2, 6px);
     color: var(--v4-text-1, var(--fg));
-    font-weight: 600;
+    font-weight: 500;
     line-height: 1.3;
   }
 
   .markdown-body :global(h1) {
-    font-size: var(--type-detail, var(--text-lg));
+    font-size: 13px;
   }
   .markdown-body :global(h2) {
     padding-bottom: var(--space-1, 4px);
     border-bottom: 1px solid var(--v4-hairline, var(--border));
-    font-size: var(--type-section, var(--text-section));
+    font-size: 13px;
   }
   .markdown-body :global(h3) {
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
   }
 
   .markdown-body :global(p) {
@@ -722,7 +724,7 @@
     background: var(--v4-control-faint, var(--row-active));
     color: var(--v4-text-1, var(--fg));
     font-family: var(--font-mono);
-    font-size: var(--type-secondary, var(--text-sm));
+    font-size: 13px;
   }
 
   .markdown-body :global(pre) {
@@ -754,7 +756,7 @@
 
   .markdown-body :global(strong) {
     color: var(--v4-text-1, var(--fg));
-    font-weight: 600;
+    font-weight: 500;
   }
 
   .markdown-body :global(del) {
@@ -784,7 +786,7 @@
     border-spacing: 0;
     border-collapse: collapse;
     color: var(--v4-text-2, var(--muted));
-    font-size: var(--type-secondary, var(--text-sm, var(--text-base)));
+    font-size: 13px;
     line-height: 1.45;
   }
 
@@ -814,7 +816,7 @@
 
   .markdown-body :global(th) {
     color: var(--v4-text-1, var(--fg));
-    font-weight: 600;
+    font-weight: 500;
   }
 
   .markdown-body :global(.markdown-align-center) {
@@ -842,7 +844,7 @@
 
   .markdown-body :global(summary) {
     color: var(--v4-text-1, var(--fg));
-    font-weight: 600;
+    font-weight: 500;
     cursor: pointer;
   }
 

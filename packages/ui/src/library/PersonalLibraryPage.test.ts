@@ -30,6 +30,24 @@ describe("US-031 personal library and deployments", () => {
     expect(host.querySelector('[data-testid="library-your-access"]')?.textContent).toContain("write");
   });
 
+  it("preview shows one action row and Share opens the share sheet", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(PersonalLibraryPage, { target: host, props: {} });
+    flushSync();
+    host.querySelector<HTMLButtonElement>('[data-testid="library-shared-tab"]')!.click();
+    flushSync();
+    host.querySelectorAll<HTMLButtonElement>('[data-testid="library-shared-row"]')[0]!.click();
+    flushSync();
+    expect(host.querySelectorAll('[data-testid="library-preview-actions"]').length).toBe(1);
+    const labels = [...host.querySelectorAll('[data-testid="library-preview"] button')].map((b) => b.textContent?.trim());
+    expect(labels.filter((l) => l === "Copy path").length).toBe(1);
+    host.querySelector<HTMLButtonElement>('[data-testid="library-preview-share"]')!.click();
+    flushSync();
+    expect(document.querySelector('[data-testid="file-share-sheet"]')).not.toBeNull();
+    expect(document.querySelector('[data-testid="file-share-unavailable"]')?.textContent).toContain("Only the owner");
+  });
+
   it("renders real hq-deploy rows from every scope, not the fixture", async () => {
     localStorage.clear();
     const calls: string[] = [];
