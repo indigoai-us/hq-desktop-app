@@ -496,7 +496,7 @@
   .ad-title {
     color: var(--t1);
     font-size: 13px;
-    font-weight: 600;
+    font-weight: 500;
   }
 
   .ad-close {
@@ -510,7 +510,7 @@
     border-radius: 6px;
     background: transparent;
     color: var(--t2);
-    font-size: 18px;
+    font-size: 13px;
     line-height: 1;
     cursor: pointer;
   }
@@ -545,21 +545,33 @@
     gap: 8px;
     margin: 0;
     color: var(--t1);
-    font-size: 16px;
-    font-weight: 650;
-    line-height: 1.3;
+    font-size: 20px;
+    font-weight: 500;
+    line-height: 1.25;
   }
 
   .ad-status {
     margin: 2px 0 0;
     color: var(--t3);
-    font: 500 10px/1.3 var(--font-mono, ui-monospace, Menlo, monospace);
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    font: 500 13px/1.3 var(--font-ui);
+  }
+
+  .ad-status {
+    display: flex;
+    align-items: center;
+    gap: 6px;
   }
 
   .ad-status[data-presence="online"] {
-    color: var(--v4-ok, #42d77d);
+    color: var(--t2);
+  }
+
+  .ad-status[data-presence="online"]::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--v4-ok, #42d77d);
   }
 
   .ad-desc {
@@ -582,9 +594,7 @@
   .ad-meta dt,
   .ad-kicker {
     color: var(--t3);
-    font: 500 10px/1.2 var(--font-mono, ui-monospace, Menlo, monospace);
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    font: 500 13px/1.2 var(--font-ui);
   }
 
   .ad-meta dd {
@@ -598,7 +608,7 @@
     max-width: 100%;
     overflow-wrap: anywhere;
     color: var(--t2);
-    font: 12px/1.4 var(--font-mono, ui-monospace, Menlo, monospace);
+    font: 13px/1.4 var(--font-mono, ui-monospace, Menlo, monospace);
   }
 
   .ad-uid {
@@ -610,7 +620,7 @@
     border: none;
     background: transparent;
     color: var(--t2);
-    font: 12px/1.4 var(--font-mono, ui-monospace, Menlo, monospace);
+    font: 13px/1.4 var(--font-mono, ui-monospace, Menlo, monospace);
     cursor: pointer;
     overflow-wrap: anywhere;
     text-align: left;
@@ -618,9 +628,7 @@
 
   .ad-uid-hint {
     color: var(--t3);
-    font-size: 10px;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    font-size: 13px;
   }
 
   .ad-section {
@@ -638,7 +646,7 @@
   .ad-muted {
     margin: 0;
     color: var(--t3);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .ad-btn,
@@ -651,7 +659,7 @@
     background: transparent;
     color: var(--t1);
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
     cursor: pointer;
   }
 
@@ -676,7 +684,7 @@
     justify-content: space-between;
     gap: 12px;
     color: var(--t2);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .ad-field select {
@@ -688,7 +696,7 @@
     background: transparent;
     color: var(--t1);
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .ad-field select:focus-visible {
@@ -706,7 +714,7 @@
   .ad-error {
     margin: 0;
     color: var(--t2);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .ad-close:focus-visible,

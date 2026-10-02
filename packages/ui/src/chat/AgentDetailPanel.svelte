@@ -356,7 +356,7 @@
       <div class="ad-identity-copy">
         <h2 class="ad-name" data-testid="agent-detail-name">{header.displayName}</h2>
         <p class="ad-status" data-testid="agent-detail-status">
-          BOT · {header.status}
+          Bot · {header.status}
         </p>
         <BotKindChip
           kind={botKindFor(header.uid, localBots, ownedLocalBotUids) ?? "cloud"}
@@ -704,7 +704,7 @@
   .ad-title {
     color: var(--t1);
     font-size: 13px;
-    font-weight: 600;
+    font-weight: 500;
   }
 
   .ad-close {
@@ -718,7 +718,7 @@
     border-radius: 6px;
     background: transparent;
     color: var(--t2);
-    font-size: 18px;
+    font-size: 13px;
     line-height: 1;
     cursor: pointer;
   }
@@ -749,17 +749,15 @@
   .ad-name {
     margin: 0;
     color: var(--t1);
-    font-size: 16px;
-    font-weight: 650;
-    line-height: 1.3;
+    font-size: 20px;
+    font-weight: 500;
+    line-height: 1.25;
   }
 
   .ad-status {
     margin: 2px 0 0;
     color: var(--t3);
-    font: 500 10px/1.3 var(--font-mono, ui-monospace, Menlo, monospace);
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    font: 500 13px/1.3 var(--font-ui);
   }
 
   .ad-desc {
@@ -795,9 +793,7 @@
   .ad-sub,
   .ad-field span {
     color: var(--t3);
-    font: 500 10px/1.2 var(--font-mono, ui-monospace, Menlo, monospace);
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    font: 500 13px/1.2 var(--font-ui);
   }
 
   .ad-meta dd,
@@ -816,15 +812,13 @@
     border: 0;
     background: transparent;
     color: inherit;
-    font: 500 11px/1.3 var(--font-mono, ui-monospace, Menlo, monospace);
+    font: 500 13px/1.3 var(--font-mono, ui-monospace, Menlo, monospace);
     cursor: pointer;
   }
 
   .ad-uid-hint {
     color: var(--t3);
-    font-size: 10px;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    font-size: 13px;
   }
 
   .ad-section {
@@ -847,7 +841,7 @@
   .ad-note {
     margin: 0;
     color: var(--t3);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .ad-jobs {
@@ -882,20 +876,19 @@
   .ad-job-title {
     color: var(--t1);
     font-size: 13px;
-    font-weight: 550;
+    font-weight: 500;
   }
 
   .ad-job-cadence,
   .ad-job-meta {
     color: var(--t3);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .ad-badge {
     justify-self: end;
     color: var(--t3);
-    font: 500 9px/1 var(--font-mono, ui-monospace, Menlo, monospace);
-    letter-spacing: 0.08em;
+    font: 500 13px/1 var(--font-ui);
   }
 
   .ad-prompt {
@@ -904,7 +897,7 @@
     padding: 8px 0 0;
     border-top: 1px solid var(--line);
     color: var(--t2);
-    font: 400 12px/1.45 var(--font-mono, ui-monospace, Menlo, monospace);
+    font: 400 13px/1.45 var(--font-mono, ui-monospace, Menlo, monospace);
     white-space: pre-wrap;
   }
 
@@ -940,7 +933,7 @@
   .ad-model-name {
     overflow: hidden;
     color: var(--t2);
-    font-size: 12px;
+    font-size: 13px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -960,7 +953,7 @@
 
   .ad-model-n {
     color: var(--t3);
-    font-size: 11px;
+    font-size: 13px;
     text-align: right;
   }
 
@@ -972,7 +965,7 @@
 
   .ad-chips span {
     color: var(--t2);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .ad-field {
@@ -1002,7 +995,7 @@
     background: transparent;
     color: var(--t1);
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
     cursor: pointer;
   }
 
@@ -1029,7 +1022,7 @@
   .ad-error {
     margin: 0;
     color: var(--t2);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .ad-close:focus-visible,
