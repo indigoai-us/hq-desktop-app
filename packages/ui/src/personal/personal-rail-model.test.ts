@@ -9,6 +9,8 @@ import {
   fixturePersonalRail,
   metadata,
   personalSecretFromRaw,
+  personalSecretsErrorReason,
+  personalSecretsFromSource,
   personalSecretsOnly,
   secretHasValue,
 } from "./personal-rail-model.js";
@@ -68,5 +70,44 @@ describe("US-033 personal secrets and connections", () => {
     expect(metadata.performanceBudget.worstFrameMs).toBeLessThanOrEqual(33);
     const stale = filterPersonalSecrets(fixturePersonalRail().secrets, "stale", "");
     expect(stale.map((row) => row.name)).toContain("SCREENPIPE_TOKEN");
+  });
+});
+
+describe("personal secrets from the vault transport", () => {
+  const now = Date.parse("2026-10-02T00:00:00Z");
+
+  it("flattens grouped rows into personal names with real rotation ages", () => {
+    const rows = personalSecretsFromSource(
+      [
+        { env: "default", count: 1, items: [{ key: "OPENAI_API_KEY", upd: "2026-09-25T00:00:00Z", rot: "" }] },
+        { env: "ALIVE", count: 1, items: [{ key: "DATABASE_URL", upd: "", rot: "2026-10-02T00:00:00Z" }] },
+        { env: "default", count: 1, items: [{ key: "BARE", upd: "", rot: "" }] },
+      ],
+      now,
+    );
+    expect(rows.map((r) => [r.name, r.rotated, r.scope])).toEqual([
+      ["OPENAI_API_KEY", "7d ago", "Personal"],
+      ["ALIVE/DATABASE_URL", "today", "Personal"],
+      ["BARE", "never", "Personal"],
+    ]);
+  });
+
+  it("keeps flat rows scoped and never carries a value", () => {
+    const rows = personalSecretsFromSource([
+      { name: "MINE", scope: "Personal", value: "sk-never" },
+      { name: "THEIRS", scope: "Company", value: "sk-company" },
+    ]);
+    expect(rows.map((r) => r.name)).toEqual(["MINE"]);
+    expect(JSON.stringify(rows)).not.toContain("sk-");
+  });
+
+  it("returns an empty list, not fixture rows, when the vault is empty", () => {
+    expect(personalSecretsFromSource([])).toEqual([]);
+  });
+
+  it("maps transport errors to a plain reason", () => {
+    expect(personalSecretsErrorReason(new Error("AUTH_REQUIRED: secrets (HTTP 403)"))).toMatch(/Sign in again/);
+    expect(personalSecretsErrorReason(new Error("personal workspace is not connected to cloud"))).toMatch(/not connected/);
+    expect(personalSecretsErrorReason(new Error("secrets fetch: dns error"))).toMatch(/Could not reach your vault/);
   });
 });

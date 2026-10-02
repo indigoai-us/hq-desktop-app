@@ -2,6 +2,7 @@
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import PersonalRailPage from "./PersonalRailPage.svelte";
+import { clearPersonalRailCache } from "./personal-rail-model.js";
 
 vi.mock("../company/company-store.svelte.js", () => ({
   companyStore: {
@@ -20,7 +21,13 @@ describe("US-033 PersonalRailPage", () => {
   afterEach(async () => {
     if (component) await unmount(component);
     component = null;
+    clearPersonalRailCache();
   });
+
+  async function settle(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+  }
 
   function mountPage(page: "secrets" | "connections") {
     const target = document.createElement("div");
@@ -62,6 +69,48 @@ describe("US-033 PersonalRailPage", () => {
     expect(target.querySelector("[data-testid='share-no-value']")?.textContent).toContain("No secret value");
     expect(target.textContent).toContain("read");
     expect(target.textContent).toContain("write");
+  });
+
+  it("lists the real personal vault rows from the desktop secrets transport, names only", async () => {
+    const { companyStore } = await import("../company/company-store.svelte.js");
+    // Shape returned by get_company_secrets for the personal slug.
+    vi.mocked(companyStore.loadSecrets).mockResolvedValueOnce([
+      { env: "default", count: 2, items: [
+        { key: "OPENAI_API_KEY", upd: "2026-09-30T00:00:00Z", rot: "" },
+        { key: "VERCEL_TOKEN", upd: "", rot: "" },
+      ] },
+      { env: "ALIVE", count: 1, items: [{ key: "DATABASE_URL", upd: "", rot: "" }] },
+    ] as never);
+    const target = mountPage("secrets");
+    expect(target.querySelector("[data-testid='personal-secrets-skeleton']")).not.toBeNull();
+    await settle();
+    expect(vi.mocked(companyStore.loadSecrets)).toHaveBeenCalledWith("personal", false);
+    const list = target.querySelector("[data-testid='personal-secrets-list']") as HTMLElement;
+    expect(target.querySelector("[data-testid='personal-secrets-count']")?.textContent).toBe("Secrets · 3");
+    expect(list.textContent).toContain("OPENAI_API_KEY");
+    expect(list.textContent).toContain("ALIVE/DATABASE_URL");
+    // No design-fixture rows in the running app.
+    expect(list.textContent).not.toContain("GITHUB_TOKEN");
+    expect(list.textContent).not.toContain("SCREENPIPE_TOKEN");
+    expect(target.querySelector("[data-testid='personal-secrets-skeleton']")).toBeNull();
+  });
+
+  it("shows the real reason and a Retry that reloads when the vault cannot be reached", async () => {
+    const { companyStore } = await import("../company/company-store.svelte.js");
+    vi.mocked(companyStore.loadSecrets)
+      .mockRejectedValueOnce(new Error("AUTH_REQUIRED: secrets (HTTP 401 Unauthorized)"))
+      .mockResolvedValueOnce([{ env: "default", count: 1, items: [{ key: "HQ_TOKEN", upd: "", rot: "" }] }] as never);
+    const target = mountPage("secrets");
+    await settle();
+    const error = target.querySelector("[data-testid='personal-secrets-error']");
+    expect(error?.textContent).toContain("Sign in again");
+    expect(error?.textContent).not.toContain("HTTP 401");
+    expect(target.querySelector("[data-testid='personal-secrets-list']")?.textContent).not.toContain("GITHUB_TOKEN");
+    (target.querySelector("[data-testid='personal-secrets-retry']") as HTMLButtonElement).click();
+    await settle();
+    expect(vi.mocked(companyStore.loadSecrets)).toHaveBeenLastCalledWith("personal", true);
+    expect(target.querySelector("[data-testid='personal-secrets-error']")).toBeNull();
+    expect(target.querySelector("[data-testid='personal-secrets-list']")?.textContent).toContain("HQ_TOKEN");
   });
 
   it("shows Allowed, Ask first, and Never on the Agents and MCP tab", () => {

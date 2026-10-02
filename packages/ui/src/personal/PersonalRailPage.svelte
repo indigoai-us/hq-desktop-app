@@ -5,6 +5,7 @@
    * First frame is the cache. Refresh runs after paint.
    * Sheets are the US-029 secret and connect sheets. Values never render.
    */
+  import { untrack } from "svelte";
   import "../home/tokens.css";
   import "../chat/chat-tokens.css";
   import { companyStore } from "../company/company-store.svelte.js";
@@ -27,26 +28,39 @@
     filterConnections,
     filterPersonalSecrets,
     fixturePersonalRail,
-    personalSecretFromRaw,
+    personalSecretsErrorReason,
+    personalSecretsFromSource,
     readPersonalRailCache,
     writePersonalRailCache,
     type BotPolicy,
-    type PersonalConnection,
     type PersonalRailCache,
-    type PersonalSecret,
   } from "./personal-rail-model.js";
 
   interface Props {
     page: "secrets" | "connections";
+    /** Perf harness and design scenes only. The running app never sets this. */
+    fixtures?: boolean;
   }
 
-  let { page }: Props = $props();
+  let { page, fixtures = false }: Props = $props();
 
-  let data = $state<PersonalRailCache>(fixturePersonalRail());
+  // Fixture mode is fixed for the life of the page.
+  const useFixtures = untrack(() => fixtures);
+  const cachedAtOpen = useFixtures ? null : readPersonalRailCache("personal");
+  let data = $state<PersonalRailCache>(
+    useFixtures
+      ? fixturePersonalRail()
+      : cachedAtOpen ?? { secrets: [], connections: fixturePersonalRail().connections },
+  );
+  // "loading" paints the skeleton; it only shows when nothing is cached yet.
+  let secretsState = $state<"loading" | "ready" | "error">(
+    useFixtures || cachedAtOpen ? "ready" : "loading",
+  );
+  let secretsError = $state("");
   let query = $state("");
   let secretTab = $state<"all" | "standard" | "proxy" | "stale">("all");
   let connectionTab = $state<"connected" | "available" | "agents" | "attention">("connected");
-  let selectedSecret = $state("github");
+  let selectedSecret = $state("");
   let selectedConnection = $state("github");
   let sheet = $state<string | null>(null);
   let secretDraft = $state("");
@@ -55,32 +69,31 @@
   let copied = $state("");
 
   $effect(() => {
-    const cached = readPersonalRailCache("personal");
-    if (cached) data = cached;
+    if (useFixtures) return;
     let live = true;
     queueMicrotask(() => {
-      if (live) void refresh();
+      if (live) void refresh(false);
     });
     return () => {
       live = false;
     };
   });
 
-  async function refresh(): Promise<void> {
-    const next = readPersonalRailCache("personal") ?? fixturePersonalRail();
+  async function refresh(force: boolean): Promise<void> {
+    if (secretsState === "error") secretsState = "loading";
     try {
-      const loaded = await companyStore.loadSecrets("personal", false);
-      if (Array.isArray(loaded)) {
-        const rows = loaded
-          .map((item) => personalSecretFromRaw((item ?? {}) as Record<string, unknown>))
-          .filter((row): row is PersonalSecret => row != null);
-        if (rows.length > 0) next.secrets = rows;
-      }
-    } catch {
-      /* keep the personal cache */
+      const loaded = await companyStore.loadSecrets("personal", force);
+      const secrets = personalSecretsFromSource(Array.isArray(loaded) ? loaded : []);
+      data = { ...data, secrets };
+      writePersonalRailCache("personal", data);
+      secretsState = "ready";
+      secretsError = "";
+    } catch (err) {
+      console.warn("[personal-rail] secrets load failed", err);
+      secretsError = personalSecretsErrorReason(err);
+      // Cached rows stay on screen; the error state only replaces an empty list.
+      secretsState = data.secrets.length > 0 ? "ready" : "error";
     }
-    writePersonalRailCache("personal", next);
-    data = next;
   }
 
   const secretRows = $derived(filterPersonalSecrets(data.secrets, secretTab, query));
@@ -182,7 +195,27 @@
       <div class="split secrets">
         <div class="list" data-testid="personal-secrets-list">
           <div class="head"><span>Name</span><span>Scope</span><span>Mode</span><span>Last rotated</span><span>Bound apps</span></div>
+          {#if secretsError && secretsState === "ready"}
+            <p class="meta" data-testid="personal-secrets-stale">
+              Showing saved rows. {secretsError}
+              <button class="btn tiny-btn" type="button" onclick={() => void refresh(true)}>Retry</button>
+            </p>
+          {/if}
           <p class="sec">Personal</p>
+          {#if secretsState === "loading"}
+            <div data-testid="personal-secrets-skeleton" aria-busy="true">
+              {#each [0, 1, 2, 3] as i (i)}<div class="skel"></div>{/each}
+            </div>
+          {:else if secretsState === "error"}
+            <div class="state" role="alert" data-testid="personal-secrets-error">
+              <p>{secretsError}</p>
+              <button class="btn" type="button" data-testid="personal-secrets-retry" onclick={() => void refresh(true)}>Retry</button>
+            </div>
+          {:else if data.secrets.length === 0}
+            <p class="state" data-testid="personal-secrets-empty">
+              No personal secrets yet. Add one with New secret or <span class="mono">hq secrets set --personal</span>.
+            </p>
+          {/if}
           {#each secretPage.rows as row (row.id)}
             <button class="srow" type="button" aria-current={row.id === secretCurrent?.id} onclick={() => (selectedSecret = row.id)}>
               <span>
@@ -393,4 +426,9 @@
   h2 { font-size: var(--type-body, 15px); margin: 4px 0; }
   .sheet { position: absolute; right: 16px; bottom: 16px; width: 320px; padding: 16px; border: 1px solid var(--v4-rowline); border-radius: 10px; background: var(--v4-raised, var(--v4-ground)); display: flex; flex-direction: column; gap: 8px; }
   .tiny { pointer-events: none; }
+  .state { padding: 16px 8px; color: var(--v4-text-2); font-size: var(--type-metadata, 13px); }
+  .state p { margin: 0 0 8px; }
+  .tiny-btn { height: 22px; padding: 0 8px; margin-left: 6px; }
+  .skel { height: 36px; margin: 8px; border-radius: 6px; background: linear-gradient(90deg, var(--v4-control-faint), var(--v4-hover), var(--v4-control-faint)); background-size: 200% 100%; animation: personal-row-skel 1.1s linear infinite; }
+  @keyframes personal-row-skel { from { background-position: 100% 0; } to { background-position: -100% 0; } }
 </style>

@@ -82,6 +82,19 @@ export function writePersonalRailCache(owner: string, value: PersonalRailCache):
   if (owner) caches.set(owner, value);
 }
 
+/** Drop every cached personal page (sign-out and tests). */
+export function clearPersonalRailCache(): void {
+  caches.clear();
+}
+
+export function emptyPersonalRail(): PersonalRailCache {
+  return { secrets: [], connections: [] };
+}
+
+/**
+ * Design fixture for the perf harness and tests only. The running app never
+ * paints these rows; PersonalRailPage reads them only when `fixtures` is set.
+ */
 export function fixturePersonalRail(): PersonalRailCache {
   return {
     secrets: [
@@ -275,4 +288,80 @@ export function execSnippet(name: string): string {
 
 export function secretHasValue(row: PersonalSecret | Record<string, unknown>): boolean {
   return "value" in row && row.value != null && String(row.value).length > 0;
+}
+
+function relativeDay(iso: string, now: number): string {
+  const at = Date.parse(iso);
+  if (!Number.isFinite(at)) return iso.trim() || "—";
+  const days = Math.max(0, Math.floor((now - at) / 86_400_000));
+  return days === 0 ? "today" : `${days}d ago`;
+}
+
+/**
+ * Rows from the personal vault, loaded through the same secrets source the
+ * company pane uses with the personal slug. The desktop returns groups shaped
+ * `{ env, items: [{ key, upd, rot }] }`; every row in the personal vault is
+ * personal. Flat API rows with an explicit scope go through
+ * personalSecretFromRaw. Names and dates only.
+ */
+export function personalSecretsFromSource(
+  loaded: readonly unknown[],
+  now: number = Date.now(),
+): PersonalSecret[] {
+  const out: PersonalSecret[] = [];
+  const seen = new Set<string>();
+  for (const entry of loaded) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    if (Array.isArray(record.items)) {
+      const group = typeof record.env === "string" ? record.env.trim() : "";
+      for (const item of record.items) {
+        if (!item || typeof item !== "object") continue;
+        const raw = item as Record<string, unknown>;
+        const key = typeof raw.key === "string" ? raw.key.trim() : "";
+        if (!key) continue;
+        const name =
+          group && group !== "default" && !key.startsWith(`${group}/`) ? `${group}/${key}` : key;
+        if (seen.has(name)) continue;
+        seen.add(name);
+        const rot = typeof raw.rot === "string" ? raw.rot : "";
+        const upd = typeof raw.upd === "string" ? raw.upd : "";
+        out.push({
+          id: name,
+          name,
+          kind: "standard",
+          version: "v1",
+          host: "",
+          scope: "Personal",
+          rotated: rot || upd ? relativeDay(rot || upd, now) : "never",
+          apps: "—",
+          readers: "you",
+          usedBy: "—",
+          created: "—",
+        });
+      }
+      continue;
+    }
+    const row = personalSecretFromRaw(record);
+    if (row && !seen.has(row.name)) {
+      seen.add(row.name);
+      out.push(row);
+    }
+  }
+  return out;
+}
+
+/** Plain reason for a failed secrets load. Never the raw transport text. */
+export function personalSecretsErrorReason(err: unknown): string {
+  const text = err instanceof Error ? err.message : String(err ?? "");
+  if (/AUTH_REQUIRED|auth:|unauthori[sz]ed|\b401\b|\b403\b/i.test(text)) {
+    return "Your sign-in expired. Sign in again to see your secrets.";
+  }
+  if (/not connected to cloud|was not found|invalid identity/i.test(text)) {
+    return "Your personal vault is not connected to HQ yet.";
+  }
+  if (/not available on this platform|no platform api/i.test(text)) {
+    return "Secrets are not available in this window.";
+  }
+  return "Could not reach your vault. Check your connection and retry.";
 }
