@@ -13,13 +13,10 @@
   import "../chat/chat-tokens.css";
   import {
     alertLabel,
-    appendLogTail,
     clampJobAlert,
     filterJobs,
     filterRuns,
     blankJob,
-    fixtureOutpost,
-    formatRetry,
     freshnessLabel,
     lastResultLabel,
     metadata,
@@ -34,28 +31,33 @@
     type JobAlert,
     type JobCadence,
     type JobRunMode,
-    type LogLine,
     type OutpostCache,
     type OutpostJob,
     type OutpostRefresher,
     type OutpostTab,
   } from "./outpost-model.js";
+  import { createOutpostRefresher, noOutpost, OUTPOST_SETUP_URL, type OutpostReadApi } from "./outpost-live.js";
 
   export { metadata };
 
   interface Props {
-    /** Reads live state from the Outpost. Absent = no Outpost API in this build. */
+    /** Reads live state from the Outpost. Wins over `api` (tests). */
     refresh?: OutpostRefresher;
+    /** The desktop hq-pro client; the page reads the user's Outpost through it. */
+    api?: OutpostReadApi | null;
+    openExternal?: (url: string) => void;
   }
 
-  let { refresh }: Props = $props();
+  let { refresh, api = null, openExternal }: Props = $props();
 
-  let data = $state<OutpostCache>(readOutpostCache("personal") ?? fixtureOutpost());
+  // First frame is the cache from the last real read, or an unknown state.
+  // Nothing here is sample data: rows only come from hq-pro.
+  let data = $state<OutpostCache>(readOutpostCache("personal") ?? { ...noOutpost(null), provisioned: null });
   let tab = $state<OutpostTab>("overview");
   let jobFilter = $state<"all" | "active" | "paused" | "failing">("all");
   let runFilter = $state<"all" | "ok" | "failed" | "running">("all");
   let logFilter = $state<"all" | "info" | "warn" | "err">("all");
-  let selectedJob = $state("attio-call-sync");
+  let selectedJob = $state("");
   let sheet = $state<OutpostJob | null>(null);
   let draftName = $state("");
   let draftCadence = $state<JobCadence>("hourly");
@@ -78,17 +80,15 @@
   // while the page is visible. Success merges into the cache; failure keeps
   // the cached data, logs the cause, and shows the stale state.
   $effect(() => {
-    const read = refresh;
+    const read = refresh ?? createOutpostRefresher(api);
     untrack(() => {
       const cached = readOutpostCache("personal");
       if (cached) data = cached;
-      else writeOutpostCache("personal", data);
     });
     let live = true;
     const run = async (): Promise<void> => {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
       try {
-        if (!read) throw new Error("no Outpost API is connected in this build");
         const next = await read();
         if (!live) return;
         const merged = { ...next, fetchedAt: next.fetchedAt ?? new Date().toISOString() };
@@ -103,6 +103,7 @@
       }
     };
     void run();
+    retry = () => void run();
     const timer = setInterval(() => void run(), OUTPOST_REFRESH_MS);
     const stopTick = startNowTicker((t) => (now = t));
     return () => {
@@ -111,6 +112,8 @@
       stopTick();
     };
   });
+
+  let retry = $state<() => void>(() => {});
 
   const freshness = $derived(freshnessLabel(data.fetchedAt, refreshFailed, now));
 
@@ -121,8 +124,9 @@
   );
   const logWindow = $derived(visibleLogWindow(filteredLogs.length, logScroll, VIEW, ROW));
   const paintedLogs = $derived(filteredLogs.slice(logWindow.start, logWindow.end));
-  const cronPreview = $derived(previewCron(draftCron, new Date("2026-10-01T18:00:00Z"), 5));
-  const offline = $derived(data.unreachable || !data.host.online);
+  const cronPreview = $derived(previewCron(draftCron, new Date(now), 5));
+  const provisioned = $derived(data.provisioned === true);
+  const offline = $derived(!provisioned || data.unreachable || !data.host.online);
 
   // QA-053: New job opens a blank sheet; Edit keeps the job's values.
   const sheetIsNew = $derived(sheet != null && !data.jobs.some((job) => job.id === sheet?.id));
@@ -215,33 +219,11 @@
     writeOutpostCache("personal", data);
   }
 
-  function streamMore(): void {
-    const incoming: LogLine[] = [
-      {
-        id: `live-${data.logs.length + 1}`,
-        t: "10:16:01.004",
-        level: "info",
-        job: "outpost",
-        message: "tail · heartbeat ok",
-      },
-    ];
-    data = { ...data, logs: appendLogTail(data.logs, incoming) };
-    writeOutpostCache("personal", data);
-  }
-
-  function retryNow(): void {
-    data = { ...data, retryInSec: Math.max(0, data.retryInSec - 1) };
-  }
-
-  function markUnreachable(): void {
-    data = { ...data, unreachable: true, host: { ...data.host, online: false } };
-    writeOutpostCache("personal", data);
-  }
 </script>
 
 <div class="page" data-testid="outpost-page" data-tab={tab} data-offline={offline ? "true" : "false"}>
   <aside class="pane" aria-label="Outpost">
-    <div class="pane-head"><span class="status"><span class="dot" class:live={!offline} class:err={offline}></span>{data.host.name} · {offline ? "Down" : "Up"}</span></div>
+    <div class="pane-head"><span class="status"><span class="dot" class:live={!offline} class:err={offline}></span>{provisioned ? `${data.host.name} · ${offline ? "Down" : "Up"}` : "Outpost"}</span></div>
     <nav>
       {#each [["overview", "Overview"], ["jobs", "Scheduled jobs"], ["runs", "Runs"], ["logs", "Logs"], ["settings", "Settings"]] as item (item[0])}
         <button type="button" class:on={tab === item[0]} aria-current={tab === item[0] ? "true" : undefined} onclick={() => (tab = item[0] as OutpostTab)}>{item[1]}</button>
@@ -251,8 +233,10 @@
   <main>
     <header class="toolbar">
       <h1>{tab === "overview" ? "Outpost" : tab === "jobs" ? "Scheduled jobs" : tab === "runs" ? "Runs" : tab === "logs" ? "Logs" : "Settings"}</h1>
-      <span class="sub">{data.host.name} · {data.host.region}</span>
-      <span class="status"><span class="dot" class:live={!offline} class:err={offline}></span>{offline ? "Unreachable" : "Online"}</span>
+      {#if provisioned}
+        <span class="sub" data-testid="outpost-host">{[data.host.name, data.host.region, data.host.instance].filter(Boolean).join(" · ")}</span>
+        <span class="status" data-testid="outpost-online"><span class="dot" class:live={!offline} class:err={offline}></span>{offline ? "Offline" : "Online"}</span>
+      {/if}
       <span class="sub" class:err={refreshFailed} data-testid="outpost-freshness">{freshness}</span>
       <span class="grow"></span>
       <button type="button" class="btn" disabled={offline} onclick={() => (notice = "terminal")}>Open terminal</button>
@@ -260,15 +244,23 @@
       <button type="button" class="btn" disabled={offline}>Restart</button>
     </header>
 
-    {#if offline}
+    {#if data.provisioned === false}
+      <div class="empty" data-testid="outpost-empty">
+        <span class="nm">No Outpost yet</span>
+        <span class="sub">An Outpost is your always-on machine in the cloud for scheduled jobs.</span>
+        <button type="button" class="btn primary" data-testid="outpost-setup" onclick={() => openExternal?.(OUTPOST_SETUP_URL)}>Set one up</button>
+      </div>
+    {:else if data.provisioned === null}
+      <div class="empty sub" data-testid="outpost-loading">Reading your Outpost…</div>
+    {:else if offline}
       <div class="banner" role="alert" data-testid="outpost-offline-banner">
         <span class="nm">Host unreachable.</span>
-        No heartbeat since {data.host.lastHeartbeatAt}.
-        <span class="sub">Retrying in {formatRetry(data.retryInSec)} · attempt {data.retryAttempt}</span>
-        <button type="button" class="btn" onclick={retryNow}>Retry now</button>
-        <button type="button" class="btn" onclick={() => (tab = "logs")}>Last logs</button>
+        No report since {data.host.lastHeartbeatAt}.
+        <button type="button" class="btn" onclick={() => retry()}>Retry now</button>
       </div>
     {/if}
+
+    {#if provisioned}
 
     {#if tab === "overview" || tab === "jobs"}
       <section>
@@ -279,6 +271,9 @@
           <button type="button" class="btn primary" disabled={offline} data-testid="new-job" onclick={openNew}>New job</button>
         </div>
         <div class="jrow hd"><span>Job</span><span>Cadence</span><span>Next run</span><span>Last result</span><span>Alerts</span><span></span></div>
+        {#if data.jobs.length === 0}
+          <p class="sub" data-testid="outpost-no-jobs">No scheduled jobs</p>
+        {/if}
         {#each jobs as job (job.id)}
           <div class="jrow" class:paused={job.paused} aria-current={selectedJob === job.id ? "true" : undefined} role="button" tabindex="0" onclick={() => (selectedJob = job.id)} onkeydown={(e) => e.key === "Enter" && (selectedJob = job.id)}>
             <span class="cell"><span class="nm">{job.name}</span><small>{job.detail}</small></span>
@@ -302,6 +297,9 @@
             <button type="button" class:on={runFilter === name} onclick={() => (runFilter = name as typeof runFilter)}>{name}</button>
           {/each}
         </div>
+        {#if data.runs.length === 0}
+          <p class="sub" data-testid="outpost-no-runs">No runs yet</p>
+        {/if}
         {#each runs as run (run.id)}
           <div class="run"><span class="nm">{run.job}</span><span class="cell sub" data-testid="run-when">{runWhenLabel(run, now)} · {run.detail}</span><span class="st {run.status}"><span class="dot" class:live={run.status === "running"} class:err={run.status === "failed"}></span>{run.status}</span></div>
         {/each}
@@ -314,8 +312,10 @@
           {#each ["all", "info", "warn", "err"] as name (name)}
             <button type="button" class:on={logFilter === name} onclick={() => (logFilter = name as typeof logFilter)}>{name}</button>
           {/each}
-          <button type="button" class="btn" data-testid="stream-logs" onclick={streamMore}>Follow</button>
         </div>
+        {#if data.logs.length === 0}
+          <p class="sub" data-testid="outpost-no-logs">No logs from the Outpost yet</p>
+        {/if}
         <div
           class="log-view"
           data-testid="log-view"
@@ -336,17 +336,12 @@
     {#if tab === "settings"}
       <section data-testid="outpost-settings">
         <h2>Host</h2>
-        <p>{data.host.hostname}</p>
-        <p>SSH fingerprint is shown. The private key stays on this Mac.</p>
-        <p class="mono">SHA256:4kq9…K5E</p>
-        <h2>Alerts</h2>
-        <div class="seg" role="group" aria-label="Alert profile">
-          <button type="button" class:on={true}>DM</button>
-          <button type="button">None</button>
-        </div>
+        <p>{data.host.name}{data.host.hostname ? ` · ${data.host.hostname}` : ""}</p>
+        <p>{data.host.instance}</p>
+        {#if data.host.diskUsed}<p>Disk {data.host.diskUsed} of {data.host.diskTotal}</p>{/if}
         <p>Per-job alerts are dm or none. Secret values are not stored on the Outpost disk.</p>
-        <button type="button" class="btn" data-testid="mark-unreachable" onclick={markUnreachable}>Mark unreachable</button>
       </section>
+    {/if}
     {/if}
   </main>
 
@@ -438,6 +433,7 @@
   .dot.live { background: var(--ok, var(--v4-ok)); }
   .dot.err { background: var(--red, var(--v4-error)); }
   .st.failed, .err, .ln.err { color: var(--red, var(--v4-error)); }
+  .empty { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; padding: 24px 0; }
   .banner { display: flex; gap: 8px; align-items: center; min-height: 40px; margin: 0 0 12px; padding: 0 12px; background: var(--raised, var(--v4-control-faint)); border-radius: 8px; }
   .tabs { display: flex; align-items: center; gap: 2px; margin-bottom: 4px; }
   .tabs .btn { margin-left: auto; }

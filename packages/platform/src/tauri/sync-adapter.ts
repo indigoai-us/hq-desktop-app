@@ -18,6 +18,7 @@ import {
   type WhoAmI,
   type VersionInfo,
   AGENT_PATHS,
+  OUTPOST_PATHS,
   buildSendReplyRequest,
   failure,
   normalizeReplyThreadValue,
@@ -1079,6 +1080,8 @@ export function createSyncPlatformAdapter(
         hqProJson('GET', AGENT_PATHS.companyTelemetry(companyUid, from, to)),
       getMyTelemetry: (from, to) =>
         hqProJson('GET', AGENT_PATHS.myTelemetry(from, to)),
+      getMyOutpostStatus: () => hqProJson('POST', OUTPOST_PATHS.status, {}),
+      listMyOutpostJobs: () => hqProJson('GET', OUTPOST_PATHS.jobsStatus),
     },
 
     company: {

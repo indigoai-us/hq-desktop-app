@@ -2,13 +2,13 @@ import { describe, expect, it } from "vitest";
 import {
   appendLogTail,
   clampJobAlert,
-  fixtureOutpost,
   formatRetry,
   offlineBanner,
   previewCron,
   visibleLogWindow,
   JOB_ALERTS,
 } from "./outpost-model.js";
+import { fixtureOutpost } from "./outpost.fixture.js";
 
 describe("US-034 outpost model", () => {
   it("keeps job alerts to dm or none", () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { AGENT_PATHS } from "../adapter.js";
+import { AGENT_PATHS, OUTPOST_PATHS } from "../adapter.js";
 import { TauriPlatformAdapter } from "./index.js";
 import { createSyncPlatformAdapter } from "./sync-adapter.js";
 
@@ -94,5 +94,33 @@ describe("createSyncPlatformAdapter agents", () => {
         },
       },
     ]);
+  });
+});
+
+describe("createSyncPlatformAdapter personal Outpost", () => {
+  it("reads the caller's Outpost status and job rows through hq_pro_fetch", async () => {
+    const calls: Invocation[] = [];
+    const adapter = createSyncPlatformAdapter({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args });
+        return { status: 200, body: JSON.stringify({ statuses: [] }) };
+      },
+    });
+    const jobs = await adapter.agents.listMyOutpostJobs?.();
+    await adapter.agents.getMyOutpostStatus?.();
+    expect(jobs).toEqual({ ok: true, value: { statuses: [] } });
+    expect(calls).toEqual([
+      { cmd: "hq_pro_fetch", args: { url: OUTPOST_PATHS.jobsStatus, method: "GET", body: null } },
+      { cmd: "hq_pro_fetch", args: { url: OUTPOST_PATHS.status, method: "POST", body: "{}" } },
+    ]);
+  });
+
+  it("surfaces a missing Outpost as an http-404 failure", async () => {
+    const adapter = createSyncPlatformAdapter({
+      invoke: async () => ({ status: 404, body: JSON.stringify({ error: true, message: "not found" }) }),
+    });
+    const res = await adapter.agents.getMyOutpostStatus?.();
+    expect(res?.ok).toBe(false);
+    expect(res && !res.ok ? res.code : "").toBe("http-404");
   });
 });

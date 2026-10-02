@@ -1197,6 +1197,12 @@ export interface AgentProfilePatch {
   description?: string;
 }
 
+/** hq-pro personal Outpost routes (owner-scoped by the caller's token). */
+export const OUTPOST_PATHS = {
+  status: "/outpost/status",
+  jobsStatus: "/outpost/jobs/status",
+} as const;
+
 export const AGENT_PATHS = {
   provisionOptions: (companyUid: string) =>
     `/v1/agents/provision-options?companyUid=${encodeURIComponent(companyUid)}`,
@@ -1286,6 +1292,13 @@ export interface AgentsApi {
    * (daily series + totals). Optional so older test doubles stay valid.
    */
   getMyTelemetry?(from: string, to: string): AdapterPromise<Json>;
+  /**
+   * POST /outpost/status — the caller's own Outpost row (state, region,
+   * instance state, telemetry timestamps). A 404 failure means no Outpost.
+   */
+  getMyOutpostStatus?(): AdapterPromise<Json>;
+  /** GET /outpost/jobs/status — the caller's scheduled-job status rows. */
+  listMyOutpostJobs?(): AdapterPromise<Json>;
 }
 
 export interface FeedbackApi {

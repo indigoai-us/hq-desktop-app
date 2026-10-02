@@ -5,6 +5,15 @@
    */
   import { onMount } from "svelte";
   import { loadOutpost } from "./outpost-lazy.js";
+  import type { OutpostReadApi } from "../outpost/outpost-live.js";
+
+  interface Props {
+    /** The desktop hq-pro client (adapter.agents). */
+    api?: OutpostReadApi | null;
+    openExternal?: (url: string) => void;
+  }
+
+  let { api = null, openExternal }: Props = $props();
 
   let Body = $state<typeof import("../outpost/OutpostPage.svelte").default | null>(null);
 
@@ -17,7 +26,7 @@
 
 <div class="host" data-testid="outpost-rail-host">
   {#if Body}
-    <Body />
+    <Body {api} {openExternal} />
   {:else}
     <div class="skeleton" data-testid="outpost-skeleton" aria-busy="true">
       <aside>

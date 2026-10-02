@@ -10239,7 +10239,7 @@
             onopenintegrations={openCompanyIntegrations}
           />
         {:else if railPlaceholder?.id === "outpost"}
-          <OutpostRailHost />
+          <OutpostRailHost api={adapter.agents ?? null} openExternal={onopenurl} />
         {:else if railPlaceholder}
           <section
             class="rail-placeholder"

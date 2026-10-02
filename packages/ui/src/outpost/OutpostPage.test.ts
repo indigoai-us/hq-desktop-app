@@ -2,7 +2,8 @@
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import OutpostPage from "./OutpostPage.svelte";
-import { writeOutpostCache, fixtureOutpost, lastResultLabel, type OutpostRefresher } from "./outpost-model.js";
+import { writeOutpostCache, lastResultLabel, type OutpostRefresher } from "./outpost-model.js";
+import { fixtureOutpost } from "./outpost.fixture.js";
 
 describe("US-034 OutpostPage", () => {
   let component: Record<string, unknown> | null = null;
@@ -30,8 +31,7 @@ describe("US-034 OutpostPage", () => {
     writeOutpostCache("personal", cache);
     const target = mountPage();
     const banner = target.querySelector("[data-testid='outpost-offline-banner']");
-    expect(banner?.textContent).toContain("No heartbeat since 10:52");
-    expect(banner?.textContent).toContain("0:22");
+    expect(banner?.textContent).toContain("No report since 10:52");
     const terminal = [...target.querySelectorAll("button")].find((b) => b.textContent === "Open terminal");
     expect(terminal?.hasAttribute("disabled")).toBe(true);
   });
@@ -104,18 +104,6 @@ describe("US-034 OutpostPage", () => {
     input.dispatchEvent(new Event("input", { bubbles: true }));
     flushSync();
     expect(target.querySelectorAll("[data-testid='cron-next'] li")).toHaveLength(5);
-  });
-
-  it("streams a new log line into the virtual window", () => {
-    writeOutpostCache("personal", fixtureOutpost());
-    const target = mountPage();
-    [...target.querySelectorAll("button")].find((b) => b.textContent === "Logs")?.click();
-    flushSync();
-    const before = target.querySelectorAll("[data-testid='log-line']").length;
-    [...target.querySelectorAll("button")].find((b) => b.textContent === "Follow")?.click();
-    flushSync();
-    expect(target.querySelectorAll("[data-testid='log-line']").length).toBe(before + 1);
-    expect(target.textContent).toContain("tail · heartbeat ok");
   });
 
   describe("QA-069 freshness", () => {
