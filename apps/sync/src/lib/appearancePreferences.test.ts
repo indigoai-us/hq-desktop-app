@@ -1,6 +1,8 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import {
   APPEARANCE_CHANGE_EVENT,
+  APPEARANCE_OPAQUE_RESET_KEY,
   APPEARANCE_REQUEST_EVENT,
   APPEARANCE_STORAGE_KEY,
   applyAppearancePreferences,
@@ -28,6 +30,13 @@ function memoryStorage(seed?: string): Storage {
   };
 }
 
+/** Storage from an install that already ran the one-time 100% opacity reset. */
+function migratedStorage(seed: string): Storage {
+  const storage = memoryStorage(seed);
+  storage.setItem(APPEARANCE_OPAQUE_RESET_KEY, '1');
+  return storage;
+}
+
 function fakeTarget(): Window {
   return new EventTarget() as Window;
 }
@@ -53,10 +62,78 @@ function fakeRoot() {
 }
 
 describe('appearance preferences', () => {
+  it('applies the fresh-install opacity and native backdrop before reading material', async () => {
+    const target = fakeTarget();
+    const { root, value } = fakeRoot();
+    let materialRead = false;
+    const applyNativeTransparency = vi.fn();
+    const dispose = installAppearancePreferences({
+      target,
+      storage: memoryStorage(),
+      root,
+      applyNativeTransparency,
+      readMaterial: () => {
+        materialRead = true;
+        return Promise.resolve('glass');
+      },
+    });
+
+    expect(root.dataset.windowTransparency).toBe('0');
+    expect(value('--hq-window-transparency-factor')).toBe('0.00');
+    expect(materialRead).toBe(false);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(
+      applyNativeTransparency.mock.calls.map(([transparency]) => transparency),
+    ).toEqual([0]);
+    dispose();
+  });
+
+  it('uses a saved transparency on the first visual and native apply', async () => {
+    const target = fakeTarget();
+    const { root, value } = fakeRoot();
+    const applyNativeTransparency = vi.fn();
+    const dispose = installAppearancePreferences({
+      target,
+      storage: migratedStorage(
+        JSON.stringify({ colorTheme: 'system', windowTransparency: 24 }),
+      ),
+      root,
+      applyNativeTransparency,
+    });
+
+    expect(root.dataset.windowTransparency).toBe('24');
+    expect(value('--hq-window-transparency-factor')).toBe('0.24');
+    await Promise.resolve();
+    expect(
+      applyNativeTransparency.mock.calls.map(([transparency]) => transparency),
+    ).toEqual([24]);
+    dispose();
+  });
+
+  it('reapplies native transparency after desktop-alt inserts its backing material', () => {
+    const source = readFileSync(
+      new URL('../../src-tauri/src/commands/desktop_alt.rs', import.meta.url),
+      'utf8',
+    );
+    const revealStart = source.indexOf(
+      '#[cfg(target_os = "macos")]\nfn reveal_desktop_alt_window(window: &tauri::WebviewWindow) {',
+    );
+    const revealEnd = source.indexOf(
+      '#[cfg(not(target_os = "macos"))]',
+      revealStart,
+    );
+    const reveal = source.slice(revealStart, revealEnd);
+
+    expect(reveal.indexOf('reapply_window_backdrop_visibility')).toBeGreaterThan(
+      reveal.indexOf('apply_liquid_glass_window'),
+    );
+  });
+
   it('defaults to system, useful glass, and clamps malformed values', () => {
     expect(readAppearancePreferences(memoryStorage())).toEqual({
       colorTheme: 'system',
-      windowTransparency: 65,
+      windowTransparency: 0,
     });
     expect(
       normalizeAppearancePreferences({
@@ -76,13 +153,13 @@ describe('appearance preferences', () => {
     expect(windowTransparencyFromOpacity(0)).toBe(100);
     expect(windowTransparencyFromOpacity(500)).toBe(0);
     expect(windowTransparencyFromOpacity(-500)).toBe(100);
-    expect(windowTransparencyFromOpacity('not-a-number')).toBe(65);
+    expect(windowTransparencyFromOpacity('not-a-number')).toBe(0);
   });
 
   it('uses safe defaults when appearance storage is absent', () => {
     expect(readAppearancePreferences(null)).toEqual({
       colorTheme: 'system',
-      windowTransparency: 65,
+      windowTransparency: 0,
     });
     expect(() =>
       requestAppearancePreferenceChange(
@@ -186,7 +263,7 @@ describe('appearance preferences', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(applyNativeTransparency.mock.calls.map(([value]) => value)).toEqual([65, 0, 40]);
+    expect(applyNativeTransparency.mock.calls.map(([value]) => value)).toEqual([0, 40]);
     cleanup();
   });
 
@@ -289,7 +366,7 @@ describe('appearance preferences', () => {
       ),
     ).toEqual({
       colorTheme: 'dark',
-      windowTransparency: 65,
+      windowTransparency: 0,
     });
     expect(
       requestAppearancePreferenceChange(
@@ -356,6 +433,7 @@ describe('window material without real glass', () => {
     const storage = new Map<string, string>();
     const store = { getItem: (k: string) => storage.get(k) ?? null, setItem: (k: string, v: string) => void storage.set(k, v), removeItem: (k: string) => void storage.delete(k) };
     store.setItem(APPEARANCE_STORAGE_KEY, JSON.stringify({ colorTheme: 'system', windowTransparency: 65 }));
+    store.setItem(APPEARANCE_OPAQUE_RESET_KEY, '1');
     const dispose = installAppearancePreferences({
       target: new EventTarget() as unknown as Window,
       storage: store as unknown as Storage,
@@ -370,6 +448,87 @@ describe('window material without real glass', () => {
     expect(factor.at(-1)).toBe('0.65');
     expect(root.dataset.material).toBe('vibrancy');
     expect(root.dataset.windowTransparency).toBe('65');
+    dispose();
+  });
+});
+
+describe('one-time 100% opacity reset for existing installs', () => {
+  it('resets a saved opacity to 100% once, keeps the theme, and records the reset', async () => {
+    const target = fakeTarget();
+    const { root } = fakeRoot();
+    const storage = memoryStorage(
+      JSON.stringify({ colorTheme: 'dark', windowTransparency: 65 }),
+    );
+    const applyNativeTransparency = vi.fn();
+    const dispose = installAppearancePreferences({
+      target,
+      storage,
+      root,
+      applyNativeTransparency,
+    });
+
+    expect(root.dataset.windowTransparency).toBe('0');
+    expect(root.dataset.forceTheme).toBe('dark');
+    expect(JSON.parse(storage.getItem(APPEARANCE_STORAGE_KEY) ?? 'null')).toEqual({
+      colorTheme: 'dark',
+      windowTransparency: 0,
+    });
+    expect(storage.getItem(APPEARANCE_OPAQUE_RESET_KEY)).toBe('1');
+    await Promise.resolve();
+    expect(
+      applyNativeTransparency.mock.calls.map(([transparency]) => transparency),
+    ).toEqual([0]);
+    dispose();
+  });
+
+  it('keeps an opacity the user chooses after the reset', () => {
+    const storage = memoryStorage(
+      JSON.stringify({ colorTheme: 'system', windowTransparency: 65 }),
+    );
+    installAppearancePreferences({ target: fakeTarget(), storage, root: fakeRoot().root })();
+
+    const target = fakeTarget();
+    const first = fakeRoot();
+    const disposeFirst = installAppearancePreferences({ target, storage, root: first.root });
+    requestAppearancePreferenceChange({ windowTransparency: 40 }, { target, storage });
+    disposeFirst();
+
+    const restarted = fakeRoot();
+    const dispose = installAppearancePreferences({
+      target: fakeTarget(),
+      storage,
+      root: restarted.root,
+    });
+    expect(restarted.root.dataset.windowTransparency).toBe('40');
+    dispose();
+  });
+
+  it('records the reset on a fresh install so a later choice is never reset', () => {
+    const storage = memoryStorage();
+    installAppearancePreferences({ target: fakeTarget(), storage, root: fakeRoot().root })();
+    expect(storage.getItem(APPEARANCE_OPAQUE_RESET_KEY)).toBe('1');
+
+    storage.setItem(
+      APPEARANCE_STORAGE_KEY,
+      JSON.stringify({ colorTheme: 'system', windowTransparency: 30 }),
+    );
+    const { root } = fakeRoot();
+    installAppearancePreferences({ target: fakeTarget(), storage, root })();
+    expect(root.dataset.windowTransparency).toBe('30');
+  });
+
+  it('shows 100% opacity when storage is unreadable, without throwing', () => {
+    const storage = {
+      getItem: vi.fn(() => {
+        throw new Error('storage read blocked');
+      }),
+      setItem: vi.fn(() => {
+        throw new Error('storage write blocked');
+      }),
+    };
+    const { root } = fakeRoot();
+    const dispose = installAppearancePreferences({ target: fakeTarget(), storage, root });
+    expect(root.dataset.windowTransparency).toBe('0');
     dispose();
   });
 });

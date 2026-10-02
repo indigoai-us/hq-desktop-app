@@ -23,6 +23,21 @@ use std::path::{Path, PathBuf};
 
 use crate::paths;
 
+/// Check the architecture Node reports for an existing managed binary.
+/// Running the binary is necessary here: an executable file can be version
+/// correct while still being the wrong slice for the host.
+pub fn node_binary_has_arch(node_bin: &Path, expected_arch: &str) -> bool {
+    let Ok(output) = std::process::Command::new(node_bin)
+        .arg("-p")
+        .arg("process.arch")
+        .output()
+    else {
+        return false;
+    };
+    output.status.success()
+        && String::from_utf8_lossy(&output.stdout).trim() == expected_arch
+}
+
 /// State of the Node runtime HQ installs and owns.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ManagedToolchain {
@@ -313,6 +328,49 @@ mod tests {
                 reason: "path-uninspectable",
             }
         );
+    }
+
+    #[cfg(unix)]
+    fn synthetic_node_with_arch(dir: &Path, arch: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let node = dir.join("node");
+        let script = format!(
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo v22.17.0; elif [ \"$1\" = \"-p\" ]; then echo {arch}; fi\n"
+        );
+        std::fs::write(&node, script).unwrap();
+        std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755)).unwrap();
+        node
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_node_arch_mismatch_reinstalls_on_arm64() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let node = synthetic_node_with_arch(tmp.path(), "x64");
+        let version = std::process::Command::new(&node)
+            .arg("--version")
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&version.stdout).trim(), "v22.17.0");
+
+        // An existing version-correct x64 Node is not reusable on an arm64
+        // host, so the installer must proceed past its reuse check.
+        assert!(!node_binary_has_arch(&node, "arm64"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_node_matching_arm64_arch_is_reused() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let node = synthetic_node_with_arch(tmp.path(), "arm64");
+        let version = std::process::Command::new(&node)
+            .arg("--version")
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&version.stdout).trim(), "v22.17.0");
+
+        assert!(node_binary_has_arch(&node, "arm64"));
     }
 
     #[test]

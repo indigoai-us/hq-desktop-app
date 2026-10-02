@@ -1049,6 +1049,15 @@ pub struct ThreadResponse {
     pub messages: Vec<ThreadMessage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
+    /// `"human"` when the server applied `view=human` to this page. Absent
+    /// from a server that predates the parameter, which the webview reads as
+    /// an ordinary unfiltered page. Raw JSON, passed through untouched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view: Option<serde_json::Value>,
+    /// `true` when the server's read budget ran out before it filled a
+    /// `view=human` page. It comes with a `next_cursor`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view_scan_truncated: Option<serde_json::Value>,
 }
 
 /// Build the `GET /v1/notify/thread` URL. Pure + side-effect-free so the query
@@ -1070,6 +1079,23 @@ pub fn build_thread_url(
     }
     if let Some(c) = cursor.filter(|c| !c.is_empty()) {
         url.push_str(&format!("&cursor={}", c));
+    }
+    url
+}
+
+/// Build the `GET /v1/notify/thread` URL for one history page, with the
+/// optional `view` (only `human` is forwarded; see
+/// `messages::history_view_param`). Without `view` this is `build_thread_url`.
+pub fn build_thread_history_url(
+    base_url: &str,
+    with_person_uid: &str,
+    limit: Option<u32>,
+    cursor: Option<&str>,
+    view: Option<&str>,
+) -> String {
+    let mut url = build_thread_url(base_url, with_person_uid, limit, cursor);
+    if let Some(v) = crate::messages::history_view_param(view) {
+        url.push_str(&format!("&view={v}"));
     }
     url
 }
@@ -1850,6 +1876,51 @@ mod tests {
             build_thread_url("https://api.example.com", "prs_x", None, Some("")),
             "https://api.example.com/v1/notify/thread?withPersonUid=prs_x",
         );
+    }
+
+    #[test]
+    fn thread_history_url_adds_view_only_for_human() {
+        let base = "https://api.example.com";
+        // Without `view`: the same URL as `build_thread_url`.
+        assert_eq!(
+            build_thread_history_url(base, "prs_x", Some(50), Some("Y3Vy"), None),
+            build_thread_url(base, "prs_x", Some(50), Some("Y3Vy")),
+        );
+        assert_eq!(
+            build_thread_history_url(base, "prs_x", Some(50), None, Some("human")),
+            "https://api.example.com/v1/notify/thread?withPersonUid=prs_x&limit=50&view=human",
+        );
+        assert_eq!(
+            build_thread_history_url(base, "prs_x", Some(50), Some("Y3Vy"), Some("human")),
+            "https://api.example.com/v1/notify/thread?withPersonUid=prs_x&limit=50&cursor=Y3Vy&view=human",
+        );
+        // Any other value is dropped: the server would answer 400.
+        assert_eq!(
+            build_thread_history_url(base, "prs_x", None, None, Some("everything")),
+            "https://api.example.com/v1/notify/thread?withPersonUid=prs_x",
+        );
+    }
+
+    #[test]
+    fn thread_response_carries_the_human_view_echo_and_truncation() {
+        let json = r#"{
+            "messages": [],
+            "unreadCount": 0,
+            "view": "human",
+            "nextCursor": "Y3Vy",
+            "viewScanTruncated": true
+        }"#;
+        let thread: ThreadResponse = serde_json::from_str(json).expect("ThreadResponse parses");
+        let v = serde_json::to_value(&thread).unwrap();
+        assert_eq!(v["view"], "human");
+        assert_eq!(v["viewScanTruncated"], true);
+        assert_eq!(v["nextCursor"], "Y3Vy");
+
+        let old = r#"{ "messages": [], "unreadCount": 0 }"#;
+        let thread: ThreadResponse = serde_json::from_str(old).expect("ThreadResponse parses");
+        let v = serde_json::to_value(&thread).unwrap();
+        assert!(v.get("view").is_none());
+        assert!(v.get("viewScanTruncated").is_none());
     }
 
     fn mk_request(pair_key: &str) -> DmRequest {

@@ -127,6 +127,7 @@
   } from '../../lib/onboarding-step-telemetry';
   import {
     BUILD_STEP_INDEX,
+    COMPANY_STEP_INDEX,
     CONNECTOR_IMPORT_STEP_INDEX,
     CONSENT_STEP_INDEX,
     FIRST_FOLDER_SYNC_STEP_INDEX,
@@ -147,6 +148,11 @@
   import { TELEMETRY_CONSENT_VERSION } from '../../lib/consent-version';
   import { startTraySync } from '../../lib/traySync';
   import ConnectorImportStep from './ConnectorImportStep.svelte';
+  import CompanyStep, { type CompanyStepEvent, type CompanyStepResult } from './CompanyStep.svelte';
+  import {
+    resolveFirstRunCompanyPath,
+    type FirstRunCompanyPath,
+  } from '../../lib/first-run-company';
   import {
     createSyncPlatformAdapter,
     FIRST_FOLDER_SYNC_STEP_FLAG,
@@ -359,6 +365,14 @@
   let setupStarted = $state(false);
   let showFirstFolderSyncStep = $state(false);
   let showInviteTeammateStep = $state(false);
+  /**
+   * The company screen this person needs, read once setup completes: `create`
+   * or `join` for someone with no company (the website no longer makes one),
+   * `existing` or null (lookup failed) to skip it.
+   */
+  let companyPath = $state<FirstRunCompanyPath | null>(null);
+  let companyStepVisited = false;
+  let companyStepCompanyUid: string | null = null;
   let inviteTeammateContext: { companyUid: string; personUid: string } | null = null;
   let inviteCreatedForEmail: string | null = null;
   let inviteEmail = $state('');
@@ -416,8 +430,16 @@
 
   let aiTools = $state<AiTools | null>(null);
   let detectionFailed = $state(false);
-  let probeInFlight = false;
+  let probeInFlight = $state(false);
+  let probeTimedOut = $state(false);
   let detectorMounted = false;
+  // How long a probe may run before we surface the "Check again" fallback in
+  // the ready scene. The probe itself is not cancelled — a late result still
+  // fills in the launch buttons.
+  const AI_TOOLS_PROBE_TIMEOUT_MS = 10_000;
+  let probeTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  // Resolvers a caller can await on when they clicked an action mid-probe.
+  const probeWaiters: Array<() => void> = [];
   let launching = $state<
     'claude' | 'codex' | 'grok' | null
   >(null);
@@ -441,6 +463,7 @@
     currentStep = step;
     currentStepVisibleAt = Date.now();
     if (step === CONNECTOR_IMPORT_STEP_INDEX) connectorImportVisited = true;
+    if (step === COMPANY_STEP_INDEX) companyStepVisited = true;
     if (step === FIRST_FOLDER_SYNC_STEP_INDEX) firstFolderSyncVisited = true;
     if (step === INVITE_TEAMMATE_STEP_INDEX) inviteTeammateVisited = true;
   }
@@ -452,10 +475,13 @@
     flow?: OnboardingFlow,
   ): void {
     if (consentOnly || replay) return;
+    const stepId = stepIdFor(step);
     const companyUid =
-      stepIdFor(step) === 'invite-teammate'
+      stepId === 'invite-teammate'
         ? inviteTeammateContext?.companyUid
-        : undefined;
+        : stepId === 'company'
+          ? (companyStepCompanyUid ?? undefined)
+          : undefined;
     onboardingTelemetry.record({
       properties: {
         step: stepIdFor(step),
@@ -1086,6 +1112,29 @@
     return payload;
   }
 
+  /**
+   * One `/membership/me` read shared by the company step and the invite step,
+   * so finishing setup costs one membership lookup, not two.
+   */
+  let membershipMeRead: Promise<Record<string, unknown>> | null = null;
+  function readMembershipMe(): Promise<Record<string, unknown>> {
+    if (!membershipMeRead) {
+      membershipMeRead = onboardingHqProJson('GET', '/membership/me');
+      // A failed read is not cached; the next caller asks again.
+      membershipMeRead.catch(() => (membershipMeRead = null));
+    }
+    return membershipMeRead;
+  }
+
+  function companyStepHqProJson(
+    method: 'GET' | 'POST',
+    url: string,
+    body?: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    if (method === 'GET' && url === '/membership/me') return readMembershipMe();
+    return onboardingHqProJson(method, url, body);
+  }
+
   async function resolveInviteTeammateContext(): Promise<{
     companyUid: string;
     personUid: string;
@@ -1097,7 +1146,7 @@
       );
       if (!flag.ok || flag.value !== true) return null;
 
-      const membershipPayload = await onboardingHqProJson('GET', '/membership/me');
+      const membershipPayload = await readMembershipMe();
       const rawMemberships = membershipPayload.memberships;
       if (!Array.isArray(rawMemberships) || !rawMemberships.every(isRecord)) {
         return null;
@@ -2039,11 +2088,13 @@
       });
       // Both follow-on steps are optional and manager-gated. The invite path
       // checks its flag before reading memberships, and every lookup fails closed.
-      const [firstFolderEnabled, inviteContext] = await Promise.all([
+      const [firstFolderEnabled, inviteContext, firstRunCompanyPath] = await Promise.all([
         resolveFirstFolderSyncStepFlag(),
         resolveInviteTeammateContext(),
+        resolveFirstRunCompanyPath({ hqProJson: companyStepHqProJson, invoke: invokeCommand }),
       ]);
       if (!isCurrentRun(runId) || !mounted) return;
+      companyPath = firstRunCompanyPath;
       showFirstFolderSyncStep = firstFolderEnabled;
       inviteTeammateContext = inviteContext;
       showInviteTeammateStep = inviteContext !== null;
@@ -2279,10 +2330,17 @@
   async function probeAiTools() {
     if (probeInFlight) return;
     probeInFlight = true;
+    probeTimedOut = false;
+    detectionFailed = false;
+    if (probeTimeoutHandle) clearTimeout(probeTimeoutHandle);
+    probeTimeoutHandle = setTimeout(() => {
+      if (probeInFlight && detectorMounted) probeTimedOut = true;
+    }, AI_TOOLS_PROBE_TIMEOUT_MS);
     try {
       const tools = await invoke<AiTools>('detect_ai_tools');
       if (detectorMounted) {
         detectionFailed = false;
+        probeTimedOut = false;
         aiTools = tools;
       }
     } catch {
@@ -2291,13 +2349,43 @@
         aiTools = NO_AI_TOOLS;
       }
     } finally {
+      if (probeTimeoutHandle) {
+        clearTimeout(probeTimeoutHandle);
+        probeTimeoutHandle = null;
+      }
       probeInFlight = false;
+      // Wake anyone who clicked a launch button while we were probing.
+      const waiters = probeWaiters.splice(0, probeWaiters.length);
+      for (const wake of waiters) wake();
     }
+  }
+
+  /**
+   * Await an in-flight probe (up to a cap) so a launch button clicked mid-probe
+   * proceeds when the result arrives instead of hanging or silently falling
+   * back to the not-installed path.
+   */
+  function awaitPendingProbe(capMs = AI_TOOLS_PROBE_TIMEOUT_MS + 2_000): Promise<void> {
+    if (!probeInFlight) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        resolve();
+      };
+      probeWaiters.push(finish);
+      setTimeout(finish, capMs);
+    });
   }
 
   async function ensureAiTools(): Promise<AiTools> {
     if (aiTools) return aiTools;
-    await probeAiTools();
+    if (probeInFlight) {
+      await awaitPendingProbe();
+    } else {
+      await probeAiTools();
+    }
     return aiTools ?? NO_AI_TOOLS;
   }
 
@@ -2761,7 +2849,7 @@
         ),
       );
     }
-    for (const id of ['first-folder', 'invite', 'connectors', 'trust', 'settings', 'run-setup', 'handoff', 'build']) {
+    for (const id of ['company', 'first-folder', 'invite', 'connectors', 'trust', 'settings', 'run-setup', 'handoff', 'build']) {
       const block = refs[`panel:${id}`];
       if (block) controller.register(id, createPanelEngine(block, { reveal: revealNav }));
     }
@@ -2874,6 +2962,10 @@
   $effect(() => {
     if (consentOnly || replay || !setupCompleted || !postSetupStepsResolved) return;
     if (currentStep !== READY_STEP_INDEX) return;
+    if (companyPath && companyPath.kind !== 'existing' && !companyStepVisited) {
+      advanceTo(COMPANY_STEP_INDEX, null);
+      return;
+    }
     if (showFirstFolderSyncStep && !firstFolderSyncVisited) {
       advanceTo(FIRST_FOLDER_SYNC_STEP_INDEX, null);
       return;
@@ -2885,6 +2977,33 @@
     if (connectorImportVisited) return;
     advanceTo(CONNECTOR_IMPORT_STEP_INDEX, null);
   });
+
+  /** Telemetry for the company step. Never carries names, handles or emails. */
+  function recordCompanyStep(event: CompanyStepEvent): void {
+    if ('companyUid' in event) companyStepCompanyUid = event.companyUid;
+    const failed =
+      event.action === 'company_create_failed' ||
+      event.action === 'invite_join_failed' ||
+      event.action === 'checkout_failed';
+    const outcome = event.action === 'plan_chosen' ? `plan_${event.plan}` : event.action;
+    recordStep(COMPANY_STEP_INDEX, failed ? 'failed' : 'started', { outcome });
+  }
+
+  /** Leave the company step: made, joined, or skipped. Back to ready for the rest. */
+  function leaveCompanyStep(result: CompanyStepResult): void {
+    const outcome =
+      result.outcome === 'created'
+        ? result.paid
+          ? 'workforce_paid'
+          : `created_${result.plan}`
+        : result.outcome;
+    advanceTo(
+      READY_STEP_INDEX,
+      result.outcome === 'skipped' ? 'skipped' : 'completed',
+      { outcome },
+      'ready',
+    );
+  }
 
   /** Leave the teammate invite: sent (Continue) or skipped. */
   function leaveInviteTeammate(): void {
@@ -3296,6 +3415,28 @@
     </section>
     {/if}
 
+    <!-- Name a company (or join an invite) and pick a plan, offered once the
+         install is done to anyone with no company yet. -->
+    <section
+      class="scene s-follow-on s-company"
+      class:on={scene === 'company'}
+      data-scene="company"
+      aria-labelledby="onboarding-title-company"
+    >
+      <div class="panel-block" bind:this={refs['panel:company']}>
+        {#if currentStep === COMPANY_STEP_INDEX && companyPath && companyPath.kind !== 'existing'}
+          <CompanyStep
+            path={companyPath}
+            invoke={invokeCommand}
+            openUrl={(url) => openExternal(url)}
+            listen={(event, handler) => listen(event, (message) => handler(message.payload))}
+            onTelemetry={recordCompanyStep}
+            oncomplete={leaveCompanyStep}
+          />
+        {/if}
+      </div>
+    </section>
+
     <!-- Optional, flag-gated: sync the HQ folder, offered once the install is
          done. The section is always there so its panel engine can register;
          its content renders only when the rollout flag is on. -->
@@ -3493,7 +3634,35 @@
             <span class="tc-line">{openDesktop.label === 'Open HQ Desktop' ? 'Use HQ’s own app' : openDesktop.label}</span>
           </span>
         </button>
-        {#if installedToolSlots.length > 0}
+        {#if probeInFlight && !probeTimedOut && !detectionFailed && installedToolSlots.length === 0}
+          <div
+            class="tool-pills tool-pills-status"
+            data-testid="onboarding-ai-tools-checking"
+            role="status"
+            aria-live="polite"
+          >
+            <span class="ai-tools-checking">
+              <span class="ai-tools-spinner" aria-hidden="true"></span>
+              <span>Checking for AI tools on this Mac…</span>
+            </span>
+          </div>
+        {:else if (probeTimedOut || detectionFailed) && installedToolSlots.length === 0}
+          <div
+            class="tool-pills tool-pills-status"
+            data-testid="onboarding-ai-tools-recheck"
+            role="status"
+          >
+            <span class="ai-tools-checking failed">We couldn’t check for AI tools on this Mac.</span>
+            <button
+              class="tool-pill"
+              type="button"
+              data-testid="onboarding-ai-tools-recheck-button"
+              onclick={() => void probeAiTools()}
+            >
+              <span class="tp-name">Check again</span>
+            </button>
+          </div>
+        {:else if installedToolSlots.length > 0}
           <div class="tool-pills">
             {#each installedToolSlots as slot (slot.kind)}
               <button
@@ -3501,12 +3670,20 @@
                 type="button"
                 data-testid="onboarding-launch-{slot.kind}"
                 disabled={finishing || launching !== null || finishBlocked}
-                aria-busy={finishing || launching === slot.kind}
+                aria-busy={finishing || launching === slot.kind || (launching === slot.kind && probeInFlight)}
                 aria-label={slot.label}
                 onclick={() => void handleLaunch(slot.kind)}
               >
                 <span class="tp-icon" aria-hidden="true">{@render ToolIcon(slot.kind)}</span>
-                <span class="tp-name">{launching === slot.kind ? 'Opening…' : toolName(slot.kind)}</span>
+                <span class="tp-name">
+                  {#if launching === slot.kind && probeInFlight}
+                    Checking…
+                  {:else if launching === slot.kind}
+                    Opening…
+                  {:else}
+                    {toolName(slot.kind)}
+                  {/if}
+                </span>
               </button>
             {/each}
           </div>

@@ -211,13 +211,13 @@ export function parseMeshGenesis(raw: unknown): MeshGenesisLink | null {
   };
 }
 
-export function parseMeshDirectoryType(value: unknown): MeshDirectoryType {
+function parseMeshDirectoryType(value: unknown): MeshDirectoryType {
   const raw = asString(value).trim().toLowerCase();
   if (raw === "chat" || raw === "dm" || raw === "project") return raw;
   return "project";
 }
 
-export function parseMeshDirectoryScope(
+function parseMeshDirectoryScope(
   value: unknown,
   type: MeshDirectoryType,
 ): MeshDirectoryScope {

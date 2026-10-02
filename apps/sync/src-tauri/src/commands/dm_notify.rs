@@ -51,14 +51,15 @@ use crate::util::logfile::log;
 use hq_desktop_core::coalesced_poll::CoalescedPoll;
 
 pub use hq_desktop_core::dm_notify::{
-    build_compose_payload, build_send_payload, build_thread_reply_payload, build_thread_url,
-    build_threads_url, classify_send_response, clear_in_flight, diff_requests,
-    dm_notifications_enabled, effective_reply_count, enqueue_mention_fetches, esc_thread_seg,
-    filter_human_visible_events, filter_mentions_by_age, is_agent_audience, is_mention_of_me,
-    mention_cursor_after_fetch, mention_notification_body, mention_notification_title,
-    mention_route, mention_summary_title, normalize_scope, partition_unnotified, plan_mention_cap,
-    read_cursor_entry_for_account, requeue_failed_mention_fetches, respond_action_path,
-    respond_action_state, should_spawn_mention_detect, should_suppress_duplicate_event,
+    build_compose_payload, build_send_payload, build_thread_history_url,
+    build_thread_reply_payload, build_threads_url, classify_send_response, clear_in_flight,
+    diff_requests, dm_notifications_enabled, effective_reply_count, enqueue_mention_fetches,
+    esc_thread_seg, filter_human_visible_events, filter_mentions_by_age, is_agent_audience,
+    is_mention_of_me, mention_cursor_after_fetch, mention_notification_body,
+    mention_notification_title, mention_route, mention_summary_title, normalize_scope,
+    partition_unnotified, plan_mention_cap, read_cursor_entry_for_account,
+    requeue_failed_mention_fetches, respond_action_path, respond_action_state,
+    should_spawn_mention_detect, should_suppress_duplicate_event,
     should_suppress_mention_for_open_channel, take_mention_fetch_batch, take_unseen_message_ids,
     try_set_in_flight, write_cursor_entry_for_account, ActiveConversationInner,
     ActiveConversationState, ActiveThreadInner, ActiveThreadState, CursorEntry, DmEvent,
@@ -1307,6 +1308,10 @@ pub async fn fetch_dm_thread(
     with_person_uid: String,
     limit: Option<u32>,
     cursor: Option<String>,
+    // `"human"` asks the server for the human view of the thread. A server
+    // that implements it echoes `view` in the response (carried through
+    // `ThreadResponse`); an older one ignores it. Absent: unchanged request.
+    view: Option<String>,
 ) -> Result<ThreadResponse, String> {
     let target = with_person_uid.trim();
     if target.is_empty() {
@@ -1325,7 +1330,8 @@ pub async fn fetch_dm_thread(
             format!("Could not resolve server URL: {e}")
         })?;
 
-    let url = build_thread_url(&base_url, target, limit, cursor.as_deref());
+    let url =
+        build_thread_history_url(&base_url, target, limit, cursor.as_deref(), view.as_deref());
 
     let resp = build_client()
         .get(&url)
@@ -3916,6 +3922,8 @@ mod tests {
             last_activity_at: None,
             last_message_at: None,
             created_at: None,
+            last_human_message_at: None,
+            has_human_message: None,
             members: None,
             notify_level: None,
             membership_source: None,
@@ -4089,6 +4097,8 @@ mod tests {
             last_activity_at: None,
             last_message_at: None,
             created_at: None,
+            last_human_message_at: None,
+            has_human_message: None,
             members: None,
             notify_level: None,
             membership_source: None,

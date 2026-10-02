@@ -95,7 +95,7 @@ function vaultObjects(raw: unknown): Array<Record<string, unknown>> {
   );
 }
 
-export async function listVaultProjectFiles(
+async function listVaultProjectFiles(
   companyUid: string,
   projectId: string,
   deps: LiveProjectDeps = {},
@@ -176,7 +176,7 @@ export function loadWebVaultFilePreview(
 
 export { parseChannelMembers } from "@hq/ui";
 
-export function parseWorkSessions(raw: unknown): ServerWorkSessionInput[] {
+function parseWorkSessions(raw: unknown): ServerWorkSessionInput[] {
   const body = rec(raw);
   const list = [
     ...(Array.isArray(body?.active) ? body.active : []),
@@ -208,7 +208,7 @@ export function parseWorkSessions(raw: unknown): ServerWorkSessionInput[] {
 }
 
 /** Map a company live-read onto project-scoped session + presence inputs. */
-export function liveInputsForProject(
+function liveInputsForProject(
   liveRaw: unknown,
   projectId: string,
 ): {
