@@ -8,11 +8,13 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Sync reports when another HQ process holds the operation lock, bounds the wait to ten minutes, retries lock timeouts with backoff, and restarts watchers that have not started a pass after thirty minutes.
+
+## [0.10.379] — 2026-10-02
+
 - Closing the main window no longer logs an error.
 
 - When hq-flags enables `desktop.setup-deps-timeout-retry-v1`, a dependency setup timeout gets one automatic retry before setup is marked passed with that step skipped.
-
-- Sync reports when another HQ process holds the operation lock, bounds the wait to ten minutes, retries lock timeouts with backoff, and restarts watchers that have not started a pass after thirty minutes.
 
 
 
