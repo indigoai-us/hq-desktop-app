@@ -176,4 +176,21 @@ describe("NotificationsPopover", () => {
     expect(link?.href).toBe("https://hq.computer/companies/acme/billing?upgrade=1");
     expect(host.querySelector("[data-testid='notification-accept-invite']")).toBeTruthy();
   });
+
+  it("asks the host to close on Escape (QA-021)", async () => {
+    publishNotificationsCache({ items: [], ready: true, loading: false });
+    const api: NotificationsApi = {
+      fetchNotifications: async () => ({ notifications: [], unreadCount: 0, nextCursor: null }),
+      ackNotification: async () => {},
+      readAllNotifications: async () => {},
+      runNotificationAction: async () => ({}),
+    };
+    let closed = 0;
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(NotificationsPopover, { target: host, props: { api, onclose: () => { closed += 1; } } });
+    await tick();
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    expect(closed).toBe(1);
+  });
 });
