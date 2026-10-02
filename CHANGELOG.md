@@ -21,6 +21,8 @@ The release moves it under the version it ships in.
   command. Before this, a failed update could leave sync unable to run until
   the CLI was reinstalled by hand.
 
+- Behind `desktop.first-launch-sync-v1`, a fresh install schedules its first sync after the ready handoff when Auto-sync remains enabled.
+
 ## [0.10.377] — 2026-10-02
 
 - Automatic updates now install after the idle cap even when sync stays busy. HQ pauses new sync cycles and waits up to a minute for active transfers before installing. A meeting recording, transcript processing, or another core update can still delay installation.
