@@ -317,6 +317,12 @@
   import { vaultsFor } from "../files/explorer/vault-model.js";
   import MemberProfilePanel from "../chat/MemberProfilePanel.svelte";
   import AgentDetailPanel from "../chat/AgentDetailPanel.svelte";
+  import {
+    botSetupMatchesRow,
+    botSetupUidFromCardId,
+    botSetupWires,
+    type BotSetupEntry,
+  } from "../chat/create-bot/bot-setup-thread.js";
   import LocalBotDetailPanel from "../chat/LocalBotDetailPanel.svelte";
   import BotSignInBanner from "../chat/BotSignInBanner.svelte";
   import BotRestoreBanner from "../chat/BotRestoreBanner.svelte";
@@ -2280,12 +2286,25 @@
   /** Seconds a fresh bot may take to come online before the card calls it failed. */
   const BOT_PROGRESS_TIMEOUT_MS = 180_000;
   let botProgressByUid = $state<Record<string, BotProgressEntry>>({});
+  /**
+   * The rest of a new bot's setup (access, skills, verify), told by the bot
+   * in the thread the modal lands on. Local rows; see bot-setup-thread.ts.
+   */
+  let botSetupByUid = $state<Record<string, BotSetupEntry>>({});
+  function patchBotSetup(uid: string, patch: Partial<BotSetupEntry>): void {
+    const current = botSetupByUid[uid];
+    if (!current) return;
+    botSetupByUid = { ...botSetupByUid, [uid]: { ...current, ...patch } };
+  }
   function setBotProgress(uid: string, patch: Partial<BotProgressEntry>): void {
     const current = botProgressByUid[uid];
     if (!current) return;
     botProgressByUid = { ...botProgressByUid, [uid]: { ...current, ...patch } };
+    if (patch.state === "online") patchBotSetup(uid, { online: true });
   }
   function clearBotProgress(uid: string): void {
+    // The card goes when the bot is online or has spoken: it is verified.
+    patchBotSetup(uid, { online: true });
     if (!botProgressByUid[uid]) return;
     const next = { ...botProgressByUid };
     delete next[uid];
@@ -2333,6 +2352,21 @@
       lastActivityAt: Date.now(),
       pinned: false,
       personUid: agentUid,
+    };
+    botSetupByUid = {
+      ...botSetupByUid,
+      [agentUid]: {
+        agentUid,
+        name: label,
+        email: null,
+        companySlug: input.companies?.[0] ?? null,
+        companyUid: null,
+        rowId: row.id,
+        channelId: null,
+        createdAt: Date.now(),
+        online: false,
+        access: { state: "pending", level: "read" },
+      },
     };
     handleSelect(row);
     void saveNewBotProfile(agentUid, extras);
@@ -4583,6 +4617,11 @@
       rows =
         setupAgentWires.length > 0 ? [...welcome, ...setupAgentWires] : welcome;
     }
+    const setup = Object.values(botSetupByUid).find((entry) => botSetupMatchesRow(entry, selectedRow));
+    if (setup) {
+      const email = openAgentMember?.personUid === setup.agentUid ? openAgentMember.email : null;
+      rows = [...rows, ...botSetupWires(email ? { ...setup, email } : setup)];
+    }
     return coalesceWorkSessionWires(rows);
   });
 
@@ -6064,6 +6103,23 @@
         // names the profile to write it to.
         console.warn("[hq-desktop] cloud bot title not saved: the create sequence returned no agent uid");
       }
+      if (agentUid) {
+        botSetupByUid = {
+          ...botSetupByUid,
+          [agentUid]: {
+            agentUid,
+            name: draft.name.trim() || "New bot",
+            email: null,
+            companySlug: companies?.find((c) => c.cloudUid === companyUid)?.slug ?? null,
+            companyUid,
+            rowId: null,
+            channelId: result.target.channelId,
+            createdAt: Date.now(),
+            online: false,
+            access: { state: "pending", level: "read" },
+          },
+        };
+      }
       navigateToEntryTarget(result.target, companyUid);
       const signInUrl = claudeSubscriptionSignInUrl(draft, agentUid);
       if (signInUrl) onopenurl?.(signInUrl);
@@ -6149,6 +6205,19 @@
   });
 
   async function handleCardAction(event: LifecycleCardActionEvent): Promise<void> {
+    // A new bot's own setup card lives only in this window: settle it here.
+    const setupUid = botSetupUidFromCardId(event.cardId);
+    if (setupUid) {
+      const entry = botSetupByUid[setupUid];
+      if (!entry) return;
+      patchBotSetup(setupUid, {
+        access:
+          event.actionId === "deny"
+            ? { state: "denied", level: entry.access.level }
+            : { state: "approved", level: event.actionId === "grant_write" ? "write" : "read" },
+      });
+      return;
+    }
     const actionRow = selectedRow;
     oncardaction?.(event);
     if (typeof adapter.messaging.runCardAction !== "function") return;
@@ -8895,7 +8964,8 @@
 
   /**
    * Team page Add agent (US-039): leave the company pane for Messages, keep
-   * the company scope, and open the create modal on the New agent stepper.
+   * the company scope, and open the one New bot modal (the Messages + flow).
+   * Creating lands in the bot's thread, where it asks for the rest.
    */
   function addAgentFromTeam(): void {
     companyPaneOpen = false;
@@ -10842,6 +10912,10 @@
                       owner: self?.displayName ?? null,
                       company: selectedRow.companyUid ? companyDisplayName(selectedRow.companyUid, companyNames) : null,
                       live: openAgentMember.online,
+                      agentUid: openLocalBot.agentUid,
+                      runtimeKind: "local",
+                      companyUid: selectedRow.companyUid,
+                      agents: adapter.agents ?? null,
                       onclose: closeAgentDetail,
                       onmessage: () => messageMemberDirectly(openAgentMember!),
                     }}
@@ -10881,6 +10955,10 @@
                       role: openAgentMember.role,
                       company: selectedRow.companyUid ? companyDisplayName(selectedRow.companyUid, companyNames) : null,
                       live: openAgentMember.online,
+                      agentUid: openAgentMember.personUid,
+                      runtimeKind: "cloud",
+                      companyUid: promotedBotCompany(localBotRecords, openAgentMember.personUid) ?? selectedRow.companyUid,
+                      agents: adapter.agents ?? null,
                       onclose: closeAgentDetail,
                       onmessage: () => messageMemberDirectly(openAgentMember!),
                     }}
