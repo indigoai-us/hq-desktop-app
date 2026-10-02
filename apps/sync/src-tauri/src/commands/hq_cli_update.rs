@@ -109,28 +109,28 @@ pub use hq_desktop_core::hq_cli_update::{
     report_install_failure_episode, report_install_failure_with_environment,
     report_install_failure_with_final_attempt, report_non_convergent_install,
     report_non_convergent_marker_unpersisted, report_npm_cache_setup_failure,
-    report_package_use_lease_timeout,
-    report_registry_serving_lag_marker_unpersisted, report_unreadable_version, resolved_hq_version,
-    should_auto_install, should_report_unreadable_version,
-    should_retry_windows_busy_install_target, suppress_for_dismissal,
-    unattributed_install_stderr_origin, user_prefix_aim_decision, version_from_hq_binary,
-    version_if_hq_cli, windows_busy_cli_version_unchanged, windows_busy_deferral_decision,
-    windows_busy_install_target_retry_delay, windows_busy_install_target_retry_rung,
-    AsyncSingleFlight, DeliveredPrefixShim, ExecutedCopyAim, ExecutedCopyReaim,
-    ExecutedCopyReaimGate, HqCliUpdateInfo, InstallEnvironment, InstallExecutor,
-    InstallFailureEpisode, InstallFailureKind, InterpreterRecovery, LaunchCliCheck,
-    LocalVersionProbeDiagnostics, LocalVersionProbeResult, ManagedRepairDisposition,
-    ManagedRetryOutcome, ManagedRetryStart, ManagedShadowRepairAction, ManagedShadowRepairOutcome,
-    MissingTargetState, NonConvergenceKind, NonConvergentReport, NpmLatest, NpmLockHolderClass,
-    NpmLockHolderDiagnostic, NpmLockHolderQueryOutcome, NpmToolchainSource, PnpmGlobalEnv,
-    PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext,
-    PostInstallCoreEffects, PostInstallOutcome, RequestedSpecKind, RestartManagerHolderObservation,
-    SettingsPathTelemetry, UserPrefixAim, VersionProbeOutcome, WindowsBusyDeferralDecision,
-    WindowsBusyDeferralMarker, WindowsBusyDeferralOutcome, WindowsBusyRetryOutcome,
-    DISMISSED_VERSION_KEY, HQ_CLI_MIN_VERSION, HQ_CLI_PACKAGE, NON_CONVERGENT_CONTRACT_KEY,
-    NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY, NPM_INSTALL_CHILD_ENV,
-    PINNED_MARKER_CONTRACT, REGISTRY_SERVING_LAG_RECURRENCE_GAP_MINUTES, STDERR_ORIGIN_NON_NPM,
-    WINDOWS_BUSY_INSTALL_TARGET_MAX_DEFERRALS, WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES,
+    report_package_use_lease_timeout, report_registry_serving_lag_marker_unpersisted,
+    report_unreadable_version, resolved_hq_version, should_auto_install,
+    should_report_unreadable_version, should_retry_windows_busy_install_target,
+    suppress_for_dismissal, unattributed_install_stderr_origin, user_prefix_aim_decision,
+    version_from_hq_binary, version_if_hq_cli, windows_busy_cli_version_unchanged,
+    windows_busy_deferral_decision, windows_busy_install_target_retry_delay,
+    windows_busy_install_target_retry_rung, AsyncSingleFlight, DeliveredPrefixShim,
+    ExecutedCopyAim, ExecutedCopyReaim, ExecutedCopyReaimGate, HqCliUpdateInfo, InstallEnvironment,
+    InstallExecutor, InstallFailureEpisode, InstallFailureKind, InterpreterRecovery,
+    LaunchCliCheck, LocalVersionProbeDiagnostics, LocalVersionProbeResult,
+    ManagedRepairDisposition, ManagedRetryOutcome, ManagedRetryStart, ManagedShadowRepairAction,
+    ManagedShadowRepairOutcome, MissingTargetState, NonConvergenceKind, NonConvergentReport,
+    NpmLatest, NpmLockHolderClass, NpmLockHolderDiagnostic, NpmLockHolderQueryOutcome,
+    NpmToolchainSource, PnpmGlobalEnv, PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily,
+    PostInstallContext, PostInstallCoreEffects, PostInstallOutcome, RequestedSpecKind,
+    RestartManagerHolderObservation, SettingsPathTelemetry, UserPrefixAim, VersionProbeOutcome,
+    WindowsBusyDeferralDecision, WindowsBusyDeferralMarker, WindowsBusyDeferralOutcome,
+    WindowsBusyRetryOutcome, DISMISSED_VERSION_KEY, HQ_CLI_MIN_VERSION, HQ_CLI_PACKAGE,
+    NON_CONVERGENT_CONTRACT_KEY, NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY,
+    NPM_INSTALL_CHILD_ENV, PINNED_MARKER_CONTRACT, REGISTRY_SERVING_LAG_RECURRENCE_GAP_MINUTES,
+    STDERR_ORIGIN_NON_NPM, WINDOWS_BUSY_INSTALL_TARGET_MAX_DEFERRALS,
+    WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES,
 };
 
 // The settings-PATH repair (HQ-DESKTOP-46) runs only on unix — Windows PATH is
@@ -1500,8 +1500,7 @@ async fn acquire_cli_package_update_lease(
     let remaining = remaining_cli_package_use_lease_budget(started.elapsed());
     let package_guard = match request.wait(remaining).await {
         Err(error)
-            if error
-                == hq_desktop_core::package_use_lease::PACKAGE_USE_LEASE_TIMEOUT_ERROR =>
+            if error == hq_desktop_core::package_use_lease::PACKAGE_USE_LEASE_TIMEOUT_ERROR =>
         {
             report_package_use_lease_timeout();
             return Err(error);
@@ -2947,7 +2946,7 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
             prefix.as_deref(),
             install_run.windows_busy_retry_attempts,
             install_run.windows_busy_retry_outcome,
-            install_run.lock_holder_diagnostic,
+            install_run.lock_holder_diagnostic.clone(),
         )
         .await
         {
@@ -4941,6 +4940,15 @@ mod tests {
         );
     }
 
+    // Every test that reaches run_npm_install_with_retries closes the
+    // process-global desktop admission gate (close_cli_process_admission_for_update)
+    // while it holds the CLI package lease. Two of them running at once would
+    // see the gate already closed and fail with "another desktop update is
+    // already quiescing HQ processes", so they take this lock first.
+    #[cfg(unix)]
+    static CLI_PROCESS_ADMISSION_TEST_LOCK: tokio::sync::Mutex<()> =
+        tokio::sync::Mutex::const_new(());
+
     // Serialize HOME mutation against every other test that reads or writes
     // the process-global HOME (launch.rs reveal-target tests, telemetry) by
     // sharing the crate-wide env mutex — a private lock here does not stop a
@@ -5650,6 +5658,7 @@ console.log('ready'); setInterval(() => {}, 1000);
     #[cfg(unix)]
     #[tokio::test]
     async fn failed_npm_install_restores_the_previous_cli_package_and_shim() {
+        let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
         use std::fs;
         use std::os::unix::fs::{symlink, PermissionsExt};
 
@@ -5713,11 +5722,12 @@ exit 1
             !package.join("dist/index.js").exists(),
             "partial package was removed"
         );
-}
+    }
 
     #[cfg(unix)]
     #[tokio::test]
     async fn cli_package_update_waits_for_shared_cli_lease_before_starting_npm() {
+        let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
@@ -5775,6 +5785,7 @@ exit 1
     #[cfg(unix)]
     #[tokio::test]
     async fn cli_package_lease_timeout_is_actionable_and_does_not_start_npm() {
+        let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
@@ -5829,6 +5840,7 @@ exit 1
     #[cfg(unix)]
     #[tokio::test]
     async fn app_owned_cache_reaches_every_install_retry_attempt() {
+        let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
@@ -5914,6 +5926,7 @@ exit 0
     #[cfg(unix)]
     #[tokio::test]
     async fn etarget_retries_once_with_prefer_online() {
+        let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
@@ -5975,6 +5988,7 @@ exit 0
     #[cfg(unix)]
     #[tokio::test]
     async fn repeated_etarget_uses_public_registry_once_after_prefer_online() {
+        let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
@@ -6046,6 +6060,7 @@ exit 0
     #[cfg(unix)]
     #[tokio::test]
     async fn prefer_online_output_uses_existing_bin_collision_recovery() {
+        let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
@@ -6120,6 +6135,7 @@ exit 2
     #[cfg(unix)]
     #[tokio::test]
     async fn public_registry_output_uses_existing_bin_collision_recovery() {
+        let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
@@ -6200,6 +6216,7 @@ exit 2
     #[cfg(unix)]
     #[tokio::test]
     async fn unrelated_npm_failure_does_not_trigger_etarget_retries() {
+        let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
@@ -6247,6 +6264,7 @@ exit 1
     #[cfg(unix)]
     #[tokio::test]
     async fn prefix_less_enotempty_cleans_the_npm_reported_scope_and_recovers() {
+        let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
         // HQ-DESKTOP-5B: on a machine whose `hq` is bare or non-npm-shaped the
         // updater resolves NO prefix (npm_prefix_known=false in 61/61 events), so
         // the pre-fix ENOTEMPTY rung took its else arm and left the wedge in place
@@ -6352,6 +6370,7 @@ exit 0
     #[cfg(unix)]
     #[tokio::test]
     async fn bounded_retry_ladder_rearms_force_only_after_cleanup() {
+        let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
@@ -6423,6 +6442,7 @@ exit 0
     #[cfg(unix)]
     #[tokio::test]
     async fn second_shim_eexist_arms_one_force_retry_and_stays_a_warning() {
+        let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
         // HQ-DESKTOP-4Y: the collision npm reported was on the package's SECOND
         // declared shim, `hq-auth-refresh`. It must arm the SAME single `--force`
         // rung the `hq` collision uses — one retry, still within the hard cap,
@@ -6506,6 +6526,7 @@ exit 0
     #[cfg(unix)]
     #[tokio::test]
     async fn eexist_after_windows_backoff_is_not_silently_forced_or_suppressed() {
+        let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
@@ -6608,6 +6629,7 @@ exit 0
     #[cfg(unix)]
     #[tokio::test]
     async fn app_owned_cache_avoids_a_read_only_home_npm_cache() {
+        let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
