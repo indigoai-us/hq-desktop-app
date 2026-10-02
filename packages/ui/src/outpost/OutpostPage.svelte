@@ -321,7 +321,7 @@
 </div>
 
 <style>
-  .page { display: grid; grid-template-columns: 220px minmax(0, 1fr); height: 100%; min-height: 0; color: var(--v4-text-1); background: var(--v4-ground); font-family: var(--font-sans); position: relative; }
+  .page { display: grid; grid-template-columns: 260px minmax(0, 1fr); height: 100%; min-height: 0; color: var(--v4-text-1); background: var(--v4-ground); font-family: var(--font-sans); position: relative; }
   .pane { border-right: 1px solid var(--v4-hairline); padding: 12px; }
   .pane-head, h1 { font-size: 15px; font-weight: 600; }
   nav { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; }

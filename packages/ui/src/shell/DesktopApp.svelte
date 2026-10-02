@@ -41,6 +41,8 @@
   import {
     brainPageDoor,
     filesConnectDoor,
+    meetingCanvasDoor,
+    meetingsSidepaneDoor,
     moreCompaniesDoor,
     newCompanyDoor,
     notificationsPopoverDoor,
@@ -330,8 +332,6 @@
   import type { AvatarPack, AvatarSelection } from "../avatars/types.js";
   import ProjectAboutDialog from "../chat/ProjectAboutDialog.svelte";
   import MeetingsPage from "../meetings/MeetingsPage.svelte";
-  import MeetingsSidepaneHost from "../meetings/MeetingsSidepaneHost.svelte";
-  import MeetingCanvasHost from "../meetings/MeetingCanvasHost.svelte";
   import {
     configureMeetingsApi,
     prefetchMeetings,
@@ -8465,6 +8465,18 @@
         companyPagePlaceholderForPage(extraPageId))
       : null,
   );
+  // Personal rail pages and account pages bring their own 260 px nav, which
+  // replaces the Messages list instead of stacking beside it.
+  const personalPageOwnsSidepane = $derived(
+    view === "extra" &&
+      (extraPageId === "rail-library" ||
+        extraPageId === "rail-deployments" ||
+        accountPlaceholderForPage(extraPageId) != null ||
+        railPlaceholder?.id === "telemetry" ||
+        railPlaceholder?.id === "secrets" ||
+        railPlaceholder?.id === "connections" ||
+        railPlaceholder?.id === "outpost"),
+  );
   const accountRoles = $derived(
     accountRoleRows(
       railCompanyRoster.map((company) => ({
@@ -9206,6 +9218,20 @@
   });
 </script>
 
+{#snippet meetingsAgenda()}
+  <MeetingsPage
+    {adapter}
+    accountId={tenantAccountId}
+    storage={tenantStorage}
+    sessionGeneration={tenantGeneration}
+    onback={() => {
+      void leaveCurrentDestination();
+    }}
+    openExternal={onopenurl}
+    focusRequest={meetingFocusRequest}
+  />
+{/snippet}
+
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- `data-shell-focus-fallback` + tabindex="-1": stable focus destination for
@@ -9573,11 +9599,21 @@
             rosterLoading={!directorySettled}
           />
         {:else if view === "meetings"}
-          <!-- US-021: Meetings owns the sidepane while it is the destination. -->
-          <MeetingsSidepaneHost memory={sidepaneScrollMemory} />
+          <!-- US-021: Meetings owns the shared 260 px sidepane while it is the
+               destination. The host body loads behind a door; the skeleton
+               paints the click frame. -->
+          <LazyDoor door={meetingsSidepaneDoor} props={{ memory: sidepaneScrollMemory }}>
+            {#snippet skeleton()}
+              <Sidepane modelKey="meetings" memory={sidepaneScrollMemory} label="Meetings">
+                <div class="meetings-door-skeleton" data-testid="meetings-sidepane-door-skeleton" aria-busy="true">
+                  <span></span><span></span><span></span>
+                </div>
+              </Sidepane>
+            {/snippet}
+          </LazyDoor>
         {/if}
         <!-- Chat stays mounted under the company pane: it owns roster loading. -->
-        <div class="chat-pane-slot" style:display={companyPaneCompany || view === "meetings" || extraPageId === "rail-library" || extraPageId === "rail-deployments" ? "none" : "contents"}>
+        <div class="chat-pane-slot" style:display={companyPaneCompany || view === "meetings" || personalPageOwnsSidepane ? "none" : "contents"}>
         <Sidepane
           modelKey={sidepaneModelKey({ tenantCompanyId })}
           scrollSelector=".chat-scroll"
@@ -9913,21 +9949,24 @@
             onresolved={handleDmRequestResolved}
           />
         {:else if view === "meetings"}
-          <MeetingCanvasHost openExternal={onopenurl} focusMeetingId={meetingFocusRequest?.meetingId ?? null}>
-            {#snippet agenda()}
-              <MeetingsPage
-                {adapter}
-                accountId={tenantAccountId}
-                storage={tenantStorage}
-                sessionGeneration={tenantGeneration}
-                onback={() => {
-                  void leaveCurrentDestination();
-                }}
-                openExternal={onopenurl}
-                focusRequest={meetingFocusRequest}
-              />
+          <!-- US-021/US-022: the canvas for the selected meeting. The classic
+               agenda (MeetingsPage) stays mounted under it and shows only from
+               More or Earlier. -->
+          <LazyDoor
+            door={meetingCanvasDoor}
+            props={{
+              agenda: meetingsAgenda,
+              openExternal: onopenurl,
+              focusMeetingId: meetingFocusRequest?.meetingId ?? null,
+            }}
+          >
+            {#snippet skeleton()}
+              <div class="meetings-door-skeleton canvas" data-testid="meetings-canvas-door-skeleton" aria-busy="true">
+                <span></span><span></span><span></span>
+              </div>
+              <div style:display="none">{@render meetingsAgenda()}</div>
             {/snippet}
-          </MeetingCanvasHost>
+          </LazyDoor>
         {:else if view === "conversation" && selectedRow}
           <header
             class="channel-header chat-shell"
@@ -11145,6 +11184,31 @@
     min-width: 0;
     min-height: 0;
     overflow: hidden;
+  }
+
+  .meetings-door-skeleton {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 16px 12px;
+  }
+
+  .meetings-door-skeleton.canvas {
+    padding: 24px;
+  }
+
+  .meetings-door-skeleton span {
+    height: 12px;
+    border-radius: 6px;
+    background: var(--v4-control-bg);
+  }
+
+  .meetings-door-skeleton span:nth-child(2) {
+    width: 70%;
+  }
+
+  .meetings-door-skeleton span:nth-child(3) {
+    width: 45%;
   }
 
   .rail-placeholder {

@@ -190,6 +190,28 @@ describe("DesktopApp app rail (console-rail US-003)", () => {
     expect(current()).toBe("telemetry");
   });
 
+  it("shows one sidepane: personal pages and Meetings replace the Messages list", async () => {
+    await mountShell();
+    const chatSlot = () => host.querySelector<HTMLElement>(".chat-pane-slot");
+    expect(chatSlot()?.style.display).toBe("contents");
+    for (const id of ["rail-telemetry", "rail-secrets", "rail-connections", "rail-outpost"]) {
+      click(id);
+      await settle();
+      expect(chatSlot()?.style.display, id).toBe("none");
+    }
+    click("rail-meetings");
+    await settle();
+    expect(chatSlot()?.style.display).toBe("none");
+    // The Meetings sidepane lives in the shared Sidepane host, and the
+    // classic agenda stays mounted under the canvas.
+    const pane = host.querySelector('[aria-label="Meetings"]');
+    expect(pane).not.toBeNull();
+    expect(host.querySelector('[data-testid="meetings-dek"]')).not.toBeNull();
+    click("rail-home");
+    await settle();
+    expect(chatSlot()?.style.display).toBe("contents");
+  });
+
   it("maps Cmd+1 to Cmd+9 to rail items in order", async () => {
     await mountShell();
     const press = async (key: string) => {

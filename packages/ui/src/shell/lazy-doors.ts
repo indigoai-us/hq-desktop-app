@@ -63,6 +63,12 @@ export const filesConnectDoor = door(
 export const newCompanyDoor = door(
   () => import("./new-company/NewCompanySheet.svelte"),
 );
+export const meetingsSidepaneDoor = door(
+  () => import("../meetings/MeetingsSidepaneHost.svelte"),
+);
+export const meetingCanvasDoor = door(
+  () => import("../meetings/MeetingCanvasHost.svelte"),
+);
 
 /** Warm every door once the first frame is up, so later clicks skip the skeleton. */
 export function preloadDoorsWhenIdle(): void {
@@ -75,6 +81,8 @@ export function preloadDoorsWhenIdle(): void {
     brainPageDoor,
     filesConnectDoor,
     newCompanyDoor,
+    meetingsSidepaneDoor,
+    meetingCanvasDoor,
   ];
   const run = () => all.forEach((d) => d.preload());
   if (typeof requestIdleCallback === "function") {

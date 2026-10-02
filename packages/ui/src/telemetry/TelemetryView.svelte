@@ -482,7 +482,7 @@
     font-family: var(--font-sans, Geist, sans-serif);
     background: var(--v4-ground, transparent);
   }
-  .pane { width: 240px; flex: none; display: flex; flex-direction: column; border-right: 1px solid var(--v4-rowline); }
+  .pane { width: 260px; flex: none; display: flex; flex-direction: column; border-right: 1px solid var(--v4-rowline); }
   .pane-head { padding: 14px 12px 8px; font-weight: 600; }
   .pane-list { overflow: auto; padding: 0 8px 12px; }
   .row, .tab, .btn, .lnk { font: inherit; color: inherit; background: transparent; border: 0; }

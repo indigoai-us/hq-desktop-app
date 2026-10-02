@@ -40,7 +40,7 @@
   .host { height: 100%; min-height: 0; }
   .skeleton {
     display: grid;
-    grid-template-columns: 220px minmax(0, 1fr);
+    grid-template-columns: 260px minmax(0, 1fr);
     height: 100%;
     gap: 16px;
     padding: 16px;

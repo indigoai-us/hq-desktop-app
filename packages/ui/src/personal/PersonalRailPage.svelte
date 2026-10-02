@@ -331,7 +331,7 @@
 </section>
 
 <style>
-  .page { display: grid; grid-template-columns: 220px minmax(0, 1fr); height: 100%; min-height: 0; color: var(--v4-text-1); background: var(--v4-ground); position: relative; }
+  .page { display: grid; grid-template-columns: 260px minmax(0, 1fr); height: 100%; min-height: 0; color: var(--v4-text-1); background: var(--v4-ground); position: relative; }
   .pane { border-right: 1px solid var(--v4-rowline); padding: 12px; overflow: auto; background: var(--v4-secondary-sidebar); }
   .pane-head, h1 { font-size: var(--type-section, 17px); font-weight: 600; margin: 0; }
   .nav, .tab, .btn { background: transparent; color: var(--v4-text-2); border: 0; border-radius: 6px; padding: 6px 8px; text-align: left; }
