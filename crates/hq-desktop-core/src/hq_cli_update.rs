@@ -4312,6 +4312,18 @@ fn npm_path_shape(detail: &str, prefix: Option<&str>) -> NpmPathShape {
     }
 }
 
+/// Select a bounded set of regular files for a Windows Restart Manager query.
+/// `is_file` is supplied by the filesystem caller so selection stays pure and testable.
+pub fn select_rm_file_resources(
+    candidates: impl IntoIterator<Item = (std::path::PathBuf, bool)>,
+) -> Vec<std::path::PathBuf> {
+    candidates
+        .into_iter()
+        .filter_map(|(path, is_file)| is_file.then_some(path))
+        .take(32)
+        .collect()
+}
+
 /// Extract npm's reported rename resources and their in-prefix parents for a
 /// Windows Restart Manager query. Returned paths stay in process memory and
 /// must never cross the telemetry boundary.
@@ -4372,6 +4384,30 @@ pub fn npm_reported_target_resources(prefix: &str, npm_detail: &str) -> Vec<std:
 #[cfg(test)]
 mod npm_reported_target_resources_tests {
     use super::npm_reported_target_resources;
+
+    #[test]
+    fn rm_resource_selection_excludes_directories() {
+        let candidates = [
+            (std::path::PathBuf::from(r"C:\npm\target"), false),
+            (std::path::PathBuf::from(r"C:\npm\target\file.js"), true),
+        ];
+        let selected = super::select_rm_file_resources(candidates);
+
+        assert_eq!(selected, [std::path::PathBuf::from(r"C:\npm\target\file.js")]);
+    }
+
+    #[test]
+    fn rm_resource_selection_caps_registered_files_at_32() {
+        let candidates = (0..40).map(|index| {
+            (
+                std::path::PathBuf::from(format!(r"C:\npm\node_modules\pkg\file-{index}.js")),
+                true,
+            )
+        });
+        let selected = super::select_rm_file_resources(candidates);
+
+        assert_eq!(selected.len(), 32);
+    }
 
     #[test]
     fn busy_query_registers_npm_rename_targets_and_each_parent_inside_the_prefix() {

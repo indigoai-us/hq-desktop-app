@@ -439,14 +439,40 @@ fn process_start_time_ms(pid: u32) -> Option<u64> {
         .find_map(|line| line.strip_prefix("btime "))?
         .parse::<u64>()
         .ok()?;
+    // `btime` is only whole-second precision; uptime plus the current wall clock
+    // recovers the sub-second boot epoch needed to compare against Node's origin.
+    let uptime = fs::read_to_string("/proc/uptime")
+        .ok()?
+        .split_whitespace()
+        .next()?
+        .parse::<f64>()
+        .ok()?;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis() as u64;
+    let boot_epoch_ms = linux_boot_epoch_ms(boot, uptime, now_ms)?;
     let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
     if hz <= 0 {
         return None;
     }
     Some(
-        boot.saturating_mul(1000)
-            .saturating_add(ticks.saturating_mul(1000) / hz as u64),
+        boot_epoch_ms.saturating_add(ticks.saturating_mul(1000) / hz as u64),
     )
+}
+
+#[cfg(target_os = "linux")]
+fn linux_boot_epoch_ms(btime_seconds: u64, uptime_seconds: f64, now_ms: u64) -> Option<u64> {
+    if !uptime_seconds.is_finite() || uptime_seconds < 0.0 {
+        return None;
+    }
+    let uptime_ms = (uptime_seconds * 1000.0).round() as u64;
+    let precise_boot_epoch_ms = now_ms.saturating_sub(uptime_ms);
+    let coarse_boot_epoch_ms = btime_seconds.saturating_mul(1000);
+    if precise_boot_epoch_ms.abs_diff(coarse_boot_epoch_ms) > 1000 {
+        return Some(coarse_boot_epoch_ms);
+    }
+    Some(precise_boot_epoch_ms)
 }
 
 #[cfg(target_os = "macos")]
@@ -591,6 +617,23 @@ mod tests {
         let mut request = PackageUseUpdateRequest::begin_at(paths).unwrap();
         assert!(request.try_acquire().unwrap().is_some());
         assert!(!file.exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_live_lease_with_900ms_btime_precision_gap_is_not_stale() {
+        let btime_seconds = 1_700_000_000;
+        let uptime_seconds = 1_000.0;
+        let now_ms = 1_700_001_000_900;
+        let recorded_origin_ms = now_ms - (uptime_seconds * 1000.0) as u64;
+        let boot_epoch_ms = linux_boot_epoch_ms(btime_seconds, uptime_seconds, now_ms).unwrap();
+        let start_ticks = 123_456;
+        let hz = 100u64;
+        let computed_start_ms = boot_epoch_ms + start_ticks * 1000 / hz;
+        let recorded_start_ms = recorded_origin_ms + start_ticks * 1000 / hz;
+
+        assert_eq!(recorded_origin_ms.abs_diff(btime_seconds * 1000), 900);
+        assert!(same_process_start(computed_start_ms, recorded_start_ms));
     }
 
     #[test]

@@ -2578,7 +2578,16 @@ pub fn query_hq_cli_package_roots_with_resources(
     use windows::Win32::System::RestartManager::CCH_RM_SESSION_KEY;
 
     let mut files = hq_cli_package_files_for_roots(package_roots);
-    files.extend(explicit_resources.iter().take(32).cloned());
+    let explicit_files = hq_desktop_core::hq_cli_update::select_rm_file_resources(
+        explicit_resources
+            .iter()
+            .cloned()
+            .map(|path| {
+                let is_file = std::fs::metadata(&path).is_ok_and(|metadata| metadata.is_file());
+                (path, is_file)
+            }),
+    );
+    files.extend(explicit_files);
     files.sort();
     files.dedup();
     if files.is_empty() {
