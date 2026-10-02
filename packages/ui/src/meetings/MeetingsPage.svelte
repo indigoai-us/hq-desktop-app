@@ -1091,7 +1091,7 @@
   .subtitle {
     margin: 0;
     color: var(--t3, var(--v4-text-3));
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 400;
     line-height: 1.45;
   }
@@ -1102,19 +1102,27 @@
     gap: 8px;
     margin-top: 2px;
     color: var(--v4-text-2);
-    font-size: var(--type-secondary, 11px);
+    font-size: var(--type-secondary, 13px);
     line-height: 16px;
   }
+  /* Status is a 6px dot plus text, not a bordered pill. */
   .error-pill {
     display: inline-flex;
     align-items: center;
-    padding: 1px 7px;
-    border: 1px solid var(--v4-control-border);
-    border-radius: var(--v4-radius-pill);
+    gap: 6px;
+    padding: 0;
+    border: 0;
     color: var(--v4-error);
-    font-size: var(--type-metadata, 10px);
-    font-weight: 600;
+    font-size: var(--type-metadata, 13px);
+    font-weight: 500;
     white-space: nowrap;
+  }
+  .error-pill::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
   }
   .error-copy {
     min-width: 0;
@@ -1126,7 +1134,7 @@
     background: transparent;
     color: var(--v4-text-1);
     font: inherit;
-    font-size: var(--type-secondary, 11px);
+    font-size: var(--type-secondary, 13px);
     line-height: 16px;
     text-decoration: underline;
     cursor: pointer;
@@ -1164,7 +1172,7 @@
     border-radius: 0;
     background: transparent;
     color: var(--v4-text-2);
-    font-size: var(--type-body, 12px);
+    font-size: var(--type-body, 13px);
     line-height: 18px;
   }
 
@@ -1210,13 +1218,13 @@
 
   .detect-title {
     color: var(--v4-text-1);
-    font-size: var(--type-body, 12px);
+    font-size: var(--type-body, 13px);
     line-height: 18px;
   }
 
   .detect-meta {
     color: var(--v4-text-2);
-    font-size: var(--type-body, 12px);
+    font-size: var(--type-body, 13px);
     line-height: 18px;
   }
 
@@ -1233,7 +1241,7 @@
     font: inherit;
     /* Match the app-standard 12px control size — the meetings --type-body
        token is 15px, which made these header buttons visibly oversized. */
-    font-size: 12px;
+    font-size: 13px;
     white-space: nowrap;
     cursor: pointer;
     transition:
@@ -1325,7 +1333,7 @@
     background: transparent;
     color: var(--t1, var(--v4-text-1));
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
     line-height: 18px;
   }
   .url-input::placeholder {
@@ -1399,8 +1407,8 @@
     padding-right: 10px;
     border-right: 1px solid var(--v4-rowline);
     color: var(--v4-text-1);
-    font-family: var(--font-mono);
-    font-size: var(--type-metadata, 10px);
+    font-variant-numeric: tabular-nums;
+    font-size: var(--type-metadata, 13px);
     white-space: nowrap;
   }
   .next-copy {
@@ -1411,8 +1419,8 @@
   .next-title {
     overflow: hidden;
     color: var(--v4-text-1);
-    font-size: var(--type-body, 12px);
-    font-weight: 600;
+    font-size: var(--type-body, 13px);
+    font-weight: 500;
     line-height: 16px;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1420,7 +1428,7 @@
   .next-meta {
     overflow: hidden;
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, 10px);
+    font-size: var(--type-metadata, 13px);
     line-height: 14px;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1447,14 +1455,12 @@
   }
   .health-label {
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, 10px);
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
+    font-size: var(--type-metadata, 13px);
+    font-weight: 500;
   }
   .health-value {
     color: var(--v4-text-2);
-    font-size: var(--type-secondary, 11px);
+    font-size: var(--type-secondary, 13px);
     line-height: 15px;
   }
   .health-value.health-error,
@@ -1465,7 +1471,7 @@
     display: block;
     margin-top: 1px;
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, 10px);
+    font-size: var(--type-metadata, 13px);
   }
 
   /* Secondary sections — naked, hairline only (no rounded outer cards). */
@@ -1491,27 +1497,25 @@
   .section-head h3 {
     margin: 0;
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, 10px);
-    font-weight: 600;
-    letter-spacing: 0.06em;
+    font-size: var(--type-metadata, 13px);
+    font-weight: 500;
     line-height: 14px;
-    text-transform: uppercase;
   }
   .section-head > span {
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, 10px);
+    font-size: var(--type-metadata, 13px);
     line-height: 14px;
   }
   .section-error {
     margin: 8px 0 0;
     color: var(--v4-error);
-    font-size: var(--type-secondary, 11px);
+    font-size: var(--type-secondary, 13px);
     line-height: 16px;
   }
   .section-empty {
     padding: 12px 0;
     color: var(--v4-text-3);
-    font-size: var(--type-body, 12px);
+    font-size: var(--type-body, 13px);
     line-height: 18px;
   }
   /* US-010: first-load skeleton — quiet muted bars, no motion needed. */
@@ -1521,7 +1525,7 @@
   .loading-label {
     margin: 0 0 10px;
     color: var(--v4-text-3);
-    font-size: var(--type-body, 12px);
+    font-size: var(--type-body, 13px);
     line-height: 18px;
   }
   .skeleton-rows {
@@ -1558,14 +1562,14 @@
   .ce-title {
     margin: 0;
     color: var(--v4-text-1);
-    font-size: var(--type-body, 12px);
-    font-weight: 600;
+    font-size: var(--type-body, 13px);
+    font-weight: 500;
     line-height: 18px;
   }
   .ce-copy {
     margin: 0;
     color: var(--v4-text-3);
-    font-size: var(--type-body, 12px);
+    font-size: var(--type-body, 13px);
     line-height: 18px;
     max-width: 420px;
   }
@@ -1577,14 +1581,14 @@
   }
   .na-title {
     color: var(--v4-text-1);
-    font-size: var(--type-body, 12px);
-    font-weight: 600;
+    font-size: var(--type-body, 13px);
+    font-weight: 500;
     line-height: 18px;
   }
   .na-copy {
     margin: 0;
     color: var(--v4-text-3);
-    font-size: var(--type-secondary, 11px);
+    font-size: var(--type-secondary, 13px);
     line-height: 16px;
   }
 
@@ -1610,7 +1614,7 @@
   }
   .disconnect-btn {
     padding: 3px 8px;
-    font-size: var(--type-metadata, 10px);
+    font-size: var(--type-metadata, 13px);
   }
   .sync-source:last-child {
     border-bottom: none;
@@ -1637,8 +1641,8 @@
     display: block;
     overflow: hidden;
     color: var(--v4-text-1);
-    font-size: var(--type-body, 12px);
-    font-weight: 600;
+    font-size: var(--type-body, 13px);
+    font-weight: 500;
     line-height: 16px;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1647,7 +1651,7 @@
     display: block;
     overflow: hidden;
     color: var(--v4-text-3);
-    font-size: var(--type-secondary, 11px);
+    font-size: var(--type-secondary, 13px);
     line-height: 14px;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1655,12 +1659,11 @@
   .status-pill {
     max-width: 110px;
     overflow: hidden;
-    padding: 2px 8px;
-    border: 1px solid var(--v4-control-border);
-    border-radius: var(--v4-radius-pill);
+    padding: 0;
+    border: 0;
     color: var(--v4-text-2);
-    font-size: var(--type-metadata, 10px);
-    font-weight: 600;
+    font-size: var(--type-metadata, 13px);
+    font-weight: 400;
     line-height: 14px;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1682,7 +1685,7 @@
   .what {
     overflow: hidden;
     color: var(--v4-text-1);
-    font-size: var(--type-body, 12px);
+    font-size: var(--type-body, 13px);
     line-height: 16px;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1690,7 +1693,7 @@
   .who {
     overflow: hidden;
     color: var(--v4-text-3);
-    font-size: var(--type-secondary, 11px);
+    font-size: var(--type-secondary, 13px);
     line-height: 14px;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1720,7 +1723,7 @@
     background: transparent;
     color: var(--t2, var(--v4-text-3));
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 500;
     line-height: 17.4px;
     white-space: nowrap;
@@ -1747,11 +1750,9 @@
   .footer-meta {
     min-width: 0;
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, 10px);
+    font-size: var(--type-metadata, 13px);
     font-weight: 500;
-    letter-spacing: 0.06em;
     line-height: 14px;
-    text-transform: uppercase;
   }
   .footer-manage {
     flex: 0 0 auto;
@@ -1762,7 +1763,7 @@
     background: transparent;
     color: var(--t2, var(--v4-text-2));
     font: inherit;
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 500;
     letter-spacing: 0;
     line-height: 14px;
