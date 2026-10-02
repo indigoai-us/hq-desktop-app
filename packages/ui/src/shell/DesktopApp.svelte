@@ -108,6 +108,13 @@
     type ConversationConnectionCards,
     type ToolConnection,
   } from "../chat/messaging/connection-card-model.js";
+  import { connectionCardArt } from "../chat/messaging/connection-card-art.js";
+  import {
+    cardModalContentFor,
+    cardModalTargets,
+    type CardModalContent,
+    type CardModalContentProps,
+  } from "../chat/messaging/card-modal-registry.js";
   import { SETUP_FAILURE_COPY } from "../chat/setup-run";
   import type { SetupRunApi } from "../chat/setup-run.js";
   import { SetupAgent, SETUP_AGENT_NAME, SETUP_AGENT_UID } from "../chat/setup-agent.svelte";
@@ -4656,6 +4663,33 @@
     };
   }
 
+  // ── The modal a connection card opens ───────────────────────────────
+  //
+  // A card's main button can open a modal instead of a page in the browser
+  // (CARD_MODAL_TARGETS in connection-card-model.ts). This is the one place
+  // that knows which card modal is open. What it shows comes from
+  // card-modal-registry.ts; the modal itself draws at the shell, over
+  // everything in the window.
+
+  /** The cards that open a modal in this build: marked in the model, with content registered. */
+  const cardModalTargetsHere = cardModalTargets();
+  /** The card modal that is open: one at a time, and it belongs to one bot's conversation. */
+  let openCardModal = $state<{ agentUid: string; target: ConnectTarget } | null>(null);
+  /** A card's main button asked for its modal. A card with no content opens nothing. */
+  function openConnectionModal(agentUid: string, target: ConnectTarget): void {
+    if (!cardModalContentFor(target)) return;
+    openCardModal = { agentUid, target };
+  }
+  function closeConnectionModal(): void {
+    openCardModal = null;
+  }
+  // Leaving the bot's conversation closes its modal.
+  $effect(() => {
+    const modal = openCardModal;
+    if (!modal) return;
+    if (view !== "conversation" || dmCloudBotUid !== modal.agentUid) untrack(closeConnectionModal);
+  });
+
   /** Everything the open bot's cards are worked out from. */
   const cloudBotCardInput = $derived.by(() => {
     const uid = dmCloudBotUid;
@@ -4672,6 +4706,7 @@
       tools: facts?.connections != null ? toolFacts(facts.connections, record) : null,
       now: connectionClock,
       inFlight: connectionInFlight[uid] ?? null,
+      modalTargets: cardModalTargetsHere,
       notes: {
         slack:
           pressed.slack ??
@@ -4700,6 +4735,45 @@
       },
       onaction: (detail) => handleConnectionAction(input.uid, detail),
     };
+  });
+  /** The open card modal's content and what it is handed, or null. */
+  const cardModalView = $derived.by((): { key: string; Content: CardModalContent; props: CardModalContentProps } | null => {
+    const modal = openCardModal;
+    const input = cloudBotCardInput;
+    if (!modal || !input || input.uid !== modal.agentUid) return null;
+    const Content = cardModalContentFor(modal.target);
+    if (!Content) return null;
+    const { agentUid, target } = modal;
+    const art = connectionCardArt(target);
+    const rowCompanyUid = selectedRow?.companyUid?.trim() || null;
+    return {
+      key: `${agentUid}:${target}`,
+      Content,
+      props: {
+        frame: {
+          open: true,
+          title: connectionCardView(target, input).title,
+          icon: target,
+          art: art.url,
+          artPosition: art.position,
+          onclose: closeConnectionModal,
+        },
+        agentUid,
+        target,
+        botName: input.botName,
+        companyUid: botConnectionFacts[agentUid]?.companyUid ?? rowCompanyUid,
+        adapter,
+        openUrl: openConnectionUrl,
+        refresh: () => refreshBotConnectionFacts(agentUid, rowCompanyUid),
+      },
+    };
+  });
+  // What the content was last handed. A content component can read its props
+  // while it is being taken down, after the modal has closed here.
+  // Held on purpose outside the reactive state: nothing redraws from it.
+  const cardModalHeld: { props: CardModalContentProps | null } = { props: null };
+  $effect.pre(() => {
+    if (cardModalView) cardModalHeld.props = cardModalView.props;
   });
   const cloudBotConnecting = $derived.by(() => {
     const input = cloudBotCardInput;
@@ -4911,6 +4985,8 @@
         setBotConnectionRecord(agentUid, markDeclined(connectionRecords[agentUid], detail.target, Date.now()));
       } else if (detail.action === "connect") {
         connectFromCard(agentUid, detail.target);
+      } else if (detail.action === "open") {
+        openConnectionModal(agentUid, detail.target);
       } else if (detail.target === "tools" && detail.connectionId) {
         await allowBotConnection(agentUid, detail.connectionId);
       }
@@ -10847,6 +10923,14 @@
 
   {#if cheatSheetOpen}
     <ShortcutCheatSheet onclose={() => (cheatSheetOpen = false)} />
+  {/if}
+
+  <!-- The modal a connection card opened. Mounted here, not in the message,
+       so it draws over the whole window. -->
+  {#if cardModalView}
+    {#key cardModalView.key}
+      <cardModalView.Content {...(cardModalView?.props ?? cardModalHeld.props!)} />
+    {/key}
   {/if}
 
   {#if attachTray}

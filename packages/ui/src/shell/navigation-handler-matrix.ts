@@ -124,6 +124,10 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   // browser or changes the card's state. The shell stays in the conversation.
   handleConnectionAction: "none",
   openConnectionUrl: "none",
+  // The modal a connection card opens: a dialog over the conversation. The
+  // shell stays where it is.
+  openConnectionModal: "none",
+  closeConnectionModal: "none",
   // #welcome / Home setup card → the setup bot's DM (handleSelect).
   openSetupBotDm: "push",
   applyChannelWake: "none",
