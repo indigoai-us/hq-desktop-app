@@ -426,7 +426,8 @@
     transition: transform 300ms ease;
   }
   /* Green is reserved for live work; a finished bar reads in full text. */
-  .progress-fill[data-status="live"],
+  /* Only a real live run paints the bar green; a "live" PRD status without a
+     live session is not live work. */
   .progress-fill.live-run-fill {
     background: var(--v4-ok);
   }
