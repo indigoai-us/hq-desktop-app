@@ -481,52 +481,59 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
                 }
             }
         }
+        Err(error) if before.is_none() && (!error.requires_reauth || first_token_read_failed) => {
+            let status = cognito::classify_startup_refresh_failure(
+                false,
+                first_token_read_failed,
+                error.requires_reauth,
+                false,
+            );
+            let reason = if first_token_read_failed {
+                "HQ Work could not read saved credentials."
+            } else {
+                "No HQ Work credentials are saved on this device."
+            };
+            (
+                signed_out_state(),
+                status,
+                None,
+                Some(reason),
+                error.refresh_failure_class,
+            )
+        }
         Err(error) => {
             if error.requires_reauth {
                 record_last_auth_transition("refresh_rejected_requires_reauth");
             }
-            // A plain "not signed in" result with no initial token remains a
-            // cheap absent path. Refresh failures (including a rejected token
-            // hidden by its marker) need the post-resolution read for status.
-            let after = if before.is_none()
-                && !first_token_read_failed
-                && !error.requires_reauth
-                && error.refresh_failure_class.is_none()
-            {
-                None
-            } else {
-                cognito::get_tokens().await.ok().flatten()
-            };
+            let after = cognito::get_tokens().await.ok().flatten();
+            let refresh_failure_class = error.refresh_failure_class;
+            let preserved_account = before
+                .as_ref()
+                .or(after.as_ref())
+                .map(notification_identity_from_tokens);
             let status = cognito::classify_startup_refresh_failure(
                 before.is_some(),
                 first_token_read_failed,
                 error.requires_reauth,
                 after.is_some(),
-                error.refresh_failure_class,
             );
-            let reason = match &status {
-                AuthSessionStatus::CredentialsAbsent => {
-                    "No HQ Work credentials are saved on this device."
-                }
-                AuthSessionStatus::CredentialsReadError => {
-                    "HQ Work could not read saved credentials."
-                }
-                AuthSessionStatus::CredentialsInvalid => {
-                    "Your saved HQ Work credentials are no longer valid."
-                }
-                _ => "HQ Work could not refresh credentials while offline or unavailable.",
-            };
-            let preserved_account = before
-                .as_ref()
-                .or(after.as_ref())
-                .map(notification_identity_from_tokens);
-            (
-                signed_out_state(),
-                status,
-                preserved_account,
-                Some(reason),
-                error.refresh_failure_class,
-            )
+            if status == AuthSessionStatus::CredentialsInvalid {
+                (
+                    signed_out_state(),
+                    AuthSessionStatus::CredentialsInvalid,
+                    preserved_account,
+                    Some("Your saved HQ Work credentials are no longer valid."),
+                    refresh_failure_class,
+                )
+            } else {
+                (
+                    signed_out_state(),
+                    AuthSessionStatus::RefreshTemporarilyUnavailable,
+                    preserved_account,
+                    Some("HQ Work could not refresh credentials while offline or unavailable."),
+                    refresh_failure_class,
+                )
+            }
         }
     };
     let mut state = state;
