@@ -325,6 +325,29 @@ fn record_bridge_died_retains_all_entries_and_returns_them() {
 }
 
 #[test]
+fn local_recording_error_retains_started_entry_on_disk() {
+    let _g = lock();
+    let _tmp = with_test_ledger();
+
+    record_started(
+        "win-1".to_string(),
+        "rec_1".to_string(),
+        None,
+        ts("2026-06-03T10:00:00Z"),
+    )
+    .unwrap();
+    record_local_event("win-1", RecordingLedgerEvent::Error).unwrap();
+
+    let retained = read_ledger().unwrap();
+    assert!(
+        retained.contains_key("win-1"),
+        "a local recording error must leave server reconciliation state on disk"
+    );
+
+    clear_override();
+}
+
+#[test]
 fn record_bridge_died_is_noop_when_empty() {
     let _g = lock();
     let _tmp = with_test_ledger();
