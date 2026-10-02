@@ -1217,7 +1217,7 @@ export function createSyncPlatformAdapter(
       startSync: async (slug) => {
         const configured = await updateMirrorQuarantineFlag();
         if (!configured.ok) return configured;
-        const result = await call('start_sync', slug ? { companySlug: slug } : undefined);
+        const result = await call<void>('start_sync', slug ? { companySlug: slug } : undefined);
         if (result.ok) dispatchPostReadyAction('start_sync', slug ? { slug } : undefined);
         return result;
       },
@@ -1250,12 +1250,12 @@ export function createSyncPlatformAdapter(
       openFileInClaude: (path) =>
         call('open_authorized_file_in_claude', { path }),
       launchClaudeCode: async (path) => {
-        const result = await call('launch_claude_code', { path });
+        const result = await call<void>('launch_claude_code', { path });
         if (result.ok) dispatchPostReadyAction('open_cli');
         return result;
       },
       launchCodexWorkspace: async (path, prompt) => {
-        const result = await call('launch_codex_workspace', {
+        const result = await call<void>('launch_codex_workspace', {
           path,
           prompt: prompt ?? null,
         });
@@ -1269,13 +1269,13 @@ export function createSyncPlatformAdapter(
         if (!path || !tool) {
           return failure('invalid-argument', 'launch payload needs path and tool');
         }
-        const result = await call('launch_cli_in_terminal', { path, tool });
+        const result = await call<void>('launch_cli_in_terminal', { path, tool });
         if (result.ok) dispatchPostReadyAction('open_cli');
         return result;
       },
       detectAiTools: () => call('detect_ai_tools'),
       pickFolder: async () => {
-        const result = await call('pick_folder');
+        const result = await call<string | null>('pick_folder');
         if (result.ok && result.value) dispatchPostReadyAction('open_folder');
         return result;
       },
