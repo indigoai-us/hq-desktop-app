@@ -123,6 +123,23 @@ describe("US-024 task view pane", () => {
     expect(host.querySelector('[data-testid="task-view-now"]')).not.toBeNull();
   });
 
+  it("leads with a live Now row: faces, phase, and elapsed", () => {
+    const host = pane();
+    const row = host.querySelector<HTMLElement>('[data-testid="task-view-now"]')!;
+    expect(row.classList.contains("is-live")).toBe(true);
+    expect(row.querySelector(".ldot")).not.toBeNull();
+    const pb = host.querySelector(".pb")!;
+    expect(pb.firstElementChild?.textContent).toBe("Now");
+  });
+
+  it("keeps a quiet Now row with no green when nothing is running", () => {
+    const host = pane({ liveRun: null });
+    const row = host.querySelector<HTMLElement>('[data-testid="task-view-now"]')!;
+    expect(row.classList.contains("is-live")).toBe(false);
+    expect(row.querySelector(".ldot")).toBeNull();
+    expect(row.textContent).toContain("Corey Epstein · Nothing running");
+  });
+
   it("shows done, open, and live marks and selects with background only", () => {
     const host = pane();
     const items = [...host.querySelectorAll<HTMLElement>('[data-testid="task-view-item"]')];

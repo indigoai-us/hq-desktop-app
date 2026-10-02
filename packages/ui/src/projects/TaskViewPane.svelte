@@ -67,7 +67,19 @@
     stories.find((s) => s.id === selectedId) ?? null,
   );
   const nowFaces = $derived(
-    liveRun ? boardFaces(lead ? [lead] : [], liveRun.bots ?? []) : [],
+    boardFaces(lead ? [lead] : [], liveRun?.bots ?? []),
+  );
+  /** Now row copy: who, phase, elapsed when live; a quiet idle line otherwise. */
+  const nowLine = $derived(
+    liveRun
+      ? [
+          nowFaces.length > 0 ? facesCaption(nowFaces) : null,
+          liveRun.phase ?? "Live",
+          liveRun.elapsed,
+        ]
+          .filter(Boolean)
+          .join(" · ")
+      : [lead, "Nothing running"].filter(Boolean).join(" · "),
   );
   const owner = $derived(selected ? taskOwner(selected) : null);
   const bot = $derived(selected ? taskBot(selected, sessions) : null);
@@ -121,19 +133,17 @@
   </div>
 
   <div class="pb">
-    {#if nowFaces.length > 0}
-      <div class="kind">Now</div>
-      <div class="now" data-testid="task-view-now">
+    <div class="kind">Now</div>
+    <div class="now" class:is-live={liveRun !== null} data-testid="task-view-now">
+      {#if nowFaces.length > 0}
         <BoardFaces faces={nowFaces} />
-        <div class="now-text">
-          <div class="now-title">
-            {facesCaption(nowFaces)}{liveRun?.phase
-              ? ` · ${liveRun.phase}`
-              : ""}{liveRun?.elapsed ? ` · ${liveRun.elapsed}` : ""}
-          </div>
+      {/if}
+      <div class="now-text">
+        <div class="now-title">
+          {#if liveRun}<i class="ldot" aria-hidden="true"></i>{/if}{nowLine}
         </div>
       </div>
-    {/if}
+    </div>
 
     {#if stories.length === 0 && loading}
       <div class="kind">Tasks</div>
@@ -315,6 +325,11 @@
 
   .now-title {
     font-size: 13px;
+    color: var(--v4-text-3);
+  }
+
+  .now.is-live .now-title {
+    color: var(--v4-text-1);
   }
 
   .tl {
