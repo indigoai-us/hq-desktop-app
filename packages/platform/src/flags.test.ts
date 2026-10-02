@@ -3,12 +3,15 @@ import type { FlagClient, FlagSnapshot } from "@indigoai-us/hq-flags-client";
 import { failure, ok } from "./adapter.js";
 import {
   CLAUDE_PROVIDER_FLAG,
+  DESKTOP_LIMIT_STATUS_PUSH_FLAG,
   FLAG_REFRESH_INTERVAL_MS,
   INVITE_TEAMMATE_STEP_FLAG,
   LOGIN_RECEIPT_DURABILITY_FLAG,
   MEETINGS_LEGACY_FLAG,
   MEETINGS_REGISTRY_KEY,
   PERSONAL_WORKSPACE_BOARD_FLAG,
+  POST_READY_ACTION_TELEMETRY_FLAG,
+  READY_FIRST_ACTION_FLAG,
   SETUP_STAGE_TIMEOUT_FIX_FLAG,
   bearerTokenFromHeaders,
   createFeatureFlagGate,
@@ -67,6 +70,13 @@ describe("registry key mapping", () => {
     );
   });
 
+  it("registers desktop limit status push as a default-off hq-flags key", () => {
+    expect(DESKTOP_LIMIT_STATUS_PUSH_FLAG).toBe("desktop.limit-status-push");
+    expect(registryKeyFor(DESKTOP_LIMIT_STATUS_PUSH_FLAG)).toBe(
+      DESKTOP_LIMIT_STATUS_PUSH_FLAG,
+    );
+  });
+
   it("maps the first-folder onboarding flag using the registry key format", () => {
     const key = "desktop.first-folder-sync-step-v1";
     expect(key).toMatch(/^[a-z0-9-]+(?:\.[a-z0-9-]+)*$/);
@@ -94,6 +104,46 @@ describe("registry key mapping", () => {
     expect(registryKeyFor(LOGIN_RECEIPT_DURABILITY_FLAG)).toBe(
       LOGIN_RECEIPT_DURABILITY_FLAG,
     );
+  });
+
+  it("maps post-ready action telemetry through its default-off hq-flags key", () => {
+    expect(POST_READY_ACTION_TELEMETRY_FLAG).toBe("desktop.post-ready-action-telemetry-v1");
+    expect(registryKeyFor(POST_READY_ACTION_TELEMETRY_FLAG)).toBe(POST_READY_ACTION_TELEMETRY_FLAG);
+  });
+
+  it("maps the ready first action through its default-off hq-flags key", () => {
+    expect(READY_FIRST_ACTION_FLAG).toBe("desktop.ready-first-action-v1");
+    expect(registryKeyFor(READY_FIRST_ACTION_FLAG)).toBe(READY_FIRST_ACTION_FLAG);
+  });
+
+  it("keeps the ready first action off until hq-flags configures it", async () => {
+    const isEnabled = vi.fn(() => true);
+    const adapter = createSyncPlatformAdapter({
+      invoke: vi.fn(async () => undefined),
+      createFlagClient: () => fakeClient({
+        ready: async () => {},
+        snapshot: () => ({ version: 1, flags: {} }),
+        isEnabled,
+      }),
+    });
+
+    await expect(adapter.identity.hasFeature(READY_FIRST_ACTION_FLAG)).resolves.toEqual(ok(false));
+    expect(isEnabled).not.toHaveBeenCalled();
+  });
+
+  it("keeps post-ready action telemetry off until hq-flags configures it", async () => {
+    const isEnabled = vi.fn(() => true);
+    const adapter = createSyncPlatformAdapter({
+      invoke: vi.fn(async () => undefined),
+      createFlagClient: () => fakeClient({
+        ready: async () => {},
+        snapshot: () => ({ version: 1, flags: {} }),
+        isEnabled,
+      }),
+    });
+
+    await expect(adapter.identity.hasFeature(POST_READY_ACTION_TELEMETRY_FLAG)).resolves.toEqual(ok(false));
+    expect(isEnabled).not.toHaveBeenCalled();
   });
 
   it("keeps login receipt durability off when the registry is unavailable", async () => {

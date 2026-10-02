@@ -3672,6 +3672,13 @@ async fn repair_managed_shadow_and_refinalize(
 
     let repair_outcome =
         managed_shadow_repair_outcome(action, install_converged(resolved.as_deref(), latest));
+    let executed_copy_aim = executed_copy_aim_for(
+        &post_install_hq,
+        Some(prefix),
+        installer_npm,
+        managed_roots,
+        paths::home_dir().as_deref(),
+    );
 
     let outcome = decide_post_install(
         &PostInstallContext::npm(
@@ -3686,7 +3693,12 @@ async fn repair_managed_shadow_and_refinalize(
             delivered_version.as_deref(),
         )
         .with_managed_roots(managed_roots)
-        .with_managed_shadow_repair(repair_outcome),
+        .with_managed_shadow_repair(repair_outcome)
+        .with_executed_copy_aim(executed_copy_aim)
+        .with_resolution_telemetry(
+            paths::resolution_source_of_bin(&post_install_hq),
+            delivered_prefix_shim_for(Some(prefix), delivered_version.as_deref()),
+        ),
     );
     log("hq-cli-update", &outcome.log_line);
     apply_post_install_with_app(app, &outcome)
@@ -3830,6 +3842,7 @@ async fn settings_path_repair_and_refinalize(
             &paths::settings_path_dirs_in(&hq_root),
             &managed_bin_dir,
         ),
+        ..SettingsPathTelemetry::default()
     };
 
     let outcome = decide_post_install(

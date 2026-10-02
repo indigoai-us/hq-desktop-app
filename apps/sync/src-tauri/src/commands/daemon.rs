@@ -304,7 +304,7 @@ pub(crate) fn handle_watch_stdout_line<R: tauri::Runtime>(
     observe_watcher_phase_from_event(phase_context, &event);
     {
         let mut t = totals.lock().unwrap_or_else(|e| e.into_inner());
-        t.accumulate(&event);
+        crate::commands::sync::accumulate_runner_event_for_health(&mut t, &event, line);
     }
     // Record each per-file transfer into the session activity log (Recent
     // Changes window). The watch daemon is the primary instant-sync path, so
@@ -1034,7 +1034,7 @@ pub fn start_daemon_for_app_launch<R: tauri::Runtime>(app: AppHandle<R>) -> Resu
     start_daemon_with_origin(app, WatcherLaunchOrigin::AppLaunch)
 }
 
-fn start_daemon_for_supervisor_respawn<R: tauri::Runtime>(
+pub(crate) fn start_daemon_for_supervisor_respawn<R: tauri::Runtime>(
     app: AppHandle<R>,
 ) -> Result<String, String> {
     start_daemon_with_origin(app, WatcherLaunchOrigin::SupervisorRespawn)
@@ -1300,6 +1300,8 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
         // emitted, mirroring the manual route, so the exit capture can tell
         // "died before any protocol" from "died mid-work".
         let mut watcher_stdout_line_count = 0_u32;
+        #[cfg(test)]
+        crate::commands::process::record_sync_runner_spawn_attempt();
         let result = run_process_impl_for_generation(
             DAEMON_HANDLE,
             daemon_generation,
@@ -3326,6 +3328,20 @@ fn apply_report_to_fault_tags(
     report: &hq_desktop_core::runner_diagnostic_report::RunnerDiagnosticReport,
 ) {
     set_payload_tag(tags, "runner_report_read", report.read.as_str().to_string());
+    set_payload_tag(tags, "node_error_code", report.node_error_code.clone());
+    set_payload_tag(tags, "node_error_name", report.node_error_name.clone());
+    set_payload_tag(tags, "node_top_frame", report.node_top_frame.clone());
+    let current_producer = tags
+        .iter()
+        .find(|(key, _)| key == "exit_producer")
+        .map(|(_, value)| value.as_str())
+        .unwrap_or("unknown");
+    if report.exit_producer != "unknown"
+        && (current_producer == "unknown"
+            || (current_producer == "launcher" && report.exit_producer == "runner"))
+    {
+        set_payload_tag(tags, "exit_producer", report.exit_producer.clone());
+    }
     let current_class = tags
         .iter()
         .find(|(key, _)| key == "runner_fatal_class")
@@ -4446,6 +4462,27 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
         ),
     };
     let runner_fatal_class_seen = runner_fatal_class != "none";
+    let (stderr_cause, owner_result, stderr_producer) =
+        watcher_exit_stderr_diagnostics(last_stderr);
+    let stderr_cause = if stderr_cause == "other" && context.runner_fatal_class != "none" {
+        context.runner_fatal_class.as_str()
+    } else {
+        stderr_cause
+    };
+    let exit_producer = if stderr_producer == "runner" || context.runner_stdout_line_count > 0 {
+        "runner"
+    } else if stderr_producer == "launcher" {
+        "launcher"
+    } else {
+        "unknown"
+    };
+    let watch_owner_result = if owner_result != "unknown" {
+        owner_result
+    } else if context.runner_stdout_line_count > 0 {
+        "acquired"
+    } else {
+        "unknown"
+    };
 
     // Assertion identity (HQ-DESKTOP-50), derived from the SAME source as the
     // fatal class above so all four describe one line: prefer the last actual
@@ -4474,6 +4511,12 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
         ("exit_class", exit_class.to_string()),
         ("runner_fatal_class", runner_fatal_class),
         ("sync_route", "watcher".to_string()),
+        ("exit_producer", exit_producer.to_string()),
+        ("watch_owner_result", watch_owner_result.to_string()),
+        ("stderr_cause", stderr_cause.to_string()),
+        ("node_error_code", "unknown".to_string()),
+        ("node_error_name", "unknown".to_string()),
+        ("node_top_frame", "unknown".to_string()),
         ("app_quitting", context.app_quitting.to_string()),
         ("updater_installing", context.updater_installing.to_string()),
         ("session_ending", context.session_ending.clone()),
@@ -4829,6 +4872,23 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     // No report was requested for this exit, so no deferred reader owns a directory;
     // the exit callback removes any (user-disabled) directory it finds.
     RunnerReportDirDisposition::DeleteOnExitPath
+}
+
+/// Reduce the last observed stderr line to fixed diagnostic tokens. The runner's
+/// lease messages are checked before the generic fatal classifier so expected
+/// owner outcomes remain distinguishable without changing crash handling.
+fn watcher_exit_stderr_diagnostics(
+    stderr: Option<&str>,
+) -> (&'static str, &'static str, &'static str) {
+    let Some(line) = stderr else {
+        return ("other", "unknown", "unknown");
+    };
+    let signature = classify_runner_fatal_signature(line);
+    (
+        signature.stderr_cause,
+        signature.watch_owner_result,
+        signature.exit_producer,
+    )
 }
 
 /// Context is constructed from the core's closed-vocabulary rollup. Keep this
@@ -7255,10 +7315,25 @@ pub fn setup_daemon_supervisor(app: &AppHandle) {
 /// pid-file lifecycle; we don't shell out to a separate stop CLI here.
 #[tauri::command]
 pub fn stop_daemon() -> Result<bool, String> {
-    if crate::commands::hq_daemon_host::daemon_mode_active() {
-        return crate::commands::hq_daemon_host::set_sync_enabled(false);
+    stop_daemon_for_phase(
+        crate::commands::hq_daemon_host::current_phase(),
+        || crate::commands::hq_daemon_host::set_sync_enabled(false),
+        stop_watch_runner,
+    )
+}
+
+fn stop_daemon_for_phase(
+    phase: crate::commands::hq_daemon_host::HostPhase,
+    stop_hosted: impl FnOnce() -> Result<bool, String>,
+    stop_legacy: impl FnOnce() -> Result<bool, String>,
+) -> Result<bool, String> {
+    if phase == crate::commands::hq_daemon_host::HostPhase::Daemon {
+        stop_hosted()
+    } else {
+        // Pending retains the old legacy fallthrough while the launch gate is
+        // unresolved; flag-off users must still be able to stop Auto-sync.
+        stop_legacy()
     }
-    stop_watch_runner()
 }
 
 /// Stop the app's own watch runner, including one left by an earlier session.
@@ -7359,6 +7434,25 @@ pub fn daemon_status() -> Result<DaemonStatus, String> {
     })
 }
 
+/// Read daemon ownership, health, last pass, and the associated log path.
+#[tauri::command]
+pub async fn daemon_sync_status(
+) -> Result<Option<crate::commands::hq_daemon_host::DaemonSyncStatusDetails>, String> {
+    if !crate::commands::hq_daemon_host::daemon_mode_active() {
+        return Ok(None);
+    }
+    tokio::task::spawn_blocking(crate::commands::hq_daemon_host::hosted_daemon_sync_status)
+        .await
+        .map_err(|error| {
+            log(
+                "hq-daemon-host",
+                &format!("daemon sync status task failed: {error}"),
+            );
+            "HQ daemon status could not be read. Tap to retry.".to_string()
+        })?
+        .map(Some)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -7369,6 +7463,26 @@ mod tests {
     use crate::commands::process::{deregister_process, try_register_handle};
     use crate::util::test_support::{scoped_home, ENV_MUTEX};
     use tempfile::TempDir;
+
+    #[test]
+    fn stopping_while_host_selection_is_pending_uses_the_legacy_stop_path() {
+        let mut hosted_called = false;
+        let mut legacy_called = false;
+        let result = stop_daemon_for_phase(
+            crate::commands::hq_daemon_host::HostPhase::Pending,
+            || {
+                hosted_called = true;
+                Ok(false)
+            },
+            || {
+                legacy_called = true;
+                Ok(true)
+            },
+        );
+        assert_eq!(result, Ok(true));
+        assert!(!hosted_called);
+        assert!(legacy_called);
+    }
 
     /// Terminal watch exits must reach the client-health recorder for every
     /// genuine death (auth-expiry exit 0, crashes, fault signals), and for
@@ -9545,6 +9659,114 @@ mod tests {
         assert_eq!(report_tag_of(&tags, "runner_fatal_class"), "none");
         assert_eq!(report_tag_of(&tags, "runner_fatal_source"), "none");
         assert_eq!(report_tag_of(&tags, "runner_report_read"), "report_absent");
+    }
+
+    #[test]
+    fn watcher_busy_exit_identifies_runner_and_owner_lease_result() {
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(20),
+            None,
+            false,
+            false,
+            "/opt/homebrew/bin/npx",
+            Some("[sync] hq-sync-runner already owned for this HQ root (owner=fixture, pid=123); exiting."),
+            current_termination_host(),
+            &WatcherExitCaptureContext::default(),
+        );
+
+        let capture = effects.captures.first().expect("watcher exit capture");
+        assert_eq!(recorded_tag(capture, "stderr_cause"), "already_owned");
+        assert_eq!(recorded_tag(capture, "watch_owner_result"), "busy");
+        assert_eq!(recorded_tag(capture, "exit_producer"), "runner");
+        assert!(capture
+            .tags
+            .iter()
+            .all(|(_, value)| !value.contains("fixture")));
+        assert!(capture.tags.iter().all(|(_, value)| !value.contains("123")));
+    }
+
+    #[test]
+    fn watcher_lease_lost_exit_identifies_runner_and_lost_result() {
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(21),
+            None,
+            false,
+            false,
+            "/opt/homebrew/bin/npx",
+            Some("[sync] watch-owner lease lost; stopping watch runner: fixture detail"),
+            current_termination_host(),
+            &WatcherExitCaptureContext::default(),
+        );
+
+        let capture = effects.captures.first().expect("watcher exit capture");
+        assert_eq!(recorded_tag(capture, "stderr_cause"), "owner_lease_lost");
+        assert_eq!(recorded_tag(capture, "watch_owner_result"), "lost");
+        assert_eq!(recorded_tag(capture, "exit_producer"), "runner");
+        assert!(capture
+            .tags
+            .iter()
+            .all(|(_, value)| !value.contains("fixture detail")));
+    }
+
+    #[test]
+    fn watcher_node_report_exposes_only_safe_error_identity_and_frame() {
+        let report = hq_desktop_core::runner_diagnostic_report::parse_runner_diagnostic_report(
+            serde_json::json!({
+                "header": {
+                    "trigger": "Exception",
+                    "event": "Uncaught Error [ERR_MODULE_NOT_FOUND]: PRIVATE_MESSAGE_MARKER",
+                    "commandLine": [
+                        "/opt/node/bin/node",
+                        "/Users/alice/.npm/_npx/private/node_modules/@indigoai-us/hq-cloud/dist/bin/sync-runner.js",
+                        "--watch"
+                    ]
+                },
+                "javascriptStack": {
+                    "message": "Uncaught Error [ERR_MODULE_NOT_FOUND]: PRIVATE_MESSAGE_MARKER",
+                    "stack": [{
+                        "functionName": "privateFunction",
+                        "scriptName": "/Users/alice/hq/secrets/private-file.js",
+                        "lineNumber": 23,
+                        "column": 17
+                    }]
+                },
+                "nativeStack": []
+            })
+            .to_string()
+            .as_bytes(),
+        );
+        let mut tags = report_tags_with_class("none");
+        set_payload_tag(&mut tags, "exit_producer", "unknown".to_string());
+        apply_report_to_fault_tags(&mut tags, &report);
+
+        assert_eq!(
+            report_tag_of(&tags, "node_error_code"),
+            "ERR_MODULE_NOT_FOUND"
+        );
+        assert_eq!(report_tag_of(&tags, "node_error_name"), "Error");
+        // A frame outside our packages and node: internals reports only
+        // "external", so a user's file name never leaves the machine.
+        assert_eq!(report_tag_of(&tags, "node_top_frame"), "external");
+        assert!(!rendered_contains_private_file(&tags));
+        assert_eq!(report_tag_of(&tags, "exit_producer"), "runner");
+        let rendered = tags
+            .iter()
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!rendered.contains("PRIVATE_MESSAGE_MARKER"));
+        assert!(!report_tag_of(&tags, "node_top_frame").contains('/'));
+        assert!(!report_tag_of(&tags, "node_top_frame").contains('\\'));
+        assert!(!rendered.contains("/Users/alice"));
+    }
+
+    fn rendered_contains_private_file(tags: &[(String, String)]) -> bool {
+        tags.iter()
+            .any(|(_, value)| value.contains("private-file") || value.contains("privateFunction"))
     }
 
     #[test]

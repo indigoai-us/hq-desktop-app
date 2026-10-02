@@ -163,10 +163,16 @@
     messages: ConversationMessageWire[];
     nextCursor: string | null;
   }> {
+    // humanOnly: ask the server for the human view. A server that predates
+    // the option ignores it and returns an unfiltered page, which the local
+    // `keepForHumanOnly` filter handles as before. The key is only added in
+    // humanOnly mode, so the unfiltered request is unchanged.
+    const view = humanOnly ? { view: "human" as const } : {};
     if (row.kind === "dm" && row.personUid) {
       const resp = await api.fetchDmThread({
         withPersonUid: row.personUid,
         limit: PAGE_SIZE,
+        ...view,
       });
       return {
         messages: resp.messages ?? [],
@@ -179,6 +185,7 @@
         channelId: row.channelId,
         limit: PAGE_SIZE,
         cursor,
+        ...view,
       });
       return {
         messages: detail.messages ?? [],

@@ -17,6 +17,17 @@ describe("mapSignInError", () => {
     ).toBe("The sign-in was denied.");
   });
 
+  it("surfaces Microsoft resolve failures instead of sending work users to personal sign-in", () => {
+    expect(
+      mapSignInError(
+        '{"code":"MICROSOFT_ENABLEMENT_REQUIRED","message":"This Microsoft work account is not set up for HQ Desktop yet. Sign in at hqforwork.com first, then return here."}',
+        "Microsoft",
+      ),
+    ).toBe(
+      "This Microsoft work account is not set up for HQ Desktop yet. Sign in at hqforwork.com first, then return here.",
+    );
+  });
+
   it("maps token exchange failures to retryable copy", () => {
     expect(
       mapSignInError("token exchange failed: 400 invalid_grant", "Google"),

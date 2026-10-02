@@ -38,14 +38,17 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 
-function syncAdapter(getSyncStatus: PlatformAdapter["sync"]["getSyncStatus"]) {
+function syncAdapter(
+  getSyncStatus: PlatformAdapter["sync"]["getSyncStatus"],
+  daemonSyncStatus: PlatformAdapter["sync"]["daemonSyncStatus"] = async () => ok(null),
+) {
   const adapter = {
     kind: "desktop",
     isAvailable: (capability: string) => capability === "canSync",
     settings: { getSettings: async () => ok({}), getConfig: async () => ok({}) },
     appShell: { notificationPermissionState: async () => ok("unsupported") },
     meetings: { listAccounts: async () => ok([]) },
-    sync: { getSyncStatus },
+    sync: { getSyncStatus, daemonSyncStatus },
   } as unknown as PlatformAdapter;
   return adapter;
 }
@@ -73,6 +76,34 @@ function daemonLabel(): string | null {
 }
 
 describe("PrototypeSettingsPanes live sync status refresh", () => {
+  it("shows CLI daemon owner, health, errors, and log path", async () => {
+    const adapter = syncAdapter(
+      async () => daemonStatus(true),
+      async () => ok({
+        running: true,
+        paused: false,
+        syncOwner: "daemon",
+        owner: "hq-daemon",
+        lastHeartbeat: "2026-10-01T12:01:00Z",
+        lastPassResult: { status: "failed", completedAt: "2026-10-01T12:00:00Z", errors: 1 },
+        unitStatus: "running",
+        reason: null,
+        logPath: "/Users/me/.hq/daemon/logs/sync.log",
+      }),
+    );
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(PrototypeSettingsPanes, {
+      target: host,
+      props: { section: "sync", adapter },
+    });
+
+    await vi.waitFor(() => expect(host.textContent).toContain("hq-daemon"));
+    expect(host.textContent).toContain("Health: running");
+    expect(host.textContent).toContain("The last daemon sync reported errors");
+    expect(host.textContent).toContain("/Users/me/.hq/daemon/logs/sync.log");
+  });
+
   it("polls while the daemon comes up after mount and stops reflecting stale STOPPED", async () => {
     vi.useFakeTimers();
     let calls = 0;
