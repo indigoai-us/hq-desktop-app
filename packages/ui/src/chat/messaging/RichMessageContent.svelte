@@ -15,14 +15,18 @@
     isHeavyMessageBody,
     renderMessageBodyMarkdown,
   } from "../../common/messageMarkdown.js";
+  import ConnectionCard from "./ConnectionCard.svelte";
   import PlainMessageBody from "./PlainMessageBody.svelte";
+  import type { ConnectionCards, ConnectionCardView } from "./connection-card-model.js";
   import { HOST_PLACED_BLOCK_KINDS } from "./richMessageContent.js";
   import type {
     BadgeTone,
     CalloutTone,
     ChartBlock,
+    ConnectBlock,
     DecisionBlock,
     DecisionOption,
+    RichBlock,
     RichContentModel,
     StatItem,
     TableBlock,
@@ -53,6 +57,14 @@
      * answered even if it is absent from `answeredQuestionIds`.
      */
     answeredChoices?: ReadonlyMap<string, string>;
+    /**
+     * The host's connection cards for a `connect` block: one view per target
+     * (built by the app, see connection-card-model.ts) and where a press goes.
+     * Without it (a channel, a conversation between people, an older host) a
+     * `connect` block draws nothing. No agent-supplied text, style or link is
+     * ever used: the block only names which cards to show.
+     */
+    connections?: ConnectionCards | null;
   }
 
   let {
@@ -60,7 +72,26 @@
     ondecision,
     answeredQuestionIds,
     answeredChoices,
+    connections = null,
   }: Props = $props();
+
+  /** The cards a `connect` block draws here: the host's view for each target. */
+  function connectCards(block: ConnectBlock): ConnectionCardView[] {
+    const views = connections?.views;
+    if (!views) return [];
+    const out: ConnectionCardView[] = [];
+    for (const target of block.targets) {
+      const view = views[target];
+      if (view) out.push(view);
+    }
+    return out;
+  }
+
+  /** Does this block put anything inside the bubble? */
+  function drawsInBubble(block: RichBlock): boolean {
+    if (HOST_PLACED_BLOCK_KINDS.has(block.kind)) return false;
+    return block.kind !== "connect" || connectCards(block).length > 0;
+  }
 
   // Optimistic local disable after a click, keyed by block index (stable per
   // message). Mirrors LifecycleCard's `localPending`. Value = chosen label
@@ -228,7 +259,7 @@
   }
 </script>
 
-{#if content.blocks.some((b) => !HOST_PLACED_BLOCK_KINDS.has(b.kind))}
+{#if content.blocks.some(drawsInBubble)}
 <div class="rich-content" data-testid="rich-message-content">
   {#each content.blocks as block, blockIndex (blockIndex)}
     {#if block.kind === "stat"}
@@ -443,6 +474,15 @@
           </div>
         {/if}
       </div>
+    {:else if block.kind === "connect"}
+      {@const cards = connectCards(block)}
+      {#if cards.length > 0}
+        <div class="rich-connect-row" data-testid="rich-connect">
+          {#each cards as card (card.target)}
+            <ConnectionCard view={card} onaction={connections?.onaction} />
+          {/each}
+        </div>
+      {/if}
     {/if}
   {/each}
 </div>
@@ -853,5 +893,13 @@
   .rich-decision-answered {
     font-size: 12px;
     color: var(--t3, var(--pop-muted));
+  }
+
+  /* Connection cards: side by side, wrapping to a stack when narrow. */
+  .rich-connect-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: stretch;
+    gap: 8px;
   }
 </style>

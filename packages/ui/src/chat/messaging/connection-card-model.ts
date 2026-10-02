@@ -639,3 +639,30 @@ function toolsView(input: ConnectionCardInput): ConnectionCardView {
 export function connectionCardView(target: ConnectTarget, input: ConnectionCardInput): ConnectionCardView {
   return target === "slack" ? slackView(input) : toolsView(input);
 }
+
+// ── What the components pass around ──────────────────────────────────────
+
+/** One button press on a card, as the host receives it. */
+export interface ConnectionCardActionDetail {
+  target: ConnectTarget;
+  action: ConnectionCardAction;
+  /** The connection of an "allow" row. */
+  connectionId?: string;
+}
+
+export type ConnectionCardActionHandler = (detail: ConnectionCardActionDetail) => void | Promise<void>;
+
+/** The cards of one message: a view per target, and where presses go. */
+export interface ConnectionCards {
+  views: Partial<Record<ConnectTarget, ConnectionCardView>>;
+  onaction: ConnectionCardActionHandler;
+}
+
+/**
+ * The cards of a whole conversation. The views are built per message, because
+ * a card in a message written after a "Not now" is a new offer.
+ */
+export interface ConversationConnectionCards {
+  viewsFor: (message: { eventId: string; createdAt?: string | null }) => Partial<Record<ConnectTarget, ConnectionCardView>>;
+  onaction: ConnectionCardActionHandler;
+}

@@ -79,7 +79,14 @@
 
   import PlainMessageBody from "./PlainMessageBody.svelte";
   import RichMessageContent from "./RichMessageContent.svelte";
-  import { messageHasVisibleContent, richContentForMessage } from "./richMessageContent";
+  import {
+    messageHasVisibleContent,
+    richContentForMessage,
+    withExtraBlocks,
+    type ExtractedRichContent,
+    type RichBlock,
+  } from "./richMessageContent";
+  import type { ConversationConnectionCards } from "./connection-card-model.js";
   import { decisionAnswersFromMessages } from "./decision-answers";
   import type { DecisionOption } from "./richMessageContent";
   import {
@@ -253,6 +260,19 @@
      */
     suggestedReplies?: readonly string[];
     /**
+     * Connection cards (Slack, Connect your tools) for `connect` blocks in
+     * this conversation: the host builds each card and handles each press.
+     * Omitted everywhere but a cloud bot's direct message, where a `connect`
+     * block then draws nothing.
+     */
+    connections?: ConversationConnectionCards | null;
+    /**
+     * Blocks the host attaches to a message that did not carry them, by
+     * eventId. They are appended to that message's own blocks when it is
+     * drawn; the message itself is not changed.
+     */
+    extraBlocksByEventId?: Readonly<Record<string, readonly RichBlock[]>> | null;
+    /**
      * Sidebar row id (`ch:<id>` / `dm:<uid>`) this composer belongs to. With
      * `draftStorage`, unsent text is restored on mount, persisted (debounced)
      * while typing, flushed on unmount, and cleared on send — so switching
@@ -322,6 +342,8 @@
     header,
     belowMessages,
     suggestedReplies = [],
+    connections = null,
+    extraBlocksByEventId = null,
     draftKey = null,
     draftStorage = null,
     composerLocked = false,
@@ -330,6 +352,13 @@
     localBots = null,
     humanOnly = false,
   }: Props = $props();
+
+  /** A message's text and blocks, with any blocks the host attached to it. */
+  function richForMessage(msg: ConversationMessageWire): ExtractedRichContent {
+    const own = richContentForMessage(msg);
+    const extra = extraBlocksByEventId?.[msg.eventId];
+    return extra ? { text: own.text, rich: withExtraBlocks(own.rich, extra) } : own;
+  }
 
   /** Presence-store online flag for an actor in this conversation's company. */
   function actorOnline(actorUid: string | null | undefined): boolean {
@@ -1695,7 +1724,7 @@
               time={row.timeLabel}
             />
           {:else if messageHasVisibleContent(msg) || parseMessageAttachments(msg).length > 0}
-            {@const rich = richContentForMessage(msg)}
+            {@const rich = richForMessage(msg)}
             <div
               class="dm-msg dm-msg-{msg.direction === 'out' ? 'out' : 'in'}"
               class:dm-msg-group-start={groupStart}
@@ -1784,6 +1813,9 @@
                       ondecision={handleDecision}
                       {answeredQuestionIds}
                       {answeredChoices}
+                      connections={connections
+                        ? { views: connections.viewsFor(msg), onaction: connections.onaction }
+                        : null}
                     />
                   {/if}
                   {#if msg.details?.trim()}
