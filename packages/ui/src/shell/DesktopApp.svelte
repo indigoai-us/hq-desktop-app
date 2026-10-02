@@ -135,6 +135,8 @@
     type CardActionIdempotencyStore,
   } from "../chat/card-action.js";
   import {
+    AGENT_INTRO_ACTION_ID,
+    AGENT_STATUS_CARD_ID,
     agentCatchingUpLine,
     agentChatReadiness,
     agentComposerPlaceholder,
@@ -3718,9 +3720,41 @@
   );
   const AGENT_CHAT_READY_POLL_MS = 5_000;
   const AGENT_CATCHING_UP_POLL_MS = 30_000;
+  const AGENT_INTRO_RETRY_MS = 20_000;
+  /** Bots whose intro request was sent, with when; and bots whose server refused it. */
+  const agentIntroAskedAt = new Map<string, number>();
+  const agentIntroUnsupported = new Set<string>();
+  /**
+   * Ask the server to open the conversation for a bot that can chat. The
+   * server announces once however often it is asked. A refusal means the
+   * server predates the action, so the bot is not asked again this session;
+   * the person can still write first.
+   */
+  function askAgentIntro(agentUid: string, channelId: string): void {
+    if (typeof adapter.messaging.runCardAction !== "function") return;
+    if (agentIntroUnsupported.has(agentUid)) return;
+    const now = Date.now();
+    if (now - (agentIntroAskedAt.get(agentUid) ?? 0) < AGENT_INTRO_RETRY_MS) return;
+    agentIntroAskedAt.set(agentUid, now);
+    void (async () => {
+      try {
+        const result = await adapter.messaging.runCardAction({
+          channelId,
+          cardId: AGENT_STATUS_CARD_ID,
+          actionId: AGENT_INTRO_ACTION_ID,
+          values: {},
+          idempotencyKey: `agent-intro-${agentUid}-${now}`,
+        });
+        if (!result.ok) agentIntroUnsupported.add(agentUid);
+      } catch {
+        agentIntroUnsupported.add(agentUid);
+      }
+    })();
+  }
   $effect(() => {
     const uid = agentChannelUid;
     const pending = provisioning.state === "pending";
+    const channelId = selectedRow?.channelId ?? null;
     if (!isAgentChannel || !uid || !uid.startsWith("agt_")) return;
     const known = untrack(() => agentChatByUid[uid]);
     if (!pending && !known?.catchingUp) return;
@@ -3734,6 +3768,7 @@
         if (result.ok) {
           next = agentChatReadiness(result.value);
           agentChatByUid = { ...untrack(() => agentChatByUid), [uid]: next };
+          if (next.chatReady && pending && channelId) askAgentIntro(uid, channelId);
         }
       } catch {
         // Keep the last known state and ask again.

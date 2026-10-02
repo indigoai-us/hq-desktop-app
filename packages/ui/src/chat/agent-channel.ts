@@ -92,6 +92,15 @@ export function provisioningFromMessages(
  */
 const CHAT_READY_STEPS = ["codex-auth", "sync"] as const;
 
+/** The status card every cloud bot's channel starts with. */
+export const AGENT_STATUS_CARD_ID = "agent_status";
+/**
+ * Card action that asks the server to open the conversation for a bot that can
+ * chat: the card turns done and the bot is prompted to say hello. A server
+ * that predates it answers with an unknown-action refusal.
+ */
+export const AGENT_INTRO_ACTION_ID = "announce";
+
 export interface AgentChatReadiness {
   /** The bot can receive a message and answer it. */
   chatReady: boolean;
