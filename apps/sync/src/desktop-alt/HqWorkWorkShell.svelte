@@ -1199,6 +1199,8 @@
       </p>
       <div class="workspace-signin">
         <SignInPrompt
+          layout="column"
+          version={version}
           reauth={signedOutReason === 'expired' ||
             signedOutReason === 'invalid' ||
             signedOutReason === 'non-human'}

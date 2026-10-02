@@ -525,6 +525,15 @@
   }
 
   $effect(() => {
+    const openFromBanner = () => {
+      coreOpen = true;
+      launchOpen = false;
+    };
+    window.addEventListener("hq-open-core", openFromBanner);
+    return () => window.removeEventListener("hq-open-core", openFromBanner);
+  });
+
+  $effect(() => {
     if (!coreOpen) return;
 
     function onMouseDown(event: MouseEvent) {

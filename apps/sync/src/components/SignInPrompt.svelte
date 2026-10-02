@@ -26,9 +26,15 @@
      * its own sign-in surface and must stay focused (`false`).
      */
     bringMainToFront?: boolean;
+    /**
+     * `column` is the desktop window before sign-in (US-016): no rail, centered
+     * copy, one primary button. The compact popover keeps the default card.
+     */
+    layout?: "card" | "column";
+    version?: string;
   }
 
-  let { reauth = false, onsuccess, bringMainToFront = true }: Props = $props();
+  let { reauth = false, onsuccess, bringMainToFront = true, layout = "card", version = "" }: Props = $props();
 
   const providers: { key: SignInProvider; label: string }[] = [
     { key: 'Google', label: 'Google' },
@@ -36,6 +42,7 @@
   ];
 
   let loadingProvider = $state<SignInProvider | null>(null);
+  let showAlternate = $state(false);
   let error = $state('');
   let microsoftEmail = $state('');
   let microsoftEmailPrompt = $state(false);
@@ -295,9 +302,19 @@
   }
 </script>
 
-<div class="sign-in-container">
+<div
+  class="sign-in-container"
+  class:sign-in-column={layout === "column"}
+  data-testid="sign-in-window"
+  data-layout={layout}
+  data-rail="off"
+  data-sidepane="off"
+>
   <div class="sign-in-card">
-    <div class="icon">
+    {#if layout === "column"}
+      <div class="wm">HQ</div>
+    {/if}
+    <div class="icon" class:hidden-mark={layout === "column"}>
       <svg
         width="48"
         height="48"
@@ -329,7 +346,9 @@
 
     <h1>{reauth ? 'Keep sync moving' : 'Sign in to HQ'}</h1>
     <p class="description">
-      {reauth
+      {layout === "column" && !reauth
+        ? 'Your companies, files, and bots follow your account.'
+        : reauth
         ? 'Your files are safe. Continue with your provider and HQ will resume syncing.'
         : 'Use Google or Microsoft to sync your HQ files.'}
     </p>
@@ -362,10 +381,26 @@
       </button>
     {/if}
 
+    {#if layout === "column" && !showAlternate && continuation.phase !== 'confirming'}
+      <button
+        type="button"
+        class="sign-in-btn big"
+        data-testid="sign-in-with-hq"
+        onclick={() => handleSignIn('Google')}
+        disabled={loadingProvider !== null || quitting}
+      >
+        {loadingProvider ? 'Waiting for browser…' : 'Sign in with HQ'}
+      </button>
+      <p class="loading-hint">Opens your browser for a secure sign-in, then returns here.</p>
+      <button type="button" class="magic-link" data-testid="magic-link" onclick={() => (showAlternate = true)}>
+        Use a magic link instead
+      </button>
+    {/if}
+
     <div
       class="sign-in-actions"
       class:secondary={continuation.phase === 'confirming'}
-      hidden={continuation.phase === 'opening' || continuation.phase === 'waiting'}
+      hidden={continuation.phase === 'opening' || continuation.phase === 'waiting' || (layout === 'column' && !showAlternate && continuation.phase !== 'confirming')}
     >
       {#each providers as provider}
         <button
@@ -459,6 +494,9 @@
     {/if}
 
     <p class="footer">Powered by Indigo</p>
+    {#if layout === "column"}
+      <p class="vf" data-testid="sign-in-version">HQ Desktop {version || "—"} · macOS</p>
+    {/if}
   </div>
 </div>
 
@@ -526,6 +564,39 @@
     box-shadow: var(--pop-shadow), inset 0 1px 0 var(--pop-highlight);
   }
 
+  .sign-in-column {
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    background: var(--v4-ground, var(--pop-bg));
+  }
+  .sign-in-column .sign-in-card { max-width: 340px; }
+  .sign-in-column .hidden-mark { display: none; }
+  .sign-in-column .footer { display: none; }
+  .wm {
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    margin-bottom: 14px;
+  }
+  .magic-link {
+    margin-top: 14px;
+    font-size: 13px;
+    color: var(--v4-text-2, var(--pop-text));
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    background: none;
+    border: 0;
+    cursor: pointer;
+  }
+  .vf {
+    margin-top: 28px;
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--v4-idle, var(--pop-text-3));
+  }
   .sign-in-card {
     display: flex;
     flex-direction: column;

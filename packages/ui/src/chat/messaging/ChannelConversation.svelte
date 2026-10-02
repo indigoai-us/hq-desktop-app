@@ -96,6 +96,7 @@
   import { takeNewestWindow, TIMELINE_WINDOW } from "./timeline-window";
   import { coalesceScroll } from "./scroll-coalesce";
   import { formatComposerSendError } from "./composer-send-error";
+  import { isQueuedSendToken } from "./message-outbox.js";
   import { uploadErrorUpgradeUrl } from "./upload-chat-attachments";
   import {
     clearDraft,
@@ -308,6 +309,8 @@
      * then `channelId`.
      */
     conversationKey?: string | null;
+    /** While offline, a successful queue parks the optimistic row instead of failing it. */
+    offline?: boolean;
   }
 
   let {
@@ -358,6 +361,7 @@
     humanOnly = false,
     serverHumanView = false,
     conversationKey = null,
+    offline = false,
   }: Props = $props();
 
   /** Presence-store online flag for an actor in this conversation's company. */
@@ -416,6 +420,7 @@
 
   // Optimistic local sends appended to the injected timeline (no persistence).
   let localSends = $state<ConversationMessageWire[]>([]);
+  let queuedLocalIds = $state<string[]>([]);
   /** Monotonic so a temp id is never reused after a row is removed. */
   let sendSeq = 1;
   let extraOlder = $state(0);
@@ -909,7 +914,9 @@
   const SUGGESTION_OTHER_PLACEHOLDER = "Type your own answer here…";
   let otherForKey = $state<string | null>(null);
   const composerPlaceholder = $derived(
-    otherForKey !== null && otherForKey === suggestionKey && visibleSuggestions.length > 0
+    offline
+      ? "Queued — sends when you are back online"
+      : otherForKey !== null && otherForKey === suggestionKey && visibleSuggestions.length > 0
       ? SUGGESTION_OTHER_PLACEHOLDER
       : placeholder,
   );
@@ -1449,8 +1456,11 @@
       // Hosts that can name the persisted event return its id; that makes the
       // echo match exact instead of content-based.
       const persistedId = await onsend?.(body, mentions, files);
+      if (isQueuedSendToken(persistedId)) {
+        queuedLocalIds = [...queuedLocalIds, eventId];
+      }
       const meta = sendMeta.get(eventId);
-      if (meta && typeof persistedId === "string" && persistedId.trim()) {
+      if (meta && typeof persistedId === "string" && persistedId.trim() && !isQueuedSendToken(persistedId)) {
         meta.echoId = persistedId.trim();
       }
     } catch (err) {
@@ -1862,7 +1872,9 @@
               class="dm-msg dm-msg-{msg.direction === 'out' ? 'out' : 'in'}"
               class:dm-msg-group-start={groupStart}
               class:dm-msg-reply-active={activeRootEventId === msg.eventId}
+              class:queued={queuedLocalIds.includes(msg.eventId)}
               data-testid="conversation-message"
+              data-queued={queuedLocalIds.includes(msg.eventId) ? "true" : undefined}
               data-event-id={msg.eventId}
               data-reply-count={msg.replyCount ?? 0}
             >
@@ -1973,6 +1985,9 @@
                     {onreleaseurl}
                   />
                 </div>
+                {#if queuedLocalIds.includes(msg.eventId)}
+                  <span class="queued-mark" data-testid="message-queued">◷ Queued · sends when back online</span>
+                {/if}
                 {#if (msg.replyCount ?? 0) > 0}
                   {@const preview = replyMetaFor(msg)}
                   <button
@@ -2612,6 +2627,24 @@
     margin-top: 0;
     padding: var(--msg-row-pad-y, 3px) 8px;
     border-radius: 6px;
+  }
+
+  .dm-msg.queued .dm-msg-avatar,
+  .dm-msg.queued .dm-bubble,
+  .dm-msg.queued .dm-msg-author {
+    opacity: 0.55;
+  }
+
+  .queued-mark {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin-top: 4px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--v4-text-3);
   }
 
   .dm-msg:hover,

@@ -41,12 +41,7 @@
   import type { MoreCompany } from "./more-companies.js";
   import TelemetryRailHost from "./TelemetryRailHost.svelte";
   import AtlasLandingHost from "./AtlasLandingHost.svelte";
-  import {
-    atlasLiveActors,
-    atlasRoster,
-    atlasWorkingNow,
-    rosterNamesFromRows,
-  } from "./atlas-landing.js";
+  import { atlasRoster, atlasWorkingNow, rosterNamesFromRows } from "./atlas-landing.js";
   import AccountMenu from "./AccountMenu.svelte";
   import {
     accountPageId,
@@ -293,6 +288,7 @@
   import { vaultsFor } from "../files/explorer/vault-model.js";
   import MemberProfilePanel from "../chat/MemberProfilePanel.svelte";
   import AgentDetailPanel from "../chat/AgentDetailPanel.svelte";
+  import ProfilePaneHost from "./profile-panes/ProfilePaneHost.svelte";
   import LocalBotDetailPanel from "../chat/LocalBotDetailPanel.svelte";
   import BotSignInBanner from "../chat/BotSignInBanner.svelte";
   import BotRestoreBanner from "../chat/BotRestoreBanner.svelte";
@@ -375,7 +371,7 @@
     type ChannelStatusModel,
     type StatusPersonRow,
   } from "../chat/channel-status-model.js";
-  import { liveInputsForCompanyProject, liveReadFor } from "../chat/live-read-store.svelte.js";
+  import { liveInputsForCompanyProject } from "../chat/live-read-store.svelte.js";
   import { applyChannelRoster, parseChannelMembers } from "./mesh-overlay.js";
   import {
     loadLiveChannelTabs,
@@ -8415,38 +8411,8 @@
       : [],
   );
 
-  // US-013: live actors for the Atlas map from the presence + live-read
-  // mirrors the shell already subscribes to. No poller, no fetch.
-  const atlasActors = $derived(
-    companyPaneCompany
-      ? atlasLiveActors(
-          liveReadFor(companyPaneCompany.uid),
-          presenceSnapshot(),
-          companyPaneCompany.uid,
-          atlasRosterNames,
-          self?.uid ?? null,
-        )
-      : [],
-  );
-  // People filter from the Atlas sidepane roster; cleared on company change.
-  let atlasFilterActor = $state<string | null>(null);
-  let atlasFilterCompany: string | null = null;
-  $effect.pre(() => {
-    const uid = companyPaneCompany?.uid ?? null;
-    if (uid !== atlasFilterCompany) {
-      atlasFilterCompany = uid;
-      atlasFilterActor = null;
-    }
-  });
-
   function selectCompanyPaneRow(rowId: string): void {
     if (!tenantCompanyId) return;
-    if (rowId.startsWith("person:")) {
-      const uid = rowId.slice("person:".length);
-      atlasFilterActor = atlasFilterActor === uid ? null : uid;
-      return;
-    }
-    atlasFilterActor = null;
     void navigate(companyRowDestination(rowId, tenantCompanyId));
   }
 
@@ -9423,7 +9389,6 @@
             memory={sidepaneScrollMemory}
             companyApi={adapter.company ?? null}
             roster={atlasCompanyRoster}
-            rosterSelected={atlasFilterActor}
             rosterLoading={!directorySettled}
           />
         {/if}
@@ -9573,10 +9538,6 @@
             workingNow={atlasWorkingNow(atlasCompanyRoster)}
             slug={companyPaneCompany.slug}
             summaryEnabled={Boolean(adapter.company)}
-            companyUid={companyPaneCompany.uid}
-            actors={atlasActors}
-            filterActor={atlasFilterActor}
-            onclearfilter={() => (atlasFilterActor = null)}
             onopenperson={(personUid) => {
               void navigate({ kind: "dm", personUid });
             }}
@@ -10499,11 +10460,22 @@
                 </div>
               {:else if openAgentMember && openLocalBot}
                 <div
-                  class="reply-column profile-column"
+                  class="reply-column profile-column inspector-pane"
                   class:overlay={narrowViewport}
                   data-testid="local-bot-detail-column"
                   data-reply-layout={narrowViewport ? "overlay" : "column"}
                 >
+                  <ProfilePaneHost
+                    kind="bot"
+                    name={openAgentMember.displayName}
+                    email={openAgentMember.email}
+                    owner={self?.displayName ?? null}
+                    company={selectedRow.companyUid ? companyDisplayName(selectedRow.companyUid, companyNames) : null}
+                    live={openAgentMember.online}
+                    onclose={closeAgentDetail}
+                    onmessage={() => messageMemberDirectly(openAgentMember!)}
+                  />
+                  <div class="legacy-detail">
                   <LocalBotDetailPanel
                     companies={(companies ?? []).filter(c => c.cloudUid?.startsWith("cmp_")).map(c => ({ uid: c.cloudUid!, name: c.displayName || c.slug, slug: c.slug }))}
                     {onopenurl}
@@ -10516,14 +10488,26 @@
                     onstart={startBotFromProfile}
                     onclose={closeAgentDetail}
                   />
+                  </div>
                 </div>
               {:else if openAgentMember}
                 <div
-                  class="reply-column profile-column"
+                  class="reply-column profile-column inspector-pane"
                   class:overlay={narrowViewport}
                   data-testid="agent-detail-column"
                   data-reply-layout={narrowViewport ? "overlay" : "column"}
                 >
+                  <ProfilePaneHost
+                    kind="bot"
+                    name={openAgentMember.displayName}
+                    email={openAgentMember.email}
+                    role={openAgentMember.role}
+                    company={selectedRow.companyUid ? companyDisplayName(selectedRow.companyUid, companyNames) : null}
+                    live={openAgentMember.online}
+                    onclose={closeAgentDetail}
+                    onmessage={() => messageMemberDirectly(openAgentMember!)}
+                  />
+                  <div class="legacy-detail">
                   <AgentDetailPanel
                     agentUid={openAgentMember.personUid}
                     {localBots}
@@ -10545,14 +10529,26 @@
                     onsaveavatar={saveOpenAgentAvatar}
                     onclose={closeAgentDetail}
                   />
+                  </div>
                 </div>
               {:else if openProfileMember}
                 <div
-                  class="reply-column profile-column"
+                  class="reply-column profile-column inspector-pane"
                   class:overlay={narrowViewport}
                   data-testid="profile-column"
                   data-reply-layout={narrowViewport ? "overlay" : "column"}
                 >
+                  <ProfilePaneHost
+                    kind="person"
+                    name={openProfileMember.displayName}
+                    email={openProfileMember.email}
+                    role={openProfileMember.role}
+                    company={selectedRow.companyUid ? companyDisplayName(selectedRow.companyUid, companyNames) : null}
+                    live={openProfileMember.online}
+                    onclose={closeMemberProfile}
+                    onmessage={() => messageMemberDirectly(openProfileMember!)}
+                  />
+                  <div class="legacy-detail">
                   <MemberProfilePanel
                     member={openProfileMember}
                     {self}
@@ -10566,6 +10562,7 @@
                     onmessage={messageMemberDirectly}
                     onclose={closeMemberProfile}
                   />
+                  </div>
                 </div>
               {:else if openReplyRootId && replyScope}
                 <div
@@ -11008,6 +11005,20 @@
     .conversation-layer {
     flex: 1 1 0;
     min-width: min(360px, 50%);
+  }
+
+  .reply-column.inspector-pane {
+    width: 340px;
+    flex: 0 0 340px;
+    background: var(--v4-secondary-sidebar, var(--side-bg));
+  }
+
+  .legacy-detail {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
   }
 
   .reply-column {
