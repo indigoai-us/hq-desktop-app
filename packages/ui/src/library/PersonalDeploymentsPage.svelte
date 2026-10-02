@@ -6,6 +6,7 @@
    * build serving until swap.
    */
   import ListEmptyState from "../common/ListEmptyState.svelte";
+  import { startNowTicker } from "../common/now-ticker.js";
   import "../home/tokens.css";
   import "../chat/chat-tokens.css";
   import type { AdapterPromise, Json } from "@hq/platform";
@@ -17,6 +18,7 @@
     loadDeployments,
     progressFor,
     readPersonalDeploymentsCache,
+    relativeAge,
     statusLabel,
     writePersonalDeploymentsCache,
     type DeployAppsPage,
@@ -93,6 +95,12 @@
       live = false;
     };
   });
+
+  // QA-069: "Last visit" re-renders from the absolute time every 30 s.
+  let now = $state(Date.now());
+  $effect(() => startNowTicker((t) => (now = t)));
+  const lastVisitLabel = (row: { lastVisit: string; lastVisitAt?: string }): string =>
+    (row.lastVisitAt ? relativeAge(row.lastVisitAt, now) : "") || row.lastVisit;
 
   const allRows = $derived(cache?.rows ?? []);
   const rows = $derived(filterDeployments(allRows, filter, query));
@@ -209,7 +217,7 @@
               <span class="st {tone(row)}">{statusLabel(row)}</span>
               <span class="sub">{row.access}</span>
               <span class="n">{formatViews(row.views30d)}</span>
-              <span class="sub">{row.lastVisit}</span>
+              <span class="sub">{lastVisitLabel(row)}</span>
             </button>
           {/each}
           {#if rows.length > shown.length}
@@ -247,7 +255,7 @@
             {#if selected.project}<dt>Project</dt><dd>{selected.project}</dd>{/if}
             {#if progress || selected.liveVersion}<dt>Serving</dt><dd>{progress ? progress.serving : selected.liveVersion}</dd>{/if}
             <dt>30d views</dt><dd>{formatViews(selected.views30d)}</dd>
-            {#if selected.lastVisit}<dt>Last visit</dt><dd>{selected.lastVisit}</dd>{/if}
+            {#if selected.lastVisit}<dt>Last visit</dt><dd>{lastVisitLabel(selected)}</dd>{/if}
           </dl>
         </aside>
       {/if}

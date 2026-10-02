@@ -140,4 +140,26 @@ describe("US-031 personal library and deployments", () => {
     expect(host.querySelector('[data-testid="deploy-redeploy-notice"]')?.textContent).toContain("isn't wired up yet");
     release!();
   });
+
+  it("re-ticks Last visit from the absolute time every 30 s (QA-069)", async () => {
+    vi.useFakeTimers();
+    try {
+      const t0 = Date.parse("2026-10-02T18:00:00Z");
+      vi.setSystemTime(t0);
+      localStorage.clear();
+      const rows = [{ id: "personal:t1", name: "tick-app", url: "https://tick-app.indigo-hq.com", host: ".indigo-hq.com", project: "", detail: "", scope: "personal", scopeLabel: "Personal", scopeMark: "PE", status: "active", access: "Public", views30d: 4, lastVisit: "5m ago", lastVisitAt: new Date(t0 - 5 * 60_000).toISOString(), step: null, liveVersion: "v1", nextVersion: "v1", byYou: true, byBot: false, log: [] }];
+      localStorage.setItem("hq.personal-deployments.v2:acct-tick", JSON.stringify({ rows }));
+      const listDeployApps = () => new Promise<{ ok: true; value: { apps: unknown[] } }>(() => {});
+      host = document.createElement("div");
+      document.body.appendChild(host);
+      component = mount(PersonalDeploymentsPage, { target: host, props: { accountId: "acct-tick", listDeployApps } });
+      flushSync();
+      expect(host.querySelector('[data-testid="deploy-row"]')?.textContent).toContain("5m ago");
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      flushSync();
+      expect(host.querySelector('[data-testid="deploy-row"]')?.textContent).toContain("15m ago");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

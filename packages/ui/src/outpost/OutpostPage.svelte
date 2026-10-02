@@ -2,9 +2,13 @@
   import { dismissable } from "../common/dismissable.js";
   /**
    * Personal Outpost (US-034).
-   * First frame is the cache. Refresh runs after paint.
+   * First frame is the cache. Refresh runs after paint, then every 60 s while
+   * visible; relative times re-render every 30 s from absolute timestamps
+   * (QA-069). A failed refresh keeps the cache and says so in the header.
    * Offline disables host actions and shows the retry countdown.
    */
+  import { untrack } from "svelte";
+  import { startNowTicker } from "../common/now-ticker.js";
   import "../home/tokens.css";
   import "../chat/chat-tokens.css";
   import {
@@ -16,7 +20,12 @@
     blankJob,
     fixtureOutpost,
     formatRetry,
+    freshnessLabel,
+    lastResultLabel,
     metadata,
+    nextRunLabel,
+    OUTPOST_REFRESH_MS,
+    runWhenLabel,
     presetCron,
     previewCron,
     readOutpostCache,
@@ -28,10 +37,18 @@
     type LogLine,
     type OutpostCache,
     type OutpostJob,
+    type OutpostRefresher,
     type OutpostTab,
   } from "./outpost-model.js";
 
   export { metadata };
+
+  interface Props {
+    /** Reads live state from the Outpost. Absent = no Outpost API in this build. */
+    refresh?: OutpostRefresher;
+  }
+
+  let { refresh }: Props = $props();
 
   let data = $state<OutpostCache>(readOutpostCache("personal") ?? fixtureOutpost());
   let tab = $state<OutpostTab>("overview");
@@ -54,20 +71,48 @@
   const ROW = 22;
   const VIEW = 280;
 
+  let now = $state(Date.now());
+  let refreshFailed = $state(false);
+
+  // Paint the cache, then refresh in the background on open and every 60 s
+  // while the page is visible. Success merges into the cache; failure keeps
+  // the cached data, logs the cause, and shows the stale state.
   $effect(() => {
-    const cached = readOutpostCache("personal");
-    if (cached) data = cached;
-    let live = true;
-    queueMicrotask(() => {
-      if (!live) return;
-      const next = readOutpostCache("personal") ?? fixtureOutpost();
-      writeOutpostCache("personal", next);
-      data = next;
+    const read = refresh;
+    untrack(() => {
+      const cached = readOutpostCache("personal");
+      if (cached) data = cached;
+      else writeOutpostCache("personal", data);
     });
+    let live = true;
+    const run = async (): Promise<void> => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      try {
+        if (!read) throw new Error("no Outpost API is connected in this build");
+        const next = await read();
+        if (!live) return;
+        const merged = { ...next, fetchedAt: next.fetchedAt ?? new Date().toISOString() };
+        writeOutpostCache("personal", merged);
+        data = merged;
+        refreshFailed = false;
+      } catch (err) {
+        console.error("[outpost] refresh failed", err);
+        if (live) refreshFailed = true;
+      } finally {
+        if (live) now = Date.now();
+      }
+    };
+    void run();
+    const timer = setInterval(() => void run(), OUTPOST_REFRESH_MS);
+    const stopTick = startNowTicker((t) => (now = t));
     return () => {
       live = false;
+      clearInterval(timer);
+      stopTick();
     };
   });
+
+  const freshness = $derived(freshnessLabel(data.fetchedAt, refreshFailed, now));
 
   const jobs = $derived(filterJobs(data.jobs, jobFilter));
   const runs = $derived(filterRuns(data.runs, runFilter));
@@ -165,7 +210,7 @@
     if (offline) return;
     data = {
       ...data,
-      jobs: data.jobs.map((row) => (row.id === job.id ? { ...row, paused: !row.paused, nextRun: row.paused ? "in 33m" : "paused" } : row)),
+      jobs: data.jobs.map((row) => (row.id === job.id ? { ...row, paused: !row.paused, nextRun: row.paused ? "" : "paused" } : row)),
     };
     writeOutpostCache("personal", data);
   }
@@ -208,6 +253,7 @@
       <h1>{tab === "overview" ? "Outpost" : tab === "jobs" ? "Scheduled jobs" : tab === "runs" ? "Runs" : tab === "logs" ? "Logs" : "Settings"}</h1>
       <span class="sub">{data.host.name} · {data.host.region}</span>
       <span class="status"><span class="dot" class:live={!offline} class:err={offline}></span>{offline ? "Unreachable" : "Online"}</span>
+      <span class="sub" class:err={refreshFailed} data-testid="outpost-freshness">{freshness}</span>
       <span class="grow"></span>
       <button type="button" class="btn" disabled={offline} onclick={() => (notice = "terminal")}>Open terminal</button>
       <button type="button" class="btn" disabled={offline}>Self-update</button>
@@ -237,8 +283,8 @@
           <div class="jrow" class:paused={job.paused} aria-current={selectedJob === job.id ? "true" : undefined} role="button" tabindex="0" onclick={() => (selectedJob = job.id)} onkeydown={(e) => e.key === "Enter" && (selectedJob = job.id)}>
             <span class="cell"><span class="nm">{job.name}</span><small>{job.detail}</small></span>
             <span>{job.cadenceLabel}</span>
-            <span>{job.nextRun}</span>
-            <span class="st result {job.status}" data-testid="job-last-result" title={job.lastResult}>{job.lastResult}</span>
+            <span data-testid="job-next-run">{nextRunLabel(job, now)}</span>
+            <span class="st result {job.status}" data-testid="job-last-result" title={lastResultLabel(job, now)}>{lastResultLabel(job, now)}</span>
             <span data-testid="job-alert">{alertLabel(job.alert, job.alertWhen)}</span>
             <span class="act">
               <button type="button" class="tab" disabled={offline} onclick={(e) => { e.stopPropagation(); togglePause(job); }}>{job.paused ? "Resume" : "Pause"}</button>
@@ -257,7 +303,7 @@
           {/each}
         </div>
         {#each runs as run (run.id)}
-          <div class="run"><span class="nm">{run.job}</span><span class="cell sub">{run.when} · {run.detail}</span><span class="st {run.status}"><span class="dot" class:live={run.status === "running"} class:err={run.status === "failed"}></span>{run.status}</span></div>
+          <div class="run"><span class="nm">{run.job}</span><span class="cell sub" data-testid="run-when">{runWhenLabel(run, now)} · {run.detail}</span><span class="st {run.status}"><span class="dot" class:live={run.status === "running"} class:err={run.status === "failed"}></span>{run.status}</span></div>
         {/each}
       </section>
     {/if}

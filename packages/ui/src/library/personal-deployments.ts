@@ -40,6 +40,8 @@ export interface PersonalDeployment {
   /** null = analytics unavailable for this app. Never shown as 0. */
   views30d: number | null;
   lastVisit: string;
+  /** Absolute last visit (ISO). The page re-renders `lastVisit` from it every 30 s (QA-069). */
+  lastVisitAt?: string;
   /** 1-based deploy step when status is deploying or building. */
   step: number | null;
   liveVersion: string;
@@ -209,6 +211,7 @@ export function deploymentFromApp(
     access: accessLabel(app),
     views30d: typeof views === "number" && Number.isFinite(views) ? views : null,
     lastVisit: relativeAge(str(app.lastVisitAt), now),
+    lastVisitAt: str(app.lastVisitAt) || undefined,
     step: null,
     liveVersion: version,
     nextVersion: version,

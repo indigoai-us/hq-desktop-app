@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 import { flushSync, mount, unmount } from "svelte";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import OutpostPage from "./OutpostPage.svelte";
-import { writeOutpostCache, fixtureOutpost } from "./outpost-model.js";
+import { writeOutpostCache, fixtureOutpost, lastResultLabel, type OutpostRefresher } from "./outpost-model.js";
 
 describe("US-034 OutpostPage", () => {
   let component: Record<string, unknown> | null = null;
@@ -10,12 +10,14 @@ describe("US-034 OutpostPage", () => {
   afterEach(async () => {
     if (component) await unmount(component);
     component = null;
+    vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
-  function mountPage() {
+  function mountPage(refresh?: OutpostRefresher) {
     const target = document.createElement("div");
     document.body.appendChild(target);
-    component = mount(OutpostPage, { target });
+    component = mount(OutpostPage, { target, props: { refresh } });
     flushSync();
     return target;
   }
@@ -41,8 +43,9 @@ describe("US-034 OutpostPage", () => {
     const cells = [...target.querySelectorAll<HTMLElement>("[data-testid='job-last-result']")];
     expect(cells.length).toBe(cache.jobs.length);
     cells.forEach((cell, i) => {
-      expect(cell.textContent).toBe(cache.jobs[i].lastResult);
-      expect(cell.getAttribute("title")).toBe(cache.jobs[i].lastResult);
+      const label = lastResultLabel(cache.jobs[i], Date.now());
+      expect(cell.textContent).toBe(label);
+      expect(cell.getAttribute("title")).toBe(label);
       expect(cell.classList.contains("result")).toBe(true);
     });
   });
@@ -113,5 +116,61 @@ describe("US-034 OutpostPage", () => {
     flushSync();
     expect(target.querySelectorAll("[data-testid='log-line']").length).toBe(before + 1);
     expect(target.textContent).toContain("tail · heartbeat ok");
+  });
+
+  describe("QA-069 freshness", () => {
+    const T0 = Date.parse("2026-10-02T18:00:00Z");
+
+    it("re-renders relative times every 30 s from absolute timestamps", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(T0);
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      writeOutpostCache("personal", fixtureOutpost(T0));
+      const target = mountPage();
+      const attio = () => [...target.querySelectorAll("[data-testid='job-last-result']")][1]?.textContent;
+      const next = () => [...target.querySelectorAll("[data-testid='job-next-run']")][1]?.textContent;
+      expect(attio()).toBe("failed · 19m ago · 3 in a row");
+      expect(next()).toBe("in 33m");
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      flushSync();
+      expect(attio()).toBe("failed · 29m ago · 3 in a row");
+      expect(next()).toBe("in 23m");
+      expect(target.querySelector("[data-testid='run-when']")?.textContent).toContain("2h ago");
+    });
+
+    it("refreshes from the Outpost on open, merges, and says when it updated", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(T0);
+      writeOutpostCache("personal", fixtureOutpost(T0 - 3 * 3_600_000));
+      const fresh = fixtureOutpost(T0);
+      fresh.jobs[1].lastResultNote = "4 in a row";
+      const refresh = vi.fn<OutpostRefresher>().mockResolvedValue(fresh);
+      const target = mountPage(refresh);
+      await vi.advanceTimersByTimeAsync(0);
+      flushSync();
+      expect(refresh).toHaveBeenCalledTimes(1);
+      expect(target.textContent).toContain("failed · 19m ago · 4 in a row");
+      expect(target.querySelector("[data-testid='outpost-freshness']")?.textContent).toBe("Updated just now");
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(refresh).toHaveBeenCalledTimes(2);
+    });
+
+    it("keeps the cache, logs, and shows the stale state when refresh fails", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(T0);
+      const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+      const cache = fixtureOutpost(T0 - 2 * 3_600_000);
+      cache.fetchedAt = new Date(T0 - 2 * 3_600_000).toISOString();
+      writeOutpostCache("personal", cache);
+      const refresh = vi.fn<OutpostRefresher>().mockRejectedValue(new Error("HTTP 502"));
+      const target = mountPage(refresh);
+      await vi.advanceTimersByTimeAsync(0);
+      flushSync();
+      const fresh = target.querySelector("[data-testid='outpost-freshness']")?.textContent;
+      expect(fresh).toBe("Couldn't refresh · showing data from 2h ago");
+      expect(fresh).not.toContain("502");
+      expect(errors).toHaveBeenCalledWith("[outpost] refresh failed", expect.any(Error));
+      expect(target.querySelectorAll("[data-testid='job-last-result']").length).toBe(cache.jobs.length);
+    });
   });
 });

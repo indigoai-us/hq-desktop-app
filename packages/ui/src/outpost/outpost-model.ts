@@ -54,7 +54,13 @@ export interface OutpostJob {
   cron: string;
   timezone: string;
   nextRun: string;
+  /** Absolute next run (ISO). When set, the label re-renders from it (QA-069). */
+  nextRunAt?: string;
   lastResult: string;
+  /** Absolute time of the last run (ISO). */
+  lastRunAt?: string;
+  /** Rest of the last-result label after the age, e.g. "3 in a row" or "38s". */
+  lastResultNote?: string;
   status: RunStatus;
   paused: boolean;
   alert: JobAlert;
@@ -71,6 +77,8 @@ export interface OutpostRun {
   jobId: string;
   job: string;
   when: string;
+  /** Absolute run start (ISO). When set, `when` is recomputed from it. */
+  at?: string;
   detail: string;
   status: RunStatus;
 }
@@ -91,6 +99,60 @@ export interface OutpostCache {
   unreachable: boolean;
   retryInSec: number;
   retryAttempt: number;
+  /** When this data last came from the Outpost (ISO). null = never refreshed. */
+  fetchedAt: string | null;
+}
+
+/** Reads the current state from the Outpost. Rejects when it cannot. */
+export type OutpostRefresher = () => Promise<OutpostCache>;
+
+/** Refresh cadence while the page is visible (QA-069). */
+export const OUTPOST_REFRESH_MS = 60_000;
+
+/** "19m ago" from an absolute ISO time. Empty when unreadable. */
+export function agoLabel(iso: string | undefined, now: number): string {
+  const at = iso ? Date.parse(iso) : Number.NaN;
+  if (Number.isNaN(at)) return "";
+  const minutes = Math.max(0, Math.round((now - at) / 60_000));
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+
+/** "in 33m" from an absolute ISO time. "due" once it has passed. */
+export function untilLabel(iso: string | undefined, now: number): string {
+  const at = iso ? Date.parse(iso) : Number.NaN;
+  if (Number.isNaN(at)) return "";
+  const minutes = Math.round((at - now) / 60_000);
+  if (minutes < 1) return "due";
+  if (minutes < 60) return `in ${minutes}m`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `in ${hours}h`;
+  return `in ${Math.round(hours / 24)}d`;
+}
+
+export function nextRunLabel(job: OutpostJob, now: number): string {
+  if (job.paused) return "paused";
+  return untilLabel(job.nextRunAt, now) || job.nextRun;
+}
+
+export function lastResultLabel(job: OutpostJob, now: number): string {
+  const age = agoLabel(job.lastRunAt, now);
+  if (!age) return job.lastResult;
+  return [job.status, age, job.lastResultNote].filter(Boolean).join(" · ");
+}
+
+export function runWhenLabel(run: OutpostRun, now: number): string {
+  return agoLabel(run.at, now) || run.when;
+}
+
+/** Header freshness line: "Updated 2m ago", or the stale state after a failed refresh. */
+export function freshnessLabel(fetchedAt: string | null, refreshFailed: boolean, now: number): string {
+  const age = agoLabel(fetchedAt ?? undefined, now);
+  if (refreshFailed) return age ? `Couldn't refresh · showing data from ${age}` : "Couldn't refresh · showing saved data";
+  return age ? `Updated ${age}` : "Refreshing…";
 }
 
 const caches = new Map<string, OutpostCache>();
@@ -103,7 +165,8 @@ export function writeOutpostCache(owner: string, value: OutpostCache): void {
   if (owner) caches.set(owner, value);
 }
 
-export function fixtureOutpost(): OutpostCache {
+export function fixtureOutpost(now: number = Date.now()): OutpostCache {
+  const at = (deltaMs: number) => new Date(now + deltaMs).toISOString();
   return {
     host: {
       name: "corey-outpost",
@@ -134,6 +197,8 @@ export function fixtureOutpost(): OutpostCache {
         timezone: "America/Los_Angeles",
         nextRun: "tomorrow 09:00",
         lastResult: "ok · today 09:00 · 38s",
+        lastRunAt: at(-2 * 3_600_000),
+        lastResultNote: "38s",
         status: "ok",
         paused: false,
         alert: "dm",
@@ -154,7 +219,10 @@ export function fixtureOutpost(): OutpostCache {
         cron: "0 * * * *",
         timezone: "America/Los_Angeles",
         nextRun: "in 33m",
+        nextRunAt: at(33 * 60_000),
         lastResult: "failed · 19m ago · 3 in a row",
+        lastRunAt: at(-19 * 60_000),
+        lastResultNote: "3 in a row",
         status: "failed",
         paused: false,
         alert: "dm",
@@ -188,9 +256,9 @@ export function fixtureOutpost(): OutpostCache {
       },
     ],
     runs: [
-      { id: "r1", jobId: "standup-brief", job: "standup-brief", when: "2h ago", detail: "38s · posted to #dev-standup", status: "ok" },
-      { id: "r2", jobId: "attio-call-sync", job: "attio-call-sync", when: "19m ago", detail: "0.8s · secret ATTIO_API_KEY not readable on Outpost", status: "failed" },
-      { id: "r3", jobId: "attio-call-sync", job: "attio-call-sync", when: "1h ago", detail: "0.8s · same error", status: "failed" },
+      { id: "r1", jobId: "standup-brief", job: "standup-brief", when: "2h ago", at: at(-2 * 3_600_000), detail: "38s · posted to #dev-standup", status: "ok" },
+      { id: "r2", jobId: "attio-call-sync", job: "attio-call-sync", when: "19m ago", at: at(-19 * 60_000), detail: "0.8s · secret ATTIO_API_KEY not readable on Outpost", status: "failed" },
+      { id: "r3", jobId: "attio-call-sync", job: "attio-call-sync", when: "1h ago", at: at(-79 * 60_000), detail: "0.8s · same error", status: "failed" },
     ],
     logs: [
       { id: "l1", t: "09:00:01.012", level: "info", job: "standup-brief", message: "job start · claude · skill indigo:standup-brief" },
@@ -200,6 +268,7 @@ export function fixtureOutpost(): OutpostCache {
     unreachable: false,
     retryInSec: 22,
     retryAttempt: 6,
+    fetchedAt: null,
   };
 }
 
