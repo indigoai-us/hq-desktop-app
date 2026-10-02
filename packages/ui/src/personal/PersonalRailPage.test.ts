@@ -170,4 +170,46 @@ describe("US-033 PersonalRailPage", () => {
     flushSync();
     expect(secrets.querySelector("[data-testid='sheet-new-secret']")).toBeNull();
   });
+
+  it("updates the detail pane when a connection row is clicked", () => {
+    const target = mountPage("connections");
+    const inspector = target.querySelector("[data-testid='connection-inspector']") as HTMLElement;
+    expect(inspector.querySelector("h2")?.textContent).toBe("GitHub");
+    (target.querySelector("[data-testid='connection-row-slack']") as HTMLElement).click();
+    flushSync();
+    expect(inspector.querySelector("h2")?.textContent).toBe("Slack");
+    expect(target.querySelector("[data-testid='connection-row-slack']")?.getAttribute("aria-current")).toBe("true");
+  });
+
+  it("updates the secret inspector when a secret row is clicked", async () => {
+    const target = mountPage("secrets");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+    const rows = [...target.querySelectorAll<HTMLButtonElement>("[data-testid='personal-secrets-list'] button.srow")];
+    const last = rows[rows.length - 1]!;
+    last.click();
+    flushSync();
+    const name = last.querySelector(".nm")?.textContent;
+    expect(target.querySelector("[data-testid='secret-inspector'] h2")?.textContent).toBe(name);
+  });
+
+  it("wires the row Disconnect button to a confirm that really disconnects", () => {
+    const target = mountPage("connections");
+    (target.querySelector("[data-testid='row-action-github']") as HTMLButtonElement).click();
+    flushSync();
+    expect(target.querySelector("[data-testid='sheet-confirm-disconnect']")).not.toBeNull();
+    (target.querySelector("[data-testid='confirm-disconnect']") as HTMLButtonElement).click();
+    flushSync();
+    expect(target.querySelector("[data-testid='sheet-confirm-disconnect']")).toBeNull();
+    expect(target.querySelector("[data-testid='connection-row-github']")).toBeNull();
+  });
+
+  it("marks the chosen bot policy in the detail pane", () => {
+    const target = mountPage("connections");
+    const policy = target.querySelector("[data-testid='detail-policy']") as HTMLElement;
+    const never = [...policy.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Never")!;
+    never.click();
+    flushSync();
+    expect(policy.querySelector("[aria-pressed='true']")?.textContent?.trim()).toBe("Never");
+  });
 });

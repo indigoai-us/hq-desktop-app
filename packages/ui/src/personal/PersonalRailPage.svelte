@@ -152,6 +152,15 @@
     }
   }
 
+  function disconnect(id: string): void {
+    data = {
+      ...data,
+      connections: data.connections.map((row) => (row.id === id ? { ...row, status: "available" as const } : row)),
+    };
+    writePersonalRailCache("personal", data);
+    sheet = null;
+  }
+
   function openConnect(app: string): void {
     connect = beginConnect(app);
     sheet = "connect-waiting";
@@ -166,7 +175,6 @@
 
 <section class="page" data-testid="personal-rail" data-page={page} data-story="US-033">
   <aside class="pane" aria-label={page === "secrets" ? "Secrets" : "Connections"}>
-    <div class="pane-head">{page === "secrets" ? "Secrets" : "Connections"}</div>
     {#if page === "secrets"}
       <button class="nav" type="button" aria-current={secretTab === "all"} onclick={() => (secretTab = "all")}>All <span>{data.secrets.length}</span></button>
       <button class="nav" type="button" aria-current={secretTab === "standard"} onclick={() => (secretTab = "standard")}>Standard</button>
@@ -192,8 +200,8 @@
     {#if page === "secrets"}
       <header class="toolbar">
         <h1>Secrets</h1>
-        <span class="chip" data-testid="personal-secrets-count">{countLabel("Secrets", secretRows.length)}</span>
-        <span class="chip">values never shown</span>
+        <span class="count" data-testid="personal-secrets-count">{countLabel("Secrets", secretRows.length)}</span>
+        <span class="sub">Values never shown</span>
         <span class="grow"></span>
         <input class="search" placeholder="Search by name" bind:value={query} />
         <button class="btn" type="button" data-testid="secrets-exec" onclick={() => secretCurrent && copyExec(secretCurrent.name)}>
@@ -233,7 +241,7 @@
               </span>
               <span>Personal</span>
               <span>{row.kind === "proxy" ? "Proxy-only" : "Standard"}</span>
-              <span class="mono">{row.rotated}</span>
+              <span>{row.rotated}</span>
               <span>{row.apps}</span>
             </button>
           {/each}
@@ -245,7 +253,7 @@
         <aside class="inspector" data-testid="secret-inspector">
           {#if secretCurrent && shareView}
             <p class="kind">Standard secret · personal</p>
-            <h2 class="mono">{shareView.name}</h2>
+            <h2>{shareView.name}</h2>
             <p class="meta mono">secrets/personal/{shareView.name}</p>
             <dl class="kv">
               <dt>Mode</dt><dd>{secretCurrent.kind === "proxy" ? "Proxy-only" : "Standard · injected as env"}</dd>
@@ -283,8 +291,8 @@
       <header class="toolbar">
         <h1>Connections</h1>
         <span class="sub">{connectionTab === "agents" ? "Agents & MCP · your bots and servers, acting as you" : "Apps you personally use · yours across every company"}</span>
-        <span class="chip live">{connectedCount} connected</span>
-        {#if attentionCount > 0}<span class="chip err">{attentionCount} needs attention</span>{/if}
+        <span class="status"><span class="dot" data-status="connected"></span>{connectedCount} connected</span>
+        {#if attentionCount > 0}<span class="status"><span class="dot" data-status="reconnect"></span>{attentionCount} needs attention</span>{/if}
         <span class="grow"></span>
         <button class="btn primary" type="button" data-testid="add-connection" onclick={() => (sheet = "connect")}>Add connection</button>
       </header>
@@ -295,10 +303,10 @@
             {#each connectionPage.rows as row (row.id)}
               <div class="agent" data-off={row.status === "available" ? "true" : undefined}>
                 <div class="srow agent-row" role="button" tabindex="0" aria-current={row.id === connectionCurrent?.id} onclick={() => (selectedConnection = row.id)} onkeydown={(event) => { if (event.key === "Enter") selectedConnection = row.id; }}>
-                  <span><span class="mark">{row.mark}</span> <span class="nm">{row.name}</span><span class="meta">{row.detail}</span></span>
-                  <span class="mono">{row.mcpServer}<span class="meta">{row.mcpNote}</span></span>
+                  <span class="cell"><span class="mark">{row.mark}</span><span class="nm">{row.name}</span><span class="meta">{row.detail}</span></span>
+                  <span><span class="mono">{row.mcpServer}</span> <span class="meta">{row.mcpNote}</span></span>
                   <span>{row.tools}</span>
-                  <span class="pol" data-testid={`policy-${row.id}`}>
+                  <span class="seg" data-testid={`policy-${row.id}`}>
                     {#each BOT_POLICIES as policy (policy)}
                       <button
                         class="tab"
@@ -321,13 +329,23 @@
           {:else}
             <div class="head"><span>App</span><span>Status</span><span>Scopes</span><span>Last used</span><span></span></div>
             {#each connectionPage.rows as row (row.id)}
-              <button class="srow" type="button" aria-current={row.id === connectionCurrent?.id} data-off={row.status === "available" ? "true" : undefined} onclick={() => (selectedConnection = row.id)}>
-                <span><span class="mark">{row.mark}</span> <span class="nm">{row.name}</span><span class="meta">{row.detail}</span></span>
-                <span class="chip" data-status={row.status}>{row.status === "connected" ? "Connected" : row.status === "reconnect" ? "Reconnect" : "Not connected"}</span>
-                <span>{row.scopes}</span>
-                <span class="mono">{row.lastUsed}</span>
-                <span class="btn tiny" role="presentation">{row.status === "available" ? "Connect" : row.status === "reconnect" ? "Reconnect" : "Disconnect"}</span>
-              </button>
+              <div class="srow" role="button" tabindex="0" data-testid={`connection-row-${row.id}`} aria-current={row.id === connectionCurrent?.id} data-off={row.status === "available" ? "true" : undefined} onclick={() => (selectedConnection = row.id)} onkeydown={(event) => { if (event.key === "Enter") selectedConnection = row.id; }}>
+                <span class="cell"><span class="mark">{row.mark}</span><span class="nm">{row.name}</span><span class="meta">{row.detail}</span></span>
+                <span class="status"><span class="dot" data-status={row.status}></span>{row.status === "connected" ? "Connected" : row.status === "reconnect" ? "Reconnect" : "Not connected"}</span>
+                <span class="cell">{row.scopes}</span>
+                <span>{row.lastUsed}</span>
+                <button
+                  class="link"
+                  type="button"
+                  data-testid={`row-action-${row.id}`}
+                  onclick={(event) => {
+                    event.stopPropagation();
+                    selectedConnection = row.id;
+                    if (row.status === "connected") sheet = "confirm-disconnect";
+                    else openConnect(row.name);
+                  }}
+                >{row.status === "available" ? "Connect" : row.status === "reconnect" ? "Reconnect" : "Disconnect"}</button>
+              </div>
             {/each}
             {#if connectionPage.remaining > 0}
               <ShowMoreRow shown={connectionPage.rows.length} total={connectionPage.total} next={connectionPage.next} noun="connections" testid="connections-show-more" onmore={() => (connectionPages += 1)} />
@@ -337,25 +355,25 @@
         </div>
         <aside class="inspector" data-testid="connection-inspector">
           {#if connectionCurrent}
-            <p class="kind">{connectionTab === "agents" ? "personal mcp server" : "personal connection"} · {connectionCurrent.status}</p>
+            <p class="kind">{connectionTab === "agents" ? "Personal MCP server" : "Personal connection"} · <span class="dot" data-status={connectionCurrent.status}></span>{connectionCurrent.status === "connected" ? "Connected" : connectionCurrent.status === "reconnect" ? "Reconnect" : "Not connected"}</p>
             <h2>{connectionCurrent.name}</h2>
             <p class="meta">{connectionCurrent.account}</p>
             <div class="act">
-              <button class="btn" type="button" onclick={() => openConnect(connectionCurrent.name)}>
+              <button class="btn" type="button" data-testid="reconnect" onclick={() => openConnect(connectionCurrent.name)}>
                 {connectionCurrent.status === "available" ? "Connect" : "Reconnect"}
               </button>
               <button class="btn" type="button" data-testid="disconnect" onclick={() => (sheet = "confirm-disconnect")}>Disconnect</button>
             </div>
             <dl class="kv">
-              <dt>Scopes</dt><dd class="mono">{connectionCurrent.scopes}</dd>
+              <dt>Scopes</dt><dd>{connectionCurrent.scopes}</dd>
               <dt>Last used</dt><dd>{connectionCurrent.lastUsed || "—"}</dd>
               {#if connectionCurrent.secretName}
                 <dt>Secret</dt><dd class="mono">{connectionCurrent.secretName}</dd>
               {/if}
               <dt>MCP</dt><dd class="mono">{connectionCurrent.mcpServer}</dd>
             </dl>
-            <p class="kind">When bots act</p>
-            <div class="pol" data-testid="detail-policy">
+            <p class="label">When bots act</p>
+            <div class="seg" data-testid="detail-policy">
               {#each BOT_POLICIES as policy (policy)}
                 <button class="tab" type="button" aria-pressed={connectionCurrent.policy === policy} onclick={() => setPolicy(connectionCurrent.id, policy)}>
                   {BOT_POLICY_LABEL[policy]}
@@ -406,6 +424,7 @@
       {:else if sheet === "confirm-disconnect"}
         <h2>Disconnect {connectionCurrent?.name}?</h2>
         <p class="meta">Bots lose this connection on their next run.</p>
+        <button class="btn danger" type="button" data-testid="confirm-disconnect" onclick={() => connectionCurrent && disconnect(connectionCurrent.id)}>Disconnect</button>
       {/if}
       <button class="btn" type="button" onclick={() => (sheet = null)}>Close</button>
     </div>
@@ -413,48 +432,67 @@
 </section>
 
 <style>
-  .page { display: grid; grid-template-columns: 260px minmax(0, 1fr); height: 100%; min-height: 0; color: var(--v4-text-1); background: var(--v4-ground); position: relative; }
-  .pane { border-right: 1px solid var(--v4-rowline); padding: 12px; overflow: auto; background: var(--v4-secondary-sidebar); }
-  .pane-head, h1 { font-size: var(--type-section, 17px); font-weight: 600; margin: 0; }
-  .nav, .tab, .btn { background: transparent; color: var(--v4-text-2); border: 0; border-radius: 6px; padding: 6px 8px; text-align: left; }
-  .nav { display: flex; justify-content: space-between; width: 100%; }
-  .nav[aria-current="true"], .tab[aria-pressed="true"], .srow[aria-current="true"] { background: var(--v4-active-row, var(--v4-hover)); color: var(--v4-text-1); }
+  /* Console-rail page chrome measured from Messages (docs/design-standard-console-rail.md):
+     one 20px/500 title, 13px everywhere else, 31px rows, status as dot plus text,
+     background-only selection, mono only for secret names, paths and MCP ids. */
+  .page { display: grid; grid-template-columns: 260px minmax(0, 1fr); height: 100%; min-height: 0; color: var(--t1, var(--v4-text-1)); background: var(--v4-ground); position: relative; font: 400 13px/1.45 var(--font-ui, "Geist", -apple-system, sans-serif); }
+  button { font: inherit; font-size: 13px; }
+  .pane { border-right: 1px solid var(--line, var(--v4-rowline)); padding: 12px 14px; overflow: auto; background: var(--v4-secondary-sidebar); display: flex; flex-direction: column; gap: 1px; }
+  h1 { font-size: var(--type-title, 20px); font-weight: var(--type-title-weight, 500); line-height: var(--type-title-line, 1.25); margin: 0 4px 0 0; }
+  .nav { display: flex; justify-content: space-between; align-items: center; width: 100%; height: 31px; box-sizing: border-box; padding: 7px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--t2, var(--v4-text-2)); text-align: left; cursor: pointer; }
+  .nav span { color: var(--t3, var(--v4-text-3)); font-variant-numeric: tabular-nums; }
+  .nav:hover, .srow:hover, .link:hover { background: var(--hover, var(--v4-hover)); }
+  .nav[aria-current="true"], .seg .tab[aria-pressed="true"], .srow[aria-current="true"] { background: var(--sel, var(--v4-active-row)); color: var(--t1, var(--v4-text-1)); box-shadow: none; }
   .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-  .toolbar { display: flex; align-items: center; gap: 8px; padding: 12px 16px; }
+  .toolbar { display: flex; align-items: center; gap: 8px; height: 52px; flex: none; box-sizing: border-box; padding: 0 20px; border-bottom: 1px solid var(--line, var(--v4-rowline)); }
   .grow { flex: 1; }
-  .sub, .meta, .kind, .foot, .sec { color: var(--v4-text-3); font-size: var(--type-metadata, 13px); margin: 8px 0; }
-  .chip { font-size: var(--type-metadata, 13px); color: var(--v4-text-3); border: 1px solid var(--v4-rowline); border-radius: 999px; padding: 2px 8px; }
-  .chip.err, .chip[data-status="reconnect"] { color: var(--v4-error); }
-  .chip.live, .chip[data-status="connected"] { color: var(--v4-ok); }
-  .search, .secret { height: 28px; border-radius: 6px; border: 1px solid var(--v4-control-border); background: var(--v4-control-faint); color: var(--v4-text-1); padding: 0 8px; }
-  .btn { border: 1px solid var(--v4-control-border); background: var(--v4-control-faint); height: 28px; }
+  .sub, .meta, .kind, .foot, .count { color: var(--t3, var(--v4-text-3)); font-size: 13px; }
+  .meta, .kind, .foot { margin: 8px 0; }
+  .sec, .label { color: var(--t2, var(--v4-text-2)); font-size: 13px; font-weight: 500; margin: 0; padding: 12px 8px 4px; }
+  .label { padding: 16px 0 6px; }
+  .count { font-variant-numeric: tabular-nums; }
+  .status { display: inline-flex; align-items: center; gap: 6px; color: var(--t2, var(--v4-text-2)); white-space: nowrap; }
+  .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--t3, var(--v4-text-3)); flex: none; margin-right: 6px; }
+  .status .dot { margin-right: 0; }
+  .dot[data-status="connected"] { background: var(--ok, var(--v4-ok)); }
+  .dot[data-status="reconnect"] { background: var(--red, var(--v4-error)); }
+  .search, .secret { height: 28px; box-sizing: border-box; border-radius: 6px; border: 1px solid var(--line2, var(--v4-control-border)); background: var(--btn-bg, var(--v4-control-faint)); color: var(--t1, var(--v4-text-1)); padding: 0 8px; font: inherit; font-size: 13px; }
+  .btn { height: 28px; box-sizing: border-box; border: 1px solid var(--line2, var(--v4-control-border)); border-radius: 6px; padding: 0 10px; background: var(--btn-bg, var(--v4-control-faint)); color: var(--t1, var(--v4-text-1)); white-space: nowrap; cursor: pointer; flex: none; }
   .btn.primary { background: var(--v4-primary-bg); color: var(--v4-primary-fg); border-color: transparent; }
+  .btn.danger { color: var(--red, var(--v4-error)); }
+  .link { height: 26px; border: 0; border-radius: 6px; padding: 0 8px; background: transparent; color: var(--t2, var(--v4-text-2)); cursor: pointer; justify-self: end; white-space: nowrap; }
   .split { display: grid; grid-template-columns: minmax(0, 1fr) 320px; min-height: 0; flex: 1; }
   .list, .inspector { min-height: 0; overflow: auto; }
-  .inspector { border-left: 1px solid var(--v4-rowline); background: var(--v4-secondary-sidebar); padding: 16px; }
-  .head, .srow { display: grid; grid-template-columns: minmax(0, 1.4fr) 90px 100px 90px minmax(0, 1fr); gap: 8px; align-items: center; padding: 8px; }
-  .head.agents, .agent-row { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) 64px 186px; }
-  .head { font-family: var(--font-mono, ui-monospace, monospace); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--v4-text-3); }
-  .srow { width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--v4-rowline); background: transparent; color: var(--v4-text-2); border-radius: 6px; }
-  .srow:hover { background: var(--v4-hover); }
-  .srow[data-off="true"] { color: var(--v4-text-3); }
-  .nm { color: var(--v4-text-1); }
-  .mono { font-family: var(--font-mono, ui-monospace, monospace); }
-  .mark { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 4px; background: var(--v4-control-faint); font-size: 9px; }
-  .kv { display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 4px 10px; font-size: var(--type-metadata, 13px); }
-  .kv dt { color: var(--v4-text-3); margin: 0; }
-  .kv dd { margin: 0; }
-  .act, .pol { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
-  .pol { justify-content: flex-end; }
-  .tab { border: 1px solid var(--v4-control-border); padding: 3px 6px; font-size: 11px; }
-  .bot { margin: 2px 8px; font-size: 12px; color: var(--v4-text-2); }
-  h2 { font-size: var(--type-body, 15px); margin: 4px 0; }
-  .sheet { position: absolute; right: 16px; bottom: 16px; width: 320px; padding: 16px; border: 1px solid var(--v4-rowline); border-radius: 10px; background: var(--v4-raised, var(--v4-ground)); display: flex; flex-direction: column; gap: 8px; }
-  .tiny { pointer-events: none; }
-  .state { padding: 16px 8px; color: var(--v4-text-2); font-size: var(--type-metadata, 13px); }
+  .list { padding: 8px 12px; }
+  .inspector { border-left: 1px solid var(--line, var(--v4-rowline)); background: var(--v4-secondary-sidebar); padding: 24px 20px; }
+  .head, .srow { display: grid; grid-template-columns: minmax(0, 1.4fr) 110px 100px 90px minmax(0, 1fr); gap: 8px; align-items: center; padding: 0 8px; }
+  .head.agents, .agent-row { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) 48px auto; }
+  .head { height: 31px; color: var(--t3, var(--v4-text-3)); }
+  .srow { width: 100%; height: 31px; box-sizing: border-box; text-align: left; border: 0; background: transparent; color: var(--t2, var(--v4-text-2)); border-radius: 8px; cursor: pointer; }
+  .srow > span, .cell { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cell { display: flex; align-items: center; gap: 8px; }
+  .srow[data-off="true"] { color: var(--t3, var(--v4-text-3)); }
+  .nm { color: var(--t1, var(--v4-text-1)); margin-right: 8px; }
+  .srow .meta { margin: 0; overflow: hidden; text-overflow: ellipsis; }
+  .mono { font-family: var(--font-mono, "Geist Mono", ui-monospace, monospace); }
+  .mark { display: inline-grid; place-items: center; width: 16px; height: 16px; border-radius: 4px; background: var(--btn-bg, var(--v4-control-faint)); color: var(--t2, var(--v4-text-2)); font-size: 10px; flex: none; }
+  .kv { display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 6px 10px; margin: 16px 0; }
+  .kv dt { color: var(--t3, var(--v4-text-3)); margin: 0; }
+  .kv dd { margin: 0; color: var(--t1, var(--v4-text-1)); overflow-wrap: anywhere; }
+  .act { display: flex; gap: 6px; flex-wrap: wrap; margin: 12px 0; }
+  .seg { display: inline-flex; gap: 2px; padding: 2px; width: max-content; border: 1px solid var(--panel-border, var(--v4-control-border)); border-radius: 6px; background: var(--hover, var(--v4-hover)); justify-self: end; }
+  .tab { border: 0; border-radius: 4px; padding: 4px 8px; background: transparent; color: var(--t2, var(--v4-text-2)); cursor: pointer; }
+  .tab:hover { color: var(--t1, var(--v4-text-1)); }
+  .sheet .tab[aria-pressed="true"] { background: var(--sel, var(--v4-active-row)); color: var(--t1, var(--v4-text-1)); }
+  .bot { margin: 0; padding: 4px 8px 4px 32px; min-height: 28px; box-sizing: border-box; color: var(--t2, var(--v4-text-2)); }
+  .inspector .bot { padding-left: 0; }
+  h2 { font-size: 13px; font-weight: 500; margin: 0 0 2px; color: var(--t1, var(--v4-text-1)); }
+  .kind { margin: 0 0 8px; display: flex; align-items: center; }
+  .sheet { position: absolute; right: 16px; bottom: 16px; width: 320px; padding: 16px 20px; border: 1px solid var(--panel-border, var(--v4-rowline)); border-radius: 8px; background: var(--panel-bg, var(--v4-raised, var(--v4-ground))); box-shadow: var(--panel-shadow, none); display: flex; flex-direction: column; gap: 8px; }
+  .state { padding: 16px 8px; color: var(--t2, var(--v4-text-2)); }
   .state p { margin: 0 0 8px; }
   .state .btn { margin: 0 8px 8px 0; }
-  .tiny-btn { height: 22px; padding: 0 8px; margin-left: 6px; }
-  .skel { height: 36px; margin: 8px; border-radius: 6px; background: linear-gradient(90deg, var(--v4-control-faint), var(--v4-hover), var(--v4-control-faint)); background-size: 200% 100%; animation: personal-row-skel 1.1s linear infinite; }
+  .tiny-btn { height: 26px; padding: 0 8px; margin-left: 6px; }
+  .skel { height: 31px; margin: 0 0 2px; border-radius: 8px; background: linear-gradient(90deg, var(--btn-bg, var(--v4-control-faint)), var(--hover, var(--v4-hover)), var(--btn-bg, var(--v4-control-faint))); background-size: 200% 100%; animation: personal-row-skel 1.1s linear infinite; }
   @keyframes personal-row-skel { from { background-position: 100% 0; } to { background-position: -100% 0; } }
 </style>
