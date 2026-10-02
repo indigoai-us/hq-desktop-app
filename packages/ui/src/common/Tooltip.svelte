@@ -29,12 +29,19 @@
     delay?: number;
     /** Horizontal alignment of the bubble relative to the trigger. */
     align?: "center" | "start" | "end";
+    /** Which side of the trigger the bubble opens on. The app rail uses right. */
+    side?: "bottom" | "right";
     /** The control this tooltip describes. Receives the tooltip element id. */
     trigger: Snippet<[string]>;
   }
 
-  let { label = null, delay = 400, align = "center", trigger }: Props =
-    $props();
+  let {
+    label = null,
+    delay = 400,
+    align = "center",
+    side = "bottom",
+    trigger,
+  }: Props = $props();
 
   const id = `tooltip-${Math.random().toString(36).slice(2, 10)}`;
   let open = $state(false);
@@ -90,6 +97,7 @@
       class="tooltip-bubble"
       class:align-start={align === "start"}
       class:align-end={align === "end"}
+      class:side-right={side === "right"}
       role="tooltip"
       {id}
       data-testid="tooltip-bubble"
@@ -141,6 +149,21 @@
     left: auto;
     right: 0;
     transform: none;
+  }
+
+  .tooltip-bubble.side-right {
+    top: 50%;
+    left: calc(100% + 8px);
+    right: auto;
+    transform: translateY(-50%);
+    animation-name: tooltip-in-right;
+  }
+
+  @keyframes tooltip-in-right {
+    from {
+      opacity: 0;
+      transform: translateY(-50%) translateX(-2px);
+    }
   }
 
   @keyframes tooltip-in {

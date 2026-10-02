@@ -12,8 +12,6 @@
     createLaunchActions,
     type LaunchKey,
   } from "../settings/launch-actions.js";
-  import { safeHref } from "../common/markdown.js";
-  import { HQ_CONSOLE_BASE } from "../common/hq-console.js";
   import Tooltip from "../common/Tooltip.svelte";
   import BrandLogoSlot from "../brand/BrandLogoSlot.svelte";
   import { isEntitledBrand, type CachedBrand } from "../brand/brand.js";
@@ -67,9 +65,6 @@
     oncommand?: () => void;
     onaccount?: () => void;
     onOpenSettings?: (tab?: SettingsTab) => void;
-    onopenMeetings?: () => void;
-    /** Opens the Files explorer. Omitted on hosts without local files. */
-    onopenFiles?: () => void;
     /** Opens the Projects page. Omitted on hosts without local files. */
     onopenProjects?: () => void;
     onopenNotifications?: () => void;
@@ -170,8 +165,6 @@
     onresolveconflicts,
     sidebarCollapsed = false,
     ontogglesidebar,
-    onopenMeetings,
-    onopenFiles,
     onopenProjects,
     onopenNotifications,
     primaryAction,
@@ -476,103 +469,6 @@
       window.removeEventListener("keydown", onKeyDown);
     };
   });
-
-  /**
-   * HQ Console (hq.computer) opens in the DEFAULT BROWSER, never the webview.
-   * Routed through the same host opener the message-body autolinks use
-   * (75b1bee1): safeHref-guarded, then `onopenurl`, then a noopener
-   * `window.open` fallback.
-   */
-  const HQ_CONSOLE_URL = HQ_CONSOLE_BASE;
-
-  function openHqConsole(): void {
-    coreOpen = false;
-    launchOpen = false;
-    const href = safeHref(HQ_CONSOLE_URL);
-    if (!href) return;
-    if (onopenurl) onopenurl(href);
-    else window.open(href, "_blank", "noopener,noreferrer");
-  }
-
-  /**
-   * Open the user's CONFIGURED HQ folder in the OS file manager.
-   *
-   * The renderer passes NO path. `revealInFinder` speaks the HQ-RELATIVE
-   * contract (what FilePreviewPane correctly uses for a selected file), and
-   * that contract cannot express the HQ ROOT — an absolute `hqFolderPath` is
-   * rejected outright, which is what "invalid HQ-relative path" was. The host
-   * resolves the configured root itself, so this works for whatever folder
-   * THIS user configured, wherever it lives, on any OS. Nothing here is
-   * machine-specific and nothing is hardcoded.
-   *
-   * `hqFolderPath` is still read, but ONLY to decide the button's enabled
-   * state and tooltip — never as the reveal argument.
-   *
-   * Hidden entirely on hosts without local-file support (web), where the
-   * platform seam reports the command unavailable.
-   */
-  const canRevealFolder = $derived(
-    Boolean(adapter?.capabilities?.localFiles) ||
-      Boolean(adapter?.isAvailable?.("localFiles")),
-  );
-  let revealing = $state(false);
-  let revealError = $state<string | null>(null);
-
-  /**
-   * Config presence gates the control. `null` = still loading (allow the
-   * click; the handler awaits resolution), `""` = genuinely not configured.
-   */
-  const hqFolderConfigured = $derived(
-    hqFolderPath === null && launchFolder === null
-      ? null
-      : resolvedLaunchFolder.length > 0,
-  );
-
-  /**
-   * Resolve the configured HQ folder once on mount so the button shows its
-   * true enabled/disabled state immediately, rather than looking available
-   * and only failing on click.
-   */
-  $effect(() => {
-    if (canRevealFolder) void ensureLaunchFolder();
-  });
-
-  const revealTooltip = $derived(
-    revealError ??
-      (hqFolderConfigured === false
-        ? "HQ folder not configured"
-        : "Open HQ folder"),
-  );
-
-  async function revealHqFolder(): Promise<void> {
-    if (revealing) return;
-    coreOpen = false;
-    launchOpen = false;
-    revealing = true;
-    revealError = null;
-    try {
-      // Resolve config first purely to give a precise disabled/error message;
-      // the host does its own authoritative resolution.
-      await ensureLaunchFolder();
-      if (!resolvedLaunchFolder) {
-        revealError = "HQ folder not configured";
-        setTimeout(() => (revealError = null), 6000);
-        return;
-      }
-      const res = await adapter.files.revealHqRoot();
-      if (!res.ok) throw new Error(res.message ?? "Reveal is unavailable");
-    } catch (err) {
-      // Surface the REAL reason. A generic string is what hid both the
-      // wrong-command-name bug and the wrong-argument-contract bug.
-      console.error("titlebar: open HQ folder failed", err);
-      const detail = err instanceof Error ? err.message : String(err);
-      revealError = `Could not open HQ folder: ${detail}`;
-      setTimeout(() => (revealError = null), 6000);
-    } finally {
-      revealing = false;
-    }
-  }
-
   const LAUNCH_ITEMS: ReadonlyArray<{ key: LaunchKey; label: string }> = [
     { key: "claude", label: "Claude Code" },
     { key: "codex", label: "Codex (ChatGPT)" },
@@ -872,134 +768,6 @@
         {/snippet}
       </Tooltip>
     {/if}
-    {#if onopenFiles}
-      <Tooltip label="Files">
-        {#snippet trigger(describedBy: string)}
-          <button
-            type="button"
-            class="v4-icon-btn"
-            data-testid="titlebar-files"
-            aria-label="Files"
-            aria-describedby={describedBy || undefined}
-            onclick={() => {
-              coreOpen = false;
-              launchOpen = false;
-              onopenFiles?.();
-            }}
-          >
-            <svg class="v4-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <path
-                d="M4 1.75h5.1L12.25 4.9v8.35a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2.75a1 1 0 0 1 1-1Z"
-                stroke="currentColor"
-                stroke-width="1.2"
-                stroke-linejoin="round"
-              />
-              <path d="M9 1.9V5h3.1M5.5 8.25h4.5M5.5 10.75h3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
-            </svg>
-          </button>
-        {/snippet}
-      </Tooltip>
-    {/if}
-    {#if canRevealFolder}
-      <Tooltip label={revealTooltip}>
-        {#snippet trigger(describedBy: string)}
-          <button
-            type="button"
-            class="v4-icon-btn"
-            data-testid="titlebar-reveal-folder"
-            aria-label="Open HQ folder"
-            aria-describedby={describedBy || undefined}
-            disabled={revealing || hqFolderConfigured === false}
-            onclick={() => void revealHqFolder()}
-          >
-            <svg
-              class="v4-icon"
-              viewBox="0 0 16 16"
-              fill="none"
-              aria-hidden="true"
-            >
-              <path
-                d="M1.75 4.25a1.5 1.5 0 0 1 1.5-1.5h2.6l1.4 1.6h5a1.5 1.5 0 0 1 1.5 1.5v6a1.5 1.5 0 0 1-1.5 1.5h-9a1.5 1.5 0 0 1-1.5-1.5v-7.6Z"
-                stroke="currentColor"
-                stroke-width="1.2"
-                stroke-linejoin="round"
-              />
-            </svg>
-          </button>
-        {/snippet}
-      </Tooltip>
-    {/if}
-    <Tooltip label="Open HQ Console">
-      {#snippet trigger(describedBy: string)}
-        <button
-          type="button"
-          class="v4-icon-btn"
-          data-testid="titlebar-console"
-          aria-label="Open HQ Console"
-          aria-describedby={describedBy || undefined}
-          onclick={openHqConsole}
-        >
-          <svg
-            class="v4-icon"
-            viewBox="0 0 16 16"
-            fill="none"
-            aria-hidden="true"
-          >
-            <circle
-              cx="8"
-              cy="8"
-              r="5.75"
-              stroke="currentColor"
-              stroke-width="1.2"
-            />
-            <path
-              d="M2.5 8h11M8 2.25c1.6 1.7 2.4 3.6 2.4 5.75S9.6 12.05 8 13.75c-1.6-1.7-2.4-3.6-2.4-5.75S6.4 3.95 8 2.25Z"
-              stroke="currentColor"
-              stroke-width="1.2"
-              stroke-linejoin="round"
-            />
-          </svg>
-        </button>
-      {/snippet}
-    </Tooltip>
-    <Tooltip label="Meetings">
-      {#snippet trigger(describedBy: string)}
-        <button
-          type="button"
-          class="v4-icon-btn"
-          data-testid="titlebar-meetings"
-          aria-label="Meetings"
-          aria-describedby={describedBy || undefined}
-          onclick={() => {
-            coreOpen = false;
-            onopenMeetings?.();
-          }}
-        >
-          <svg
-            class="v4-icon"
-            viewBox="0 0 16 16"
-            fill="none"
-            aria-hidden="true"
-          >
-            <rect
-              x="1.75"
-              y="4.25"
-              width="8.5"
-              height="7.5"
-              rx="1.5"
-              stroke="currentColor"
-              stroke-width="1.2"
-            />
-            <path
-              d="M10.75 6.2 14.25 4.4v7.2l-3.5-1.8V6.2Z"
-              stroke="currentColor"
-              stroke-width="1.2"
-              stroke-linejoin="round"
-            />
-          </svg>
-        </button>
-      {/snippet}
-    </Tooltip>
     {#if syncLabel?.text}
       <Tooltip label={syncLabel.detail}>
         {#snippet trigger(describedBy: string)}

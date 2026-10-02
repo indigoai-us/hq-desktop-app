@@ -36,6 +36,15 @@
   import V4TitleBar from "../home/V4TitleBar.svelte";
   import ChannelSkeleton from "./ChannelSkeleton.svelte";
   import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
+  import AppRail from "./AppRail.svelte";
+  import {
+    RAIL_SHORTCUT_COUNT,
+    activeRailItemId,
+    railDestination,
+    railItems,
+    railPlaceholderForPage,
+    type RailItem,
+  } from "./app-rail.js";
   import ChatSidebar, {
     type ChatSidebarActions,
   } from "../chat/ChatSidebar.svelte";
@@ -6566,6 +6575,9 @@
       };
     }
     if (destination.kind === "extra") {
+      if (railPlaceholderForPage(destination.page)) {
+        return { status: "ready", destination };
+      }
       if (!extraPages?.[destination.page]) {
         return {
           status: "rejected",
@@ -8215,6 +8227,34 @@
     void navigate({ kind: "library", tab: next });
   }
 
+  const railItemList = $derived(
+    railItems(
+      (companies ?? [])
+        .filter((c) => c.kind === "company" && (c.cloudUid ?? "").trim())
+        .map((c) => ({ uid: c.cloudUid!.trim(), label: c.displayName || c.slug })),
+      resolvedAccountLabel ?? "You",
+    ),
+  );
+  const activeRailId = $derived(
+    activeRailItemId({ view, tenantCompanyId, extraPageId, settingsSection }),
+  );
+  const railPlaceholder = $derived(
+    view === "extra" ? railPlaceholderForPage(extraPageId) : null,
+  );
+
+  /** Rail clicks and ⌘1–⌘9 both land here, so history sees one push each. */
+  function selectRailItem(item: RailItem): void {
+    meetingFocusRequest = null;
+    if (item.kind === "home") changeTenantCompany(null);
+    else if (item.kind === "company") changeTenantCompany(item.companyUid);
+    void navigate(railDestination(item, { localFiles: !isWeb }));
+  }
+
+  function selectRailIndex(index: number): void {
+    const item = railItemList[index];
+    if (item) selectRailItem(item);
+  }
+
   function toggleNotifications(): void {
     if (view === "notifications") void navigate({ kind: "messages" });
     else void navigate({ kind: "notifications" });
@@ -8510,66 +8550,17 @@
         return true;
       },
     },
-    {
-      id: "view.notifications",
-      keys: "Mod+1",
-      label: "Notifications",
-      group: "Views",
-      run: () => {
-        meetingFocusRequest = null;
-        void navigate({ kind: "notifications" });
-      },
-    },
-    {
-      id: "view.meetings",
-      keys: "Mod+2",
-      label: "Meetings",
-      group: "Views",
-      run: () => {
-        meetingFocusRequest = null;
-        void navigate({ kind: "meetings" });
-      },
-    },
-    ...(adapter.kind !== "web"
-      ? [
-          {
-            id: "view.marketplace",
-            keys: "Mod+3",
-            label: "Marketplace",
-            group: "Views",
-            run: () => openLibrary("marketplace"),
-          } satisfies ShortcutBinding,
-        ]
-      : []),
-    {
-      id: "view.library",
-      keys: "Mod+4",
-      label: "Library",
-      group: "Views",
-      run: () => openLibrary("skills"),
-    },
-    ...(adapter.kind !== "web"
-      ? [
-          {
-            id: "view.projects",
-            keys: "Mod+6",
-            label: "Projects",
-            group: "Views",
-            run: () => {
-              void navigate({ kind: "projects" });
-            },
-          } satisfies ShortcutBinding,
-          {
-            id: "view.files",
-            keys: "Mod+5",
-            label: "Files",
-            group: "Views",
-            run: () => {
-              void navigate({ kind: "explorer" });
-            },
-          } satisfies ShortcutBinding,
-        ]
-      : []),
+    // ⌘1–⌘9 select the rail item at that position (console-rail US-003).
+    ...Array.from({ length: RAIL_SHORTCUT_COUNT }, (_, index) =>
+      ({
+        id: `view.rail.${index + 1}`,
+        keys: `Mod+${index + 1}`,
+        label:
+          index === 0 ? "Home" : index === 1 ? "Meetings" : `Rail item ${index + 1}`,
+        group: "Views",
+        run: () => selectRailIndex(index),
+      }) satisfies ShortcutBinding,
+    ),
     {
       id: "conversation.next",
       keys: "Mod+Shift+]",
@@ -8859,14 +8850,8 @@
     coreUseFixtures={coreFixtures}
     ontogglesidebar={() => (sidebarCollapsed = !sidebarCollapsed)}
     onopenNotifications={toggleNotifications}
-    onopenMeetings={() => {
-      void navigate({ kind: "meetings" });
-    }}
     onopenProjects={isWeb ? undefined : () => {
       void navigate({ kind: "projects" });
-    }}
-    onopenFiles={isWeb ? undefined : () => {
-      void navigate({ kind: "explorer" });
     }}
     onOpenSettings={() => openSettings()}
     onopenLibrary={() => openLibrary("skills")}
@@ -8880,6 +8865,21 @@
     onforward={() => void goForward()}
     launchMenuForcedOpen={tourLaunchOpen}
   />
+
+  <!-- Console rail (US-003): 48 px titlebar over a 56 px rail, the 260 px
+       sidepane, and flexible content. Banners and every destination render
+       in the column to the right of the rail. -->
+  <div class="shell-row">
+  {#if !phoneViewport}
+    <AppRail
+      items={railItemList}
+      activeId={activeRailId}
+      {unreadCount}
+      youInitials={resolvedAccountInitials ?? ""}
+      onselect={selectRailItem}
+    />
+  {/if}
+  <div class="shell-column">
 
   {#if recommendBanner}
     <RecommendedUpdateBanner
@@ -9194,6 +9194,16 @@
               void leaveCurrentDestination();
             }}
           />
+        {:else if railPlaceholder}
+          <section
+            class="rail-placeholder"
+            data-testid="rail-placeholder"
+            data-story={railPlaceholder.story}
+          >
+            <h1>{railPlaceholder.title}</h1>
+            <p>{railPlaceholder.summary}</p>
+            <p class="rail-placeholder-story">Built in {railPlaceholder.story}.</p>
+          </section>
         {:else if view === "extra" && extraPageId && extraPages?.[extraPageId]}
           {@const Page = extraPages[extraPageId].component}
           <div class="extra-page-host" data-testid="extra-page-host" data-page={extraPageId}>
@@ -10287,6 +10297,8 @@
       onclose={() => (linkMenu = null)}
     />
   {/if}
+  </div>
+  </div>
 </div>
 
 <style>
@@ -10334,6 +10346,49 @@
     .desktop-shell.has-window-controls {
     --titlebar-height: calc(48px / 1.12);
     --titlebar-leading-inset: calc(96px / 1.12);
+  }
+
+  .shell-row {
+    display: flex;
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .shell-column {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .rail-placeholder {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 32px;
+    color: var(--v4-text-2);
+    font-size: 14px;
+  }
+
+  .rail-placeholder h1 {
+    margin: 0 0 4px;
+    color: var(--v4-text-1);
+    font-size: 20px;
+    font-weight: 600;
+  }
+
+  .rail-placeholder p {
+    margin: 0;
+  }
+
+  .rail-placeholder-story {
+    color: var(--v4-text-3);
+    font: 400 12px/1.4 var(--font-mono, monospace);
   }
 
   .desktop-body {

@@ -107,9 +107,9 @@ export function tourSteps(ctx: TourContext = {}): TourStep[] {
       body: company
         ? `Click here to open your files. Everything HQ knows about your company lives there, synced to ${thisComputerNoun()} and shared with your team.`
         : `Click here to open your files, synced to ${thisComputerNoun()}. Your company's files appear there once setup creates it.`,
-      // Hidden on the web host: the card centers.
-      targets: ['[data-testid="titlebar-files"]'],
-      placement: "bottom",
+      // The rail's Library item opens the Files explorer.
+      targets: ['[data-testid="rail-library"]'],
+      placement: "right",
       onEnter: "none",
     },
     {
@@ -140,16 +140,16 @@ export function tourSteps(ctx: TourContext = {}): TourStep[] {
       id: "meetings",
       title: "Meetings",
       body: "HQ can take notes on your calls and turn them into summaries and action items.",
-      targets: ['[data-testid="titlebar-meetings"]'],
-      placement: "bottom",
+      targets: ['[data-testid="rail-meetings"]'],
+      placement: "right",
       onEnter: "none",
     },
     {
       id: "web-console",
-      title: "Open HQ on the web",
-      body: "This opens hq.computer, where you manage your team, billing and integrations.",
-      targets: ['[data-testid="titlebar-console"]'],
-      placement: "bottom",
+      title: "Your personal tools",
+      body: "Deployments, telemetry, secrets, connections and Outpost live on the left rail.",
+      targets: ['[data-testid="rail-deployments"]'],
+      placement: "right",
       onEnter: "none",
     },
     {

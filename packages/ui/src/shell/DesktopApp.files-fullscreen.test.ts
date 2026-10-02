@@ -61,7 +61,7 @@ describe("DesktopApp Files destination", () => {
     await settle();
 
     expect(host.querySelector('[data-testid="chat-sidebar"]')).toBeTruthy();
-    host.querySelector<HTMLButtonElement>('[data-testid="titlebar-files"]')!.click();
+    host.querySelector<HTMLButtonElement>('[data-testid="rail-library"]')!.click();
     await settle();
 
     const files = host.querySelector('[data-testid="files-host"]');

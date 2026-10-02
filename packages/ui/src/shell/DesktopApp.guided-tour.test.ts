@@ -178,10 +178,10 @@ describe("DesktopApp first-run guided tour", () => {
     expect(q("guided-tour-progress")?.textContent?.trim()).toBe("1 of 8");
     expect(createBot).not.toHaveBeenCalled();
 
-    // Step 2: the titlebar Files button; the explorer does not open.
+    // Step 2: the rail Library button; the explorer does not open.
     await next();
     expect(q("guided-tour-card")?.textContent).toContain("Your company's files");
-    expect(resolvedSelector(1)).toBe('[data-testid="titlebar-files"]');
+    expect(resolvedSelector(1)).toBe('[data-testid="rail-library"]');
     expect(q("vault-explorer")).toBeNull();
 
     // Step 3: the sidebar "+" that leads to New bot; the create modal stays shut.
@@ -210,7 +210,7 @@ describe("DesktopApp first-run guided tour", () => {
     // Step 5: meetings.
     await next();
     expect(q("guided-tour-card")?.textContent).toContain("HQ can take notes on your calls");
-    expect(resolvedSelector(4)).toBe('[data-testid="titlebar-meetings"]');
+    expect(resolvedSelector(4)).toBe('[data-testid="rail-meetings"]');
 
     // The person opens another conversation themselves mid-tour.
     const other = host.querySelector<HTMLButtonElement>('.chat-row[data-conversation-id^="dm:person-"]')!;
@@ -223,10 +223,10 @@ describe("DesktopApp first-run guided tour", () => {
     );
     expect(q("guided-tour-progress")?.textContent?.trim()).toBe("5 of 8");
 
-    // Step 6: the web console globe.
+    // Step 6: the personal tools on the rail.
     await next();
-    expect(q("guided-tour-card")?.textContent).toContain("Open HQ on the web");
-    expect(resolvedSelector(5)).toBe('[data-testid="titlebar-console"]');
+    expect(q("guided-tour-card")?.textContent).toContain("Your personal tools");
+    expect(resolvedSelector(5)).toBe('[data-testid="rail-deployments"]');
     expect(q("titlebar-launch-menu")).toBeNull();
 
     // Step 7: the Launch menu is held open; a click on the card keeps it.

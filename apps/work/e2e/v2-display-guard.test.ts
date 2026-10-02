@@ -116,7 +116,7 @@ test.describe("v2 display library: empty states, no fixture fallback", () => {
   }) => {
     await page.goto("/");
     await expect(page.getByTestId("desktop-shell")).toBeVisible();
-    await page.getByTestId("titlebar-meetings").click();
+    await page.getByTestId("rail-meetings").click();
     await expect(page.getByTestId("desktop-alt-meetings")).toBeVisible();
     await expect(page.getByTestId("meetings-feature-hidden")).toHaveCount(0);
     await expect(
