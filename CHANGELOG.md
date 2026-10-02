@@ -10,7 +10,11 @@ The release moves it under the version it ships in.
 
 - Keep desktop recording recovery entries after local SDK errors until hq-pro reconciliation reaches a terminal status.
 
+- Closing the main window no longer logs an error.
+
 - When hq-flags enables `desktop.setup-deps-timeout-retry-v1`, a dependency setup timeout gets one automatic retry before setup is marked passed with that step skipped.
+
+- Sync reports when another HQ process holds the operation lock, bounds the wait to ten minutes, retries lock timeouts with backoff, and restarts watchers that have not started a pass after thirty minutes.
 
 
 
