@@ -369,3 +369,31 @@ describe("ChatSidebar new-channel scope", () => {
     expect(createChannel).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("ChatSidebar New channel sheet dismissal (QA-019)", () => {
+  async function openSheet(): Promise<void> {
+    let actions: { openNewChannel: () => void } | null = null;
+    await mountSidebar({ onactions: (a: typeof actions) => { if (a) actions = a; } });
+    expect(actions).not.toBeNull();
+    actions!.openNewChannel();
+    for (let i = 0; i < 100 && !document.querySelector('[data-testid="new-channel-sheet"]'); i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      await tick();
+    }
+    expect(document.querySelector('[data-testid="new-channel-sheet"]')).not.toBeNull();
+  }
+
+  it("closes on its Close button", async () => {
+    await openSheet();
+    (document.querySelector('[data-testid="new-channel-sheet"] button[aria-label="Close"]') as HTMLButtonElement).click();
+    await tick();
+    expect(document.querySelector('[data-testid="new-channel-sheet"]')).toBeNull();
+  });
+
+  it("closes on Escape", async () => {
+    await openSheet();
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await tick();
+    expect(document.querySelector('[data-testid="new-channel-sheet"]')).toBeNull();
+  });
+});

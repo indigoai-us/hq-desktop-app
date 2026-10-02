@@ -1709,6 +1709,8 @@
     hint?: { title: string; companyUid: string | null },
   ): void {
     createOpen = false;
+    // The New channel sheet closes through here too (QA-019).
+    channelSheetOpen = false;
     plusBtnEl?.focus();
     if (!openChannelId) return;
     // A just-created channel is opened before the directory feed lists it, so
