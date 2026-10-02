@@ -73,13 +73,30 @@ afterEach(async () => {
 });
 
 
-async function mountShell(): Promise<void> {
+function localFilesAdapter(): PlatformAdapter {
+  return {
+    ...webAdapter(),
+    files: {
+      listDir: async () => ok([]),
+      getFileContent: async () => ok(""),
+      vault: {
+        summary: async (root: string) =>
+          ok({ root, notes: 0, files: 0, links: 0, truncated: false, hubs: [], folders: [] }),
+        search: async () => ok([]),
+        noteLinks: async () => ok({ resolved: [], backlinks: [], backlinkCount: 0, outgoing: [] }),
+        readNote: async () => ok({ text: "", size: 0, truncated: false }),
+      },
+    },
+  } as unknown as PlatformAdapter;
+}
+
+async function mountShell(adapter: PlatformAdapter = webAdapter()): Promise<void> {
   host = document.createElement("div");
   document.body.appendChild(host);
   component = mount(DesktopApp, {
     target: host,
     props: {
-      adapter: webAdapter(),
+      adapter,
       sidebarApi: createFixtureChatSidebarApi(),
       notificationsApi: createEmptyNotificationsApi(),
       self: {
@@ -188,22 +205,38 @@ describe("DesktopApp app rail (console-rail US-003)", () => {
     await lazyBodiesLoaded(loadPersonalRail);
   });
 
-  it("opens library and personal deployments through lazy hosts", async () => {
+  it("opens Files as the explorer alone and personal deployments through a lazy host", async () => {
     await mountShell();
     click("rail-library");
     await settle();
-    expect(host.querySelector('[data-testid="library-host"]')).not.toBeNull();
-    expect(host.querySelector('[data-testid="library-skeleton"]')).not.toBeNull();
+    // Owner: "this view should just be the files explorer". No Library nav
+    // column (My files / Shared / Recent / Starred / Companies / Local).
+    expect(host.querySelector('[data-testid="rail-files-host"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="personal-library"]')).toBeNull();
+    expect(host.querySelector('[data-testid="library-shared-tab"]')).toBeNull();
+    // The web adapter has no local files, so it says where Files works.
+    expect(host.querySelector('[data-testid="rail-files-unavailable"]')).not.toBeNull();
     expect(current()).toBe("library");
     click("rail-deployments");
     await settle();
     expect(host.querySelector('[data-testid="personal-deployments-host"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="personal-deployments-skeleton"]')).not.toBeNull();
     expect(current()).toBe("deployments");
-    await lazyBodiesLoaded(
-      () => import("../library/PersonalLibraryPage.svelte"),
-      () => import("../library/PersonalDeploymentsPage.svelte"),
-    );
+    await lazyBodiesLoaded(() => import("../library/PersonalDeploymentsPage.svelte"));
+  });
+
+  it("paints the vault explorer for Files in the same frame when local files exist", async () => {
+    await mountShell(localFilesAdapter());
+    click("rail-library");
+    await tick();
+    const files = host.querySelector('[data-testid="rail-files-host"]');
+    expect(files).not.toBeNull();
+    expect(files!.querySelector('[data-testid="vault-explorer"]')).not.toBeNull();
+    expect(files!.querySelector('[data-testid="vault-search"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="personal-library"]')).toBeNull();
+    // The new shell chrome stays: the rail is still there and Files is current.
+    expect(current()).toBe("library");
+    await settle();
   });
 
   it("opens telemetry through the lazy host instead of the placeholder", async () => {
@@ -266,7 +299,6 @@ describe("DesktopApp app rail (console-rail US-003)", () => {
     expect(current()).toBe("home");
     await lazyBodiesLoaded(
       loadOutpost,
-      () => import("../library/PersonalLibraryPage.svelte"),
       ...meetingsBodies,
     );
   });

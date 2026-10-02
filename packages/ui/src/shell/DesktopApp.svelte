@@ -52,7 +52,6 @@
   import { pinCompany, type MoreCompany } from "./more-companies.js";
   import type { NewCompanyPlan, ProjectTemplate } from "./new-company/new-company.js";
   import TelemetryRailHost from "./TelemetryRailHost.svelte";
-  import LibraryRailHost from "./LibraryRailHost.svelte";
   import DeploymentsRailHost from "./DeploymentsRailHost.svelte";
   import PersonalRailHost from "./PersonalRailHost.svelte";
   import OutpostRailHost from "./OutpostRailHost.svelte";
@@ -9960,11 +9959,26 @@
             {/snippet}
           </LazyDoor>
         {:else if extraPageId === "rail-library"}
-          <LibraryRailHost
-            accountId={tenantAccountId ?? "local"}
-            adapter={adapter}
-            library={adapter.library ?? null}
-          />
+          <!-- The rail's Files destination is the file explorer only: vault
+               roots and tree, the reading view, and file actions. -->
+          <div class="explorer-host rail-files" data-testid="rail-files-host">
+            {#if adapter.files}
+              <VaultExplorer
+                {adapter}
+                {companies}
+                vaultId={explorerVault}
+                path={explorerPath}
+                onlocationchange={(loc) => {
+                  explorerVault = loc.vaultId;
+                  explorerPath = loc.path;
+                }}
+              />
+            {:else}
+              <p class="rail-files-empty" data-testid="rail-files-unavailable">
+                Files open in the desktop app, which reads your local HQ folder.
+              </p>
+            {/if}
+          </div>
         {:else if extraPageId === "rail-deployments"}
           <DeploymentsRailHost
             accountId={tenantAccountId ?? "local"}
@@ -11420,6 +11434,17 @@
     min-width: 0;
     min-height: 0;
     overflow: hidden;
+  }
+  .rail-files {
+    height: 100%;
+    background: var(--v4-ground, #161618);
+    color: var(--t1);
+  }
+  .rail-files-empty {
+    margin: 0;
+    padding: 16px;
+    font-size: 13px;
+    color: var(--t3);
   }
   .projects-host > :global(*),
   .explorer-host > :global(*) {
