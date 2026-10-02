@@ -3463,7 +3463,12 @@
       .map((w) => ({
         companyUid: (w.cloudUid as string).trim(),
         label: w.displayName?.trim() || w.slug,
-        iconUrl: w.iconUrl ?? null,
+        // Same resolved icon the rail and More companies use.
+        iconUrl: companyIconUrl(
+          (w.cloudUid as string).trim(),
+          companyIcons,
+          w.iconUrl ?? null,
+        ),
       })),
   );
 
