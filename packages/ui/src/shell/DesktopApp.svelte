@@ -56,6 +56,7 @@
   import PersonalRailHost from "./PersonalRailHost.svelte";
   import OutpostRailHost from "./OutpostRailHost.svelte";
   import AtlasLandingHost from "./AtlasLandingHost.svelte";
+  import type { AtlasVaultSource } from "./atlas-landing.js";
   import ActivityRailHost from "./ActivityRailHost.svelte";
   import GoalsRailHost from "./GoalsRailHost.svelte";
   import TeamPage from "../company/TeamPage.svelte";
@@ -1642,6 +1643,34 @@
     }
     throw new Error("No authorized Vault byte transport is available.");
   }
+
+  /**
+   * Atlas in the native app (QA-016): the Console atlas endpoint needs a web
+   * session the app does not have, so the map is built from the vault through
+   * this adapter, signed in with the app's own HQ account. The web harness
+   * keeps the Console session fetch (null here).
+   */
+  const atlasVaultSource = $derived.by((): AtlasVaultSource | null => {
+    const files = adapter.files;
+    if (adapter.kind === "web" || !files?.listVaultPrefix) return null;
+    return {
+      async listPage(company, prefix, cursor) {
+        const res = await files.listVaultPrefix(company, prefix, cursor);
+        if (!res.ok) throw new Error(`vault list ${res.code ?? res.reason}`);
+        return res.value;
+      },
+      async readText(company, key) {
+        if (!files.presignVaultGet) return null;
+        const signed = await files.presignVaultGet(company, key);
+        if (!signed.ok) throw new Error(`vault presign ${signed.code ?? signed.reason}`);
+        const url = presignUrlFromResult(signed.value)?.url;
+        if (!url) return null;
+        const res = await getVaultBytesForHost(url, MAX_CHANNEL_FILE_PREVIEW_BYTES);
+        if (!res.ok) throw new Error(`vault read http ${res.status}`);
+        return await res.text();
+      },
+    };
+  });
 
   type ChannelTab = "chat" | "board" | "files";
   const CHANNEL_TABS: ReadonlyArray<{ id: ChannelTab; label: string }> = [
@@ -9878,6 +9907,7 @@
             slug={companyPaneCompany?.slug ?? ""}
             summaryEnabled={Boolean(adapter.company)}
             companyUid={companyPaneCompany?.uid ?? null}
+            atlasSource={atlasVaultSource}
             actors={atlasActors}
             filterActor={atlasFilterActor}
             onclearfilter={() => (atlasFilterActor = null)}

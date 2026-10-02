@@ -1152,12 +1152,13 @@ export function createSyncPlatformAdapter(
         readNote: (path) => call('read_vault_note', { path }),
       },
       getFileContent: (path) => call('get_company_file_content', { path }),
-      listVaultPrefix: (companyUid, prefix) =>
+      listVaultPrefix: (companyUid, prefix, cursor) =>
         hqProJson(
           'GET',
           withQuery(WEB_PATHS.filesList, {
             company: companyUid,
             prefix,
+            cursor,
           }),
         ),
       presignVaultGet: (companyUid, key) =>

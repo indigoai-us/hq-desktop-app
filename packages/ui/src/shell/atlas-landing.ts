@@ -14,6 +14,18 @@
 import type { PresenceSnapshot } from "@hq/core";
 import type { SidepaneRosterEntry } from "./sidepane-models.js";
 
+/**
+ * Vault access the Atlas graph builder needs in the native app (QA-016). The
+ * shell supplies it from the platform adapter; it lives here, outside atlas/,
+ * so the shell can name the type without importing the Atlas chunk.
+ */
+export interface AtlasVaultSource {
+  /** Raw hq-pro `/v1/files/list` body for one page; the builder parses it. */
+  listPage(companyUid: string, prefix: string, cursor?: string): Promise<unknown>;
+  /** Object text, or null when the object has no readable body. */
+  readText(companyUid: string, key: string): Promise<string | null>;
+}
+
 /** Display name for a person or bot uid, from rows the shell already loaded. */
 export type RosterNames = ReadonlyMap<string, string>;
 

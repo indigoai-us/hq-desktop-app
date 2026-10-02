@@ -1074,9 +1074,9 @@ export class WebPlatformAdapter implements PlatformAdapter {
   readonly files: PlatformAdapter["files"] = {
     listDir: async () => NO_API,
     getFileContent: async () => NO_API,
-    listVaultPrefix: (companyUid, prefix) =>
+    listVaultPrefix: (companyUid, prefix, cursor) =>
       this.get(
-        `${WEB_PATHS.filesList}?company=${encodeURIComponent(companyUid)}&prefix=${encodeURIComponent(prefix)}`,
+        `${WEB_PATHS.filesList}?company=${encodeURIComponent(companyUid)}&prefix=${encodeURIComponent(prefix)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
       ),
     presignVaultGet: (companyUid, key) =>
       this.post(WEB_PATHS.filesPresign, {

@@ -13,7 +13,7 @@
     atlasTimeOpacity,
     type AtlasTimeMode,
   } from "./atlas-timeline.js";
-  import type { AtlasCache } from "./atlas-cache.js";
+  import { reasonForError, type AtlasCache, type AtlasFailReason } from "./atlas-cache.js";
   import {
     atlasActorNodeIds,
     atlasDistinctActors,
@@ -74,7 +74,7 @@
   }: Props = $props();
 
   let graph = $state<AtlasGraph | null>(untrack(() => cache.cached(companyUid)));
-  let refreshError = $state(false);
+  let refreshError = $state<AtlasFailReason | null>(null);
   let selected = $state<string | null>(null);
   let view = $state<AtlasViewBox>({ x: 400, y: 280, k: 0.5 });
   let framedFor = "";
@@ -145,20 +145,29 @@
   // either a graph arrives or the failed state (with Retry) replaces the
   // skeleton. Without a cached map a failure must never leave the skeleton up.
   let retrying = $state(false);
-  const loadFailed = $derived(refreshError && !graph);
+  const loadFailed = $derived(refreshError !== null && !graph);
+
+  // Plain-language reason for the failed state; raw transport text stays in the log.
+  const FAIL_COPY: Record<AtlasFailReason, string> = {
+    "signed-out": "Your HQ sign-in has expired. Sign in again from the menu bar app, then try again.",
+    "no-access": "You don't have access to this company's files yet. Ask an admin to add you, then try again.",
+    timeout: "The company map took too long to load. Try again in a moment.",
+    offline: "We couldn't reach HQ. Check your connection, then try again.",
+    unavailable: "We couldn't load your company map just now. Try again in a moment.",
+  };
 
   function loadGraph(uid: string): void {
-    refreshError = false;
+    refreshError = null;
     cache
       .refresh(uid)
       .then((fresh) => {
         if (uid !== companyUid) return;
         if (fresh) graph = fresh;
-        else if (!graph) refreshError = true;
+        else if (!graph) refreshError = "unavailable";
       })
       .catch((err) => {
         console.warn("[atlas] refresh failed", err);
-        if (uid === companyUid) refreshError = true;
+        if (uid === companyUid) refreshError = reasonForError(err);
       })
       .finally(() => {
         if (uid === companyUid) retrying = false;
@@ -304,7 +313,7 @@
       {:else if loadFailed}
         <div class="empty" data-testid="atlas-error" role="alert">
           <div class="empty-center">
-            <div class="empty-ctr"><b>The map didn't load</b>We couldn't reach your company map just now. Check your connection, then try again.</div>
+            <div class="empty-ctr" data-reason={refreshError}><b>The map didn't load</b>{FAIL_COPY[refreshError ?? "unavailable"]}</div>
             <button type="button" class="btn" data-testid="atlas-retry" disabled={retrying} onclick={retry}>{retrying ? "Trying again" : "Retry"}</button>
           </div>
         </div>

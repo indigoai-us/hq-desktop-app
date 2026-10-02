@@ -1,9 +1,11 @@
 /**
  * Per-company Atlas graph cache. Paint from the cached graph first, then
- * refresh from the Console company atlas endpoint in the background.
+ * refresh in the background: from the Console company atlas endpoint on the
+ * web, or from the vault through the platform adapter in the native app.
  */
 
 import { parseAtlasGraph, type AtlasGraph } from "./atlas-model.js";
+import { buildAtlasGraph, type AtlasVaultSource } from "./atlas-build.js";
 
 export type AtlasFetcher = (companyUid: string) => Promise<unknown>;
 
@@ -22,6 +24,36 @@ export function atlasEndpoint(consoleBase: string, companyUid: string): string {
 /** Longest an Atlas refresh may run before it counts as failed (QA-016). */
 export const ATLAS_REFRESH_TIMEOUT_MS = 15_000;
 
+/** Why a refresh failed, in terms the failed state can explain to a person. */
+export type AtlasFailReason = "signed-out" | "no-access" | "timeout" | "offline" | "unavailable";
+
+export class AtlasLoadError extends Error {
+  constructor(
+    readonly reason: AtlasFailReason,
+    detail: string,
+  ) {
+    super(`atlas ${reason}: ${detail}`);
+    this.name = "AtlasLoadError";
+  }
+}
+
+/** Map an HTTP status or adapter failure code onto a fail reason. */
+export function atlasFailReason(code: string | number | null | undefined): AtlasFailReason {
+  const text = String(code ?? "").toLowerCase();
+  if (/401|auth|sign|session|token/.test(text)) return "signed-out";
+  if (/403|forbidden|denied/.test(text)) return "no-access";
+  if (/timeout|timed out|abort/.test(text)) return "timeout";
+  if (/network|offline|fetch|connect|dns/.test(text)) return "offline";
+  return "unavailable";
+}
+
+/** The failed-state reason for any thrown refresh error. */
+export function reasonForError(err: unknown): AtlasFailReason {
+  if (err instanceof AtlasLoadError) return err.reason;
+  if (err instanceof Error) return atlasFailReason(`${err.name} ${err.message}`);
+  return "unavailable";
+}
+
 export function consoleAtlasFetcher(
   consoleBase: string,
   fetchImpl: typeof fetch = (input, init) => fetch(input, init),
@@ -36,10 +68,28 @@ export function consoleAtlasFetcher(
         cache: "no-store",
         signal: controller?.signal,
       });
-      if (!res.ok) throw new Error(`atlas ${res.status}`);
+      if (!res.ok) throw new AtlasLoadError(atlasFailReason(res.status), `http ${res.status}`);
       return await res.json();
+    } catch (err) {
+      if (err instanceof AtlasLoadError) throw err;
+      throw new AtlasLoadError(reasonForError(err), err instanceof Error ? err.message : String(err));
     } finally {
       if (timer) clearTimeout(timer);
+    }
+  };
+}
+
+/**
+ * Native path: build the graph from the ACL-filtered vault listing the
+ * platform adapter reaches with the app's own HQ sign-in (QA-016).
+ */
+export function vaultAtlasFetcher(source: AtlasVaultSource): AtlasFetcher {
+  return async (companyUid) => {
+    try {
+      return await buildAtlasGraph(source, companyUid);
+    } catch (err) {
+      if (err instanceof AtlasLoadError) throw err;
+      throw new AtlasLoadError(reasonForError(err), err instanceof Error ? err.message : String(err));
     }
   };
 }
@@ -47,7 +97,7 @@ export function consoleAtlasFetcher(
 /** Reject when `job` has not settled within `ms`; the job itself is left alone. */
 function withTimeout<T>(job: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("atlas refresh timed out")), ms);
+    const timer = setTimeout(() => reject(new AtlasLoadError("timeout", "atlas refresh timed out")), ms);
     job.then(
       (value) => {
         clearTimeout(timer);
@@ -122,9 +172,13 @@ export type AtlasCache = ReturnType<typeof createAtlasCache>;
 
 const shared = new Map<string, AtlasCache>();
 
-/** One cache per Console base for the app session, backed by localStorage. */
-export function sharedAtlasCache(consoleBase: string): AtlasCache {
-  let cache = shared.get(consoleBase);
+/**
+ * One cache per source for the app session, backed by localStorage. Pass a
+ * `fetcher` (with a distinct `key`) to load through something other than the
+ * Console endpoint at `key`; the snapshot storage is shared either way.
+ */
+export function sharedAtlasCache(key: string, fetcher?: AtlasFetcher): AtlasCache {
+  let cache = shared.get(key);
   if (!cache) {
     let storage: AtlasCacheStorage | null = null;
     try {
@@ -132,8 +186,8 @@ export function sharedAtlasCache(consoleBase: string): AtlasCache {
     } catch (err) {
       console.warn("[atlas] localStorage unavailable", err);
     }
-    cache = createAtlasCache({ fetcher: consoleAtlasFetcher(consoleBase), storage });
-    shared.set(consoleBase, cache);
+    cache = createAtlasCache({ fetcher: fetcher ?? consoleAtlasFetcher(key), storage });
+    shared.set(key, cache);
   }
   return cache;
 }

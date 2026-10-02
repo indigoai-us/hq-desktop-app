@@ -1064,8 +1064,11 @@ export interface FilesApi {
   /** Files explorer vault index. Desktop only; hosts without it omit it. */
   vault?: VaultApi;
   getFileContent(path: string): AdapterPromise<string>;
-  /** ACL-filtered vault browse (hq-pro GET /v1/files/list). */
-  listVaultPrefix(companyUid: string, prefix: string): AdapterPromise<Json>;
+  /**
+   * ACL-filtered vault browse (hq-pro GET /v1/files/list). Pass the previous
+   * page's `cursor` to continue a listing.
+   */
+  listVaultPrefix(companyUid: string, prefix: string, cursor?: string): AdapterPromise<Json>;
   /** Presigned GET for a vault key (hq-pro POST /v1/files/presign). */
   presignVaultGet(companyUid: string, key: string): AdapterPromise<Json>;
   /**

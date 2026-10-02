@@ -6,7 +6,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import AtlasView from "./AtlasView.svelte";
-import { createAtlasCache } from "./atlas-cache.js";
+import { AtlasLoadError, createAtlasCache } from "./atlas-cache.js";
 import { ATLAS_SMOKE_DETAIL, smokeAtlasGraph } from "./atlas-model.js";
 
 const NOW = Date.UTC(2026, 8, 30, 12);
@@ -240,6 +240,23 @@ describe("Atlas chunk boundary", () => {
     });
     expect(host.querySelector(sel("atlas-error"))).toBeNull();
     expect(calls).toBe(2);
+  });
+
+  it("QA-016: an expired sign-in explains the reason in plain words, without raw server text", async () => {
+    const cache = createAtlasCache({
+      fetcher: async () => {
+        throw new AtlasLoadError("signed-out", "vault list http-401 {\"raw\":\"server\"}");
+      },
+    });
+    mountView(cache);
+    await vi.waitFor(() => {
+      expect(host.querySelector(sel("atlas-error"))).not.toBeNull();
+    });
+    const text = host.querySelector(sel("atlas-error"))?.textContent ?? "";
+    expect(text).toContain("sign-in has expired");
+    expect(text).not.toContain("401");
+    expect(text).not.toContain("raw");
+    expect(host.querySelector(sel("atlas-retry"))).not.toBeNull();
   });
 
   it("QA-016: a fetch that never settles is cut off by the timeout and shows the error state", async () => {

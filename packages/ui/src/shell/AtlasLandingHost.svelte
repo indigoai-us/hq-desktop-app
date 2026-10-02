@@ -13,6 +13,7 @@
   import type { AtlasLiveActor, AtlasWorkingNow } from "./atlas-landing.js";
   import { HQ_CONSOLE_BASE } from "../common/hq-console.js";
   import { useCompanySummary } from "../company/company-summary.svelte.js";
+  import type { AtlasVaultSource } from "./atlas-landing.js";
 
   type AtlasModule = Awaited<ReturnType<typeof loadAtlas>>;
   type AtlasCache = ReturnType<AtlasModule["createAtlasCache"]>;
@@ -36,6 +37,12 @@
     onopenpage?: (rowId: string) => void;
     /** Injected graph cache (tests); defaults to the shared Console cache. */
     atlasCache?: AtlasCache | null;
+    /**
+     * Native hosts: build the graph from the vault through the platform
+     * adapter (the app's own HQ sign-in). Without it the Console endpoint,
+     * which needs a web session, is used (QA-016).
+     */
+    atlasSource?: AtlasVaultSource | null;
   }
 
   let {
@@ -50,6 +57,7 @@
     onclearfilter,
     onopenpage,
     atlasCache = null,
+    atlasSource = null,
   }: Props = $props();
 
   // Shared cache with the company sidepane: paints the warm summary first and
@@ -61,7 +69,12 @@
   const projectsInProgress = $derived(summary.summary.board);
 
   let mod = $state<AtlasModule | null>(null);
-  const cache = $derived(mod ? (atlasCache ?? mod.sharedAtlasCache(HQ_CONSOLE_BASE)) : null);
+  const cache = $derived.by(() => {
+    if (!mod) return null;
+    if (atlasCache) return atlasCache;
+    if (atlasSource) return mod.sharedAtlasCache("vault", mod.vaultAtlasFetcher(atlasSource));
+    return mod.sharedAtlasCache(HQ_CONSOLE_BASE);
+  });
 
   // A failed chunk load used to leave "Loading" up forever (QA-016).
   let chunkFailed = $state(false);
