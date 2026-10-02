@@ -14,6 +14,8 @@ The release moves it under the version it ships in.
 
 - Desktop usage uploads are limited to four requests and 4 MB per sync; remaining records resume on later syncs.
 
+- Behind `desktop.sync-on-launch-reconcile-v1`, the desktop app honors the existing Sync on launch preference with a one-shot sync when background Auto-sync is disabled.
+
 - When an HQ CLI update fails partway through installing, the desktop app now
   puts the previous HQ CLI back instead of leaving a broken or missing `hq`
   command. Before this, a failed update could leave sync unable to run until
