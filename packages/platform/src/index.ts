@@ -7,6 +7,8 @@ export * from "./post-ready-actions.js";
 export * from "./library-shelf.js";
 // Plan-limit refusal parsing + upgrade-link allowlist (hard-stop-readiness).
 export * from "./plan-limit.js";
+// Plain-language API error copy (QA-080).
+export * from "./api-error.js";
 export {
   CLAUDE_PROVIDER_FLAG,
   DESKTOP_LIMIT_STATUS_PUSH_FLAG,

@@ -213,7 +213,10 @@ describe("Settings → Bots (Work shell)", () => {
       expect(host.querySelector('[data-testid="settings-bot-assistant"]')).not.toBeNull();
       expect(host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}"]`)).not.toBeNull();
     });
-    expect(adapter.agents.listMobileRoster).toHaveBeenCalledWith(null);
+    // QA-080: one scoped request per company, never the unscoped all-company scan.
+    expect(adapter.agents.listMobileRoster).toHaveBeenCalledWith("cmp_indigo");
+    expect(adapter.agents.listMobileRoster).toHaveBeenCalledWith("cmp_other");
+    expect(adapter.agents.listMobileRoster).not.toHaveBeenCalledWith(null);
 
     const local = host.querySelector('[data-testid="settings-bots-local"]')!;
     // No display name stored → the row reads as its handle, as it always did.

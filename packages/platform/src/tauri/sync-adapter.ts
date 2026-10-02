@@ -54,6 +54,7 @@ import {
   type RequestPolicyOptions,
 } from '../request-policy.js';
 import { hqProFailure, parseHqProErrorBody } from '../plan-limit.js';
+import { scrubTransportFailure } from '../api-error.js';
 import { dispatchPostReadyAction } from '../post-ready-actions.js';
 
 export type SyncInvokeFn = (
@@ -368,7 +369,7 @@ export function createSyncPlatformAdapter(
       method,
       body: body === undefined ? null : JSON.stringify(body),
     });
-    if (!raw.ok) return { result: raw, status: null };
+    if (!raw.ok) return { result: scrubTransportFailure(raw), status: null };
     const rec = asRecord(raw.value);
     if (rec && typeof rec.status === 'number') {
       const text = typeof rec.body === 'string' ? rec.body : '';
@@ -382,7 +383,11 @@ export function createSyncPlatformAdapter(
           text,
           `${method} ${path} failed`,
         );
-        return { result: hqProFailure(details), status: rec.status, retryAfter };
+        return {
+          result: scrubTransportFailure(hqProFailure(details)),
+          status: rec.status,
+          retryAfter,
+        };
       }
       if (rec.status === 204 || !text.trim()) {
         return { result: ok(undefined as T), status: rec.status };

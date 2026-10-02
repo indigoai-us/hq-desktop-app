@@ -27,6 +27,7 @@ import { TAURI_CAPABILITIES, type Capability } from "../capabilities.js";
 import { WEB_PATHS } from "../web/index.js";
 import { localBotSettingsArgs } from "./local-bot-settings.js";
 import { hqProFailure, parseHqProErrorBody } from "../plan-limit.js";
+import { scrubTransportFailure } from "../api-error.js";
 import { createCallsApi } from "../calls/api.js";
 import {
   CLAUDE_PROVIDER_FLAG,
@@ -161,7 +162,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
       method,
       body: body === undefined ? null : JSON.stringify(body),
     });
-    if (!raw.ok) return raw;
+    if (!raw.ok) return scrubTransportFailure(raw);
     const rec =
       raw.value && typeof raw.value === "object" && !Array.isArray(raw.value)
         ? (raw.value as Record<string, unknown>)
@@ -169,8 +170,10 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     if (rec && typeof rec.status === "number") {
       const text = typeof rec.body === "string" ? rec.body : "";
       if (rec.status < 200 || rec.status >= 300) {
-        return hqProFailure(
-          parseHqProErrorBody(rec.status, text, `${method} ${path} failed`),
+        return scrubTransportFailure(
+          hqProFailure(
+            parseHqProErrorBody(rec.status, text, `${method} ${path} failed`),
+          ),
         );
       }
       try {

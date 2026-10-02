@@ -2,14 +2,16 @@
  * Pure helpers for the Cloud group of Settings → Bots.
  *
  * Cloud bots are company-hosted (`agt_*` entities provisioned through a company
- * channel). The cheapest cross-company listing is the member-safe
- * `GET /v1/agents/mobile-roster` with no companyUid: hq-pro returns every
- * visible bot across all of the caller's active companies, each row tagged with
- * its companyUid. Rows carry setup phase but no runtime (paused/running) state
+ * channel). They are listed with the member-safe `GET /v1/agents/mobile-roster`
+ * once per company, in parallel. The unscoped form (no companyUid) scans every
+ * company in one sequential server request and runs past the 15s client
+ * timeout for people in many companies (QA-080), so it is only a fallback when
+ * no company uid is known. Rows carry setup phase but no runtime (paused/running) state
  * and no avatar; the pane renders an initial and infers "paused" only from its
  * own successful Pause action.
  */
 
+import type { AdapterResult, Json } from "@hq/platform";
 import type { WorkspaceLike } from "../chat/channel-admin.js";
 import { canEditAgentProfile } from "../avatars/can-edit.js";
 import { deriveAgentWorkStatus, type AgentWorkStatus } from "../chat/agent-detail-model.js";
@@ -102,4 +104,46 @@ export function cloudBotsFromRoster(
   }
   rows.sort((a, b) => a.displayName.localeCompare(b.displayName));
   return rows;
+}
+
+/**
+ * Fetch the mobile roster for each company in parallel and merge the rows,
+ * tagging each with its company when the server row omits it. Partial failure
+ * still returns the companies that answered; `failure` is set only when every
+ * request failed, so one slow company cannot blank the whole list.
+ */
+export async function fetchCloudRoster(
+  listMobileRoster: (companyUid?: string | null) => Promise<AdapterResult<Json>>,
+  companyUids: ReadonlyArray<string | null | undefined>,
+): Promise<{ agents: unknown[]; failure: unknown | null }> {
+  const uids = [...new Set(companyUids.map((uid) => (uid ?? "").trim()).filter(Boolean))];
+  const scopes: Array<string | null> = uids.length ? uids : [null];
+  const results = await Promise.all(
+    scopes.map(async (uid) => {
+      try {
+        return { uid, result: await listMobileRoster(uid) };
+      } catch (error) {
+        return { uid, result: { ok: false as const, reason: "error" as const, message: error instanceof Error ? error.message : String(error) } };
+      }
+    }),
+  );
+  const agents: unknown[] = [];
+  let failure: unknown | null = null;
+  let anyOk = false;
+  for (const { uid, result } of results) {
+    if (!result.ok) {
+      failure ??= result;
+      continue;
+    }
+    anyOk = true;
+    const value: unknown = result.value;
+    const rec = isRecord(value) ? value : {};
+    const list = Array.isArray(value) ? value : Array.isArray(rec.agents) ? rec.agents : [];
+    const scope = uid ?? (str(rec.companyUid) || null);
+    for (const item of list) {
+      if (isRecord(item) && scope && !str(item.companyUid)) agents.push({ ...item, companyUid: scope });
+      else agents.push(item);
+    }
+  }
+  return { agents, failure: anyOk ? null : failure };
 }

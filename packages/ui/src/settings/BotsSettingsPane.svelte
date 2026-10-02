@@ -62,9 +62,11 @@
     cloudBotInitial,
     cloudBotStatusLabel,
     cloudBotsFromRoster,
+    fetchCloudRoster,
     type CloudBotRow,
   } from "./cloud-bots.js";
   import "./settings-chrome.css";
+  import { friendlyApiError } from "../common/api-error.js";
 
   interface Props {
     adapter?: PlatformAdapter | null;
@@ -234,7 +236,7 @@
     }
     const result = await api.list();
     if (!result.ok) {
-      loadError = result.message || "Could not read your local bots.";
+      loadError = friendlyApiError(result, "Could not read your local bots.", "bots");
     } else {
       bots = result.value.bots ?? [];
       loadError = "";
@@ -250,7 +252,7 @@
     lineIsError = false;
     const result = await api[verb](name);
     if (!result.ok) {
-      line = result.message || `Could not ${verb} ${name}.`;
+      line = friendlyApiError(result, `Could not ${verb} ${name}.`, "bots");
       lineIsError = true;
     } else {
       line = "";
@@ -288,7 +290,7 @@
     createError = null;
     const result = await api.create(input);
     if (!result.ok) {
-      createError = result.message || `Could not create ${input.name}.`;
+      createError = friendlyApiError(result, `Could not create ${input.name}.`, "bots");
       createBusy = null;
       return;
     }
@@ -431,15 +433,18 @@
       cloudError = "";
     }
     try {
-      const result = await agents.listMobileRoster(null);
-      if (!result.ok) {
-        cloudError = result.message || "Could not read your cloud bots.";
+      const roster = await fetchCloudRoster(
+        (uid) => agents.listMobileRoster(uid),
+        (companies ?? []).map((company) => company.cloudUid),
+      );
+      if (roster.failure) {
+        cloudError = friendlyApiError(roster.failure, "Could not read your cloud bots.", "bots");
       } else {
-        cloudBots = cloudBotsFromRoster(result.value, { companies, isAdmin });
+        cloudBots = cloudBotsFromRoster({ agents: roster.agents }, { companies, isAdmin });
         cloudError = "";
       }
     } catch (error) {
-      cloudError = error instanceof Error ? error.message : "Could not read your cloud bots.";
+      cloudError = friendlyApiError(error, "Could not read your cloud bots.", "bots");
     }
     cloudLoading = false;
   }
@@ -460,7 +465,7 @@
           ? await agents.start(bot.uid)
           : await agents.deprovision(bot.uid);
     if (!result.ok) {
-      cloudLine = result.message || `Could not ${verb} ${bot.displayName}.`;
+      cloudLine = friendlyApiError(result, `Could not ${verb} ${bot.displayName}.`, "bots");
       cloudLineIsError = true;
     } else {
       cloudLine = "";
