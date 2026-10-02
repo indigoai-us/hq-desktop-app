@@ -3,6 +3,7 @@
   import type { AdapterPromise, AgentProvisionOptionsView } from "@hq/platform";
   import type { EntryPointResult, EntryPointTarget, CloudBotDraft } from "../lifecycle-entry-points.js";
   import { botHandle, cloudNameIssue, firstSignedInCloudRuntime, type BotRuntime } from "./create-bot-model.js";
+  import NewBotDawn from "./NewBotDawn.svelte";
 
   type Company = { companyUid: string; label: string };
   export interface NewBotCreated { name: string; companyUid: string; brain: BotRuntime; target: EntryPointTarget; }
@@ -51,10 +52,24 @@
   $effect(() => { if (!runtimeChosen) runtime = firstSignedInCloudRuntime(runtimeReady); });
   $effect(() => { const uid = companyUid.trim(); const generation = ++quoteGeneration; options = null; quoteStatus = uid ? "loading" : "error"; if (!uid) return; let active = true; void loadProvisionOptions(uid).then((result) => { if (!active || generation !== quoteGeneration || !result.ok || !Array.isArray(result.value.options)) { if (active && generation === quoteGeneration) quoteStatus = "error"; return; } options = result.value; quoteStatus = "ready"; chooseSizeAfterLoad(result.value); }).catch(() => { if (active && generation === quoteGeneration) quoteStatus = "error"; }); return () => { active = false; }; });
   $effect(() => { focusStep(); });
+  // The sun starts low and creeps while the create request is in flight; the
+  // Waking up screen takes over from the same low position.
+  let creatingProgress = $state(2);
+  $effect(() => { if (!busy) { creatingProgress = 2; return; } const timer = setInterval(() => { creatingProgress = Math.min(8, creatingProgress + 0.5); }, 400); return () => clearInterval(timer); });
   async function submit(): Promise<void> { attempted = true; refusal = null; if (!canCreate || busy) return; busy = true; const result = await oncreate(companyUid, { name: name.trim(), handle: derivedHandle, runtime, size: selectedSize as "basic" | "power" | "dev", authMode: "subscription" }).catch((): EntryPointResult => ({ ok: false, blocked: false, reason: "We couldn't create this bot. Try again in a moment." })); busy = false; if (result.ok) { oncomplete({ name: name.trim(), companyUid, brain: runtime, target: result.target }); return; } const message = result.reason.trim() || "We couldn't create this bot. Try again in a moment."; refusal = message.match(/^.*?[.!?](?:\s|$)/)?.[0].trim() || message; }
   function onKeydown(event: KeyboardEvent): void { if (event.key !== "Enter" || busy) return; const target = event.target as HTMLElement; if (target.tagName === "BUTTON") return; event.preventDefault(); if (step === 1) continueName(); else if (step < finalStep) go((step + 1) as 2 | 3); else void submit(); }
 </script>
 
+{#if busy}
+<!-- Creating: the same sunrise the Waking up screen continues, so pressing
+     Create bot reads as one unbroken wait instead of a frozen form. -->
+<section class="new-bot-waking" data-testid="new-bot-creating">
+  <NewBotDawn progress={creatingProgress} mode="creating" label={`Creating ${name.trim()}`} />
+  <p class="new-bot-takeover-kicker">A new teammate</p>
+  <h1 id="new-bot-takeover-title">Waking up <em>{name.trim()}</em></h1>
+  <p class="new-bot-waking-status" data-testid="new-bot-creating-status" aria-live="polite">Getting things ready.</p>
+</section>
+{:else}
 <div class="new-bot-create" data-testid="new-bot-create-screen" role="group" onkeydown={onKeydown}>
   <header class="new-bot-create-head">
     <div class="new-bot-progress" aria-label={`Step ${step} of ${finalStep}`}>{#each Array(finalStep) as _, index}<span class:active={index + 1 === step}></span>{/each}</div>
@@ -78,3 +93,4 @@
     {#if step === 1}<button type="button" class="new-bot-create-submit" data-testid="new-bot-continue-name" onclick={continueName}>Continue</button>{#if onopenlocal}<button type="button" class="new-bot-takeover-local" data-testid="new-bot-takeover-local" onclick={onopenlocal}>Create a local bot instead</button>{/if}{:else if step === 2 && !singleCompany}<button type="button" class="new-bot-create-submit" data-testid="new-bot-continue-brain" onclick={() => go(3)}>Continue</button>{:else}{#if step === 3}<button type="button" class="new-bot-more" aria-expanded={moreOptions} onclick={() => (moreOptions = !moreOptions)}>More options</button>{/if}<button type="button" class="new-bot-create-submit" data-testid="new-bot-create-submit" disabled={!canSubmit} aria-busy={busy ? "true" : undefined} onclick={() => void submit()}>{busy ? "Creating bot..." : "Create bot"}</button>{#if defaultOption}<p class="new-bot-price" data-testid="new-bot-default-price">{optionPrice(defaultOption)} for {defaultOption.productName}.</p>{:else if quoteStatus === "loading"}<p class="new-bot-price" aria-live="polite">Loading the server's default price...</p>{/if}{/if}
   </footer>
 </div>
+{/if}

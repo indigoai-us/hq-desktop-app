@@ -53,15 +53,15 @@ function harness(over: {
     agentChannelId: AGENT_CHANNEL,
     agentUid: "agt_polar",
   };
-  const runCompanyTabAction = vi.fn(async () => {
+  const runCompanyTabAction = vi.fn(async (_args: Record<string, unknown>) => {
     if (opened instanceof Error) throw opened;
     return opened;
   });
-  const runCardAction = vi.fn(async () => {
+  const runCardAction = vi.fn(async (_args: Record<string, unknown>) => {
     if (created instanceof Error) throw created;
     return created;
   });
-  const logToFile = vi.fn(async () => undefined);
+  const logToFile = vi.fn(async (_tag: string, _message: string) => undefined);
   const api = {
     runCompanyTabAction,
     runCardAction,

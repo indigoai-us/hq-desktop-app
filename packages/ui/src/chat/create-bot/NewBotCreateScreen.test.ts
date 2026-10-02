@@ -171,18 +171,56 @@ describe("NewBotCreateScreen", () => {
       )!
       .click();
     await settle();
-    const create = document.querySelector<HTMLButtonElement>(
-      "[data-testid='new-bot-create-submit']",
-    )!;
-    create.click();
+    // The form gives way to the creating view while the request runs, so the
+    // button is a fresh element after a failure brings the form back.
+    const createButton = () =>
+      document.querySelector<HTMLButtonElement>(
+        "[data-testid='new-bot-create-submit']",
+      )!;
+    createButton().click();
     await settle();
     expect(document.querySelector("[role='alert']")?.textContent).toContain(
       "The server didn't send",
     );
-    expect(create.disabled).toBe(false);
-    create.click();
+    expect(document.querySelector("[data-testid='new-bot-creating']")).toBeNull();
+    expect(
+      document
+        .querySelector("[data-company-uid='cmp_current']")
+        ?.getAttribute("aria-checked"),
+    ).toBe("true");
+    expect(createButton().disabled).toBe(false);
+    createButton().click();
     await settle();
     expect(oncreate).toHaveBeenCalledTimes(2);
+  });
+  it("replaces the form with the creating view while the request is in flight", async () => {
+    let finish: (value: unknown) => void = () => {};
+    const oncreate = vi.fn(
+      () => new Promise((resolve) => { finish = resolve; }),
+    );
+    const { oncomplete } = render({ oncreate });
+    await settle();
+    await advanceName();
+    document
+      .querySelector<HTMLButtonElement>("[data-testid='new-bot-continue-brain']")!
+      .click();
+    await settle();
+    document
+      .querySelector<HTMLButtonElement>("[data-testid='new-bot-create-submit']")!
+      .click();
+    await settle();
+    const creating = document.querySelector("[data-testid='new-bot-creating']");
+    expect(creating?.textContent).toContain("Waking up Polar");
+    expect(document.querySelector("[data-testid='new-bot-create-screen']")).toBeNull();
+    const bar = creating?.querySelector("[role='progressbar']");
+    expect(bar?.getAttribute("aria-label")).toBe("Creating Polar");
+    expect(bar?.getAttribute("data-mode")).toBe("creating");
+    finish({
+      ok: true,
+      target: { channelId: "chn_bot", cardId: null, cardKind: null },
+    });
+    await settle();
+    expect(oncomplete).toHaveBeenCalledTimes(1);
   });
   async function openCompanyStep(): Promise<void> {
     await settle();

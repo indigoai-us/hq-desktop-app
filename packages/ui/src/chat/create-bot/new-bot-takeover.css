@@ -675,3 +675,30 @@
     transform: none;
   }
 }
+
+/* The sunrise drawn while a bot is being created and woken up. */
+.new-bot-dawn {
+  width: 100%;
+  height: 176px;
+  margin-bottom: 6px;
+}
+
+.new-bot-dawn canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.new-bot-waking {
+  justify-items: stretch;
+}
+
+.new-bot-waking > button {
+  justify-self: start;
+}
+
+@media (max-height: 780px) {
+  .new-bot-dawn {
+    height: 136px;
+  }
+}

@@ -14,6 +14,7 @@
     type BrainProvider,
   } from "./bot-brain-approval.js";
   import { focusOnMount } from "../portal.js";
+  import NewBotDawn, { type DawnMode } from "./NewBotDawn.svelte";
 
   interface Props {
     session: WakingBotSession;
@@ -48,13 +49,14 @@
   let actionMessage = $state("");
   let copiedCodexCode = $state<string | null>(null);
 
-  const initials = $derived(
-    session.name
-      .split(/\s+/)
-      .filter(Boolean)
-      .slice(0, 2)
-      .map((word) => word[0]?.toUpperCase() ?? "")
-      .join("") || "B",
+  const dawnMode = $derived<DawnMode>(
+    session.phase === "failed"
+      ? "failed"
+      : session.phase === "ready"
+        ? "ready"
+        : session.approval
+          ? "waiting"
+          : "waking",
   );
   const statusLine = $derived(wakingStatusLine(session));
   const approval = $derived(session.approval);
@@ -181,18 +183,11 @@
 </script>
 
 <section class="new-bot-waking" data-testid="new-bot-waking-screen">
-  <div
-    class="new-bot-waking-ring"
-    data-testid="new-bot-waking-ring"
-    style={`--waking-progress: ${session.progress}%`}
-    role="progressbar"
-    aria-label={`Waking up ${session.name}`}
-    aria-valuemin="0"
-    aria-valuemax="100"
-    aria-valuenow={session.progress}
-  >
-    <span class="new-bot-waking-avatar">{initials}</span>
-  </div>
+  <NewBotDawn
+    progress={session.progress}
+    mode={dawnMode}
+    label={`Waking up ${session.name}`}
+  />
   <p class="new-bot-takeover-kicker">A new teammate</p>
   <h1 id="new-bot-takeover-title">Waking up <em>{session.name}</em></h1>
   <p
