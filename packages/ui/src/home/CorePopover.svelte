@@ -899,6 +899,11 @@
 {/if}
 
 <style>
+  /* Surface matches the titlebar Launch menu (.v4-launch-menu in
+     V4TitleBar.svelte): near-opaque --v4-popover-strong, hairline border,
+     popover radius and shadow. No backdrop-filter; a nested blur is
+     neutered outside its parent's backdrop root anyway. Only the vertical
+     axis scrolls so long pack lists never add a horizontal scrollbar. */
   .core-popover {
     position: absolute;
     top: calc(100% + 6px);
@@ -907,19 +912,23 @@
     display: flex;
     flex-direction: column;
     gap: 0;
-    width: min(300px, calc(100vw - 24px));
+    box-sizing: border-box;
+    width: 340px;
+    max-width: calc(100vw - 24px);
     max-height: min(70vh, 520px);
-    overflow: auto;
-    padding: 6px;
-    border: 1px solid var(--panel-border);
-    border-radius: 12px;
-    /* Frosted glass panel — Daybook .panel. */
-    background: var(--panel-bg);
-    box-shadow: var(--panel-shadow);
-    color: var(--t1);
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding: 8px;
+    border: 1px solid var(--v4-hairline, var(--panel-border, var(--line2)));
+    border-radius: var(--v4-radius-popover, 10px);
+    background: var(--v4-popover-strong, var(--panel-bg, var(--btn-bg)));
+    box-shadow: var(--v4-shadow-popover, var(--panel-shadow));
+    color: var(--v4-text-1, var(--t1));
     font: 400 13px/1.45 var(--font-ui);
-    backdrop-filter: blur(40px) saturate(1.5);
-    -webkit-backdrop-filter: blur(40px) saturate(1.5);
+  }
+
+  .core-popover > * {
+    min-width: 0;
   }
 
   /* PL-01 status header. Tones reuse the existing --ok / --warn / --ice-ink
@@ -931,7 +940,7 @@
     padding: 10px 12px 8px;
     margin-bottom: 6px;
     border-radius: 10px;
-    background: var(--raised);
+    background: var(--v4-raised, var(--raised));
   }
 
   .core-status-state {
@@ -992,8 +1001,8 @@
   }
 
   .core-notice[data-tone="warn"] {
-    border-color: var(--panel-border);
-    background: var(--raised);
+    border-color: var(--v4-hairline, var(--panel-border));
+    background: var(--v4-raised, var(--raised));
   }
 
   .core-notice-text {
@@ -1029,7 +1038,7 @@
     padding: 10px 12px;
     margin-bottom: 6px;
     border-radius: 10px;
-    background: var(--raised);
+    background: var(--v4-raised, var(--raised));
   }
 
   .core-recovery-sentence {
@@ -1052,7 +1061,7 @@
     margin-bottom: 6px;
     border: none;
     border-radius: 10px;
-    background: var(--raised);
+    background: var(--v4-raised, var(--raised));
   }
 
   .core-paused-title {
@@ -1205,7 +1214,7 @@
   }
 
   .core-row-button:hover {
-    background: var(--hover);
+    background: var(--v4-hover, var(--hover));
   }
 
   .core-row-label {
@@ -1359,7 +1368,7 @@
   }
 
   .core-btn.secondary:hover:not(:disabled) {
-    background: var(--hover);
+    background: var(--v4-hover, var(--hover));
     color: var(--t1);
     border-color: var(--line2);
   }
@@ -1383,7 +1392,7 @@
     gap: 0;
     border: none;
     border-radius: 10px;
-    background: var(--raised);
+    background: var(--v4-raised, var(--raised));
     padding: 4px 0;
     margin-top: 4px;
     transition: background 0.12s;
@@ -1452,7 +1461,7 @@
   }
 
   .core-pack-row:hover {
-    background: var(--hover);
+    background: var(--v4-hover, var(--hover));
   }
 
   .core-pack-name {
@@ -1480,12 +1489,5 @@
     margin: 0;
     color: var(--warn-ink);
     font-size: 11px;
-  }
-
-  @media (prefers-reduced-transparency: reduce) {
-    .core-popover {
-      backdrop-filter: none;
-      -webkit-backdrop-filter: none;
-    }
   }
 </style>

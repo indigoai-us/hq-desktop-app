@@ -168,7 +168,6 @@ const BACKDROP_FILTER_ALLOWLIST = new Set([
   "packages/ui/src/chat/ChatSidebar.svelte::.chat-popover",
   "packages/ui/src/chat/ChatSidebar.svelte::.chat-context-menu",
   "packages/ui/src/common/LinkContextMenu.svelte::.link-context-menu",
-  "packages/ui/src/home/CorePopover.svelte::.core-popover",
   "packages/ui/src/library/LibraryBrowser.svelte::.scope-menu",
   "packages/ui/src/projects/ProjectDetailView.svelte::.status-menu",
   "packages/ui/src/settings/VersionPopout.svelte::.version-popout",
