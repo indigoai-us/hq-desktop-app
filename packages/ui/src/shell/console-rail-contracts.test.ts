@@ -6,8 +6,8 @@
  * meetings), the ChatSidebar companies / company-channel surface, or the
  * company Overview page, and the later story that has to change it.
  *
- * Pending contracts use it.todo. Each name starts with the story that
- * removes the todo and turns the assertion on. Do not skip or loosen a
+ * Every pending contract is now on (US-039). Each name starts with the
+ * story that turned the assertion on. Do not skip or loosen a
  * passing test to make one of these pass.
  */
 import { existsSync } from "node:fs";
@@ -141,13 +141,42 @@ describe("US-002 existing shell contracts stay on disk", () => {
 });
 
 describe("US-002 pending console-rail contracts", () => {
-  it.todo(
-    "US-003: AppRail order is Home, Meetings, pinned company tiles, More companies, Library, Deployments, Telemetry, Secrets, Connections, Outpost, spacer, You",
-  );
+  it("US-003: AppRail order is Home, Meetings, pinned company tiles, More companies, Library, Deployments, Telemetry, Secrets, Connections, Outpost, spacer, You", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { railItems } = await import("./app-rail.js");
+    const items = railItems(
+      [
+        { uid: "co_a", label: "Indigo" },
+        { uid: "co_b", label: "Amass" },
+      ],
+      "Corey",
+    );
+    expect(items.map((item) => item.id)).toEqual([
+      "home",
+      "meetings",
+      "company:co_a",
+      "company:co_b",
+      "more-companies",
+      "library",
+      "deployments",
+      "telemetry",
+      "secrets",
+      "connections",
+      "outpost",
+      "you",
+    ]);
+    const rail = readFileSync(join(REPO_ROOT, "packages/ui/src/shell/AppRail.svelte"), "utf8");
+    // The spacer renders between the navigation items and the You avatar.
+    expect(rail).toMatch(/data-testid="rail-spacer"/);
+  });
 
-  it.todo(
-    "US-004: the rail shows at most six pinned company tiles",
-  );
+  it("US-004: the rail shows at most six pinned company tiles", async () => {
+    const { MAX_PINNED_COMPANY_TILES, railItems } = await import("./app-rail.js");
+    expect(MAX_PINNED_COMPANY_TILES).toBe(6);
+    const companies = Array.from({ length: 9 }, (_, i) => ({ uid: `co_${i}`, label: `Co ${i}` }));
+    const tiles = railItems(companies, "You").filter((item) => item.kind === "company");
+    expect(tiles).toHaveLength(6);
+  });
 
   it("US-009: opening a company lands on Atlas and does not mount the Overview page", async () => {
     const { readFileSync } = await import("node:fs");
@@ -173,11 +202,26 @@ describe("US-002 pending console-rail contracts", () => {
     expect(shell).toMatch(/<AtlasLandingHost\b/);
   });
 
-  it.todo(
-    "US-011: the notifications bell stays in the titlebar",
-  );
+  it("US-011: the notifications bell stays in the titlebar", async () => {
+    const { readFileSync } = await import("node:fs");
+    const titlebar = readFileSync(join(REPO_ROOT, "packages/ui/src/home/V4TitleBar.svelte"), "utf8");
+    const rail = readFileSync(join(REPO_ROOT, "packages/ui/src/shell/AppRail.svelte"), "utf8");
+    expect(titlebar).toMatch(/data-testid="titlebar-notifications"/);
+    expect(rail).not.toMatch(/notifications/i);
+  });
 
-  it.todo(
-    "US-010: the avatar menu sits at the bottom of the rail with Profile, Billing, Settings, and Sign out",
-  );
+  it("US-010: the avatar menu sits at the bottom of the rail with Profile, Billing, Settings, and Sign out", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { railItems } = await import("./app-rail.js");
+    const items = railItems([], "You");
+    expect(items.at(-1)?.kind).toBe("you");
+    const menu = readFileSync(join(REPO_ROOT, "packages/ui/src/shell/AccountMenu.svelte"), "utf8");
+    const order = ["account-profile", "account-billing", "account-settings", "account-sign-out"].map(
+      (id) => menu.indexOf(`data-testid="${id}"`),
+    );
+    for (const index of order) expect(index).toBeGreaterThan(-1);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    const shell = readFileSync(join(REPO_ROOT, "packages/ui/src/shell/DesktopApp.svelte"), "utf8");
+    expect(shell).toMatch(/onyou=\{toggleAccountMenu\}/);
+  });
 });
