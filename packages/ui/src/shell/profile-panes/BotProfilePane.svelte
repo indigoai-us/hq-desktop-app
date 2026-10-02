@@ -2,6 +2,10 @@
   /**
    * 340 px bot profile. Atlas inspector grammar: mono section labels, hairline
    * groups, background selection only. Paints from the cached snapshot.
+   *
+   * This pane owns every bot control: UID with Copy, runtime chip, scheduled
+   * jobs, 30-day usage, Pause / Resume, Open session, Edit (each section's
+   * Edit opens that tab of the edit sheet) and Stop. Other surfaces link here.
    */
   import {
     PROFILE_PANE_WIDTH,
@@ -10,19 +14,69 @@
     type BotProfileSnapshot,
   } from "./profile-pane-model.js";
 
+  import type { EditBotTab } from "./profile-pane-model.js";
+
+  interface BotUsageSummary {
+    status: "loading" | "ready" | "unavailable";
+    tokens?: string;
+    sessions?: number | null;
+    daily?: number[];
+    message?: string;
+  }
+
   interface Props {
     snapshot: BotProfileSnapshot | null;
+    /** Agent UID; shown with Copy. Empty hides the row. */
+    uid?: string | null;
+    /** Where the bot runs: Local (this computer) or Cloud (hosted fleet). */
+    runtimeKind?: "local" | "cloud" | null;
+    usage?: BotUsageSummary | null;
+    /** True while the bot is paused (stopped box); the button reads Resume. */
+    paused?: boolean;
+    busy?: boolean;
+    actionError?: string | null;
     onclose?: () => void;
     onmessage?: () => void;
     onsession?: () => void;
-    onedit?: () => void;
+    onedit?: (tab?: EditBotTab) => void;
     onpause?: () => void;
+    onresume?: () => void;
+    onstop?: () => void;
   }
 
-  let { snapshot, onclose, onmessage, onsession, onedit, onpause }: Props = $props();
+  let {
+    snapshot,
+    uid = null,
+    runtimeKind = null,
+    usage = null,
+    paused = false,
+    busy = false,
+    actionError = null,
+    onclose,
+    onmessage,
+    onsession,
+    onedit,
+    onpause,
+    onresume,
+    onstop,
+  }: Props = $props();
 
   const phase = $derived(profilePhase(snapshot?.name));
   void metadata;
+  let copied = $state(false);
+  const dailyMax = $derived(Math.max(0, ...(usage?.daily ?? [])));
+
+  async function copyUid(): Promise<void> {
+    if (!uid) return;
+    try {
+      await navigator.clipboard.writeText(uid);
+      copied = true;
+      setTimeout(() => (copied = false), 1200);
+    } catch (err) {
+      console.warn("[hq-desktop] copy bot UID failed", err);
+      copied = false;
+    }
+  }
 </script>
 
 <aside
@@ -53,15 +107,35 @@
         <div>
           <div class="nm">{snapshot.name}</div>
           <div class="hd">{snapshot.handle} · {snapshot.email}</div>
-          <div class="hd"><b>bot</b> · owned by {snapshot.owner}</div>
+          <div class="hd">
+            <b>bot</b> · owned by {snapshot.owner}
+            {#if runtimeKind}<span class="chip rt" data-testid="bot-profile-runtime-chip">{runtimeKind === "cloud" ? "Cloud" : "Local"}</span>{/if}
+          </div>
         </div>
       </div>
+      {#if uid}
+        <div class="uid" data-testid="bot-profile-uid">
+          <span class="k0">UID</span>
+          <span class="v">{uid}</span>
+          <button type="button" class="link" data-testid="bot-profile-copy-uid" onclick={() => void copyUid()}>{copied ? "Copied" : "Copy"}</button>
+        </div>
+      {/if}
       <div class="act">
         <button type="button" class="btn primary" data-testid="bot-profile-message" onclick={() => onmessage?.()}>Message</button>
-        <button type="button" class="btn" data-testid="bot-profile-pause" onclick={() => onpause?.()}>{snapshot.live ? "Pause" : "Wake"}</button>
+        <button
+          type="button"
+          class="btn"
+          data-testid="bot-profile-pause"
+          disabled={busy}
+          onclick={() => (paused ? onresume?.() : onpause?.())}
+        >{paused ? "Resume" : "Pause"}</button>
         <button type="button" class="btn" data-testid="bot-profile-session" onclick={() => onsession?.()}>Open session</button>
-        <button type="button" class="btn" data-testid="bot-profile-edit" onclick={() => onedit?.()}>Edit bot</button>
+        <button type="button" class="btn" data-testid="bot-profile-edit" onclick={() => onedit?.("identity")}>Edit bot</button>
+        <button type="button" class="btn" data-testid="bot-profile-stop" disabled={busy} onclick={() => onstop?.()}>Stop</button>
       </div>
+      {#if actionError}
+        <p class="err" role="alert" data-testid="bot-profile-action-error">{actionError}</p>
+      {/if}
       <section class="g">
         <div class="k">Now</div>
         <div class="now">
@@ -75,7 +149,7 @@
         </div>
       </section>
       <section class="g">
-        <div class="k">Runtime {#if snapshot.runtimeVersion}<span class="count">{snapshot.runtimeVersion}</span>{/if}</div>
+        <div class="k">Runtime {#if snapshot.runtimeVersion}<span class="count">{snapshot.runtimeVersion}</span>{/if} <button type="button" class="link" data-testid="bot-profile-edit-runtime" onclick={() => onedit?.("runtime")}>Edit</button></div>
         <div class="kv">
           {#each snapshot.runtime as row (row.label)}
             <b>{row.label}</b><span>{row.value}</span>
@@ -84,7 +158,7 @@
       </section>
       {#if snapshot.companies.length}
         <section class="g">
-          <div class="k">Companies <span class="count">{snapshot.companies.length}</span></div>
+          <div class="k">Companies <span class="count">{snapshot.companies.length}</span> <button type="button" class="link" data-testid="bot-profile-edit-membership" onclick={() => onedit?.("membership")}>Edit</button></div>
           {#each snapshot.companies as co (co.name)}
             <div class="co"><span class="tile">{co.mark}</span>{co.name}<span class="r">{co.role}</span></div>
           {/each}
@@ -92,7 +166,7 @@
       {/if}
       {#if snapshot.capabilities.length}
         <section class="g">
-          <div class="k">Capabilities <button type="button" class="link" onclick={() => onedit?.()}>Edit</button></div>
+          <div class="k">Capabilities <button type="button" class="link" data-testid="bot-profile-edit-capabilities" onclick={() => onedit?.("capabilities")}>Edit</button></div>
           <div class="chips">{#each snapshot.capabilities as cap (cap)}<span class="chip">{cap}</span>{/each}</div>
         </section>
       {/if}
@@ -112,9 +186,29 @@
           {/each}
         </section>
       {/if}
+      {#if usage}
+        <section class="g" data-testid="bot-profile-usage" data-state={usage.status}>
+          <div class="k">Bot · 30d usage</div>
+          {#if usage.status === "loading"}
+            <div class="shimmer row" aria-busy="true"></div>
+          {:else if usage.status === "unavailable"}
+            <div class="m">{usage.message ?? "Not available yet."}</div>
+          {:else}
+            <div class="kv">
+              <b>Tokens</b><span>{usage.tokens ?? "0"}</span>
+              {#if usage.sessions !== null && usage.sessions !== undefined}<b>Sessions</b><span>{usage.sessions}</span>{/if}
+            </div>
+            {#if usage.daily && usage.daily.length}
+              <div class="spark" aria-hidden="true">
+                {#each usage.daily as value, i (i)}<i style:height="{dailyMax > 0 ? Math.max(8, Math.round((value / dailyMax) * 100)) : 8}%"></i>{/each}
+              </div>
+            {/if}
+          {/if}
+        </section>
+      {/if}
       {#if snapshot.grants.length}
         <section class="g">
-          <div class="k">Vault access</div>
+          <div class="k">Vault access <button type="button" class="link" data-testid="bot-profile-edit-access" onclick={() => onedit?.("access")}>Edit</button></div>
           {#each snapshot.grants as grant (grant.path)}
             <div class="va"><span class="d">{grant.path}</span><span class:w={grant.level.includes("write")}>{grant.level}</span></div>
           {/each}
@@ -217,6 +311,15 @@
   .va { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; font-family: var(--font-mono, "Geist Mono", monospace); font-size: 11px; }
   .va .d { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--v4-text-3); }
   .va .w { color: var(--v4-text-1); }
+  .uid { display: flex; align-items: center; gap: 8px; font-family: var(--font-mono, "Geist Mono", monospace); font-size: 11px; color: var(--v4-text-3); }
+  .uid .k0 { font-size: 10px; letter-spacing: 0.1em; }
+  .uid .v { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--v4-text-2); }
+  .uid .link { margin-left: auto; }
+  .chip.rt { margin-left: 6px; }
+  .btn:disabled { opacity: 0.5; cursor: default; }
+  .err { margin: 0; color: var(--v4-error); font-size: var(--type-metadata, 12px); }
+  .spark { display: flex; align-items: flex-end; gap: 2px; height: 28px; margin-top: 8px; }
+  .spark i { flex: 1; min-width: 2px; border-radius: 1px; background: var(--v4-control-bg); }
   .shimmer { border-radius: 6px; background: var(--v4-control-faint, rgba(255,255,255,0.06)); }
   .shimmer.id { height: 44px; }
   .shimmer.row { height: 14px; }

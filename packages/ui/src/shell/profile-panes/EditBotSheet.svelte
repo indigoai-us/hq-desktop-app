@@ -1,7 +1,7 @@
 <script lang="ts">
   /**
-   * Edit bot sheet. Tabs are the new-agent stepper steps (Identity through
-   * Runtime). Field groups follow that step's content. Save is local until
+   * Edit bot sheet. Tabs are Identity, Membership, Access, Capabilities and
+   * Runtime; Access and Capabilities use the shared folder and skill pickers. Field groups follow that step's content. Save is local until
    * the host applies it on the next heartbeat.
    */
   import {
@@ -9,18 +9,45 @@
     editBotTabLabel,
     type EditBotTab,
   } from "./profile-pane-model.js";
-  import { emptyDraft, type AgentStepperDraft } from "../../agents/agent-stepper-model.js";
+  import { emptyDraft, setGrant, type AgentStepperDraft } from "../../agents/agent-stepper-model.js";
+  import FolderPicker from "../../agents/FolderPicker.svelte";
+  import SkillPicker from "../../agents/SkillPicker.svelte";
 
   interface Props {
     name: string;
     draft?: AgentStepperDraft | null;
+    /** Vault folders the Access tab can add. Callers own the list. */
+    folders?: readonly { path: string; note?: string }[];
+    /** Opening tab; the pane's Edit links land on the section they name. */
+    initialTab?: EditBotTab;
     onclose?: () => void;
     onsave?: (draft: AgentStepperDraft) => void;
   }
 
-  let { name, draft = null, onclose, onsave }: Props = $props();
+  let { name, draft = null, folders = [], initialTab = "identity", onclose, onsave }: Props = $props();
+  let picker = $state<"folders" | "skills" | null>(null);
 
-  let tab = $state<EditBotTab>("identity");
+  function toggleGrant(index: number, level: "read" | "write"): void {
+    const grant = local.grants[index];
+    if (!grant) return;
+    const next = setGrant(grant, level, !grant[level]);
+    local.grants[index] = next;
+  }
+
+  function addFolder(path: string): void {
+    picker = null;
+    if (local.grants.some((g) => g.path === path)) return;
+    local.grants = [...local.grants, { path, note: "", read: true, write: false }];
+  }
+
+  function toggleSkill(id: string): void {
+    local.skills = local.skills.map((skill) =>
+      skill.id === id && !skill.blocked ? { ...skill, selected: !skill.selected } : skill,
+    );
+  }
+
+  // svelte-ignore state_referenced_locally
+  let tab = $state<EditBotTab>(initialTab);
   let local = $state<AgentStepperDraft>(emptyDraft());
 
   $effect(() => {
@@ -60,35 +87,49 @@
         {/each}
         {#if local.companies.length === 0}<p class="hint">No companies are cached yet.</p>{/if}
       {:else if tab === "access"}
-        {#each local.grants as grant (grant.path)}
+        {#each local.grants as grant, i (grant.path)}
           <div class="fr">
             <span class="mono">{grant.path}</span>
-            <span>{grant.write ? "read · write" : grant.read ? "read" : "none"}</span>
+            <span class="lv">
+              <button type="button" class="seg" aria-pressed={grant.read || grant.write} data-testid="edit-bot-grant-read" onclick={() => toggleGrant(i, "read")}>read</button>
+              <button type="button" class="seg" aria-pressed={grant.write} data-testid="edit-bot-grant-write" onclick={() => toggleGrant(i, "write")}>write</button>
+            </span>
           </div>
         {/each}
+        <div class="fr"><span></span><button type="button" class="btn" data-testid="edit-bot-add-path" onclick={() => (picker = "folders")}>Add a path…</button></div>
         {#each local.secrets as secret (secret.name)}
           <div class="fr"><span>{secret.name}</span><span>{secret.granted ? "mounted per run" : "not granted"}</span></div>
         {/each}
-        {#if local.grants.length === 0 && local.secrets.length === 0}
-          <p class="hint">No vault grants are cached. Names only — secret values stay hidden.</p>
-        {/if}
+        <p class="hint">Read or write only. Secret names are listed; values stay hidden.</p>
       {:else if tab === "capabilities"}
-        {#each local.skills as skill (skill.id)}
-          <label class="rd"><input type="checkbox" bind:checked={skill.selected} /> {skill.title}</label>
-        {/each}
+        <div class="fr">
+          <span>Skills</span>
+          <span class="chips">
+            {#each local.skills.filter((skill) => skill.selected) as skill (skill.id)}<span class="chip">{skill.title}</span>{/each}
+            <button type="button" class="btn" data-testid="edit-bot-open-skills" onclick={() => (picker = "skills")}>Browse skills</button>
+          </span>
+        </div>
         {#each local.tools as tool (tool.id)}
           <label class="rd"><input type="checkbox" bind:checked={tool.selected} /> {tool.title}</label>
         {/each}
         <div class="fr"><span>Model</span><span class="mono">{local.model}</span></div>
-        {#if local.skills.length === 0 && local.tools.length === 0}
-          <p class="hint">Capabilities refresh from the bot record. This tab edits the cached draft.</p>
-        {/if}
+        <div class="fr"><span>Budget</span><span class="mono">${local.budgetPerDay}/day</span></div>
       {:else}
         <div class="fr"><span>Place</span><span>{local.place}</span></div>
         <div class="fr"><span>Box</span><span>{local.size} · {local.region}</span></div>
         <p class="hint">Runtime changes apply on the next heartbeat, about 30 s. Pause the bot first if it is live.</p>
       {/if}
     </div>
+    {#if picker === "folders"}
+      <FolderPicker folders={folders.length ? folders : [{ path: "knowledge/", note: "read" }]} onchoose={addFolder} onclose={() => (picker = null)} />
+    {:else if picker === "skills"}
+      <SkillPicker
+        skills={local.skills}
+        selected={local.skills.filter((skill) => skill.selected).map((skill) => skill.id)}
+        ontoggle={toggleSkill}
+        onclose={() => (picker = null)}
+      />
+    {/if}
     <footer class="sf">
       <span class="note">Applies on the next heartbeat · about 30 s</span>
       <span class="grow"></span>
@@ -132,6 +173,10 @@
   .rd small { color: var(--v4-text-3); }
   .mono { font-family: var(--font-mono, "Geist Mono", monospace); font-size: 12px; }
   .grow { flex: 1; }
+  .lv, .chips { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+  .seg { border: 1px solid var(--v4-control-border, var(--line)); background: transparent; color: var(--v4-text-2); border-radius: 6px; padding: 2px 8px; font: inherit; font-size: 12px; cursor: pointer; }
+  .seg[aria-pressed="true"] { background: var(--v4-active-row, var(--v4-hover)); color: var(--v4-text-1); }
+  .chip { padding: 1px 6px; border-radius: 4px; background: var(--v4-control-faint); font-size: 12px; }
   .btn {
     border: 1px solid var(--v4-control-border, var(--line)); background: transparent; color: var(--v4-text-1);
     border-radius: 6px; padding: 4px 10px; font: inherit; cursor: pointer;
