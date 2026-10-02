@@ -1,7 +1,6 @@
 ; HQ installer hooks — Windows (NSIS).
 !include "StrFunc.nsh"
 ${StrStr}
-${StrLen}
 
 !macro HQ_CAPTURE_DOWNLOAD_TOKEN
   ; Capture only this setup executable's own download URL. The marker is
@@ -13,7 +12,7 @@ ${StrLen}
     StrCpy $2 $0 102
     ${If} $2 == "https://github.com/indigoai-us/hq-desktop-app/releases/latest/download/HQ_x64-setup.exe?downloadToken="
       StrCpy $3 $0 43 102
-      ${StrLen} $4 $0
+      StrLen $4 $0
       ${If} $4 == 145
         CreateDirectory "$PROFILE\.hq"
         FileOpen $5 "$PROFILE\.hq\download-token" w
@@ -27,7 +26,7 @@ ${StrLen}
       StrCpy $2 $0 104
       ${If} $2 == "https://github.com/indigoai-us/hq-desktop-app/releases/latest/download/HQ_arm64-setup.exe?downloadToken="
         StrCpy $3 $0 43 104
-        ${StrLen} $4 $0
+        StrLen $4 $0
         ${If} $4 == 147
           CreateDirectory "$PROFILE\.hq"
           FileOpen $5 "$PROFILE\.hq\download-token" w

@@ -212,7 +212,8 @@ describe('Windows installer captures only its own download token', () => {
     expect(windowsInstallerHooks).toContain('StrCpy $3 $0 43 102');
     expect(windowsInstallerHooks).toContain('StrCpy $2 $0 104');
     expect(windowsInstallerHooks).toContain('StrCpy $3 $0 43 104');
-    expect(windowsInstallerHooks.split('\n').slice(0, 4)).toContain('${StrLen}');
+    expect(windowsInstallerHooks).toContain('StrLen $4 $0');
+    expect(windowsInstallerHooks).not.toContain('${StrLen}');
     expect(windowsInstallerHooks).not.toContain('${StrCpy}');
   });
 });
