@@ -67,6 +67,7 @@ const NETWORK_CLONE_RETRY_BACKOFF: Duration = Duration::from_millis(500);
 
 struct CoreUpdateRescueCommand {
     command: tokio::process::Command,
+    rescue_path: String,
     npx_resolution: crate::commands::hq_core_state::CoreUpdateNpxResolution,
     managed_git_healthy: bool,
 }
@@ -492,6 +493,7 @@ async fn install_hq_core_update_inner(
 
     let CoreUpdateRescueCommand {
         command,
+        rescue_path,
         npx_resolution,
         ..
     } = core_update_rescue_command(false);
@@ -537,6 +539,45 @@ async fn install_hq_core_update_inner(
             .with_npx_resolution(npx_resolution)
         })?;
 
+    if let Some(git_version) =
+        crate::commands::hq_core_staging::rescue_git_version_on_path(&rescue_path).await
+    {
+        if crate::commands::hq_core_staging::rescue_git_version_is_supported(&git_version)
+            == Some(false)
+        {
+            let diagnostic = crate::commands::hq_core_staging::rescue_git_preflight_diagnostic(
+                &git_version,
+            );
+            crate::commands::hq_core_state::emit_core_update_git_preflight_failure(
+                update_source,
+                crate::commands::hq_core_state::Channel::Release,
+                &git_version,
+            );
+            let _ = std::fs::write(&log_path, &diagnostic);
+            return Ok(CoreUpdateRescueRun {
+                result: crate::commands::hq_core_staging::RescueRunResult {
+                    exit_code: 1,
+                    log_tail: diagnostic.clone(),
+                    log_path: log_path.display().to_string(),
+                    rescue_stderr_tail:
+                        hq_telemetry::redact_core_update_diagnostic_tail(&diagnostic),
+                    rescue_telemetry:
+                        crate::commands::hq_core_state::CoreUpdateRescueTelemetry::from_raw_with_probes(
+                            &diagnostic,
+                            1,
+                        )
+                        .await,
+                    npx_resolution,
+                    baseline_persisted: false,
+                    baseline_retry_target: latest,
+                    baseline_refresh_pending: false,
+                    rescue_error_kind: Some("git_too_old"),
+                },
+                managed_git_retry: crate::commands::hq_core_state::ManagedGitRetryOutcome::NotNeeded,
+            });
+        }
+    }
+
     let _update_guard =
         crate::commands::process::begin_update_sensitive_operation().map_err(|error| {
             crate::commands::hq_core_state::CoreUpdateError::new(
@@ -546,11 +587,15 @@ async fn install_hq_core_update_inner(
             .with_npx_resolution(npx_resolution)
         })?;
 
-    let rescue_args = crate::commands::hq_core_staging::build_rescue_args(
+    let mut rescue_args = crate::commands::hq_core_staging::build_rescue_args(
         &hq_folder,
         PROD_HQ_CORE_REPO,
         Some(&git_ref),
         floor_sha.as_deref(),
+    );
+    crate::commands::hq_core_staging::add_automatic_rescue_lock_timeout(
+        &mut rescue_args,
+        observation.source(),
     );
 
     let initial_exit_code = spawn_rescue_attempt(
@@ -783,6 +828,7 @@ async fn install_hq_core_update_inner(
 fn core_update_rescue_command(managed_git_first: bool) -> CoreUpdateRescueCommand {
     let (mut command, npx_resolution) = crate::commands::hq_core_staging::rescue_command();
     let mut managed_git_healthy = false;
+    let mut rescue_path = hq_desktop_core::paths::child_path();
 
     #[cfg(not(windows))]
     if let Some(home) = dirs::home_dir() {
@@ -805,13 +851,14 @@ fn core_update_rescue_command(managed_git_first: bool) -> CoreUpdateRescueComman
             }
         };
         managed_git_healthy = healthy;
-        let rescue_path = hq_desktop_core::paths::managed_git_rescue_path_for_home(
+        let managed_rescue_path = hq_desktop_core::paths::managed_git_rescue_path_for_home(
             &hq_desktop_core::paths::child_path(),
             &home,
             healthy,
             managed_git_first,
         );
-        command.env("PATH", rescue_path);
+        command.env("PATH", managed_rescue_path.clone());
+        rescue_path = managed_rescue_path;
     } else {
         log(
             "hq-core-update",
@@ -821,6 +868,7 @@ fn core_update_rescue_command(managed_git_first: bool) -> CoreUpdateRescueComman
 
     CoreUpdateRescueCommand {
         command,
+        rescue_path,
         npx_resolution,
         managed_git_healthy,
     }

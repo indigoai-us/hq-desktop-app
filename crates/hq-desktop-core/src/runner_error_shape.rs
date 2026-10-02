@@ -290,7 +290,7 @@ const ROLLUP_TAG_TOP_N: usize = 3;
 /// `complete` event's new optional `filesPlanLimited` counter instead of
 /// per-file `error` events. The source-version marker moves with the runner
 /// pin.
-pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.18.17";
+pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.18.30";
 
 /// Compile-time byte-equality for two `&str`, used only by the vocabulary-drift
 /// guard below. A stable-Rust `const fn` (a `while` byte loop, no new
