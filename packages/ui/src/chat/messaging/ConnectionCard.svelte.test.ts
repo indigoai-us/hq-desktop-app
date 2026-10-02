@@ -268,6 +268,118 @@ describe("a connection card", () => {
   });
 });
 
+describe("a card that keeps one height", () => {
+  function renderCard(view: ReturnType<typeof connectionCardView>): HTMLElement {
+    const root = target();
+    component = mount(ConnectionCard, { target: root, props: { view, onaction: vi.fn() } });
+    flushSync();
+    return root.querySelector<HTMLElement>('[data-testid="connection-card"]')!;
+  }
+  function waitingFacts(count: number, usable: string[] = []) {
+    const at = (i: number): string => new Date(Date.parse("2026-09-01T00:00:00.000Z") + i * 3_600_000).toISOString();
+    return toolFacts(
+      {
+        viewer: { canManageIntegrations: true, personUid: "prs_me" },
+        connections: [
+          ...usable.map((name, i) => ({
+            id: `acct_open_${i}`,
+            provider: `factory:${name.toLowerCase()}`,
+            status: "connected",
+            createdBy: "prs_me",
+            createdAt: at(i),
+            access: { mode: "everyone" },
+            installation: { displayName: name },
+          })),
+          ...Array.from({ length: count }, (_, i) => ({
+            id: `acct_${i}`,
+            provider: "factory:app",
+            status: "connected",
+            createdBy: "prs_me",
+            createdAt: at(i),
+            access: { mode: "private" },
+            installation: { displayName: `App ${i}` },
+          })),
+        ],
+      },
+      null,
+    );
+  }
+  const scroller = (el: HTMLElement) => el.querySelector<HTMLElement>('[data-testid="connection-card-scroll"]');
+
+  it("puts every waiting row in one scroll area inside the glass, and the buttons outside it", () => {
+    const el = renderCard(connectionCardView("tools", input({ tools: waitingFacts(17, ["Linear"]) })));
+    const area = scroller(el)!;
+    expect(area.querySelectorAll('[data-testid="connection-card-row"]')).toHaveLength(17);
+    expect(area.closest(".connection-card-glass")).not.toBeNull();
+    // The header and the line stay put: they are not in the scroll area.
+    expect(area.querySelector(".connection-card-head")).toBeNull();
+    expect(area.querySelector('[data-testid="connection-card-line"]')).toBeNull();
+    // The button strip stays on the art, outside the glass and the scroll area.
+    const strip = primary(el)!.parentElement!;
+    expect(strip.closest(".connection-card-glass")).toBeNull();
+    expect(strip.closest('[data-testid="connection-card-scroll"]')).toBeNull();
+    expect(el.querySelector('[data-testid="connection-card-more"]')).toBeNull();
+    // The card itself takes no inline size: the height is one constant in its style.
+    expect(el.getAttribute("style")).toBeNull();
+  });
+
+  it("makes the scroll area reachable from the keyboard, with a name", () => {
+    const el = renderCard(connectionCardView("tools", input({ tools: waitingFacts(5) })));
+    const area = scroller(el)!;
+    expect(area.tabIndex).toBe(0);
+    expect(area.getAttribute("role")).toBe("group");
+    expect(area.getAttribute("aria-label")).toBe("Your connections");
+  });
+
+  it("has no scroll area when there are no rows", () => {
+    const root = renderBlock({ views: views(), onaction: () => {} });
+    expect(cards(root)).toHaveLength(2);
+    expect(root.querySelector('[data-testid="connection-card-scroll"]')).toBeNull();
+  });
+
+  it("keeps the +N more line as the last line of the list, only beyond the cap", () => {
+    const el = renderCard(connectionCardView("tools", input({ tools: waitingFacts(33) })));
+    const area = scroller(el)!;
+    expect(area.querySelectorAll('[data-testid="connection-card-row"]')).toHaveLength(30);
+    const more = area.querySelector<HTMLElement>('[data-testid="connection-card-more"]')!;
+    expect(more.textContent).toBe("+3 more in HQ Integrations");
+    expect(area.lastElementChild).toBe(more);
+  });
+
+  it("fades the bottom edge of the list while more rows are below, and not at its end", () => {
+    const el = renderCard(connectionCardView("tools", input({ tools: waitingFacts(17) })));
+    const area = scroller(el)!;
+    const fade = area.parentElement!;
+    // No layout in this environment: nothing is below, so no fade.
+    expect(fade.dataset.moreBelow).toBe("false");
+    Object.defineProperty(area, "scrollHeight", { configurable: true, value: 680 });
+    Object.defineProperty(area, "clientHeight", { configurable: true, value: 110 });
+    area.scrollTop = 0;
+    area.dispatchEvent(new Event("scroll"));
+    flushSync();
+    expect(fade.dataset.moreBelow).toBe("true");
+    Object.defineProperty(area, "scrollTop", { configurable: true, value: 570 });
+    area.dispatchEvent(new Event("scroll"));
+    flushSync();
+    expect(fade.dataset.moreBelow).toBe("false");
+  });
+
+  it("gives the full line and the full note as a title, for when they are cut at two lines", () => {
+    const names = ["Gmail (Stefan)", "Firecrawl", "Granola API", "Zapier MCP", "Linear", "Notion", "Figma", "Stripe"];
+    const el = renderCard(
+      connectionCardView("tools", input({ tools: waitingFacts(2, names), notes: { tools: "Could not share Linear. Try again." } })),
+    );
+    const line = el.querySelector<HTMLElement>('[data-testid="connection-card-line"]')!;
+    expect(line.textContent).toBe("Nova can use: Gmail (Stefan), Firecrawl, Granola API, Zapier MCP, Linear, Notion and 2 more.");
+    expect(line.getAttribute("title")).toBe(line.textContent);
+    const note = el.querySelector<HTMLElement>('[data-testid="connection-card-note"]')!;
+    expect(note.getAttribute("title")).toBe("Could not share Linear. Try again.");
+    // The note is on the glass, after the list, and never in the scroll area.
+    expect(note.closest(".connection-card-glass")).not.toBeNull();
+    expect(note.closest('[data-testid="connection-card-scroll"]')).toBeNull();
+  });
+});
+
 describe("Not now", () => {
   it("leads to the declined card with no button", () => {
     // The host keeps the record; the card is redrawn from the model.

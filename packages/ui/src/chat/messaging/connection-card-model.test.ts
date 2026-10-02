@@ -4,6 +4,7 @@ import {
   BOT_CONNECTION_CARDS_STORAGE_KEY,
   CONNECTING_TIMEOUT_MS,
   MAX_BOT_CONNECTION_RECORDS,
+  MAX_WAITING_ROWS,
   SLACK_TIMEOUT_NOTE,
   TOOLS_TIMEOUT_NOTE,
   companyUidFromStatus,
@@ -634,27 +635,40 @@ describe("connectionCardView: tools", () => {
     expect(view.primaryLabel).toBeNull();
   });
 
-  it("shows at most four waiting rows and counts the rest", () => {
-    const rows = Array.from({ length: 7 }, (_, i) => closed(`acct_${i}`, `App${i}`, `2026-10-0${i + 1}T00:00:00.000Z`));
+  it("lists every waiting connection up to the cap and counts only the rest", () => {
+    const at = (i: number): string => new Date(Date.parse("2026-09-01T00:00:00.000Z") + i * 3_600_000).toISOString();
+    const rows = Array.from({ length: MAX_WAITING_ROWS + 3 }, (_, i) => closed(`acct_${i}`, `App${i}`, at(i)));
+    // Seventeen, as in the owner's screenshot: all of them, newest first, no count.
+    const seventeen = connectionCardView("tools", input({ tools: toolFacts(list(rows.slice(0, 17)), null) }));
+    expect(seventeen.waiting.map((row) => row.name)).toEqual(Array.from({ length: 17 }, (_, i) => `App${16 - i}`));
+    expect(seventeen.moreWaiting).toBeNull();
+    // Exactly the cap: still no count.
+    const full = connectionCardView("tools", input({ tools: toolFacts(list(rows.slice(0, MAX_WAITING_ROWS)), null) }));
+    expect(full.waiting).toHaveLength(MAX_WAITING_ROWS);
+    expect(full.moreWaiting).toBeNull();
+    // Beyond the cap: the newest thirty, and a last line for the rest.
     const view = connectionCardView("tools", input({ tools: toolFacts(list(rows), null) }));
-    expect(view.waiting.map((row) => row.name)).toEqual(["App6", "App5", "App4", "App3"]);
+    expect(MAX_WAITING_ROWS).toBe(30);
+    expect(view.waiting).toHaveLength(MAX_WAITING_ROWS);
+    expect(view.waiting[0]?.name).toBe(`App${MAX_WAITING_ROWS + 2}`);
     expect(view.moreWaiting).toBe("+3 more in HQ Integrations");
-    expect(connectionCardView("tools", input({ tools: toolFacts(list(rows.slice(0, 4)), null) })).moreWaiting).toBeNull();
   });
 
   it("counts only the person's own waiting connections in +N more", () => {
-    const mine = Array.from({ length: 6 }, (_, i) => closed(`acct_mine_${i}`, `Mine${i}`, `2026-10-0${i + 1}T00:00:00.000Z`));
+    const at = (i: number): string => new Date(Date.parse("2026-09-01T00:00:00.000Z") + i * 3_600_000).toISOString();
+    const mine = Array.from({ length: MAX_WAITING_ROWS + 2 }, (_, i) => closed(`acct_mine_${i}`, `Mine${i}`, at(i)));
     const theirs = Array.from({ length: 77 }, (_, i) => ({
       ...closed(`acct_theirs_${i}`, `Gmail (Teammate ${i})`, "2026-10-09T00:00:00.000Z"),
       createdBy: `prs_teammate_${i}`,
     }));
     const view = connectionCardView("tools", input({ tools: toolFacts(list([...theirs, ...mine]), null) }));
-    expect(view.waiting.map((row) => row.name)).toEqual(["Mine5", "Mine4", "Mine3", "Mine2"]);
+    expect(view.waiting).toHaveLength(MAX_WAITING_ROWS);
+    expect(view.waiting.every((row) => row.name.startsWith("Mine"))).toBe(true);
     expect(view.moreWaiting).toBe("+2 more in HQ Integrations");
-    // Four of the person's own and any number of a teammate's: nothing was left out.
-    const four = connectionCardView("tools", input({ tools: toolFacts(list([...theirs, ...mine.slice(0, 4)]), null) }));
-    expect(four.waiting).toHaveLength(4);
-    expect(four.moreWaiting).toBeNull();
+    // Six of the person's own and any number of a teammate's: nothing was left out.
+    const six = connectionCardView("tools", input({ tools: toolFacts(list([...theirs, ...mine.slice(0, 6)]), null) }));
+    expect(six.waiting.map((row) => row.name)).toEqual(["Mine5", "Mine4", "Mine3", "Mine2", "Mine1", "Mine0"]);
+    expect(six.moreWaiting).toBeNull();
     // Only a teammate's connections: no rows and no count.
     const none = connectionCardView("tools", input({ tools: toolFacts(list(theirs), null) }));
     expect(none.waiting).toEqual([]);

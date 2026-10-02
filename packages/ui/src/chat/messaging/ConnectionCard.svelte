@@ -14,6 +14,10 @@
    * The look follows the New Bot takeover: a brand wallpaper, a dark scrim and
    * a glass panel holding the words. Like the takeover the card is dark in
    * both app themes, so no color here comes from a theme variable.
+   *
+   * Every card is one fixed height in every state (`--cc-height` below). What
+   * does not fit scrolls inside the glass panel: the tools card's rows. The
+   * header, the line and the button strip never move.
    */
   import { onDestroy } from "svelte";
   import aurora from "../create-bot/assets/new-bot-wallpapers/aurora.jpg";
@@ -77,6 +81,30 @@
     }
     void Promise.resolve(result).then(done, done);
   }
+
+  // The rows scroll inside the card. A soft fade at the bottom edge of the
+  // list says more rows are below; it goes once the list is at its end.
+  let list = $state<HTMLElement | null>(null);
+  let moreBelow = $state(false);
+  function measureList(): void {
+    const el = list;
+    moreBelow = el ? el.scrollHeight - el.clientHeight - el.scrollTop > 1 : false;
+  }
+  $effect(() => {
+    const el = list;
+    // Measure again when the rows change.
+    void view.waiting.length;
+    void view.moreWaiting;
+    if (!el) {
+      moreBelow = false;
+      return;
+    }
+    measureList();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => measureList());
+    observer.observe(el);
+    return () => observer.disconnect();
+  });
 </script>
 
 <div
@@ -110,30 +138,48 @@
         </span>
       {/if}
     </div>
-    <div class="connection-card-line" data-testid="connection-card-line">{view.line}</div>
+    <!-- A long line is cut at two lines so the card keeps its height; the title holds all of it. -->
+    <div class="connection-card-line" data-testid="connection-card-line" title={view.line}>{view.line}</div>
     {#if view.waiting.length > 0}
-      <ul class="connection-card-rows">
-        {#each view.waiting as row (row.connectionId)}
-          <li class="connection-card-row" data-testid="connection-card-row" data-connection-id={row.connectionId}>
-            <span class="connection-card-row-name">{row.name}</span>
-            <button
-              type="button"
-              class="connection-card-btn"
-              data-testid="connection-card-allow"
-              disabled={row.pending || isPressed("allow", row.connectionId)}
-              onclick={() => press("allow", row.connectionId)}
-            >
-              {row.label}
-            </button>
-          </li>
-        {/each}
-      </ul>
-    {/if}
-    {#if view.moreWaiting}
+      <div class="connection-card-list" data-more-below={moreBelow ? "true" : "false"}>
+        <!-- The list scrolls, so it takes focus: the arrow keys scroll it for
+             someone who does not use a pointer. -->
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+        <div
+          class="connection-card-scroll"
+          data-testid="connection-card-scroll"
+          role="group"
+          aria-label="Your connections"
+          tabindex="0"
+          bind:this={list}
+          onscroll={measureList}
+        >
+          <ul class="connection-card-rows">
+            {#each view.waiting as row (row.connectionId)}
+              <li class="connection-card-row" data-testid="connection-card-row" data-connection-id={row.connectionId}>
+                <span class="connection-card-row-name">{row.name}</span>
+                <button
+                  type="button"
+                  class="connection-card-btn"
+                  data-testid="connection-card-allow"
+                  disabled={row.pending || isPressed("allow", row.connectionId)}
+                  onclick={() => press("allow", row.connectionId)}
+                >
+                  {row.label}
+                </button>
+              </li>
+            {/each}
+          </ul>
+          {#if view.moreWaiting}
+            <div class="connection-card-more" data-testid="connection-card-more">{view.moreWaiting}</div>
+          {/if}
+        </div>
+      </div>
+    {:else if view.moreWaiting}
       <div class="connection-card-more" data-testid="connection-card-more">{view.moreWaiting}</div>
     {/if}
     {#if view.note}
-      <div class="connection-card-note" data-testid="connection-card-note" role="status">{view.note}</div>
+      <div class="connection-card-note" data-testid="connection-card-note" role="status" title={view.note}>{view.note}</div>
     {/if}
   </div>
   {#if view.primaryLabel || view.declineLabel}
@@ -185,13 +231,16 @@
     --cc-accent: #c4a5ff;
     --cc-ok: #4ade80;
     --cc-warn: #fcd34d;
+    /* The one height of every connection card, in every state. Room for the
+       title, two lines and a note on the glass, the art, and the button strip. */
+    --cc-height: 240px;
     position: relative;
     isolation: isolate;
     overflow: hidden;
     box-sizing: border-box;
     flex: 1 1 220px;
     min-width: 200px;
-    min-height: 88px;
+    height: var(--cc-height);
     display: flex;
     flex-direction: column;
     gap: 6px;
@@ -228,6 +277,10 @@
   }
   /* The glass panel: the takeover card's treatment. */
   .connection-card-glass {
+    /* As tall as its words, never taller than the room above the buttons:
+       past that the rows scroll inside it. */
+    flex: 0 1 auto;
+    min-height: 0;
     display: flex;
     flex-direction: column;
     gap: 6px;
@@ -271,6 +324,7 @@
     box-shadow: none;
   }
   .connection-card-head {
+    flex: 0 0 auto;
     display: flex;
     align-items: center;
     gap: 7px;
@@ -291,6 +345,10 @@
   }
   .connection-card-title {
     font-weight: 600;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .connection-card-mark {
     margin-left: auto;
@@ -302,21 +360,84 @@
     color: var(--cc-ok);
     white-space: nowrap;
   }
+  /* Two lines at most, then an ellipsis: a long line never grows the card. */
+  .connection-card-line,
+  .connection-card-note {
+    flex: 0 0 auto;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+  }
   .connection-card-line {
     font-size: 12px;
     line-height: 1.45;
     color: var(--cc-muted);
   }
-  /* The rows sit on a darker inset panel, so a name and its button read as one line. */
+  /* The rows sit on a darker inset panel, so a name and its button read as
+     one line. The panel takes the room that is left and scrolls inside it. */
+  .connection-card-list {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 5px;
+    background: rgba(9, 9, 11, 0.46);
+    overflow: hidden;
+  }
+  /* The fade over the last visible row while more rows are below. */
+  .connection-card-list::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 26px;
+    pointer-events: none;
+    background: linear-gradient(to bottom, rgba(9, 9, 11, 0), rgba(9, 9, 11, 0.86));
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+  .connection-card-list[data-more-below="true"]::after {
+    opacity: 1;
+  }
+  .connection-card-scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    /* At its end the wheel moves the conversation: the default, kept on purpose. */
+    overscroll-behavior: auto;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.26) transparent;
+  }
+  .connection-card-scroll::-webkit-scrollbar {
+    width: 6px;
+  }
+  .connection-card-scroll::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .connection-card-scroll::-webkit-scrollbar-thumb {
+    border-radius: 3px;
+    background: rgba(255, 255, 255, 0.26);
+  }
+  .connection-card-scroll::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.42);
+  }
+  .connection-card-scroll:focus-visible {
+    outline: 2px solid var(--cc-accent);
+    outline-offset: -2px;
+  }
   .connection-card-rows {
     list-style: none;
     margin: 0;
     padding: 0 8px;
     display: flex;
     flex-direction: column;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 5px;
-    background: rgba(9, 9, 11, 0.46);
   }
   .connection-card-row {
     display: flex;
@@ -335,14 +456,20 @@
     overflow-wrap: anywhere;
   }
   .connection-card-more {
+    flex: 0 0 auto;
     font-size: 12px;
     color: var(--cc-muted);
+  }
+  .connection-card-scroll .connection-card-more {
+    padding: 6px 8px 7px;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
   }
   /* The buttons stand on the art, at the bottom, each with its own fill. */
   .connection-card-actions {
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
+    flex: 0 0 auto;
     margin-top: auto;
     padding: 0 1px 1px;
   }
@@ -408,7 +535,8 @@
     color: var(--cc-warn);
   }
   @media (prefers-reduced-motion: reduce) {
-    .connection-card-btn {
+    .connection-card-btn,
+    .connection-card-list::after {
       transition: none;
     }
   }

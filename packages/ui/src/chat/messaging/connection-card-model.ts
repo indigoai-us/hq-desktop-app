@@ -31,7 +31,11 @@ export const CONNECTING_TIMEOUT_MS = 10 * 60_000;
 /** How many bots the record keeps, newest first. */
 export const MAX_BOT_CONNECTION_RECORDS = 50;
 
-const MAX_WAITING_ROWS = 4;
+/**
+ * How many of the person's own waiting connections a card lists. The list
+ * scrolls inside the card, so this is a bound on the work, not on the height.
+ */
+export const MAX_WAITING_ROWS = 30;
 const MAX_USABLE_NAMES = 6;
 const MAX_REMEMBERED_IDS = 200;
 
@@ -459,9 +463,9 @@ export interface ConnectionCardView {
   note: string | null;
   /** Tools: names of the connections the bot can use. */
   usable: string[];
-  /** Tools: the person's own connections they can let the bot use, at most four. */
+  /** Tools: the person's own connections they can let the bot use, at most {@link MAX_WAITING_ROWS}. */
   waiting: ConnectionCardRow[];
-  /** Tools: "+N more in HQ Integrations" when rows of the person's own were left out. */
+  /** Tools: "+N more in HQ Integrations", only when the person has more than the cap. */
   moreWaiting: string | null;
 }
 
