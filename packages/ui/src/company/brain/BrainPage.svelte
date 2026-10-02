@@ -119,7 +119,12 @@
   const activeList = $derived(
     page === "knowledge" ? knowledgeRows : page === "policies" ? policyRows : page === "skills" ? skillRows : workerRows,
   );
-  const shown = $derived(previewRows(activeList, expanded));
+  const shown = $derived.by(() => {
+    if (page === "knowledge") return previewRows(knowledgeRows, expanded);
+    if (page === "policies") return previewRows(policyRows, expanded);
+    if (page === "skills") return previewRows(skillRows, expanded);
+    return previewRows(workerRows, expanded);
+  });
   const windowed = $derived(virtualWindow(shown.length, scrollTop, 640));
   const slice = $derived(shown.slice(windowed.start, windowed.end));
   const policyGroups = $derived(groupPolicies(policyRows));
@@ -194,7 +199,7 @@
     if (depth > 4) return [];
     const res = await api.listDir(root);
     if (!res.ok || !Array.isArray(res.value)) return [];
-    const entries = res.value as DirEntry[];
+    const entries = res.value as unknown as DirEntry[];
     const filesOut: string[] = [];
     for (const entry of entries) {
       if (!entry || typeof entry.path !== "string") continue;
@@ -378,16 +383,16 @@
           {/each}
         {:else}
           <div style:height={`${windowed.padTop}px`}></div>
-          {#each slice as row (page === "skills" ? (row as SkillRow).path : page === "workers" ? (row as WorkerRow).path : (row as KnowledgeFile).path)}
+          {#each slice as row (page === "skills" ? (row as unknown as SkillRow).path : page === "workers" ? (row as unknown as WorkerRow).path : (row as unknown as KnowledgeFile).path)}
             {#if page === "skills"}
-              {@const skill = row as SkillRow}
+              {@const skill = row as unknown as SkillRow}
               <button type="button" class="item" aria-current={selectedSkill?.path === skill.path} onclick={() => (selected = skill.path)} data-testid="skill-row">
                 <span class="name">{skill.name}</span>
                 <span class="meta">{skill.description}</span>
                 <span class="meta">{skill.triggers.join(" · ")}</span>
               </button>
             {:else if page === "workers"}
-              {@const worker = row as WorkerRow}
+              {@const worker = row as unknown as WorkerRow}
               <button type="button" class="item" class:muted={worker.parked} aria-current={selectedWorker?.path === worker.path} onclick={() => (selected = worker.path)}>
                 <span class="name">{worker.name}</span>
                 <span class="meta">{worker.description}</span>
