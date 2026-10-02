@@ -127,6 +127,12 @@ function brainOf(value: unknown): AgentBrain | undefined {
   return AGENT_BRAINS.includes(value as AgentBrain) ? (value as AgentBrain) : undefined;
 }
 
+function endpointOf(value: unknown): { method: "POST"; path: string } | undefined {
+  const rec = asRecord(value);
+  const path = str(rec?.path);
+  return rec?.method === "POST" && path ? { method: "POST", path } : undefined;
+}
+
 /**
  * Validate the server's `nextActions`. An entry with an unknown kind, or
  * missing the fields its kind needs, is dropped rather than half-rendered.
@@ -163,7 +169,8 @@ export function parseNextActions(raw: unknown): NextAction[] {
       case "brain_signin_paste": {
         const url = str(rec.url);
         if (!url) continue;
-        out.push({ ...base, kind, url, ...(brain ? { brain } : {}) });
+        const endpoint = endpointOf(rec.endpoint);
+        out.push({ ...base, kind, url, ...(brain ? { brain } : {}), ...(endpoint ? { endpoint } : {}) });
         break;
       }
       case "plan_upgrade":
@@ -172,18 +179,21 @@ export function parseNextActions(raw: unknown): NextAction[] {
           kind,
           ...(str(rec.requiredPlan) ? { requiredPlan: str(rec.requiredPlan) } : {}),
           ...(str(rec.checkoutUrl) ? { checkoutUrl: str(rec.checkoutUrl) } : {}),
-          ...(typeof rec.amountMinor === "number" ? { amountMinor: rec.amountMinor } : {}),
+          ...(typeof rec.amount === "number" ? { amount: rec.amount } : {}),
           ...(str(rec.currency) ? { currency: str(rec.currency) } : {}),
         });
         break;
-      case "retry":
+      case "retry": {
+        const endpoint = endpointOf(rec.endpoint);
         out.push({
           ...base,
           kind,
           ...(str(rec.step) ? { step: str(rec.step) } : {}),
           ...(str(rec.reason) ? { reason: str(rec.reason) } : {}),
+          ...(endpoint ? { endpoint } : {}),
         });
         break;
+      }
       case "sync_in_progress": {
         const progress = asRecord(rec.progress);
         out.push({
@@ -194,9 +204,13 @@ export function parseNextActions(raw: unknown): NextAction[] {
           ...(progress
             ? {
                 progress: {
-                  ...(typeof progress.done === "number" ? { done: progress.done } : {}),
-                  ...(typeof progress.total === "number" ? { total: progress.total } : {}),
-                  ...(str(progress.label) ? { label: str(progress.label) } : {}),
+                  ...(str(progress.phase) ? { phase: str(progress.phase) } : {}),
+                  ...(typeof progress.filesDone === "number" ? { filesDone: progress.filesDone } : {}),
+                  ...(typeof progress.filesTotal === "number" ? { filesTotal: progress.filesTotal } : {}),
+                  ...(typeof progress.bytesDone === "number" ? { bytesDone: progress.bytesDone } : {}),
+                  ...(typeof progress.bytesTotal === "number" ? { bytesTotal: progress.bytesTotal } : {}),
+                  ...(str(progress.startedAt) ? { startedAt: str(progress.startedAt) } : {}),
+                  ...(str(progress.updatedAt) ? { updatedAt: str(progress.updatedAt) } : {}),
                 },
               }
             : {}),

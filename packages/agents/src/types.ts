@@ -1,14 +1,14 @@
 /**
  * Wire types for the hq-pro-agents cloud-bot API (`/v1/agents`).
  *
- * TODO(desktop-agent-creation US-001/US-003): generate these from the JSON
- * schema hq-pro-agents publishes for the status response and `nextActions`.
- * Until that schema lands they are written by hand from hq-pro-agents
- * origin/main: `src/agents/handler.ts` (handleStatus, toAgentView,
- * setupStateResponse), `src/agents/types.ts` (AgentSetupState) and
- * `src/agent-config/setup-steps.ts`. `nextActions` and `chatReady` follow the
- * contract in the desktop-agent-creation plan (section 3.1 and 3.5); a server
- * that does not send them yet is handled by the reducer.
+ * TODO(desktop-agent-creation US-001/US-003): generate these from
+ * hq-pro-agents `schemas/agent-status.schema.json` once it is on main (today
+ * on branch feature/desktop-agent-creation-next-actions). Until then they are
+ * written by hand from hq-pro-agents origin/main (`src/agents/handler.ts`
+ * handleStatus, toAgentView, setupStateResponse; `src/agents/types.ts`) and
+ * that branch's `nextActions` shape. `nextActions` is only sent when the
+ * company has `agents.desktop-agent-creation`; a status without it is handled
+ * by the reducer.
  *
  * Every type here is a read model: fields the client does not use are kept
  * loose (`unknown`) so a server addition never breaks a parse.
@@ -107,7 +107,14 @@ export interface BrainSigninDeviceAction extends NextActionBase {
   brain?: AgentBrain;
   url: string;
   code: string;
+  /** Absent or null when the box stamped no capture time. */
   expiresAt?: string;
+}
+
+/** The route an action posts to, as the server names it. */
+export interface NextActionEndpoint {
+  method: "POST";
+  path: string;
 }
 
 /** Claude subscription sign-in: open the URL, paste `code#state` back. */
@@ -115,6 +122,8 @@ export interface BrainSigninPasteAction extends NextActionBase {
   kind: "brain_signin_paste";
   brain?: AgentBrain;
   url: string;
+  /** POST /v1/agents/{uid}/login-code. */
+  endpoint?: NextActionEndpoint;
 }
 
 /** The plan cannot host another bot. */
@@ -122,7 +131,8 @@ export interface PlanUpgradeAction extends NextActionBase {
   kind: "plan_upgrade";
   requiredPlan?: string;
   checkoutUrl?: string;
-  amountMinor?: number;
+  /** Minor units (cents). */
+  amount?: number;
   currency?: string;
 }
 
@@ -130,13 +140,24 @@ export interface PlanUpgradeAction extends NextActionBase {
 export interface RetryAction extends NextActionBase {
   kind: "retry";
   step?: string;
+  /** Plain words, e.g. "Starting the bot's computer failed." */
   reason?: string;
+  /** POST /v1/agents/{uid}/retry. */
+  endpoint?: NextActionEndpoint;
 }
 
 /** Informational: vault download or first sync still running. */
 export interface SyncInProgressAction extends NextActionBase {
   kind: "sync_in_progress";
-  progress?: { done?: number; total?: number; label?: string };
+  progress?: {
+    phase?: string;
+    filesDone?: number;
+    filesTotal?: number;
+    bytesDone?: number;
+    bytesTotal?: number;
+    startedAt?: string;
+    updatedAt?: string;
+  };
 }
 
 export type NextAction =

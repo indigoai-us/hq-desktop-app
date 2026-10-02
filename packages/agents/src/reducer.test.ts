@@ -60,6 +60,8 @@ const PASTE = {
   required: true,
   title: "Sign in to Claude",
   url: "https://claude.ai/oauth/authorize?x=1",
+  brain: "claude",
+  endpoint: { method: "POST", path: "/v1/agents/agt_1/login-code" },
 };
 const PLAN = {
   id: "plan",
@@ -68,11 +70,19 @@ const PLAN = {
   title: "Upgrade",
   requiredPlan: "agents-500",
   checkoutUrl: "https://checkout.example/1",
-  amountMinor: 50000,
+  amount: 50000,
   currency: "usd",
 };
-const RETRY = { id: "retry:audit", kind: "retry", required: true, title: "Final checks failed", step: "audit", reason: "timed out" };
-const SYNC = { id: "sync", kind: "sync_in_progress", required: true, title: "Getting files", progress: { done: 40, total: 100, label: "40 of 100 files" } };
+const RETRY = {
+  id: "retry:audit",
+  kind: "retry",
+  required: true,
+  title: "Final checks failed",
+  step: "audit",
+  reason: "Final checks failed.",
+  endpoint: { method: "POST", path: "/v1/agents/agt_1/retry" },
+};
+const SYNC = { id: "sync", kind: "sync_in_progress", required: true, title: "Getting files", progress: { phase: "downloading", filesDone: 40, filesTotal: 100, startedAt: "2026-10-02T15:00:00Z", updatedAt: "2026-10-02T15:01:00Z" } };
 
 describe("reduceSetup phases", () => {
   it("provisioning with nothing asked is working, groups fold in plain words", () => {
@@ -151,7 +161,7 @@ describe("reduceSetup action kinds", () => {
 
   it("brain_signin_paste is the primary action", () => {
     const view = reduceSetup(status("waiting", steps({ "codex-auth": "waiting" }), { nextActions: [PASTE] }));
-    expect(view.primaryAction).toMatchObject({ kind: "brain_signin_paste", url: PASTE.url });
+    expect(view.primaryAction).toEqual(PASTE);
   });
 
   it("plan_upgrade carries price and checkout", () => {
@@ -242,6 +252,16 @@ describe("parseNextActions", () => {
         "retry",
       ]),
     ).toEqual([]);
+  });
+
+  it("accepts a device code whose expiresAt is null", () => {
+    expect(parseNextActions([{ ...DEVICE, expiresAt: null }])).toEqual([
+      { id: DEVICE.id, kind: DEVICE.kind, required: true, title: DEVICE.title, url: DEVICE.url, code: DEVICE.code, brain: "codex" },
+    ]);
+  });
+
+  it("drops an endpoint that is not a POST path", () => {
+    expect(parseNextActions([{ ...RETRY, endpoint: { method: "GET", path: "/x" } }])[0]).not.toHaveProperty("endpoint");
   });
 
   it("returns [] for a non-array", () => {
