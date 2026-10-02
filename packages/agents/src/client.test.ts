@@ -214,6 +214,14 @@ describe("getCreateAvailability", () => {
       createAgentsClient(fakeFetch(403, { error: "Forbidden", admins: [{ displayName: "Corey" }, { displayName: "Corey" }, "Stefan"] })).getCreateAvailability("cmp_1"),
     ).resolves.toEqual({ state: "role", admins: ["Corey", "Stefan"] });
     await expect(createAgentsClient(fakeFetch(403, "nope")).getCreateAvailability("cmp_1")).resolves.toEqual({ state: "role", admins: [] });
+    await expect(
+      createAgentsClient(
+        fakeFetch(403, {
+          code: "CREATE_AGENTS_NOT_ALLOWED",
+          admins: [{ personUid: "prs_1", displayName: "prs_1" }, { personUid: "prs_2", displayName: "Shawon" }],
+        }),
+      ).getCreateAvailability("cmp_1"),
+    ).resolves.toEqual({ state: "role", admins: ["Shawon"] });
   });
 
   it("a plan block on the quote is the plan state", async () => {

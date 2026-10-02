@@ -231,8 +231,12 @@ function adminNames(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   const names: string[] = [];
   for (const item of value) {
-    const name = typeof item === "string" ? str(item) : str(asRecord(item)?.displayName);
-    if (name && !names.includes(name)) names.push(name);
+    const rec = asRecord(item);
+    const name = typeof item === "string" ? str(item) : str(rec?.displayName);
+    // The server falls back to the person uid for a nameless admin; a uid is
+    // not a name anyone can be asked by.
+    if (!name || name === str(rec?.personUid) || /^(prs|agt)_/i.test(name)) continue;
+    if (!names.includes(name)) names.push(name);
   }
   return names;
 }
