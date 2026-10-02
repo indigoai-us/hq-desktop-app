@@ -125,6 +125,12 @@ export interface TelemetrySnapshot {
   models: ModelUsage[];
   byCompany: ShareRow[];
   byActor: ShareRow[];
+  /**
+   * Tokens in the headline that no Claude family row covers: other vendors'
+   * models, or usage the source recorded without a model. The By model table
+   * shows them as one row so it adds up to the headline.
+   */
+  unattributed?: { tokens: number; note: string };
   io: { input: string; cacheRead: string; cacheWrite: string; output: string };
   outcomeCounts: {
     all: number;

@@ -72,6 +72,27 @@ describe("My Telemetry from /v1/telemetry/me", () => {
     expect(snap.notice).toBe(MISSING_SESSION_ROWS);
   });
 
+  it("puts non-Claude and model-less tokens in one Other row so the table adds up to the headline (QA-081)", () => {
+    const body = meBody("2026-09-03", "2026-10-02", 42);
+    // 400 more tokens in the headline than any model accounts for.
+    (body.totals as { tokens: unknown }).tokens = tokens(2000, 50, 0, 850);
+    const snap = snapshotFromMe(body, "30d");
+    const familyTokens = snap.models.reduce((n, m) => n + m.input + m.output + m.cacheWrite + m.cacheRead, 0);
+    expect(familyTokens).toBe(2000);
+    expect(snap.unattributed?.tokens).toBe(900);
+    expect(familyTokens + snap.unattributed!.tokens).toBe(2900);
+    expect(snap.unattributed?.note).toContain("gpt-6-sol");
+    expect(snap.unattributed?.note).toContain("400 tokens were recorded without a model");
+  });
+
+  it("omits the Other row when every token has a Claude model", () => {
+    const body = meBody("2026-09-03", "2026-10-02", 1);
+    const totals = body.totals as { tokensByModel: Record<string, unknown>; tokens: unknown };
+    delete totals.tokensByModel["gpt-6-sol"];
+    totals.tokens = tokens(1100, 50, 0, 850);
+    expect(snapshotFromMe(body, "30d").unattributed).toBeUndefined();
+  });
+
   it("prices only Claude models at list rate", () => {
     expect(modelFamily("claude-haiku-4-5-20251001")).toBe("haiku");
     expect(modelFamily("grok-4.7-build")).toBeNull();

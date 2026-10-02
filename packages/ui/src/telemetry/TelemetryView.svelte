@@ -66,12 +66,16 @@
   );
   const maxStack = $derived(snapshot ? stackMax(snapshot.days) : 0);
   const skillMax = $derived(snapshot?.skills[0]?.count ?? 1);
+  // Family rows plus the remainder row, so the table total matches the headline.
   const tokenTotal = $derived(
-    snapshot?.models.reduce(
+    (snapshot?.models.reduce(
       (sum, row) => sum + row.input + row.output + row.cacheWrite + row.cacheRead,
       0,
-    ) ?? 0,
+    ) ?? 0) + (snapshot?.unattributed?.tokens ?? 0),
   );
+  // No telemetry endpoint returns tokens per day by company or actor yet, so
+  // those tabs say so instead of redrawing the model bars under a new title.
+  const stackUnavailable = $derived(tokenStack !== "model");
 
   const pages: { id: TelemetryPage; label: string; meta?: string }[] = [
     { id: "overview", label: "Overview" },
@@ -399,8 +403,11 @@
               {/each}
             </div>
             <span class="grow"></span>
-            <span class="lg"><i class="o"></i>Opus<i class="s"></i>Sonnet<i class="h"></i>Haiku</span>
+            {#if tokenStack === "model"}<span class="lg"><i class="o"></i>Opus<i class="s"></i>Sonnet<i class="h"></i>Haiku</span>{/if}
           </div>
+          {#if stackUnavailable}
+          <p class="foot" data-testid="telemetry-stack-unavailable">{tokenStack === "company" ? "Company" : "Actor"} breakdown isn't available yet. HQ does not report tokens per day by {tokenStack} for your account.</p>
+          {:else}
           <div class="chart" data-testid="telemetry-bars">
             <span class="pk">{snapshot.peakLabel}</span>
             {#each snapshot.days as day, i (i)}
@@ -413,6 +420,7 @@
             {/each}
           </div>
           <div class="spark-lb">{#each snapshot.dayLabels as label (label)}<span>{label}</span>{/each}</div>
+          {/if}
         </div>
         <div class="two">
           <div>
@@ -428,7 +436,17 @@
                 <span class="n">{formatUsd(listRateUsd(model))}</span>
               </div>
             {/each}
-            <div class="trow tot"><span>Total</span><span class="n">{formatTokens(tokenTotal)}</span><span></span><span class="n">100%</span><span class="n">{formatUsd(snapshot.listCostUsd)}</span></div>
+            {#if snapshot.unattributed}
+              <div class="trow" data-testid="telemetry-model-other">
+                <span class="nm"><i></i>Other / unattributed</span>
+                <span class="n">{formatTokens(snapshot.unattributed.tokens)}</span>
+                <span class="bar"><i style:width="{sharePercent(snapshot.unattributed.tokens, tokenTotal)}%"></i></span>
+                <span class="n">{sharePercent(snapshot.unattributed.tokens, tokenTotal)}%</span>
+                <span class="n">—</span>
+              </div>
+            {/if}
+            <div class="trow tot" data-testid="telemetry-model-total"><span>Total</span><span class="n">{formatTokens(tokenTotal)}</span><span></span><span class="n">100%</span><span class="n">{formatUsd(snapshot.listCostUsd)}</span></div>
+            {#if snapshot.unattributed?.note}<p class="foot" data-testid="telemetry-model-other-note">{snapshot.unattributed.note}</p>{/if}
             <div class="sech gap">Input, output, cache</div>
             <div class="statline">
               <div class="stat"><div class="n">{snapshot.io.input}</div><div class="l">input</div></div>

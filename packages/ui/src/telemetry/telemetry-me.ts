@@ -99,6 +99,17 @@ function pct(part: number, total: number): number {
 
 const FAMILY_LABEL: Record<ModelId, string> = { opus: "Opus", sonnet: "Sonnet", haiku: "Haiku" };
 
+function unattributedNote(otherModels: string[], noModelTokens: number): string {
+  const parts: string[] = [];
+  if (otherModels.length > 0) {
+    const shown = otherModels.slice(0, 3).join(", ");
+    const more = otherModels.length > 3 ? ` and ${otherModels.length - 3} more` : "";
+    parts.push(`Other covers non-Claude models (${shown}${more}), which have no list price here.`);
+  }
+  if (noModelTokens > 0) parts.push(`${formatTokens(noModelTokens)} tokens were recorded without a model.`);
+  return parts.join(" ");
+}
+
 /** Build the view snapshot from a `/v1/telemetry/me` body. */
 export function snapshotFromMe(body: unknown, range: TelemetryRange): TelemetrySnapshot {
   const root = record(body);
@@ -151,6 +162,18 @@ export function snapshotFromMe(body: unknown, range: TelemetryRange): TelemetryS
 
   const sum = buckets(totals.tokens);
   const tokenSum = bucketTotal(sum) || allTokens;
+  // The headline counts every token; the family rows only Claude models. Usage
+  // from other vendors, or recorded with no model, goes in one remainder row.
+  const familyTokens = allTokens - otherTokens;
+  const unattributedTokens = Math.max(0, tokenSum - familyTokens);
+  const otherModels = Object.keys(record(totals.tokensByModel)).filter((m) => !modelFamily(m));
+  const unattributed =
+    unattributedTokens > 0
+      ? {
+          tokens: unattributedTokens,
+          note: unattributedNote(otherModels, tokenSum - allTokens),
+        }
+      : undefined;
 
   const days: DayStack[] = daily.map((point, i) => {
     const p = record(point);
@@ -180,9 +203,9 @@ export function snapshotFromMe(body: unknown, range: TelemetryRange): TelemetryS
 
   const mixParts = models.map((m) => ({
     label: m.label,
-    share: pct(m.input + m.output + m.cacheWrite + m.cacheRead, allTokens),
+    share: pct(m.input + m.output + m.cacheWrite + m.cacheRead, tokenSum),
   }));
-  if (otherTokens > 0) mixParts.push({ label: "other", share: pct(otherTokens, allTokens) });
+  if (unattributedTokens > 0) mixParts.push({ label: "other", share: pct(unattributedTokens, tokenSum) });
   const modelMix = mixParts
     .filter((part) => part.share > 0)
     .sort((a, b) => b.share - a.share)
@@ -220,6 +243,7 @@ export function snapshotFromMe(body: unknown, range: TelemetryRange): TelemetryS
     models,
     byCompany: [],
     byActor: [],
+    unattributed,
     io: {
       input: formatTokens(sum.inputTokens),
       cacheRead: formatTokens(sum.cacheReadTokens),
