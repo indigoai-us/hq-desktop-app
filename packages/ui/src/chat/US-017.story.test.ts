@@ -12,7 +12,7 @@ import type { ConversationRow } from "./sidebar-model.js";
 describe("US-017 create menu and people picker", () => {
   it("offers New message, New channel, and New agent with the storyboard shortcuts", () => {
     expect(CREATE_MENU_ITEMS.map((item) => [item.label, item.keys])).toEqual([
-      ["New message", "Mod+N"],
+      ["New message", "Mod+Shift+K"],
       ["New channel", "Mod+Shift+N"],
       ["New bot", "Mod+Alt+N"],
     ]);

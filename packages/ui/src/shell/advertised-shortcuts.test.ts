@@ -3,7 +3,8 @@
 /**
  * QA-077: every shortcut Settings advertises is bound by the shell with the
  * same chord and triggers its action. ⌘⇧A opens Atlas for the active company
- * (first rail company on Home, toast with none); ⌘N is bound exactly once.
+ * (first rail company on Home, toast with none); ⌘N is bound exactly once,
+ * to the search-first create dialog, and ⇧⌘K opens New message.
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -18,7 +19,6 @@ import { DEFAULT_SHORTCUTS } from "../account/account-pages.js";
 import { CREATE_MENU_ITEMS } from "../chat/create-menu.js";
 import {
   ADVERTISED_SHORTCUTS,
-  NEW_CHAT_KEYS,
   atlasShortcutTarget,
 } from "./advertised-shortcuts.js";
 import { dismissToast, toastItems } from "./toast-stack.svelte.js";
@@ -142,6 +142,8 @@ describe("advertised shortcut table (QA-077)", () => {
       ADVERTISED_SHORTCUTS.map((row) => row.id),
     );
     expect(DEFAULT_SHORTCUTS.find((row) => row.id === "atlas")?.keys).toBe("⌘⇧A");
+    expect(DEFAULT_SHORTCUTS.find((row) => row.id === "new-chat")?.keys).toBe("⌘N");
+    expect(DEFAULT_SHORTCUTS.find((row) => row.id === "new-message")?.keys).toBe("⌘⇧K");
   });
 
   it("picks the active company, else the first rail company, else none", () => {
@@ -163,11 +165,13 @@ describe("shell bindings for advertised shortcuts (QA-077)", () => {
     }
   });
 
-  it("binds ⌘N exactly once, and the create dialog keeps its own chord", async () => {
+  it("binds ⌘N exactly once, to the create dialog, and ⇧⌘K to New message", async () => {
     await mountShell();
     const bound = listShortcuts();
-    expect(bound.filter((b) => b.keys === "Mod+N").map((b) => b.id)).toEqual(["create.message"]);
-    expect(bound.find((b) => b.id === "chat.new")?.keys).toBe(NEW_CHAT_KEYS);
+    expect(bound.filter((b) => b.keys === "Mod+N").map((b) => b.id)).toEqual(["chat.new"]);
+    expect(bound.filter((b) => b.keys === "Mod+Shift+K").map((b) => b.id)).toEqual([
+      "create.message",
+    ]);
   });
 
   it("each advertised shell chord is consumed from Home", async () => {
@@ -182,22 +186,31 @@ describe("shell bindings for advertised shortcuts (QA-077)", () => {
     }
   });
 
-  it("⌘N opens the New message sheet", async () => {
+  it("⌘N opens the search-first create dialog", async () => {
     await mountShell();
     await press("Mod+N");
+    await vi.waitFor(() =>
+      expect(document.querySelector('[data-testid="chat-create-modal"]')).not.toBeNull(),
+    );
+    expect(shown("new-message-sheet")).toBe(false);
+  });
+
+  it("⇧⌘K opens the New message sheet", async () => {
+    await mountShell();
+    await press("Mod+Shift+K");
     await vi.waitFor(() => expect(shown("new-message-sheet")).toBe(true));
   });
 
-  it("⌘N opens a visible New message sheet on a company page", async () => {
+  it("⇧⌘K opens a visible New message sheet on a company page", async () => {
     await mountShell();
     clickCompany("Acme");
     await settle();
-    await press("Mod+N");
+    await press("Mod+Shift+K");
     await vi.waitFor(() => expect(shown("new-message-sheet")).toBe(true));
     expect(document.querySelector('[data-testid="chat-create-modal"]')).toBeNull();
   });
 
-  it("⌘N, ⇧⌘N and ⌥⌘N are each bound once, with the Create menu chords", async () => {
+  it("⇧⌘K, ⇧⌘N and ⌥⌘N are each bound once, with the Create menu chords", async () => {
     await mountShell();
     const bound = listShortcuts();
     for (const item of CREATE_MENU_ITEMS) {

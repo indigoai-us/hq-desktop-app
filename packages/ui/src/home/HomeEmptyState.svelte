@@ -20,7 +20,7 @@
   </p>
   <div class="keys">
     <button type="button" onclick={() => onfind?.()}><kbd>⌘K</kbd> Find anything</button>
-    <button type="button" onclick={() => onnewmessage?.()}><kbd>⌘N</kbd> New message</button>
+    <button type="button" onclick={() => onnewmessage?.()}><kbd>⇧⌘K</kbd> New message</button>
     <button type="button" onclick={() => onnewchannel?.()}><kbd>⇧⌘N</kbd> New channel</button>
   </div>
 </div>

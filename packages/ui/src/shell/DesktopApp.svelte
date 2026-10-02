@@ -117,7 +117,6 @@
     type ShortcutBinding,
   } from "../common/keyboard-shortcuts.js";
   import {
-    NEW_CHAT_KEYS,
     advertisedShortcut,
     atlasShortcutTarget,
   } from "./advertised-shortcuts.js";
@@ -9287,7 +9286,7 @@
     return CREATE_MENU_ITEMS.find((item) => item.id === action)!.keys;
   }
 
-  /** ⌘N: the New message sheet, from any page (QA-077). */
+  /** ⇧⌘K: the New message sheet, from any page (QA-077). */
   function openNewMessage(): void {
     paletteOpen = false;
     cheatSheetOpen = false;
@@ -9443,11 +9442,10 @@
       },
     },
     {
-      // The search-first create dialog keeps its own chord; ⌘N opens exactly
-      // one thing, the New message sheet.
+      // ⌘N opens exactly one thing, the search-first create dialog.
       id: "chat.new",
-      keys: NEW_CHAT_KEYS,
-      label: "New chat",
+      keys: advertisedShortcut("chat.new").keys,
+      label: advertisedShortcut("chat.new").label,
       group: "Conversations",
       run: () => openNewChat(),
     },

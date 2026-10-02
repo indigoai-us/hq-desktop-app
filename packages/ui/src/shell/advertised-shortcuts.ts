@@ -25,13 +25,11 @@ export const ADVERTISED_SHORTCUTS: readonly AdvertisedShortcut[] = [
   { id: "palette", bindingId: "palette.toggle", label: "Command palette", keys: "Mod+K" },
   { id: "home", bindingId: "view.rail.1", label: "Home", keys: "Mod+1" },
   { id: "atlas", bindingId: "view.atlas", label: "Open Atlas", keys: "Mod+Shift+A" },
-  { id: "new-message", bindingId: "create.message", label: "New message", keys: "Mod+N" },
+  { id: "new-chat", bindingId: "chat.new", label: "New chat", keys: "Mod+N" },
+  { id: "new-message", bindingId: "create.message", label: "New message", keys: "Mod+Shift+K" },
   { id: "settings", bindingId: "view.settings", label: "Settings", keys: "Mod+," },
   { id: "select-all", bindingId: null, label: "Select all in the composer", keys: "Mod+A" },
 ];
-
-/** The search-first create dialog keeps its own chord, separate from ⌘N. */
-export const NEW_CHAT_KEYS = "Mod+Shift+K";
 
 export function advertisedShortcut(bindingId: string): AdvertisedShortcut {
   const row = ADVERTISED_SHORTCUTS.find((entry) => entry.bindingId === bindingId);

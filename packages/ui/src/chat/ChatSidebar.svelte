@@ -217,7 +217,7 @@
 
   export interface ChatSidebarActions {
     openCreate: () => void;
-    /** The New message sheet (⌘N, owned by the shell registry). */
+    /** The New message sheet (⇧⌘K, owned by the shell registry). */
     openNewMessage: () => void;
     openNewChannel: () => void;
     openSearch: () => void;
@@ -2603,7 +2603,7 @@
         group: "Sidebar",
         run: () => selectScope("personal"),
       },
-      // ⌘N / ⇧⌘N / ⌥⌘N (the Create menu) are shell bindings so they work
+      // ⇧⌘K / ⇧⌘N / ⌥⌘N (the Create menu) are shell bindings so they work
       // from every page; registering them here too would double-bind them
       // and leave them dead wherever this sidebar is unmounted (QA-077).
     ]);
@@ -3932,7 +3932,7 @@
   {/if}
 
   {#if messageSheetOpen}
-    <!-- Portaled so ⌘N / ⇧⌘N show on pages that hide this sidebar (QA-077). -->
+    <!-- Portaled so ⇧⌘K / ⇧⌘N show on pages that hide this sidebar (QA-077). -->
     <div class="sheet-portal" use:portal>
       <LazyDoor
         door={newMessageSheetDoor}
