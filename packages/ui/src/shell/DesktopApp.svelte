@@ -826,6 +826,12 @@
      * card / packs / update). MUST stay false on real-data paths.
      */
     coreFixtures?: boolean;
+    /**
+     * Keep the sidebar's legacy Companies block. Off in the console-rail
+     * shell, where companies live on the rail only; the company-home heal
+     * tests still drive that block.
+     */
+    sidebarCompanies?: boolean;
     onsignout?: () => Promise<void> | void;
     onOpenSettings?: () => void;
     /** Open HQ Console externally (Settings → Manage account). */
@@ -1027,6 +1033,7 @@
     identities = null,
     mentionCandidates = [],
     coreFixtures = false,
+    sidebarCompanies = false,
     onsignout,
     onOpenSettings,
     onOpenConsole,
@@ -9582,6 +9589,7 @@
           api={sidebarApi}
           {wakes}
           companies={effectiveCompanies}
+          companiesOnRail={!sidebarCompanies}
           onhomechannelresolved={handleHomeChannelResolved}
           {self}
           {isAdmin}

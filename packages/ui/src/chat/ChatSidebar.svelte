@@ -231,6 +231,11 @@
     /** Wake events (web: bridged from the MeshClient). */
     wakes?: ChatWakeBus | null;
     companies?: Workspace[] | null;
+    /**
+     * Console rail shell: companies live on the rail only, so the sidebar
+     * drops its Companies block and company pin menu.
+     */
+    companiesOnRail?: boolean;
     /** A company's home channel was just created/adopted by `ensureCompanyHomeChannel`
      *  (roster row had no `homeChannelId` yet). Lets the host patch its own
      *  roster copy and refresh from the server, so chrome elsewhere (and a
@@ -435,6 +440,7 @@
     api,
     wakes = null,
     companies = null,
+    companiesOnRail = false,
     onhomechannelresolved,
     self = null,
     isAdmin = null,
@@ -3294,7 +3300,7 @@
       </button>
     {/if}
 
-    {#if (companies ?? []).length > 0}
+    {#if !companiesOnRail && (companies ?? []).length > 0}
       <div class="chat-section-label chat-companies-label" id="chat-companies-label">
         <span>COMPANIES</span>
         <button

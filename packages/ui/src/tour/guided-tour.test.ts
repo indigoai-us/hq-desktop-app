@@ -100,6 +100,7 @@ describe("tourSteps", () => {
     expect(steps[3].title).toBe("Bring in your team");
     expect(steps[3].targets).toEqual([
       '[data-testid="team-invite"]',
+      '[data-testid="rail-company"]',
       '[data-testid="chat-companies-section"]',
     ]);
     expect(steps[4].targets).toEqual(['[data-testid="rail-meetings"]']);

@@ -191,10 +191,10 @@ describe("DesktopApp first-run guided tour", () => {
     expect(resolvedSelector(2)).toBe('[data-testid="chat-new-message"]');
     expect(q("chat-create-modal")).toBeNull();
 
-    // Step 4: invites, pointed at the sidebar's Companies section.
+    // Step 4: invites, pointed at the first company tile on the rail.
     await next();
     expect(q("guided-tour-card")?.textContent).toContain("Bring in your team");
-    expect(resolvedSelector(3)).toBe('[data-testid="chat-companies-section"]');
+    expect(resolvedSelector(3)).toBe('[data-testid="rail-company"]');
 
     // Back and forth over steps 2-4 never opens the explorer or the modal.
     q("guided-tour-back")!.click();

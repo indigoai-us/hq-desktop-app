@@ -128,10 +128,15 @@ export function tourSteps(ctx: TourContext = {}): TourStep[] {
         ? "Invite teammates so they share the same files, bots and knowledge. Invites are sent from your company's Team page on hq.computer."
         : "Invite teammates so they share the same files, bots and knowledge. Invites open once setup creates your company.",
       // No send-invite control is mounted in the desktop shell today; the
-      // Team panel's Invite button wins if one appears, else the sidebar's
-      // Companies section. With no company there is nothing to point at.
+      // Team panel's Invite button wins if one appears, then the rail's
+      // first company tile, then a host sidebar that still lists companies.
+      // With no company there is nothing to point at.
       targets: hasCompany
-        ? ['[data-testid="team-invite"]', '[data-testid="chat-companies-section"]']
+        ? [
+            '[data-testid="team-invite"]',
+            '[data-testid="rail-company"]',
+            '[data-testid="chat-companies-section"]',
+          ]
         : [],
       placement: "right",
       onEnter: "none",
