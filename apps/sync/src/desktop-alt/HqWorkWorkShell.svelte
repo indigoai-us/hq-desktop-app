@@ -20,6 +20,7 @@
   import { createSetupInstallGuideCallbacks } from './lib/install-guide-adapter';
   import {
     applyAvailableUpdate,
+    setBackgroundUpdatesOff,
     applyRecommendBanner,
     clearRecommendBanner,
     createChatWakeBus,
@@ -928,6 +929,12 @@
       if (typeof id === 'string' && id) common.runShortcut(id);
     }).catch(() => () => {});
 
+    // QA-051: About says automatic updates are off in dev and debug builds.
+    void invokeFn('background_updates_off')
+      .then((off) => {
+        if (!cancelled) setBackgroundUpdatesOff(off === true);
+      })
+      .catch((err: unknown) => console.warn('[updates] background_updates_off failed', err));
     const updateEvents = [
       'update:available',
       'update:cleared',

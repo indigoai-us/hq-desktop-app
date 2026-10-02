@@ -278,6 +278,7 @@
     type SyncStatusState,
   } from "../home/sync-status.js";
   import {
+    applyAvailableUpdate,
     dismissRecommendBanner,
     installRecommendedUpdate,
     orchestrationAdapterFrom,
@@ -1217,6 +1218,9 @@
   function applyUpdateGateStatus(status: UpdateGateStatus): void {
     const v = status.pendingVersion;
     if (!v) return;
+    // QA-051: Settings → About reads the update store, so the version the
+    // Home banner offers must land there too, dismissed or not.
+    applyAvailableUpdate(v);
     if (isDismissed(v)) return;
     const isNew = v !== updatePendingVersion;
     updateHoldReasons = status.reasons ?? [];

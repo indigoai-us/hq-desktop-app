@@ -193,6 +193,7 @@ export {
   reportInstallFailed,
   reportIdleWait,
   applyAvailableUpdate,
+  setBackgroundUpdatesOff,
   applyRecommendBanner,
   dismissRecommendBanner,
   clearRecommendBanner,

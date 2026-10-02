@@ -8,6 +8,7 @@ import {
   paintAccount,
   recordShortcut,
   updateReady,
+  aboutUpdateLine,
   DEFAULT_SHORTCUTS,
 } from "./account-pages.js";
 
@@ -43,5 +44,20 @@ describe("account pages (US-035)", () => {
     expect(painted.displayName).toBe("Ada Lovelace");
     expect(painted.invoices.length).toBeGreaterThan(0);
     expect(metadata.performanceBudget.scrollDroppedFramesPct).toBe(0.01);
+  });
+
+  it("About reads the shared update store, never claiming up to date when an update is offered (QA-051)", () => {
+    const base = { installPhase: "idle", availableVersion: null, backgroundUpdatesOff: false };
+    expect(aboutUpdateLine({ ...base, appStatus: "available", availableVersion: "0.10.379" })).toBe(
+      "HQ 0.10.379 is available.",
+    );
+    expect(aboutUpdateLine({ ...base, appStatus: "up-to-date" })).toBe("HQ is up to date.");
+    expect(aboutUpdateLine({ ...base, appStatus: "unchecked" })).toBe("HQ has not checked for updates yet.");
+    expect(aboutUpdateLine({ ...base, appStatus: "unchecked", backgroundUpdatesOff: true })).toContain(
+      "Automatic updates are off in this build",
+    );
+    expect(
+      aboutUpdateLine({ ...base, appStatus: "available", availableVersion: "0.10.379", backgroundUpdatesOff: true }),
+    ).toBe("HQ 0.10.379 is available. Automatic updates are off in this build; use Check for updates.");
   });
 });

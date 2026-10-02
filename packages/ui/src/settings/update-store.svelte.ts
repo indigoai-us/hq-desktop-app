@@ -66,6 +66,8 @@ let checking = $state(INITIAL.checking);
 let installPhase = $state<AppInstallPhase>(INITIAL.installPhase);
 let downloadPercent = $state<number | null>(INITIAL.downloadPercent);
 let autoUpdateEnabled = $state(INITIAL.autoUpdateEnabled);
+/** Host reports the background update checker is off (dev or debug build). */
+let backgroundUpdatesOff = $state(false);
 let installError = $state<string | null>(INITIAL.installError);
 let idleWaitRemainingSecs = $state<number | null>(INITIAL.idleWaitRemainingSecs);
 let recommendBanner = $state<RecommendBanner | null>(INITIAL.recommendBanner);
@@ -378,6 +380,10 @@ export function setAutoUpdateEnabled(enabled: boolean): void {
   autoUpdateEnabled = enabled;
 }
 
+export function setBackgroundUpdatesOff(off: boolean): void {
+  backgroundUpdatesOff = off;
+}
+
 export function applyAvailableUpdate(version: string | null): void {
   if (version && version.trim()) {
     availableVersion = version.trim();
@@ -405,6 +411,7 @@ export function resetUpdateStore(): void {
   installPhase = INITIAL.installPhase;
   downloadPercent = INITIAL.downloadPercent;
   autoUpdateEnabled = INITIAL.autoUpdateEnabled;
+  backgroundUpdatesOff = false;
   installError = INITIAL.installError;
   clearIdleWait();
   idleWaitRemainingSecs = INITIAL.idleWaitRemainingSecs;
@@ -453,6 +460,9 @@ export const updateStore = {
   },
   get autoUpdateEnabled() {
     return autoUpdateEnabled;
+  },
+  get backgroundUpdatesOff() {
+    return backgroundUpdatesOff;
   },
   get installError() {
     return installError;

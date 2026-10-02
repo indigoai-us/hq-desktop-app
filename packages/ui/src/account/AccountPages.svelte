@@ -17,7 +17,7 @@
     paintAccount,
     readAccountCache,
     recordShortcut,
-    updateReady,
+    aboutUpdateLine,
     writeAccountCache,
     type AccountCache,
     type AccountCompany,
@@ -79,7 +79,17 @@
   });
 
   const invoice = $derived(data.invoices.find((row) => row.id === invoiceId) ?? null);
-  const ready = $derived(updateReady(updateStore.installPhase, updateStore.appStatus));
+  // Restart card only once a package is staged; otherwise the About line
+  // reads the same store as the Home banner (QA-051).
+  const ready = $derived(updateStore.installPhase === "ready");
+  const aboutLine = $derived(
+    aboutUpdateLine({
+      installPhase: updateStore.installPhase,
+      appStatus: updateStore.appStatus,
+      availableVersion: updateStore.availableVersion,
+      backgroundUpdatesOff: updateStore.backgroundUpdatesOff,
+    }),
+  );
   // "Later" hides the restart card for this visit; the toolbar status stays.
   let updateDeferred = $state(false);
   const mark = $derived(
@@ -292,7 +302,7 @@
           {:else if ready}
             <p class="sub">An update is ready. It installs the next time HQ restarts.</p>
           {:else}
-            <p class="sub">HQ is up to date.</p>
+            <p class="sub" data-testid="about-update-line">{aboutLine}</p>
           {/if}
         </div>
       </div>

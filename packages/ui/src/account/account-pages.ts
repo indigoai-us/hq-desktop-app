@@ -171,3 +171,29 @@ export function recordShortcut(
 export function updateReady(phase: string, appStatus: string): boolean {
   return phase === "ready" || (appStatus === "available" && phase !== "installing");
 }
+
+/**
+ * The About line in Account Settings, from the same update store the Home
+ * banner feeds (QA-051). Never claims "up to date" unless a check said so.
+ */
+export function aboutUpdateLine(state: {
+  installPhase: string;
+  appStatus: string;
+  availableVersion: string | null;
+  backgroundUpdatesOff: boolean;
+}): string {
+  const off = state.backgroundUpdatesOff
+    ? " Automatic updates are off in this build; use Check for updates."
+    : "";
+  if (state.installPhase === "installing") return "Installing the update. HQ restarts when it finishes.";
+  if (state.appStatus === "available") {
+    const v = state.availableVersion ? `HQ ${state.availableVersion}` : "A new version of HQ";
+    return `${v} is available.${off}`;
+  }
+  if (state.appStatus === "checking") return "Checking for updates…";
+  if (state.appStatus === "up-to-date") return `HQ is up to date.${off}`;
+  if (state.appStatus === "failed") return `Could not check for updates.${off}`;
+  return state.backgroundUpdatesOff
+    ? "Automatic updates are off in this build. Use Check for updates to look for a new version."
+    : "HQ has not checked for updates yet.";
+}

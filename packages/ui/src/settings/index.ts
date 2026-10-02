@@ -23,6 +23,7 @@ export {
   reportIdleWait,
   setAutoUpdateEnabled,
   applyAvailableUpdate,
+  setBackgroundUpdatesOff,
   applyRecommendBanner,
   dismissRecommendBanner,
   clearRecommendBanner,

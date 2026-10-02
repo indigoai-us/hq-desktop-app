@@ -860,6 +860,7 @@ fn main() {
             crate::recovery::reset_local_ui_state,
             crate::recovery::open_recovery_window_cmd,
             updater::get_pending_update,
+            updater::background_updates_off,
             updater::install_update,
             updater::download_update,
             updater::install_downloaded_update,

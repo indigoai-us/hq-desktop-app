@@ -2372,6 +2372,14 @@ fn background_updates_disabled_for(
     debug_build && !allow_auto_update
 }
 
+/// Whether this build skips the background update checker (dev or debug
+/// build, or `HQ_DEV_NO_AUTO_UPDATE=1`). Settings → About uses it to say
+/// automatic updates are off instead of implying the app is current (QA-051).
+#[tauri::command]
+pub fn background_updates_off() -> bool {
+    background_updates_disabled()
+}
+
 /// Whether the bundled updater config names at least one feed endpoint.
 ///
 /// A private test bundle is built with `plugins.updater.endpoints: []` so it

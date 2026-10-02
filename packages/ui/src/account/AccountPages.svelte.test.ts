@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import AccountPages from "./AccountPages.svelte";
-import { markDownloaded, resetUpdateStore } from "../settings/update-store.svelte.js";
+import { applyAvailableUpdate, markDownloaded, resetUpdateStore } from "../settings/update-store.svelte.js";
 
 let component: ReturnType<typeof mount> | null = null;
 
@@ -29,6 +29,19 @@ describe("AccountPages (US-035)", () => {
     await tick();
     expect(host.querySelector('[data-testid="update-card"]')?.textContent).toContain("Restart to update");
     expect(host.querySelector('[data-testid="update-ready-chip"]')).not.toBeNull();
+    host.remove();
+  });
+
+  it("About shows the available update the Home banner offers, not up to date (QA-051)", async () => {
+    applyAvailableUpdate("0.10.379");
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(AccountPages, { target: host, props: { page: "settings", name: "Ada", roles: [] } });
+    await tick();
+    const line = host.querySelector('[data-testid="about-update-line"]')?.textContent ?? "";
+    expect(line).toContain("HQ 0.10.379 is available.");
+    expect(line).not.toContain("up to date");
+    expect(host.querySelector('[data-testid="update-card"]')).toBeNull();
     host.remove();
   });
 
