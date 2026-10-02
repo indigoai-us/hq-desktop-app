@@ -14,6 +14,7 @@
   import ShowMoreRow from "../shell/ShowMoreRow.svelte";
   import { profilePaneDoor } from "../shell/lazy-doors.js";
   import { pageRows } from "../shell/list-paging.js";
+  import { UNKNOWN_ROLE } from "../shell/account-menu.js";
   import type { TeamMember, TeamTelemetryView } from "./team-telemetry.js";
   import {
     INVITE_ROLES,
@@ -172,7 +173,8 @@
   }
 
   function roleLine(member: TeamMember): string {
-    return member.role?.trim() || (member.kind === "agent" ? "Member" : "Member");
+    // QA-048: no invented role. Profile shows the same dash for this company.
+    return member.role?.trim() || UNKNOWN_ROLE;
   }
 
   function initials(name: string): string {

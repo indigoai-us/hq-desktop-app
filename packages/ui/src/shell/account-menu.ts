@@ -70,53 +70,96 @@ export interface AccountRoleRow {
   role: string;
 }
 
+/** Shown on Profile when a company's roster gave no role for the person. */
+export const UNKNOWN_ROLE = "\u2014";
+
 /**
  * The signed-in person's role in one company's member roster (the contacts
  * read scoped to the company uid, the same source Team lists). Accepts the
- * bare array or `{ contacts: [...] }`. Null when the person is not listed or
- * the row has no role.
+ * bare array or `{ contacts: [...] }`. The row matches on person uid, or on
+ * email when the person signed in under a second identity. Null when the
+ * person is not listed or the row has no role.
  */
-export function selfRoleFromRoster(payload: unknown, selfUid: string): string | null {
+export function selfRoleFromRoster(
+  payload: unknown,
+  selfUid: string,
+  selfEmail: string = "",
+): string | null {
   const uid = selfUid.trim();
-  if (!uid) return null;
+  const email = selfEmail.trim().toLowerCase();
+  if (!uid && !email) return null;
   const rows = Array.isArray(payload)
     ? payload
     : payload && typeof payload === "object" && Array.isArray((payload as { contacts?: unknown }).contacts)
       ? (payload as { contacts: unknown[] }).contacts
       : [];
+  const roleOf = (rec: Record<string, unknown>): string | null => {
+    const role = [rec.role, rec.membershipRole].find((v) => typeof v === "string" && v.trim());
+    return typeof role === "string" ? role.trim() : null;
+  };
+  let byEmail: string | null = null;
   for (const row of rows) {
     if (!row || typeof row !== "object") continue;
     const rec = row as Record<string, unknown>;
     const id = [rec.personUid, rec.uid, rec.id].find((v) => typeof v === "string" && v.trim());
-    if (typeof id !== "string" || id.trim() !== uid) continue;
-    const role = [rec.role, rec.membershipRole].find((v) => typeof v === "string" && v.trim());
-    return typeof role === "string" ? role.trim() : null;
+    if (uid && typeof id === "string" && id.trim() === uid) return roleOf(rec);
+    const rowEmail = typeof rec.email === "string" ? rec.email.trim().toLowerCase() : "";
+    if (email && rowEmail === email && byEmail == null) byEmail = roleOf(rec);
   }
-  return null;
+  return byEmail;
 }
 
 /**
- * One row per company membership that has a role. A role read from the
- * company's member roster wins over the cached membership role, so Profile
- * agrees with Team (QA-048).
+ * One row per company membership. The role comes only from the company's
+ * member roster, the source Team lists, so Profile and Team agree (QA-048).
+ * A company whose roster has not loaded, or gave no role for the person,
+ * shows UNKNOWN_ROLE. The cached membership role is never shown: it said
+ * owner for every company while Team said member.
  */
 export function accountRoleRows(
   companies: readonly AccountRoleInput[],
-  rosterRoles: Readonly<Record<string, string>> = {},
+  rosterRoles: Readonly<Record<string, string | null>> = {},
 ): AccountRoleRow[] {
   const rows: AccountRoleRow[] = [];
   for (const company of companies) {
     if (company.kind === "personal") continue;
     const uid = company.uid.trim();
-    const role = rosterRoles[uid]?.trim() || company.role?.trim() || "";
-    if (!uid || !role) continue;
+    if (!uid) continue;
     rows.push({
       uid,
       label: company.label.trim() || uid,
-      role,
+      role: rosterRoles[uid]?.trim() || UNKNOWN_ROLE,
     });
   }
   return rows;
+}
+
+const ROSTER_ROLES_KEY = "hq.account.rosterRoles.v1";
+
+/** Last roster roles read for Profile, keyed by person uid then company uid. */
+export function readRosterRolesCache(selfUid: string): Record<string, string | null> {
+  try {
+    const raw = globalThis.localStorage?.getItem(ROSTER_ROLES_KEY);
+    if (!raw) return {};
+    const all = JSON.parse(raw) as Record<string, Record<string, string | null>>;
+    const mine = all?.[selfUid];
+    return mine && typeof mine === "object" ? { ...mine } : {};
+  } catch (err) {
+    console.warn("[account] roster role cache read failed", err);
+    return {};
+  }
+}
+
+export function writeRosterRolesCache(selfUid: string, roles: Record<string, string | null>): void {
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) return;
+    const raw = storage.getItem(ROSTER_ROLES_KEY);
+    const all = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    storage.setItem(ROSTER_ROLES_KEY, JSON.stringify({ ...all, [selfUid]: roles }));
+  } catch (err) {
+    console.warn("[account] roster role cache write failed", err);
+  }
 }
 
 export interface OwnLiveWork {

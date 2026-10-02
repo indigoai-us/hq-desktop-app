@@ -75,6 +75,8 @@
     accountPlaceholderForPage,
     accountRoleRows,
     selfRoleFromRoster,
+    readRosterRolesCache,
+    writeRosterRolesCache,
     ownLiveWork,
     type AccountPageId,
   } from "./account-menu.js";
@@ -8649,16 +8651,20 @@
         railPlaceholder?.id === "outpost"),
   );
   // QA-048: Profile reads the signed-in person's role from each company's
-  // member roster, the same source Team lists, so the two views agree.
-  let accountRosterRoles = $state<Record<string, string>>({});
+  // member roster, the same source Team lists, so the two views agree. The
+  // last roster read paints first; every member company is then re-read. A
+  // company with no roster role shows a dash, never the cached membership role.
+  let accountRosterRoles = $state<Record<string, string | null>>({});
   const accountProfileOpen = $derived(
     view === "extra" && accountPlaceholderForPage(extraPageId)?.id === "profile",
   );
   $effect(() => {
     if (!accountProfileOpen) return;
     const selfUid = self?.uid?.trim() ?? "";
+    const selfEmail = self?.email?.trim() ?? "";
     const uids = railCompanyRoster.map((company) => company.uid);
     if (!selfUid || uids.length === 0) return;
+    accountRosterRoles = readRosterRolesCache(selfUid);
     let cancelled = false;
     for (const companyUid of uids) {
       void adapter.messaging
@@ -8669,10 +8675,10 @@
             console.warn("[account] company roster read failed", companyUid, res.message ?? res.reason);
             return;
           }
-          const role = selfRoleFromRoster(res.value, selfUid);
-          if (role && accountRosterRoles[companyUid] !== role) {
-            accountRosterRoles = { ...accountRosterRoles, [companyUid]: role };
-          }
+          const role = selfRoleFromRoster(res.value, selfUid, selfEmail);
+          if (accountRosterRoles[companyUid] === role) return;
+          accountRosterRoles = { ...accountRosterRoles, [companyUid]: role };
+          writeRosterRolesCache(selfUid, accountRosterRoles);
         })
         .catch((err: unknown) => {
           console.warn("[account] company roster read failed", companyUid, err);
@@ -8687,9 +8693,7 @@
       railCompanyRoster.map((company) => ({
         uid: company.uid,
         label: company.label,
-        role:
-          (effectiveCompanies ?? []).find((row) => (row.cloudUid ?? "").trim() === company.uid)
-            ?.role ?? null,
+        role: null,
       })),
       accountRosterRoles,
     ),

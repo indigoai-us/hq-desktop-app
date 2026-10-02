@@ -132,4 +132,26 @@ describe("TeamPage roster (QA-022)", () => {
     });
     expect(target.textContent).not.toContain("HTTP 404");
   });
+
+  it("shows a dash, not an invented Member, when the roster has no role (QA-048)", async () => {
+    const company = {
+      getTeamTelemetry: vi.fn(async () => ({ ok: true as const, value: { perMember: [] } })),
+      listMembers: vi.fn(async () => ({
+        ok: true as const,
+        value: [
+          { personUid: "prs_cy", displayName: "Cy" },
+          { personUid: "prs_di", displayName: "Di", role: "owner" },
+        ],
+      })),
+    };
+    const target = render({ slug: "amass-roles", company });
+    await vi.waitFor(() => {
+      flushSync();
+      expect(target.querySelectorAll("[data-testid='team-row']")).toHaveLength(2);
+    });
+    const rows = [...target.querySelectorAll("[data-testid='team-row']")].map((row) => row.textContent ?? "");
+    expect(rows.find((text) => text.includes("Cy"))).toContain("\u2014");
+    expect(rows.find((text) => text.includes("Cy"))).not.toContain("Member");
+    expect(rows.find((text) => text.includes("Di"))).toContain("owner");
+  });
 });
