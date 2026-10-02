@@ -86,6 +86,7 @@
     companyRowDestination,
     companyRowForPage,
   } from "./company-pane.js";
+  import { paneForEntry } from "./destination-pane.js";
   import {
     RAIL_SHORTCUT_COUNT,
     activeRailItemId,
@@ -6927,6 +6928,34 @@
       : "";
   }
 
+  /** Membership uid for a uid-or-slug company key, or the key itself. */
+  function companyUidForKey(key: string): string {
+    const workspace = (effectiveCompanies ?? []).find(
+      (company) => company.cloudUid === key || company.slug === key,
+    );
+    return workspace?.cloudUid?.trim() || key;
+  }
+
+  function syncSidepaneToEntry(entry: NavigationEntry): void {
+    const target = paneForEntry(entry);
+    switch (target.pane) {
+      case "company":
+        companyPaneOpen = true;
+        setTenantScope(companyUidForKey(target.companyKey));
+        break;
+      case "home":
+        companyPaneOpen = false;
+        setTenantScope(
+          target.companyKey ? companyUidForKey(target.companyKey) : null,
+        );
+        break;
+      case "meetings":
+      case "none":
+        companyPaneOpen = false;
+        break;
+    }
+  }
+
   function applyCommittedNavigation(applied: AppliedNavigation): void {
     syncNavigationChrome();
     paletteOpen = false;
@@ -6945,6 +6974,9 @@
     }
     navigationUnavailable = null;
     embeddedNavigationError = null;
+    // QA-047/QA-045: the sidepane comes from the entry being applied, in the
+    // same step as the canvas, for every entry point including Back.
+    syncSidepaneToEntry(applied.entry);
     const next = applied.entry.destination;
     if (next.kind !== "notifications") inboxRouteNotice = null;
     meetingFocusRequest = null;
@@ -7409,6 +7441,16 @@
 
   function changeTenantCompany(companyUid: string | null): void {
     if (tenantCompanyId === companyUid) return;
+    setTenantScope(companyUid);
+    void navigate({ kind: "messages" });
+  }
+
+  /**
+   * Rotate tenant scope without navigating. Committed navigation entries call
+   * this directly so applying an entry never starts a second navigation.
+   */
+  function setTenantScope(companyUid: string | null): void {
+    if (tenantCompanyId === companyUid) return;
     // Company switching is in-account navigation: the history stack stays.
     // Existing tenant-generation guards still cancel in-flight company reads.
     // Remove every visible selection before the re-keyed sidebar begins reads
@@ -7448,7 +7490,6 @@
     startMeetingsStore();
     if (view === "meetings") setMeetingsViewActive(true);
     void prefetchMeetings();
-    void navigate({ kind: "messages" });
   }
 
   /**

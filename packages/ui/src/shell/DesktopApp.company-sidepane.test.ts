@@ -178,4 +178,93 @@ describe("DesktopApp company sidepane (console-rail US-007)", () => {
     expect(host.querySelector('[data-testid="rail-placeholder"]')).toBeNull();
     expect(host.querySelector('[data-row-id="projects"]')?.getAttribute("aria-current")).toBe("page");
   });
+
+  const unicom = {
+    slug: "unicom",
+    displayName: "unicom",
+    kind: "company",
+    state: "synced",
+    cloudUid: "cmp_unicom",
+    role: "member",
+    membershipStatus: "active",
+  } as Workspace;
+
+  async function runCommand(id: string): Promise<void> {
+    const mac = /Mac OS X|Macintosh/i.test(navigator.userAgent);
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "k", metaKey: mac, ctrlKey: !mac, bubbles: true }),
+    );
+    await tick();
+    host.querySelector<HTMLButtonElement>(`#${id}`)!.click();
+    await settle();
+  }
+
+  function meetingsPaneShown(): boolean {
+    return (
+      host.querySelector('[data-testid="meetings-sidepane-door-skeleton"]') != null ||
+      host.querySelector('[data-sidepane-key="meetings"], [aria-label="Meetings"]') != null
+    );
+  }
+
+  it("QA-047: the palette Meetings command swaps the company sections for the Meetings pane", async () => {
+    await mountShell([unicom]);
+    await settle();
+    click("rail-company");
+    await settle();
+    host.querySelector<HTMLButtonElement>('[data-row-id="team"]')!.click();
+    await settle();
+    expect(host.querySelector('[data-testid="company-sidepane-header"]')).not.toBeNull();
+
+    await runCommand("command-go-meetings");
+
+    expect(host.querySelector('[data-testid="company-sidepane-header"]')).toBeNull();
+    expect(meetingsPaneShown()).toBe(true);
+    expect(current()).toBe("meetings");
+  });
+
+  it("QA-045: Bots, then Settings, then Back restores Bots with the company pane", async () => {
+    await mountShell([unicom]);
+    await settle();
+    click("rail-company");
+    await settle();
+    host.querySelector<HTMLButtonElement>('[data-row-id="bots"]')!.click();
+    await settle();
+    expect(host.querySelector('[data-testid="bots-page"]')).not.toBeNull();
+
+    await runCommand("command-go-settings");
+    expect(host.querySelector('[data-testid="company-sidepane-header"]')).toBeNull();
+
+    click("titlebar-back");
+    await settle();
+
+    expect(host.querySelector('[data-testid="company-sidepane-header"]')?.textContent).toContain(
+      "unicom",
+    );
+    expect(host.querySelector('[data-row-id="bots"]')?.getAttribute("aria-current")).toBe("page");
+    expect(current()).toBe("company");
+    // The canvas is the Bots page, not a conversation.
+    expect(host.querySelector('[data-testid="bots-page"]')).not.toBeNull();
+  });
+
+  it("QA-045: Back from Home to Bots restores the company pane and tenant with the Bots canvas", async () => {
+    await mountShell([unicom]);
+    await settle();
+    click("rail-company");
+    await settle();
+    host.querySelector<HTMLButtonElement>('[data-row-id="bots"]')!.click();
+    await settle();
+    click("rail-home");
+    await settle();
+    expect(host.querySelector('[data-testid="company-sidepane-header"]')).toBeNull();
+
+    click("titlebar-back");
+    await settle();
+
+    expect(host.querySelector('[data-testid="company-sidepane-header"]')?.textContent).toContain(
+      "unicom",
+    );
+    expect(host.querySelector('[data-row-id="bots"]')?.getAttribute("aria-current")).toBe("page");
+    expect(host.querySelector('[data-testid="bots-page"]')).not.toBeNull();
+    expect(current()).toBe("company");
+  });
 });
