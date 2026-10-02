@@ -732,6 +732,7 @@ fn main() {
             intro_window::set_intro_fullscreen,
             welcome_window::set_welcome_backdrop,
             welcome_window::set_welcome_window,
+            welcome_window::get_welcome_window_active,
             welcome_window::get_desktop_wallpaper,
             commands::first_run::show_main_window_at_tray,
             commands::lifecycle::get_lifecycle_state,

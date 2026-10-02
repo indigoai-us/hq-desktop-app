@@ -57,6 +57,14 @@ pub fn set_welcome_window_active(active: bool) {
     WELCOME_WINDOW_ACTIVE.store(active, Ordering::SeqCst);
 }
 
+/// Whether launch handed `main` to the welcome flow. The renderer reads this
+/// before its startup check resolves so a first launch paints an opaque
+/// splash immediately instead of a transparent, invisible window.
+#[tauri::command]
+pub async fn get_welcome_window_active() -> bool {
+    welcome_window_active()
+}
+
 /// Clamp the renderer's requested fade to something sane.
 pub fn welcome_fade_ms(requested: Option<f64>) -> f64 {
     match requested {
@@ -283,23 +291,34 @@ pub fn set_welcome_window(app: AppHandle, enabled: bool) -> Result<(), String> {
 pub async fn get_desktop_wallpaper(app: AppHandle) -> Option<String> {
     #[cfg(target_os = "macos")]
     {
+        // Only the screen lookup needs the main thread. Decoding and scaling
+        // the wallpaper (a 6K HEIC on current macOS) took ~8s on a fresh VM
+        // and froze the main thread, so the first-run welcome window stayed
+        // blank until it finished. Decode off the main thread instead.
         let window = app.get_webview_window("main")?;
-        let (tx, rx) = tokio::sync::oneshot::channel::<Option<Vec<u8>>>();
+        let (tx, rx) = tokio::sync::oneshot::channel::<Option<String>>();
         let handle = window.clone();
         window
             .run_on_main_thread(move || {
-                let bytes = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    macos::wallpaper_jpeg(&handle)
+                let path = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    macos::wallpaper_path(&handle)
                 }))
                 .ok()
                 .flatten();
-                let _ = tx.send(bytes);
+                let _ = tx.send(path);
             })
             .ok()?;
-        let bytes = tokio::time::timeout(std::time::Duration::from_secs(5), rx)
+        let path = tokio::time::timeout(std::time::Duration::from_secs(5), rx)
             .await
             .ok()?
             .ok()??;
+        let bytes = tauri::async_runtime::spawn_blocking(move || {
+            std::panic::catch_unwind(|| macos::wallpaper_jpeg_from_path(&path))
+                .ok()
+                .flatten()
+        })
+        .await
+        .ok()??;
         jpeg_data_url(&bytes)
     }
     #[cfg(not(target_os = "macos"))]
@@ -412,15 +431,29 @@ mod macos {
         msg_send![class, mainScreen]
     }
 
-    /// Read the wallpaper of the window's screen, scale it down, and encode it
-    /// as JPEG. Main thread only. `None` on any failure.
-    pub fn wallpaper_jpeg(window: &tauri::WebviewWindow) -> Option<Vec<u8>> {
+    /// The file path of the wallpaper on the window's screen. Main thread
+    /// only; cheap (no image decode).
+    pub fn wallpaper_path(window: &tauri::WebviewWindow) -> Option<String> {
         // SAFETY: called on the main thread (run_on_main_thread). Every object
-        // is checked for nil before use; ownership is tracked by `Retained`,
-        // and autoreleased temporaries drain with the pool.
+        // is checked for nil before use.
         let result = autoreleasepool(|_| unsafe {
             let screen = window_screen(window)?;
-            encode_wallpaper(&screen)
+            let workspace_class = AnyClass::get(c"NSWorkspace")?;
+            let workspace: Option<Retained<AnyObject>> =
+                msg_send![workspace_class, sharedWorkspace];
+            let workspace = workspace?;
+            let url: Option<Retained<AnyObject>> =
+                msg_send![&*workspace, desktopImageURLForScreen: &*screen];
+            let url = url?;
+            let path: *mut AnyObject = msg_send![&*url, path];
+            if path.is_null() {
+                return None;
+            }
+            let utf8: *const std::ffi::c_char = msg_send![path, UTF8String];
+            if utf8.is_null() {
+                return None;
+            }
+            Some(std::ffi::CStr::from_ptr(utf8).to_string_lossy().into_owned())
         });
         if result.is_none() {
             log(
@@ -431,18 +464,39 @@ mod macos {
         result
     }
 
-    unsafe fn encode_wallpaper(screen: &AnyObject) -> Option<Vec<u8>> {
-        let workspace_class = AnyClass::get(c"NSWorkspace")?;
-        let workspace: Option<Retained<AnyObject>> = msg_send![workspace_class, sharedWorkspace];
-        let workspace = workspace?;
-        let url: Option<Retained<AnyObject>> =
-            msg_send![&*workspace, desktopImageURLForScreen: screen];
-        let url = url?;
+    /// Decode, scale down, and JPEG-encode the wallpaper at `path`. Runs off
+    /// the main thread: it draws into a private bitmap context, which AppKit
+    /// supports on secondary threads. `None` on any failure.
+    pub fn wallpaper_jpeg_from_path(path: &str) -> Option<Vec<u8>> {
+        let path = std::ffi::CString::new(path).ok()?;
+        // SAFETY: every object is checked for nil before use; ownership is
+        // tracked by `Retained`, and autoreleased temporaries drain with the
+        // pool on this thread.
+        let result = autoreleasepool(|_| unsafe {
+            let path_string = ns_string(&path);
+            if path_string.is_null() {
+                return None;
+            }
+            let url_class = AnyClass::get(c"NSURL")?;
+            let url: Option<Retained<AnyObject>> =
+                msg_send![url_class, fileURLWithPath: path_string];
+            let url = url?;
+            encode_wallpaper(&url)
+        });
+        if result.is_none() {
+            log(
+                LOG_TAG,
+                "welcome-wallpaper: unavailable, using the native blur",
+            );
+        }
+        result
+    }
 
+    unsafe fn encode_wallpaper(url: &AnyObject) -> Option<Vec<u8>> {
         // NSImage reads HEIC, JPEG, PNG and the rest through ImageIO.
         let image_class = AnyClass::get(c"NSImage")?;
         let image: Allocated<AnyObject> = msg_send![image_class, alloc];
-        let image: Option<Retained<AnyObject>> = msg_send![image, initWithContentsOfURL: &*url];
+        let image: Option<Retained<AnyObject>> = msg_send![image, initWithContentsOfURL: url];
         let image = image?;
         let valid: bool = msg_send![&*image, isValid];
         if !valid {
