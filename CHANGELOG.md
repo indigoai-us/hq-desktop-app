@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Fixes a race in the agent sign-in test when reading the child process ID.
+
 - Desktop usage uploads are limited to four requests and 4 MB per sync; remaining records resume on later syncs.
 
 ## [0.10.377] — 2026-10-02
