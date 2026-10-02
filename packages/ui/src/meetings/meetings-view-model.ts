@@ -102,6 +102,19 @@ export function slimMeetingEvent(event: MeetingEvent): MeetingEvent {
     next.sourceCompanyUid = event.sourceCompanyUid;
   if (event.sourceAccountId != null)
     next.sourceAccountId = event.sourceAccountId;
+  // US-021: the live canvas reads these; attendees are capped to stay small.
+  if (event.signals != null) next.signals = event.signals;
+  if (event.attendees?.length)
+    next.attendees = event.attendees.slice(0, 24).map((a) => ({
+      email: a.email,
+      displayName: a.displayName,
+      responseStatus: a.responseStatus,
+      self: a.self,
+      resource: a.resource,
+    }));
+  if (event.room != null) next.room = event.room;
+  if (event.outline?.length) next.outline = event.outline;
+  if (event.notes?.length) next.notes = event.notes;
   return next;
 }
 

@@ -28,6 +28,51 @@ export interface MeetingEvent {
   sourceCompanyUid?: string;
   sourceAccountId?: string;
   signals?: unknown;
+  /** Calendar attendees (Google shape); the room strip shows them as invited. */
+  attendees?: MeetingAttendee[];
+  /** US-021: live room presence from the notetaker, when the host has it. */
+  room?: MeetingRoom | null;
+  /** US-021: agenda outline for the live canvas. */
+  outline?: MeetingOutlineEntry[];
+  /** US-021: notetaker notes for the live canvas. */
+  notes?: MeetingNoteEntry[];
+}
+
+export interface MeetingAttendee {
+  email?: string;
+  displayName?: string;
+  responseStatus?: string;
+  self?: boolean;
+  resource?: boolean;
+}
+
+export interface MeetingRoom {
+  live?: boolean;
+  speakerId?: string | null;
+  participants?: Array<{
+    id: string;
+    name?: string;
+    kind?: "human" | "bot";
+    live?: boolean;
+    speaking?: boolean;
+  }>;
+}
+
+export interface MeetingOutlineEntry {
+  id?: string;
+  title: string;
+  detail?: string | null;
+  state?: "done" | "now" | "todo";
+  children?: Array<{ id?: string; title: string; done?: boolean }>;
+}
+
+export interface MeetingNoteEntry {
+  id?: string;
+  author?: string;
+  kind?: "human" | "bot";
+  at?: string;
+  text?: string;
+  typing?: boolean;
 }
 
 export interface ScheduledBot {

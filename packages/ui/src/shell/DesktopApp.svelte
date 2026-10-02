@@ -304,6 +304,8 @@
   import type { AvatarPack, AvatarSelection } from "../avatars/types.js";
   import ProjectAboutDialog from "../chat/ProjectAboutDialog.svelte";
   import MeetingsPage from "../meetings/MeetingsPage.svelte";
+  import MeetingsSidepaneHost from "../meetings/MeetingsSidepaneHost.svelte";
+  import MeetingCanvasHost from "../meetings/MeetingCanvasHost.svelte";
   import {
     configureMeetingsApi,
     prefetchMeetings,
@@ -9391,9 +9393,12 @@
             roster={atlasCompanyRoster}
             rosterLoading={!directorySettled}
           />
+        {:else if view === "meetings"}
+          <!-- US-021: Meetings owns the sidepane while it is the destination. -->
+          <MeetingsSidepaneHost memory={sidepaneScrollMemory} />
         {/if}
         <!-- Chat stays mounted under the company pane: it owns roster loading. -->
-        <div class="chat-pane-slot" style:display={companyPaneCompany ? "none" : "contents"}>
+        <div class="chat-pane-slot" style:display={companyPaneCompany || view === "meetings" ? "none" : "contents"}>
         <Sidepane
           modelKey={sidepaneModelKey({ tenantCompanyId })}
           scrollSelector=".chat-scroll"
@@ -9585,17 +9590,21 @@
             onresolved={handleDmRequestResolved}
           />
         {:else if view === "meetings"}
-          <MeetingsPage
-            {adapter}
-            accountId={tenantAccountId}
-            storage={tenantStorage}
-            sessionGeneration={tenantGeneration}
-            onback={() => {
-              void leaveCurrentDestination();
-            }}
-            openExternal={onopenurl}
-            focusRequest={meetingFocusRequest}
-          />
+          <MeetingCanvasHost openExternal={onopenurl} focusMeetingId={meetingFocusRequest?.meetingId ?? null}>
+            {#snippet agenda()}
+              <MeetingsPage
+                {adapter}
+                accountId={tenantAccountId}
+                storage={tenantStorage}
+                sessionGeneration={tenantGeneration}
+                onback={() => {
+                  void leaveCurrentDestination();
+                }}
+                openExternal={onopenurl}
+                focusRequest={meetingFocusRequest}
+              />
+            {/snippet}
+          </MeetingCanvasHost>
         {:else if view === "conversation" && selectedRow}
           <header
             class="channel-header chat-shell"
