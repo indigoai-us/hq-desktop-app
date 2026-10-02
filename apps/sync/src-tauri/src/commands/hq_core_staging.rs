@@ -972,7 +972,7 @@ async fn run_replace_from_staging_inner(
     // Staging leaves --ref to the engine default (main) and has no floor SHA.
     // Token is passed via env (never in argv — argv shows up in `ps`).
     let mut rescue_args = build_rescue_args(&hq_folder, &repo, None, None);
-    add_automatic_rescue_lock_timeout(&mut rescue_args, observation.source());
+    add_automatic_rescue_lock_timeout(&mut rescue_args, update_source);
     cmd.args(rescue_args)
         .env("GH_TOKEN", &token)
         .stdout(std::process::Stdio::from(log_file_for_stdout))

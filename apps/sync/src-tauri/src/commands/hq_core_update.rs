@@ -595,7 +595,7 @@ async fn install_hq_core_update_inner(
     );
     crate::commands::hq_core_staging::add_automatic_rescue_lock_timeout(
         &mut rescue_args,
-        observation.source(),
+        update_source,
     );
 
     let initial_exit_code = spawn_rescue_attempt(
