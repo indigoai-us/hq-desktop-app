@@ -182,7 +182,7 @@ export function grantFilterLabel(filter: GrantFilter): string {
   if (filter === "all") return "All";
   if (filter === "people") return "People";
   if (filter === "groups") return "Groups";
-  if (filter === "agents") return "Agents";
+  if (filter === "agents") return "Bots";
   if (filter === "guests") return "Guests";
   return "Expiring";
 }

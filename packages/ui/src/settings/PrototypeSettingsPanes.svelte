@@ -1241,7 +1241,7 @@
     <div class="set-row">
       <div>
         <div class="sn">Show company / email labels in the sidebar</div>
-        <div class="sd">Company names on channels and agents; emails on people when names collide</div>
+        <div class="sd">Company names on channels and bots; emails on people when names collide</div>
       </div>
       <button
         type="button"

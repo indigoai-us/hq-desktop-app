@@ -2611,7 +2611,7 @@
       {
         id: "create.agent",
         keys: "Mod+Alt+N",
-        label: "New agent",
+        label: "New bot",
         group: "Create",
         run: () => openCreateAction("agent"),
       },

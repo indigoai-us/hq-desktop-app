@@ -139,7 +139,7 @@ describe("ChatSidebar create flow", () => {
     const menu = document.querySelector('[data-testid="chat-create-menu"]');
     expect(menu?.textContent).toContain("New message");
     expect(menu?.textContent).toContain("New channel");
-    expect(menu?.textContent).toContain("New agent");
+    expect(menu?.textContent).toContain("New bot");
     expect(menu?.textContent).not.toContain("New company");
     expect(document.querySelector('[data-testid="chat-create-modal"]')).toBeNull();
     expect(document.querySelector('[data-testid="chat-plus-new-message"]')).toBeNull();

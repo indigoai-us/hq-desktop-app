@@ -233,7 +233,7 @@
           </label>
         {/each}
       {:else}
-        <p class="cb-help error" data-testid="cloud-bot-no-size">No agent sizes are available for this company right now.</p>
+        <p class="cb-help error" data-testid="cloud-bot-no-size">No bot sizes are available for this company right now.</p>
       {/if}
     </fieldset>
   </div>

@@ -16,7 +16,7 @@ export interface CreateMenuItem {
 export const CREATE_MENU_ITEMS: readonly CreateMenuItem[] = [
   { id: "message", label: "New message", keys: "Mod+N" },
   { id: "channel", label: "New channel", keys: "Mod+Shift+N" },
-  { id: "agent", label: "New agent", keys: "Mod+Alt+N" },
+  { id: "agent", label: "New bot", keys: "Mod+Alt+N" },
 ];
 
 export function createMenuHasCompany(): boolean {

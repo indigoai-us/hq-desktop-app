@@ -14,7 +14,7 @@ describe("US-017 create menu and people picker", () => {
     expect(CREATE_MENU_ITEMS.map((item) => [item.label, item.keys])).toEqual([
       ["New message", "Mod+N"],
       ["New channel", "Mod+Shift+N"],
-      ["New agent", "Mod+Alt+N"],
+      ["New bot", "Mod+Alt+N"],
     ]);
     expect(createMenuHasCompany()).toBe(false);
   });
@@ -56,7 +56,7 @@ describe("US-017 create menu and people picker", () => {
     expect(groupPickerEntries(entries).map((section) => section.label)).toEqual([
       "People",
       "Groups",
-      "Agents",
+      "Bots",
       "Guests",
     ]);
     expect(togglePickerId(["prs_eric"], "agt_deacon")).toEqual(["prs_eric", "agt_deacon"]);

@@ -52,7 +52,7 @@
   <label class="pp-q">
     <input
       type="text"
-      placeholder="Search people, groups, agents…"
+      placeholder="Search people, groups, bots…"
       bind:value={query}
       data-testid="people-picker-query"
     />

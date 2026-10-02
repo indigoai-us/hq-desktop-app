@@ -32,7 +32,7 @@ export interface PeoplePickerSection {
 const SECTION_ORDER: { kind: PeoplePickerKind; label: string }[] = [
   { kind: "person", label: "People" },
   { kind: "group", label: "Groups" },
-  { kind: "agent", label: "Agents" },
+  { kind: "agent", label: "Bots" },
   { kind: "guest", label: "Guests" },
 ];
 
