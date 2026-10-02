@@ -26,6 +26,8 @@
     provenanceView,
   } from "../common/provenance.js";
   import { relativeActivity } from "../common/relative-activity.js";
+  import BoardFaces from "./BoardFaces.svelte";
+  import { boardFaces, facesCaption } from "./board-faces.js";
 
   interface Props {
     project: Project;
@@ -89,6 +91,15 @@
   /** Owner first, then assignee, then creator — the person to show. */
   const person = $derived(provenance.people[0] ?? null);
   const personInitials = $derived(person ? initials(person.label) : "");
+  /** Active cards: humans (circles) then live bots (rounded squares). */
+  const liveFaces = $derived(
+    liveRun
+      ? boardFaces(
+          provenance.people.map((p) => p.label),
+          liveRun.bots ?? Array.from({ length: liveRun.workers }, () => "bot"),
+        )
+      : [],
+  );
 
   function initials(label: string): string {
     const base = label.split("@")[0]?.trim() || label.trim();
@@ -148,26 +159,28 @@
     {/if}
 
     {#if liveRun}
-      <div
-        class="live-run"
-        data-testid="project-live-run"
-        title={liveRun.subagents !== null
-          ? `${liveRun.subagents} ${liveRun.subagents === 1 ? "subagent" : "subagents"}`
-          : undefined}
-      >
-        <span class="live-dot" aria-hidden="true"></span>
-        <span class="live-run-text">
-          {liveRun.phase ?? "Live"}
-          {#if liveRun.elapsed}
-            · <span class="live-run-time">{liveRun.elapsed}</span>
-          {/if}
-          · {liveRun.workers}
-          {liveRun.workers === 1 ? "worker" : "workers"}
-          {#if liveRun.lastSignalAt}
-            · {relativeActivity(liveRun.lastSignalAt, now)}
-          {/if}
+      <div class="live-row">
+        <span
+          class="chip live"
+          data-testid="project-live-run"
+          title={liveRun.lastSignalAt
+            ? `Last signal ${relativeActivity(liveRun.lastSignalAt, now)}`
+            : undefined}
+        >
+          <span class="live-dot" aria-hidden="true"></span>
+          <span class="live-run-text"
+            >{liveRun.phase ?? "Live"}{#if liveRun.elapsed}&nbsp;·&nbsp;<span class="live-run-time"
+                >{liveRun.elapsed}</span
+              >{/if}</span
+          >
         </span>
       </div>
+      {#if liveFaces.length > 0}
+        <div class="live-row faces-row" data-testid="project-live-faces">
+          <BoardFaces faces={liveFaces} />
+          <span class="faces-caption">{facesCaption(liveFaces)}</span>
+        </div>
+      {/if}
     {/if}
 
     <div class="card-foot" title={stateContext ?? undefined}>
@@ -203,7 +216,7 @@
         </span>
       {/if}
 
-      {#if personInitials}
+      {#if personInitials && liveFaces.length === 0}
         <span
           class="person"
           data-testid="project-card-provenance"
@@ -480,7 +493,7 @@
     line-height: 1;
   }
 
-  .live-run {
+  .live-row {
     display: flex;
     align-items: center;
     gap: 6px;
@@ -488,6 +501,27 @@
     color: var(--v4-text-3);
     font-size: 12px;
     line-height: 16px;
+  }
+
+  /* Live chip: phase and elapsed time. Green is reserved for live. */
+  .chip.live {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    max-width: 100%;
+    height: 20px;
+    padding: 0 7px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--v4-ok) 12%, transparent);
+    color: var(--v4-text-1);
+    font-size: 11px;
+  }
+
+  .faces-caption {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .live-run-text {

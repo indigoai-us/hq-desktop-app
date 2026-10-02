@@ -755,6 +755,8 @@ export interface PortfolioSessionRef {
   tool?: string;
   model?: string;
   source?: string;
+  /** Bot (agent) display name running the session, when the event carries one. */
+  agent?: string;
 }
 
 /** Whether a session status counts as a live execution signal for Active. */
@@ -947,6 +949,11 @@ export interface ProjectLiveRunView {
   progressPercent: number | null;
   /** Freshest lastActivityAt ISO, when any live session has one. */
   lastSignalAt: string | null;
+  /**
+   * One label per live bot session (agent name when known, else "bot").
+   * Optional so older literal views stay valid.
+   */
+  bots?: string[];
 }
 
 const LIVE_PHASE_LABEL: Record<string, string> = {
@@ -1028,6 +1035,7 @@ export function projectLiveRunView(
     subagents: null,
     progressPercent: progress.total > 0 ? progress.percent : null,
     lastSignalAt,
+    bots: sorted.map((s) => s.agent?.trim() || "bot"),
   };
 }
 

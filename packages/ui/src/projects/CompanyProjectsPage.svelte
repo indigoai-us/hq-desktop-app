@@ -61,6 +61,10 @@
   import type { PortfolioSessionRef } from "../chat/portfolio-session.js";
   import ProjectDetailView from "./ProjectDetailView.svelte";
   import ProjectRow from "./ProjectRow.svelte";
+  import BoardFaces from "./BoardFaces.svelte";
+  import NewProjectSheet from "./NewProjectSheet.svelte";
+  import { boardFaces } from "./board-faces.js";
+  import { newProjectPrompt, type NewProjectDraft } from "./new-project.js";
   import ProvenanceLine from "../common/ProvenanceLine.svelte";
   import UnavailableNote from "../common/UnavailableNote.svelte";
   import "../home/tokens.css";
@@ -200,14 +204,54 @@
     }
   }
 
+  let newProjectOpen = $state(false);
+
   async function createProject(): Promise<void> {
-    if (!onnewproject || newProjectPending) return;
+    if (newProjectPending) return;
+    // US-023: the New project sheet opens in the same frame; a host override
+    // (legacy onnewproject) still wins when supplied.
+    if (!onnewproject) {
+      newProjectOpen = true;
+      return;
+    }
     newProjectPending = true;
     try {
       await onnewproject();
     } finally {
       newProjectPending = false;
     }
+  }
+
+  /** Hand the new project to Claude Code (no native create call yet). */
+  async function submitNewProject(draft: NewProjectDraft): Promise<void> {
+    const prompt = newProjectPrompt(draft);
+    if (!adapter.isAvailable("canLaunchApps")) {
+      await navigator.clipboard.writeText(prompt);
+      actionMessage = "Prompt copied — paste it into Claude Code.";
+      return;
+    }
+    const configResult = await adapter.settings.getConfig();
+    const folder =
+      configResult.ok && typeof configResult.value?.hqFolderPath === "string"
+        ? configResult.value.hqFolderPath
+        : "";
+    const opened = await adapter.shell.openClaudeCodeLink(
+      buildClaudeCodeUrl({ folder, prompt }),
+    );
+    if (!opened.ok) throw new Error(opened.message ?? "Could not open Claude Code");
+    actionMessage = "Opened in Claude Code.";
+  }
+
+  /** Companies offered in the sheet: this one first, then any seen in projects. */
+  const sheetCompanies = $derived(
+    [slug, ...new Set(projects.map((p) => p.company).filter((c) => c && c !== slug))],
+  );
+
+  /** Stacked faces for list rows: lead person, then live bots. */
+  function rowFaces(project: Project) {
+    const lead = leadLabel(project);
+    const live = projectLiveRunView(project, sessions, now);
+    return boardFaces(lead ? [lead] : [], live?.bots ?? []);
   }
 
   let pushSessions = $state<PortfolioSessionRef[]>([]);
@@ -741,17 +785,16 @@
         {#if actionMessage}
           <span class="action-status" role="status">{actionMessage}</span>
         {/if}
-        {#if onnewproject}
-          <button
-            type="button"
-            class="primary-action"
-            onclick={createProject}
-            disabled={newProjectPending}
-            aria-busy={newProjectPending}
-          >
-            {newProjectPending ? "Opening…" : "New project"}
-          </button>
-        {/if}
+        <button
+          type="button"
+          class="primary-action"
+          data-testid="new-project-button"
+          onclick={createProject}
+          disabled={newProjectPending}
+          aria-busy={newProjectPending}
+        >
+          {newProjectPending ? "Opening…" : "New project"}
+        </button>
       </div>
     </header>
 
@@ -868,11 +911,50 @@
           {/each}
         </div>
       {:else if companyProjects.length === 0}
-        <div class="empty-state" data-testid="empty-projects-state">
-          <span>No projects yet</span>
-          <p>
-            Projects will appear here after they sync into the local workspace.
-          </p>
+        <div
+          class="kanban-board"
+          data-testid="empty-projects-state"
+          aria-label="Projects by operational state"
+        >
+          {#each PORTFOLIO_COLUMNS as column (column)}
+            <section class="kanban-column" aria-labelledby={`portfolio-empty-${column}`}>
+              <header class="kanban-column-head">
+                <span class="kanban-column-title" id={`portfolio-empty-${column}`}>
+                  <span class="column-dot" data-column={column} aria-hidden="true"></span>
+                  {PORTFOLIO_COLUMN_LABEL[column]}
+                  <span class="kanban-column-count">0</span>
+                </span>
+              </header>
+              <div class="kanban-stack">
+                {#if column === "not-started"}
+                  <button
+                    type="button"
+                    class="empty-create"
+                    data-testid="empty-create-project"
+                    onclick={createProject}
+                  >
+                    <span class="empty-create-title">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+                      Create project
+                    </span>
+                    <span class="empty-create-sub"
+                      >Blank, from a brainstorm, or from a PRD. Lands here as Not started.</span
+                    >
+                  </button>
+                {:else}
+                  <div class="column-empty">
+                    <span
+                      >{column === "active"
+                        ? "Nothing live"
+                        : column === "complete"
+                          ? "Nothing shipped"
+                          : "Nothing yet"}</span
+                    >
+                  </div>
+                {/if}
+              </div>
+            </section>
+          {/each}
         </div>
       {:else if filteredCompanyProjects.length === 0}
         <div class="empty-state" data-testid="filtered-projects-empty-state">
@@ -984,6 +1066,7 @@
             <span>Goal</span>
             <span>Provenance</span>
             <span>Tasks</span>
+            <span>On it</span>
             <span>Updated</span>
           </div>
           {#each PORTFOLIO_COLUMNS as column (column)}
@@ -1061,6 +1144,9 @@
                       <span style={`width: ${progress.percent}%`}></span>
                     </span>
                   </div>
+                  <div class="list-faces" data-testid="project-list-faces">
+                    <BoardFaces faces={rowFaces(project)} />
+                  </div>
                   <div class="list-updated">{listUpdatedLabel(project)}</div>
                 </div>
               {/each}
@@ -1081,6 +1167,16 @@
         </div>
       {/if}
     </div>
+  {/if}
+  {#if newProjectOpen}
+    <NewProjectSheet
+      company={slug}
+      companies={sheetCompanies}
+      owners={ownerOptions}
+      {objectives}
+      onclose={() => (newProjectOpen = false)}
+      oncreate={submitNewProject}
+    />
   {/if}
 </section>
 
@@ -1464,6 +1560,41 @@
     font-size: 12px;
   }
 
+  /* US-023 empty board: dashed Create project card in Not started. */
+  .empty-create {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    width: 100%;
+    padding: 14px 12px;
+    border: 1px dashed var(--v4-control-border);
+    border-radius: 8px;
+    background: transparent;
+    color: var(--v4-text-3);
+    font: inherit;
+    font-size: 12px;
+    line-height: 1.4;
+    text-align: left;
+    cursor: pointer;
+  }
+  .empty-create:hover {
+    background: var(--v4-control-faint);
+  }
+  .empty-create-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--v4-text-1);
+    font-size: 13px;
+    font-weight: 500;
+  }
+
+  .list-faces {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+  }
+
   .show-more-projects {
     width: 100%;
     min-height: 30px;
@@ -1514,10 +1645,11 @@
       minmax(96px, 0.6fr)
       minmax(220px, 1.1fr)
       105px
+      60px
       74px;
     align-items: center;
     gap: 10px;
-    min-width: 745px;
+    min-width: 815px;
     padding: 0 4px;
   }
 
