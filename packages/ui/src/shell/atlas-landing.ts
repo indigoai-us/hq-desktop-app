@@ -13,6 +13,7 @@
 
 import type { PresenceSnapshot } from "@hq/core";
 import type { SidepaneRosterEntry } from "./sidepane-models.js";
+import type { NavigationDestination } from "./navigation-history.js";
 
 /**
  * Vault access the Atlas graph builder needs in the native app (QA-016). The
@@ -162,4 +163,35 @@ export function atlasLiveActors(
       a.actorUid.localeCompare(b.actorUid) ||
       (a.projectId ?? "").localeCompare(b.projectId ?? ""),
   );
+}
+
+/** The node fields an Atlas inspector action needs (path is company-relative). */
+export interface AtlasActionNode {
+  type: string;
+  path: string;
+  folder: boolean;
+}
+
+/**
+ * Where the Atlas inspector's Open files / Open board buttons go (QA-066).
+ * A project opens on the Projects page, on its Files or Tasks tab, the same
+ * place Projects > project > Files reaches. Any other file opens in the Files
+ * explorer; a folder opens the company vault. Null when there is no company.
+ */
+export function atlasNodeDestination(
+  node: AtlasActionNode,
+  companySlug: string | null | undefined,
+  action: "files" | "board",
+): NavigationDestination | null {
+  const slug = companySlug?.trim();
+  if (!slug) return null;
+  const path = node.path.replace(/^\/+|\/+$/g, "");
+  const project = node.type === "project" ? /^projects\/([^/]+)/.exec(path)?.[1] : undefined;
+  if (project) {
+    return { kind: "projects", company: slug, project, tab: action === "files" ? "files" : "tasks" };
+  }
+  if (action === "board") return { kind: "projects", company: slug };
+  const vault = `company:${slug}`;
+  if (node.folder || !path) return { kind: "explorer", vault, path: null };
+  return { kind: "explorer", vault, path: `companies/${slug}/${path}` };
 }

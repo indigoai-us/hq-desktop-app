@@ -16,7 +16,7 @@
    * writable status, and existing file / Open in Claude Code actions. Does not
    * invent backend fields.
    */
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import type { PlatformAdapter } from "@hq/platform";
   import { buildClaudeCodeUrl } from "../files/claude-code-link.js";
   import {
@@ -83,6 +83,8 @@
      * and no repo access). Default keeps the repo when the PRD links one.
      */
     repoAccess?: boolean;
+    /** Tab to open on (QA-066: Atlas Open files lands on Files). */
+    initialTab?: "tasks" | "files" | null;
     /**
      * Notify the caller a status persisted (US-010) so it can refresh its list.
      * Optional — the detail view persists + paints optimistically on its own.
@@ -126,6 +128,7 @@
     provenanceUnavailable = false,
     sessions: sessionInput = [],
     repoAccess = true,
+    initialTab = null,
   }: Props = $props();
 
   function configureProjectsApiIfNeeded(): void {
@@ -345,7 +348,7 @@
   // ---- Workspace tabs (DESKTOP-005) ----------------------------------------
   // Tasks is the primary/default surface.
   type Tab = "overview" | "tasks" | "files" | "activity";
-  let tab = $state<Tab>("tasks");
+  let tab = $state<Tab>(untrack(() => initialTab) ?? "tasks");
   // Keep a stable alias so older contracts that look for board still see Tasks
   // as the board surface via data-testid="tab-board" on the Tasks control.
   const boardTabActive = $derived(tab === "tasks");

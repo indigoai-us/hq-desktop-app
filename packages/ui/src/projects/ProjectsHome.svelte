@@ -34,6 +34,9 @@
      * local folders, which can include companies the person is not in.
      */
     pickerCompanies?: readonly string[] | null;
+    /** Project to open on arrival (folder name) and its tab (QA-066). */
+    focusProject?: string | null;
+    focusTab?: "tasks" | "files" | null;
   }
 
   let {
@@ -44,6 +47,8 @@
     onslugchange,
     pinned,
     pickerCompanies = null,
+    focusProject = null,
+    focusTab = null,
   }: Props = $props();
 
   const sheetRoster = $derived(pickerCompanies ?? companyPickerSlugs(companies));
@@ -156,6 +161,8 @@
           slug={current.slug}
           companyUid={current.cloudUid ?? null}
           pickerCompanies={sheetRoster}
+          {focusProject}
+          {focusTab}
         />
       {/key}
     </div>

@@ -371,6 +371,7 @@
     type NavigationDestination,
     type NavigationEntry,
     type NavigationScrollState,
+    type ProjectsFocusTab,
   } from "./navigation-history.js";
   import {
     createNavigationScrollTracker,
@@ -1745,6 +1746,8 @@
   >("conversation");
   /** Company shown on the Projects page; null follows the selected channel. */
   let projectsCompany = $state<string | null>(null);
+  /** Project the Projects page opens on arrival, and its tab (QA-066). */
+  let projectsFocus = $state<{ project: string; tab: ProjectsFocusTab | null } | null>(null);
   /** Files explorer location (vault id + HQ-relative file). */
   let explorerVault = $state<string | null>(null);
   let explorerPath = $state<string | null>(null);
@@ -6682,7 +6685,9 @@
       case "explorer":
         return { kind: "explorer", vault: explorerVault, path: explorerPath };
       case "projects":
-        return { kind: "projects", company: projectsCompany };
+        return projectsFocus
+          ? { kind: "projects", company: projectsCompany, project: projectsFocus.project, tab: projectsFocus.tab }
+          : { kind: "projects", company: projectsCompany };
       case "extra":
         if (extraPageId) return extraDestination(extraPageId, extraPageParam);
         return { kind: "messages" };
@@ -7097,6 +7102,7 @@
         break;
       case "projects":
         projectsCompany = next.company ?? null;
+        projectsFocus = next.project ? { project: next.project, tab: next.tab ?? null } : null;
         view = "projects";
         settingsSection = null;
         extraPageId = null;
@@ -10019,6 +10025,8 @@
               {companies}
               pickerCompanies={companyPickerSlugs(effectiveCompanies)}
               slug={projectsCompany}
+              focusProject={projectsFocus?.project ?? null}
+              focusTab={projectsFocus?.tab ?? null}
               preferredSlug={selectedCompanySlug || null}
               onslugchange={(slug) => {
                 void navigate({ kind: "projects", company: slug });
@@ -10048,6 +10056,9 @@
             filterActor={atlasFilterActor}
             onclearfilter={() => (atlasFilterActor = null)}
             onopenpage={selectCompanyPaneRow}
+            onnavigate={(destination) => {
+              void navigate(destination);
+            }}
             onopenperson={(personUid) => {
               void navigate({ kind: "dm", personUid });
             }}

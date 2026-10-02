@@ -499,3 +499,17 @@ it("normalizes a stale Office company destination back to Chat through history s
   expect(canonicalizeDestination(JSON.parse(JSON.stringify(office.destination)))).toMatchObject({companyTab:"chat"});
   expect(destinationsEqual(office.destination,{kind:"channel",channelId:"company-channel",companyTab:"chat"})).toBe(true);
 });
+
+describe("projects destination with a focused project (QA-066)", () => {
+  it("keeps the project and tab, and treats a different project as a new destination", () => {
+    expect(
+      canonicalizeDestination({ kind: "projects", company: "indigo", project: " billing-v2 ", tab: "files" }),
+    ).toEqual({ kind: "projects", company: "indigo", project: "billing-v2", tab: "files" });
+    expect(
+      destinationsEqual(
+        { kind: "projects", company: "indigo", project: "billing-v2", tab: "files" },
+        { kind: "projects", company: "indigo" },
+      ),
+    ).toBe(false);
+  });
+});

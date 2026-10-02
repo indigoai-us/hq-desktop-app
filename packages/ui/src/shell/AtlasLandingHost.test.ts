@@ -353,3 +353,63 @@ describe("AtlasLandingHost projects in progress (QA-065)", () => {
     expect(rollupText(target)).toContain("3 projects in progress");
   });
 });
+
+describe("AtlasLandingHost inspector actions (QA-066)", () => {
+  async function mountWithMap(onnavigate: (d: unknown) => void) {
+    const graph = smokeAtlasGraph();
+    const storage = new Map([["hq.atlas.v1:co_indigo", JSON.stringify(graph)]]);
+    const atlasCache = createAtlasCache({
+      fetcher: vi.fn(async () => graph),
+      storage: { getItem: (k) => storage.get(k) ?? null, setItem: (k, v) => void storage.set(k, v) },
+    });
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    mounted.push(
+      mount(AtlasLandingHost, {
+        target,
+        props: { companyLabel: "Indigo", workingNow: [], slug: "indigo", companyUid: "co_indigo", atlasCache, onnavigate },
+      }),
+    );
+    await loadAtlas();
+    for (let i = 0; i < 50 && !target.querySelector("[data-testid='atlas-map']"); i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await tick();
+    }
+    return target;
+  }
+
+  async function select(target: HTMLElement, id: string): Promise<void> {
+    const node = target.querySelector(`[data-testid='atlas-node-${id}']`)!;
+    node.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    flushSync();
+    await tick();
+  }
+
+  function button(target: HTMLElement, label: string): HTMLButtonElement {
+    const found = [...target.querySelectorAll("[data-testid='atlas-inspector'] button")].find(
+      (b) => b.textContent?.trim() === label,
+    );
+    expect(found, label).toBeDefined();
+    return found as HTMLButtonElement;
+  }
+
+  it("opens a project's Files tab and its board on the Projects page", async () => {
+    const onnavigate = vi.fn();
+    const target = await mountWithMap(onnavigate);
+    await select(target, "project:projects/billing-v2/");
+    button(target, "Open files").click();
+    expect(onnavigate).toHaveBeenLastCalledWith({ kind: "projects", company: "indigo", project: "billing-v2", tab: "files" });
+    button(target, "Open board").click();
+    expect(onnavigate).toHaveBeenLastCalledWith({ kind: "projects", company: "indigo", project: "billing-v2", tab: "tasks" });
+  });
+
+  it("opens any other file in the company Files explorer", async () => {
+    const onnavigate = vi.fn();
+    const target = await mountWithMap(onnavigate);
+    await select(target, "policy:policies/tenancy.md");
+    button(target, "Open files").click();
+    const [[destination]] = onnavigate.mock.calls.slice(-1);
+    expect(destination).toMatchObject({ kind: "explorer", vault: "company:indigo" });
+    expect(destination.path).toBe(["companies", "indigo", "policies", "tenancy.md"].join("/"));
+  });
+});

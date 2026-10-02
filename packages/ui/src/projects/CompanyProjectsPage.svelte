@@ -91,12 +91,24 @@
      */
     pickerCompanies?: readonly string[] | null;
     onnewproject?: () => void | Promise<void>;
+    /** Project to open once loaded, by id or folder name (QA-066). */
+    focusProject?: string | null;
+    /** Detail tab the focused project opens on. */
+    focusTab?: "tasks" | "files" | null;
   }
 
   /** Legacy cycle filter kept for needs-link + work-actions contracts. */
   type ProjectFilter = "all" | "active" | "needs-link";
 
-  let { adapter, slug, companyUid = null, pickerCompanies = null, onnewproject }: Props = $props();
+  let {
+    adapter,
+    slug,
+    companyUid = null,
+    pickerCompanies = null,
+    onnewproject,
+    focusProject = null,
+    focusTab = null,
+  }: Props = $props();
 
   // Wire the module-level project/session seams to this platform adapter.
   $effect.pre(() => {
@@ -330,6 +342,24 @@
       .map((project) => applyProjectProvenance(project, cloudProvenance))
       .sort(compareProjectsByRecency),
   );
+
+  // Open the focused project once it loads (QA-066: Atlas Open files / Open
+  // board). Matches the board id or the project's folder under projects/.
+  let detailTab = $state<"tasks" | "files" | null>(null);
+  let appliedFocus = "";
+  $effect(() => {
+    const want = focusProject?.trim();
+    if (!want || loading) return;
+    const key = `${slug}:${want}:${focusTab ?? ""}`;
+    if (key === appliedFocus) return;
+    const match = companyProjects.find(
+      (p) => p.id === want || p.prdPath.replace(/\\/g, "/").includes(`/projects/${want}/`),
+    );
+    if (!match) return;
+    appliedFocus = key;
+    detailTab = focusTab;
+    void openProject(match);
+  });
 
   const sessions = $derived(pushSessions);
   // The sidepane Projects row shows this same total (QA-014).
@@ -918,6 +948,7 @@
       onselectDependency={selectStoryById}
       {onStoryPassesChange}
       {sessions}
+      initialTab={detailTab}
     />
   {:else}
     <!-- US-024: the task view pane spans the full content height beside the

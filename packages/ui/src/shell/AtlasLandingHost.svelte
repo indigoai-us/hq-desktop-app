@@ -14,6 +14,8 @@
   import { HQ_CONSOLE_BASE } from "../common/hq-console.js";
   import { useCompanySummary } from "../company/company-summary.svelte.js";
   import type { AtlasLocalSource, AtlasVaultSource } from "./atlas-landing.js";
+  import { atlasNodeDestination, type AtlasActionNode } from "./atlas-landing.js";
+  import type { NavigationDestination } from "./navigation-history.js";
   import { loadLocalProjects, ProjectsUnavailableError } from "../projects/local-projects.js";
   import { boardProjectsInProgress } from "../projects/projects-model.js";
 
@@ -37,6 +39,8 @@
     onclearfilter?: () => void;
     /** Empty company prompts (US-014): open a company page by sidepane row id. */
     onopenpage?: (rowId: string) => void;
+    /** Shell navigation for the inspector's Open files / Open board (QA-066). */
+    onnavigate?: (destination: NavigationDestination) => void;
     /** Injected graph cache (tests); defaults to the shared Console cache. */
     atlasCache?: AtlasCache | null;
     /**
@@ -64,6 +68,7 @@
     filterActor = null,
     onclearfilter,
     onopenpage,
+    onnavigate,
     atlasCache = null,
     atlasSource = null,
     atlasLocal = null,
@@ -132,6 +137,11 @@
     };
   });
 
+  function openNode(node: AtlasActionNode, action: "files" | "board"): void {
+    const destination = atlasNodeDestination(node, slug, action);
+    if (destination) onnavigate?.(destination);
+  }
+
   function selectWho(id: string): void {
     if (id.startsWith("person:")) onopenperson?.(id.slice("person:".length));
   }
@@ -148,6 +158,8 @@
       {onclearfilter}
       {onopenpage}
       projectsInProgress={boardInProgress}
+      onopenfiles={(node) => openNode(node, "files")}
+      onopenboard={(node) => openNode(node, "board")}
       onopenperson={(uid) => onopenperson?.(uid)}
       onmessage={(who) => {
         if (who.actorUid) onopenperson?.(who.actorUid);

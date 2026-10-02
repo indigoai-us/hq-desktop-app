@@ -66,8 +66,16 @@ export type NavigationDestination =
   | { kind: "shared-files" }
   /** The Files explorer; `vault` is `personal` or `company:<slug>`. */
   | { kind: "explorer"; vault?: string | null; path?: string | null }
-  /** The Projects page; `company` is the company slug shown. */
-  | { kind: "projects"; company?: string | null }
+  /**
+   * The Projects page; `company` is the company slug shown. `project` opens
+   * that project (its folder name) on `tab` (QA-066).
+   */
+  | {
+      kind: "projects";
+      company?: string | null;
+      project?: string | null;
+      tab?: ProjectsFocusTab | null;
+    }
   /** The DM connection-requests panel; `pairKey` is the request to bring into view. */
   | { kind: "dm-requests"; pairKey?: string | null }
   | {
@@ -78,6 +86,9 @@ export type NavigationDestination =
       companyUid?: string | null;
     }
   | { kind: "setup-checkout"; companyUid: string; checkout?: string | null };
+
+/** Project detail tab a projects destination can open on. */
+export type ProjectsFocusTab = "tasks" | "files";
 
 export interface NavigationEntry {
   destination: NavigationDestination;
@@ -294,8 +305,13 @@ export function canonicalizeDestination(
         vault: trimId(destination.vault),
         path: trimId(destination.path),
       };
-    case "projects":
-      return { kind: "projects", company: trimId(destination.company) };
+    case "projects": {
+      const company = trimId(destination.company);
+      const project = trimId(destination.project);
+      if (!project) return { kind: "projects", company };
+      const tab = destination.tab === "files" || destination.tab === "tasks" ? destination.tab : null;
+      return { kind: "projects", company, project, tab };
+    }
     case "library":
       return {
         kind: "library",
@@ -388,7 +404,9 @@ export function canonicalDestinationKey(
     case "explorer":
       return `explorer:${dest.vault ?? ""}:${dest.path ?? ""}`;
     case "projects":
-      return `projects:${dest.company ?? ""}`;
+      return dest.project
+        ? `projects:${dest.company ?? ""}:${dest.project}:${dest.tab ?? ""}`
+        : `projects:${dest.company ?? ""}`;
     case "library":
       return `library:${dest.tab}:${dest.itemId ?? ""}`;
     case "settings":
