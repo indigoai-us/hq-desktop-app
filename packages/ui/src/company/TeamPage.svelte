@@ -26,6 +26,7 @@
     inviteRoleFields,
     inviteRoleLabel,
     inviteSummary,
+    mergeRosterIntoTeamView,
     metadata,
     pendingInvitesFromTelemetry,
     readTeamCache,
@@ -141,59 +142,56 @@
     let cancelled = false;
     void (async () => {
       try {
-        const [rawRes, members] = await Promise.all([
-          company.getTeamTelemetry(key),
-          company.listMembers(key).catch(() => null),
-        ]);
+        // The company roster: contacts scoped to the company uid (the one
+        // roster source that is keyed correctly on every adapter), else the
+        // members route by slug.
+        const rosterRead = async (): Promise<unknown[]> => {
+          if (messaging && companyUid) {
+            const res = await messaging.listContacts({ companyUid });
+            if (res.ok && Array.isArray(res.value)) return res.value;
+            if (!res.ok) console.warn("[team] company contacts read failed", res.message ?? res.reason);
+          }
+          const res = await company.listMembers(key).catch((err: unknown) => {
+            console.warn("[team] members read failed", err);
+            return null;
+          });
+          return res && res.ok && Array.isArray(res.value) ? res.value : [];
+        };
+        const [rawRes, roster] = await Promise.all([company.getTeamTelemetry(key), rosterRead()]);
         if (cancelled) return;
-        if (!rawRes.ok) {
-          view = { ...emptyView, error: rawRes.message || "Could not read the team." };
+        const labels: Record<string, { email?: string | null; displayName?: string | null }> = {};
+        for (const row of roster) {
+          if (!row || typeof row !== "object") continue;
+          const rec = row as Record<string, unknown>;
+          const id = typeof rec.personUid === "string" ? rec.personUid : "";
+          if (!id) continue;
+          labels[id] = {
+            email: typeof rec.email === "string" ? rec.email : null,
+            displayName: typeof rec.displayName === "string" ? rec.displayName : null,
+          };
+        }
+        if (!rawRes.ok && roster.length === 0) {
+          console.warn("[team] telemetry read failed", rawRes.message ?? rawRes.reason);
+          view = { ...emptyView, error: "Could not read the team. Try again in a moment." };
           phase = "ready";
           return;
         }
-        const labels: Record<string, { email?: string | null; displayName?: string | null }> = {};
-        if (members && members.ok && Array.isArray(members.value)) {
-          for (const row of members.value) {
-            if (!row || typeof row !== "object") continue;
-            const rec = row as Record<string, unknown>;
-            const id = typeof rec.personUid === "string" ? rec.personUid : "";
-            if (!id) continue;
-            labels[id] = {
-              email: typeof rec.email === "string" ? rec.email : null,
-              displayName: typeof rec.displayName === "string" ? rec.displayName : null,
-            };
-          }
-        } else if (messaging) {
-          const contacts = await messaging.listContacts();
-          if (contacts.ok && Array.isArray(contacts.value)) {
-            for (const row of contacts.value) {
-              if (!row || typeof row !== "object") continue;
-              const rec = row as Record<string, unknown>;
-              const id = typeof rec.personUid === "string" ? rec.personUid : "";
-              if (!id) continue;
-              labels[id] = {
-                email: typeof rec.email === "string" ? rec.email : null,
-                displayName: typeof rec.displayName === "string" ? rec.displayName : null,
-              };
-            }
-          }
-        }
-        if (cancelled) return;
-        const next = normalizeCompanyTeamTelemetry(rawRes.value, { memberLabelsById: labels });
-        const fromWire = pendingInvitesFromTelemetry(rawRes.value);
+        if (!rawRes.ok) console.warn("[team] telemetry read failed; showing the roster", rawRes.message ?? rawRes.reason);
+        const fromTelemetry = rawRes.ok
+          ? normalizeCompanyTeamTelemetry(rawRes.value, { memberLabelsById: labels })
+          : emptyView;
+        const next = mergeRosterIntoTeamView(fromTelemetry, roster);
+        const fromWire = rawRes.ok ? pendingInvitesFromTelemetry(rawRes.value) : [];
         view = next;
         if (fromWire.length > 0) invites = fromWire;
         phase = "ready";
         writeTeamCache(key, { view: next, invites });
       } catch (err) {
         if (cancelled) return;
-        view = {
-          ...emptyView,
-          error: err instanceof Error ? err.message : "Could not read the team.",
-        };
+        console.warn("[team] read failed", err);
+        view = { ...emptyView, error: "Could not read the team." };
         phase = "ready";
       }
-      void companyUid;
     })();
     return () => {
       cancelled = true;
@@ -529,6 +527,8 @@
 />
 
 <style>
+  /* Segmented controls size to their tabs; nothing stretches or centres them. */
+  .tabs, .seg { width: max-content; flex: none; justify-content: flex-start; }
   .team-page {
     position: relative;
     display: flex;

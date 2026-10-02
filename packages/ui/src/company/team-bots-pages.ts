@@ -8,7 +8,7 @@
  * pending invite only after confirmation. Pause on Bots is the same gate.
  */
 
-import type { TeamTelemetryView } from "./team-telemetry.js";
+import { memberKindFromUid, type TeamMember, type TeamTelemetryView } from "./team-telemetry.js";
 
 export const metadata = {
   performanceBudget: {
@@ -199,4 +199,54 @@ export function emptyJobDraft(name = ""): ScheduledJob {
 /** Pause applies only after the confirm sheet. */
 export function pauseAllowed(confirmed: boolean): boolean {
   return confirmed;
+}
+
+function str(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+/**
+ * Add the company's member roster (contacts scoped to the company, or the
+ * members route) to the telemetry view. Telemetry only lists people with
+ * recorded activity, so a quiet member, or a company whose telemetry route
+ * returns nothing, would otherwise not appear on Team at all (QA-022).
+ * Telemetry rows win for anyone listed in both.
+ */
+export function mergeRosterIntoTeamView(view: TeamTelemetryView, roster: readonly unknown[]): TeamTelemetryView {
+  const known = new Set(view.members.map((member) => member.id));
+  const added: TeamMember[] = [];
+  for (const row of roster) {
+    if (!row || typeof row !== "object") continue;
+    const rec = row as Record<string, unknown>;
+    const id = str(rec.personUid) || str(rec.agentUid) || str(rec.uid) || str(rec.id);
+    if (!id || known.has(id)) continue;
+    known.add(id);
+    const kindRaw = str(rec.kind) || str(rec.entityType) || str(rec.type);
+    const kind =
+      kindRaw === "agent" || kindRaw === "bot" || rec.isAgent === true || rec.isBot === true
+        ? "agent"
+        : kindRaw === "human" || kindRaw === "person"
+          ? "human"
+          : memberKindFromUid(id);
+    const email = str(rec.email) || undefined;
+    const role = str(rec.role) || str(rec.membershipRole) || undefined;
+    added.push({
+      id,
+      displayName: str(rec.displayName) || str(rec.name) || email || id,
+      email,
+      kind,
+      role,
+      topSkills: [],
+      activeProjects: [],
+    });
+  }
+  if (added.length === 0) return view;
+  const members = [...view.members, ...added];
+  return {
+    ...view,
+    members,
+    humans: members.filter((member) => member.kind !== "agent"),
+    agents: members.filter((member) => member.kind === "agent"),
+    empty: members.length === 0,
+  };
 }
