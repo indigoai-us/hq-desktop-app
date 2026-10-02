@@ -121,6 +121,8 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   // toggles the popover.
   openAccountPage: "push",
   openCompanyFromMore: "push",
+  // Personal Connections → a company's Integrations page.
+  openCompanyIntegrations: "push",
   toggleAccountMenu: "none",
   toggleMoreCompanies: "none",
   // Core popover "Resolve conflicts" → Settings › Sync, through navigate().
@@ -346,6 +348,16 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
     history: "push",
     host: "shared-shell",
     inScope: true,
+  },
+  {
+    id: "open-company-integrations",
+    file: SHARED_SHELL_FILE,
+    needle: "function openCompanyIntegrations(uid: string): void",
+    destinationKind: "company",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+    notes: "Personal Connections link into the company's Integrations page.",
   },
   {
     id: "open-dm-requests",

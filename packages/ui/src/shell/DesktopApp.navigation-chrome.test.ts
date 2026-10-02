@@ -4,7 +4,7 @@
  * US-003 — title-bar Back/Forward + keyboard, through the shared resolver.
  */
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import { ok, type Capability, type PlatformAdapter } from "@hq/platform";
 
@@ -13,6 +13,7 @@ import ExtraPageProbe from "./ExtraPageProbe.test.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { dispatchEmbeddedNavigation } from "./embedded-navigation.js";
+import { loadShellSettings } from "./settings-lazy.js";
 import { installMemoryLocalStorage } from "../test-support/memory-local-storage.js";
 
 const seededLibraryHistory = vi.hoisted(() => ({ enabled: false }));
@@ -436,6 +437,13 @@ describe("DesktopApp title-bar back/forward", () => {
 });
 
 describe("DesktopApp settings Back button", () => {
+  // Settings is a lazy chunk. Resolve the shared loader once before the
+  // tests so the {#await} in DesktopApp settles on the next microtask instead
+  // of racing a cold module transform under load.
+  beforeAll(async () => {
+    await loadShellSettings();
+  });
+
   async function openSettingsSection(
     section: "profile" | "appearance" | "notifications",
   ): Promise<void> {

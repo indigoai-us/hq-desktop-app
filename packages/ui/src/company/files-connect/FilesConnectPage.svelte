@@ -900,7 +900,7 @@
         <button class="btn" type="button" onclick={closeSheet}>Cancel</button>
         <button class="btn primary" type="button" data-testid="run-deploy" disabled={busy || !deploySourceCurrent} onclick={() => void runDeploy(deploySourceCurrent?.path ?? "")}>Deploy</button>
       {:else if sheet === "deploy-allowlist"}
-        <button class="btn primary" type="button" onclick={() => (sheet = "deploy")}>Back</button>
+        <button class="btn primary" type="button" onclick={() => (sheet = "deploy")}>Back to deploy</button>
       {:else if sheet === "deploy-access"}
         <button class="btn" type="button" onclick={closeSheet}>Cancel</button>
         <button class="btn primary" type="button" disabled={busy} onclick={() => void handOff(shareAccessPrompt(slug, deployCurrent?.url || deployCurrent?.name || "", grantLevel), "access change")}>Save</button>
