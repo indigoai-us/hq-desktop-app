@@ -51,8 +51,12 @@ test.describe('console rail: full user path', () => {
     await page.getByTestId('tab-files').click();
     await expect(page.getByTestId('tab-files')).toHaveAttribute('aria-current', 'page');
 
+    // Meetings opens its own sidepane in place of the Messages list, with the
+    // classic agenda mounted under the canvas.
     await clickPaints(page, '[data-testid="rail-meetings"]', '[data-testid="desktop-alt-meetings"]');
-    await expect(page.getByTestId('meetings-live-now')).toBeVisible();
+    await expect(page.getByTestId('meetings-sidepane-header')).toBeVisible();
+    await expect(page.getByTestId('chat-sidebar')).toBeHidden();
+    await expect(page.getByTestId('meetings-row').first()).toBeVisible();
 
     await clickPaints(page, '[data-testid="rail-home"]', '[data-testid="chat-sidebar"]');
     await page.locator('[data-conversation-id]').first().click();

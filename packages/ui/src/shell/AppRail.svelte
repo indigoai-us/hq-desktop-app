@@ -180,13 +180,13 @@
 <nav class="app-rail" aria-label="Primary" data-testid="app-rail">
   {#each top as item, index (item.id)}
     {#if index > 0 && railGroup(item) !== railGroup(top[index - 1]!)}
-      <div class="sep" data-testid="rail-sep" aria-hidden="true"></div>
+      <div class="sep" data-testid="app-rail-sep" aria-hidden="true"></div>
     {/if}
     {@render railButton(item)}
   {/each}
   <div class="spacer" data-testid="rail-spacer"></div>
   {#if you}
-    <div class="sep" data-testid="rail-sep" aria-hidden="true"></div>
+    <div class="sep" data-testid="app-rail-sep" aria-hidden="true"></div>
     {@render railButton(you)}
   {/if}
 </nav>

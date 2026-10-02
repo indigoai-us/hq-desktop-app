@@ -66,7 +66,7 @@ describe("pinned company tiles (US-004)", () => {
     await tick();
     const nav = host.querySelector("[data-testid='app-rail']")!;
     const order = [...nav.children].map((el) =>
-      el.getAttribute("data-testid") === "rail-sep"
+      el.getAttribute("data-testid") === "app-rail-sep"
         ? "|"
         : (el.querySelector("button")?.getAttribute("data-rail-id") ??
           el.getAttribute("data-rail-id") ??
