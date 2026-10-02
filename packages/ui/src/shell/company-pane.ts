@@ -95,11 +95,13 @@ export function companyPaneCounts(
   summary: CompanyPaneSummary | null | undefined,
 ): Record<string, number> {
   if (!summary) return {};
+  // A partial summary (older server, empty body) must not crash the pane;
+  // missing counts read as zero.
   return {
-    projects: summary.board,
-    activity: summary.activity.last7d,
-    deployments: summary.deployments,
-    secrets: summary.secrets,
+    projects: summary.board ?? 0,
+    activity: summary.activity?.last7d ?? 0,
+    deployments: summary.deployments ?? 0,
+    secrets: summary.secrets ?? 0,
   };
 }
 

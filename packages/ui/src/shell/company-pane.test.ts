@@ -69,3 +69,15 @@ describe("company sidepane (console-rail US-007)", () => {
     ).toBe("company:co");
   });
 });
+
+describe("companyPaneCounts with a partial summary (US-039)", () => {
+  it("reads missing counts as zero instead of throwing", async () => {
+    const { companyPaneCounts } = await import("./company-pane.js");
+    expect(companyPaneCounts({} as never)).toEqual({
+      projects: 0,
+      activity: 0,
+      deployments: 0,
+      secrets: 0,
+    });
+  });
+});

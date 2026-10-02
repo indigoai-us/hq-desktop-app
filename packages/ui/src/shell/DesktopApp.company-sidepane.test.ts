@@ -156,4 +156,26 @@ describe("DesktopApp company sidepane (console-rail US-007)", () => {
     await settle();
     expect(host.querySelector('[data-testid="company-sidepane-header"]')).toBeNull();
   });
+
+  it("Projects row opens the project board, not a placeholder (US-039)", async () => {
+    await mountShell([
+      {
+        slug: "indigo",
+        displayName: "Indigo",
+        kind: "company",
+        state: "synced",
+        cloudUid: "cmp_indigo",
+        role: "member",
+        membershipStatus: "active",
+      } as Workspace,
+    ]);
+    await settle();
+    host.querySelector<HTMLButtonElement>('[data-testid="rail-company"]')!.click();
+    await settle();
+    host.querySelector<HTMLButtonElement>('[data-row-id="projects"]')!.click();
+    await settle();
+    expect(host.querySelector('[data-testid="projects-host"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="rail-placeholder"]')).toBeNull();
+    expect(host.querySelector('[data-row-id="projects"]')?.getAttribute("aria-current")).toBe("page");
+  });
 });

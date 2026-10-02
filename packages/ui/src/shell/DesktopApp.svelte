@@ -9707,6 +9707,20 @@
             messaging={adapter.messaging ?? null}
             senderName={resolvedAccountLabel ?? "you"}
           />
+        {:else if railPlaceholder?.id === "projects" && companyPaneCompany}
+          <!-- US-039: the sidepane Projects row opens the US-023 board for
+               this company instead of the placeholder. -->
+          <div class="projects-host" data-testid="projects-host">
+            <ProjectsHome
+              {adapter}
+              {companies}
+              slug={companyPaneCompany.slug ?? null}
+              preferredSlug={companyPaneCompany.slug ?? null}
+              onslugchange={(slug) => {
+                void navigate({ kind: "projects", company: slug });
+              }}
+            />
+          </div>
         {:else if railPlaceholder?.id === "company-settings" && companyPaneCompany}
           <CompanySettingsHost
             slug={companyPaneCompany.slug ?? ""}
