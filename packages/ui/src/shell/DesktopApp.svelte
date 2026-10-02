@@ -10043,7 +10043,7 @@
             }}
           />
         {:else if railPlaceholder?.id === "telemetry"}
-          <TelemetryRailHost />
+          <TelemetryRailHost agents={adapter.agents ?? null} />
         {:else if railPlaceholder?.id === "secrets" || railPlaceholder?.id === "connections"}
           <PersonalRailHost
             page={railPlaceholder.id}

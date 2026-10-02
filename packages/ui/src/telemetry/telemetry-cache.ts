@@ -1,27 +1,31 @@
 /**
  * Personal telemetry cache. The view paints whatever is already stored,
  * then refreshes in the background. No timer is started here.
+ *
+ * There is no built-in fallback: the running app shows a skeleton until the
+ * first real load, then an error state if it fails. Only the perf harness and
+ * tests pass `fallback` (the design fixture).
  */
-import { TELEMETRY_SMOKE } from "./telemetry-smoke.js";
-import type { TelemetrySnapshot } from "./telemetry-model.js";
+import type { TelemetryRange, TelemetrySnapshot } from "./telemetry-model.js";
 
-export type TelemetryFetcher = () => Promise<TelemetrySnapshot | null>;
+export type TelemetryFetcher = (range?: TelemetryRange) => Promise<TelemetrySnapshot | null>;
 
 export interface TelemetryCacheStorage {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
 }
 
-const STORAGE_KEY = "hq.telemetry.personal.v1";
+// v2: v1 entries can hold the design fixture written by older builds.
+const STORAGE_KEY = "hq.telemetry.personal.v2";
 
 export function createTelemetryCache(input: {
   fetcher?: TelemetryFetcher;
   storage?: TelemetryCacheStorage | null;
-  fallback?: TelemetrySnapshot;
+  fallback?: TelemetrySnapshot | null;
 }) {
-  const fallback = input.fallback ?? TELEMETRY_SMOKE;
+  const fallback = input.fallback ?? null;
   let memory: TelemetrySnapshot | null = null;
-  let inflight: Promise<TelemetrySnapshot> | null = null;
+  let inflight: { range: TelemetryRange | undefined; job: Promise<TelemetrySnapshot> } | null = null;
   const storage = input.storage ?? null;
 
   function readStorage(): TelemetrySnapshot | null {
@@ -56,18 +60,19 @@ export function createTelemetryCache(input: {
     }
   }
 
-  function refresh(): Promise<TelemetrySnapshot> {
-    if (inflight) return inflight;
-    const job = (input.fetcher ? input.fetcher() : Promise.resolve(fallback))
+  function refresh(range?: TelemetryRange): Promise<TelemetrySnapshot> {
+    if (inflight && inflight.range === range) return inflight.job;
+    const job = (input.fetcher ? input.fetcher(range) : Promise.resolve(null))
       .then((next) => {
         const snapshot = next ?? fallback;
+        if (!snapshot) throw new Error("telemetry: no source configured");
         write(snapshot);
         return snapshot;
       })
       .finally(() => {
-        inflight = null;
+        if (inflight?.job === job) inflight = null;
       });
-    inflight = job;
+    inflight = { range, job };
     return job;
   }
 

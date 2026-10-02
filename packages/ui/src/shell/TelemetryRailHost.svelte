@@ -5,8 +5,16 @@
    */
   import { onMount } from "svelte";
   import { loadTelemetry } from "./telemetry-lazy.js";
+  import type { MyTelemetryApi } from "../telemetry/telemetry-me.js";
 
   type TelemetryModule = Awaited<ReturnType<typeof loadTelemetry>>;
+
+  interface Props {
+    /** Platform agents API; its getMyTelemetry reads hq-pro /v1/telemetry/me. */
+    agents?: MyTelemetryApi | null;
+  }
+
+  let { agents = null }: Props = $props();
 
   let mod = $state<TelemetryModule | null>(null);
   let cache = $state<ReturnType<TelemetryModule["createTelemetryCache"]> | null>(null);
@@ -14,7 +22,10 @@
   onMount(() => {
     const storage = typeof localStorage === "undefined" ? null : localStorage;
     void loadTelemetry().then((loaded) => {
-      cache = loaded.createTelemetryCache({ storage });
+      cache = loaded.createTelemetryCache({
+        storage,
+        fetcher: loaded.createMyTelemetryFetcher(agents),
+      });
       mod = loaded;
     });
   });

@@ -26,7 +26,6 @@
     type TelemetrySnapshot,
     type TokenStack,
   } from "./telemetry-model.js";
-  import { TELEMETRY_SCOPES } from "./telemetry-smoke.js";
   import ShowMoreRow from "../shell/ShowMoreRow.svelte";
   import { pageRows } from "../shell/list-paging.js";
 
@@ -41,6 +40,8 @@
 
   let base = $state<TelemetrySnapshot | null>(untrack(() => cache.cached()));
   let refreshing = $state(false);
+  // Plain reason from the last failed load; the raw error goes to the console.
+  let loadError = $state("");
   let page = $state<TelemetryPage>("overview");
   let range = $state<TelemetryRange>("30d");
   // Every figure on screen reads the snapshot recomputed for the chosen range.
@@ -79,24 +80,40 @@
     { id: "outcomes", label: "Outcomes" },
   ];
 
-  function refresh(): void {
+  // The source has no per-company split yet, so the only scope is all work.
+  const scopes = [{ id: "all", label: "All my work", mark: "", count: 0 }];
+
+  function refresh(next: TelemetryRange = range): void {
     refreshing = true;
     cache
-      .refresh()
-      .then((next) => {
-        base = next;
+      .refresh(next)
+      .then((loaded) => {
+        // A source without endDate (the real one) is fetched per range;
+        // the fixture carries endDate and is recomputed by snapshotForRange.
+        base = loaded;
+        loadError = "";
       })
       .catch((err) => {
         console.warn("[telemetry] refresh failed", err);
+        loadError =
+          err && typeof err === "object" && "reason" in err && typeof err.reason === "string"
+            ? err.reason
+            : "Could not load your telemetry. Check your connection and retry.";
       })
       .finally(() => {
         refreshing = false;
       });
   }
 
+  function pickRange(next: TelemetryRange): void {
+    range = next;
+    refresh(next);
+  }
+
   onMount(() => {
-    if (!base) base = cache.fallback;
-    refresh();
+    if (!base && cache.fallback) base = cache.fallback;
+    if (base && !base.endDate) range = base.range;
+    refresh(range);
   });
 
   function exportCsv(): void {
@@ -160,12 +177,12 @@
             class="tab"
             role="tab"
             aria-selected={range === id}
-            onclick={() => (range = id as TelemetryRange)}
+            onclick={() => pickRange(id as TelemetryRange)}
           >{id}</button>
         {/each}
       </div>
       <div class="sec">Scope</div>
-      {#each TELEMETRY_SCOPES as item (item.id)}
+      {#each scopes as item (item.id)}
         <button
           class="row"
           aria-current={activeScope === item.id ? "true" : undefined}
@@ -197,7 +214,20 @@
       <button class="btn" onclick={exportCsv}>Export CSV</button>
     </div>
 
-    {#if !snapshot}
+    {#if snapshot && loadError}
+      <p class="foot" data-testid="telemetry-stale">Showing saved numbers. {loadError} <button class="lnk" onclick={() => refresh()}>Retry</button></p>
+    {/if}
+    {#if snapshot?.optedOut}
+      <p class="foot" data-testid="telemetry-opted-out">Personal telemetry is off for your account, so HQ has nothing recorded. Turn it on in Settings to start counting sessions.</p>
+    {:else if snapshot?.notice}
+      <p class="foot" data-testid="telemetry-notice">{snapshot.notice}</p>
+    {/if}
+    {#if !snapshot && loadError}
+      <div class="canvas" role="alert" data-testid="telemetry-error">
+        <p>{loadError}</p>
+        <button class="btn" data-testid="telemetry-retry" onclick={() => refresh()}>Retry</button>
+      </div>
+    {:else if !snapshot}
       <div class="canvas" data-testid="telemetry-skeleton" aria-busy="true">
         <div class="statline">
           {#each [0, 1, 2, 3, 4, 5] as i (i)}
@@ -286,7 +316,7 @@
               {/each}
             </div>
             <span class="grow"></span>
-            <span class="chip live">{snapshot.outcomeCounts.live} in progress</span>
+            {#if snapshot.outcomeCounts.live > 0}<span class="chip live">{snapshot.outcomeCounts.live} in progress</span>{/if}
           </div>
           <div class="srow hd wide" data-testid="telemetry-sessions-head"><span>When</span><span>Company</span><span>Project</span><span>Host</span><span class="n">Length</span><span class="n">Tokens</span><span>Outcome</span></div>
           <div class="scroll">

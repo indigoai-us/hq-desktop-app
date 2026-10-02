@@ -43,7 +43,7 @@ describe("telemetry list rate (US-032)", () => {
 describe("telemetry cache (US-032)", () => {
   it("returns the stored snapshot before the refresh resolves", async () => {
     const storage = new Map<string, string>();
-    storage.set("hq.telemetry.personal.v1", JSON.stringify(TELEMETRY_SMOKE));
+    storage.set("hq.telemetry.personal.v2", JSON.stringify(TELEMETRY_SMOKE));
     let release: (value: typeof TELEMETRY_SMOKE) => void = () => {};
     const cache = createTelemetryCache({
       storage: {

@@ -6,4 +6,5 @@
 export { default as TelemetryView } from "./TelemetryView.svelte";
 export * from "./telemetry-model.js";
 export * from "./telemetry-cache.js";
+export * from "./telemetry-me.js";
 export { TELEMETRY_SMOKE, TELEMETRY_SCOPES, SMOKE_LIST_COST_LABEL } from "./telemetry-smoke.js";

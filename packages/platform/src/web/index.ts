@@ -233,6 +233,7 @@ export const WEB_PATHS = {
   agentMobileRoster: AGENT_PATHS.mobileRoster,
   agentOwners: AGENT_PATHS.owners,
   agentCompanyTelemetry: AGENT_PATHS.companyTelemetry,
+  myTelemetry: AGENT_PATHS.myTelemetry,
 } as const;
 
 export interface WebPlatformAdapterConfig {
@@ -977,6 +978,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
       this.get(WEB_PATHS.agentOwners(companyUid, agentUid)),
     getCompanyTelemetry: (companyUid, from, to) =>
       this.get(WEB_PATHS.agentCompanyTelemetry(companyUid, from, to)),
+    getMyTelemetry: (from, to) => this.get(WEB_PATHS.myTelemetry(from, to)),
   };
 
   readonly company: PlatformAdapter["company"] = {

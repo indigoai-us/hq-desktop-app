@@ -1068,6 +1068,8 @@ export function createSyncPlatformAdapter(
         hqProJson('GET', AGENT_PATHS.owners(companyUid, agentUid)),
       getCompanyTelemetry: (companyUid, from, to) =>
         hqProJson('GET', AGENT_PATHS.companyTelemetry(companyUid, from, to)),
+      getMyTelemetry: (from, to) =>
+        hqProJson('GET', AGENT_PATHS.myTelemetry(from, to)),
     },
 
     company: {

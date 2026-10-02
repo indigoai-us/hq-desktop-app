@@ -139,6 +139,10 @@ export interface TelemetrySnapshot {
     noneMeta: string;
   };
   mix: { deployed: number; shipped: number; blocked: number; none: number; other: number };
+  /** What the source could not provide, shown as a plain note. */
+  notice?: string;
+  /** The owner has not opted in to personal telemetry. */
+  optedOut?: boolean;
 }
 
 export function listRateUsd(usage: ModelUsage): number {

@@ -1142,6 +1142,8 @@ export const AGENT_PATHS = {
     `/v1/fleet/${encodeURIComponent(companyUid)}/agents/${encodeURIComponent(agentUid)}/owners`,
   companyTelemetry: (companyUid: string, from: string, to: string) =>
     `/v1/telemetry/company?companyUid=${encodeURIComponent(companyUid)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+  myTelemetry: (from: string, to: string) =>
+    `/v1/telemetry/me?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
 } as const;
 
 export interface AgentProvisionSizeOption {
@@ -1197,6 +1199,11 @@ export interface AgentsApi {
     from: string,
     to: string,
   ): AdapterPromise<Json>;
+  /**
+   * GET /v1/telemetry/me?from=&to= — the caller's own cross-company rollups
+   * (daily series + totals). Optional so older test doubles stay valid.
+   */
+  getMyTelemetry?(from: string, to: string): AdapterPromise<Json>;
 }
 
 export interface FeedbackApi {
