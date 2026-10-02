@@ -61,7 +61,7 @@
   import GoalsRailHost from "./GoalsRailHost.svelte";
   import TeamPage from "../company/TeamPage.svelte";
   import BotsPage from "../company/BotsPage.svelte";
-  import { botSubjectName } from "./profile-panes/profile-pane-model.js";
+  import { botSubjectName } from "./profile-panes/bot-subject-name.js";
   import CompanySettingsHost from "./CompanySettingsHost.svelte";
   import AccountHost from "./AccountHost.svelte";
   import {

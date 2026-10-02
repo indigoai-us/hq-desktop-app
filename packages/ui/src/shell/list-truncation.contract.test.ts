@@ -43,6 +43,8 @@ const ALLOWED: Record<string, string> = {
   "company/brain/brain-model.ts": "slug length",
   "shell/more-companies.ts": "recent-company shortcuts; Show all companies lists the rest",
   "shell/palette-rows.ts": "id preview string length",
+  "telemetry/telemetry-me.ts":
+    "By-model rows past the cap fold into the Other row, whose note names every hidden model",
 };
 
 // Caps of 1–3 are initials, avatar stacks, and label chips; 4+ or a named
