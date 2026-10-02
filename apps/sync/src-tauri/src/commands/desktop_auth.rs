@@ -45,6 +45,7 @@
 //! not tidiness — `src-tauri` cannot be compiled without a GTK/JavaScriptCore
 //! toolchain, so logic placed here is logic that no unit test can reach.
 
+use hq_desktop_core::authenticated_receipts::DESKTOP_PERSON_MISSING_CODE;
 use hq_desktop_core::authenticated_receipts::{
     classify_receipt_http_status, may_deliver_for_account, next_receipt_attempt_count,
     next_receipt_retry_at_ms, ReceiptHttpDisposition,
@@ -747,6 +748,13 @@ fn workspace_selected_receipt_for_authorizer(
     }
 }
 
+/// The `code` field of an hq-pro error body, if present.
+fn receipt_error_code(body: &serde_json::Value) -> Option<String> {
+    body.get("code")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+}
+
 async fn post_authenticated_desktop_receipt(
     receipt: &AuthenticatedDesktopReceipt,
 ) -> Result<AuthenticatedReceiptDelivery, String> {
@@ -769,9 +777,28 @@ async fn post_authenticated_desktop_receipt(
         .await
         .map_err(|error| format!("desktop telemetry request failed: {error}"))?;
     let status = response.status().as_u16();
-    match classify_receipt_http_status(status) {
+    // A 403 carries a coded reason, and only DESKTOP_PERSON_MISSING is
+    // temporary (first sign-in before the person record exists). Read the
+    // body for that status alone.
+    let error_code = if status == 403 {
+        response
+            .json::<serde_json::Value>()
+            .await
+            .ok()
+            .and_then(|body| receipt_error_code(&body))
+    } else {
+        None
+    };
+    match classify_receipt_http_status(status, error_code.as_deref()) {
         ReceiptHttpDisposition::Delivered => Ok(AuthenticatedReceiptDelivery::Delivered),
-        ReceiptHttpDisposition::Retry => Ok(AuthenticatedReceiptDelivery::Retry),
+        ReceiptHttpDisposition::Retry => {
+            if error_code.as_deref() == Some(DESKTOP_PERSON_MISSING_CODE) {
+                eprintln!(
+                    "[desktop-onboarding] receipt held until the person record exists (HTTP 403 {DESKTOP_PERSON_MISSING_CODE})"
+                );
+            }
+            Ok(AuthenticatedReceiptDelivery::Retry)
+        }
         ReceiptHttpDisposition::Rejected => {
             eprintln!("[desktop-onboarding] rejecting receipt after permanent HTTP {status}");
             Ok(AuthenticatedReceiptDelivery::Rejected)
@@ -1285,6 +1312,57 @@ mod authenticated_receipt_tests {
             "a mid-flush account switch must hold person A's receipt"
         );
         assert!(!receipt_matches_bearer_account(&receipt, "not-a-jwt"));
+    }
+
+    #[test]
+    fn first_sign_in_person_missing_response_is_retried_not_dropped() {
+        // hq-pro answers login_completed with 403 DESKTOP_PERSON_MISSING when
+        // the Cognito account has no person entity yet (first sign-in runs
+        // before the workspace step creates it). That must keep the receipt.
+        let body = serde_json::json!({
+            "error": "this account has no canonical person; complete sign-up before activating a desktop session",
+            "code": "DESKTOP_PERSON_MISSING"
+        });
+        let code = receipt_error_code(&body);
+        assert_eq!(code.as_deref(), Some(DESKTOP_PERSON_MISSING_CODE));
+        assert_eq!(
+            classify_receipt_http_status(403, code.as_deref()),
+            ReceiptHttpDisposition::Retry
+        );
+        assert_eq!(
+            receipt_error_code(&serde_json::json!({ "error": "x" })),
+            None
+        );
+        assert_eq!(
+            classify_receipt_http_status(403, None),
+            ReceiptHttpDisposition::Rejected
+        );
+    }
+
+    #[test]
+    fn receipts_deliver_for_access_tokens_whose_email_verified_is_a_string() {
+        // Regression: Cognito access tokens carry `email_verified: "true"`
+        // (a JSON string). The claims decoder used to reject that, so the
+        // bearer resolved to no account and every receipt was held forever.
+        let receipt = receipt(
+            AuthenticatedReceiptEndpoint::WorkspaceSelected,
+            "evt_workspace",
+            "2026-09-17T10:01:00.000Z",
+        );
+        let claims = URL_SAFE_NO_PAD.encode(
+            serde_json::to_vec(&serde_json::json!({
+                "sub": "person-a",
+                "email_verified": "true",
+                "token_use": "access"
+            }))
+            .expect("claims serialize"),
+        );
+        let bearer = format!("header.{claims}.signature");
+
+        assert!(
+            receipt_matches_bearer_account(&receipt, &bearer),
+            "string-form email_verified must not hold the receipt"
+        );
     }
 
     #[test]
