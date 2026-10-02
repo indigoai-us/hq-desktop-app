@@ -7,6 +7,16 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+
+- First-run onboarding events now use the same installation identifier as launch and sign-in receipts, so those steps can be joined without adding personal data.
+- Log in with Microsoft now works for work and school Microsoft accounts, not only personal Microsoft accounts.
+
+
+
+- When someone takes their first action after desktop setup, HQ can now record which action they took without sending folder details.
+
+## [0.10.375] — 2026-10-02
+
 - Daemon sync controls explain paused, disabled, and stopped states. Resume also re-enables sync for machines migrated from the older daemon setting. Instant Sync changes reach an existing daemon and require HQ CLI 5.312.0 or later. Sync actions wait briefly for host selection at launch, then use the legacy or daemon path. Company-specific Sync Now no longer starts a sync across every company when the daemon owns sync.
 
 - Watcher exit diagnostics now report external Node frames without exposing a user's file name.
