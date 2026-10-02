@@ -19,6 +19,8 @@ export interface PeoplePickerEntry {
   meta: string;
   live: boolean;
   companyUid: string | null;
+  /** Every company this person or bot is known in (dedup merges these). */
+  companyUids?: readonly string[];
 }
 
 export interface PeoplePickerSection {
@@ -41,7 +43,7 @@ export function filterPickerEntries(
 ): PeoplePickerEntry[] {
   const needle = query.trim().toLowerCase();
   return entries.filter((entry) => {
-    if (companyUid && entry.companyUid && entry.companyUid !== companyUid) return false;
+    if (companyUid && !entryInCompany(entry, companyUid)) return false;
     if (!needle) return true;
     return (
       entry.name.toLowerCase().includes(needle) ||
@@ -49,6 +51,17 @@ export function filterPickerEntries(
       entry.id.toLowerCase().includes(needle)
     );
   });
+}
+
+/**
+ * A company channel can only add people and bots known in that company.
+ * People/bots with no company (personal DMs) are not eligible. Groups and
+ * guests are passed in explicitly by the caller, so an unscoped one stays.
+ */
+function entryInCompany(entry: PeoplePickerEntry, companyUid: string): boolean {
+  const known = entry.companyUids ?? (entry.companyUid ? [entry.companyUid] : []);
+  if (known.length === 0) return entry.kind === "group" || entry.kind === "guest";
+  return known.includes(companyUid);
 }
 
 export function groupPickerEntries(
@@ -76,7 +89,18 @@ export function entriesFromDirectory(args: {
   const byId = new Map<string, PeoplePickerEntry>();
   const remember = (entry: PeoplePickerEntry) => {
     if (!entry.id || !entry.name) return;
-    if (!byId.has(entry.id)) byId.set(entry.id, entry);
+    const prior = byId.get(entry.id);
+    if (!prior) {
+      byId.set(entry.id, {
+        ...entry,
+        companyUids: entry.companyUid ? [entry.companyUid] : [],
+      });
+      return;
+    }
+    const uid = entry.companyUid;
+    if (uid && !prior.companyUids?.includes(uid)) {
+      byId.set(entry.id, { ...prior, companyUids: [...(prior.companyUids ?? []), uid] });
+    }
   };
 
   for (const row of args.rows) {

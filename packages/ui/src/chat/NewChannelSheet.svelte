@@ -105,7 +105,9 @@
     New channel
     <span class="sub">{companyLabel}</span>
     <span class="grow"></span>
-    <button type="button" class="icon" aria-label="Close" onclick={() => onclose()}>✕</button>
+    <button type="button" class="icon" aria-label="Close" onclick={() => onclose()}>
+      <svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true"><path d="M3.5 3.5l7 7M10.5 3.5l-7 7" /></svg>
+    </button>
   </header>
   <div class="sb">
     <div class="fr">
@@ -127,7 +129,10 @@
             class="tab"
             role="tab"
             aria-selected={companyUid === company.companyUid}
-            onclick={() => (companyUid = company.companyUid)}
+            onclick={(event) => {
+              companyUid = company.companyUid;
+              event.currentTarget.scrollIntoView({ block: "nearest", inline: "nearest" });
+            }}
           >{company.label}</button>
         {/each}
       </div>
@@ -194,27 +199,36 @@
   .sh {
     height: 52px; display: flex; align-items: center; gap: 8px;
     padding: 0 10px 0 20px; border-bottom: 1px solid var(--panel-border, var(--v4-hairline));
-    font-size: 15px; font-weight: 600;
+    font-size: 13px; font-weight: 500;
   }
-  .sub { font-size: 12px; font-weight: 400; color: var(--t3, var(--v4-text-3)); }
+  .sub { font-size: 13px; font-weight: 400; color: var(--t3, var(--v4-text-3)); }
   .grow { flex: 1; }
-  .icon { border: 0; background: transparent; color: var(--t3, var(--v4-text-3)); }
-  .sb { overflow: auto; }
+  .icon {
+    width: 24px; height: 24px; padding: 0; display: grid; place-items: center;
+    border: 0; border-radius: 6px; background: transparent; color: var(--t3, var(--v4-text-3));
+  }
+  .icon:hover { background: var(--hover); color: var(--t1, var(--v4-text-1)); }
+  .icon svg { fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; }
+  .sb { overflow-x: hidden; overflow-y: auto; }
   .fr {
     display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 12px;
     padding: 10px 20px; border-bottom: 1px solid var(--panel-border, var(--v4-rowline));
   }
-  .lb { font-size: 12px; color: var(--t3, var(--v4-text-3)); padding-top: 6px; }
+  .lb { font-size: 13px; color: var(--t3, var(--v4-text-3)); padding-top: 6px; }
   .search {
     display: flex; align-items: center; height: 28px; gap: 4px; padding: 0 8px;
     border: 1px solid var(--panel-border, var(--v4-control-border)); border-radius: 6px;
   }
   .search input { flex: 1; border: 0; background: transparent; color: inherit; font: inherit; font-size: 13px; min-width: 0; }
-  .pre, .hint, .mono { color: var(--t3, var(--v4-text-3)); font-size: 12px; }
+  .pre, .hint, .mono { color: var(--t3, var(--v4-text-3)); font-size: 13px; }
   .mono { font-family: var(--font-mono, ui-monospace, monospace); }
   .hint { margin: 5px 0 0; line-height: 1.4; }
-  .tabs { display: flex; gap: 2px; width: max-content; padding: 2px; border-radius: 6px; border: 1px solid var(--panel-border); background: var(--hover); }
-  .tab { border: 0; background: transparent; color: var(--t2, inherit); font: inherit; font-size: 12px; padding: 4px 8px; border-radius: 4px; }
+  /* QA-020: the company strip scrolls inside its own column; the form never shifts. */
+  .tabs {
+    display: flex; gap: 2px; width: max-content; max-width: 100%; min-width: 0;
+    overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; padding: 2px; border-radius: 6px; border: 1px solid var(--panel-border); background: var(--hover); }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tab { border: 0; background: transparent; color: var(--t2, inherit); font: inherit; font-size: 13px; padding: 4px 8px; border-radius: 4px; flex: 0 0 auto; white-space: nowrap; }
   .tab[aria-selected="true"] { background: var(--v4-active-row, var(--hover)); color: var(--t1, inherit); }
   .ta {
     width: 100%; min-height: 60px; border: 1px solid var(--panel-border); border-radius: 6px;

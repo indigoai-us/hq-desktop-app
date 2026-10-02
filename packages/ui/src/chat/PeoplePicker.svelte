@@ -116,10 +116,10 @@
     border-radius: 6px;
     background: var(--hover, var(--v4-control-bg));
     color: var(--t1, var(--v4-text-1));
-    font-size: 12px;
+    font-size: 13px;
   }
   .x { color: var(--t3, var(--v4-text-3)); }
-  .pp-n { margin-left: auto; align-self: center; font-size: 12px; color: var(--t3, var(--v4-text-3)); }
+  .pp-n { margin-left: auto; align-self: center; font-size: 13px; color: var(--t3, var(--v4-text-3)); }
   .pp-q { display: block; margin: 8px 10px 2px; }
   .pp-q input {
     width: 100%;
@@ -134,10 +134,9 @@
   .pp-list { overflow: auto; max-height: 240px; padding: 0 6px 6px; }
   .sec {
     padding: 10px 6px 2px;
-    font-size: 11px;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    color: var(--t3, var(--v4-text-3));
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--t2, var(--v4-text-2));
   }
   .pp-li {
     display: grid;
@@ -188,13 +187,13 @@
   .who b { font-weight: 500; color: var(--t1, var(--v4-text-1)); }
   .m {
     display: block;
-    font-size: 12px;
+    font-size: 13px;
     color: var(--t3, var(--v4-text-3));
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .rt { font-size: 11px; color: var(--t3, var(--v4-text-3)); }
+  .rt { font-size: 13px; color: var(--t3, var(--v4-text-3)); }
   .rt.live { color: var(--ok, var(--v4-ok)); }
-  .empty { padding: 12px 8px; color: var(--t3, var(--v4-text-3)); font-size: 12px; }
+  .empty { padding: 12px 8px; color: var(--t3, var(--v4-text-3)); font-size: 13px; }
 </style>

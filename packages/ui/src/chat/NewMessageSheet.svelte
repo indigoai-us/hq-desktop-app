@@ -139,7 +139,9 @@
     New message
     <span class="sub">{companyLabel}</span>
     <span class="grow"></span>
-    <button type="button" class="icon" aria-label="Close" onclick={onclose}>✕</button>
+    <button type="button" class="icon" aria-label="Close" onclick={onclose}>
+      <svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true"><path d="M3.5 3.5l7 7M10.5 3.5l-7 7" /></svg>
+    </button>
   </header>
   <div class="sb">
     <div class="fr">
@@ -227,13 +229,18 @@
     gap: 8px;
     padding: 0 10px 0 20px;
     border-bottom: 1px solid var(--panel-border, var(--v4-hairline));
-    font-size: 15px;
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
   }
-  .sub { font-size: 12px; font-weight: 400; color: var(--t3, var(--v4-text-3)); }
+  .sub { font-size: 13px; font-weight: 400; color: var(--t3, var(--v4-text-3)); }
   .grow { flex: 1; }
-  .icon { border: 0; background: transparent; color: var(--t3, var(--v4-text-3)); font-size: 14px; }
-  .sb { overflow: auto; min-height: 0; }
+  .icon {
+    width: 24px; height: 24px; padding: 0; display: grid; place-items: center;
+    border: 0; border-radius: 6px; background: transparent; color: var(--t3, var(--v4-text-3));
+  }
+  .icon:hover { background: var(--hover); color: var(--t1, var(--v4-text-1)); }
+  .icon svg { fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; }
+  .sb { overflow-x: hidden; overflow-y: auto; min-height: 0; }
   .fr {
     display: grid;
     grid-template-columns: 120px minmax(0, 1fr);
@@ -242,7 +249,7 @@
     padding: 10px 20px;
     border-bottom: 1px solid var(--panel-border, var(--v4-rowline));
   }
-  .lb { font-size: 12px; color: var(--t3, var(--v4-text-3)); padding-top: 6px; }
+  .lb { font-size: 13px; color: var(--t3, var(--v4-text-3)); padding-top: 6px; }
   .tabs {
     display: flex;
     gap: 2px;
@@ -252,22 +259,27 @@
     border-radius: 6px;
     border: 1px solid var(--panel-border, var(--v4-control-border));
     background: var(--hover, var(--v4-control-faint));
-    overflow: auto;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
   }
+  .tabs::-webkit-scrollbar { display: none; }
   .tab {
     border: 0;
     background: transparent;
     color: var(--t2, var(--v4-text-2));
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
     padding: 4px 8px;
     border-radius: 4px;
+    flex: 0 0 auto;
+    white-space: nowrap;
   }
   .tab[aria-selected="true"] {
     background: var(--v4-active-row, var(--hover));
     color: var(--t1, var(--v4-text-1));
   }
-  .hint { font-size: 12px; color: var(--t3, var(--v4-text-3)); line-height: 1.4; margin: 6px 0 0; }
+  .hint { font-size: 13px; color: var(--t3, var(--v4-text-3)); line-height: 1.4; margin: 6px 0 0; }
   .ta {
     width: 100%;
     min-height: 60px;

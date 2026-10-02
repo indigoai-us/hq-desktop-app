@@ -3,6 +3,7 @@ import { CREATE_MENU_ITEMS, createMenuHasCompany } from "./create-menu.js";
 import {
   channelPathPreview,
   entriesFromDirectory,
+  filterPickerEntries,
   groupPickerEntries,
   togglePickerId,
 } from "./people-picker.js";
@@ -60,6 +61,24 @@ describe("US-017 create menu and people picker", () => {
     ]);
     expect(togglePickerId(["prs_eric"], "agt_deacon")).toEqual(["prs_eric", "agt_deacon"]);
     expect(togglePickerId(["prs_eric"], "prs_eric")).toEqual([]);
+  });
+
+  it("narrows channel member choices to the selected company (QA-018)", () => {
+    const entries = entriesFromDirectory({
+      rows: [],
+      contacts: [
+        { personUid: "prs_eric", displayName: "Eric", companyUid: "cmp_indigo" },
+        { personUid: "prs_eric", displayName: "Eric", companyUid: "cmp_amass" },
+        { personUid: "prs_amy", displayName: "Amy", companyUid: "cmp_amass" },
+        { personUid: "agt_sender", displayName: "sender bot", companyUid: "cmp_sender" },
+        { personUid: "prs_loose", displayName: "Loose", companyUid: null },
+      ],
+    });
+    const names = (uid: string) =>
+      filterPickerEntries(entries, "", uid).map((entry) => entry.name).sort();
+    expect(names("cmp_indigo")).toEqual(["Eric"]);
+    expect(names("cmp_amass")).toEqual(["Amy", "Eric"]);
+    expect(names("cmp_sender")).toEqual(["sender bot"]);
   });
 
   it("previews the channel path from the company label and the typed name", () => {
