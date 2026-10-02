@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- On a fresh install, HQ now shows its logo and "Starting HQ..." right away instead of a blank, frozen window while it starts up.
 - Desktop sign-in can open the website first to link the new account to the native app; if that check fails, it opens Cognito directly as before.
 - Library Back now leaves internal Library tab history and returns to the prior app screen.
 
