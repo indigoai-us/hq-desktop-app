@@ -14,14 +14,17 @@
    * It always draws at the app shell, above everything in the window, and is
    * never clipped by the message that holds the card: `portal` moves it to
    * `.desktop-shell` wherever it is mounted. While it is open the rest of the
-   * app is inert, Tab stays inside it, and focus goes back to the button
-   * that opened it when it closes.
+   * app is inert, Tab stays inside it, the app's keyboard shortcuts are held
+   * (so typing or pasting in a field here can never set one off, and nothing
+   * like the command palette opens over it), and focus goes back to the
+   * button that opened it when it closes.
    *
    * Content comes in as two snippets, `body` and `footer`. The pieces a flow
    * needs are next to this file: `card-modal-btn` (with `is-primary` or
    * `is-quiet`), CardModalStep, CardModalStatus and CardModalField.
    */
   import type { Snippet } from "svelte";
+  import { suspendShortcuts } from "../../common/keyboard-shortcuts.js";
   import { portal } from "../portal.js";
   import ConnectionCardIcon from "./ConnectionCardIcon.svelte";
   import type { ConnectTarget } from "./richMessageContent.js";
@@ -112,9 +115,13 @@
     openedAt = Date.now();
     const ported = portal(node);
     const releaseInert = inertOutside(node);
+    // The app's shortcuts are part of "the rest of the app": none of them
+    // fires while the dialog is open, whatever has focus inside it.
+    const releaseShortcuts = suspendShortcuts();
     focusIntoDialog(node.querySelector<HTMLElement>('[role="dialog"]'));
     return {
       destroy() {
+        releaseShortcuts();
         releaseInert();
         ported.destroy?.();
         restoreFocus(returnFocusNow ?? opener);

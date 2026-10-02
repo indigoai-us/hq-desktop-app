@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createRawSnippet, flushSync, mount, unmount, type Component, type Snippet } from "svelte";
 
+import { registerShortcuts, runShortcut, shortcutsSuspended } from "../../common/keyboard-shortcuts.js";
 import CardModal from "./CardModal.svelte";
 import CardModalField from "./CardModalField.svelte";
 import CardModalStatus from "./CardModalStatus.svelte";
@@ -114,6 +115,56 @@ function pressBackdrop(): void {
   layer()!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   flushSync();
 }
+
+describe("the card modal: the app's keyboard shortcuts", () => {
+  const mac = /Mac OS X|Macintosh/i.test(navigator.userAgent);
+  const chord = (name: string, code: string) => ({ key: name, code, metaKey: mac, ctrlKey: !mac });
+
+  it("holds them while it is open, whatever has focus inside it, and lets go when it closes", async () => {
+    const palette = vi.fn();
+    const help = vi.fn();
+    const unregister = registerShortcuts([
+      { id: "palette.toggle", keys: "Mod+K", label: "Command palette", group: "General", run: palette },
+      { id: "help.shortcuts", keys: "Mod+/", label: "Keyboard shortcuts", group: "General", allowInInput: true, run: help },
+    ]);
+    try {
+      render({
+        body: html('<div><input data-testid="probe-field" data-card-modal-autofocus /></div>'),
+      });
+      expect(shortcutsSuspended()).toBe(true);
+      // From the field: typing, and the one binding that fires inside fields.
+      expect(document.activeElement).toBe(byId("probe-field"));
+      const typed = key("k", chord("k", "KeyK"));
+      key("/", chord("/", "Slash"));
+      key("v", chord("v", "KeyV"));
+      // From a button: where the palette binding would fire.
+      byId("probe-next")!.focus();
+      key("k", chord("k", "KeyK"));
+      expect(palette).not.toHaveBeenCalled();
+      expect(help).not.toHaveBeenCalled();
+      // The key press itself is not swallowed: the field keeps it.
+      expect(typed.defaultPrevented).toBe(false);
+      expect(runShortcut("palette.toggle")).toBe(false);
+      expect(dialog()).not.toBeNull();
+
+      props.open = false;
+      flushSync();
+      expect(shortcutsSuspended()).toBe(false);
+      key("k", chord("k", "KeyK"));
+      expect(palette).toHaveBeenCalledTimes(1);
+    } finally {
+      unregister();
+    }
+  });
+
+  it("lets go when it is taken down while open", async () => {
+    render();
+    expect(shortcutsSuspended()).toBe(true);
+    await unmount(component!);
+    component = null;
+    expect(shortcutsSuspended()).toBe(false);
+  });
+});
 
 describe("the card modal: opening and closing", () => {
   it("draws nothing until it is open, and goes when it is closed", () => {

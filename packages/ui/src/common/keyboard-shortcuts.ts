@@ -10,6 +10,9 @@
  * unless `allowInInput` is set, honour `event.defaultPrevented`, and call
  * `preventDefault()` when they match. Native menu accelerators route through
  * `runShortcut(id)` so a menu item and its key binding share one handler.
+ *
+ * A modal dialog that owns the keyboard holds all of it with
+ * `suspendShortcuts()`: nothing fires, from a key or a menu, until it lets go.
  */
 
 import { isMac } from "./platform";
@@ -218,6 +221,29 @@ export function formatShortcut(keys: string, mac: boolean = isMac()): string {
 
 const registrations: ShortcutBinding[][] = [];
 let listening = false;
+/** How many modal dialogs are holding the shortcuts. */
+let suspended = 0;
+
+/**
+ * Hold every shortcut while a modal dialog owns the keyboard: no binding
+ * fires from a key press or from a native menu until the returned function
+ * is called. The dialog handles its own keys (Escape, Tab). Holds nest, so
+ * two dialogs can each hold and release in any order.
+ */
+export function suspendShortcuts(): () => void {
+  suspended += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    suspended = Math.max(0, suspended - 1);
+  };
+}
+
+/** True while a modal dialog is holding the shortcuts. */
+export function shortcutsSuspended(): boolean {
+  return suspended > 0;
+}
 
 function allBindings(): ShortcutBinding[] {
   const out: ShortcutBinding[] = [];
@@ -226,6 +252,7 @@ function allBindings(): ShortcutBinding[] {
 }
 
 function onKeydown(event: KeyboardEvent): void {
+  if (suspended > 0) return;
   if (event.defaultPrevented) return;
   // Mid-IME composition: every keystroke belongs to the input method, and
   // `key`/`code` describe the raw key rather than the user's intent. WebKit
@@ -287,6 +314,7 @@ export function listShortcuts(): ShortcutBinding[] {
  * ran and did not decline.
  */
 export function runShortcut(id: string): boolean {
+  if (suspended > 0) return false;
   for (let g = registrations.length - 1; g >= 0; g -= 1) {
     for (const binding of registrations[g]) {
       if (binding.id !== id) continue;

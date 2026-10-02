@@ -8,6 +8,8 @@ import {
   matchesShortcut,
   registerShortcuts,
   runShortcut,
+  shortcutsSuspended,
+  suspendShortcuts,
 } from "./keyboard-shortcuts";
 
 function fire(
@@ -255,6 +257,53 @@ describe("IME composition", () => {
     expect(composing.defaultPrevented).toBe(false);
 
     // Same keystroke, composition finished → the binding runs.
+    fire({ key: "k", metaKey: isMacHere(), ctrlKey: !isMacHere() });
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("suspendShortcuts", () => {
+  it("holds every binding, from a key and from a menu, until it is released", () => {
+    const run = vi.fn();
+    register([
+      { id: "k", keys: "Mod+K", label: "K", group: "g", run },
+      { id: "help", keys: "Mod+/", label: "Help", group: "g", allowInInput: true, run },
+    ]);
+    const release = suspendShortcuts();
+    expect(shortcutsSuspended()).toBe(true);
+    const held = fire({ key: "k", metaKey: isMacHere(), ctrlKey: !isMacHere() });
+    expect(run).not.toHaveBeenCalled();
+    // The key press is left alone: a field under the dialog still gets it.
+    expect(held.defaultPrevented).toBe(false);
+    // Even a binding that fires from inside a field.
+    const input = document.createElement("input");
+    document.body.appendChild(input);
+    fire({ key: "/", code: "Slash", metaKey: isMacHere(), ctrlKey: !isMacHere(), target: input });
+    expect(run).not.toHaveBeenCalled();
+    // And a native menu item.
+    expect(runShortcut("k")).toBe(false);
+    expect(run).not.toHaveBeenCalled();
+
+    release();
+    expect(shortcutsSuspended()).toBe(false);
+    fire({ key: "k", metaKey: isMacHere(), ctrlKey: !isMacHere() });
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(runShortcut("k")).toBe(true);
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  it("nests: the shortcuts come back when the last hold is released, and a release counts once", () => {
+    const run = vi.fn();
+    register([{ id: "k", keys: "Mod+K", label: "K", group: "g", run }]);
+    const first = suspendShortcuts();
+    const second = suspendShortcuts();
+    first();
+    first();
+    expect(shortcutsSuspended()).toBe(true);
+    fire({ key: "k", metaKey: isMacHere(), ctrlKey: !isMacHere() });
+    expect(run).not.toHaveBeenCalled();
+    second();
+    expect(shortcutsSuspended()).toBe(false);
     fire({ key: "k", metaKey: isMacHere(), ctrlKey: !isMacHere() });
     expect(run).toHaveBeenCalledTimes(1);
   });
