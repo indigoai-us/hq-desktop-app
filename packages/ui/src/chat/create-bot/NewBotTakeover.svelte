@@ -26,6 +26,8 @@
     restartBrainApproval?: ((agentUid: string, brain: BrainProvider) => Promise<unknown>) | null;
     submitClaudeLoginCode?: ((agentUid: string, code: string) => Promise<unknown>) | null;
     openExternal?: ((url: string) => void | Promise<void>) | null;
+    sendHello?: ((session: WakingBotSession) => Promise<boolean>) | null;
+    checkHello?: ((session: WakingBotSession) => Promise<boolean>) | null;
     wakingSession?: WakingBotSession | null;
     onwaking?: ((session: WakingBotSession) => void) | null;
     onwakingchange?: ((session: WakingBotSession | null) => void) | null;
@@ -51,6 +53,8 @@
     restartBrainApproval = null,
     submitClaudeLoginCode = null,
     openExternal = (url) => { window.open(url, "_blank", "noopener,noreferrer"); },
+    sendHello = null,
+    checkHello = null,
     wakingSession = null,
     onwaking = null,
     onwakingchange = null,
@@ -104,7 +108,7 @@
   function startWaking(created: NewBotCreated): void {
     const session = beginWakingSession({
       agentUid: created.target.agentUid ?? "",
-      channelId: created.target.channelId,
+      channelId: created.target.channelId ?? "",
       companyUid: created.companyUid,
       name: created.name,
       brain: created.brain,
@@ -191,6 +195,8 @@
           {restartBrainApproval}
           {submitClaudeLoginCode}
           {openExternal}
+          {sendHello}
+          {checkHello}
           onupdate={updateWaking}
           onclose={closeWaking}
           onretry={retryWaking}

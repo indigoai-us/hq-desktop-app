@@ -758,11 +758,16 @@ export function createSyncPlatformAdapter(
       },
       sendDm: (toPersonUid, body, extras) => {
         const attachments = extras?.attachments;
-        if (attachments && attachments.length > 0) {
+        const hasAttachments = Boolean(attachments && attachments.length > 0);
+        const audience = extras?.audience;
+        const idempotencyKey = extras?.idempotencyKey?.trim();
+        if (hasAttachments || audience || idempotencyKey) {
           return hqProJson('POST', WEB_PATHS.dmSend, {
             toPersonUid,
             body,
-            attachments,
+            ...(hasAttachments ? { attachments } : {}),
+            ...(audience ? { audience } : {}),
+            ...(idempotencyKey ? { idempotencyKey } : {}),
           });
         }
         return call('send_dm', { toPersonUid, body });

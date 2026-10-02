@@ -331,6 +331,7 @@ export function normalizeConversationMessages(
     const rootEventId = optionalString(row.rootEventId);
     const replyCount = optionalReplyCount(row.replyCount);
     const lastReplyAt = optionalString(row.lastReplyAt);
+    const audience = optionalString(row.audience);
     out.push({
       eventId,
       fromPersonUid: asString(row.fromPersonUid) || null,
@@ -349,16 +350,59 @@ export function normalizeConversationMessages(
       ...(rootEventId ? { rootEventId } : {}),
       ...(replyCount !== undefined ? { replyCount } : {}),
       ...(lastReplyAt ? { lastReplyAt } : {}),
+      ...(audience ? { audience } : {}),
     });
   }
   return out;
 }
 
+/** How a conversation's fetched rows are laid out on the main timeline. */
+export interface TimelineDisplayOptions {
+  /**
+   * Show thread replies in the main timeline, in time order, instead of
+   * tucking them under their root. A one-to-one conversation with a bot is a
+   * single exchange: hosted bots answer every message as a reply to it, and a
+   * person should read those answers in line like any other chat.
+   */
+  inlineReplies?: boolean;
+}
+
+/**
+ * Lay a page out as one flat exchange: replies become ordinary rows, the
+ * "N replies" affordance is dropped, and rows written for the bot only
+ * (`audience: "agent"`) are left out because they are not for the person.
+ */
+export function inlineReplyRows(
+  rows: readonly ConversationMessageWire[],
+): ConversationMessageWire[] {
+  const out: ConversationMessageWire[] = [];
+  for (const row of rows) {
+    if ((row.audience ?? "").trim().toLowerCase() === "agent") continue;
+    if (
+      row.rootEventId === undefined &&
+      row.replyCount === undefined &&
+      row.lastReplyAt === undefined &&
+      row.replyAuthors === undefined
+    ) {
+      out.push(row);
+      continue;
+    }
+    const { rootEventId: _root, replyCount: _count, lastReplyAt: _last, replyAuthors: _authors, ...flat } = row;
+    out.push(flat);
+  }
+  return out;
+}
+
 /** REST returns newest-first; ChannelConversation wants oldest → newest. */
-export function messagesForDisplay(raw: unknown): ConversationMessageWire[] {
+export function messagesForDisplay(
+  raw: unknown,
+  options: TimelineDisplayOptions = {},
+): ConversationMessageWire[] {
+  const oldestFirst = [...normalizeConversationMessages(raw)].reverse();
+  if (options.inlineReplies) return inlineReplyRows(oldestFirst);
   // Fold FIRST: the reply rows carry the author + time the root affordance
   // needs, and are discarded on the next line.
-  return foldReplyMetadata([...normalizeConversationMessages(raw)].reverse())
+  return foldReplyMetadata(oldestFirst)
     .filter((row) => !isReplyMessage(row));
 }
 
@@ -451,7 +495,13 @@ export function timelineHasEvent(
 export function mergeFetchedTimeline(
   existing: ConversationMessageWire[],
   raw: unknown,
+  options: TimelineDisplayOptions = {},
 ): ConversationMessageWire[] {
+  if (options.inlineReplies) {
+    const merged = mergeTimelineMessages(existing, messagesForDisplay(raw, options));
+    if (merged === existing) return existing;
+    return timelinesContentEqual(existing, merged) ? existing : merged;
+  }
   const page = timelinePageFromPayload(raw);
   const mapped = normalizeConversationMessages(
     page.messages !== undefined ? page.messages : raw,

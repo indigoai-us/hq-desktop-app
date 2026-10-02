@@ -135,9 +135,9 @@
     type CardActionIdempotencyStore,
   } from "../chat/card-action.js";
   import {
-    AGENT_INTRO_ACTION_ID,
-    AGENT_STATUS_CARD_ID,
     agentCatchingUpLine,
+    agentHelloArrived,
+    buildAgentHelloRequest,
     agentChatReadiness,
     agentComposerPlaceholder,
     isAgentConversationRow,
@@ -558,6 +558,7 @@
     sentMessageFromResult,
     sinceForChannelWake,
     timelineHasEvent,
+    type TimelineDisplayOptions,
     timelinePageFromPayload,
   } from "../chat/live-messages.js";
   import {
@@ -3720,41 +3721,9 @@
   );
   const AGENT_CHAT_READY_POLL_MS = 5_000;
   const AGENT_CATCHING_UP_POLL_MS = 30_000;
-  const AGENT_INTRO_RETRY_MS = 20_000;
-  /** Bots whose intro request was sent, with when; and bots whose server refused it. */
-  const agentIntroAskedAt = new Map<string, number>();
-  const agentIntroUnsupported = new Set<string>();
-  /**
-   * Ask the server to open the conversation for a bot that can chat. The
-   * server announces once however often it is asked. A refusal means the
-   * server predates the action, so the bot is not asked again this session;
-   * the person can still write first.
-   */
-  function askAgentIntro(agentUid: string, channelId: string): void {
-    if (typeof adapter.messaging.runCardAction !== "function") return;
-    if (agentIntroUnsupported.has(agentUid)) return;
-    const now = Date.now();
-    if (now - (agentIntroAskedAt.get(agentUid) ?? 0) < AGENT_INTRO_RETRY_MS) return;
-    agentIntroAskedAt.set(agentUid, now);
-    void (async () => {
-      try {
-        const result = await adapter.messaging.runCardAction({
-          channelId,
-          cardId: AGENT_STATUS_CARD_ID,
-          actionId: AGENT_INTRO_ACTION_ID,
-          values: {},
-          idempotencyKey: `agent-intro-${agentUid}-${now}`,
-        });
-        if (!result.ok) agentIntroUnsupported.add(agentUid);
-      } catch {
-        agentIntroUnsupported.add(agentUid);
-      }
-    })();
-  }
   $effect(() => {
     const uid = agentChannelUid;
     const pending = provisioning.state === "pending";
-    const channelId = selectedRow?.channelId ?? null;
     if (!isAgentChannel || !uid || !uid.startsWith("agt_")) return;
     const known = untrack(() => agentChatByUid[uid]);
     if (!pending && !known?.catchingUp) return;
@@ -3768,7 +3737,6 @@
         if (result.ok) {
           next = agentChatReadiness(result.value);
           agentChatByUid = { ...untrack(() => agentChatByUid), [uid]: next };
-          if (next.chatReady && pending && channelId) askAgentIntro(uid, channelId);
         }
       } catch {
         // Keep the last known state and ask again.
@@ -3782,6 +3750,124 @@
       if (timer) clearTimeout(timer);
     };
   });
+  /**
+   * Cloud bots made in the new bot flow on this device whose company files
+   * may still be downloading. Their conversation is a direct message; the
+   * line under it says the bot can chat while it catches up. A bot leaves
+   * the list once its files are there.
+   */
+  const NEW_CLOUD_BOTS_STORAGE_KEY = "hq.chat.newCloudBots.v1";
+  function loadNewCloudBots(): string[] {
+    try {
+      const parsed = JSON.parse(window.localStorage?.getItem(NEW_CLOUD_BOTS_STORAGE_KEY) ?? "[]") as unknown;
+      return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === "string" && v.startsWith("agt_")) : [];
+    } catch {
+      return [];
+    }
+  }
+  let newCloudBotUids = $state<string[]>(loadNewCloudBots());
+  function setNewCloudBots(next: string[]): void {
+    newCloudBotUids = next;
+    try {
+      window.localStorage?.setItem(NEW_CLOUD_BOTS_STORAGE_KEY, JSON.stringify(next.slice(0, 50)));
+    } catch {
+      // best-effort
+    }
+  }
+  const dmAgentUid = $derived(
+    selectedRow?.kind === "dm" && (selectedRow.personUid ?? "").startsWith("agt_")
+      ? (selectedRow.personUid as string)
+      : null,
+  );
+  const dmNewCloudBotUid = $derived(dmAgentUid && newCloudBotUids.includes(dmAgentUid) ? dmAgentUid : null);
+  const dmCloudBotCatchingUp = $derived(
+    Boolean(dmNewCloudBotUid && agentChatByUid[dmNewCloudBotUid]?.catchingUp),
+  );
+  $effect(() => {
+    const uid = dmNewCloudBotUid;
+    if (!uid) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const check = async (): Promise<void> => {
+      let next: AgentChatReadiness | null = null;
+      try {
+        const result = await adapter.agents.getStatus(uid);
+        if (stopped) return;
+        if (result.ok) {
+          next = agentChatReadiness(result.value);
+          agentChatByUid = { ...untrack(() => agentChatByUid), [uid]: next };
+          if ((next.chatReady && !next.catchingUp) || next.failed) {
+            setNewCloudBots(untrack(() => newCloudBotUids).filter((id) => id !== uid));
+            return;
+          }
+        }
+      } catch {
+        // Keep the last known state and ask again.
+      }
+      if (stopped) return;
+      timer = setTimeout(() => void check(), next?.chatReady ? AGENT_CATCHING_UP_POLL_MS : AGENT_CHAT_READY_POLL_MS);
+    };
+    void check();
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    };
+  });
+
+  /** Bots asked for their first message whose answer has not been seen yet (uid → name). */
+  let cloudBotHelloPending = $state<Record<string, string>>({});
+  /**
+   * Ask a new cloud bot to write its first message. The request travels on
+   * the bot-only lane of the direct message, so the person sees the bot's
+   * hello and never the request. One request per bot, however often asked.
+   */
+  async function sendCloudBotHello(session: { agentUid: string; name: string }): Promise<boolean> {
+    const uid = session.agentUid.trim();
+    if (!uid) return false;
+    let filesStillDownloading = true;
+    try {
+      const status = await adapter.agents.getStatus(uid);
+      if (status.ok) filesStillDownloading = agentChatReadiness(status.value).catchingUp;
+    } catch {
+      // Say the files are still downloading; that is the usual case this early.
+    }
+    const firstName = (self?.displayName ?? "").trim().split(/\s+/)[0] ?? "";
+    const result = await adapter.messaging.sendDm(
+      uid,
+      buildAgentHelloRequest({ personName: firstName, filesStillDownloading }),
+      { audience: "agent", idempotencyKey: `new-bot-hello-${uid}` },
+    );
+    if (!result.ok) return false;
+    cloudBotHelloPending = { ...cloudBotHelloPending, [uid]: session.name };
+    return true;
+  }
+  async function cloudBotHelloArrived(session: { agentUid: string; helloAskedAt?: number | null }): Promise<boolean> {
+    const uid = session.agentUid.trim();
+    if (!uid) return false;
+    const result = await adapter.messaging.fetchDmThread({ withPersonUid: uid, limit: 30 });
+    if (!result.ok) return false;
+    const arrived = agentHelloArrived(normalizeConversationMessages(result.value), {
+      agentUid: uid,
+      askedAtMs: session.helloAskedAt ?? null,
+    });
+    if (arrived && cloudBotHelloPending[uid]) {
+      const { [uid]: _seen, ...rest } = cloudBotHelloPending;
+      cloudBotHelloPending = rest;
+    }
+    return arrived;
+  }
+  // The person reached the conversation before the bot's first message: show
+  // the bot as working, because a request to it is in flight.
+  $effect(() => {
+    const row = selectedRow;
+    const uid = dmAgentUid;
+    if (!row || !uid || !cloudBotHelloPending[uid] || liveTimelineId !== row.id) return;
+    const name = cloudBotHelloPending[uid]!;
+    const { [uid]: _started, ...rest } = cloudBotHelloPending;
+    cloudBotHelloPending = rest;
+    thinkingByRow = startThinkingIn(thinkingByRow, row.id, { agentUid: uid, agentName: row.title?.trim() || name }, Date.now());
+  });
+
   const SETUP_DONE_PLACEHOLDER = "Setup is complete — pick a next step above.";
   const composerPlaceholder = $derived(
     setupAgentDone
@@ -4003,6 +4089,14 @@
     if (next.map !== thinkingByRow) thinkingByRow = next.map;
   }
 
+  /**
+   * A one-to-one conversation with a bot reads as one exchange: the bot's
+   * answers show in line, whether or not it posted them as thread replies.
+   */
+  function timelineDisplayFor(row: ConversationRow | null | undefined): TimelineDisplayOptions {
+    return { inlineReplies: row?.kind === "dm" && (row.personUid ?? "").startsWith("agt_") };
+  }
+
   /** Same messages (by reference) in the same order — nothing to repaint. */
   function sameTimeline(
     a: ConversationMessageWire[],
@@ -4175,7 +4269,7 @@
     if (raw == null) return;
     hydrateStubChannelRow(row, raw);
     historyCursors[row.id] = row.channelId ? (timelinePageFromPayload(raw).nextCursor ?? null) : null;
-    let incoming = messagesForDisplay(raw);
+    let incoming = messagesForDisplay(raw, timelineDisplayFor(row));
     // An immediate readback can lag the accepted mutation. Preserve its
     // pending receipt over a stale open card, but accept any newer state.
     if (pendingCardId && incoming.some((message) => {
@@ -4200,13 +4294,13 @@
     const raw = await fetchTimelineRaw(row, since);
     if (selectedRow?.id !== row.id) return;
     if (raw == null) return;
-    const incoming = messagesForDisplay(raw);
+    const incoming = messagesForDisplay(raw, timelineDisplayFor(row));
     // History may have loaded while this refresh was in flight. Merge into
     // the current timeline so its newly prepended page is not discarded.
     const current = liveTimelineId === row.id
       ? liveTimeline
       : (timelineCache.get(row.id) ?? []);
-    commitTimeline(row, mergeFetchedTimeline(current, raw));
+    commitTimeline(row, mergeFetchedTimeline(current, raw, timelineDisplayFor(row)));
     clearThinkingFromIncoming(incoming, row.id);
   }
 
@@ -4283,6 +4377,7 @@
           ? injected
           : [];
     if (Object.keys(replyCountOverride).length === 0) return rows;
+    if (timelineDisplayFor(selectedRow).inlineReplies) return rows;
     return rows.map((msg) =>
       replyCountOverride[msg.eventId] != null
         ? { ...msg, replyCount: replyCountOverride[msg.eventId] }
@@ -5882,6 +5977,7 @@
     if (result.ok) {
       const title = draft.title?.trim() ?? "";
       const agentUid = result.target.agentUid?.trim() ?? "";
+      if (agentUid && !newCloudBotUids.includes(agentUid)) setNewCloudBots([agentUid, ...newCloudBotUids]);
       if (title && agentUid) {
         void saveNewBotProfile(agentUid, { title });
       } else if (title) {
@@ -6142,6 +6238,11 @@
     const row = selectedRow;
     return wakes.on("reply:new", (payload) => {
       if (!replyNewMatchesConversation(payload, row)) return;
+      if (row && timelineDisplayFor(row).inlineReplies) {
+        // The reply is a row of the main timeline here, not a count on its root.
+        void catchUpTimeline(row).catch(() => undefined);
+        return;
+      }
       if (openReplyRootId === payload.rootEventId) return;
       const injected = row ? (messagesByRow?.(row) ?? []) : [];
       const source =
@@ -7398,8 +7499,8 @@
     });
     if (!res.ok) return;
     if (selectedRow?.id !== row.id) return;
-    const incoming = messagesForDisplay(res.value);
-    commitTimeline(row, mergeFetchedTimeline(liveTimeline, res.value));
+    const incoming = messagesForDisplay(res.value, timelineDisplayFor(row));
+    commitTimeline(row, mergeFetchedTimeline(liveTimeline, res.value, timelineDisplayFor(row)));
     clearThinkingFromIncoming(incoming, row.id);
   }
 
@@ -7472,8 +7573,8 @@
     }
     if (!res.ok) return;
     if (selectedRow?.id !== row.id) return;
-    const incoming = messagesForDisplay(res.value);
-    commitTimeline(row, mergeFetchedTimeline(liveTimeline, res.value));
+    const incoming = messagesForDisplay(res.value, timelineDisplayFor(row));
+    commitTimeline(row, mergeFetchedTimeline(liveTimeline, res.value, timelineDisplayFor(row)));
     clearThinkingFromIncoming(incoming, row.id);
   }
 
@@ -8965,6 +9066,8 @@
           oncreateagent={canCreateCloudBots ? createCloudBotEntry : null}
           loadAgentStatus={(agentUid, brain) => adapter.agents.getStatus(agentUid, brain)}
           retryAgent={(agentUid) => adapter.agents.retryProvisioning(agentUid)}
+          sendBotHello={sendCloudBotHello}
+          checkBotHello={cloudBotHelloArrived}
           restartBrainApproval={(agentUid, brain) => adapter.agents.restartBrainApproval?.(agentUid, brain) ?? Promise.resolve({ ok: false })}
           submitClaudeLoginCode={(agentUid, code) => adapter.agents.submitClaudeLoginCode?.(agentUid, code) ?? Promise.resolve({ ok: false })}
           openExternal={(url) => {
@@ -9556,6 +9659,11 @@
                   {#if isAgentChannel && agentChatState?.catchingUp}
                     <div class="agent-channel-fallback" data-testid="agent-channel-catching-up" role="status">
                       {agentCatchingUpLine(provisioning.agentName !== "Agent" ? provisioning.agentName : headerTitle)}
+                    </div>
+                  {/if}
+                  {#if dmCloudBotCatchingUp}
+                    <div class="agent-channel-fallback" data-testid="agent-dm-catching-up" role="status">
+                      {agentCatchingUpLine(headerTitle)}
                     </div>
                   {/if}
                   {#if setupFinaleVisible}

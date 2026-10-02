@@ -4,6 +4,9 @@ import {
   agentComposerPlaceholder,
   isAgentConversationRow,
   provisioningFromMessages,
+  AGENT_HELLO_REQUEST_LEAD,
+  agentHelloArrived,
+  buildAgentHelloRequest,
 } from "./agent-channel.js";
 import type { ConversationRow } from "./sidebar-model.js";
 import type { ConversationMessageWire } from "./chat-api.js";
@@ -152,5 +155,45 @@ describe("agentChatReadiness", () => {
     expect(agentChatReadiness({ setupState: { phase: "creating" } }).chatReady).toBe(false);
     expect(agentChatReadiness({ setupState: { phase: "ready" } })).toEqual({ chatReady: true, catchingUp: false, failed: false });
     expect(agentChatReadiness(null).chatReady).toBe(false);
+  });
+});
+
+describe("the new bot's first message", () => {
+  it("asks on the bot's behalf without telling the person to do anything", () => {
+    const text = buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: true });
+    expect(text.startsWith(AGENT_HELLO_REQUEST_LEAD)).toBe(true);
+    expect(text).toContain("Stefan cannot see this message");
+    expect(text).toContain("still downloading");
+    expect(buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: false })).not.toContain("downloading");
+    // No name known: the request still reads as a sentence and never shows an id.
+    expect(buildAgentHelloRequest({ personName: " ", filesStillDownloading: false })).toContain(
+      "the person who created you cannot see this message",
+    );
+  });
+
+  const JOINED = { fromPersonUid: "agt_nova", body: "Nova (an agent) just joined Acme.", createdAt: "2026-10-02T13:50:42.000Z" };
+  const REQUEST = {
+    fromPersonUid: "prs_me",
+    body: buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: true }),
+    createdAt: "2026-10-02T13:53:50.000Z",
+  };
+  const HELLO = { fromPersonUid: "agt_nova", body: "Hi Stefan, I'm Nova.", createdAt: "2026-10-02T13:54:20.000Z" };
+
+  it("does not take the joined notice for the bot's first message", () => {
+    // The server posts "just joined" in the direct message the moment the bot
+    // is created, minutes before the bot can answer anything.
+    expect(agentHelloArrived([JOINED], { agentUid: "agt_nova", askedAtMs: Date.parse(REQUEST.createdAt) })).toBe(false);
+    expect(agentHelloArrived([REQUEST, JOINED], { agentUid: "agt_nova" })).toBe(false);
+  });
+
+  it("sees the first message once the bot wrote after the request", () => {
+    expect(agentHelloArrived([HELLO, REQUEST, JOINED], { agentUid: "agt_nova" })).toBe(true);
+  });
+
+  it("falls back to the time of asking when the page leaves the request out", () => {
+    const askedAtMs = Date.parse(REQUEST.createdAt);
+    expect(agentHelloArrived([HELLO, JOINED], { agentUid: "agt_nova", askedAtMs })).toBe(true);
+    expect(agentHelloArrived([HELLO, JOINED], { agentUid: "agt_nova" })).toBe(false);
+    expect(agentHelloArrived([HELLO, JOINED], { agentUid: "agt_other", askedAtMs })).toBe(false);
   });
 });

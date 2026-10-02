@@ -125,16 +125,40 @@ export interface WakingSidebarBot {
 }
 
 /**
- * Keeps a just-created bot visible before its server conversation reaches the
- * directory. The real directory row replaces this optimistic row by id.
+ * Keeps a just-created bot visible before its conversation reaches the
+ * directory. The bot's conversation is its direct message: the real directory
+ * row replaces this optimistic row by id. A channel an older server made for
+ * the bot is left out, because the person talks to the bot in the direct
+ * message and nowhere else.
  */
 export function withWakingBotRow(
   rows: readonly ConversationRow[],
   bot: WakingSidebarBot | null,
 ): ConversationRow[] {
-  if (!bot?.channelId) return [...rows];
-  const id = `ch:${bot.channelId}`;
+  if (!bot || (!bot.agentUid && !bot.channelId)) return [...rows];
   const wakingBot = { agentUid: bot.agentUid, progress: bot.progress };
+  if (bot.agentUid) {
+    const visible = bot.channelId
+      ? rows.filter((row) => row.channelId !== bot.channelId)
+      : [...rows];
+    const known = visible.find((row) => row.kind === "dm" && row.personUid === bot.agentUid);
+    if (known) {
+      return visible.map((row) => row === known ? { ...row, wakingBot } : row);
+    }
+    return [{
+      id: `dm:${bot.agentUid}`,
+      kind: "dm",
+      title: bot.name || "Your bot",
+      companyUid: null,
+      unreadDot: false,
+      lastActivityAt: bot.startedAt,
+      pinned: false,
+      personUid: bot.agentUid,
+      wakingBot,
+    }, ...visible];
+  }
+  // No bot id (a server that named only the channel): keep the channel row.
+  const id = `ch:${bot.channelId}`;
   const known = rows.find((row) => row.id === id);
   if (known) {
     return rows.map((row) => row.id === id ? { ...row, wakingBot } : row);
@@ -151,6 +175,49 @@ export function withWakingBotRow(
     channelScope: "company",
     wakingBot,
   }, ...rows];
+}
+
+export const BOT_SETUP_CHANNELS_STORAGE_KEY = "hq.chat.botSetupChannels.v1";
+
+/**
+ * Channels an older server created alongside a bot made in the new bot flow.
+ * The flow's conversation is the direct message, so these stay off the list.
+ */
+export function loadBotSetupChannels(
+  storage: Pick<Storage, "getItem"> | null | undefined,
+): string[] {
+  if (!storage) return [];
+  try {
+    const parsed = JSON.parse(storage.getItem(BOT_SETUP_CHANNELS_STORAGE_KEY) ?? "[]") as unknown;
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === "string" && v.length > 0) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function rememberBotSetupChannel(
+  channelIds: readonly string[],
+  channelId: string,
+  storage: Pick<Storage, "setItem"> | null | undefined,
+): string[] {
+  const id = channelId.trim();
+  if (!id || channelIds.includes(id)) return [...channelIds];
+  const next = [id, ...channelIds].slice(0, 200);
+  try {
+    storage?.setItem(BOT_SETUP_CHANNELS_STORAGE_KEY, JSON.stringify(next));
+  } catch {
+    // best-effort
+  }
+  return next;
+}
+
+export function withoutBotSetupChannels(
+  rows: readonly ConversationRow[],
+  channelIds: readonly string[],
+): ConversationRow[] {
+  if (channelIds.length === 0) return [...rows];
+  const hidden = new Set(channelIds);
+  return rows.filter((row) => !(row.channelId && hidden.has(row.channelId)));
 }
 
 /**

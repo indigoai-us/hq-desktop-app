@@ -146,6 +146,9 @@
     normalizeChannel,
     normalizeConversations,
     rememberRecentDm,
+    loadBotSetupChannels,
+    rememberBotSetupChannel,
+    withoutBotSetupChannels,
     resolveSearchHitRow,
     rowAvatar,
     saveConversationCache,
@@ -287,6 +290,10 @@
     /** Polls a just-created cloud bot while its waking screen is open. */
     loadAgentStatus?: ((agentUid: string, brain?: "grok" | "codex" | "claude") => Promise<unknown>) | null;
     retryAgent?: ((agentUid: string) => Promise<unknown>) | null;
+    /** Ask a new cloud bot, on the bot-only lane, to write its first message. */
+    sendBotHello?: ((session: WakingBotSession) => Promise<boolean>) | null;
+    /** True once that first message is in the direct message. */
+    checkBotHello?: ((session: WakingBotSession) => Promise<boolean>) | null;
     restartBrainApproval?: ((agentUid: string, brain: "grok" | "codex" | "claude") => Promise<unknown>) | null;
     submitClaudeLoginCode?: ((agentUid: string, code: string) => Promise<unknown>) | null;
     openExternal?: ((url: string) => void | Promise<void>) | null;
@@ -448,6 +455,8 @@
     oncreateagent = null,
     loadAgentStatus = null,
     retryAgent = null,
+    sendBotHello = null,
+    checkBotHello = null,
     restartBrainApproval = null,
     submitClaudeLoginCode = null,
     openExternal = null,
@@ -946,6 +955,7 @@
   });
 
   let wakingBot = $state<WakingBotSession | null>(null);
+  let botSetupChannels = $state<string[]>(loadBotSetupChannels(storage));
   const contactsWithUnreads = $derived(applyPairUnreads(contacts, pairUnreads));
 
   /**
@@ -1009,14 +1019,14 @@
   });
 
   const allRows = $derived(
-    withWakingBotRow(normalizeConversations(channelsWithSetup, contactsWithUnreads, {
+    withWakingBotRow(withoutBotSetupChannels(normalizeConversations(channelsWithSetup, contactsWithUnreads, {
       pinnedIds: pinsWithSetup,
       dmDots,
       recentDms,
       engagedAgentUids: engagedAgents,
       ownAgentUids,
       homeChannelIdByUid,
-    }), wakingBot),
+    }), botSetupChannels), wakingBot),
   );
 
   /**
@@ -1645,13 +1655,35 @@
 
   function beginWakingBot(session: WakingBotSession): void {
     wakingBot = session;
+    if (session.agentUid && session.channelId) {
+      botSetupChannels = rememberBotSetupChannel(botSetupChannels, session.channelId, storage);
+    }
   }
 
   function updateWakingBot(session: WakingBotSession | null): void {
     wakingBot = session;
   }
 
+  /** The bot can chat: take the person to their direct message with it. */
   function openWakingBotChat(session: WakingBotSession): void {
+    if (session.agentUid) {
+      const row: ConversationRow = allRows.find(
+        (candidate) => candidate.kind === "dm" && candidate.personUid === session.agentUid,
+      ) ?? {
+        id: `dm:${session.agentUid}`,
+        kind: "dm",
+        title: session.name,
+        companyUid: null,
+        unreadDot: false,
+        lastActivityAt: Date.now(),
+        pinned: false,
+        personUid: session.agentUid,
+      };
+      // The row still carries the waking marker for a moment; open the plain row.
+      const { wakingBot: _waking, ...plain } = row;
+      void openRow(plain);
+      return;
+    }
     const row = allRows.find((candidate) => candidate.channelId === session.channelId);
     if (row) {
       void openRow(row);
@@ -3823,6 +3855,8 @@
       {restartBrainApproval}
       {submitClaudeLoginCode}
       {openExternal}
+      sendHello={sendBotHello}
+      checkHello={checkBotHello}
       wakingSession={wakingBot}
       onwaking={beginWakingBot}
       onwakingchange={updateWakingBot}
@@ -3941,17 +3975,16 @@
         onclick={(e) => handleRowClick(row, e)}
         oncontextmenu={(e) => openContextMenu(row, e)}
       >
-        {#if row.kind === "channel"}
-          {#if row.wakingBot}
-            <span
-              class="chat-waking-ring"
-              data-testid="chat-waking-bot-ring"
-              style={`--chat-waking-progress: ${row.wakingBot.progress}%`}
-              aria-label={`${row.title} is waking up`}
-            >
-              <span>{initialsFor(row.title)}</span>
-            </span>
-          {:else}
+        {#if row.wakingBot}
+          <span
+            class="chat-waking-ring"
+            data-testid="chat-waking-bot-ring"
+            style={`--chat-waking-progress: ${row.wakingBot.progress}%`}
+            aria-label={`${row.title} is waking up`}
+          >
+            <span>{initialsFor(row.title)}</span>
+          </span>
+        {:else if row.kind === "channel"}
             <span class="chat-glyph-wrap" aria-hidden="true">
             {#if !hasChildren && isCompanyScopedRow(row)}
               <CompanyIcon iconUrl={rowCompanyIcon(row)} size={16} />
@@ -3966,7 +3999,6 @@
               ></span>
             {/if}
             </span>
-          {/if}
         {:else if row.kind === "group"}
           <span
             class="chat-avatar group"

@@ -778,6 +778,10 @@ export class WebPlatformAdapter implements PlatformAdapter {
         ...(extras?.attachments && extras.attachments.length > 0
           ? { attachments: extras.attachments }
           : {}),
+        ...(extras?.audience ? { audience: extras.audience } : {}),
+        ...(extras?.idempotencyKey?.trim()
+          ? { idempotencyKey: extras.idempotencyKey.trim() }
+          : {}),
       }),
     // Mirrors the Rust `build_compose_payload` contract: exactly one
     // recipient key travels (personUid wins when both are given), and the

@@ -2,7 +2,10 @@
   import { onMount } from "svelte";
   import {
     applyWakingStatus,
+    awaitingHello,
     recordWakingCheckFailure,
+    recordWakingHello,
+    recordWakingHelloAsked,
     WAKING_NUDGE_MS,
     WAKING_POLL_MS,
     wakingStatusLine,
@@ -24,6 +27,10 @@
     restartBrainApproval?: ((agentUid: string, brain: BrainProvider) => Promise<unknown>) | null;
     submitClaudeLoginCode?: ((agentUid: string, code: string) => Promise<unknown>) | null;
     openExternal?: ((url: string) => void | Promise<void>) | null;
+    /** Ask the bot, on the bot-only lane, to write its first message. Resolves true once sent. */
+    sendHello?: ((session: WakingBotSession) => Promise<boolean>) | null;
+    /** True once the bot's first message is in the direct message. */
+    checkHello?: ((session: WakingBotSession) => Promise<boolean>) | null;
     onupdate: (session: WakingBotSession) => void;
     onclose: () => void;
     onretry: () => void;
@@ -36,6 +43,8 @@
     restartBrainApproval = null,
     submitClaudeLoginCode = null,
     openExternal = null,
+    sendHello = null,
+    checkHello = null,
     onupdate,
     onclose,
     onretry,
@@ -89,6 +98,26 @@
     } catch {
       // The next interval asks again.
     }
+  }
+
+  /**
+   * The bot can chat. Ask it for its first message (once), then look for that
+   * message. A host that cannot do either hands the person over at once.
+   */
+  async function settleHello(current: WakingBotSession): Promise<WakingBotSession> {
+    if (!awaitingHello(current)) return current;
+    if (!sendHello || !checkHello || !current.agentUid) return recordWakingHello(current);
+    let next = current;
+    try {
+      if (next.helloAskedAt == null) {
+        if (!(await sendHello(next))) return next;
+        next = recordWakingHelloAsked(next);
+      }
+      if (await checkHello(next)) return recordWakingHello(next);
+    } catch {
+      // The next check asks again; the wait is bounded by the status check.
+    }
+    return next;
   }
 
   /** Coming back from the browser is the usual sign that the sign-in is done. */
@@ -222,13 +251,15 @@
         const result = await getStatus(checkedSession.agentUid, checkedSession.brain ?? undefined);
         if (stopped) return;
         const response = result as { ok?: unknown; value?: unknown };
-        const next = response && response.ok === true
+        let next = response && response.ok === true
           ? applyWakingStatus(checkedSession, response.value)
           : recordWakingCheckFailure(checkedSession);
-        if (next.phase === "ready") void clearCopiedCodexCode();
+        next = await settleHello(next);
+        if (stopped) return;
+        if (next.phase === "ready" || next.chatReadyAt != null) void clearCopiedCodexCode();
         if (checkedSession.approval && !next.approval) actionMessage = "";
         onupdate(next);
-        if (next.phase === "waking") void nudge();
+        if (next.phase === "waking" && next.chatReadyAt == null) void nudge();
       } catch {
         if (!stopped) onupdate(recordWakingCheckFailure(checkedSession));
       }

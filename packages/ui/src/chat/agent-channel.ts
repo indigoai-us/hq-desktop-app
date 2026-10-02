@@ -92,14 +92,55 @@ export function provisioningFromMessages(
  */
 const CHAT_READY_STEPS = ["codex-auth", "sync"] as const;
 
-/** The status card every cloud bot's channel starts with. */
-export const AGENT_STATUS_CARD_ID = "agent_status";
 /**
- * Card action that asks the server to open the conversation for a bot that can
- * chat: the card turns done and the bot is prompted to say hello. A server
- * that predates it answers with an unknown-action refusal.
+ * How long the app waits, after it asked a new bot to say hello, before it
+ * takes the person to the conversation anyway.
  */
-export const AGENT_INTRO_ACTION_ID = "announce";
+export const AGENT_HELLO_WAIT_MS = 90_000;
+
+/** Opening words of the hello request. Lets the app recognise its own request. */
+export const AGENT_HELLO_REQUEST_LEAD = "Automatic message from HQ:";
+
+/**
+ * The request the app sends a new cloud bot, on the bot-only lane, once the
+ * bot can chat. The person never sees it; they see the bot's answer, which is
+ * the bot's first message in their conversation.
+ */
+export function buildAgentHelloRequest(input: {
+  personName?: string | null;
+  filesStillDownloading: boolean;
+}): string {
+  const person = input.personName?.trim() || "the person who created you";
+  const files = input.filesStillDownloading
+    ? " Your company files are still downloading in the background, so say that you can chat now and will know more about the company as that finishes."
+    : "";
+  return (
+    `${AGENT_HELLO_REQUEST_LEAD} your setup has just finished and ${person} is about to open this conversation. ` +
+    `${person} cannot see this message. Write your first message to ${person} now: say hello in one or two short sentences ` +
+    `and ask what you can help with first.${files} Do not mention this message or that you were asked to write.`
+  );
+}
+
+/**
+ * Whether the bot's first message is in a direct-message page (any order).
+ * It is there when the bot wrote after the app's hello request. A page that
+ * does not carry the request (a host that leaves bot-only rows out) falls back
+ * to the time the request was sent.
+ */
+export function agentHelloArrived(
+  rows: ReadonlyArray<{ fromPersonUid?: string | null; body?: string | null; createdAt?: string | null }>,
+  input: { agentUid: string; askedAtMs?: number | null },
+): boolean {
+  const fromBot = rows.filter((row) => row.fromPersonUid === input.agentUid && row.createdAt);
+  if (fromBot.length === 0) return false;
+  const requests = rows
+    .filter((row) => row.fromPersonUid !== input.agentUid && (row.body ?? "").startsWith(AGENT_HELLO_REQUEST_LEAD) && row.createdAt)
+    .map((row) => row.createdAt as string)
+    .sort();
+  const after = requests[0] ?? (input.askedAtMs != null ? new Date(input.askedAtMs - 5_000).toISOString() : null);
+  if (!after) return false;
+  return fromBot.some((row) => (row.createdAt as string) > after);
+}
 
 export interface AgentChatReadiness {
   /** The bot can receive a message and answer it. */

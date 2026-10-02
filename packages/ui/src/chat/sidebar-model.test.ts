@@ -62,6 +62,9 @@ import {
   titlebarDayDate,
   togglePin,
   withWakingBotRow,
+  loadBotSetupChannels,
+  rememberBotSetupChannel,
+  withoutBotSetupChannels,
   type ConversationRow,
   type GroupedConversations,
   type DmContactInput,
@@ -172,22 +175,66 @@ describe("isStrictlyRicherConversationRow", () => {
 });
 
 describe("withWakingBotRow", () => {
-  it("keeps a newly created bot visible until the directory catches up", () => {
-    const rows = withWakingBotRow([], {
-      agentUid: "agt_nova",
-      channelId: "chn_nova",
-      companyUid: "cmp_acme",
-      name: "Nova",
-      startedAt: NOW,
-      progress: 42,
-    });
+  const BOT = {
+    agentUid: "agt_nova",
+    channelId: "chn_nova",
+    companyUid: "cmp_acme",
+    name: "Nova",
+    startedAt: NOW,
+    progress: 42,
+  };
+
+  it("keeps a newly created bot visible as a direct message until the directory catches up", () => {
+    // Regression (owner walkthrough 2026-10-02): the new bot showed up as a
+    // "team channel". Its conversation is a direct message.
+    const rows = withWakingBotRow([], BOT);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
-      id: "ch:chn_nova",
+      id: "dm:agt_nova",
+      kind: "dm",
       title: "Nova",
-      channelId: "chn_nova",
+      personUid: "agt_nova",
       wakingBot: { agentUid: "agt_nova", progress: 42 },
     });
+    expect(rows[0]?.channelId).toBeUndefined();
+  });
+
+  it("marks the bot's own direct-message row and leaves out a channel an older server made for it", () => {
+    const botDm = normalizeDm(dm({ personUid: "agt_nova", displayName: "Nova" }));
+    const leftover = normalizeChannel(channel({ channelId: "chn_nova", name: "Nova" }));
+    const other = normalizeChannel(channel({ channelId: "chn_other", name: "#launch" }));
+    const rows = withWakingBotRow([leftover, botDm, other], BOT);
+    expect(rows.map((row) => row.id)).toEqual(["dm:agt_nova", "ch:chn_other"]);
+    expect(rows[0]?.wakingBot).toEqual({ agentUid: "agt_nova", progress: 42 });
+  });
+
+  it("falls back to the channel row only when the server named no bot", () => {
+    const rows = withWakingBotRow([], { ...BOT, agentUid: "" });
+    expect(rows[0]).toMatchObject({ id: "ch:chn_nova", kind: "channel" });
+  });
+});
+
+describe("bot setup channels", () => {
+  it("keeps channels an older server made for a new bot off the list, across restarts", () => {
+    const store = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => { store.set(key, value); },
+    };
+    const remembered = rememberBotSetupChannel([], "chn_nova", storage);
+    expect(rememberBotSetupChannel(remembered, "chn_nova", storage)).toEqual(["chn_nova"]);
+    expect(loadBotSetupChannels(storage)).toEqual(["chn_nova"]);
+
+    const leftover = normalizeChannel(channel({ channelId: "chn_nova", name: "Nova" }));
+    const other = normalizeChannel(channel({ channelId: "chn_other", name: "#launch" }));
+    expect(withoutBotSetupChannels([leftover, other], loadBotSetupChannels(storage)).map((row) => row.id))
+      .toEqual(["ch:chn_other"]);
+    expect(withoutBotSetupChannels([leftover, other], [])).toHaveLength(2);
+  });
+
+  it("reads a damaged list as empty", () => {
+    expect(loadBotSetupChannels({ getItem: () => "{not json" })).toEqual([]);
+    expect(loadBotSetupChannels(null)).toEqual([]);
   });
 });
 

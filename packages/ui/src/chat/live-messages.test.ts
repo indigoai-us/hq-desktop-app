@@ -479,3 +479,42 @@ describe("sentMessageFromResult", () => {
     );
   });
 });
+
+describe("a one-to-one conversation with a bot", () => {
+  // Regression (owner walkthrough 2026-10-02): a hosted bot answers each
+  // message as a thread reply, so its answer sat under "1 reply". "See how
+  // sheister replies in a DM? That's the flow we want."
+  const PAGE = {
+    messages: [
+      { eventId: "e4", fromPersonUid: "agt_nova", body: "Here now.", createdAt: "2026-10-02T13:55:10.000Z", rootEventId: "e3" },
+      { eventId: "e3", fromPersonUid: "prs_me", body: "Hello?", createdAt: "2026-10-02T13:54:50.000Z", replyCount: 1 },
+      { eventId: "e2", fromPersonUid: "agt_nova", body: "Hi, I'm Nova.", createdAt: "2026-10-02T13:54:20.000Z", rootEventId: "e1" },
+      { eventId: "e1", fromPersonUid: "prs_me", body: "Automatic message from HQ: ...", createdAt: "2026-10-02T13:53:50.000Z", audience: "agent", replyCount: 1 },
+      { eventId: "e0", fromPersonUid: "agt_nova", body: "Nova just joined.", createdAt: "2026-10-02T13:50:42.000Z" },
+    ],
+  };
+
+  it("shows the bot's replies in line, in time order, with no reply counts", () => {
+    const rows = messagesForDisplay(PAGE, { inlineReplies: true });
+    expect(rows.map((row) => row.eventId)).toEqual(["e0", "e2", "e3", "e4"]);
+    expect(rows.every((row) => row.rootEventId === undefined && row.replyCount === undefined)).toBe(true);
+  });
+
+  it("leaves out rows written for the bot only", () => {
+    const rows = messagesForDisplay(PAGE, { inlineReplies: true });
+    expect(rows.some((row) => row.eventId === "e1")).toBe(false);
+  });
+
+  it("keeps threads tucked under their root everywhere else", () => {
+    const rows = messagesForDisplay(PAGE);
+    expect(rows.map((row) => row.eventId)).toEqual(["e0", "e1", "e3"]);
+    expect(rows.find((row) => row.eventId === "e3")?.replyCount).toBe(1);
+  });
+
+  it("merges a later page without dropping the replies already shown", () => {
+    const first = messagesForDisplay({ messages: PAGE.messages.slice(2) }, { inlineReplies: true });
+    const merged = mergeFetchedTimeline(first, PAGE, { inlineReplies: true });
+    expect(merged.map((row) => row.eventId)).toEqual(["e0", "e2", "e3", "e4"]);
+    expect(mergeFetchedTimeline(merged, PAGE, { inlineReplies: true })).toBe(merged);
+  });
+});

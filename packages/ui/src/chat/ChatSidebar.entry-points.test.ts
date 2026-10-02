@@ -18,6 +18,7 @@ import { createFixtureChatSidebarApi } from "../shell/fixtures.js";
 import type { Workspace } from "./workspaces.js";
 import type { EntryPointResult } from "./lifecycle-entry-points.js";
 import { takePendingChannelOpen } from "./open-target.js";
+import { takePendingConversation } from "./pending-conversation.js";
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -293,8 +294,11 @@ describe("ChatSidebar lifecycle entry points", () => {
     await settle();
     expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
 
+    // The bot's row is its direct message, and the channel an older server
+    // made for it never shows.
+    expect(q('[data-conversation-id="ch:chn_nova"]')).toBeNull();
     const sidebarBot = q<HTMLButtonElement>(
-      '[data-conversation-id="ch:chn_nova"]',
+      '[data-conversation-id="dm:agt_nova"]',
     );
     const sidebarRing = q<HTMLElement>('[data-testid="chat-waking-bot-ring"]');
     expect(sidebarBot?.textContent).toContain("Nova");
@@ -312,7 +316,10 @@ describe("ChatSidebar lifecycle entry points", () => {
     ).toBe("8");
   });
 
-  it("opens a ready bot chat after the live handoff when no real directory row exists yet", async () => {
+  it("opens the bot's direct message after the live handoff, never a channel", async () => {
+    // Regression (owner walkthrough 2026-10-02): the hand-off landed in a
+    // "team channel" where the bot answered in threads. "See how sheister
+    // replies in a DM? That's the flow we want."
     vi.useFakeTimers();
     try {
       const oncreateagent = vi.fn(
@@ -352,11 +359,11 @@ describe("ChatSidebar lifecycle entry points", () => {
       await vi.advanceTimersByTimeAsync(350);
       await settle();
 
-      expect(takePendingChannelOpen()).toMatchObject({
-        channelId: "chn_nova",
-        title: "Nova",
-        companyUid: "cmp_indigo",
+      expect(takePendingConversation()).toMatchObject({
+        personUid: "agt_nova",
+        displayName: "Nova",
       });
+      expect(takePendingChannelOpen()?.channelId).not.toBe("chn_nova");
       expect(q('[data-testid="new-bot-waking-screen"]')).toBeNull();
     } finally {
       vi.useRealTimers();

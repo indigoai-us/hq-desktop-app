@@ -290,4 +290,86 @@ describe("NewBotWakingScreen", () => {
     await settle();
     expect(restartBrainApproval).toHaveBeenCalledWith("agt_nova", "grok");
   });
+  describe("the bot's first message", () => {
+    const CHAT_READY = {
+      ok: true,
+      value: {
+        setupState: {
+          phase: "waiting",
+          steps: [
+            { name: "codex-auth", status: "done" },
+            { name: "sync", status: "done" },
+            { name: "audit", status: "waiting" },
+          ],
+        },
+      },
+    };
+
+    it("asks the bot for its first message and holds the person until it is there", async () => {
+      // Regression (owner walkthrough 2026-10-02): the person was taken to the
+      // conversation, wrote twice, and got no answer.
+      const sendHello = vi.fn(async (_session: { agentUid: string }) => true);
+      const checkHello = vi.fn(async () => false);
+      const { onupdate, retryAgent } = render(undefined, { getStatus: async () => CHAT_READY, sendHello, checkHello });
+      await settle();
+      await settle();
+      expect(sendHello).toHaveBeenCalledTimes(1);
+      expect(sendHello.mock.calls[0]?.[0]).toMatchObject({ agentUid: "agt_nova" });
+      const last = onupdate.mock.calls.at(-1)?.[0];
+      expect(last.phase).toBe("waking");
+      expect(last.chatReadyAt).toEqual(expect.any(Number));
+      expect(last.helloAskedAt).toEqual(expect.any(Number));
+      // Setup is past the point a re-check helps; the wait is for the bot now.
+      expect(retryAgent).not.toHaveBeenCalled();
+    });
+
+    it("hands over as soon as the first message is seen, without asking twice", async () => {
+      const asked = {
+        ...beginWakingSession({ agentUid: "agt_nova", channelId: "", companyUid: "cmp_acme", name: "Nova", now: Date.now() - 200_000 }),
+        chatReadyAt: Date.now() - 20_000,
+        helloAskedAt: Date.now() - 19_000,
+      };
+      const sendHello = vi.fn(async () => true);
+      const checkHello = vi.fn(async () => true);
+      const { onupdate } = render(asked, { getStatus: async () => CHAT_READY, sendHello, checkHello });
+      await settle();
+      await settle();
+      expect(sendHello).not.toHaveBeenCalled();
+      expect(checkHello).toHaveBeenCalledTimes(1);
+      expect(onupdate.mock.calls.at(-1)?.[0]).toMatchObject({ phase: "ready", progress: 100 });
+    });
+
+    it("asks again on the next check when the request could not be sent", async () => {
+      const sendHello = vi.fn(async () => false);
+      const checkHello = vi.fn(async () => false);
+      const { onupdate } = render(undefined, { getStatus: async () => CHAT_READY, sendHello, checkHello });
+      await settle();
+      await settle();
+      const last = onupdate.mock.calls.at(-1)?.[0];
+      expect(last.phase).toBe("waking");
+      expect(last.helloAskedAt ?? null).toBeNull();
+      expect(checkHello).not.toHaveBeenCalled();
+    });
+
+    it("hands over at once on a host that cannot ask for a first message", async () => {
+      const { onupdate } = render(undefined, { getStatus: async () => CHAT_READY });
+      await settle();
+      await settle();
+      expect(onupdate.mock.calls.at(-1)?.[0]).toMatchObject({ phase: "ready" });
+    });
+
+    it("says the bot is writing while it waits", async () => {
+      const waiting = {
+        ...beginWakingSession({ agentUid: "agt_nova", channelId: "", companyUid: "cmp_acme", name: "Nova", now: Date.now() - 200_000 }),
+        signedInAt: Date.now() - 30_000,
+        chatReadyAt: Date.now() - 5_000,
+      };
+      render(waiting, { getStatus: async () => CHAT_READY, sendHello: async () => true, checkHello: async () => false });
+      await settle();
+      expect(document.querySelector('[data-testid="new-bot-waking-status"]')?.textContent).toBe(
+        "Almost there. Nova is writing its first message to you.",
+      );
+      expect(document.querySelector('[data-testid="new-bot-approval"]')).toBeNull();
+    });
+  });
 });

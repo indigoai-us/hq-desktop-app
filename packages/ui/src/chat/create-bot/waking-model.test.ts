@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import {
   applyWakingStatus,
+  awaitingHello,
   beginWakingSession,
   recordWakingCheckFailure,
+  recordWakingHello,
+  recordWakingHelloAsked,
   resumeWakingSession,
   US001_MEDIAN_WAKING_ESTIMATE_MS,
   WAKING_ESTIMATE_MS,
@@ -62,25 +65,58 @@ describe("waking model", () => {
     expect(signedIn.progress).toBeLessThan(100);
   });
 
-  it("hands off to chat once the bot is signed in and its computer has checked in", () => {
+  const CHAT_READY = {
+    setupState: {
+      phase: "waiting",
+      steps: [
+        { name: "codex-auth", status: "done" },
+        { name: "sync", status: "done" },
+        { name: "channels", status: "done" },
+        { name: "audit", status: "waiting" },
+        { name: "runtime-install", status: "pending" },
+      ],
+    },
+  };
+
+  it("does not wait for the company file download before the bot can talk", () => {
     // Regression (owner, 2026-10-02): "The goal of this is speed to live."
     // The final check waits on the company file download, which the server
     // runs in the background; the waking screen must not wait for it.
-    const live = applyWakingStatus(session(), {
-      setupState: {
-        phase: "waiting",
-        steps: [
-          { name: "codex-auth", status: "done" },
-          { name: "sync", status: "done" },
-          { name: "channels", status: "done" },
-          { name: "audit", status: "waiting" },
-          { name: "runtime-install", status: "pending" },
-        ],
-      },
-    }, STARTED + 300_000);
-    expect(live.phase).toBe("ready");
-    expect(live.progress).toBe(100);
-    expect(wakingStatusLine(live, STARTED + 300_000)).toBe("Nova is live. Opening chat…");
+    const canChat = applyWakingStatus(session(), CHAT_READY, STARTED + 190_000);
+    expect(canChat.chatReadyAt).toBe(STARTED + 190_000);
+    expect(awaitingHello(canChat)).toBe(true);
+    expect(canChat.approval).toBeNull();
+  });
+
+  it("takes the person to chat only once the bot's first message is there", () => {
+    // Regression (owner walkthrough 2026-10-02): the person was taken to the
+    // conversation, wrote twice, and the bot did not answer. "The new bot
+    // needs to be able to reply immediately ... once we take the user there."
+    const canChat = applyWakingStatus(session(), CHAT_READY, STARTED + 190_000);
+    expect(canChat.phase).toBe("waking");
+    expect(canChat.progress).toBeLessThan(100);
+    expect(wakingStatusLine(canChat, STARTED + 190_000)).toBe(
+      "Almost there. Nova is writing its first message to you.",
+    );
+
+    const asked = recordWakingHelloAsked(canChat, STARTED + 191_000);
+    const still = applyWakingStatus(asked, CHAT_READY, STARTED + 220_000);
+    expect(still.phase).toBe("waking");
+    expect(still.helloAskedAt).toBe(STARTED + 191_000);
+
+    const spoke = recordWakingHello(still, STARTED + 225_000);
+    expect(spoke.phase).toBe("ready");
+    expect(spoke.progress).toBe(100);
+    expect(wakingStatusLine(spoke, STARTED + 225_000)).toBe("Nova is live. Opening chat…");
+  });
+
+  it("stops holding for the first message after a bounded wait", () => {
+    const canChat = applyWakingStatus(session(), CHAT_READY, STARTED + 190_000);
+    const before = applyWakingStatus(canChat, CHAT_READY, STARTED + 190_000 + 89_000);
+    const after = applyWakingStatus(canChat, CHAT_READY, STARTED + 190_000 + 90_000);
+    expect(before.phase).toBe("waking");
+    expect(after.phase).toBe("ready");
+    expect(after.progress).toBe(100);
   });
 
   it("does not claim a sign-in the person never did", () => {
@@ -114,10 +150,12 @@ describe("waking model", () => {
     expect(wakingStatusLine(failed)).toBe("We couldn't start this bot.");
   });
 
-  it("marks the ring complete only after the status says ready", () => {
+  it("marks the ring complete only once the bot is ready and has spoken", () => {
     const waiting = applyWakingStatus(session(), { setupState: { phase: "creating" } }, STARTED + 20_000);
-    const ready = applyWakingStatus(waiting, { setupState: { phase: "ready" } }, STARTED + 30_000);
+    const canChat = applyWakingStatus(waiting, { setupState: { phase: "ready" } }, STARTED + 30_000);
+    const ready = recordWakingHello(canChat, STARTED + 40_000);
     expect(waiting.progress).toBeLessThan(100);
+    expect(canChat.progress).toBeLessThan(100);
     expect(ready.progress).toBe(100);
   });
 
@@ -135,7 +173,8 @@ describe("waking model", () => {
   });
 
   it("resumes the exact same bot after retrying", () => {
-    const retried = resumeWakingSession({ ...session(), phase: "failed" }, STARTED + 10_000);
+    const retried = resumeWakingSession({ ...session(), phase: "failed", chatReadyAt: STARTED + 5_000 }, STARTED + 10_000);
+    expect(retried.chatReadyAt).toBeNull();
     expect(retried).toMatchObject({ agentUid: "agt_nova", channelId: "chn_nova", phase: "waking", consecutiveCheckFailures: 0 });
   });
 });

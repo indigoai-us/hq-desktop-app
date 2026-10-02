@@ -137,6 +137,7 @@ describe("runCreateCloudBotEntry", () => {
         size: "basic",
         authMode: "subscription",
         deferChannels: "true",
+        conversation: "dm",
       },
     });
     expect(logToFile).not.toHaveBeenCalled();
@@ -173,7 +174,7 @@ describe("runCreateCloudBotEntry", () => {
     await runCreateCloudBotEntry(api, "cmp_acme", { ...DRAFT, title: "Analyst" });
     const sent = runCardAction.mock.calls[0]![0] as { values: Record<string, string> };
     expect(Object.keys(sent.values).sort()).toEqual(
-      ["authMode", "deferChannels", "handle", "name", "runtime", "size"].sort(),
+      ["authMode", "conversation", "deferChannels", "handle", "name", "runtime", "size"].sort(),
     );
   });
 
@@ -184,6 +185,18 @@ describe("runCreateCloudBotEntry", () => {
     const result = await runCreateCloudBotEntry(api, "cmp_acme", DRAFT);
     expect(result.ok).toBe(true);
     expect(runCardAction).toHaveBeenCalledTimes(1);
+  });
+
+  it("succeeds when the server made no channel for the bot: the conversation is the direct message", async () => {
+    // Owner, 2026-10-02: a new bot must not come with a team channel.
+    const h = harness({
+      created: { cardId: "create_agent", actionId: "create", state: "done", agentUid: "agt_polar" },
+    });
+    const result = await runCreateCloudBotEntry(h.api, "cmp_acme", DRAFT);
+    expect(result).toEqual({
+      ok: true,
+      target: { channelId: "", cardId: null, cardKind: null, agentUid: "agt_polar" },
+    });
   });
 
   it("reports and logs when the server names no channel or card", async () => {

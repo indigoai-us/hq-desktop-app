@@ -747,6 +747,16 @@ export interface MessagingApi {
         sizeBytes: number;
         kind: "image" | "file";
       }>;
+      /**
+       * Message lane. "agent" is for the bot only: no notification, and
+       * conversation views leave it out for the person. Default: the server's.
+       */
+      audience?: "human" | "agent" | "both";
+      /**
+       * Bot recipients only. The server delivers one message per key, so a
+       * request the app may repeat reaches the bot once.
+       */
+      idempotencyKey?: string;
     },
   ): AdapterPromise<Json>;
   /**

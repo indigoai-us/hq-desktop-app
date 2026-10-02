@@ -8,7 +8,7 @@
  */
 
 import { brainApprovalFromStatus, type BrainApproval, type BrainProvider } from "./bot-brain-approval.js";
-import { agentChatReadiness } from "../agent-channel.js";
+import { AGENT_HELLO_WAIT_MS, agentChatReadiness } from "../agent-channel.js";
 
 /**
  * US-001 recorded median create-to-audit time, measured 2026-10-01. Kept as a
@@ -62,6 +62,18 @@ export interface WakingBotSession {
   /** True once this session has asked the person to approve the brain. */
   askedApproval?: boolean;
   finishEstimateMs?: number;
+  /** When the bot's setup first said it can chat. */
+  chatReadyAt?: number | null;
+  /** When the app asked the bot to say hello in the direct message. */
+  helloAskedAt?: number | null;
+  /** When the bot's first message was seen. The person is taken to chat then. */
+  helloAt?: number | null;
+  /** Fixtures can shorten how long the screen waits for the first message. */
+  helloWaitMs?: number;
+}
+
+function helloWait(session: WakingBotSession): number {
+  return Math.max(0, session.helloWaitMs ?? AGENT_HELLO_WAIT_MS);
 }
 
 /**
@@ -88,6 +100,7 @@ function finishEstimate(session: WakingBotSession): number {
  * (60 to 94). 100 is reserved for a status that says the bot is ready.
  */
 function stageProgress(session: WakingBotSession, now: number): number {
+  if (session.chatReadyAt != null) return 96;
   if (session.signedInAt != null) {
     const elapsed = Math.max(0, now - session.signedInAt);
     return 60 + Math.min(34, Math.round((elapsed / finishEstimate(session)) * 34));
@@ -107,15 +120,20 @@ function text(value: unknown): string {
 }
 
 /**
- * "ready" here means the bot can chat, not that every setup step is finished.
- * The company file download can run for many minutes after the sign-in; the
- * server does that in the background and the person should be talking to the
- * bot meanwhile.
+ * What the bot's own setup status says. "ready" here means the bot can chat,
+ * not that every setup step is finished. The company file download can run
+ * for many minutes after the sign-in; the server does that in the background
+ * and the person should be talking to the bot meanwhile.
  */
 function phaseFromStatus(payload: unknown): WakingPhase {
   const readiness = agentChatReadiness(payload);
   if (readiness.failed) return "failed";
   return readiness.chatReady ? "ready" : "waking";
+}
+
+/** True while the screen holds for the bot's first message. */
+export function awaitingHello(session: WakingBotSession): boolean {
+  return session.phase === "waking" && session.chatReadyAt != null && session.helloAt == null;
 }
 
 export function wakingProgress(
@@ -163,11 +181,22 @@ export function applyWakingStatus(
   payload: unknown,
   now: number = Date.now(),
 ): WakingBotSession {
-  const phase = phaseFromStatus(payload);
+  const statusPhase = phaseFromStatus(payload);
   const stepDone = signInStepDone(payload);
   let signedInAt = session.signedInAt ?? null;
-  let approval = phase === "waking" ? brainApprovalFromStatus(payload) : null;
-  if (phase === "waking") {
+  let chatReadyAt = session.chatReadyAt ?? null;
+  let phase = statusPhase;
+  if (statusPhase === "ready") {
+    chatReadyAt ??= now;
+    signedInAt ??= now;
+    // A bot that can chat has not yet shown that it answers. The person is
+    // taken to the conversation once its first message is there, or after a
+    // bounded wait so a slow first answer never strands them here.
+    const spoke = session.helloAt != null;
+    if (!spoke && now - chatReadyAt < helloWait(session)) phase = "waking";
+  }
+  let approval = statusPhase === "waking" ? brainApprovalFromStatus(payload) : null;
+  if (statusPhase === "waking") {
     if (stepDone === true) {
       approval = null;
       signedInAt ??= now;
@@ -189,10 +218,36 @@ export function applyWakingStatus(
     approval,
     approvalSince: approval ? session.approvalSince ?? now : null,
     signedInAt,
+    chatReadyAt,
     askedApproval: session.askedApproval === true || session.approval !== null || approval !== null,
     consecutiveCheckFailures: 0,
   };
   return { ...next, progress: phase === "ready" ? 100 : stageProgress(next, now) };
+}
+
+/** The app has sent the bot its request to say hello. */
+export function recordWakingHelloAsked(
+  session: WakingBotSession,
+  now: number = Date.now(),
+): WakingBotSession {
+  return { ...session, helloAskedAt: session.helloAskedAt ?? now };
+}
+
+/** The bot's first message is in the conversation: hand the person over. */
+export function recordWakingHello(
+  session: WakingBotSession,
+  now: number = Date.now(),
+): WakingBotSession {
+  return {
+    ...session,
+    chatReadyAt: session.chatReadyAt ?? now,
+    helloAt: session.helloAt ?? now,
+    phase: "ready",
+    approval: null,
+    approvalSince: null,
+    progress: 100,
+    consecutiveCheckFailures: 0,
+  };
 }
 
 export function recordWakingCheckFailure(
@@ -216,6 +271,7 @@ export function wakingStatusLine(
   if (session.consecutiveCheckFailures >= WAKING_RECONNECT_AFTER_FAILURES) {
     return "Reconnecting. Your bot is still waking up.";
   }
+  if (session.chatReadyAt != null) return `Almost there. ${session.name} is writing its first message to you.`;
   const signedIn = session.signedInAt != null;
   const since = signedIn ? session.signedInAt! : session.startedAt;
   const estimateMs = signedIn ? finishEstimate(session) : session.estimateMs;
@@ -243,5 +299,6 @@ export function resumeWakingSession(
     consecutiveCheckFailures: 0,
     approvalSince: null,
     signedInAt: session.signedInAt != null ? now : null,
+    chatReadyAt: null,
   };
 }

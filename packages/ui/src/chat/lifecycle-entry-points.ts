@@ -399,6 +399,9 @@ export async function runCreateCloudBotEntry(
     size,
     authMode,
     deferChannels: "true",
+    // The person talks to the bot in a direct message. A server that knows
+    // this value makes no channel for the bot; an older one ignores it.
+    conversation: "dm",
     ...(authMode === "apiKey" && draft.apiKey ? { apiKey: draft.apiKey } : {}),
   };
 
@@ -420,10 +423,12 @@ export async function runCreateCloudBotEntry(
   }
 
   const agentChannelId = trimmed(result.agentChannelId);
-  if (agentChannelId) {
-    // The bot exists and has its own channel. Its uid rides along when the
-    // server named one, so the caller can finish the profile.
-    const agentUid = trimmed(result.agentUid);
+  const createdAgentUid = trimmed(result.agentUid);
+  if (agentChannelId || createdAgentUid) {
+    // The bot exists. Its uid rides along so the caller can finish the profile
+    // and open the direct message. An older server also made a channel for the
+    // bot; its id is kept so the app can leave that channel out of the list.
+    const agentUid = createdAgentUid;
     return {
       ok: true,
       target: {
