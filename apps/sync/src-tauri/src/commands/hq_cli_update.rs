@@ -109,6 +109,7 @@ pub use hq_desktop_core::hq_cli_update::{
     report_install_failure_episode, report_install_failure_with_environment,
     report_install_failure_with_final_attempt, report_non_convergent_install,
     report_non_convergent_marker_unpersisted, report_npm_cache_setup_failure,
+    report_package_use_lease_timeout,
     report_registry_serving_lag_marker_unpersisted, report_unreadable_version, resolved_hq_version,
     should_auto_install, should_report_unreadable_version,
     should_retry_windows_busy_install_target, suppress_for_dismissal,
@@ -1266,7 +1267,16 @@ async fn acquire_cli_package_update_lease(
     let process_guard = crate::commands::process::close_cli_process_admission_for_update()?;
 
     let remaining = remaining_cli_package_use_lease_budget(started.elapsed());
-    let package_guard = request.wait(remaining).await?;
+    let package_guard = match request.wait(remaining).await {
+        Err(error)
+            if error
+                == hq_desktop_core::package_use_lease::PACKAGE_USE_LEASE_TIMEOUT_ERROR =>
+        {
+            report_package_use_lease_timeout();
+            return Err(error);
+        }
+        result => result?,
+    };
     Ok((package_guard, process_guard))
 }
 

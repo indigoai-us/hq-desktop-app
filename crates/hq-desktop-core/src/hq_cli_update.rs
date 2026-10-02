@@ -8485,6 +8485,30 @@ pub fn report_npm_cache_setup_failure(category: &'static str) {
     );
 }
 
+/// Report a bounded timeout while waiting for active HQ CLI processes to
+/// release the package-use lease. The fixed message, tag, and fingerprint
+/// intentionally exclude local paths and process details.
+pub fn report_package_use_lease_timeout() {
+    sentry::with_scope(
+        |scope| {
+            scope.set_tag("hq_cli_update_kind", "install-failed");
+            scope.set_tag("install_failure_kind", "package_use_lease_timeout");
+            scope.set_tag("hq_cli_update_stage", "package_use_lease_timeout");
+            scope.set_fingerprint(Some(&[
+                "hq-cli-update",
+                "install-failed",
+                "package_use_lease_timeout",
+            ]));
+        },
+        || {
+            sentry::capture_message(
+                "[hq-cli-update] timed out waiting for active HQ CLI package use",
+                sentry::Level::Error,
+            );
+        },
+    );
+}
+
 /// Derive the npm global prefix from the exact `hq` binary the app resolved.
 ///
 /// Unix npm uses `<prefix>/bin/hq`; Windows npm writes `<prefix>\hq.cmd`.
@@ -9429,6 +9453,34 @@ mod tests {
         std::fs::write(&npm, "fixture").unwrap();
         let hq = prefix_hq_shim_path(&prefix).to_string_lossy().into_owned();
         (temp, prefix.to_string_lossy().into_owned(), hq)
+    }
+
+    #[test]
+    fn package_use_lease_timeout_report_has_fixed_tag_and_no_paths() {
+        let events = sentry::test::with_captured_events(report_package_use_lease_timeout);
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+        assert_eq!(event.level, sentry::Level::Error);
+        assert_eq!(
+            event.tags["install_failure_kind"],
+            "package_use_lease_timeout"
+        );
+        assert_eq!(
+            event.tags["hq_cli_update_stage"],
+            "package_use_lease_timeout"
+        );
+        let fingerprint: Vec<&str> = event.fingerprint.iter().map(|part| part.as_ref()).collect();
+        assert_eq!(
+            fingerprint,
+            vec![
+                "hq-cli-update",
+                "install-failed",
+                "package_use_lease_timeout"
+            ]
+        );
+        let message = event.message.as_deref().expect("static event message");
+        assert!(!message.contains('/') && !message.contains('\\'));
+        assert!(event.extra.is_empty());
     }
 
     #[test]

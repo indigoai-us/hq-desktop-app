@@ -15,6 +15,8 @@ use sha2::{Digest, Sha256};
 const STATE_SUBDIR: &str = "hq-cli/package-use";
 const WINDOWS_STATE_SUBDIR: &str = "hq-cli/state/package-use";
 const UPDATE_REQUEST_NAME: &str = "update.pending.json";
+pub const PACKAGE_USE_LEASE_TIMEOUT_ERROR: &str =
+    "The HQ CLI is still running. Close active HQ CLI work and retry the update; npm was not started.";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PackageUseLeasePaths {
@@ -363,7 +365,7 @@ impl PackageUseUpdateRequest {
                 return Ok(guard);
             }
             if started.elapsed() >= timeout {
-                return Err("The HQ CLI is still running. Close active HQ CLI work and retry the update; npm was not started.".to_string());
+                return Err(PACKAGE_USE_LEASE_TIMEOUT_ERROR.to_string());
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
