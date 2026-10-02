@@ -152,6 +152,25 @@ describe('a manual sign-in invalidates anything continuation is holding', () => 
   });
 });
 
+describe('Microsoft work accounts are not sent to MicrosoftPersonal', () => {
+  it('resolves the Cognito provider through hq-pro instead of a static personal mapping', () => {
+    const start = rustFunction(oauth, 'start_oauth_login');
+    const resolve = rustFunction(oauth, 'resolve_identity_provider');
+    expect(start).toContain('email: Option<String>');
+    expect(start).toContain('resolve_identity_provider');
+    expect(start).not.toContain('MicrosoftPersonal');
+    expect(resolve).toContain('identity_provider_for_sign_in');
+    expect(oauth).not.toContain('cognito_identity_provider');
+  });
+
+  it('asks for an email on both sign-in surfaces before starting Microsoft OAuth', () => {
+    expect(signInPrompt).toContain("provider === 'Microsoft' && microsoftEmail.trim() === ''");
+    expect(onboardingWizard).toContain("provider === 'Microsoft' && microsoftEmail.trim() === ''");
+    expect(signInPrompt).toContain('data-testid="microsoft-email"');
+    expect(onboardingWizard).toContain('data-testid="microsoft-email"');
+  });
+});
+
 describe('the first-run wizard never opens the browser on its own', () => {
   it('imports none of the continuation attempt functions', () => {
     // The first-run wizard opened the browser on the raw Cognito provider
