@@ -8,7 +8,10 @@ import DesktopApp from "./DesktopApp.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { createTenantStorage } from "../identity/tenant-storage.js";
-import { writeSettingsPrefs } from "../settings/settings-prefs.js";
+import {
+  writeSettingsPrefs,
+  writeStoredUiSize,
+} from "../settings/settings-prefs.js";
 import type { Workspace } from "../chat/workspaces.js";
 import { installMemoryLocalStorage } from "../test-support/memory-local-storage.js";
 
@@ -164,5 +167,36 @@ describe("DesktopApp settings on web", () => {
 
     expect(document.documentElement.getAttribute("data-ui-size")).toBe("compact");
     expect(document.documentElement.style.getPropertyValue("--hq-window-opacity")).toBe("64%");
+  });
+
+  it("applies the device-wide interface size at startup over a tenant copy (QA-074)", async () => {
+    writeStoredUiSize("large");
+    const storage = createTenantStorage(memoryStorage, {
+      accountId: "acct_stefan",
+      companyId: "all",
+    });
+    writeSettingsPrefs({ uiSize: "compact" }, storage);
+
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(DesktopApp, {
+      target: host,
+      props: {
+        adapter: webAdapter(),
+        sidebarApi: createFixtureChatSidebarApi(),
+        notificationsApi: createEmptyNotificationsApi(),
+        self: {
+          uid: "prs_test",
+          displayName: "Stefan Johnson",
+          email: "stefan@example.com",
+        },
+        tenantAccountId: "acct_stefan",
+        tenantGeneration: 1,
+        coreFixtures: false,
+      },
+    });
+    await tick();
+
+    expect(document.documentElement.getAttribute("data-ui-size")).toBe("large");
   });
 });

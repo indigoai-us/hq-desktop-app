@@ -63,7 +63,9 @@
   } from "./shell-settings-model.js";
   import {
     readSettingsPrefs,
+    readStoredUiSize,
     writeSettingsPrefs,
+    writeStoredUiSize,
     type SettingsUiSize,
     type ShellSettingsPrefs,
   } from "./settings-prefs.js";
@@ -104,6 +106,8 @@
     version?: string;
     adapter?: PlatformAdapter | null;
     storage?: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null;
+    /** Unscoped device storage for device-wide prefs (interface size). */
+    deviceStorage?: Pick<Storage, "getItem" | "setItem"> | null;
     sessionGeneration?: number;
     companies?: Workspace[] | null;
     personalLabel?: string | null;
@@ -122,6 +126,7 @@
     version = "0.0.0",
     adapter = null,
     storage = typeof window !== "undefined" ? window.localStorage : null,
+    deviceStorage = typeof window !== "undefined" ? window.localStorage : null,
     sessionGeneration = 0,
     companies = null,
     personalLabel = null,
@@ -137,11 +142,11 @@
   // instead of the local pref so the two never disagree on first paint.
   const hostOpacity = readHostWindowOpacity();
   const osStrings = platformStrings();
-  let prefs = $state<ShellSettingsPrefs>(
-    hostOpacity == null
-      ? readSettingsPrefs(storage)
-      : { ...readSettingsPrefs(storage), windowOpacity: hostOpacity },
-  );
+  let prefs = $state<ShellSettingsPrefs>({
+    ...readSettingsPrefs(storage),
+    ...(hostOpacity == null ? {} : { windowOpacity: hostOpacity }),
+    uiSize: readStoredUiSize(deviceStorage, storage),
+  });
   let theme = $state<ColorTheme>(readStoredTheme());
   let notifPermission = $state<string | null>(null);
   let notifRequesting = $state(false);
@@ -323,7 +328,7 @@
   }
 
   function setUiSize(next: SettingsUiSize): void {
-    patch({ uiSize: applyUiSize(next) });
+    prefs = { ...prefs, uiSize: writeStoredUiSize(applyUiSize(next), deviceStorage) };
   }
 
   function setOpacity(next: number): void {

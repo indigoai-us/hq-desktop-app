@@ -397,7 +397,11 @@
     hasAppearanceHost,
   } from "../settings/shell-settings-model.js";
   import { restoreStoredColorTheme } from "../settings/settings-theme-seam.js";
-  import { readSettingsPrefs, writeSettingsPrefs } from "../settings/settings-prefs.js";
+  import {
+    readSettingsPrefs,
+    readStoredUiSize,
+    writeSettingsPrefs,
+  } from "../settings/settings-prefs.js";
   import {
     EMPTY_LIVE_SYNC,
     lastSyncLabelFromLive,
@@ -9327,7 +9331,7 @@
     // does not survive a reload, so without this the glass returns on every
     // restart and the setting looks like it silently forgot itself.
     const prefs = readSettingsPrefs(tenantStorage);
-    applyUiSize(prefs.uiSize);
+    applyUiSize(readStoredUiSize(undefined, tenantStorage));
     // With the desktop appearance host installed, its persisted preference is
     // already live; re-applying the local pref would round-trip a stale copy
     // through the host and clobber the user's theme. Same guard as

@@ -148,3 +148,38 @@ export function writeSettingsPrefs(
   }
   return next;
 }
+
+/**
+ * Interface size is a device-wide preference, like the colour theme. It used
+ * to live in the prefs blob, which the shell writes through tenant-scoped
+ * storage — so a size chosen while a company was open was invisible from Home
+ * (a different tenant scope) and Settings fell back to Default (QA-074).
+ */
+export const UI_SIZE_STORAGE_KEY = "hq-work-ui-size";
+
+export function readStoredUiSize(
+  storage: Pick<Storage, "getItem"> | null | undefined = defaultStorage(),
+  legacy?: Pick<Storage, "getItem"> | null,
+): SettingsUiSize {
+  try {
+    const raw = storage?.getItem(UI_SIZE_STORAGE_KEY);
+    if (raw === "compact" || raw === "default" || raw === "large") return raw;
+  } catch {
+    /* private mode */
+  }
+  // Before the device key existed the size lived in the (tenant) prefs blob.
+  return legacy ? readSettingsPrefs(legacy).uiSize : DEFAULT_SETTINGS_PREFS.uiSize;
+}
+
+export function writeStoredUiSize(
+  size: SettingsUiSize,
+  storage: Pick<Storage, "setItem"> | null | undefined = defaultStorage(),
+): SettingsUiSize {
+  const next = parseUiSize(size);
+  try {
+    storage?.setItem(UI_SIZE_STORAGE_KEY, next);
+  } catch {
+    /* private mode */
+  }
+  return next;
+}
