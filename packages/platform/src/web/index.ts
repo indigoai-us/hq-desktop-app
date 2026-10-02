@@ -750,6 +750,11 @@ export class WebPlatformAdapter implements PlatformAdapter {
       this.get(
         `/v1/companies/slug-available?slug=${encodeURIComponent(slug)}`,
       ),
+    activateCompanyCloud: (companyUid) =>
+      this.post(
+        `/v1/companies/${encodeURIComponent(companyUid)}/activate-cloud`,
+        {},
+      ),
     getCompanyTab: (companyUid, tab) =>
       this.get(WEB_PATHS.companyTab(companyUid, tab)),
     runCompanyTabAction: (args) =>

@@ -10,6 +10,7 @@ The release moves it under the version it ships in.
 
 - Referral links now carry through desktop sign-in regardless of the signup experiment. HQ retries referral confirmation after connection failures or a restart and keeps each referral tied to the account that signed in.
 
+- Creating a company from the desktop app now sets up its cloud storage right away. Before, the app created the company but never provisioned its vault, so the first sync failed with "has no bucket provisioned. Run VLT-2 bucket provisioning first" and teammate invites could not go out. The New company form shows "Setting up cloud storage..." while this runs, its Try again button re-runs only the setup step, and the sync banner's Try again now repairs companies created by earlier builds.
 - Core update failures now report the available snapshot disk space instead of the required snapshot size.
 
 ## [0.10.381] — 2026-10-02
