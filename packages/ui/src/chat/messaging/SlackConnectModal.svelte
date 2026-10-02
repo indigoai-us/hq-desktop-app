@@ -128,6 +128,31 @@
     if (!gone) tokenInput()?.focus();
   }
 
+  /**
+   * Keep the keyboard inside the dialog while the button that was pressed is
+   * disabled: a disabled button drops focus to the page.
+   */
+  function holdFocus(): void {
+    dialogEl()?.focus();
+  }
+  /** Put focus on the current step's own control, unless it is already on a live control in here. */
+  async function focusStageControl(): Promise<void> {
+    await tick();
+    if (gone) return;
+    const dialog = dialogEl();
+    if (!dialog) return;
+    const active = document.activeElement;
+    if (
+      active instanceof HTMLElement &&
+      active !== dialog &&
+      dialog.contains(active) &&
+      !(active as HTMLButtonElement).disabled
+    ) {
+      return;
+    }
+    dialog.querySelector<HTMLElement>(`[${CARD_MODAL_AUTOFOCUS}]:not([disabled])`)?.focus();
+  }
+
   // A step can finish by itself while the person is in Slack, and the button
   // they last pressed goes with it. Focus then moves to the new step's own
   // control, so the keyboard is never left on nothing.
@@ -140,14 +165,7 @@
     }
     if (stage === stageSeen) return;
     stageSeen = stage;
-    void tick().then(() => {
-      if (gone) return;
-      const dialog = dialogEl();
-      if (!dialog) return;
-      const active = document.activeElement;
-      if (active instanceof HTMLElement && active !== dialog && dialog.contains(active)) return;
-      dialog.querySelector<HTMLElement>(`[${CARD_MODAL_AUTOFOCUS}]:not([disabled])`)?.focus();
-    });
+    void focusStageControl();
   });
 
   /** Start: ask the server to set the bot up in Slack. The only place attach is sent. */
@@ -156,6 +174,7 @@
     attachInFlight = true;
     attachError = null;
     touch();
+    holdFocus();
     try {
       if (status == null) {
         // Not known yet whether this bot already has Slack. Find out first:
@@ -195,6 +214,8 @@
     } finally {
       attachInFlight = false;
       touch();
+      // Still on the intro (Try again), or on whatever step came next.
+      void focusStageControl();
     }
   }
 
@@ -224,6 +245,8 @@
     tokenInFlight = true;
     tokenError = null;
     touch();
+    // The Connect button is disabled while this is on its way: focus stays in the field.
+    tokenInput()?.focus();
     started();
     let result: unknown = null;
     try {
@@ -296,7 +319,7 @@
           <CardModalStatus kind="problem" text={view.attachError} />
         {/if}
       {:else if view.stage === "blocked" && view.blocked}
-        <div data-testid="slack-connect-blocked" data-reason={view.blocked.reason}>
+        <div class="slack-connect-blocked" data-testid="slack-connect-blocked" data-reason={view.blocked.reason}>
           <CardModalStatus kind="problem" text={view.blocked.sentence} />
         </div>
       {:else}
@@ -462,6 +485,11 @@
   .slack-connect-intro {
     display: grid;
     gap: 2px;
+  }
+
+  /* A blocked state is not a failure: the mark warns, the sentence reads as copy. */
+  .slack-connect-blocked :global(.card-modal-status-text) {
+    color: var(--cm-ink);
   }
 
   /* The four things to do on Slack's page. Quieter than the step it sits in. */

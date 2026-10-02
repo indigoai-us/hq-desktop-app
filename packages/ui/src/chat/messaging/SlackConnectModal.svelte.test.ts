@@ -383,6 +383,8 @@ describe("the Connect Slack modal: Start and attach", () => {
     expect(closeX().disabled).toBe(true);
     expect(dialog().getAttribute("aria-busy")).toBe("true");
     expect(started).not.toHaveBeenCalled();
+    // The disabled button does not drop the keyboard out of the dialog.
+    expect(document.activeElement).toBe(dialog());
 
     finish(ok({ config: SOCKET_ROW, followUpUrl: INSTALL }));
     await settle();
@@ -392,6 +394,7 @@ describe("the Connect Slack modal: Start and attach", () => {
     expect(stage()).toBe("approve");
     expect(closeX().disabled).toBe(false);
     expect(byId("slack-connect-start")).toBeNull();
+    expect(document.activeElement).toBe(byId("slack-connect-open-slack"));
   });
 
   it("shows the step list from the attach answer before the status catches up", async () => {
@@ -463,6 +466,8 @@ describe("the Connect Slack modal: Start and attach", () => {
       expect(statusLines()).toEqual(["problem:Slack did not answer. Try again."]);
       expect(footerButtons()).toEqual(["Try again"]);
       expect(started).not.toHaveBeenCalled();
+      // Focus is back on the button, ready for the retry.
+      expect(document.activeElement).toBe(startButton());
       // Try again asks once more, and works.
       attachSlack.mockResolvedValueOnce(ok({ config: SOCKET_ROW, followUpUrl: INSTALL }));
       serverStatus = WAITING_FOR_APPROVAL;
@@ -535,6 +540,8 @@ describe("the Connect Slack modal: the token", () => {
     expect(submitSlackAppToken).toHaveBeenCalledWith(NOVA, TOKEN);
     expect(statusLines()).toEqual(["working:Checking the token with Slack."]);
     expect(closeX().disabled).toBe(true);
+    // The Connect button is disabled now: the keyboard stays in the field.
+    expect(document.activeElement).toBe(tokenField());
 
     serverStatus = TOKEN_STORED;
     const field = tokenField()!;
