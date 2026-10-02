@@ -30,6 +30,21 @@ pub struct MeetingEvent {
     pub meeting_url: Option<String>,
     #[serde(default)]
     pub signals: Option<serde_json::Value>,
+    // Event details for the meeting canvas. Serde drops any field not listed
+    // here, so before these existed the canvas never saw attendees or the
+    // description even though hq-pro sends them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attendees: Option<Vec<serde_json::Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub organizer: Option<serde_json::Value>,
+    #[serde(default, rename = "htmlLink", skip_serializing_if = "Option::is_none")]
+    pub html_link: Option<String>,
+    #[serde(default, rename = "conferenceData", skip_serializing_if = "Option::is_none")]
+    pub conference_data: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1305,5 +1320,56 @@ mod tests {
         // depending on how the payload was constructed.
         let body = build_notification_body("zoom", Some(""), Some(""));
         assert_eq!(body, "Zoom meeting");
+    }
+}
+
+#[cfg(test)]
+mod event_details_passthrough_tests {
+    use super::MeetingEvent;
+    use serde_json::json;
+
+    /// Regression: the meeting canvas showed "No attendees" and "No agenda"
+    /// for every event because these fields were dropped at this boundary.
+    #[test]
+    fn event_details_survive_the_round_trip() {
+        let wire = json!({
+            "id": "evt_1",
+            "summary": "HQ Dev Standup",
+            "description": "1. Wins\n2. Blockers",
+            "location": "https://zoom.us/j/123",
+            "start": { "dateTime": "2026-10-02T09:30:00-06:00" },
+            "end": { "dateTime": "2026-10-02T10:30:00-06:00" },
+            "status": "confirmed",
+            "attendees": [
+                { "email": "a@example.com", "displayName": "Ada", "responseStatus": "accepted" },
+                { "email": "b@example.com", "displayName": null, "responseStatus": "needsAction" }
+            ],
+            "organizer": { "email": "a@example.com", "displayName": "Ada" },
+            "htmlLink": "https://calendar.google.com/event?eid=1",
+            "conferenceData": { "entryPoints": [{ "entryPointType": "video", "uri": "https://zoom.us/j/123" }] }
+        });
+        let event: MeetingEvent = serde_json::from_value(wire).unwrap();
+        let out = serde_json::to_value(&event).unwrap();
+        assert_eq!(out["description"], "1. Wins\n2. Blockers");
+        assert_eq!(out["location"], "https://zoom.us/j/123");
+        assert_eq!(out["attendees"][0]["displayName"], "Ada");
+        assert_eq!(out["attendees"][1]["responseStatus"], "needsAction");
+        assert_eq!(out["organizer"]["email"], "a@example.com");
+        assert_eq!(out["htmlLink"], "https://calendar.google.com/event?eid=1");
+        assert_eq!(out["conferenceData"]["entryPoints"][0]["uri"], "https://zoom.us/j/123");
+    }
+
+    #[test]
+    fn events_without_details_still_parse_and_omit_them() {
+        let wire = json!({
+            "id": "evt_2",
+            "start": { "date": "2026-10-02" },
+            "end": { "date": "2026-10-03" },
+            "status": "confirmed"
+        });
+        let event: MeetingEvent = serde_json::from_value(wire).unwrap();
+        let out = serde_json::to_value(&event).unwrap();
+        assert!(out.get("attendees").is_none());
+        assert!(out.get("description").is_none());
     }
 }

@@ -25,6 +25,7 @@
     type NewMeetingDraft,
   } from "./meeting-states-model";
   import { eventStart, isPlausibleMeetingUrl } from "./meetings-model";
+  import { agendaItems, attendeeViews, locationLabel, meetingJoinUrl, organizerLabel } from "./meeting-details";
   import MeetingsToolbarControls from "./MeetingsToolbarControls.svelte";
   import { meetingsStore } from "./meetings-store.svelte";
   import { meetingsRailState } from "./meetings-rail-state.svelte";
@@ -72,6 +73,15 @@
   }: Props = $props();
 
   let tab = $state<"recap" | "transcript" | "notes" | "agenda">("recap");
+  const agenda = $derived(event ? agendaItems(event) : []);
+  const attendees = $derived(event ? attendeeViews(event) : []);
+  const organizer = $derived(event ? organizerLabel(event) : "");
+  const place = $derived(event ? locationLabel(event) : "");
+  // A cached event from before the host passed details through has no
+  // attendees field; hold a skeleton while the first refresh is in flight.
+  const detailsPending = $derived(
+    !!event && event.attendees === undefined && meetingsStore.loading && meetingsStore.lastSyncedAt === 0,
+  );
   let query = $state("");
   let jumped = $state<string | null>(null);
   let draft = $state<NewMeetingDraft>(emptyNewMeetingDraft());
@@ -81,7 +91,7 @@
   const recap = $derived(event ? recapModel(event, bot) : null);
   const turns = $derived(event ? filterTranscript(transcriptTurns(event), query) : []);
   const url = $derived(
-    (event?.meetingUrl || event?.hangoutLink || (event ? meetingsRailState.attachedLinks.get(event.id) : "") || "").trim(),
+    ((event ? meetingJoinUrl(event) : "") || (event ? meetingsRailState.attachedLinks.get(event.id) : "") || "").trim(),
   );
   // US-042: settled, no error, and no linked account → connect-first canvas.
   const noCalendar = $derived(
@@ -314,12 +324,16 @@
             {#if jumped}<p class="muted">Jumped to {jumped}</p>{/if}
           </div>
         {:else if tab === "agenda"}
-          <h2 class="sh">Agenda <span class="n">{event.outline?.length ?? 0}</span></h2>
-          <ol class="ag" data-testid="meeting-agenda">
-            {#each event.outline ?? [] as item, i (item.id ?? i)}
-              <li><span class="n">{i + 1}</span><span>{item.title}{#if item.detail}<span class="q">{item.detail}</span>{/if}</span></li>
-            {:else}<li class="muted">No agenda yet.</li>{/each}
-          </ol>
+          <h2 class="sh">Agenda <span class="n">{agenda.length}</span></h2>
+          {#if detailsPending}
+            <div class="sk-lines" data-testid="meeting-agenda-skeleton" aria-busy="true"><i></i><i></i><i></i></div>
+          {:else}
+            <ol class="ag" data-testid="meeting-agenda">
+              {#each agenda as item, i (item.id ?? i)}
+                <li><span class="n">{i + 1}</span><span>{item.title}{#if item.detail}<span class="q">{item.detail}</span>{/if}</span></li>
+              {:else}<li class="muted ag-empty">No agenda yet.</li>{/each}
+            </ol>
+          {/if}
         {:else}
           <div data-testid="meeting-notes-tab">
             {#each event.notes ?? [] as note, i (note.id ?? i)}
@@ -329,10 +343,19 @@
         {/if}
       </div>
       <aside class="side" data-testid="meeting-side">
-        <h2 class="sh">Attendees</h2>
-        {#each event.attendees ?? [] as person (person.email || person.displayName)}
-          <div class="att"><span class="mini">{initialsOf(person.displayName || person.email || "?")}</span>{person.displayName || person.email}<span class="meta">{person.responseStatus || ""}</span></div>
-        {:else}<p class="muted">No attendees on the calendar event.</p>{/each}
+        <h2 class="sh">Attendees{#if attendees.length}<span class="n">{attendees.length}</span>{/if}</h2>
+        {#if detailsPending}
+          <div class="sk-lines" data-testid="meeting-attendees-skeleton" aria-busy="true"><i></i><i></i></div>
+        {:else}
+          {#each attendees as person (person.key)}
+            <div class="att" data-testid="meeting-attendee" title={person.email || undefined}><span class="mini">{initialsOf(person.name || "?")}</span><span class="an">{person.name}{#if person.organizer}<span class="q">Organizer</span>{/if}</span><span class="meta">{person.response}</span></div>
+          {:else}<p class="muted">No attendees on the calendar event.</p>{/each}
+        {/if}
+        {#if organizer || place}
+          <h2 class="sh">Details</h2>
+          {#if organizer}<p class="muted" data-testid="meeting-organizer">Organized by {organizer}</p>{/if}
+          {#if place}<p class="muted" data-testid="meeting-location">{place}</p>{/if}
+        {/if}
         {#if mode === "upcoming"}
           <h2 class="sh">Live signals</h2>
           <p class="muted">Nothing yet. Action items, decisions, and questions appear here once the meeting is live.</p>
@@ -432,7 +455,9 @@
   .tt { display: block; }
   .mm { display: block; }
   .r { margin-left: auto; text-decoration: underline; text-underline-offset: 3px; color: var(--t2); font-size: 12px; }
-  .split { display: grid; grid-template-columns: minmax(0, 1fr) 300px; min-height: 0; flex: 1; }
+  /* The agenda column keeps 240 px; narrower windows scroll instead of
+     wrapping the agenda one word per line. */
+  .split { display: grid; grid-template-columns: minmax(240px, 1fr) 300px; min-height: 0; flex: 1; }
   .main, .side { min-height: 0; overflow: auto; padding: 0 24px 24px; contain: layout paint; }
   .side { border-left: 1px solid var(--line); background: var(--v4-secondary-sidebar, transparent); padding: 16px 20px; }
   .tabs { display: flex; gap: 2px; align-items: center; padding: 10px 0; position: sticky; top: 0; background: var(--v4-ground, var(--side-bg)); }
@@ -455,6 +480,15 @@
   .jm { border: 0; background: transparent; color: var(--t3); cursor: pointer; }
   .ag { margin: 0; padding: 0; list-style: none; }
   .ag li { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+  /* The empty row has one child; in the numbered grid it landed in the 22 px
+     number column and wrapped per word. */
+  .ag li.ag-empty { display: block; }
+  .an { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .an .q { display: inline; margin-left: 6px; }
+  .sk-lines { display: grid; gap: 8px; padding: 8px 0; }
+  .sk-lines i { display: block; height: 10px; border-radius: 4px; background: var(--v4-control-bg, var(--hover)); }
+  .sk-lines i:nth-child(2) { width: 70%; }
+  .sk-lines i:nth-child(3) { width: 45%; }
   .scrim { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.45); }
   .sheet { position: absolute; left: 50%; top: 48px; transform: translateX(-50%); width: 480px; max-height: calc(100% - 72px); display: flex; flex-direction: column; background: var(--v4-popover, var(--side-bg)); border: 1px solid var(--line); border-radius: 8px; z-index: 2; }
   .sh-row, .sf { padding: 12px 16px; border-bottom: 1px solid var(--line); font-weight: 600; }

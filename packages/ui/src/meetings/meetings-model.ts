@@ -36,14 +36,21 @@ export interface MeetingEvent {
   outline?: MeetingOutlineEntry[];
   /** US-021: notetaker notes for the live canvas. */
   notes?: MeetingNoteEntry[];
+  /** Calendar event body; often HTML from Google. The canvas reads it as the agenda. */
+  description?: string | null;
+  location?: string | null;
+  organizer?: { email?: string; displayName?: string | null; self?: boolean } | null;
+  htmlLink?: string | null;
+  conferenceData?: { entryPoints?: Array<{ entryPointType?: string; uri?: string }> } | null;
 }
 
 export interface MeetingAttendee {
   email?: string;
-  displayName?: string;
+  displayName?: string | null;
   responseStatus?: string;
   self?: boolean;
   resource?: boolean;
+  organizer?: boolean;
 }
 
 export interface MeetingRoom {
