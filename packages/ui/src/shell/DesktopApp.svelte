@@ -8736,6 +8736,40 @@
     notificationsPopoverOpen = !notificationsPopoverOpen;
   }
 
+  async function acceptCompanyInviteFromBell(
+    item: NotificationItem,
+  ): Promise<
+    | { ok: true }
+    | { ok: false; message: string; upgradeUrl: string | null }
+  > {
+    const slug = (item.actionRef ?? "").trim();
+    const uid = (item.targetRef ?? "").trim();
+    const claimFn = adapter.company?.claimPendingInvite;
+    if (!slug || !claimFn) {
+      return {
+        ok: false,
+        message: "Couldn't join the company. Try again.",
+        upgradeUrl: null,
+      };
+    }
+    const claim = await claimFn(slug);
+    const { inviteClaimOutcome } = await import("../inbox/company-invite-requests.js");
+    const outcome = inviteClaimOutcome(claim, uid, pinnedCompanyIds ?? []);
+    if (!outcome.ok) return outcome;
+    if (outcome.pinnedIds) setPinnedCompanies(outcome.pinnedIds);
+    await readWorkspaceHealth();
+    void onrefreshroster?.();
+    if (!outcome.companyUid) return { ok: true };
+    const nextRecent = rememberCompanyId(companyRecentIds, outcome.companyUid);
+    companyRecentIds = nextRecent;
+    writeSettingsPrefs({ companyRecentIds: nextRecent });
+    companyPaneOpen = true;
+    changeTenantCompany(outcome.companyUid);
+    notificationsPopoverOpen = false;
+    void navigate(companyRowDestination("atlas", outcome.companyUid));
+    return { ok: true };
+  }
+
   function openSettings(section: EmbeddedSettingsSection | null = null): void {
     void navigate({ kind: "settings", section });
   }
@@ -9375,6 +9409,8 @@
       door={notificationsPopoverDoor}
       props={{
         api: notificationsApi,
+        pendingWorkspaces: syncWorkspaces,
+        onacceptcompany: acceptCompanyInviteFromBell,
         onclose: () => (notificationsPopoverOpen = false),
         onopen: openNotification,
         onopensettings: () => {
@@ -9822,12 +9858,15 @@
             }}
           />
         {:else if railPlaceholder?.id === "atlas" && companyPaneCompany}
+          <!-- Props read companyPaneCompany through getters that can run once
+               more while this branch tears down (switching rail items), so
+               they tolerate it going null. -->
           <AtlasLandingHost
-            companyLabel={companyPaneCompany.label}
+            companyLabel={companyPaneCompany?.label ?? ""}
             workingNow={atlasWorkingNow(atlasCompanyRoster)}
-            slug={companyPaneCompany.slug}
+            slug={companyPaneCompany?.slug ?? ""}
             summaryEnabled={Boolean(adapter.company)}
-            companyUid={companyPaneCompany.uid}
+            companyUid={companyPaneCompany?.uid ?? null}
             actors={atlasActors}
             filterActor={atlasFilterActor}
             onclearfilter={() => (atlasFilterActor = null)}
