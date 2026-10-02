@@ -3496,8 +3496,8 @@ mod tests {
 
         assert_eq!(
             crate::hq_cli_update::hq_cli_backing(&managed.join("hq.cmd")),
-            CandidateBacking::Indeterminate,
-            "an unreadable manifest is indeterminate, not a definitive absence"
+            CandidateBacking::ManifestUnreadable,
+            "an unreadable manifest has its precise state, but is not a definitive absence"
         );
 
         let managed_roots = [tmp.path().join("toolchain")];
@@ -4091,7 +4091,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             crate::hq_cli_update::hq_cli_backing(&hq),
-            CandidateBacking::Indeterminate
+            CandidateBacking::ManifestUnreadable
         );
 
         // Keep selection hermetic; search-directory expansion has its own test.
