@@ -36,6 +36,17 @@ export function mapSignInError(
     );
   }
 
+  if (
+    structured?.code === "MICROSOFT_EMAIL_REQUIRED" ||
+    structured?.code === "MICROSOFT_ENABLEMENT_REQUIRED" ||
+    structured?.code === "MICROSOFT_RESOLVE_FAILED"
+  ) {
+    return (
+      structured.message ||
+      "We could not identify your Microsoft account. Check your connection and retry."
+    );
+  }
+
   if (/token exchange/i.test(message)) {
     return "We couldn't finish sign-in after the browser step. Check your connection and retry.";
   }

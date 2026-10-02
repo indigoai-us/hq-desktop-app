@@ -10,7 +10,12 @@
    * Loads via Tauri `get_company_team_telemetry` (hq-pro company telemetry).
    * Tenant isolation: command resolves slug → companyUid server-side.
    */
-  import type { CompanyApi, LocalBotRow, MessagingApi } from "@hq/platform";
+  import {
+    dispatchPostReadyAction,
+    type CompanyApi,
+    type LocalBotRow,
+    type MessagingApi,
+  } from "@hq/platform";
   import BotKindChip from "../chat/BotKindChip.svelte";
   import { botKindFor } from "../chat/bot-kind.js";
   import { companyConsoleUrl, companyInviteUrl } from "../common/hq-console";
@@ -187,6 +192,7 @@
   }
 
   async function openInvite(): Promise<void> {
+    dispatchPostReadyAction("invite", { uid: companyUid ?? undefined, slug });
     await openExternalDestination("invite", companyInviteUrl(slug));
   }
 

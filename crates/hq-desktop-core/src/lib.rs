@@ -88,6 +88,7 @@ pub mod messages;
 pub mod native_notify;
 pub mod notify_authz;
 pub mod notify_prefs;
+pub mod microsoft_org;
 pub mod oauth;
 pub mod paths;
 pub mod plan_limit;
