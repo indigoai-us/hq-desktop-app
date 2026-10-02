@@ -69,3 +69,27 @@ describe("Core popout surface matches the Launch popout", () => {
     expect(coreCss).not.toMatch(/\b(?:rgb|rgba|hsl|hsla)\(/);
   });
 });
+
+// QA-037: at a narrow window the desktop update row ("UPDATE AVAILABLE ·
+// Download & install") clipped its action at the panel edge. The row and its
+// action group must wrap, and the panel keeps its 340px Launch-menu width.
+describe("Core popout rows wrap instead of clipping actions", () => {
+  it("lets the row wrap", () => {
+    expect(decl(rule(coreCss, ".core-row"), "flex-wrap")).toBe("wrap");
+  });
+
+  it("lets the action group wrap and stay inside the panel", () => {
+    const actions = rule(coreCss, ".core-row-actions");
+    expect(decl(actions, "flex-wrap")).toBe("wrap");
+    expect(decl(actions, "max-width")).toBe("100%");
+    expect(decl(actions, "margin-left")).toBe("auto");
+  });
+
+  it("keeps action labels on one line so they are never cut mid-word", () => {
+    expect(decl(rule(coreCss, ".core-text-btn"), "white-space")).toBe("nowrap");
+  });
+
+  it("keeps the 340px panel width", () => {
+    expect(core).toMatch(/340px/);
+  });
+});

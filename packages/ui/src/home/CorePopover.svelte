@@ -1192,8 +1192,11 @@
     gap: 2px;
   }
 
+  /* Rows wrap at narrow widths so the actions move to their own line
+     instead of clipping at the panel edge (QA-037). */
   .core-row {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
     gap: 8px;
@@ -1229,9 +1232,13 @@
 
   .core-row-actions {
     display: inline-flex;
+    flex-wrap: wrap;
     flex-shrink: 0;
     align-items: center;
+    justify-content: flex-end;
     gap: 4px;
+    max-width: 100%;
+    margin-left: auto;
   }
 
   .core-idle-hint {
