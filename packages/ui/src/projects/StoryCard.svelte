@@ -243,7 +243,7 @@
     min-width: 0;
     overflow: hidden;
     color: var(--v4-text-3);
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 500;
     font-variant-numeric: tabular-nums;
     text-overflow: ellipsis;
@@ -267,7 +267,7 @@
     border-radius: var(--v4-radius-pill);
     background: transparent;
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 500;
     line-height: 1;
   }
@@ -291,8 +291,8 @@
     margin: 0;
     overflow: hidden;
     color: var(--v4-text-1);
-    font-size: 14px;
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     line-height: 1.35;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
@@ -316,8 +316,8 @@
     border-radius: var(--v4-radius-button);
     background: var(--v4-control-faint);
     color: var(--v4-text-3);
-    font-size: 11px;
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     line-height: 16px;
   }
 
@@ -341,7 +341,7 @@
   .assignee-name {
     overflow: hidden;
     color: var(--v4-text-2);
-    font-size: 12px;
+    font-size: 13px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -356,7 +356,7 @@
     gap: 6px;
     min-width: 0;
     color: var(--v4-text-3);
-    font-size: 12px;
+    font-size: 13px;
     line-height: 16px;
   }
 
@@ -424,7 +424,7 @@
   .ac-count {
     flex-shrink: 0;
     color: var(--v4-text-3);
-    font-size: 12px;
+    font-size: 13px;
     font-variant-numeric: tabular-nums;
   }
 

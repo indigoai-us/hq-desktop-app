@@ -21,6 +21,11 @@ const FILES = [
   "ProjectFilesHost.svelte",
   "NewProjectSheet.svelte",
   "CompanyGoalsPage.svelte",
+  "TaskViewPane.svelte",
+  "BoardFaces.svelte",
+  "TaskViewDoor.svelte",
+  "StoryCard.svelte",
+  "StoryList.svelte",
   "../home/StoryPanel.svelte",
 ];
 
@@ -35,8 +40,8 @@ describe("projects pages follow the Messages type scale", () => {
     it(`${file}: text is 13px or a 20px title, weight <= 500, no caps`, () => {
       const css = styleOf(file);
       const sizes = [...css.matchAll(/font-size:\s*([^;]+);/g)].map((m) => m[1].trim());
-      // 9px/10px only survive inside avatar initials, never as text sizes.
-      const bad = sizes.filter((s) => !["13px", "20px", "9px", "10px"].includes(s.replace(/\s*!important/, "")));
+      // 8px/9px/10px only survive inside avatar initials, never as text sizes.
+      const bad = sizes.filter((s) => !["13px", "20px", "8px", "9px", "10px"].includes(s.replace(/\s*!important/, "")));
       expect(bad).toEqual([]);
       expect(css).not.toMatch(/font-weight:\s*(600|650|700|bold)/);
       expect(css).not.toMatch(/text-transform:\s*uppercase/);

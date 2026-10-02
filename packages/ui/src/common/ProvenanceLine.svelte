@@ -92,7 +92,7 @@
   .label {
     overflow: hidden;
     color: var(--v4-text-2);
-    font-weight: 600;
+    font-weight: 500;
     text-overflow: ellipsis;
     white-space: nowrap;
   }

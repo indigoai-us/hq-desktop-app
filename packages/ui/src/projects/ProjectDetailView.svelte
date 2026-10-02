@@ -1903,7 +1903,8 @@
 
 
   .task-rail-provenance {
-    flex: 0 1 auto;
+    /* Shrinks long before the title does. */
+    flex: 0 100 auto;
     display: block;
     min-width: 0;
     overflow: hidden;

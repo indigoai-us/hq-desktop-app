@@ -493,7 +493,7 @@
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
     font-weight: 400;
     line-height: 1.2;
     text-align: left;
@@ -521,7 +521,7 @@
     background: var(--v4-active-row);
     box-shadow: none;
     color: var(--v4-text-1);
-    font-weight: 600;
+    font-weight: 500;
   }
 
   .ft-note {
@@ -530,7 +530,7 @@
     align-items: center;
     gap: 4px;
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: 13px;
     white-space: nowrap;
   }
 
@@ -566,7 +566,7 @@
     overflow: hidden;
     min-width: 0;
     color: inherit;
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
     font-weight: inherit;
     line-height: 1.25;
     white-space: nowrap;
@@ -577,7 +577,7 @@
     overflow: hidden;
     min-width: 0;
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, var(--text-micro));
+    font-size: 13px;
     font-weight: 400;
     line-height: 1.3;
     white-space: nowrap;
@@ -643,7 +643,7 @@
   .ft-status {
     padding: 12px;
     color: var(--v4-text-3);
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
     text-align: center;
   }
 
@@ -666,7 +666,7 @@
     padding-block: 3px;
     padding-right: 8px;
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, var(--text-micro));
+    font-size: 13px;
   }
 
   .ft-retry {
@@ -677,7 +677,7 @@
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
-    font-weight: 600;
+    font-weight: 500;
     cursor: pointer;
   }
 

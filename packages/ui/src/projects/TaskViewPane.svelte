@@ -265,8 +265,8 @@
     gap: 8px;
     padding: 0 12px 0 16px;
     border-bottom: 1px solid var(--v4-rowline);
-    font-size: var(--type-secondary);
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     min-width: 0;
   }
 
@@ -304,11 +304,10 @@
   }
 
   .kind {
-    font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--v4-text-3);
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 0;
+    color: var(--v4-text-2);
     margin: 12px 0 6px;
   }
 
@@ -367,7 +366,7 @@
   .id,
   .mono {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 13px;
   }
 
   .id {
@@ -407,8 +406,8 @@
   }
 
   .td h3 {
-    font-size: var(--type-secondary);
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     margin: 0 0 4px;
   }
 
@@ -432,7 +431,7 @@
     padding: 2px 8px;
     border: 1px solid var(--v4-control-border);
     border-radius: 999px;
-    font-size: 11px;
+    font-size: 13px;
     color: var(--v4-text-2);
   }
 

@@ -39,7 +39,7 @@
     background: var(--v4-control-border);
     color: var(--v4-text-2);
     font-size: 8px;
-    font-weight: 600;
+    font-weight: 500;
     line-height: 1;
   }
   .mini + .mini {
