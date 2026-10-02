@@ -8,22 +8,22 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
-- In the sidebar, the order and the day headings now both follow the latest
-  message a person typed, where the server reports it: a channel that only
-  bots posted in today is listed under the day a person last typed in it. A
-  conversation with no typed message is placed by when it was created, so a
-  channel made today appears under Today. A conversation the server has not
-  classified yet, which today includes every direct message, is placed by its
-  latest activity. In 0.10.373 those conversations were listed alphabetically
-  within each day instead of by time. They stay placed by activity until the
-  server update and its one-time fill-in are in place.
+- Fixes the sidebar order in 0.10.373, which listed conversations by unread
+  count and then by name within each day instead of by time. The order and
+  the day headings now both follow the latest message a person typed, where
+  the server reports it: a channel that only bots posted in today is listed
+  under the day a person last typed in it. A conversation the server reports
+  as having no typed message is placed by when it was created, so a channel
+  made today appears under Today. A conversation the server has not
+  classified yet is still placed by its latest activity, bot and session
+  activity included, until a one-time server fill-in has run.
 
 - Channels and direct messages that hide bot and session activity now ask the
   server for the filtered history. When a conversation opens on a long run of
-  hidden activity, the app loads earlier history automatically up to a limit
-  and then offers "Look further back", instead of showing an empty pane with
-  a "load earlier" button. With an older server the app filters on its side,
-  as before.
+  hidden activity, the app continues loading earlier history automatically,
+  up to a limit of eight requests, and then offers "Look further back",
+  instead of showing an empty pane with a "load earlier" button. With an
+  older server the app filters on its side, as before.
 
 - On a fresh install, HQ now shows its logo and "Starting HQ..." right away instead of a blank, frozen window while it starts up.
 - Sign-in and workspace-selection receipts reach HQ again. Since late September the app could not read the `email_verified` claim on Cognito access tokens (it arrives as text, not true/false), so every receipt was held on disk instead of sent. Receipts already held on your machine are sent on the next signed-in start.
