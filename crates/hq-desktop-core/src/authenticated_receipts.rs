@@ -18,6 +18,28 @@ pub enum ReceiptHttpDisposition {
     Rejected,
 }
 
+/// hq-pro's coded 403 for a valid human token that has no person entity yet.
+/// A brand-new account sends `login_completed` before the workspace step
+/// creates its person record, so this is a timing gap, not a permanent refusal.
+pub const DESKTOP_PERSON_MISSING_CODE: &str = "DESKTOP_PERSON_MISSING";
+
+/// Classify a receipt response by status plus the server's error `code`.
+///
+/// `403 DESKTOP_PERSON_MISSING` is retried: the receipt stays in custody and is
+/// resent on later flushes (backoff caps at one hour) until the person record
+/// exists. The retry window is bounded by hq-pro itself, which answers a
+/// receipt whose `occurredAt` is older than 30 days with `400`, and that is
+/// still terminal here. Every other 4xx except 401/429 remains a drop.
+pub fn classify_receipt_http_response(
+    status: u16,
+    error_code: Option<&str>,
+) -> ReceiptHttpDisposition {
+    if status == 403 && error_code == Some(DESKTOP_PERSON_MISSING_CODE) {
+        return ReceiptHttpDisposition::Retry;
+    }
+    classify_receipt_http_status(status)
+}
+
 /// Only malformed or otherwise permanent client validation responses discard a
 /// receipt. Credential turnover (401), throttling (429), and server failures
 /// remain retryable.
@@ -95,6 +117,33 @@ mod tests {
         assert_eq!(
             classify_receipt_http_status(422),
             ReceiptHttpDisposition::Rejected
+        );
+    }
+
+    #[test]
+    fn person_missing_403_is_retried_until_the_person_record_exists() {
+        assert_eq!(
+            classify_receipt_http_response(403, Some(DESKTOP_PERSON_MISSING_CODE)),
+            ReceiptHttpDisposition::Retry
+        );
+        // Other coded 403s and an uncoded 403 stay permanent.
+        assert_eq!(
+            classify_receipt_http_response(403, Some("DESKTOP_MACHINE_IDENTITY_FORBIDDEN")),
+            ReceiptHttpDisposition::Rejected
+        );
+        assert_eq!(
+            classify_receipt_http_response(403, None),
+            ReceiptHttpDisposition::Rejected
+        );
+        // The server's 30-day occurredAt window (400) still ends the retry loop.
+        assert_eq!(
+            classify_receipt_http_response(400, Some("DESKTOP_INVALID_OCCURREDAT")),
+            ReceiptHttpDisposition::Rejected
+        );
+        // The code only matters on 403.
+        assert_eq!(
+            classify_receipt_http_response(200, Some(DESKTOP_PERSON_MISSING_CODE)),
+            ReceiptHttpDisposition::Delivered
         );
     }
 
