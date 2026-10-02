@@ -9,7 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Core update failures now report the available snapshot disk space instead of the required snapshot size.
-- If the desktop cannot read the HQ daemon flag at startup, it now uses the last successfully read value, retries with bounded backoff, and rechecks after sign-in so the sync host can switch without a relaunch.
+- If the desktop cannot read the HQ daemon flag at startup, it uses the last successfully read value and retries with bounded backoff. After a failed startup read, a later successful on value can recover from the Legacy host to daemon sync without relaunching the app. Sign-in also triggers a retry.
 
 ## [0.10.381] — 2026-10-02
 

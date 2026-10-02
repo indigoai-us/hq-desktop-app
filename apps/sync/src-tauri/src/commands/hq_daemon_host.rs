@@ -62,6 +62,8 @@ const HOST_FLAG_RETRY_MAX: Duration = Duration::from_secs(60);
 const HOST_FLAG_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
 const HOST_FLAG_CACHE_FILE: &str = "hq-daemon-host-flag.json";
 const AUTH_SESSION_READY_EVENT: &str = "auth:session-ready";
+const DAEMON_OFF_NEXT_LAUNCH_MESSAGE: &str =
+    "desktop.hq-daemon turned off; the switch applies on the next launch (daemon-off-by-flag)";
 /// Rollout gate for honoring the existing Sync on launch preference when
 /// background Auto-sync is disabled. The lead creates this hq-flags key with
 /// defaultValue=false before enabling the behavior.
@@ -82,8 +84,6 @@ static PHASE: AtomicU8 = AtomicU8::new(if cfg!(test) { 1 } else { 0 });
 static PHASE_WAIT_LOCK: Mutex<()> = Mutex::new(());
 static PHASE_CHANGED: Condvar = Condvar::new();
 static HOST_TRANSITION_LOCK: Mutex<()> = Mutex::new(());
-static DAEMON_HOST_LOOP_ACTIVE: AtomicBool = AtomicBool::new(false);
-static DAEMON_HOST_HELPERS_STARTED: AtomicBool = AtomicBool::new(false);
 /// Pid of the running daemon child, 0 when none.
 static CHILD_PID: AtomicU32 = AtomicU32::new(0);
 /// Set to relaunch the child at once (its environment changed).
@@ -180,36 +180,12 @@ fn choose_sync_host_for_cli_probe(
     cli_version.map(|version| choose_sync_host(true, true, Some(version)))
 }
 
-fn pause_daemon_if_running<PauseDaemon>(
-    daemon_running: bool,
-    pause_daemon: PauseDaemon,
-) -> Result<(), String>
-where
-    PauseDaemon: FnOnce() -> Result<(), String>,
-{
-    if daemon_running {
-        pause_daemon()
-    } else {
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DaemonHostAction {
-    Start,
-    Reuse,
-}
-
-fn daemon_host_action(worker_active: bool) -> DaemonHostAction {
-    if worker_active {
-        DaemonHostAction::Reuse
-    } else {
-        DaemonHostAction::Start
-    }
-}
-
 fn launch_reconcile_for_host_selection(initial_selection: bool, configured: bool) -> bool {
     initial_selection && configured
+}
+
+fn should_defer_daemon_to_legacy(current: HostPhase, next: HostPhase) -> bool {
+    current == HostPhase::Daemon && next == HostPhase::Legacy
 }
 
 fn next_host_flag_retry_delay(current: Duration, read_failed: bool, sign_in: bool) -> Duration {
@@ -284,8 +260,7 @@ where
             Ok(())
         }
         (HostPhase::Daemon, HostPhase::Legacy) => {
-            pause_daemon()?;
-            start_legacy();
+            drop(pause_daemon);
             Ok(())
         }
         (_, HostPhase::Legacy) => {
@@ -896,6 +871,10 @@ fn apply_host_mode(
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     let previous = current_phase();
+    if should_defer_daemon_to_legacy(previous, next) {
+        log(LOG_TAG, DAEMON_OFF_NEXT_LAUNCH_MESSAGE);
+        return;
+    }
     if previous == next {
         return;
     }
@@ -916,7 +895,7 @@ fn apply_host_mode(
                 .map(|_| ())
                 .map_err(|error| format!("could not stop the legacy watch runner: {error}"))
         },
-        || pause_daemon_if_running(hosted_daemon_status().running, || set_daemon_sync(false)),
+        || set_daemon_sync(false),
         || {
             set_phase(HostPhase::Legacy);
             start_legacy_services(
@@ -936,7 +915,8 @@ fn apply_host_mode(
                     is_autostart_enabled(),
                 ),
             );
-            start_or_resume_daemon_host(daemon_handle, launch_sync)
+            std::thread::spawn(move || enter_daemon_mode(daemon_handle, launch_sync));
+            Ok(())
         },
     );
     if let Err(error) = result {
@@ -1045,34 +1025,6 @@ fn sync_wanted() -> bool {
         && (is_autostart_enabled() || is_realtime_sync_enabled())
 }
 
-struct DaemonHostLoopActiveGuard;
-
-impl Drop for DaemonHostLoopActiveGuard {
-    fn drop(&mut self) {
-        DAEMON_HOST_LOOP_ACTIVE.store(false, Ordering::Release);
-    }
-}
-
-fn start_or_resume_daemon_host(handle: AppHandle, launch_sync: bool) -> Result<(), String> {
-    match daemon_host_action(DAEMON_HOST_LOOP_ACTIVE.load(Ordering::Acquire)) {
-        DaemonHostAction::Reuse => set_daemon_sync(sync_wanted()),
-        DaemonHostAction::Start => {
-            if DAEMON_HOST_LOOP_ACTIVE
-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-            {
-                std::thread::spawn(move || {
-                    let _active = DaemonHostLoopActiveGuard;
-                    enter_daemon_mode(handle, launch_sync);
-                });
-                Ok(())
-            } else {
-                set_daemon_sync(sync_wanted())
-            }
-        }
-    }
-}
-
 fn enter_daemon_mode(handle: AppHandle, launch_sync: bool) {
     // A watch runner from an earlier session would sync the same folder twice.
     if let Err(e) = crate::commands::daemon::stop_watch_runner() {
@@ -1081,22 +1033,17 @@ fn enter_daemon_mode(handle: AppHandle, launch_sync: bool) {
             &format!("could not stop an earlier watch runner: {e}"),
         );
     }
-    if DAEMON_HOST_HELPERS_STARTED
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_ok()
+    // The mesh LaunchAgent this app installed keeps the daemon's mesh waiting.
+    if let Err(e) =
+        tauri::async_runtime::block_on(crate::commands::install_stages::retire_work_mesh_unit())
     {
-        // The mesh LaunchAgent this app installed keeps the daemon's mesh waiting.
-        if let Err(e) =
-            tauri::async_runtime::block_on(crate::commands::install_stages::retire_work_mesh_unit())
-        {
-            log(
-                LOG_TAG,
-                &format!("could not remove the separate Work Mesh unit: {e}"),
-            );
-        }
-        std::thread::spawn(watch_env_changes);
-        crate::commands::sync_progress_watch::setup_last_pass_watch(&handle);
+        log(
+            LOG_TAG,
+            &format!("could not remove the separate Work Mesh unit: {e}"),
+        );
     }
+    std::thread::spawn(watch_env_changes);
+    crate::commands::sync_progress_watch::setup_last_pass_watch(&handle);
     if let Err(e) = set_daemon_sync(sync_wanted()) {
         log(
             LOG_TAG,
@@ -1503,7 +1450,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_legacy_stop_never_starts_daemon_and_daemon_to_legacy_pauses_first() {
+    fn failed_legacy_stop_never_starts_daemon() {
         let events = Arc::new(Mutex::new(Vec::new()));
         let stop_events = events.clone();
         let start_events = events.clone();
@@ -1520,23 +1467,43 @@ mod tests {
         );
         assert_eq!(stopped, Err("runner still active".to_string()));
         assert!(events.lock().unwrap().is_empty());
+    }
+    #[test]
+    fn daemon_host_keeps_running_when_refresh_reads_flag_off() {
+        let resolution = resolve_host_flag_read(Ok(Some(false)), Some(true));
+        assert_eq!(resolution.cache_write, Some(false));
+        let mode = host_mode_for_flag_resolution(resolution, true, Some(HQ_DAEMON_HOST_MIN_CLI));
+        assert_eq!(
+            mode,
+            SyncHostMode::Legacy(hq_desktop_core::hq_daemon::LegacyReason::FlagOff)
+        );
 
+        let events = Arc::new(Mutex::new(Vec::new()));
         let pause_events = events.clone();
         let legacy_events = events.clone();
-        run_host_transition(
-            HostPhase::Daemon,
-            HostPhase::Legacy,
-            || Ok(()),
-            || {
-                pause_events.lock().unwrap().push("pause-daemon");
-                Ok(())
-            },
-            || legacy_events.lock().unwrap().push("start-legacy"),
-            || unreachable!("daemon host is not started in this transition"),
-        )
-        .unwrap();
-        assert_eq!(*events.lock().unwrap(), ["pause-daemon", "start-legacy"]);
+        let defer = should_defer_daemon_to_legacy(HostPhase::Daemon, HostPhase::Legacy);
+        assert!(defer);
+        assert_eq!(
+            DAEMON_OFF_NEXT_LAUNCH_MESSAGE,
+            "desktop.hq-daemon turned off; the switch applies on the next launch (daemon-off-by-flag)"
+        );
+        if !defer {
+            run_host_transition(
+                HostPhase::Daemon,
+                HostPhase::Legacy,
+                || Ok(()),
+                || {
+                    pause_events.lock().unwrap().push("pause-daemon");
+                    Ok(())
+                },
+                || legacy_events.lock().unwrap().push("start-legacy"),
+                || Ok(()),
+            )
+            .unwrap();
+        }
+        assert!(events.lock().unwrap().is_empty());
     }
+
     #[test]
     fn unreadable_cli_version_keeps_the_current_mode_for_retry() {
         assert_eq!(choose_sync_host_for_cli_probe(true, true, None), None);
@@ -1549,31 +1516,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_transition_skips_pause_when_daemon_is_not_running() {
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let pause_events = events.clone();
-        let legacy_events = events.clone();
-        run_host_transition(
-            HostPhase::Daemon,
-            HostPhase::Legacy,
-            || Ok(()),
-            || {
-                pause_daemon_if_running(false, || {
-                    pause_events.lock().unwrap().push("pause-daemon");
-                    Ok(())
-                })
-            },
-            || legacy_events.lock().unwrap().push("start-legacy"),
-            || Ok(()),
-        )
-        .unwrap();
-        assert_eq!(*events.lock().unwrap(), ["start-legacy"]);
-    }
-
-    #[test]
-    fn active_daemon_worker_is_reused_and_later_switches_skip_launch_reconcile() {
-        assert_eq!(daemon_host_action(true), DaemonHostAction::Reuse);
-        assert_eq!(daemon_host_action(false), DaemonHostAction::Start);
+    fn launch_reconcile_runs_only_during_initial_host_selection() {
         assert!(launch_reconcile_for_host_selection(true, true));
         assert!(!launch_reconcile_for_host_selection(false, true));
     }
