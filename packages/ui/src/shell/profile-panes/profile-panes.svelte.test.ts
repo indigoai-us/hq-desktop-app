@@ -39,6 +39,26 @@ describe("ProfilePaneHost", () => {
     expect(host.querySelector('[data-testid="user-profile-shimmer"]')).not.toBeNull();
   });
 
+  it("person profile wires View in Atlas and Manage access", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    const calls: string[] = [];
+    mount(ProfilePaneHost, {
+      target: host,
+      props: {
+        kind: "person",
+        name: "Maya Chen",
+        company: "Indigo",
+        onatlas: () => calls.push("atlas"),
+        onmanage: () => calls.push("manage"),
+      },
+    });
+    await tick();
+    (host.querySelector('[data-testid="user-profile-atlas"]') as HTMLButtonElement).click();
+    (host.querySelector('[data-testid="user-profile-manage"]') as HTMLButtonElement).click();
+    expect(calls).toEqual(["atlas", "manage"]);
+  });
+
   it("confirms Stop and switches the session to the ended state", async () => {
     host = document.createElement("div");
     document.body.appendChild(host);

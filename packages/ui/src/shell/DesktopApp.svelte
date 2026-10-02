@@ -11118,6 +11118,12 @@
                       live: openProfileMember.online,
                       onclose: closeMemberProfile,
                       onmessage: () => messageMemberDirectly(openProfileMember!),
+                      onatlas: selectedRow.companyUid
+                        ? () => void navigate(companyRowDestination("atlas", selectedRow!.companyUid!))
+                        : undefined,
+                      onmanage: selectedRow.companyUid
+                        ? () => void navigate(companyRowDestination("team", selectedRow!.companyUid!))
+                        : undefined,
                     }}
                   >
                     {#snippet skeleton()}

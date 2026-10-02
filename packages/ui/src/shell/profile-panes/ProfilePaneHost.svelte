@@ -40,6 +40,7 @@
     onclose?: () => void;
     onmessage?: () => void;
     onatlas?: () => void;
+    onmanage?: () => void;
     /** Bot controls: the agent UID, where it runs, and the hq-pro agents API. */
     agentUid?: string | null;
     runtimeKind?: "local" | "cloud" | null;
@@ -60,6 +61,7 @@
     onclose,
     onmessage,
     onatlas,
+    onmanage,
     agentUid = null,
     runtimeKind = null,
     companyUid = null,
@@ -210,7 +212,7 @@
       onstop={stopSession}
     />
   {:else}
-    <UserProfilePane snapshot={personView} {onclose} {onmessage} {onatlas} />
+    <UserProfilePane snapshot={personView} {onclose} {onmessage} {onatlas} {onmanage} />
   {/if}
   {#if editing}
     <EditBotSheet {name} initialTab={editTab} onclose={() => (editing = false)} onsave={() => (editing = false)} />

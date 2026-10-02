@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 const here = dirname(fileURLToPath(import.meta.url));
 const FILES = [
   "BotProfilePane.svelte",
+  "UserProfilePane.svelte",
   "../../chat/LocalBotDetailPanel.svelte",
   "../../chat/MemberProfilePanel.svelte",
   "../../chat/AgentDetailPanel.svelte",

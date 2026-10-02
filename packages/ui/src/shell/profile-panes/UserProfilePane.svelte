@@ -6,9 +6,11 @@
     onclose?: () => void;
     onmessage?: () => void;
     onatlas?: () => void;
+    /** Opens the company Team page, where membership and access are managed. */
+    onmanage?: () => void;
   }
 
-  let { snapshot, onclose, onmessage, onatlas }: Props = $props();
+  let { snapshot, onclose, onmessage, onatlas, onmanage }: Props = $props();
   const phase = $derived(profilePhase(snapshot?.name));
   const initials = $derived((snapshot?.name ?? "?").slice(0, 2).toUpperCase());
 </script>
@@ -23,7 +25,7 @@
   <header class="head">
     <span>Profile</span>
     <span class="grow"></span>
-    <button type="button" class="icon" data-testid="user-profile-close" aria-label="Close profile" onclick={() => onclose?.()}>✕</button>
+    <button type="button" class="icon" data-testid="user-profile-close" aria-label="Close profile" onclick={() => onclose?.()}>×</button>
   </header>
   {#if phase === "shimmer" || !snapshot}
     <div class="body" data-testid="user-profile-shimmer" aria-busy="true">
@@ -45,7 +47,7 @@
       {/if}
       <div class="acts">
         <button type="button" class="btn primary" data-testid="user-profile-message" onclick={() => onmessage?.()}>Message</button>
-        <button type="button" class="btn" data-testid="user-profile-atlas" onclick={() => onatlas?.()}>View in Atlas</button>
+        {#if onatlas}<button type="button" class="btn" data-testid="user-profile-atlas" onclick={() => onatlas?.()}>View in Atlas</button>{/if}
       </div>
       <div class="k">Presence</div>
       <div class="kv">
@@ -57,7 +59,7 @@
       {#if snapshot.bots.length}
         <div class="k">Bots they own</div>
         {#each snapshot.bots as bot (bot.name)}
-          <div class="li"><span class="sq" class:on={bot.live} aria-hidden="true">⌁</span><div><div>{bot.name}</div><div class="mm">{bot.note}</div></div></div>
+          <div class="li"><span class="sq" class:on={bot.live} aria-hidden="true">{bot.name.slice(0, 1).toUpperCase()}</span><div><div>{bot.name}</div><div class="mm">{bot.note}</div></div></div>
         {/each}
       {/if}
       {#if snapshot.channels.length}
@@ -70,7 +72,7 @@
           <div class="li"><span class="fi">FILE</span><div><div>{file.name}</div><div class="mm">{file.meta}</div></div></div>
         {/each}
       {/if}
-      <div class="manage"><span>Access follows company membership.</span><span class="link">Manage access</span></div>
+      <div class="manage"><span>Access follows company membership.</span>{#if onmanage}<button type="button" class="link" data-testid="user-profile-manage" onclick={() => onmanage?.()}>Manage access</button>{/if}</div>
     </div>
   {/if}
 </aside>
@@ -80,60 +82,66 @@
     box-sizing: border-box; max-width: 100%; height: 100%; min-height: 0;
     display: flex; flex-direction: column;
     background: var(--side-bg, var(--v4-secondary-sidebar));
-    box-shadow: inset 1px 0 0 var(--v4-glass-highlight, transparent);
     color: var(--v4-text-1);
+    font: 400 13px/1.45 var(--font-ui, var(--font-sans));
   }
   .head {
-    height: 52px; flex: none; display: flex; align-items: center; gap: 8px;
-    padding: 0 10px 0 16px; border-bottom: 1px solid var(--v4-rowline, var(--line));
-    font-size: var(--type-section, 15px); font-weight: 600;
+    flex: none; display: flex; align-items: center; gap: 8px;
+    padding: 12px 14px; border-bottom: 1px solid var(--v4-rowline, var(--line));
+    font-size: 13px; font-weight: 500;
   }
   .grow { flex: 1; }
-  .icon { width: 24px; height: 24px; border: 0; background: transparent; color: var(--v4-text-3); cursor: pointer; }
-  .body { overflow: auto; padding: 16px; min-height: 0; }
+  .icon {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 24px; height: 24px; padding: 0; border: 0; border-radius: 6px;
+    background: transparent; color: var(--v4-text-2); font-size: 13px; cursor: pointer;
+  }
+  .icon:hover { background: var(--hover, var(--v4-hover)); color: var(--v4-text-1); }
+  .body { overflow: auto; padding: 24px 20px; min-height: 0; }
   .idn { display: flex; gap: 12px; align-items: center; }
   .av {
     width: 48px; height: 48px; border-radius: 50%; position: relative; flex: none;
-    display: grid; place-items: center; font-weight: 600;
+    display: grid; place-items: center; font-weight: 500;
     background: var(--v4-control-bg); color: var(--v4-text-1);
   }
   .ld {
     position: absolute; right: 0; bottom: 0; width: 11px; height: 11px; border-radius: 50%;
     background: var(--v4-ok); border: 2px solid var(--v4-ground, var(--side-bg));
   }
-  .nm { font-size: var(--type-section, 15px); font-weight: 600; }
-  .em { font-size: var(--type-metadata, 12px); color: var(--v4-text-3); margin-top: 2px; }
+  .nm { font-size: 20px; line-height: 1.25; font-weight: 500; }
+  .em { color: var(--v4-text-3); margin-top: 2px; }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
-  .chip { padding: 2px 7px; border-radius: var(--v4-radius-pill, 999px); background: var(--v4-control-bg); color: var(--v4-text-2); font-size: 11px; }
-  .acts { display: flex; gap: 6px; margin-top: 14px; }
+  .chip { padding: 1px 7px; border-radius: var(--v4-radius-pill, 999px); background: var(--v4-control-bg); color: var(--v4-text-2); }
+  .acts { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 6px; margin-top: 16px; }
   .btn {
-    border: 1px solid var(--v4-control-border, var(--line));
-    background: var(--v4-control-faint, transparent);
-    color: var(--v4-text-1); border-radius: var(--v4-radius-button, 6px);
-    padding: 4px 8px; font: inherit; cursor: pointer;
+    height: 32px; padding: 0 10px;
+    border: 1px solid var(--v4-control-border, var(--line2));
+    background: transparent;
+    color: var(--v4-text-1); border-radius: 8px;
+    font: inherit; white-space: nowrap; cursor: pointer;
   }
-  .btn.primary { background: var(--v4-primary-bg); color: var(--v4-primary-fg); border-color: transparent; }
-  .k {
-    font-family: var(--font-mono, "Geist Mono", monospace);
-    font-size: 10px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase;
-    color: var(--v4-text-2); margin: 18px 0 6px;
-  }
-  .kv { display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: 4px 8px; font-size: var(--type-metadata, 12px); }
-  .kv .k { margin: 0; font-weight: 400; color: var(--v4-text-3); letter-spacing: 0; text-transform: none; font-family: inherit; font-size: inherit; }
-  .live { color: var(--v4-ok); }
-  .li { display: flex; gap: 10px; align-items: center; padding: 6px 0; }
+  .btn:hover { background: var(--hover, var(--v4-hover)); }
+  .btn.primary { background: var(--v4-primary-bg, var(--t1)); color: var(--v4-primary-fg, var(--v4-bg)); border-color: transparent; font-weight: 500; }
+  .btn.primary:hover { filter: brightness(1.08); }
+  .k { font-weight: 500; color: var(--v4-text-2); margin: 20px 0 6px; }
+  .kv { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 6px 12px; }
+  .kv .k { margin: 0; font-weight: 400; color: var(--v4-text-3); }
+  .live { display: inline-flex; align-items: center; gap: 6px; color: var(--v4-text-1); }
+  .live::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--v4-ok); }
+  .li { display: flex; gap: 10px; align-items: center; min-height: 31px; }
   .sq, .fi {
     width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center; flex: none;
-    background: var(--v4-control-bg); font-size: 9px;
+    background: var(--v4-control-bg); font-size: 10px;
   }
   .sq.on { box-shadow: inset 0 0 0 1px var(--v4-ok); }
   .fi { font-family: var(--font-mono, "Geist Mono", monospace); font-size: 8px; color: var(--v4-text-2); }
-  .mm { font-size: 11px; color: var(--v4-text-3); }
-  .chan { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: var(--type-metadata, 12px); color: var(--v4-text-2); }
-  .chan span::before { content: "#"; font-family: var(--font-mono, "Geist Mono", monospace); color: var(--v4-text-3); margin-right: 2px; }
-  .manage { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--v4-rowline, var(--line)); display: flex; gap: 8px; font-size: var(--type-metadata, 12px); color: var(--v4-text-3); }
-  .link { color: var(--v4-text-2); text-decoration: underline; text-underline-offset: 3px; }
-  .shimmer { border-radius: 6px; background: var(--v4-control-faint, rgba(255,255,255,0.06)); margin-bottom: 8px; }
+  .mm { color: var(--v4-text-3); }
+  .chan { display: flex; flex-wrap: wrap; gap: 4px 10px; color: var(--v4-text-2); }
+  .chan span::before { content: "#"; color: var(--v4-text-3); margin-right: 2px; }
+  .manage { margin-top: 20px; padding-top: 12px; border-top: 1px solid var(--v4-rowline, var(--line)); display: flex; align-items: baseline; gap: 8px; color: var(--v4-text-3); }
+  .link { flex: none; margin-left: auto; padding: 0; border: 0; background: none; font: inherit; color: var(--v4-text-2); white-space: nowrap; cursor: pointer; }
+  .link:hover { color: var(--v4-text-1); text-decoration: underline; text-underline-offset: 3px; }
+  .shimmer { border-radius: 6px; background: var(--v4-control-faint, var(--line)); margin-bottom: 8px; }
   .shimmer.id { height: 48px; }
   .shimmer.row { height: 14px; }
   .shimmer.block { height: 64px; }

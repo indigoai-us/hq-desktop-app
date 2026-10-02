@@ -265,7 +265,7 @@
   }
   .nm { font-size: 20px; line-height: 1.25; font-weight: 500; color: var(--v4-text-1); }
   .hd { color: var(--v4-text-3); margin-top: 2px; }
-  .act { display: flex; gap: 6px; }
+  .act { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
   .btn {
     flex: 1 1 0;
     min-width: 0;
