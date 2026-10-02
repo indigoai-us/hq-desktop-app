@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Core update failures now report the available snapshot disk space instead of the required snapshot size.
+
 ## [0.10.381] — 2026-10-02
 
 - Sync works again for everyone whose app runs sync itself. Since 0.10.369 the app passed a launcher option to hq-cloud runners 6.18.25 to 6.18.37 that made every sync pass fail, so nothing synced. The app now passes it only to runners from 6.18.38, which handle it correctly.
