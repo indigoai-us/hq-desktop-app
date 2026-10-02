@@ -8,6 +8,7 @@ export * from "./library-shelf.js";
 export * from "./plan-limit.js";
 export {
   CLAUDE_PROVIDER_FLAG,
+  DESKTOP_LIMIT_STATUS_PUSH_FLAG,
   FIRST_FOLDER_SYNC_STEP_FLAG,
   HUMAN_ONLY_CONVERSATIONS_FLAG,
   HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT,

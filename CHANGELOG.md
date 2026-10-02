@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- On refresh, HQ Desktop can show the existing plan-limit notice when a free company is nearing or over a resource limit.
 - First run now sets up your company. After the install finishes, someone
   with no company names one (with an optional website and teammate invites),
   then picks Starter or Workforce. Workforce opens checkout in your browser
