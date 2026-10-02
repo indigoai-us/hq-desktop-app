@@ -461,8 +461,7 @@
           if (
             plan.plan !== 'free' ||
             plan.cohort !== 'enforceable' ||
-            plan.planLimitsExempt === true ||
-            plan.payingBypass === true
+            plan.planLimitsExempt === true
           ) {
             removeStatusPushNotice(workspace.slug);
             continue;

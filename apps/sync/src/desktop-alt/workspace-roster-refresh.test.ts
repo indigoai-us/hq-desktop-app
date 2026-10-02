@@ -272,7 +272,6 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
         plan: 'free',
         cohort: 'enforceable',
         planLimitsExempt: false,
-        payingBypass: false,
         agents: { used: 8, limit: 10, over: false, pctUsed: 80 },
         upgradeUrl: 'https://hq.computer/companies/acme/billing?upgrade=team',
       },
@@ -292,6 +291,71 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
     expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeNull();
   });
 
+  it.each([
+    {
+      name: 'free enforceable over-limit resource',
+      usageBody: {
+        plan: 'free',
+        cohort: 'enforceable',
+        planLimitsExempt: false,
+        agents: { used: 11, limit: 10, over: true, pctUsed: 110 },
+      },
+      expectedNotice: true,
+    },
+    {
+      name: 'free enforceable resource at 80 percent',
+      usageBody: {
+        plan: 'free',
+        cohort: 'enforceable',
+        planLimitsExempt: false,
+        agents: { used: 8, limit: 10, over: false, pctUsed: 80 },
+      },
+      expectedNotice: true,
+    },
+    {
+      name: 'grandfathered cohort',
+      usageBody: {
+        plan: 'free',
+        cohort: 'grandfathered',
+        planLimitsExempt: false,
+        agents: { used: 11, limit: 10, over: true, pctUsed: 110 },
+      },
+      expectedNotice: false,
+    },
+    {
+      name: 'plan-limit exempt company',
+      usageBody: {
+        plan: 'free',
+        cohort: 'enforceable',
+        planLimitsExempt: true,
+        agents: { used: 11, limit: 10, over: true, pctUsed: 110 },
+      },
+      expectedNotice: false,
+    },
+    {
+      name: 'non-free plan',
+      usageBody: {
+        plan: 'team',
+        cohort: 'enforceable',
+        planLimitsExempt: false,
+        agents: { used: 11, limit: 10, over: true, pctUsed: 110 },
+      },
+      expectedNotice: false,
+    },
+  ])('uses the serialized usage response for $name', async ({ usageBody, expectedNotice }) => {
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    expect(JSON.parse(JSON.stringify(usageBody))).not.toHaveProperty('payingBypass');
+    const { invokeFn } = mockInvoke([() => ({ workspaces: [ACME] })], {
+      limitStatusPushFlag: true,
+      usageBody,
+    });
+    component = mount(HqWorkWorkShell, { target: host, props: { invokeFn } });
+    await flush();
+
+    expect(Boolean(host.querySelector('[data-testid=\"sync-plan-limit-notice\"]'))).toBe(expectedNotice);
+  });
+
   it('does not push a notice for a free company below the warning threshold', async () => {
     host = document.createElement('div');
     document.body.appendChild(host);
@@ -301,7 +365,6 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
         plan: 'free',
         cohort: 'enforceable',
         planLimitsExempt: false,
-        payingBypass: false,
         agents: { used: 4, limit: 10, over: false, pctUsed: 40 },
       },
     });
@@ -320,7 +383,6 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
         plan: 'free',
         cohort: 'enforceable',
         planLimitsExempt: true,
-        payingBypass: false,
         agents: { used: 11, limit: 10, over: false, pctUsed: 110 },
       },
     });
