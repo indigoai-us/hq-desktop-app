@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Desktop usage uploads are limited to four requests and 4 MB per sync; remaining records resume on later syncs.
 - Automatic updates now install after the idle cap even when sync stays busy. HQ pauses new sync cycles and waits up to a minute for active transfers before installing. A meeting recording, transcript processing, or another core update can still delay installation.
 
 - Desktop setup completion telemetry now carries the persisted install attempt ID so it can join to first launch.
