@@ -353,7 +353,7 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
     id: "open-company-integrations",
     file: SHARED_SHELL_FILE,
     needle: "function openCompanyIntegrations(uid: string): void",
-    destinationKind: "company",
+    destinationKind: "extra",
     history: "push",
     host: "shared-shell",
     inScope: true,
