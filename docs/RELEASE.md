@@ -483,6 +483,12 @@ public key. Both `apps/sync/src-tauri/tauri.conf.json` (macOS) and
 - Beta and alpha resolve the highest eligible public release for their channel,
   then read that tag's
   `https://github.com/indigoai-us/hq-desktop-app/releases/download/<tag>/latest.json`.
+- Local builds never self-update in the background. `tauri dev`, any build
+  with debug assertions (`tauri build --debug`, `pnpm --dir apps/sync
+  bundle:debug`) and any run with `HQ_DEV_NO_AUTO_UPDATE=1` skip the background
+  checker, so a debug bundle keeps the version stamped from `versions.toml`.
+  Set `HQ_DEV_ALLOW_AUTO_UPDATE=1` on a debug build to exercise the updater on
+  purpose. Manual "Check for updates" is unchanged.
 
 - `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: the single private key matching that pubkey (the `hq-sync` macOS updater key — set it once; the macOS and Windows jobs both use it).
 
