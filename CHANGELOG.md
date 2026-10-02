@@ -8,10 +8,11 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- If the desktop cannot read the HQ daemon flag at startup, it now uses the last successfully read value, retries with bounded backoff, and rechecks after sign-in so the sync host can switch without a relaunch.
+
 ## [0.10.381] — 2026-10-02
 
 - Sync works again for everyone whose app runs sync itself. Since 0.10.369 the app passed a launcher option to hq-cloud runners 6.18.25 to 6.18.37 that made every sync pass fail, so nothing synced. The app now passes it only to runners from 6.18.38, which handle it correctly.
-- If the desktop cannot read the HQ daemon flag at startup, it now uses the last successfully read value, retries with bounded backoff, and rechecks after sign-in so the sync host can switch without a relaunch.
 - Inviting a teammate after setup no longer fails when that address was already invited: HQ resends the existing invitation and says so. Other invite failures now name the cause (plan limit, invalid email, no connection, server problem) instead of a generic message, and the setup telemetry records the error kind and HTTP status.
 - When you name a new company during setup, HQ now waits for the company's cloud storage to be ready before sending invites. If it isn't ready yet, the invites are queued and sent the next time the app sees the company ready, and the setup screen says they are pending instead of reporting them sent.
 - The "Name your company" setup form no longer shows "(optional)" twice on the Website label, and the Invite teammates box now matches the other fields.
