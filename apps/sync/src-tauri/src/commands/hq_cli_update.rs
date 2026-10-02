@@ -1441,7 +1441,7 @@ async fn resolve_npm_global_prefix_for_lease(npm: &str, path: &str) -> Result<St
     command.args(["prefix", "-g"]).env("PATH", path);
     let output = tokio::time::timeout(
         Duration::from_secs(3),
-        tokio::process::Command::from_std(command)
+        tokio::process::Command::from(command)
             .kill_on_drop(true)
             .output(),
     )
