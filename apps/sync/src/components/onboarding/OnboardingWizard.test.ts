@@ -227,6 +227,7 @@ type ContinuationTestOptions = {
   config?: unknown | (() => unknown);
   identity?: unknown | (() => unknown);
   mayStart?: string | null;
+  downloadToken?: string | null;
   cancel?: undefined | (() => Promise<void>);
   deliver?: (args: { path: string; body: Record<string, string | number> }) => number;
 };
@@ -240,6 +241,7 @@ function stubContinuationInvoke({
   config = CONTINUATION_CONFIG,
   identity = { email: 'placeholder account' },
   mayStart = null,
+  downloadToken = null,
   cancel,
   deliver = () => 200,
 }: ContinuationTestOptions = {}) {
@@ -252,6 +254,8 @@ function stubContinuationInvoke({
         return NO_AI_TOOLS;
       case 'is_first_run':
         return true;
+      case 'first_launch_download_token':
+        return downloadToken;
       case 'get_auth_state':
         return { authenticated };
       case 'emit_desktop_operational_telemetry':
@@ -748,6 +752,21 @@ describe('first-run sign-in screen', () => {
     await flushUntil(() => deliveredLaunches.length === 2);
     expect(deliveredLaunches[1]).toEqual(deliveredLaunches[0]);
     expect(localStorage.getItem(__INTERNALS__.STORAGE_KEY)).toContain('"firstLaunchRecorded":true');
+  });
+
+  it('attaches the native download provenance token to the first-launch receipt', async () => {
+    const deliveredLaunches: Array<Record<string, string | number>> = [];
+    stubContinuationInvoke({
+      config: { ...CONTINUATION_CONFIG, variant: 'control' },
+      downloadToken: 'a'.repeat(43),
+      deliver: ({ path, body }) => {
+        if (path === '/v1/desktop/onboarding/launch') deliveredLaunches.push(body);
+        return 200;
+      },
+    });
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+    await flushUntil(() => deliveredLaunches.length === 1);
+    expect(deliveredLaunches[0].downloadToken).toBe('a'.repeat(43));
   });
 
   it('restarts sign-in once after an expired OAuth attempt', async () => {

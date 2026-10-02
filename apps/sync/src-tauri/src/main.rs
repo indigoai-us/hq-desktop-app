@@ -739,6 +739,7 @@ fn main() {
             commands::sync::start_sync,
             commands::sync::cancel_sync,
             commands::first_run::is_first_run,
+            commands::download_provenance::first_launch_download_token,
             commands::first_run::should_show_auto_sync_notice,
             commands::first_run::mark_first_run_complete,
             commands::window_material::window_material_capability,

@@ -27,6 +27,7 @@ pub mod daemon;
 pub mod hq_daemon_host;
 pub mod desktop_alt;
 pub mod desktop_auth;
+pub mod download_provenance;
 pub mod dm_mqtt;
 pub mod dm_notify;
 pub mod dock;

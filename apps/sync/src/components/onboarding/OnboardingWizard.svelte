@@ -966,7 +966,9 @@
     // It survives re-renders and a resumed wizard, while recordReceipt keeps
     // an undelivered receipt's event id and timestamp stable for retry.
     if (firstLaunch && onboardingTelemetry.recordFirstLaunch()) {
-      void recordReceipt(deps, launchReceipt(deps)).catch(() => undefined);
+      const downloadToken = await invokeCommand<string | null>('first_launch_download_token')
+        .catch(() => null);
+      void recordReceipt(deps, launchReceipt(deps, downloadToken)).catch(() => undefined);
     }
   }
 

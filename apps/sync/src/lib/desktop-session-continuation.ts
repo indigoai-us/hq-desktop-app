@@ -343,7 +343,14 @@ export function progressReceipt(
 }
 
 /** Build the once-per-installation launch receipt. */
-export function launchReceipt(deps: ContinuationDeps): ContinuationReceipt {
+export function launchReceipt(
+  deps: ContinuationDeps,
+  downloadToken?: string | null,
+): ContinuationReceipt {
+  const safeDownloadToken =
+    typeof downloadToken === 'string' && /^[A-Za-z0-9_-]{43}$/.test(downloadToken)
+      ? downloadToken
+      : undefined;
   return {
     path: '/v1/desktop/onboarding/launch',
     body: {
@@ -352,6 +359,7 @@ export function launchReceipt(deps: ContinuationDeps): ContinuationReceipt {
       occurredAt: new Date(deps.now()).toISOString(),
       platform: deps.platform,
       version: deps.appVersion,
+      ...(safeDownloadToken ? { downloadToken: safeDownloadToken } : {}),
     },
   };
 }

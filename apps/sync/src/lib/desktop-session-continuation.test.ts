@@ -252,6 +252,13 @@ describe('the receipt queue', () => {
     expect(delivered[0].path).toBe('/v1/desktop/onboarding/launch');
   });
 
+  it('adds only a correctly shaped first-launch download token', () => {
+    const { deps } = harness();
+    expect(launchReceipt(deps, 'a'.repeat(43)).body.downloadToken).toBe('a'.repeat(43));
+    expect(launchReceipt(deps, 'too-short').body).not.toHaveProperty('downloadToken');
+    expect(launchReceipt(deps).body).not.toHaveProperty('downloadToken');
+  });
+
   it('replays the receipt unchanged, timestamp and all', async () => {
     // The server's sort key includes occurredAt, so a re-stamped retry writes a
     // SECOND row instead of deduplicating against the first. The receipt has to

@@ -194,7 +194,8 @@ describe('the first-run wizard never opens the browser on its own', () => {
       onboardingWizard.indexOf('async function completeAuthenticatedSignIn'),
     );
     expect(record).toContain('onboardingTelemetry.recordFirstLaunch()');
-    expect(record).toContain('recordReceipt(deps, launchReceipt(deps))');
+    expect(record).toContain("invokeCommand<string | null>('first_launch_download_token')");
+    expect(record).toContain('recordReceipt(deps, launchReceipt(deps, downloadToken))');
     expect(record).toContain('flushReceipts(deps)');
     expect(record).toContain('onboardingTelemetry.setInstallAttemptId(context.installAttemptId)');
     expect(record.indexOf('setInstallAttemptId(')).toBeLessThan(
