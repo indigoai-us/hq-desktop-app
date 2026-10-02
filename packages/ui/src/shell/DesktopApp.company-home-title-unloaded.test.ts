@@ -11,9 +11,9 @@
  * with the company header, but the title read
  * "chn_01M3C8NWK6KAE8ZY6BWBD61XTG".
  *
- * The fix: `ChatSidebar.openHomeChannelId()` now seeds `requestChannelOpen`
- * with the company's slug as a display hint, so the stub is titled with the
- * slug (never the raw id) from the first paint. Once `fetchChannel` (the
+ * The fix: `ChatSidebar.openHomeChannelId()` seeds `requestChannelOpen`
+ * with the company's display name as a hint, so the stub is titled with the
+ * company name (never the raw id or slug) from the first paint. Once `fetchChannel` (the
  * channel-get call the timeline fetch already makes) returns the channel's
  * own metadata, `DesktopApp.hydrateStubChannelRow` adopts the real name.
  */
@@ -39,7 +39,7 @@ const SETUP_ROW: ConversationRow = {
 
 const LIVERECOVER: Workspace = {
   slug: "liverecover",
-  displayName: "Liverecover",
+  displayName: "Two Word Company",
   kind: "company",
   state: "synced",
   cloudUid: "cmp_liverecover",
@@ -156,18 +156,18 @@ describe("DesktopApp home-channel title, opened by id before rows load", () => {
     // Mirrors `ChatSidebar.openCompanyHome()` -> `openHomeChannelId()`: the
     // home channel is known from the roster but not among the sidebar's
     // already-loaded rows, so it opens via `requestChannelOpen` with the
-    // company slug as the display hint.
+    // company display name as the display hint.
     requestChannelOpen(LIVERECOVER.homeChannelId!, {
-      title: LIVERECOVER.slug,
+      title: LIVERECOVER.homeChannelId!,
       companyUid: LIVERECOVER.cloudUid,
     });
     await settle(12);
 
     // Before the channel-get call resolves, the title must never be the raw
-    // id — it should read the company slug.
+    // id or slug — it should read the company display name.
     const titleEl = () => host.querySelector('[data-testid="channel-name"]');
     await vi.waitFor(() => expect(titleEl()).toBeTruthy());
-    expect(titleEl()?.textContent).toBe("liverecover");
+    expect(titleEl()?.textContent).toBe("Two Word Company");
     expect(titleEl()?.textContent).not.toContain("chn_");
 
     // Once the channel-get metadata lands, the real name replaces the stub
@@ -177,8 +177,42 @@ describe("DesktopApp home-channel title, opened by id before rows load", () => {
     await settle(12);
 
     await vi.waitFor(() => {
-      expect(titleEl()?.textContent).toBe("Liverecover Home");
+      // A company-home header represents the company. The channel's metadata
+      // may call it "Liverecover Home", but the current cloud company name is
+      // the user-facing label this issue requires.
+      expect(titleEl()?.textContent).toBe("Two Word Company");
     });
     expect(titleEl()?.textContent).not.toContain("chn_");
   }, 15_000);
+
+  it("keeps the slug as the provisional title when only the slug is known", async () => {
+    const slugOnlyCompany = { ...LIVERECOVER, displayName: LIVERECOVER.slug };
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(DesktopApp, {
+      target: host,
+      props: {
+        adapter: adapter(),
+        sidebarApi: createFixtureChatSidebarApi(),
+        notificationsApi: createEmptyNotificationsApi(),
+        self: { uid: "prs_test", displayName: "Stefan Johnson", email: "stefan@example.com" },
+        coreFixtures: false,
+        initialRow: SETUP_ROW,
+        companies: [slugOnlyCompany],
+      },
+    });
+    await settle();
+
+    requestChannelOpen(LIVERECOVER.homeChannelId!, {
+      title: LIVERECOVER.slug,
+      companyUid: LIVERECOVER.cloudUid,
+    });
+    await settle(12);
+
+    await vi.waitFor(() => {
+      const titleEl = host.querySelector('[data-testid="channel-name"]');
+      expect(titleEl?.textContent).toBe(LIVERECOVER.slug);
+      expect(titleEl?.textContent).not.toContain("chn_");
+    });
+  });
 });

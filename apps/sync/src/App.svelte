@@ -1016,6 +1016,27 @@
       })
     );
 
+    unlisteners.push(
+      await listen<{
+        title?: unknown;
+        message?: unknown;
+      }>('hq-core-update:automatic-failed', async ({ payload }) => {
+        const title = typeof payload.title === 'string'
+          ? payload.title.slice(0, 80)
+          : 'Core update failed';
+        const body = typeof payload.message === 'string'
+          ? payload.message.slice(0, 240)
+          : 'Open the Core update log for details.';
+        try {
+          if (await isNotifyPermissionGranted()) {
+            sendNotification({ title, body });
+          }
+        } catch (err) {
+          console.error('core update failure notification failed:', err);
+        }
+      })
+    );
+
     // Exact channel unread snapshots include increases and read/decrement
     // transitions, so the aggregate and native menu-bar count cannot stick.
     unlisteners.push(

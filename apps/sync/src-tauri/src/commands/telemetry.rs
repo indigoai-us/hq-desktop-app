@@ -852,6 +852,12 @@ const ALLOWED_DESKTOP_PROPERTY_KEYS: &[&str] = &[
     "errorOperation",
     "errorIoKind",
     "errorCode",
+    "deferralCount",
+    "firstDeferralAgeSeconds",
+    "lockTimeoutSeconds",
+    "holdReason",
+    "requiredGitVersion",
+    "detectedGitVersion",
 ];
 
 const SYMLINK_ERROR_OPERATION_VALUES: &[&str] = &[
@@ -2731,6 +2737,12 @@ mod codex_telemetry_tests {
             "skipReason": "automatic_updates_disabled",
             "platform": "macos-aarch64",
             "errorCategory": "dns",
+            "deferralCount": 10,
+            "firstDeferralAgeSeconds": 21600,
+            "lockTimeoutSeconds": 900,
+            "holdReason": "timeout",
+            "requiredGitVersion": "2.19.0",
+            "detectedGitVersion": "2.15.0",
             "npxResolved": false,
             "npxResolution": "not_resolved",
             "logPath": "/Users/alice/private/core-update.log",
@@ -2752,6 +2764,12 @@ mod codex_telemetry_tests {
         assert_eq!(sanitized["skipReason"], "automatic_updates_disabled");
         assert_eq!(sanitized["platform"], "macos-aarch64");
         assert_eq!(sanitized["errorCategory"], "dns");
+        assert_eq!(sanitized["deferralCount"], 10);
+        assert_eq!(sanitized["firstDeferralAgeSeconds"], 21600);
+        assert_eq!(sanitized["lockTimeoutSeconds"], 900);
+        assert_eq!(sanitized["holdReason"], "timeout");
+        assert_eq!(sanitized["requiredGitVersion"], "2.19.0");
+        assert_eq!(sanitized["detectedGitVersion"], "2.15.0");
         assert_eq!(sanitized["npxResolved"], false);
         assert_eq!(sanitized["npxResolution"], "not_resolved");
         assert!(sanitized.get("logPath").is_none());
@@ -2932,6 +2950,12 @@ mod codex_telemetry_tests {
                 "errorOperation",
                 "errorIoKind",
                 "errorCode",
+                "deferralCount",
+                "firstDeferralAgeSeconds",
+                "lockTimeoutSeconds",
+                "holdReason",
+                "requiredGitVersion",
+                "detectedGitVersion",
             ]
         );
         for key in ALLOWED_DESKTOP_PROPERTY_KEYS {

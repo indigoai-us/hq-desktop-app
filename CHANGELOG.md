@@ -9,6 +9,11 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - When someone takes their first action after desktop setup, HQ can now record which action they took without sending folder details.
+- Desktop now uses the current cloud company name for workspace rows and
+  home-channel labels before falling back to cached names or slugs.
+
+## [0.10.374] — 2026-10-02
+
 - On a fresh install, HQ now shows its logo and "Starting HQ..." right away instead of a blank, frozen window while it starts up.
 - Sign-in and workspace-selection receipts reach HQ again. Since late September the app could not read the `email_verified` claim on Cognito access tokens (it arrives as text, not true/false), so every receipt was held on disk instead of sent. Receipts already held on your machine are sent on the next signed-in start.
 - A first-ever sign-in's receipt is no longer discarded when HQ has not created the person record yet. The app keeps it and resends it once the record exists (HQ stops accepting it after 30 days).
@@ -17,6 +22,11 @@ The release moves it under the version it ships in.
   then picks Starter or Workforce. Workforce opens checkout in your browser
   and HQ picks up when you come back. Someone who was invited can join that
   company instead.
+- Sync health no longer counts runner diagnostics as failed syncs. The runner
+  pin now starts at hq-cloud 6.18.31 and accepts later 6.18 patch releases.
+- Automatic Core updates wait for sync to finish after 10 deferrals or 6 hours.
+  The wait ends after 15 minutes, and a failed update backs off before retrying.
+  Updates also report when Git 2.19.0 or newer is required.
 - Desktop sign-in can open the website first to link the new account to the native app; if that check fails, it opens Cognito directly as before.
 - Library Back now leaves internal Library tab history and returns to the prior app screen.
 
