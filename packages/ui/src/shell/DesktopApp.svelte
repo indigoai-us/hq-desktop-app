@@ -41,6 +41,8 @@
   import type { MoreCompany } from "./more-companies.js";
   import TelemetryRailHost from "./TelemetryRailHost.svelte";
   import AtlasLandingHost from "./AtlasLandingHost.svelte";
+  import ActivityRailHost from "./ActivityRailHost.svelte";
+  import GoalsRailHost from "./GoalsRailHost.svelte";
   import TeamPage from "../company/TeamPage.svelte";
   import BotsPage from "../company/BotsPage.svelte";
   import {
@@ -9611,6 +9613,16 @@
               void navigate({ kind: "dm", personUid: uid });
             }}
             onsettings={() => openSettings("bots")}
+          />
+        {:else if railPlaceholder?.id === "activity" && companyPaneCompany}
+          <ActivityRailHost
+            slug={companyPaneCompany.slug ?? ""}
+            companyLabel={companyPaneCompany.label}
+          />
+        {:else if railPlaceholder?.id === "goals" && companyPaneCompany}
+          <GoalsRailHost
+            {adapter}
+            slug={companyPaneCompany.slug ?? ""}
           />
         {:else if railPlaceholder?.id === "telemetry"}
           <TelemetryRailHost />
