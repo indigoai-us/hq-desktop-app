@@ -62,7 +62,7 @@
     type MemberOption,
     type SecretRow,
   } from "./files-connect-model.js";
-  import { parseListPage, type AtlasListedObject } from "../../atlas/atlas-build.js";
+  import { parseListPage, type AtlasListedObject } from "../../shell/vault-list-page.js";
 
   interface Props {
     page: FilesConnectPageId;

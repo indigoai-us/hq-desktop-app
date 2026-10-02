@@ -21,10 +21,10 @@ import type { AtlasLocalSource, AtlasVaultSource } from "../shell/atlas-landing.
 
 export type { AtlasLocalSource, AtlasVaultSource };
 
-export type AtlasListedObject = { key: string; lastModified?: string | null; size?: number };
+import { parseListPage, type AtlasListedObject, type AtlasListPage } from "../shell/vault-list-page.js";
 
-/** One page of `GET /v1/files/list`. */
-export type AtlasListPage = { objects: AtlasListedObject[]; cursor: string | null };
+export { parseListPage };
+export type { AtlasListedObject, AtlasListPage };
 
 type AtlasPrdRefs = {
   projectId: string;
@@ -46,28 +46,6 @@ const PRD_FETCH_CONCURRENCY = 32;
 export const ATLAS_PRD_BUDGET_MS = 8_000;
 const RECENT_FILES = 80;
 const SKIP_ROOT_FILES = new Set(["INDEX.md", "README.md", "board.json", "company.yaml"]);
-
-/** Parse one `/v1/files/list` body. Throws on a shape the builder cannot use. */
-export function parseListPage(raw: unknown): AtlasListPage {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new Error("vault listing did not parse");
-  }
-  const row = raw as Record<string, unknown>;
-  if (!Array.isArray(row.objects)) throw new Error("vault listing did not parse");
-  const objects: AtlasListedObject[] = [];
-  for (const item of row.objects) {
-    if (!item || typeof item !== "object") continue;
-    const o = item as Record<string, unknown>;
-    if (typeof o.key !== "string" || !o.key) continue;
-    objects.push({
-      key: o.key,
-      lastModified: typeof o.lastModified === "string" ? o.lastModified : null,
-      size: typeof o.size === "number" ? o.size : undefined,
-    });
-  }
-  const cursor = typeof row.cursor === "string" && row.cursor ? row.cursor : null;
-  return { objects, cursor };
-}
 
 async function listAll(
   source: AtlasVaultSource,
