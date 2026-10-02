@@ -99,7 +99,6 @@
     setupCompletionResult,
     setupProgressPercent,
     setupStageRecoveryAction,
-    SETUP_DEPS_TIMEOUT_RETRY_FLAG,
     stageCommandInvocations,
     stageTimeoutMs,
     setupFailureTelemetryDetails,
@@ -159,6 +158,7 @@
     createSyncPlatformAdapter,
     dispatchPostReadyAction,
     FIRST_FOLDER_SYNC_STEP_FLAG,
+    SETUP_DEPS_TIMEOUT_RETRY_FLAG,
     retryThrottled,
   } from '@hq/platform';
   import { markPostReadyActionReady } from '../../lib/post-ready-action-telemetry';
