@@ -8,6 +8,23 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- In the sidebar, the order and the day headings now both follow the latest
+  message a person typed, where the server reports it: a channel that only
+  bots posted in today is listed under the day a person last typed in it. A
+  conversation with no typed message is placed by when it was created, so a
+  channel made today appears under Today. A conversation the server has not
+  classified yet, which today includes every direct message, is placed by its
+  latest activity. In 0.10.373 those conversations were listed alphabetically
+  within each day instead of by time. They stay placed by activity until the
+  server update and its one-time fill-in are in place.
+
+- Channels and direct messages that hide bot and session activity now ask the
+  server for the filtered history. When a conversation opens on a long run of
+  hidden activity, the app loads earlier history automatically up to a limit
+  and then offers "Look further back", instead of showing an empty pane with
+  a "load earlier" button. With an older server the app filters on its side,
+  as before.
+
 - Desktop sign-in can open the website first to link the new account to the native app; if that check fails, it opens Cognito directly as before.
 
 ## [0.10.373] — 2026-10-01
@@ -27,21 +44,7 @@ The release moves it under the version it ships in.
 - Desktop company-creation invites identify the desktop surface in the hq-pro team invite action.
 - Windows setup now detects Claude Code from the current user PATH and
   Anthropic's user-local install directory, including on Retry.
-- The sidebar orders DMs and channels by the latest message a person typed,
-  where the server reports it, and the day headings follow the same time: a
-  channel that only bots posted in today is listed under the day a person
-  last typed in it. A conversation with no typed message is placed by when it
-  was created, so a channel made today appears under Today. A conversation
-  the server has not classified yet, which today includes every direct
-  message, is still placed by its latest activity. That stays the case until
-  the server update and its one-time fill-in are in place.
-
-- Channels and direct messages that hide bot and session activity now ask the
-  server for the filtered history. When a conversation opens on a long run of
-  hidden activity, the app loads earlier history automatically up to a limit
-  and then offers "Look further back", instead of showing an empty pane with
-  a "load earlier" button. With an older server the app filters on its side,
-  as before.
+- The sidebar orders DMs and channels by the latest message a person typed.
 
 - HQ no longer restarts for an update, or at support's request, while a meeting
   is being recorded; it waits until the recording finishes.
