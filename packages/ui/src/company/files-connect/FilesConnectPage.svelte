@@ -29,6 +29,7 @@
     companyDeploymentRows,
     deployPrompt,
     deploymentRowsFromSource,
+    findDeploySources,
     emptyCompanyCache,
     fileSharePrompt,
     isEmail,
@@ -51,6 +52,7 @@
     type AccessLevel,
     type ConnectSession,
     type DeploymentRowModel,
+    type DeploySourceScan,
     type FilesConnectCache,
     type FilesConnectPageId,
     type MemberOption,
@@ -323,7 +325,44 @@
     }
   }
 
+  // ---- deploy sources (QA-044) ----------------------------------------------
+  // null = scanning (skeleton). Real project folders only, never samples.
+  let deployScan = $state<DeploySourceScan | null>(null);
+  let deployScanFor = "";
+  let deploySource = $state<string>("");
+  const deploySourceCurrent = $derived(deployScan?.sources.find((source) => source.id === deploySource) ?? null);
+
+  function openDeploy(): void {
+    sheet = "deploy";
+    const s = slug;
+    if (deployScanFor === s && deployScan) return;
+    deployScanFor = s;
+    deployScan = null;
+    deploySource = "";
+    if (!files) {
+      deployScan = { sources: [], reason: "Project files are not available in this window, so there is nothing to pick from." };
+      return;
+    }
+    void findDeploySources(s, async (path) => {
+      const res = await scopedListDir(path);
+      if (!res.ok) throw new Error(res.message ?? "Could not list files");
+      return res.value as unknown as DirEntry[];
+    })
+      .then((scan) => {
+        if (slug !== s) return;
+        deployScan = scan;
+        deploySource = scan.sources[0]?.id ?? "";
+      })
+      .catch((err) => {
+        console.error("deploy source scan failed:", err);
+        if (slug !== s) return;
+        deployScanFor = "";
+        deployScan = { sources: [], reason: "Could not read this company's projects. Close this and try again." };
+      });
+  }
+
   async function runDeploy(artifact: string): Promise<void> {
+    if (!artifact) return;
     await handOff(deployPrompt(slug || "company", artifact), "deploy workflow");
   }
 
@@ -671,14 +710,14 @@
       <h1>Deployments</h1>
       {#if deployments}<span class="count" data-testid="deployments-count">{countLabel("Deployments", deployments.length)}</span>{/if}
       <span class="grow"></span>
-      <button class="btn primary" type="button" data-testid="deploy-from-project" onclick={() => (sheet = "deploy")}>Deploy</button>
+      <button class="btn primary" type="button" data-testid="deploy-from-project" onclick={openDeploy}>Deploy</button>
     </header>
     {#if deployments === null}
       <div class="list" data-testid="deployments-skeleton" aria-busy="true">{@render skeletonRows()}</div>
     {:else if deployments.length === 0}
       <div class="empty" data-testid="deployments-empty">
         <p>{deploymentsError ?? "Nothing deployed yet"}</p>
-        <button class="btn" type="button" onclick={() => (sheet = "deploy")}>Deploy from a project</button>
+        <button class="btn" type="button" onclick={openDeploy}>Deploy from a project</button>
       </div>
     {:else}
       <div class="split">
@@ -773,6 +812,23 @@
         <div class="fr"><span class="lb">Secret</span><span class="mono">{secretCurrent?.name}</span></div>
         <p class="hint">The binding stores the name, not the value.</p>
       {:else if sheet === "deploy"}
+        {#if deployScan === null}
+          <div data-testid="deploy-sources-skeleton">{@render skeletonRows()}</div>
+        {:else if deployScan.sources.length === 0}
+          <div class="empty" data-testid="deploy-sources-empty">
+            <span class="empty-title">Nothing to deploy yet</span>
+            <p class="wrap">{deployScan.reason}</p>
+          </div>
+        {:else}
+          <label class="fr"><span class="lb">Project</span>
+            <select class="field" data-testid="deploy-source" bind:value={deploySource}>
+              {#each deployScan.sources as source (source.id)}
+                <option value={source.id}>{source.dir === "." ? source.project : `${source.project} · ${source.dir}`}</option>
+              {/each}
+            </select>
+          </label>
+          {#if deploySourceCurrent}<p class="hint mono" data-testid="deploy-source-path" title={deploySourceCurrent.path}>{deploySourceCurrent.path}</p>{/if}
+        {/if}
         <div class="fr"><span class="lb">Who can open</span><button class="link" type="button" onclick={() => (sheet = "deploy-allowlist")}>Company members</button></div>
         <p class="hint">Runs the hq-deploy command and returns the link.</p>
       {:else if sheet === "deploy-allowlist"}
@@ -842,7 +898,7 @@
         <button class="btn primary" type="button" data-testid="bind-save" disabled={busy} onclick={() => void handOff(secretBindPrompt(slug, secretCurrent?.name ?? "", sheet === "bind-outpost" ? "outpost" : "app"), "binding")}>Bind</button>
       {:else if sheet === "deploy"}
         <button class="btn" type="button" onclick={closeSheet}>Cancel</button>
-        <button class="btn primary" type="button" data-testid="run-deploy" disabled={busy} onclick={() => void runDeploy(query || "project")}>Deploy</button>
+        <button class="btn primary" type="button" data-testid="run-deploy" disabled={busy || !deploySourceCurrent} onclick={() => void runDeploy(deploySourceCurrent?.path ?? "")}>Deploy</button>
       {:else if sheet === "deploy-allowlist"}
         <button class="btn primary" type="button" onclick={() => (sheet = "deploy")}>Back</button>
       {:else if sheet === "deploy-access"}
@@ -926,6 +982,8 @@
   .empty { padding: 48px 16px; color: var(--t3, var(--v4-text-3)); text-align: center; display: flex; flex-direction: column; align-items: center; gap: 4px; }
   .empty p { margin: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .empty .btn { margin-top: 8px; }
+  .empty p.wrap { white-space: normal; overflow: visible; }
+  .sheet .empty { padding: 24px 20px; }
   .empty-title { color: var(--t2, var(--v4-text-2)); }
   .empty-line { margin: 0; padding: 48px 16px; text-align: center; color: var(--t3, var(--v4-text-3)); }
   .skel { display: flex; flex-direction: column; padding: 6px 8px; }

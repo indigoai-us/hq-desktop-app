@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  findDeploySources,
   companyDeploymentRows,
   legacyDeploymentRow,
   ACCESS_LEVELS,
@@ -85,5 +86,36 @@ describe("company deployment rows (QA-013)", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]!.name).toBe("real");
     expect(rows[0]!.status).toBe("off");
+  });
+});
+
+describe("findDeploySources (QA-044)", () => {
+  const d = (path: string) => ({ name: path.split("/").pop()!, path, isDir: true });
+  const f = (path: string) => ({ name: path.split("/").pop()!, path, isDir: false });
+  const P = "companies/acme/projects";
+
+  it("lists project folders that hold an index.html, from the real listing", async () => {
+    const tree: Record<string, ReturnType<typeof d>[]> = {
+      [P]: [d(`${P}/site`), d(`${P}/notes`)],
+      [`${P}/site`]: [d(`${P}/site/dist`), d(`${P}/site/node_modules`)],
+      [`${P}/site/dist`]: [f(`${P}/site/dist/index.html`)],
+      [`${P}/site/node_modules`]: [f(`${P}/site/node_modules/index.html`)],
+      [`${P}/notes`]: [f(`${P}/notes/README.md`)],
+    };
+    const scan = await findDeploySources("acme", async (path) => tree[path] ?? []);
+    expect(scan.reason).toBeNull();
+    expect(scan.sources).toEqual([{ id: `${P}/site/dist`, project: "site", path: `${P}/site/dist`, dir: "dist" }]);
+  });
+
+  it("says why nothing is deployable", async () => {
+    const none = await findDeploySources("acme", async () => []);
+    expect(none.sources).toEqual([]);
+    expect(none.reason).toMatch(/no projects yet/);
+    const unbuilt = await findDeploySources("acme", async (path) => (path === P ? [d(`${P}/a`), d(`${P}/b`)] : []));
+    expect(unbuilt.reason).toMatch(/None of this company's 2 projects has a built web page/);
+  });
+
+  it("throws when the projects folder cannot be read", async () => {
+    await expect(findDeploySources("acme", async () => { throw new Error("denied"); })).rejects.toThrow("denied");
   });
 });

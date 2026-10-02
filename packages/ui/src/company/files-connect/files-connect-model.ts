@@ -468,3 +468,83 @@ export function fileSharePrompt(slug: string, vaultPath: string, email: string, 
     "Then read the ACL back and confirm the grant.",
   ].join("\n");
 }
+
+// ---- deploy sources (QA-044) ------------------------------------------------
+
+/** One folder in a company project that holds a built web page. */
+export interface DeploySource {
+  id: string;
+  project: string;
+  /** HQ-relative folder that holds index.html. */
+  path: string;
+  /** Folder inside the project, or "." for the project root. */
+  dir: string;
+}
+
+export interface DeploySourceScan {
+  sources: DeploySource[];
+  /** Why nothing is deployable, when sources is empty. */
+  reason: string | null;
+}
+
+interface ScanEntry {
+  name: string;
+  path: string;
+  isDir: boolean;
+}
+
+const SCAN_SKIP = new Set(["node_modules", ".git", ".next", ".svelte-kit", ".turbo", "src", "tests", "test"]);
+
+/**
+ * Lists the folders under `companies/{slug}/projects` that hold an
+ * index.html, the web output /deploy can publish. The walk is bounded
+ * (depth, project count) and stops descending once a folder is a source.
+ * A failed project listing is logged and skipped; a failed root listing
+ * throws so the sheet can say it could not read the projects.
+ */
+export async function findDeploySources(
+  slug: string,
+  listDir: (path: string) => Promise<readonly ScanEntry[]>,
+  limits: { maxDepth?: number; maxProjects?: number } = {},
+): Promise<DeploySourceScan> {
+  const maxDepth = limits.maxDepth ?? 3;
+  const maxProjects = limits.maxProjects ?? 60;
+  const projects = (await listDir(`companies/${slug}/projects`))
+    .filter((entry) => entry.isDir && !entry.name.startsWith("."))
+    .slice(0, maxProjects);
+  if (projects.length === 0) {
+    return { sources: [], reason: "This company has no projects yet. Add a project with a built web page, then deploy it from here." };
+  }
+  const sources: DeploySource[] = [];
+  for (const project of projects) {
+    let frontier: ScanEntry[] = [project];
+    for (let depth = 0; depth <= maxDepth && frontier.length > 0; depth += 1) {
+      const next: ScanEntry[] = [];
+      for (const folder of frontier) {
+        let children: readonly ScanEntry[];
+        try {
+          children = await listDir(folder.path);
+        } catch (err) {
+          console.error("deploy source scan failed:", folder.path, err);
+          continue;
+        }
+        if (children.some((child) => !child.isDir && child.name === "index.html")) {
+          const dir = folder.path === project.path ? "." : folder.path.slice(project.path.length + 1);
+          sources.push({ id: folder.path, project: project.name, path: folder.path, dir });
+          continue;
+        }
+        for (const child of children) {
+          if (child.isDir && !child.name.startsWith(".") && !SCAN_SKIP.has(child.name)) next.push(child);
+        }
+      }
+      frontier = next;
+    }
+  }
+  if (sources.length > 0) return { sources, reason: null };
+  const which = projects.length === 1 ? "This company's one project has" : `None of this company's ${projects.length} projects has`;
+  const what = projects.length === 1 ? "no built web page yet" : "a built web page yet";
+  return {
+    sources,
+    reason: `${which} ${what} (a folder with index.html). Build one in a project, or ask the agent to /deploy a file directly.`,
+  };
+}

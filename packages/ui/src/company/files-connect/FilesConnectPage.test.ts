@@ -359,4 +359,45 @@ describe("US-029 FilesConnectPage", () => {
     flushSync();
     expect(target.querySelector("[data-testid='sheet-share']")).toBeNull();
   });
+
+  it("lists deployable project sources, deploys the picked one, and explains an empty list (QA-044)", async () => {
+    const P = "companies/indigo/projects";
+    const tree: Record<string, unknown[]> = {
+      [P]: [{ name: "launch", path: `${P}/launch`, isDir: true, hasChildren: true }],
+      [`${P}/launch`]: [{ name: "index.html", path: `${P}/launch/index.html`, isDir: false, hasChildren: false }],
+    };
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const files = {
+      listDir: vi.fn(async (path: string) => {
+        if (path === P) await gate;
+        return ok(tree[path] ?? []);
+      }),
+    };
+    const listDeployApps = vi.fn(async () => ok({ apps: [] }));
+    const target = mountPage("deployments", files, { listDeployApps });
+    (target.querySelector("[data-testid='deploy-from-project']") as HTMLButtonElement).click();
+    flushSync();
+    expect(target.querySelector("[data-testid='deploy-sources-skeleton']")).not.toBeNull();
+    expect((target.querySelector("[data-testid='run-deploy']") as HTMLButtonElement).disabled).toBe(true);
+    release();
+    await vi.waitFor(() => expect(target.querySelector("[data-testid='deploy-source']")).not.toBeNull());
+    expect(target.querySelector("[data-testid='deploy-source-path']")?.textContent).toBe(`${P}/launch`);
+    const run = target.querySelector("[data-testid='run-deploy']") as HTMLButtonElement;
+    expect(run.disabled).toBe(false);
+    run.click();
+    await vi.waitFor(() => expect(openAgentWorkflow).toHaveBeenCalled());
+    const prompt = String((openAgentWorkflow.mock.calls[0] as unknown as unknown[] | undefined)?.[1] ?? "");
+    expect(prompt).toContain("/deploy indigo");
+    expect(prompt).toContain(`Artifact: ${P}/launch`);
+  });
+
+  it("shows why nothing is deployable and keeps Deploy disabled (QA-044)", async () => {
+    const files = { listDir: vi.fn(async () => ok([])) };
+    const target = mountPage("deployments", files, { listDeployApps: vi.fn(async () => ok({ apps: [] })) });
+    (target.querySelector("[data-testid='deploy-from-project']") as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(target.querySelector("[data-testid='deploy-sources-empty']")).not.toBeNull());
+    expect(target.querySelector("[data-testid='deploy-sources-empty']")?.textContent).toMatch(/no projects yet/);
+    expect((target.querySelector("[data-testid='run-deploy']") as HTMLButtonElement).disabled).toBe(true);
+  });
 });
