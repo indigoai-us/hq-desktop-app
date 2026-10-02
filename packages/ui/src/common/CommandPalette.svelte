@@ -2,6 +2,16 @@
   import { onMount, tick } from "svelte";
   import CompanyIcon from "../company/CompanyIcon.svelte";
   import { formatShortcut } from "./keyboard-shortcuts";
+  import {
+    PALETTE_SCOPE_IDS,
+    createAsNewItems,
+    itemInPaletteScope,
+    nextPaletteScope,
+    paletteScopeLabel,
+    paletteSectionLabel,
+    type PaletteScopeId,
+    type PaletteSectionId,
+  } from "../shell/palette-rows.js";
 
   export interface CommandPaletteItem {
     id: string;
@@ -28,16 +38,36 @@
     iconUrl?: string | null;
     /** True to draw the company mark (favicon or building) for this row. */
     showCompanyMark?: boolean;
+    /** Result group. Conversations set this from the row kind. */
+    section?: PaletteSectionId;
+    /** Owning company for scope filtering. */
+    companyUid?: string | null;
+    /** Personal-scope row (personal channel, or a DM with no company). */
+    personal?: boolean;
+    /** Stay open after the action (scope widen). */
+    keepOpen?: boolean;
   }
 
   interface Props {
     commands: CommandPaletteItem[];
     onclose: () => void;
+    /** Active company name for the first scope chip. */
+    companyName?: string;
+    /** Active company uid. Rows from other companies hide on the company chip. */
+    companyUid?: string | null;
+    /**
+     * Create-as-new row. The palette paints the row immediately; the host
+     * navigates. Absent handler still shows the row and closes the palette.
+     */
+    oncreate?: (
+      kind: "project" | "channel" | "note" | "ask",
+      query: string,
+    ) => void;
   }
 
   interface CommandPaletteSection {
-    id: "actions" | "navigate" | "conversations";
-    label: "ACTIONS" | "NAVIGATE" | "CONVERSATIONS";
+    id: PaletteSectionId;
+    label: string;
     items: CommandPaletteItem[];
   }
   interface CommandActionError {
@@ -45,8 +75,10 @@
     message: string;
   }
 
-  let { commands, onclose }: Props = $props();
+  let { commands, onclose, companyName = "Company", companyUid = null, oncreate }: Props =
+    $props();
   let query = $state("");
+  let scope = $state<PaletteScopeId>("company");
   let highlightedIndex = $state(0);
   let inputEl: HTMLInputElement | null = $state(null);
   let paletteEl: HTMLDivElement | null = $state(null);
@@ -127,19 +159,74 @@
     return [...filteredActionNav, ...rankedConversations];
   });
 
-  function sectionId(command: CommandPaletteItem): CommandPaletteSection["id"] {
-    // Conversations (US-013) sit under their own section after actions/navigate.
-    if (command.id.startsWith("conversation-")) return "conversations";
-    return command.id.startsWith("command-go-") ? "navigate" : "actions";
+  function sectionId(command: CommandPaletteItem): PaletteSectionId {
+    if (command.section) return command.section;
+    if (command.id.startsWith("project-")) return "projects";
+    if (command.id.startsWith("file-")) return "files";
+    if (command.id.startsWith("skill-")) return "skills";
+    if (command.id.startsWith("conversation-")) return "channels";
+    return "commands";
   }
 
+  const scopedCommands = $derived.by((): CommandPaletteItem[] => {
+    return filteredCommands.filter((command) =>
+      itemInPaletteScope(
+        {
+          section: sectionId(command),
+          companyUid: command.companyUid,
+          personal: command.personal,
+        },
+        scope,
+        companyUid,
+      ),
+    );
+  });
+
+  const scopeLabel = $derived(paletteScopeLabel(scope, companyName));
+
+  const showingCreate = $derived(
+    query.trim().length > 0 && scopedCommands.length === 0,
+  );
+
+  const createCommands = $derived.by((): CommandPaletteItem[] => {
+    if (!showingCreate) return [];
+    return createAsNewItems(query, scopeLabel).map((spec) => ({
+      id: spec.id,
+      label: spec.label,
+      detail: spec.detail,
+      section: spec.section,
+      keepOpen: spec.kind === "search-all",
+      action: () => {
+        if (spec.kind === "search-all") {
+          scope = "all";
+          return;
+        }
+        oncreate?.(spec.kind, query.trim());
+      },
+    }));
+  });
+
+  const visibleCommands = $derived(
+    showingCreate ? createCommands : scopedCommands,
+  );
+
   const commandSections = $derived.by((): CommandPaletteSection[] => {
-    const sections: CommandPaletteSection[] = [
-      { id: "actions", label: "ACTIONS", items: [] },
-      { id: "navigate", label: "NAVIGATE", items: [] },
-      { id: "conversations", label: "CONVERSATIONS", items: [] },
+    const order: PaletteSectionId[] = [
+      "projects",
+      "people",
+      "channels",
+      "files",
+      "skills",
+      "commands",
+      "create",
+      "also",
     ];
-    for (const command of filteredCommands) {
+    const sections: CommandPaletteSection[] = order.map((id) => ({
+      id,
+      label: paletteSectionLabel(id),
+      items: [],
+    }));
+    for (const command of visibleCommands) {
       const target = sections.find(
         (section) => section.id === sectionId(command),
       );
@@ -149,8 +236,8 @@
   });
 
   $effect(() => {
-    if (highlightedIndex >= filteredCommands.length) {
-      highlightedIndex = Math.max(0, filteredCommands.length - 1);
+    if (highlightedIndex >= visibleCommands.length) {
+      highlightedIndex = Math.max(0, visibleCommands.length - 1);
     }
   });
 
@@ -180,7 +267,7 @@
     await tick();
     try {
       await command.action();
-      onclose();
+      if (!command.keepOpen) onclose();
     } catch (err) {
       console.error("command-palette: action failed", err);
       actionError = { command, message: errorMessage(err) };
@@ -200,25 +287,9 @@
 
   function handleKeydown(event: KeyboardEvent) {
     if (event.key === "Tab") {
-      const focusable = [
-        inputEl,
-        ...(paletteEl?.querySelectorAll<HTMLButtonElement>(
-          "button:not([disabled])",
-        ) ?? []),
-      ].filter(
-        (element): element is HTMLInputElement | HTMLButtonElement =>
-          element instanceof HTMLElement,
-      );
-      const first = focusable[0];
-      const last = focusable.at(-1);
-
-      if (
-        (event.shiftKey && document.activeElement === first) ||
-        (!event.shiftKey && document.activeElement === last)
-      ) {
-        event.preventDefault();
-        (event.shiftKey ? last : first)?.focus();
-      }
+      // Tab widens the scope (Shift+Tab narrows). Chips are the only scopes.
+      event.preventDefault();
+      scope = nextPaletteScope(scope, event.shiftKey ? -1 : 1);
       return;
     }
 
@@ -231,9 +302,9 @@
     if (event.key === "ArrowDown") {
       event.preventDefault();
       highlightedIndex =
-        filteredCommands.length === 0
+        visibleCommands.length === 0
           ? 0
-          : (highlightedIndex + 1) % filteredCommands.length;
+          : (highlightedIndex + 1) % visibleCommands.length;
       void revealHighlightedOption();
       return;
     }
@@ -241,17 +312,17 @@
     if (event.key === "ArrowUp") {
       event.preventDefault();
       highlightedIndex =
-        filteredCommands.length === 0
+        visibleCommands.length === 0
           ? 0
-          : (highlightedIndex - 1 + filteredCommands.length) %
-            filteredCommands.length;
+          : (highlightedIndex - 1 + visibleCommands.length) %
+            visibleCommands.length;
       void revealHighlightedOption();
       return;
     }
 
     if (event.key === "Enter") {
       event.preventDefault();
-      void execute(filteredCommands[highlightedIndex]);
+      void execute(visibleCommands[highlightedIndex]);
     }
   }
 </script>
@@ -285,9 +356,24 @@
         spellcheck="false"
         aria-label="Filter commands"
         aria-controls="command-palette-list"
-        aria-activedescendant={filteredCommands[highlightedIndex]?.id}
-        placeholder="Search commands"
+        aria-activedescendant={visibleCommands[highlightedIndex]?.id}
+        placeholder="Search or jump to…"
       />
+      <div class="scope-chips" role="radiogroup" aria-label="Search scope">
+        {#each PALETTE_SCOPE_IDS as id (id)}
+          <button
+            type="button"
+            role="radio"
+            class:on={scope === id}
+            aria-checked={scope === id}
+            onclick={() => {
+              scope = id;
+            }}
+          >
+            {paletteScopeLabel(id, companyName)}
+          </button>
+        {/each}
+      </div>
     </div>
 
     <h2 id="command-palette-title">Command palette</h2>
@@ -313,12 +399,18 @@
       role="listbox"
       aria-label="Commands"
     >
+      {#if showingCreate}
+        <div class="command-empty-note" role="status">
+          <strong>No results for “{query.trim()}” in {scopeLabel}</strong>
+          <span>Searched projects, people and bots, channels, files, skills, and commands. Tab widens the scope.</span>
+        </div>
+      {/if}
       {#if commandSections.length > 0}
         {#each commandSections as section (section.id)}
           <div class="command-section" role="presentation">
             <div class="command-section-title">{section.label}</div>
             {#each section.items as command (command.id)}
-              {@const index = filteredCommands.indexOf(command)}
+              {@const index = visibleCommands.indexOf(command)}
               <button
                 id={command.id}
                 class:highlighted={index === highlightedIndex}
@@ -356,8 +448,18 @@
           </div>
         {/each}
       {:else}
-        <div class="command-empty" role="status">No commands found</div>
+        <div class="command-empty" role="status">
+          <strong>No results in {scopeLabel}</strong>
+          <span>Type to search projects, people and bots, channels, files, skills, and commands.</span>
+        </div>
       {/if}
+    </div>
+    <div class="command-foot">
+      <span><kbd>tab</kbd> scope</span>
+      <span class="grow"></span>
+      <span>
+        {showingCreate ? 0 : visibleCommands.length} results · {scopeLabel}
+      </span>
     </div>
   </div>
 </div>
@@ -412,11 +514,69 @@
     display: flex;
     align-items: center;
     gap: 10px;
-    height: 48px;
+    min-height: 48px;
     flex: 0 0 auto;
-    padding: 0 12px;
+    flex-wrap: wrap;
+    padding: 8px 12px;
     border-bottom: 1px solid var(--pop-divider);
     background: var(--pop-hover);
+  }
+
+  .scope-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    width: 100%;
+  }
+
+  .scope-chips button {
+    padding: 3px 8px;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--v4-text-3, var(--pop-muted));
+    font: inherit;
+    font-size: var(--text-base);
+    cursor: pointer;
+  }
+
+  .scope-chips button.on {
+    background: var(--v4-active-row, var(--pop-hover));
+    color: var(--v4-text-1, var(--pop-text));
+  }
+
+  .command-empty-note {
+    padding: 16px 12px 8px;
+    text-align: center;
+  }
+
+  .command-empty-note strong {
+    display: block;
+    color: var(--v4-text-1, var(--pop-text));
+    font-weight: 500;
+  }
+
+  .command-empty-note span {
+    display: block;
+    margin-top: 4px;
+    color: var(--v4-text-3, var(--pop-muted));
+    font-size: var(--text-base);
+    line-height: 1.45;
+  }
+
+  .command-foot {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex: 0 0 auto;
+    padding: 8px 14px;
+    border-top: 1px solid var(--pop-divider);
+    color: var(--v4-text-3, var(--pop-muted));
+    font-size: var(--text-base);
+  }
+
+  .command-foot .grow {
+    flex: 1;
   }
 
   .command-glyph,
