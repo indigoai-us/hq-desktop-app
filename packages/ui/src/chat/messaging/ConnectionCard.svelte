@@ -173,9 +173,12 @@
     border-color: color-mix(in srgb, var(--ok-ink, #248a3d) 32%, transparent);
     background: color-mix(in srgb, var(--ok-ink, #248a3d) 8%, transparent);
   }
+  /* Declined recedes through the dashed border and a dimmer title and icon.
+     The words stay on --t2: --t3 is under 3:1 on both grounds, too faint for
+     the one sentence that says how to come back. */
   .connection-card[data-state="declined"] {
     border-style: dashed;
-    color: var(--t3, var(--pop-muted));
+    color: var(--t2, var(--pop-muted));
   }
   .connection-card-head {
     display: flex;
@@ -211,7 +214,7 @@
     line-height: 1.45;
     color: var(--t2, var(--pop-muted));
   }
-  .connection-card[data-state="declined"] .connection-card-line {
+  .connection-card[data-state="declined"] .connection-card-icon {
     color: var(--t3, var(--pop-muted));
   }
   .connection-card-rows {
@@ -236,7 +239,7 @@
   }
   .connection-card-more {
     font-size: 12px;
-    color: var(--t3, var(--pop-muted));
+    color: var(--t2, var(--pop-muted));
   }
   .connection-card-actions {
     display: flex;
