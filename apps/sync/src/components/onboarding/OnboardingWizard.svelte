@@ -99,10 +99,12 @@
     setupCompletionResult,
     setupProgressPercent,
     setupStageRecoveryAction,
+    resolveFlagWithTimeout,
     stageCommandInvocations,
     stageTimeoutMs,
     setupFailureTelemetryDetails,
     StageTimeoutError,
+    SETUP_TIMEOUT_NATIVE_SETTLE_TIMEOUT_MS,
     withProgressTimeout,
     STAGE_ORDER,
     withTimeout,
@@ -158,6 +160,7 @@
     createSyncPlatformAdapter,
     dispatchPostReadyAction,
     FIRST_FOLDER_SYNC_STEP_FLAG,
+    SETUP_DEPS_TIMEOUT_RETRY_FLAG,
     retryThrottled,
   } from '@hq/platform';
   import { markPostReadyActionReady } from '../../lib/post-ready-action-telemetry';
@@ -415,6 +418,7 @@
   let effectiveInstallPath = $state<string | null>(null);
   let currentRunId = 0;
   let currentSetupRunId = '';
+  let currentDepsAttemptId = '';
   let setupCancelled = false;
   const initialCloudSyncOperation = { operation: null as Promise<void> | null };
   let unlistenInstallProgress: UnlistenFn | null = null;
@@ -1404,6 +1408,7 @@
   function beginSetupRun(): number {
     currentRunId += 1;
     currentSetupRunId = createSetupRunId();
+    currentDepsAttemptId = currentSetupRunId;
     setupCancelled = false;
     setupRetry = null;
     // Supersession: the previous run may have left a stage mid-retry. This
@@ -1461,7 +1466,7 @@
     if (handle !== 'preflight') activeInstallHandles.add(handle);
     if (
       currentStageId === 'deps' &&
-      payload.setupRunId === currentSetupRunId &&
+      payload.setupRunId === currentDepsAttemptId &&
       payload.line?.trim()
     ) {
       activeDepsOutputTimeoutProgress?.();
@@ -1639,6 +1644,7 @@
     id: StageId,
     runId: number,
     failureScope: OnboardingFailureScope,
+    depsTimeoutRetryEnabled: boolean,
   ): Promise<void> {
     const invocations = stageCommandInvocations(id, { installPath: effectiveInstallPath });
     if (invocations.length === 0) return;
@@ -1673,9 +1679,7 @@
             : Promise.resolve(invokeDesktopCommand(invocation.command, args));
         const onTimeout = (timeoutMs = ms) =>
           new StageTimeoutError(id, timeoutMs);
-        const cancel = () => {
-          void cancelForegroundWork(runId);
-        };
+        const cancel = () => cancelForegroundWork(runId);
         if (id === 'initial-sync') {
           await withProgressTimeout(
             operation,
@@ -1714,6 +1718,10 @@
             activityTimeoutEnabled
               ? ms * SETUP_STAGE_TIMEOUT_MAX_ELAPSED_MULTIPLIER
               : undefined,
+            depsTimeoutRetryEnabled,
+            depsTimeoutRetryEnabled
+              ? SETUP_TIMEOUT_NATIVE_SETTLE_TIMEOUT_MS
+              : 0,
           );
         } else if (id === 'content' && activityTimeoutEnabled) {
           await withProgressTimeout(
@@ -1808,11 +1816,20 @@
     id: StageId,
     runId: number,
     attemptCount: number,
+    depsTimeoutRetryFlag: Promise<boolean>,
   ): Promise<StageRunResult> {
     if (!isCurrentRun(runId)) return CANCELLED_STAGE_RUN;
     const setupRunId = currentSetupRunId;
+    const depsTimeoutRetryEnabled =
+      id === 'deps' ? await depsTimeoutRetryFlag : false;
+    if (!isCurrentRun(runId)) return CANCELLED_STAGE_RUN;
+    const setupAttemptId =
+      id === 'deps' && depsTimeoutRetryEnabled
+        ? createSetupRunId()
+        : setupRunId;
+    if (id === 'deps') currentDepsAttemptId = setupAttemptId;
     const failureScope = {
-      setupRunId,
+      setupRunId: setupAttemptId,
       attemptCount,
       flow: onboardingFlow,
       frontendSessionId: onboardingTelemetry.sessionId,
@@ -1829,7 +1846,12 @@
     stages = setStageStatus(stages, id, 'running');
     await journalStageStart(id);
 
-    const result = await invokeStageCommand(id, runId, failureScope).then(
+    const result = await invokeStageCommand(
+      id,
+      runId,
+      failureScope,
+      depsTimeoutRetryEnabled,
+    ).then(
       () => ({ kind: 'done' as const }),
       (err) => ({ kind: 'failed' as const, err }),
     );
@@ -1865,6 +1887,10 @@
         stageId: id,
         message,
         retryCount: attemptCount - 1,
+        depsTimeoutRetryEnabled,
+        depsTimeoutRetrySuppressed:
+          result.err instanceof StageTimeoutError &&
+          result.err.retrySuppressed,
       });
       stages = setStageStatus(
         stages,
@@ -1954,14 +1980,23 @@
     }
   }
 
-  async function runSetup(runId: number, startStage: StageId = STAGE_ORDER[0]) {
+  async function runSetup(
+    runId: number,
+    startStage: StageId = STAGE_ORDER[0],
+    depsTimeoutRetryFlag: Promise<boolean> = Promise.resolve(false),
+  ) {
     const startIndex = Math.max(0, STAGE_ORDER.indexOf(startStage));
     const retryCounts = new Map<StageId, number>();
     for (const id of STAGE_ORDER.slice(startIndex)) {
       if (!isCurrentRun(runId)) return;
       while (isCurrentRun(runId)) {
         const attemptCount = (retryCounts.get(id) ?? 0) + 1;
-        const result = await runStage(id, runId, attemptCount);
+        const result = await runStage(
+          id,
+          runId,
+          attemptCount,
+          depsTimeoutRetryFlag,
+        );
         if (result.outcome === 'cancelled') return;
         if (result.outcome === 'ok') break;
 
@@ -2200,6 +2235,24 @@
     const runId = beginSetupRun();
     inFlightRunId = runId;
     try {
+      const depsTimeoutRetryFlag = resolveFlagWithTimeout(
+        Promise.resolve()
+          .then(() =>
+            onboardingFeatureFlags.identity.hasFeature(
+              SETUP_DEPS_TIMEOUT_RETRY_FLAG,
+            ),
+          )
+          .then((result) => result.ok && result.value === true)
+          .catch((error) => {
+            console.warn(
+              'onboarding: dependency timeout retry flag unavailable; leaving retry off',
+              error,
+            );
+            return false;
+          }),
+        2_000,
+      );
+      if (!isCurrentRun(runId)) return;
       if (installPath) effectiveInstallPath = installPath;
       await listenForProgress(runId);
       let startStage: StageId = STAGE_ORDER[0];
@@ -2216,7 +2269,7 @@
         }
       }
       if (!isCurrentRun(runId)) return;
-      await runSetup(runId, startStage);
+      await runSetup(runId, startStage, depsTimeoutRetryFlag);
     } finally {
       // Only the run that still owns the guard may release it: a superseded
       // run finishing late must not clear a newer run's claim. Every exit —
