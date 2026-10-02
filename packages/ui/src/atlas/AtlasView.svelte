@@ -351,22 +351,25 @@
     height: 100%;
     min-height: 0;
     background: var(--v4-ground);
-    color: var(--v4-text-1);
+    color: var(--t1, var(--v4-text-1));
     font-family: var(--font-sans, "Geist", sans-serif);
+    font-size: 13px;
   }
   .toolbar {
     display: flex;
     align-items: center;
     gap: 8px;
-    height: 44px;
-    padding: 0 var(--v4-space-4);
-    border-bottom: 1px solid var(--v4-rowline);
+    height: 52px;
+    box-sizing: border-box;
+    padding: 0 20px;
+    border-bottom: 1px solid var(--line, var(--v4-rowline));
     flex: none;
   }
   h1 {
-    font-size: var(--type-section);
-    font-weight: 600;
-    margin: 0;
+    font-size: var(--type-title, 20px);
+    font-weight: var(--type-title-weight, 500);
+    line-height: var(--type-title-line, 1.25);
+    margin: 0 8px 0 0;
   }
   .grow {
     flex: 1;
@@ -374,12 +377,9 @@
   .chip {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
-    padding: 2px 7px;
-    border-radius: var(--v4-radius-pill);
-    background: var(--v4-control-bg);
-    color: var(--v4-text-2);
-    font-size: 11px;
+    gap: 6px;
+    color: var(--t2, var(--v4-text-2));
+    font-size: 13px;
   }
   .clear {
     margin-left: 2px;
@@ -397,13 +397,15 @@
     background: var(--v4-ok);
   }
   .btn {
-    padding: 4px 10px;
-    border: 1px solid var(--v4-control-border);
-    border-radius: var(--v4-radius-button);
-    background: var(--v4-control-bg);
-    color: var(--v4-text-1);
+    height: 26px;
+    box-sizing: border-box;
+    padding: 0 10px;
+    border: 1px solid var(--line2, var(--v4-control-border));
+    border-radius: 6px;
+    background: var(--btn-bg, var(--v4-control-bg));
+    color: var(--t1, var(--v4-text-1));
     font: inherit;
-    font-size: var(--type-metadata);
+    font-size: 13px;
     cursor: pointer;
   }
   .btn:disabled {
@@ -443,11 +445,8 @@
     stroke-dasharray: 3 6;
   }
   .region {
-    font-family: var(--font-mono, "Geist Mono", monospace);
-    font-size: 11px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    fill: var(--v4-text-3);
+    font-size: 13px;
+    fill: var(--t3, var(--v4-text-3));
   }
   .empty-center {
     position: absolute;
@@ -462,16 +461,16 @@
   }
   .empty-ctr {
     text-align: center;
-    font-size: var(--type-metadata);
-    color: var(--v4-text-3);
+    font-size: 13px;
+    color: var(--t3, var(--v4-text-3));
     background: var(--v4-ground);
     padding: 0 10px;
   }
   .empty-ctr b {
     display: block;
-    font-size: var(--type-section);
-    font-weight: 600;
-    color: var(--v4-text-1);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--t1, var(--v4-text-1));
     margin-bottom: 2px;
   }
   .empty-prompts {
@@ -486,31 +485,27 @@
     align-items: flex-start;
     gap: 6px;
     text-align: left;
-    padding: 14px;
-    border: 1px dashed var(--v4-control-border);
-    border-radius: var(--v4-radius-card);
-    background: var(--v4-ground);
+    padding: 14px 16px;
+    border: 0;
+    border-radius: 10px;
+    background: var(--raised, var(--v4-control-faint));
     color: var(--v4-text-1);
     font: inherit;
     cursor: pointer;
   }
   .empty-p:hover {
-    background: var(--v4-active-row);
-    border-color: var(--v4-text-3);
+    background: var(--hover, var(--v4-active-row));
   }
   .pk {
-    font-family: var(--font-mono, "Geist Mono", monospace);
-    font-size: 10px;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--v4-text-3);
+    font-size: 13px;
+    color: var(--t3, var(--v4-text-3));
   }
   .pt {
-    font-size: var(--type-secondary);
+    font-size: 13px;
     font-weight: 500;
   }
   .ps {
-    font-size: var(--type-metadata);
+    font-size: 13px;
     color: var(--v4-text-3);
     line-height: 1.4;
   }
@@ -518,7 +513,7 @@
     position: absolute;
     left: 14px;
     bottom: 10px;
-    font-size: 11px;
+    font-size: 13px;
     color: var(--v4-text-3);
   }
   .legend span {

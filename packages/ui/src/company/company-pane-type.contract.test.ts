@@ -17,6 +17,10 @@ const PAGES = [
   "company/CompanySettingsPage.svelte",
   "activity/ActivityView.svelte",
   "goals/GoalsView.svelte",
+  "company/brain/BrainPage.svelte",
+  "atlas/AtlasView.svelte",
+  "atlas/AtlasInspector.svelte",
+  "atlas/AtlasScrubber.svelte",
   "shell/CompanySidepane.svelte",
 ];
 

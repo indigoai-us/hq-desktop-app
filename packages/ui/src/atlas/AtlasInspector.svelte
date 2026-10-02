@@ -164,24 +164,22 @@
     min-height: 0;
   }
   .kind {
-    font-family: var(--font-mono, "Geist Mono", monospace);
-    font-size: 10px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--v4-text-3);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--t2, var(--v4-text-3));
   }
   .kind.spaced {
     margin-top: 12px;
   }
   h2 {
-    font-size: var(--type-section);
+    font-size: 13px;
     margin: 2px 0 0;
-    font-weight: 600;
+    font-weight: 500;
   }
   .path {
     font-family: var(--font-mono, "Geist Mono", monospace);
-    font-size: 11px;
-    color: var(--v4-text-3);
+    font-size: 13px;
+    color: var(--t3, var(--v4-text-3));
     overflow-wrap: anywhere;
     margin-top: 4px;
   }
@@ -194,12 +192,9 @@
   .chip {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
-    padding: 2px 7px;
-    border-radius: var(--v4-radius-pill);
-    background: var(--v4-control-bg);
-    color: var(--v4-text-2);
-    font-size: 11px;
+    gap: 6px;
+    color: var(--t2, var(--v4-text-2));
+    font-size: 13px;
   }
   .chip.mono {
     font-family: var(--font-mono, "Geist Mono", monospace);
@@ -251,8 +246,8 @@
     overflow-wrap: anywhere;
   }
   .r {
-    font-family: var(--font-mono, "Geist Mono", monospace);
-    font-size: 11px;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
     color: var(--v4-text-3);
     min-width: 40px;
   }
@@ -281,7 +276,7 @@
     border: 1.5px solid var(--v4-secondary-sidebar);
   }
   .goal {
-    font-size: var(--type-metadata);
+    font-size: 13px;
     color: var(--v4-text-2);
     margin: 4px 0 0;
     line-height: 1.45;
@@ -296,7 +291,7 @@
     display: flex;
     gap: 8px;
     align-items: center;
-    font-size: var(--type-metadata);
+    font-size: 13px;
     color: var(--v4-text-2);
   }
   .st i {
@@ -329,22 +324,24 @@
     flex-wrap: wrap;
   }
   .btn {
-    padding: 5px 10px;
-    border: 1px solid var(--v4-control-border);
-    border-radius: var(--v4-radius-button);
-    background: var(--v4-control-bg);
-    color: var(--v4-text-1);
+    height: 26px;
+    box-sizing: border-box;
+    padding: 0 10px;
+    border: 1px solid var(--line2, var(--v4-control-border));
+    border-radius: 6px;
+    background: var(--btn-bg, var(--v4-control-bg));
+    color: var(--t1, var(--v4-text-1));
     font: inherit;
-    font-size: var(--type-metadata);
+    font-size: 13px;
     cursor: pointer;
   }
   .btn.primary {
-    background: var(--v4-primary-bg);
-    color: var(--v4-primary-fg);
+    background: var(--t1, var(--v4-primary-bg));
+    color: var(--badge-fg, var(--v4-primary-fg));
     border-color: transparent;
   }
   .foot {
-    font-size: 11px;
+    font-size: 13px;
     color: var(--v4-text-3);
     margin-top: 10px;
   }

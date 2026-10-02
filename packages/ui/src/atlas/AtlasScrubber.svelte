@@ -126,7 +126,13 @@
     aria-label={playing ? "Pause" : "Play 30 days"}
     {disabled}
     onclick={play}
-  >{playing ? "❚❚" : "▶"}</button>
+  >
+    {#if playing}
+      <svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true"><path d="M5 3.5v7M9 3.5v7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" /></svg>
+    {:else}
+      <svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true"><path d="M4.5 3.2v7.6L10.8 7z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" fill="none" /></svg>
+    {/if}
+  </button>
   <div
     class="hist"
     bind:this={histEl}
@@ -189,14 +195,16 @@
     width: 28px;
     height: 28px;
     border: 0;
-    border-radius: 50%;
-    background: var(--v4-control-bg);
+    border-radius: 8px;
+    background: transparent;
     display: grid;
     place-items: center;
-    color: var(--v4-text-1);
-    font: inherit;
-    font-size: 10px;
+    color: var(--t2, var(--v4-text-2));
     cursor: pointer;
+  }
+  .play:hover:not(:disabled) {
+    background: var(--hover, var(--v4-hover));
+    color: var(--t1, var(--v4-text-1));
   }
   .play:disabled {
     opacity: 0.5;
@@ -251,26 +259,27 @@
     align-items: center;
     gap: 6px;
     justify-content: flex-end;
-    font-size: var(--type-metadata);
+    font-size: 13px;
   }
   .tab {
-    padding: 3px 8px;
+    padding: 4px 8px;
     border: 0;
-    border-radius: var(--v4-radius-button);
+    border-radius: 6px;
+    font-size: 13px;
     background: none;
     color: var(--v4-text-2);
     font: inherit;
     cursor: pointer;
   }
   .tab[aria-pressed="true"] {
-    background: var(--v4-active-row);
-    color: var(--v4-text-1);
+    background: var(--sel, var(--v4-active-row));
+    color: var(--t1, var(--v4-text-1));
   }
   .now {
     min-width: 42px;
     text-align: right;
-    font-family: var(--font-mono, "Geist Mono", monospace);
-    font-size: 11px;
-    color: var(--v4-text-3);
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    color: var(--t3, var(--v4-text-3));
   }
 </style>
