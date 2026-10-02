@@ -569,6 +569,9 @@
   data-testid="project-detail-view"
 >
   <header class="detail-header">
+    <!-- Toolbar: breadcrumb on the left, section tabs on the right, so the
+         tabs never sit under the hero. -->
+    <div class="detail-toolbar" data-testid="project-toolbar">
     <!-- Breadcrumb: company / Projects / project — preserves company context. -->
     <nav
       class="breadcrumb"
@@ -592,10 +595,87 @@
       <span class="crumb-sep" aria-hidden="true">/</span>
       <span class="crumb-current">{projectDisplayName(project)}</span>
     </nav>
+      <span class="meta-spacer" aria-hidden="true"></span>
+      <nav
+        class="tabs workspace-tabs"
+        aria-label="Project sections"
+        data-testid="workspace-tabs"
+      >
+        <button
+          type="button"
+          class="tab"
+          class:active={tab === "overview"}
+          aria-current={tab === "overview" ? "page" : undefined}
+          data-testid="tab-overview"
+          onclick={() => selectTab("overview")}
+        >
+          Overview
+        </button>
+        <button
+          type="button"
+          class="tab"
+          class:active={boardTabActive}
+          aria-current={boardTabActive ? "page" : undefined}
+          data-testid="tab-board"
+          data-tab="tasks"
+          onclick={() => selectTab("tasks")}
+        >
+          Tasks
+          {#if kpi.total > 0}
+            <span class="tab-count">{kpi.total}</span>
+          {/if}
+        </button>
+        <button
+          type="button"
+          class="tab"
+          class:active={tab === "files"}
+          aria-current={tab === "files" ? "page" : undefined}
+          data-testid="tab-files"
+          onclick={() => selectTab("files")}
+        >
+          Files
+        </button>
+        <button
+          type="button"
+          class="tab"
+          class:active={tab === "activity"}
+          aria-current={tab === "activity" ? "page" : undefined}
+          data-testid="tab-activity"
+          onclick={() => selectTab("activity")}
+        >
+          Activity
+        </button>
+      </nav>
 
-    <div class="toolbar-identity">
+      {#if showTaskViewToggle}
+        <div class="view-toggle" role="group" aria-label="Board view mode">
+          <button
+            type="button"
+            class="toggle-segment"
+            class:is-active={taskViewMode === "board"}
+            aria-pressed={taskViewMode === "board"}
+            data-testid="view-toggle-board"
+            onclick={() => (taskViewMode = "board")}
+          >
+            Board
+          </button>
+          <button
+            type="button"
+            class="toggle-segment"
+            class:is-active={taskViewMode === "list"}
+            aria-pressed={taskViewMode === "list"}
+            data-testid="view-toggle-list"
+            onclick={() => (taskViewMode = "list")}
+          >
+            List
+          </button>
+        </div>
+      {/if}
+    </div>
+
+    <div class="toolbar-identity" class:is-compact={tab === "files"}>
       <h1 id="project-detail-title">{projectDisplayName(project)}</h1>
-      {#if project.description}
+      {#if project.description && tab !== "files"}
         <p class="detail-description" title={project.description}>
           {project.description}
         </p>
@@ -749,7 +829,7 @@
     </div>
 
     <!-- Compact summary strip — progress + task roll-up counts. -->
-    {#if hasPrd && kpi.total > 0}
+    {#if hasPrd && kpi.total > 0 && tab !== "files"}
       <div class="kpi-strip" aria-label="Project metrics">
         <div class="kpi-tile kpi-stories">
           <span class="kpi-label">Stories</span>
@@ -793,83 +873,6 @@
       </span>
     {/if}
 
-    <div class="tabs-row">
-      <nav
-        class="tabs workspace-tabs"
-        aria-label="Project sections"
-        data-testid="workspace-tabs"
-      >
-        <button
-          type="button"
-          class="tab"
-          class:active={tab === "overview"}
-          aria-current={tab === "overview" ? "page" : undefined}
-          data-testid="tab-overview"
-          onclick={() => selectTab("overview")}
-        >
-          Overview
-        </button>
-        <button
-          type="button"
-          class="tab"
-          class:active={boardTabActive}
-          aria-current={boardTabActive ? "page" : undefined}
-          data-testid="tab-board"
-          data-tab="tasks"
-          onclick={() => selectTab("tasks")}
-        >
-          Tasks
-          {#if kpi.total > 0}
-            <span class="tab-count">{kpi.total}</span>
-          {/if}
-        </button>
-        <button
-          type="button"
-          class="tab"
-          class:active={tab === "files"}
-          aria-current={tab === "files" ? "page" : undefined}
-          data-testid="tab-files"
-          onclick={() => selectTab("files")}
-        >
-          Files
-        </button>
-        <button
-          type="button"
-          class="tab"
-          class:active={tab === "activity"}
-          aria-current={tab === "activity" ? "page" : undefined}
-          data-testid="tab-activity"
-          onclick={() => selectTab("activity")}
-        >
-          Activity
-        </button>
-      </nav>
-
-      {#if showTaskViewToggle}
-        <div class="view-toggle" role="group" aria-label="Board view mode">
-          <button
-            type="button"
-            class="toggle-segment"
-            class:is-active={taskViewMode === "board"}
-            aria-pressed={taskViewMode === "board"}
-            data-testid="view-toggle-board"
-            onclick={() => (taskViewMode = "board")}
-          >
-            Board
-          </button>
-          <button
-            type="button"
-            class="toggle-segment"
-            class:is-active={taskViewMode === "list"}
-            aria-pressed={taskViewMode === "list"}
-            data-testid="view-toggle-list"
-            onclick={() => (taskViewMode = "list")}
-          >
-            List
-          </button>
-        </div>
-      {/if}
-    </div>
   </header>
 
   <div class="workspace-body" data-testid="project-workspace-body">
@@ -1617,15 +1620,25 @@
   }
 
   /* Tabs + (on Tasks) the Board/List control share one hairline row. */
-  .tabs-row {
+  .detail-toolbar {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    justify-content: space-between;
     gap: 8px;
     min-width: 0;
-    margin-top: 16px;
-    border-bottom: 1px solid var(--v4-hairline);
+    margin: 0 0 10px;
+  }
+
+  .detail-toolbar .breadcrumb {
+    margin: 0;
+  }
+
+  .detail-toolbar .view-toggle {
+    margin-bottom: 0;
+  }
+
+  .toolbar-identity.is-compact h1 {
+    font-size: 15px;
   }
 
   .tabs {
@@ -1639,16 +1652,15 @@
     background: transparent;
   }
 
+  /* Toolbar tabs: the open section is a background highlight only. */
   .tab {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    height: 34px;
-    margin-bottom: -1px;
+    height: 26px;
     padding: 0 10px;
     border: 0;
-    border-bottom: 2px solid transparent;
-    border-radius: 0;
+    border-radius: var(--v4-radius-button);
     background: transparent;
     color: var(--v4-text-3);
     font: inherit;
@@ -1656,12 +1668,8 @@
     font-weight: 500;
     cursor: pointer;
     transition:
-      border-color 140ms ease,
+      background-color 140ms ease,
       color 140ms ease;
-  }
-
-  .tab:first-child {
-    padding-left: 0;
   }
 
   .tab:hover {
@@ -1669,8 +1677,7 @@
   }
 
   .tab.active {
-    border-bottom-color: var(--v4-text-1);
-    background: transparent;
+    background: var(--v4-control-faint);
     color: var(--v4-text-1);
   }
 

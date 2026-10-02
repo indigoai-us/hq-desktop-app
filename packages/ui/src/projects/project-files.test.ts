@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   fileTemplateBody,
+  folderSummary,
   normalizeNewFileName,
   repoLinkFromPrdText,
   resolveUploadName,
@@ -94,5 +95,15 @@ describe("row marks", () => {
       label: "deacon",
       live: true,
     });
+  });
+});
+
+describe("folderSummary", () => {
+  it("counts folders and files for the empty preview", () => {
+    expect(folderSummary([{ isDir: true }, { isDir: false }, { isDir: false }])).toBe(
+      "1 folder · 2 files",
+    );
+    expect(folderSummary([{ isDir: true }, { isDir: true }])).toBe("2 folders");
+    expect(folderSummary([])).toBe("Empty folder");
   });
 });

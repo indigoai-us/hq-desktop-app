@@ -164,3 +164,13 @@ export function rowMarkForPath(
   const label = (best.agent || best.tool || "session").trim();
   return { label, live: isPortfolioLiveStatus(best.status) };
 }
+
+/** "2 folders · 3 files" for the empty preview; "Empty folder" when none. */
+export function folderSummary(entries: readonly Pick<DirEntry, "isDir">[]): string {
+  const folders = entries.filter((entry) => entry.isDir).length;
+  const files = entries.length - folders;
+  const parts: string[] = [];
+  if (folders > 0) parts.push(`${folders} ${folders === 1 ? "folder" : "folders"}`);
+  if (files > 0) parts.push(`${files} ${files === 1 ? "file" : "files"}`);
+  return parts.length > 0 ? parts.join(" · ") : "Empty folder";
+}

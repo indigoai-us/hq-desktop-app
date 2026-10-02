@@ -15,6 +15,7 @@
     fileTemplateBody,
     normalizeNewFileName,
     rememberChildren,
+    folderSummary,
     repoLinkFromPrdText,
     resolveUploadName,
     rowMarkForPath,
@@ -77,6 +78,26 @@
       repoAccess,
     }),
   );
+
+  /** Folder summary for the empty preview; paints from the tree cache. */
+  let rootSummary = $state<string | null>(null);
+  $effect(() => {
+    const root = vaultRoot;
+    void treeNonce;
+    const cached = cachedChildren(root);
+    rootSummary = cached ? folderSummary(cached) : null;
+    let alive = true;
+    loadChildren(root)
+      .then((entries) => {
+        if (alive) rootSummary = folderSummary(entries);
+      })
+      .catch((err) => {
+        console.error("folder summary failed:", err);
+      });
+    return () => {
+      alive = false;
+    };
+  });
 
   $effect(() => {
     newFolder = vaultRoot;
@@ -295,8 +316,9 @@
       <FilePreviewPane {adapter} path={selectedPath} />
     {:else}
       <div class="files-empty" data-testid="project-files-empty">
-        <span class="files-empty-title">Preview</span>
-        <p>Select a file to read it here. Open and Copy path sit on the preview.</p>
+        <span class="files-empty-title">Select a file</span>
+        <p class="files-empty-path" title={vaultRoot}>{vaultRoot}</p>
+        <p data-testid="project-files-summary">{rootSummary ?? "Reading folder…"}</p>
       </div>
     {/if}
   </section>
@@ -462,6 +484,8 @@
   }
   .files-preview { min-width: 0; min-height: 0; overflow: auto; }
   .files-empty { padding: 24px 16px; color: var(--v4-text-3); }
+  .files-empty p { margin: 2px 0 0; font-size: 12px; }
+  .files-empty-path { font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .files-empty-title { display: block; color: var(--v4-text-1); font-weight: 600; margin-bottom: 4px; }
   .scrim {
     position: absolute;
