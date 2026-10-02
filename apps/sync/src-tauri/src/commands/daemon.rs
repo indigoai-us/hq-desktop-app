@@ -103,6 +103,16 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 /// wedged indefinitely.
 const DAEMON_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const DAEMON_HEARTBEAT_CHECK_INTERVAL: Duration = Duration::from_secs(15);
+const WATCHER_FIRST_PASS_START_DEADLINE: Duration = Duration::from_secs(30 * 60);
+const OPERATION_LOCKED_EXIT: i32 = 17;
+
+fn should_restart_watcher_before_first_pass(first_pass_started: bool, spawn_age: Duration) -> bool {
+    !first_pass_started && spawn_age >= WATCHER_FIRST_PASS_START_DEADLINE
+}
+
+fn is_operation_lock_timeout_exit(code: Option<i32>, signal: Option<i32>) -> bool {
+    signal.is_none() && code == Some(OPERATION_LOCKED_EXIT)
+}
 
 /// Multiple of [`DAEMON_HEARTBEAT_TIMEOUT`] at which the heartbeat is judged on
 /// plain wall time regardless of throttling. Bounds the CPU-bound-wedge case
@@ -295,6 +305,25 @@ pub(crate) fn handle_watch_stdout_line<R: tauri::Runtime>(
     phase_context: &Mutex<WatcherPhaseContext>,
     line: &str,
 ) -> bool {
+    if let Some(status) = parse_watch_runner_status(line) {
+        {
+            let mut context = phase_context
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if status.state == "running" {
+                context.first_pass_started = true;
+                note_operation_lock_recovered();
+            }
+            context.protocol_status = Some(status.clone());
+        }
+        crate::commands::client_health::set_watcher_waiting_for_lock(
+            status.state == "waiting-for-lock",
+        );
+        if let Err(error) = app.emit(crate::events::EVENT_SYNC_WATCHER_STATUS, status) {
+            log("daemon", &format!("failed to emit watcher status: {error}"));
+        }
+        return true;
+    }
     // Shared tolerant parse seam — blank, malformed, and unknown-type lines
     // (e.g. the runner's additive `manifest-upload` event) are skipped rather
     // than killing the watcher. See `events::parse_sync_line`.
@@ -372,14 +401,103 @@ pub(crate) fn handle_watch_stdout_line<R: tauri::Runtime>(
     true
 }
 
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct WatcherProtocolStatus {
+    state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    holder_command: Option<String>,
+}
+
+fn safe_lock_holder_label(command: &str) -> Option<String> {
+    let mut words = command.split_whitespace();
+    let binary = std::path::Path::new(words.next()?).file_name()?.to_str()?;
+    let binary = binary.strip_suffix(".exe").unwrap_or(binary).to_string();
+    let safe_token = |value: &str| {
+        (!value.is_empty()
+            && value.len() <= 48
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte)))
+        .then(|| value.to_string())
+    };
+    let binary = safe_token(&binary)?;
+    let subcommand = words
+        .next()
+        .filter(|word| !word.starts_with('-'))
+        .and_then(|word| {
+            let leaf = std::path::Path::new(word).file_name()?.to_str()?;
+            let leaf = leaf.strip_suffix(".js").unwrap_or(leaf);
+            safe_token(leaf)
+        });
+    Some(match subcommand {
+        Some(subcommand) => format!("{binary} {subcommand}"),
+        None => binary,
+    })
+}
+
+fn parse_watch_runner_status(line: &str) -> Option<WatcherProtocolStatus> {
+    let value: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
+    if value.get("type")?.as_str()? != "status" {
+        return None;
+    }
+    let state = value.get("state")?.as_str()?;
+    if !matches!(
+        state,
+        "starting" | "running" | "waiting-for-lock" | "stopping" | "stopped"
+    ) {
+        return None;
+    }
+    let holder_command = (state == "waiting-for-lock")
+        .then(|| value.get("holder")?.get("command")?.as_str())
+        .flatten()
+        .and_then(safe_lock_holder_label);
+    Some(WatcherProtocolStatus {
+        state: state.to_string(),
+        holder_command,
+    })
+}
+
 fn start_daemon_heartbeat_watchdog(
     generation: u64,
     last_heartbeat: Arc<Mutex<hq_desktop_core::cpu_throttle::RunnableMark>>,
     finished: Arc<AtomicBool>,
+    phase_context: Arc<Mutex<WatcherPhaseContext>>,
 ) {
     thread::spawn(move || loop {
         thread::sleep(DAEMON_HEARTBEAT_CHECK_INTERVAL);
         if finished.load(Ordering::Acquire) {
+            return;
+        }
+        let (first_pass_started, spawn_age, last_status) = {
+            let context = phase_context
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            (
+                context.first_pass_started,
+                context.spawned_at.elapsed(),
+                context.protocol_status.as_ref().map(|status| {
+                    match status.holder_command.as_deref() {
+                        Some(holder) => format!("{} ({holder})", status.state),
+                        None => status.state.clone(),
+                    }
+                }),
+            )
+        };
+        if should_restart_watcher_before_first_pass(first_pass_started, spawn_age) {
+            log(
+                "daemon.watchdog",
+                &format!(
+                    "watcher-stalled: no pass started within {}s; last protocol status: {}",
+                    WATCHER_FIRST_PASS_START_DEADLINE.as_secs(),
+                    last_status.as_deref().unwrap_or("none")
+                ),
+            );
+            HEARTBEAT_STALL_TERMINATION_IN_FLIGHT.store(true, Ordering::Release);
+            if !terminate_daemon_generation_once(generation, DaemonFailureCategory::HeartbeatStall)
+            {
+                HEARTBEAT_STALL_TERMINATION_IN_FLIGHT.store(false, Ordering::Release);
+            }
             return;
         }
         // The watch daemon runs under HQ's CPU ceiling, so wall time since the
@@ -1287,6 +1405,7 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
         daemon_generation,
         last_heartbeat.clone(),
         daemon_finished.clone(),
+        watcher_phase.clone(),
     );
 
     thread::spawn(move || {
@@ -2202,6 +2321,9 @@ impl Default for WatcherExitCaptureContext {
 pub(crate) struct WatcherPhaseContext {
     phase: &'static str,
     observed_at: Instant,
+    protocol_status: Option<WatcherProtocolStatus>,
+    spawned_at: Instant,
+    first_pass_started: bool,
 }
 
 impl Default for WatcherPhaseContext {
@@ -2211,6 +2333,9 @@ impl Default for WatcherPhaseContext {
             // generation starts here until the runner emits a protocol event.
             phase: RUNNER_PHASE_PRE_PROTOCOL,
             observed_at: Instant::now(),
+            protocol_status: None,
+            spawned_at: Instant::now(),
+            first_pass_started: false,
         }
     }
 }
@@ -3767,6 +3892,7 @@ fn set_payload_string_extra(
 /// without writing real Sentry events or mutating the global supervisor state.
 trait WatcherProcessEffects {
     fn note_watcher_crashed(&mut self) -> u32;
+    fn note_operation_lock_timeout(&mut self) -> u32;
     fn note_watcher_capture_policy_streak(
         &mut self,
         policy: WatcherExitCapturePolicy,
@@ -3834,6 +3960,10 @@ struct ProductionWatcherProcessEffects;
 impl WatcherProcessEffects for ProductionWatcherProcessEffects {
     fn note_watcher_crashed(&mut self) -> u32 {
         note_watcher_crashed()
+    }
+
+    fn note_operation_lock_timeout(&mut self) -> u32 {
+        note_operation_lock_timeout()
     }
 
     fn note_watcher_capture_policy_streak(
@@ -4038,6 +4168,7 @@ fn handle_watcher_exit(
     context: &WatcherExitCaptureContext,
 ) -> RunnerReportDirDisposition {
     let mut effects = ProductionWatcherProcessEffects;
+    crate::commands::client_health::set_watcher_waiting_for_lock(false);
     handle_watcher_exit_with_effects(
         &mut effects,
         code,
@@ -4076,6 +4207,17 @@ fn handle_watcher_exit_with_effects<E: WatcherProcessEffects>(
         // recorded the lifecycle transition, so this is not a new event, not a
         // lifecycle change, and never references the stall in-flight flag.
         effects.reset_exec_not_runnable_failure_streak();
+        return RunnerReportDirDisposition::DeleteOnExitPath;
+    }
+
+    if is_operation_lock_timeout_exit(code, signal) {
+        effects.reset_exec_not_runnable_failure_streak();
+        let retry = effects.note_operation_lock_timeout();
+        effects.set_lifecycle_state(WatchDaemonState::Backoff, DaemonFailureCategory::None);
+        effects.log(
+            "daemon",
+            &format!("watch runner timed out waiting for the operation lock; retry #{retry} after backoff"),
+        );
         return RunnerReportDirDisposition::DeleteOnExitPath;
     }
 
@@ -5541,6 +5683,8 @@ struct WatcherCrashState {
     /// Consecutive fast failures (crash-loop length). Reset once a watcher
     /// survives `FAST_FAIL_WINDOW`.
     consecutive: u32,
+    /// Lock timeout retries have separate backoff and are not crash failures.
+    operation_lock_timeout_consecutive: u32,
     /// Consecutive exec-not-runnable (126/127) exits. This stays separate from
     /// `consecutive`: unrelated fast exits must never turn one 126/127 blip
     /// into an escalated capture.
@@ -5669,6 +5813,22 @@ fn note_watcher_crashed() -> u32 {
         Instant::now() + respawn_backoff(consecutive, SUPERVISOR_INTERVAL, RESPAWN_MAX_BACKOFF),
     );
     consecutive
+}
+
+fn note_operation_lock_timeout() -> u32 {
+    let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
+    st.operation_lock_timeout_consecutive = st.operation_lock_timeout_consecutive.saturating_add(1);
+    let retries = st.operation_lock_timeout_consecutive;
+    st.backoff_until =
+        Some(Instant::now() + respawn_backoff(retries, SUPERVISOR_INTERVAL, RESPAWN_MAX_BACKOFF));
+    retries
+}
+
+fn note_operation_lock_recovered() {
+    crash_state()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .operation_lock_timeout_consecutive = 0;
 }
 
 /// Return the streak relevant to the selected capture policy. The global
@@ -7637,6 +7797,135 @@ mod tests {
         assert_eq!(seen[0]["path"], "knowledge/readme.md");
     }
 
+    #[test]
+    fn watcher_status_accepts_unknown_fields_and_scrubs_lock_holder_arguments() {
+        let status = parse_watch_runner_status(
+            r#"{"type":"status","state":"waiting-for-lock","holder":{"pid":42,"command":"/Users/alice/.local/bin/hq sync --token secret"},"future":true}"#,
+        )
+        .expect("known status with additive fields parses");
+        assert_eq!(status.state, "waiting-for-lock");
+        assert_eq!(status.holder_command.as_deref(), Some("hq sync"));
+        assert_eq!(
+            parse_watch_runner_status(
+                r#"{"type":"status","state":"waiting-for-lock","holder":{"command":"/Users/alice/email@example.com/run --token abc"}}"#,
+            )
+            .expect("holder with path and options still has a bounded label")
+            .holder_command
+            .as_deref(),
+            Some("run"),
+            "do not skip options to expose a later argument"
+        );
+    }
+
+    #[test]
+    fn waiting_for_lock_status_updates_watcher_state_and_emits_safe_app_detail() {
+        use std::sync::Arc;
+        use tauri::Listener;
+
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let hq_folder = TempDir::new().unwrap();
+        let totals = Mutex::new(RunTotals::default());
+        let phase = Mutex::new(WatcherPhaseContext::default());
+        let seen = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let seen_w = seen.clone();
+        handle.listen(crate::events::EVENT_SYNC_WATCHER_STATUS, move |event| {
+            seen_w
+                .lock()
+                .unwrap()
+                .push(serde_json::from_str(event.payload()).unwrap());
+        });
+
+        assert!(handle_watch_stdout_line(
+            &handle,
+            hq_folder.path().to_str().unwrap(),
+            &totals,
+            &phase,
+            r#"{"type":"status","state":"waiting-for-lock","holder":{"pid":42,"command":"/Users/alice/.local/bin/hq sync --token secret"}}"#,
+        ));
+        std::thread::sleep(Duration::from_millis(30));
+
+        assert_eq!(
+            phase
+                .lock()
+                .unwrap()
+                .protocol_status
+                .as_ref()
+                .unwrap()
+                .state,
+            "waiting-for-lock"
+        );
+        assert!(!phase.lock().unwrap().first_pass_started);
+        let seen_lock = seen.lock().unwrap();
+        assert_eq!(seen_lock.len(), 1);
+        assert_eq!(seen_lock[0]["state"], "waiting-for-lock");
+        assert_eq!(seen_lock[0]["holderCommand"], "hq sync");
+        drop(seen_lock);
+
+        assert!(handle_watch_stdout_line(
+            &handle,
+            hq_folder.path().to_str().unwrap(),
+            &totals,
+            &phase,
+            r#"{"type":"status","state":"running","passId":"pass-1"}"#,
+        ));
+        std::thread::sleep(Duration::from_millis(30));
+        assert!(phase.lock().unwrap().first_pass_started);
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[1]["state"], "running");
+    }
+
+    #[test]
+    fn operation_lock_timeout_is_retried_without_counting_as_a_crash() {
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(OPERATION_LOCKED_EXIT),
+            None,
+            false,
+            false,
+            "npx",
+            Some("operation lock timed out"),
+            current_termination_host(),
+            &WatcherExitCaptureContext::default(),
+        );
+        assert_eq!(effects.lock_timeouts, 1);
+        assert_eq!(effects.consecutive, 0, "a lock timeout is not a crash");
+        assert!(effects.in_backoff, "retry must wait for a backoff window");
+        assert!(
+            effects.captures.is_empty(),
+            "lock timeout is not a crash report"
+        );
+        assert_eq!(
+            effects.lifecycle,
+            vec![(WatchDaemonState::Backoff, DaemonFailureCategory::None)]
+        );
+    }
+
+    #[test]
+    fn only_the_operation_locked_exit_code_takes_the_lock_retry_path() {
+        assert!(is_operation_lock_timeout_exit(Some(17), None));
+        assert!(!is_operation_lock_timeout_exit(Some(17), Some(9)));
+        assert!(!is_operation_lock_timeout_exit(Some(1), None));
+    }
+
+    #[test]
+    fn first_pass_stall_deadline_ignores_long_passes_that_have_started() {
+        assert!(should_restart_watcher_before_first_pass(
+            false,
+            WATCHER_FIRST_PASS_START_DEADLINE
+        ));
+        assert!(!should_restart_watcher_before_first_pass(
+            false,
+            WATCHER_FIRST_PASS_START_DEADLINE - Duration::from_secs(1)
+        ));
+        assert!(!should_restart_watcher_before_first_pass(
+            true,
+            WATCHER_FIRST_PASS_START_DEADLINE * 4
+        ));
+    }
+
     /// hard-stop-readiness US-019 e2e: given a company over storage, when the
     /// desktop app finishes an auto-sync pass, the desktop window hears the
     /// notice and the paused set, the menu bar is handed the paused set with
@@ -8354,6 +8643,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingWatcherEffects {
         consecutive: u32,
+        lock_timeouts: u32,
         /// Mirrors the production episode streak: grows on every exit regardless
         /// of the fast/slow arm.
         slow_death_consecutive: u32,
@@ -8394,6 +8684,12 @@ mod tests {
             }
             self.in_backoff = true;
             self.consecutive
+        }
+
+        fn note_operation_lock_timeout(&mut self) -> u32 {
+            self.lock_timeouts = self.lock_timeouts.saturating_add(1);
+            self.in_backoff = true;
+            self.lock_timeouts
         }
 
         fn note_watcher_capture_policy_streak(
@@ -14635,6 +14931,7 @@ mod tests {
         let phase_context = Mutex::new(WatcherPhaseContext {
             phase: "pull",
             observed_at: Instant::now(),
+            ..WatcherPhaseContext::default()
         });
         // An EMPTY tail proves the class-scoped shape comes from the retained
         // evidence, not from the generic tail path.
@@ -14984,6 +15281,7 @@ mod tests {
         let phase_context = Mutex::new(WatcherPhaseContext {
             phase: "scan",
             observed_at: Instant::now(),
+            ..WatcherPhaseContext::default()
         });
         let context = watcher_exit_capture_context(
             &Mutex::new(RunTotals::default()),
@@ -15097,6 +15395,7 @@ mod tests {
             &Mutex::new(WatcherPhaseContext {
                 phase: "idle",
                 observed_at: Instant::now(),
+                ..WatcherPhaseContext::default()
             }),
             &generation,
             0,

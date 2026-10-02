@@ -12,6 +12,7 @@ The release moves it under the version it ships in.
 
 - Fixes a race in the agent sign-in test when reading the child process ID.
 
+- Sync reports when another HQ process holds the operation lock, bounds the wait to ten minutes, retries lock timeouts with backoff, and restarts watchers that have not started a pass after thirty minutes.
 - Desktop usage uploads are limited to four requests and 4 MB per sync; remaining records resume on later syncs.
 
 ## [0.10.377] — 2026-10-02

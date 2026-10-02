@@ -250,6 +250,8 @@
   // film ends or is skipped.
   let replayIntro = $state(false);
   let syncState = $state<'idle' | 'syncing' | 'error' | 'conflict' | 'setup-needed' | 'auth-error'>('idle');
+  let watcherWaitingForLock = $state(false);
+  let watcherLockHolder = $state<string | null>(null);
   // True while a manual "Sync Now" owns the progress UI — its richer
   // stdout-driven stream (fanout-aware) drives the card. Gates out the
   // cross-process file-watcher so the two sources never fight. Set on the Sync
@@ -990,6 +992,15 @@
   }
 
   async function setupTrayListeners(unlisteners: ListenerRegistry) {
+    unlisteners.push(
+      await listen<{ state: string; holderCommand?: string }>(
+        'sync:watcher-status',
+        ({ payload }) => {
+          watcherWaitingForLock = payload.state === 'waiting-for-lock';
+          watcherLockHolder = watcherWaitingForLock ? payload.holderCommand ?? null : null;
+        },
+      ),
+    );
     // Refresh the workspaces read every time this window gains focus (it is
     // shown for onboarding and sign-in). Cheap — a single Tauri command plus a
     // small vault round-trip — and it catches external mutations: a company
@@ -2116,6 +2127,13 @@
 </script>
 
 <main>
+  {#if watcherWaitingForLock}
+    <p class="watcher-lock-status" role="status">
+      {watcherLockHolder
+        ? `Waiting for another sync (${watcherLockHolder}) to finish`
+        : "Waiting for another sync to finish"}
+    </p>
+  {/if}
   {#if startupSplash === 'welcome-splash'}
     <div class="welcome-splash" data-testid="startup-welcome-splash" data-tauri-drag-region>
       <svg class="welcome-splash-mark" viewBox="0 0 280 161" fill="currentColor" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="HQ">
@@ -2202,6 +2220,21 @@
     align-items: center;
     justify-content: center;
     height: 100vh;
+  }
+
+  .watcher-lock-status {
+    position: fixed;
+    z-index: 20;
+    top: 8px;
+    left: 8px;
+    right: 8px;
+    margin: 0;
+    padding: 8px 12px;
+    border-radius: 8px;
+    background: var(--popover-surface, #17171b);
+    color: var(--popover-text, #e0e0e0);
+    font-size: 12px;
+    text-align: center;
   }
 
   .welcome-splash {
