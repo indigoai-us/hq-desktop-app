@@ -33,7 +33,10 @@ export interface TokenClasses {
 }
 
 export interface ModelUsage extends TokenClasses {
-  model: ModelId;
+  /** Row id: a Claude family, or the display name of any other model group. */
+  model: string;
+  /** Claude family used for list pricing; absent for models with no list price here. */
+  family?: ModelId;
   label: string;
   hint: string;
 }
@@ -151,8 +154,14 @@ export interface TelemetrySnapshot {
   optedOut?: boolean;
 }
 
+/** True when the row has a list price in LIST_RATES. */
+export function hasListRate(usage: ModelUsage): boolean {
+  return (usage.family ?? usage.model) in LIST_RATES;
+}
+
 export function listRateUsd(usage: ModelUsage): number {
-  const rate = LIST_RATES[usage.model];
+  const rate = LIST_RATES[(usage.family ?? usage.model) as ModelId];
+  if (!rate) return 0;
   const million = 1_000_000;
   return (
     (usage.input * rate.input +

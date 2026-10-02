@@ -6,6 +6,7 @@ import { createTelemetryCache } from "./telemetry-cache.js";
 import {
   MISSING_SESSION_ROWS,
   createMyTelemetryFetcher,
+  modelDisplayName,
   modelFamily,
   rangeWindow,
   snapshotFromMe,
@@ -61,8 +62,8 @@ describe("My Telemetry from /v1/telemetry/me", () => {
     expect(snap.storiesShipped).toBe(6);
     expect(snap.distinctSkills).toBe(2);
     expect(snap.skills).toEqual([{ name: "deploy", count: 5 }, { name: "review", count: 3 }]);
-    expect(snap.models.map((m) => m.model)).toEqual(["opus", "sonnet"]);
-    expect(snap.modelMix).toBe("Opus 40% · Sonnet 40% · other 20%");
+    expect(snap.models.map((m) => m.model)).toEqual(["opus", "sonnet", "Codex"]);
+    expect(snap.modelMix).toBe("Opus 40% · Sonnet 40% · Codex 20%");
     expect(snap.days.map((d) => [d.opus, d.sonnet, d.haiku])).toEqual([[1000, 0, 0], [0, 1000, 0]]);
     expect(snap.rangeLabel).toBe("Sep 3 – Oct 2");
     expect(snap.cacheReadShare).toBe("34%");
@@ -72,17 +73,42 @@ describe("My Telemetry from /v1/telemetry/me", () => {
     expect(snap.notice).toBe(MISSING_SESSION_ROWS);
   });
 
-  it("puts non-Claude and model-less tokens in one Other row so the table adds up to the headline (QA-081)", () => {
+  it("puts model-less tokens in an Other row so the table adds up to the headline (QA-081)", () => {
     const body = meBody("2026-09-03", "2026-10-02", 42);
     // 400 more tokens in the headline than any model accounts for.
     (body.totals as { tokens: unknown }).tokens = tokens(2000, 50, 0, 850);
     const snap = snapshotFromMe(body, "30d");
-    const familyTokens = snap.models.reduce((n, m) => n + m.input + m.output + m.cacheWrite + m.cacheRead, 0);
-    expect(familyTokens).toBe(2000);
-    expect(snap.unattributed?.tokens).toBe(900);
-    expect(familyTokens + snap.unattributed!.tokens).toBe(2900);
-    expect(snap.unattributed?.note).toContain("gpt-6-sol");
-    expect(snap.unattributed?.note).toContain("400 tokens were recorded without a model");
+    const rowTokens = snap.models.reduce((n, m) => n + m.input + m.output + m.cacheWrite + m.cacheRead, 0);
+    expect(rowTokens).toBe(2500);
+    expect(snap.unattributed?.tokens).toBe(400);
+    expect(rowTokens + snap.unattributed!.tokens).toBe(2900);
+    expect(snap.unattributed?.note).toBe("400 tokens were recorded without a model.");
+  });
+
+  it("lists Fable, System and unknown models as their own rows and never calls a Claude model non-Claude (QA-085)", () => {
+    const body = meBody("2026-09-03", "2026-10-02", 42);
+    const totals = body.totals as { tokensByModel: Record<string, unknown>; tokens: unknown };
+    totals.tokensByModel["claude-fable-5-1"] = tokens(3000, 0, 0, 0);
+    totals.tokensByModel["<synthetic>"] = tokens(200, 0, 0, 0);
+    totals.tokensByModel["mystery-9"] = tokens(100, 0, 0, 0);
+    totals.tokensByModel["grok-4.7-build"] = tokens(50, 0, 0, 0);
+    totals.tokens = tokens(4950, 50, 0, 850);
+    const snap = snapshotFromMe(body, "30d");
+    expect(snap.models.map((m) => m.label)).toEqual(["Fable", "Opus", "Sonnet", "Codex", "System", "mystery-9"]);
+    expect(snap.models.find((m) => m.label === "System")?.hint).toBe("Tokens from HQ's own background tasks");
+    expect(snap.models.find((m) => m.label === "Fable")?.family).toBeUndefined();
+    // Seven groups exceed the six-row cap, so the smallest folds into Other and is named.
+    expect(snap.unattributed).toEqual({ tokens: 50, note: "Includes 1 model not shown above: Grok." });
+    expect(snap.unattributed?.note).not.toMatch(/non-Claude/);
+  });
+
+  it("names models through one display helper", () => {
+    expect(modelDisplayName("claude-fable-5-1")).toBe("Fable");
+    expect(modelDisplayName("claude-opus-5-5")).toBe("Opus");
+    expect(modelDisplayName("gpt-6-sol")).toBe("Codex");
+    expect(modelDisplayName("grok-4.7-build")).toBe("Grok");
+    expect(modelDisplayName("<synthetic>")).toBe("System");
+    expect(modelDisplayName("mystery-9")).toBe("mystery-9");
   });
 
   it("omits the Other row when every token has a Claude model", () => {

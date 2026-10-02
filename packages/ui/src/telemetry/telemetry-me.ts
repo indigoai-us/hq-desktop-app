@@ -99,16 +99,41 @@ function pct(part: number, total: number): number {
 
 const FAMILY_LABEL: Record<ModelId, string> = { opus: "Opus", sonnet: "Sonnet", haiku: "Haiku" };
 
-function unattributedNote(otherModels: string[], noModelTokens: number): string {
+/** Row name for tokens from HQ's own background tasks (`<synthetic>` and other internal ids). */
+export const SYSTEM_MODEL_LABEL = "System";
+export const SYSTEM_MODEL_NOTE = "Tokens from HQ's own background tasks";
+
+/** By-model rows shown before the smallest are folded into Other. */
+export const MODEL_ROW_CAP = 6;
+
+/**
+ * Display name for a model id reported by the server. Claude families and
+ * known vendors get a short name; internal ids are "System"; anything else is
+ * shown as-is.
+ */
+export function modelDisplayName(model: string): string {
+  const raw = model.trim();
+  const id = raw.toLowerCase();
+  if (/^<.*>$/.test(id) || id === "synthetic") return SYSTEM_MODEL_LABEL;
+  const family = modelFamily(id);
+  if (family) return FAMILY_LABEL[family];
+  if (id.includes("fable")) return "Fable";
+  if (id.startsWith("gpt-") || id.includes("codex")) return "Codex";
+  if (id.startsWith("grok")) return "Grok";
+  return raw;
+}
+
+function unattributedNote(hiddenModels: string[], noModelTokens: number): string {
   const parts: string[] = [];
-  if (otherModels.length > 0) {
-    const shown = otherModels.slice(0, 3).join(", ");
-    const more = otherModels.length > 3 ? ` and ${otherModels.length - 3} more` : "";
-    parts.push(`Other covers non-Claude models (${shown}${more}), which have no list price here.`);
+  if (hiddenModels.length > 0) {
+    const noun = hiddenModels.length === 1 ? "model" : "models";
+    parts.push(`Includes ${hiddenModels.length} ${noun} not shown above: ${hiddenModels.join(", ")}.`);
   }
   if (noModelTokens > 0) parts.push(`${formatTokens(noModelTokens)} tokens were recorded without a model.`);
   return parts.join(" ");
 }
+
+type RowAcc = Buckets & { models: Set<string>; family?: ModelId };
 
 /** Build the view snapshot from a `/v1/telemetry/me` body. */
 export function snapshotFromMe(body: unknown, range: TelemetryRange): TelemetrySnapshot {
@@ -118,60 +143,63 @@ export function snapshotFromMe(body: unknown, range: TelemetryRange): TelemetryS
   const from = typeof root.from === "string" ? root.from : "";
   const to = typeof root.to === "string" ? root.to : "";
 
-  const familyTotals = new Map<ModelId, Buckets & { models: Set<string> }>();
+  // One row per display name, so every model the server reports is listed.
+  const rows = new Map<string, RowAcc>();
   let allTokens = 0;
-  let otherTokens = 0;
   for (const [model, value] of Object.entries(record(totals.tokensByModel))) {
     const b = buckets(value);
     const total = bucketTotal(b);
+    if (total <= 0) continue;
     allTokens += total;
-    const family = modelFamily(model);
-    if (!family) {
-      otherTokens += total;
-      continue;
-    }
-    const acc = familyTotals.get(family) ?? {
+    const label = modelDisplayName(model);
+    const acc: RowAcc = rows.get(label) ?? {
       inputTokens: 0,
       outputTokens: 0,
       cacheCreationTokens: 0,
       cacheReadTokens: 0,
       models: new Set<string>(),
+      family: modelFamily(model) ?? undefined,
     };
     acc.inputTokens += b.inputTokens;
     acc.outputTokens += b.outputTokens;
     acc.cacheCreationTokens += b.cacheCreationTokens;
     acc.cacheReadTokens += b.cacheReadTokens;
     acc.models.add(model);
-    familyTotals.set(family, acc);
+    rows.set(label, acc);
   }
 
-  const models: ModelUsage[] = (["opus", "sonnet", "haiku"] as const)
-    .filter((family) => familyTotals.has(family))
-    .map((family) => {
-      const acc = familyTotals.get(family)!;
-      return {
-        model: family,
-        label: FAMILY_LABEL[family],
-        hint: `${acc.models.size} model${acc.models.size === 1 ? "" : "s"}`,
-        input: acc.inputTokens,
-        output: acc.outputTokens,
-        cacheWrite: acc.cacheCreationTokens,
-        cacheRead: acc.cacheReadTokens,
-      };
-    });
+  const ordered = [...rows.entries()].sort((x, y) => bucketTotal(y[1]) - bucketTotal(x[1]) || x[0].localeCompare(y[0]));
+  const shownRows = ordered.slice(0, MODEL_ROW_CAP);
+  const hiddenRows = ordered.slice(MODEL_ROW_CAP);
+
+  const models: ModelUsage[] = shownRows.map(([label, acc]) => ({
+    model: acc.family ?? label,
+    ...(acc.family ? { family: acc.family } : {}),
+    label,
+    hint:
+      label === SYSTEM_MODEL_LABEL
+        ? SYSTEM_MODEL_NOTE
+        : `${acc.models.size} model${acc.models.size === 1 ? "" : "s"}`,
+    input: acc.inputTokens,
+    output: acc.outputTokens,
+    cacheWrite: acc.cacheCreationTokens,
+    cacheRead: acc.cacheReadTokens,
+  }));
 
   const sum = buckets(totals.tokens);
   const tokenSum = bucketTotal(sum) || allTokens;
-  // The headline counts every token; the family rows only Claude models. Usage
-  // from other vendors, or recorded with no model, goes in one remainder row.
-  const familyTokens = allTokens - otherTokens;
-  const unattributedTokens = Math.max(0, tokenSum - familyTokens);
-  const otherModels = Object.keys(record(totals.tokensByModel)).filter((m) => !modelFamily(m));
+  // The headline counts every token. Other holds tokens with no model id, plus
+  // the smallest rows when the table is capped, so the table adds up.
+  const shownTokens = models.reduce((n, m) => n + m.input + m.output + m.cacheWrite + m.cacheRead, 0);
+  const unattributedTokens = Math.max(0, tokenSum - shownTokens);
   const unattributed =
     unattributedTokens > 0
       ? {
           tokens: unattributedTokens,
-          note: unattributedNote(otherModels, tokenSum - allTokens),
+          note: unattributedNote(
+            hiddenRows.map(([label]) => label),
+            tokenSum - allTokens,
+          ),
         }
       : undefined;
 

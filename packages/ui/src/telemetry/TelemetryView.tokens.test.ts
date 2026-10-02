@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import TelemetryView from "./TelemetryView.svelte";
 import { createTelemetryCache } from "./telemetry-cache.js";
 import { TELEMETRY_SMOKE } from "./telemetry-smoke.js";
+import { snapshotFromMe } from "./telemetry-me.js";
 import { formatTokens, type TelemetrySnapshot } from "./telemetry-model.js";
 
 describe("Telemetry Tokens page (QA-081)", () => {
@@ -36,7 +37,7 @@ describe("Telemetry Tokens page (QA-081)", () => {
     const snapshot: TelemetrySnapshot = {
       ...TELEMETRY_SMOKE,
       endDate: undefined,
-      unattributed: { tokens: familyTokens * 3, note: "Other covers non-Claude models (gpt-6-sol)." },
+      unattributed: { tokens: familyTokens * 3, note: "Includes 1 model not shown above: gpt-6-sol." },
     };
     const target = await openTokens(snapshot);
     const other = target.querySelector("[data-testid='telemetry-model-other']");
@@ -46,6 +47,34 @@ describe("Telemetry Tokens page (QA-081)", () => {
       formatTokens(familyTokens * 4),
     );
     expect(target.querySelector("[data-testid='telemetry-model-other-note']")?.textContent).toContain("gpt-6-sol");
+  });
+
+  it("renders Fable, System and unknown models as rows with an honest note (QA-085)", async () => {
+    const t = (n: number) => ({ inputTokens: n, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0 });
+    const snapshot = snapshotFromMe(
+      {
+        from: "2026-09-03",
+        to: "2026-10-02",
+        daily: [],
+        totals: {
+          distinctSessions: 3,
+          tokensByModel: { "claude-fable-5-1": t(3000), "claude-opus-5-5": t(1000), "<synthetic>": t(200), "mystery-9": t(100) },
+          tokens: t(4500),
+        },
+      },
+      "30d",
+    );
+    const target = await openTokens({ ...snapshot, endDate: undefined });
+    const names = [...target.querySelectorAll(".trow .nm")].map((el) => el.textContent ?? "");
+    expect(names[0]).toContain("Fable");
+    expect(names[1]).toContain("Opus");
+    expect(names[2]).toContain("System");
+    expect(names[2]).toContain("Tokens from HQ's own background tasks");
+    expect(names[3]).toContain("mystery-9");
+    expect(target.querySelector("[data-testid='telemetry-model-other']")?.textContent).toContain(formatTokens(200));
+    const note = target.querySelector("[data-testid='telemetry-model-other-note']")?.textContent ?? "";
+    expect(note).toBe("200 tokens were recorded without a model.");
+    expect(target.textContent).not.toContain("non-Claude");
   });
 
   it("Company and Actor tabs show an unavailable state and hide the model chart", async () => {

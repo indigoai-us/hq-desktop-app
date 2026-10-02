@@ -11,6 +11,7 @@
     barPercents,
     formatTokens,
     formatUsd,
+    hasListRate,
     listRateUsd,
     outcomesForFilter,
     sessionsForFilter,
@@ -429,11 +430,11 @@
             {#each snapshot.models as model (model.model)}
               {@const tokens = model.input + model.output + model.cacheWrite + model.cacheRead}
               <div class="trow">
-                <span class="nm"><i class={model.model}></i>{model.label}<span class="m">{model.hint}</span></span>
+                <span class="nm"><i class={model.family ?? ""}></i>{model.label}<span class="m">{model.hint}</span></span>
                 <span class="n">{formatTokens(tokens)}</span>
                 <span class="bar"><i style:width="{sharePercent(tokens, tokenTotal)}%"></i></span>
                 <span class="n">{sharePercent(tokens, tokenTotal)}%</span>
-                <span class="n">{formatUsd(listRateUsd(model))}</span>
+                <span class="n">{hasListRate(model) ? formatUsd(listRateUsd(model)) : "—"}</span>
               </div>
             {/each}
             {#if snapshot.unattributed}
