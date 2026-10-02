@@ -43,6 +43,8 @@ The release moves it under the version it ships in.
 - Internal: removed two unused packages/ui helpers and made three module-only helpers private (TD-60, #1198). No user-visible change.
 
 - Internal: unused exports in the shared UI package are now module-private. No behaviour change.
+- Automatic sync now forwards live-update availability to the tray, so poll-only status appears without starting a manual sync.
+- When live sync updates are unavailable, the tray shows the last completed sync and polling cadence. It no longer says Syncing when no files are moving.
 
 - Internal: unused exports in the work shell and installer are now module-private. No behaviour change.
 

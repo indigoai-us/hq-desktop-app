@@ -16,6 +16,7 @@ export default defineConfig({
       project: process.env.SENTRY_PROJECT ?? "hq-sync-web",
       authToken: process.env.SENTRY_AUTH_TOKEN,
       release: { name: `hq-sync-web@${pkg.version}` },
+      telemetry: false,
     }),
   ],
   define: {
