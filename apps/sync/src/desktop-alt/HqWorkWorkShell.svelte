@@ -1375,9 +1375,25 @@
      .desktop-shell) is the single layer that scales with the Appearance
      window-opacity setting. A second full-window fill at this level (PR #772's
      staged backing, alpha floor .72/.78) stacked under that ground and made
-     the window read as solid at every slider value. */
+     the window read as solid at every slider value.
+
+     OWNER-002: at 100% opacity (the default, and the value when the setting
+     is unset) the host still paints a solid floor. Any host region the shell
+     ground does not cover (old stacked plan-limit notices, warnings, a
+     modal's backdrop) otherwise showed other apps through the window. The
+     floor's alpha is 1 only when the transparency factor is 0, so below 100%
+     it is fully transparent and does not stack under the shell ground. */
   .hq-work-embedded {
-    background: transparent;
+    --hq-work-solid-floor-alpha: clamp(
+      0%,
+      calc(100% - var(--hq-window-transparency-factor, 0) * 10000%),
+      100%
+    );
+    background: color-mix(
+      in srgb,
+      var(--v4-reading-surface, #111111) var(--hq-work-solid-floor-alpha),
+      transparent
+    );
   }
 
   .lifecycle-state {
