@@ -540,6 +540,47 @@ describe('automatic setup recovery', () => {
       }),
     ).toEqual({ kind: 'skip', message: hardTimeout });
   });
+
+  it('retries dependency hard timeouts only when enabled and while retry is available', () => {
+    const hardTimeout = 'This step took too long (over 540s) and was skipped.';
+    expect(
+      setupStageRecoveryAction({
+        stageId: 'deps',
+        message: hardTimeout,
+        retryCount: 0,
+      }),
+    ).toEqual({ kind: 'skip', message: hardTimeout });
+
+    expect(
+      setupStageRecoveryAction({
+        stageId: 'deps',
+        message: hardTimeout,
+        retryCount: 0,
+        depsTimeoutRetryEnabled: true,
+      }),
+    ).toEqual({
+      kind: 'retry',
+      delayMs: 1000,
+      nextRetryCount: 1,
+      message: hardTimeout,
+    });
+    expect(
+      setupStageRecoveryAction({
+        stageId: 'deps',
+        message: hardTimeout,
+        retryCount: 1,
+        depsTimeoutRetryEnabled: true,
+      }),
+    ).toEqual({ kind: 'skip', message: hardTimeout });
+    expect(
+      setupStageRecoveryAction({
+        stageId: 'content',
+        message: hardTimeout,
+        retryCount: 0,
+        depsTimeoutRetryEnabled: true,
+      }),
+    ).toEqual({ kind: 'skip', message: hardTimeout });
+  });
 });
 
 describe('stage timeouts', () => {

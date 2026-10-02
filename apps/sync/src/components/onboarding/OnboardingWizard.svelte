@@ -99,6 +99,7 @@
     setupCompletionResult,
     setupProgressPercent,
     setupStageRecoveryAction,
+    SETUP_DEPS_TIMEOUT_RETRY_FLAG,
     stageCommandInvocations,
     stageTimeoutMs,
     setupFailureTelemetryDetails,
@@ -1808,6 +1809,7 @@
     id: StageId,
     runId: number,
     attemptCount: number,
+    depsTimeoutRetryEnabled: boolean,
   ): Promise<StageRunResult> {
     if (!isCurrentRun(runId)) return CANCELLED_STAGE_RUN;
     const setupRunId = currentSetupRunId;
@@ -1865,6 +1867,7 @@
         stageId: id,
         message,
         retryCount: attemptCount - 1,
+        depsTimeoutRetryEnabled,
       });
       stages = setStageStatus(
         stages,
@@ -1954,14 +1957,23 @@
     }
   }
 
-  async function runSetup(runId: number, startStage: StageId = STAGE_ORDER[0]) {
+  async function runSetup(
+    runId: number,
+    startStage: StageId = STAGE_ORDER[0],
+    depsTimeoutRetryEnabled = false,
+  ) {
     const startIndex = Math.max(0, STAGE_ORDER.indexOf(startStage));
     const retryCounts = new Map<StageId, number>();
     for (const id of STAGE_ORDER.slice(startIndex)) {
       if (!isCurrentRun(runId)) return;
       while (isCurrentRun(runId)) {
         const attemptCount = (retryCounts.get(id) ?? 0) + 1;
-        const result = await runStage(id, runId, attemptCount);
+        const result = await runStage(
+          id,
+          runId,
+          attemptCount,
+          depsTimeoutRetryEnabled,
+        );
         if (result.outcome === 'cancelled') return;
         if (result.outcome === 'ok') break;
 
@@ -2200,6 +2212,19 @@
     const runId = beginSetupRun();
     inFlightRunId = runId;
     try {
+      let depsTimeoutRetryEnabled = false;
+      try {
+        const result = await onboardingFeatureFlags.identity.hasFeature(
+          SETUP_DEPS_TIMEOUT_RETRY_FLAG,
+        );
+        depsTimeoutRetryEnabled = result.ok && result.value === true;
+      } catch (error) {
+        console.warn(
+          'onboarding: dependency timeout retry flag unavailable; leaving retry off',
+          error,
+        );
+      }
+      if (!isCurrentRun(runId)) return;
       if (installPath) effectiveInstallPath = installPath;
       await listenForProgress(runId);
       let startStage: StageId = STAGE_ORDER[0];
@@ -2216,7 +2241,7 @@
         }
       }
       if (!isCurrentRun(runId)) return;
-      await runSetup(runId, startStage);
+      await runSetup(runId, startStage, depsTimeoutRetryEnabled);
     } finally {
       // Only the run that still owns the guard may release it: a superseded
       // run finishing late must not clear a newer run's claim. Every exit —

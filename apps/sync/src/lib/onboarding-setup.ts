@@ -774,6 +774,7 @@ export interface SetupStageRecoveryInput {
   stageId: StageId;
   message: string | null | undefined;
   retryCount: number;
+  depsTimeoutRetryEnabled?: boolean;
 }
 
 export function setupStageRecoveryAction(
@@ -782,6 +783,19 @@ export function setupStageRecoveryAction(
   const message =
     input.message?.trim() || 'Stage failed with no detail recorded.';
   if (isHardStageTimeoutMessage(message)) {
+    const nextRetryCount = Math.max(0, Math.floor(input.retryCount)) + 1;
+    if (
+      input.stageId === 'deps' &&
+      input.depsTimeoutRetryEnabled === true &&
+      nextRetryCount <= stageAutoRetryLimit('deps')
+    ) {
+      return {
+        kind: 'retry',
+        delayMs: setupAutoRetryDelayMs(nextRetryCount),
+        nextRetryCount,
+        message,
+      };
+    }
     return { kind: 'skip', message };
   }
 
