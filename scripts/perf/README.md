@@ -23,7 +23,7 @@ Output: `reports/perf/baseline-<YYYY-MM-DD>.json`.
 `pnpm perf:rail` is the same harness plus three console-rail scenarios, judged against `scripts/fixtures/perf-baseline.console-rail.json`:
 
 - company switch (click a company tile). Skipped until US-004 and US-009 add the tile and the Atlas landing.
-- sidepane switch (Home to company and back). Skipped until US-006 adds the sidepane host.
+- sidepane switch (Home to company and back), timed once the US-006 sidepane host is mounted.
 - lazy-chunk check. Atlas and telemetry must be absent from the initial JS graph (Vite manifest). Size limits: Atlas 120 KB, telemetry 80 KB.
 
 ```bash

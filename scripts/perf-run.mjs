@@ -331,9 +331,12 @@ async function measureRailScenarios(page) {
   const home = await page.$(
     '[data-testid="rail-home"], [data-testid="app-rail-home"]',
   );
-  const companyNav = await page.$(
-    '[data-testid="rail-company-nav"], [data-testid="sidepane-company"]',
-  );
+  // With the US-006 host mounted, a company tile swaps the sidepane model.
+  const sidepaneHost = await page.$('[data-testid="sidepane"]');
+  const companyNav =
+    (await page.$(
+      '[data-testid="rail-company-nav"], [data-testid="sidepane-company"]',
+    )) ?? (sidepaneHost ? company : null);
   let sidepaneSwitch;
   if (!home || !companyNav) {
     sidepaneSwitch = {
@@ -341,6 +344,9 @@ async function measureRailScenarios(page) {
       todo: RAIL_SCENARIO_TODO.sidepaneSwitch,
     };
   } else {
+    // Start from Home so the first timed click is a real model swap.
+    await home.click({ timeout: 5000 }).catch(() => {});
+    await page.waitForTimeout(100);
     const toCompany = await timeToNextPaint(page, () =>
       companyNav.click({ timeout: 5000 }).catch(() => {}),
     );
