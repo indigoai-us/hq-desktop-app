@@ -56,3 +56,30 @@ describe("new project sheet model", () => {
     ]);
   });
 });
+
+describe("New project company tabs (QA-050)", () => {
+  it("uses the rail roster, Personal first, and drops local-only companies", async () => {
+    const { companyPickerSlugs } = await import("../shell/pinned-companies.js");
+    const { newProjectCompanies, newProjectDefaultCompany } = await import("./new-project.js");
+    const roster = companyPickerSlugs([
+      { kind: "personal", slug: "personal", cloudUid: "prs_1" },
+      { kind: "company", slug: "indigo", cloudUid: "cmp_1" },
+      { kind: "company", slug: "workspace", cloudUid: null },
+      { kind: "company", slug: "tonal", cloudUid: "  " },
+      { kind: "company", slug: "postpilot", cloudUid: "cmp_2" },
+    ]);
+    expect(roster).toEqual(["personal", "indigo", "postpilot"]);
+    const tabs = newProjectCompanies("tonal", roster, ["tonal", "magical-moments"]);
+    expect(tabs).toEqual(["personal", "indigo", "postpilot"]);
+    expect(newProjectDefaultCompany("tonal", tabs)).toBe("personal");
+    expect(newProjectDefaultCompany("indigo", tabs)).toBe("indigo");
+  });
+
+  it("falls back to the current company plus project companies without a roster", async () => {
+    const { newProjectCompanies } = await import("./new-project.js");
+    expect(newProjectCompanies("indigo", null, ["indigo", "acme", null, "acme"])).toEqual([
+      "indigo",
+      "acme",
+    ]);
+  });
+});

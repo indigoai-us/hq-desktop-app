@@ -59,3 +59,17 @@ describe("pinned companies (US-004)", () => {
     expect(companyLiveCount(snapshot, "co_missing")).toBe(0);
   });
 });
+
+describe("member companies (QA-050)", () => {
+  it("keeps only cloud member companies in roster order", async () => {
+    const { memberCompanies } = await import("./pinned-companies.js");
+    const rows = memberCompanies([
+      { kind: "company", slug: "b", cloudUid: "cmp_b" },
+      { kind: "personal", slug: "personal", cloudUid: "prs_1" },
+      { kind: "company", slug: "local-only", cloudUid: undefined },
+      { kind: "company", slug: "a", cloudUid: "cmp_a" },
+    ]);
+    expect(rows.map((r) => r.slug)).toEqual(["b", "a"]);
+    expect(memberCompanies(null)).toEqual([]);
+  });
+});

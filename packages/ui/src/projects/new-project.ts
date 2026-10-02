@@ -109,3 +109,23 @@ export function linkPickerOptions(
   }
   return out;
 }
+
+/**
+ * Company tabs for the New project sheet. With the rail roster (QA-050) the
+ * tabs are exactly that list — Personal first, then member companies — so
+ * local-only manifest companies never appear. Without it (stories, tests)
+ * fall back to the current company plus any seen in projects.
+ */
+export function newProjectCompanies(
+  current: string,
+  roster: readonly string[] | null | undefined,
+  seen: readonly (string | null | undefined)[] = [],
+): string[] {
+  if (roster && roster.length > 0) return [...new Set(roster)];
+  return [current, ...new Set(seen.filter((c): c is string => !!c && c !== current))];
+}
+
+/** Default tab: the current company when it is a target, else the first tab. */
+export function newProjectDefaultCompany(current: string, companies: readonly string[]): string {
+  return companies.includes(current) ? current : (companies[0] ?? current);
+}

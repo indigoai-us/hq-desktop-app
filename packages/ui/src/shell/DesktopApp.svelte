@@ -100,6 +100,8 @@
     rememberCompanyId,
     reorderPinnedIds,
     seedPinnedCompanyIds,
+    memberCompanies,
+    companyPickerSlugs,
   } from "./pinned-companies.js";
   import ChatSidebar, {
     type ChatSidebarActions,
@@ -8544,8 +8546,7 @@
   let accountMenuAnchor = $state({ left: 64, bottom: 16 });
 
   const railCompanyRoster = $derived(
-    (effectiveCompanies ?? [])
-      .filter((c) => c.kind === "company" && (c.cloudUid ?? "").trim())
+    memberCompanies(effectiveCompanies)
       .map((c) => ({
         uid: c.cloudUid!.trim(),
         label: c.displayName || c.slug,
@@ -10100,7 +10101,7 @@
           <DeploymentsRailHost
             accountId={tenantAccountId ?? "local"}
             listDeployApps={adapter.company?.listDeployApps}
-            companies={companies ?? []}
+            companies={memberCompanies(companies)}
             openExternal={onopenurl}
           />
         {:else if (railPlaceholder?.id === "vault" || railPlaceholder?.id === "integrations" || railPlaceholder?.id === "secrets" || railPlaceholder?.id === "deployments") && companyPaneCompany}
@@ -10676,6 +10677,7 @@
                 {adapter}
                 slug={selectedCompanySlug}
                 companyUid={selectedRow.companyUid ?? null}
+                pickerCompanies={companyPickerSlugs(effectiveCompanies)}
               />
             </div>
           {:else if activeTab === "chat"}

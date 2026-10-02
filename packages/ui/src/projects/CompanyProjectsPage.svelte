@@ -68,7 +68,12 @@
   import { setStoryPasses } from "./projects-store.svelte.js";
   import { pushToast } from "../shell/toast-stack.svelte.js";
   import { boardFaces } from "./board-faces.js";
-  import { newProjectPrompt, type NewProjectDraft } from "./new-project.js";
+  import {
+    newProjectCompanies,
+    newProjectDefaultCompany,
+    newProjectPrompt,
+    type NewProjectDraft,
+  } from "./new-project.js";
   import ProvenanceLine from "../common/ProvenanceLine.svelte";
   import UnavailableNote from "../common/UnavailableNote.svelte";
   import "../home/tokens.css";
@@ -79,13 +84,18 @@
     slug: string;
     /** Cloud company uid for GET ProjectView. Absent for a local-only company. */
     companyUid?: string | null;
+    /**
+     * Company picker targets from the rail roster (QA-050): Personal first,
+     * then member companies. Absent outside the shell (stories, tests).
+     */
+    pickerCompanies?: readonly string[] | null;
     onnewproject?: () => void | Promise<void>;
   }
 
   /** Legacy cycle filter kept for needs-link + work-actions contracts. */
   type ProjectFilter = "all" | "active" | "needs-link";
 
-  let { adapter, slug, companyUid = null, onnewproject }: Props = $props();
+  let { adapter, slug, companyUid = null, pickerCompanies = null, onnewproject }: Props = $props();
 
   // Wire the module-level project/session seams to this platform adapter.
   $effect.pre(() => {
@@ -261,9 +271,13 @@
     actionMessage = "Opened in Claude Code.";
   }
 
-  /** Companies offered in the sheet: this one first, then any seen in projects. */
+  /** Companies offered in the sheet: the rail's roster, else this one plus any seen in projects. */
   const sheetCompanies = $derived(
-    [slug, ...new Set(projects.map((p) => p.company).filter((c) => c && c !== slug))],
+    newProjectCompanies(
+      slug,
+      pickerCompanies,
+      projects.map((p) => p.company),
+    ),
   );
 
   /** Stacked faces for list rows: lead person, then live bots. */
@@ -1337,7 +1351,7 @@
   {/if}
   {#if newProjectOpen}
     <NewProjectSheet
-      company={slug}
+      company={newProjectDefaultCompany(slug, sheetCompanies)}
       companies={sheetCompanies}
       owners={ownerOptions}
       {objectives}

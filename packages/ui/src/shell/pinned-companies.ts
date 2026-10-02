@@ -85,3 +85,33 @@ export function companyLiveCount(
   }
   return count;
 }
+
+export interface RosterWorkspace {
+  kind: string;
+  slug: string;
+  cloudUid?: string | null;
+}
+
+/**
+ * Companies the person is a cloud member of — the one list the rail, More
+ * companies, Profile, and every company picker share (QA-050). Local-only
+ * manifest companies are excluded.
+ */
+export function memberCompanies<T extends RosterWorkspace>(
+  companies: readonly T[] | null | undefined,
+): T[] {
+  return (companies ?? []).filter(
+    (c) => c.kind === "company" && (c.cloudUid ?? "").trim() !== "",
+  );
+}
+
+/** Picker targets by slug: Personal first, then member companies in rail order. */
+export function companyPickerSlugs(
+  companies: readonly RosterWorkspace[] | null | undefined,
+): string[] {
+  const slugs = ["personal"];
+  for (const c of memberCompanies(companies)) {
+    if (!slugs.includes(c.slug)) slugs.push(c.slug);
+  }
+  return slugs;
+}
