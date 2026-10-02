@@ -1288,6 +1288,32 @@ mod authenticated_receipt_tests {
     }
 
     #[test]
+    fn receipts_deliver_for_access_tokens_whose_email_verified_is_a_string() {
+        // Regression: Cognito access tokens carry `email_verified: "true"`
+        // (a JSON string). The claims decoder used to reject that, so the
+        // bearer resolved to no account and every receipt was held forever.
+        let receipt = receipt(
+            AuthenticatedReceiptEndpoint::WorkspaceSelected,
+            "evt_workspace",
+            "2026-09-17T10:01:00.000Z",
+        );
+        let claims = URL_SAFE_NO_PAD.encode(
+            serde_json::to_vec(&serde_json::json!({
+                "sub": "person-a",
+                "email_verified": "true",
+                "token_use": "access"
+            }))
+            .expect("claims serialize"),
+        );
+        let bearer = format!("header.{claims}.signature");
+
+        assert!(
+            receipt_matches_bearer_account(&receipt, &bearer),
+            "string-form email_verified must not hold the receipt"
+        );
+    }
+
+    #[test]
     fn paused_workspace_receipt_keeps_the_workspace_authorizer_after_an_account_switch() {
         let captured = workspace_receipt_authorization_from_session(Some(AuthSessionEnvelope {
             account_id: Some("person-a".to_string()),
