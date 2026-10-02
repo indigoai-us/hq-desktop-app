@@ -862,6 +862,7 @@ const ALLOWED_DESKTOP_PROPERTY_KEYS: &[&str] = &[
     "holdReason",
     "requiredGitVersion",
     "detectedGitVersion",
+    "found",
 ];
 
 const SYMLINK_ERROR_OPERATION_VALUES: &[&str] = &[
@@ -1072,7 +1073,12 @@ fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
                 }
                 (_, Value::Bool(_)) => matches!(
                     key.as_str(),
-                    "enabled" | "autoUpdateEnabled" | "eligible" | "versionBehind" | "npxResolved"
+                    "enabled"
+                        | "autoUpdateEnabled"
+                        | "eligible"
+                        | "versionBehind"
+                        | "npxResolved"
+                        | "found"
                 )
                 .then_some(value),
                 (_, Value::Number(n)) => {
@@ -1119,6 +1125,19 @@ fn sanitize_post_ready_action_properties(properties: Option<Value>) -> Value {
         out.insert("action".to_string(), Value::String(action.to_string()));
     }
     Value::Object(out)
+}
+
+/// Tag every hq-pro desktop row with the website visitor id the CDP mirror
+/// uses, so the web→desktop funnel joins on one id. Only a safe label is
+/// attached; a caller-supplied `anonId` is never trusted.
+fn attach_anon_id(properties: &mut Value, anon_id: Option<String>) {
+    let Some(object) = properties.as_object_mut() else {
+        return;
+    };
+    object.remove("anonId");
+    if let Some(anon) = anon_id.filter(|id| is_safe_label_value(id)) {
+        object.insert("anonId".to_string(), Value::String(anon));
+    }
 }
 
 fn build_desktop_telemetry_event(
@@ -1193,6 +1212,10 @@ fn build_desktop_telemetry_event(
     if is_post_ready_action {
         properties["os"] = Value::String(std::env::consts::OS.to_string());
     }
+    attach_anon_id(
+        &mut properties,
+        crate::commands::cdp_mirror::current_anon_id(),
+    );
     let install_attempt_id = (event_name == "desktop_setup_completed")
         .then(crate::commands::first_run::install_attempt_id)
         .flatten();
@@ -1303,6 +1326,7 @@ const OPERATIONAL_DESKTOP_EVENT_NAMES: &[&str] = &[
     "desktop_auto_update_post_cap_outcome",
     "oauth_signin_succeeded",
     "telemetry_preference_changed",
+    "install_tag_read",
 ];
 
 fn is_operational_desktop_event_name(event_name: &str) -> bool {
@@ -3054,6 +3078,7 @@ mod codex_telemetry_tests {
                 "holdReason",
                 "requiredGitVersion",
                 "detectedGitVersion",
+                "found",
             ]
         );
         for key in ALLOWED_DESKTOP_PROPERTY_KEYS {
@@ -6991,5 +7016,37 @@ mod codex_telemetry_tests {
         let (row, offset, _) = scanner.next_bounded(record.len() as u64).unwrap();
         assert_eq!(row.unwrap()["model"], "final-model");
         assert_eq!(offset, record.len() as u64);
+    }
+
+    #[test]
+    fn anon_id_is_attached_only_as_a_safe_label() {
+        let mut props = serde_json::json!({ "step": "x", "anonId": "spoofed" });
+        attach_anon_id(&mut props, Some("vyg-abc".into()));
+        assert_eq!(props["anonId"], "vyg-abc");
+        let mut props = serde_json::json!({ "anonId": "spoofed" });
+        attach_anon_id(&mut props, Some("bad id/with?url".into()));
+        assert!(props.get("anonId").is_none());
+        let mut props = serde_json::json!({});
+        attach_anon_id(&mut props, None);
+        assert!(props.get("anonId").is_none());
+    }
+
+    #[test]
+    fn install_tag_read_is_operational_and_keeps_only_labels() {
+        assert!(is_operational_desktop_event_name("install_tag_read"));
+        let event = build_desktop_telemetry_event(
+            "install_tag_read".into(),
+            Some(serde_json::json!({
+                "found": true,
+                "source": "whereFroms",
+                "url": "https://x.com/HQ.dmg?aid=vyg-1&secret=1"
+            })),
+            None,
+            None,
+            "no-consent",
+        );
+        assert_eq!(event.properties["found"], true);
+        assert_eq!(event.properties["source"], "whereFroms");
+        assert!(event.properties.get("url").is_none());
     }
 }
