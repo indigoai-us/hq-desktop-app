@@ -294,6 +294,16 @@
      * option existed. Read only when `humanOnly` is on.
      */
     serverHumanView?: boolean;
+    /**
+     * Identity of the conversation this pane shows (the host passes the row
+     * id). A run of history requests is bound to the identity it started
+     * for: once this value changes, or the pane is unmounted, the run issues
+     * no further request. Without it a pane the host has already replaced
+     * could keep asking for history, and the host would apply those requests
+     * to whichever conversation is open by then. Falls back to `draftKey`,
+     * then `channelId`.
+     */
+    conversationKey?: string | null;
   }
 
   let {
@@ -342,6 +352,7 @@
     localBots = null,
     humanOnly = false,
     serverHumanView = false,
+    conversationKey = null,
   }: Props = $props();
 
   /** Presence-store online flag for an actor in this conversation's company. */
@@ -567,6 +578,20 @@
     return out;
   });
 
+  /**
+   * Root rows from the host that this pane paints: visible in this mode and
+   * not a retired card (`timeline` drops those). The server human view reads
+   * this one set everywhere it asks "is there anything to show yet": to
+   * start the open-time run, to decide whether a run should continue, and to
+   * choose between the loading, paused, and ordinary states. Reading
+   * `visibleRootMessages` in one place and `timeline` in another left a
+   * cached conversation whose only visible row was a retired card on
+   * "Loading earlier messages" with no run and no button.
+   */
+  const paintableRootMessages = $derived(
+    visibleRootMessages.filter((msg) => !isHiddenTimelineMessage(msg)),
+  );
+
   // Persisted answered-decision state, derived from the whole injected message
   // set (root + replies, oldest → newest) so a card locks + highlights its
   // chosen option across reload and thread reopen — not just optimistically
@@ -732,16 +757,29 @@
   let serverViewAutoStarted = $state(false);
   /** "Show N earlier" prepends rows; anchor the height so the view holds still. */
   let earlierError = $state(false);
+  /** The pane has been unmounted: no run may issue another request. */
+  let destroyed = false;
+  /** The conversation a run of history requests belongs to. */
+  const conversationIdentity = $derived(
+    conversationKey ?? draftKey ?? channelId ?? null,
+  );
   async function showEarlier(): Promise<void> {
     if (loadingEarlier || (windowed.hidden === 0 && !hasEarlier)) return;
+    // The run is bound to the conversation it starts for. The host applies a
+    // history request to whichever conversation is open when it is made, so
+    // a run that outlives its conversation must stop asking.
+    const startedFor = conversationIdentity;
+    const stillCurrent = () =>
+      !destroyed && conversationIdentity === startedFor;
     loadingEarlier = true;
     earlierError = false;
     prependAnchorHeight = scroller?.scrollHeight ?? 0;
     try {
       if (windowed.hidden === 0) {
-        const visibleBefore = visibleRootMessages.length;
+        const paintableBefore = paintableRootMessages.length;
         let requests = 0;
         do {
+          if (!stillCurrent()) break;
           await onloadearlier?.();
           requests += 1;
           // Without the server's echo this is one request per action, as it
@@ -750,14 +788,15 @@
           if (!(humanOnly && serverHumanView)) break;
           await tick();
         } while (
+          stillCurrent() &&
           hasEarlier &&
-          visibleRootMessages.length === visibleBefore &&
+          paintableRootMessages.length === paintableBefore &&
           requests < SERVER_VIEW_MAX_REQUESTS_PER_ACTION
         );
       }
-      extraOlder += TIMELINE_WINDOW;
+      if (stillCurrent()) extraOlder += TIMELINE_WINDOW;
     } catch {
-      earlierError = true;
+      if (stillCurrent()) earlierError = true;
     } finally {
       await tick();
       if (scroller && prependAnchorHeight > 0) {
@@ -788,7 +827,12 @@
     // Only auto-fetch when the visible pane is EMPTY. Any visible human row
     // means the reader has something to read on open; further paging stays
     // click-driven so an ordinary channel does not silently chew server pages.
-    if (visibleRootMessages.length > 0) return;
+    // The server human view reads the rows the pane paints, the same set
+    // `serverScanEmpty` reads, so the two cannot disagree about "empty".
+    const shown = serverHumanView
+      ? paintableRootMessages.length
+      : visibleRootMessages.length;
+    if (shown > 0) return;
     if (serverHumanView) serverViewAutoStarted = true;
     else autoFetchPages += 1;
     void showEarlier();
@@ -807,7 +851,7 @@
       hasEarlier &&
       !loading &&
       !earlierError &&
-      timeline.length === 0,
+      paintableRootMessages.length === 0,
   );
 
   let selectedMentions = $state<MentionTarget[]>([]);
@@ -957,6 +1001,7 @@
   });
 
   onDestroy(() => {
+    destroyed = true;
     threadScroll.cancel();
     flushDraft();
     if (copiedTimer) clearTimeout(copiedTimer);

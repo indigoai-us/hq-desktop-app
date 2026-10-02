@@ -64,7 +64,8 @@ export interface ConversationRow {
   hasHumanMessage?: false;
   /**
    * Epoch-ms creation time. Set only on rows known to hold no human message,
-   * where it is the sort key. Never used as activity.
+   * where it is the recency key, on the same timeline as human times. Never
+   * used as activity.
    */
   createdAt?: number;
   /**
@@ -1364,13 +1365,20 @@ export function rowHumanRecencyState(row: ConversationRow): RowHumanRecencyState
 }
 
 /**
- * Recency key the sidebar sorts by. Match `humanRecencyKey` in
+ * Recency key of a row. It is the one value the sidebar places a row by: the
+ * row order (`compareRowRecency`), the day sections (`groupByDay`), the
+ * history view (`searchHistory`, `historyDayGroups`), and the boot pick
+ * (`pickAutoOpenConversation`) all read it, so a row cannot sit in a section
+ * that disagrees with where the order puts it. Match `humanRecencyKey` in
  * `@hq/platform`.
  *
  * In `humanOnly` mode:
  *  - `known`: the last-human-message time.
- *  - `none`: 0. Bot and session activity never moves such a row;
- *    `compareRowRecency` orders these rows by creation time below the rest.
+ *  - `none`: the creation time, on the same timeline as human times. A
+ *    conversation created today sits where "today" puts it, and one created
+ *    a month ago that only bots post in sits a month back. Bot and session
+ *    activity never moves such a row. Without a creation time the key is 0
+ *    and `compareRowRecency` places the row below every other.
  *  - `unknown`: `lastActivityAt`, so a row the server has not reported on
  *    keeps its place instead of sinking to the bottom in title order.
  *
@@ -1383,30 +1391,45 @@ export function rowRecencyKey(
   if (humanOnly) {
     const state = rowHumanRecencyState(row);
     if (state === "known") return row.lastHumanMessageAt ?? 0;
-    if (state === "none") return 0;
+    if (state === "none") return Math.max(0, row.createdAt ?? 0);
   }
   return row.lastActivityAt;
 }
 
 /**
+ * True for a row that has no place on the timeline in `humanOnly` mode: it
+ * is known to hold no human message and carries no creation time (a 1:1 DM
+ * today: the DM thread listing sends none). Such rows form the bottom tier.
+ * Match `isUndatedNoHumanRow` in `@hq/platform`.
+ */
+export function isUndatedNoHumanRow(
+  row: ConversationRow,
+  humanOnly: boolean,
+): boolean {
+  return (
+    humanOnly &&
+    rowHumanRecencyState(row) === "none" &&
+    !((row.createdAt ?? 0) > 0)
+  );
+}
+
+/**
  * Order two rows by recency: negative when `a` sorts first, 0 on a tie (the
- * caller then applies its own tie-break). In `humanOnly` mode rows known to
- * hold no human message sort below every other row, newest creation time
- * first; such rows without a creation time tie, which leaves them in title
- * order under the caller's tie-break. Match `compareHumanRecency` in
- * `@hq/platform`.
+ * caller then applies its own tie-break). Rows are ordered by
+ * `rowRecencyKey`, newest first. In `humanOnly` mode a row known to hold no
+ * human message that also has no creation time sorts below every other row;
+ * such rows tie, which leaves them in title order under the caller's
+ * tie-break. Match `compareHumanRecency` in `@hq/platform`.
  */
 export function compareRowRecency(
   a: ConversationRow,
   b: ConversationRow,
   humanOnly: boolean,
 ): number {
-  if (humanOnly) {
-    const aNone = rowHumanRecencyState(a) === "none";
-    const bNone = rowHumanRecencyState(b) === "none";
-    if (aNone !== bNone) return aNone ? 1 : -1;
-    if (aNone && bNone) return (b.createdAt ?? 0) - (a.createdAt ?? 0);
-  }
+  const aBottom = isUndatedNoHumanRow(a, humanOnly);
+  const bBottom = isUndatedNoHumanRow(b, humanOnly);
+  if (aBottom !== bBottom) return aBottom ? 1 : -1;
+  if (aBottom && bBottom) return 0;
   return rowRecencyKey(b, humanOnly) - rowRecencyKey(a, humanOnly);
 }
 
@@ -1435,11 +1458,12 @@ export function sortConversations(
   copy.sort((a, b) => {
     const recency = compareRowRecency(a, b, humanOnly);
     if (recency !== 0) return recency;
-    // A row known to hold no human message is ordered by creation time, then
-    // title. Unread is bot or session activity there, so it is not a
-    // tie-break for those rows.
-    const noneTier = humanOnly && rowHumanRecencyState(a) === "none";
-    if (!noneTier) {
+    // Unread breaks a tie, as it always has. The one exception is the
+    // bottom tier (known to hold no human message, no creation time): those
+    // rows are ordered by title, since their unread is bot or session
+    // activity and nothing else places them.
+    const bottomTier = isUndatedNoHumanRow(a, humanOnly);
+    if (!bottomTier) {
       const aUnread = a.unreadCount ?? (a.unreadDot ? 1 : 0);
       const bUnread = b.unreadCount ?? (b.unreadDot ? 1 : 0);
       if (bUnread !== aUnread) return bUnread - aUnread;
@@ -1488,8 +1512,8 @@ export function applySidebarFilters(
     personUid?: string | null;
     /**
      * When true, sort by the last human message, in three states: a known
-     * time, a known "none" (below the rest, by creation time), or unknown
-     * (falls back to `lastActivityAt`). See `compareRowRecency`.
+     * time, a known "none" (by creation time, on the same timeline), or
+     * unknown (falls back to `lastActivityAt`). See `compareRowRecency`.
      */
     humanOnly?: boolean;
   } = {},
@@ -1510,11 +1534,22 @@ export function applySidebarFilters(
 /**
  * Split filtered rows into pinned + day sections + LAST WEEK (>7d).
  * `now` is injectable for deterministic tests.
+ *
+ * A row is bucketed by `rowRecencyKey`, the same key the order uses. With
+ * `humanOnly` on that is the last human message for a row that has one, the
+ * creation time for a row known to hold none (never a day its bot or
+ * session activity fell on; without a creation time the key is 0 and the
+ * row lands in `lastWeek`), and `lastActivityAt` for a row the server has
+ * not reported on. With it off the key is `lastActivityAt`.
+ * Rows keep their input order inside a bucket, so rows sorted with the same
+ * `humanOnly` come out in that order, section after section.
  */
 export function groupByDay(
   rows: ConversationRow[],
   now: number = Date.now(),
+  options: { humanOnly?: boolean } = {},
 ): GroupedConversations {
+  const humanOnly = options.humanOnly === true;
   const pinned = rows.filter((r) => r.pinned);
   const unpinned = rows.filter((r) => !r.pinned);
 
@@ -1527,7 +1562,8 @@ export function groupByDay(
   const byDay = new Map<number, ConversationRow[]>();
 
   for (const row of unpinned) {
-    const activity = row.lastActivityAt > 0 ? row.lastActivityAt : 0;
+    const key = rowRecencyKey(row, humanOnly);
+    const activity = key > 0 ? key : 0;
     if (activity < lastWeekCutoff) {
       lastWeek.push(row);
       continue;
@@ -1663,17 +1699,22 @@ export function takeRailConversations(
 
 /**
  * First conversation to open when the shell has no selection. Skips
- * browse-only owner rows. Prefer the newest lastActivityAt.
+ * browse-only owner rows. Prefer the most recent row by the order the rail
+ * uses (`compareRowRecency`): the newest `lastActivityAt`, or with
+ * `humanOnly` on the row the human order puts first. Otherwise the shell
+ * could open a conversation whose only recent activity is a bot's, which
+ * the rail lists in its last section.
  */
 export function pickAutoOpenConversation(
   rows: readonly ConversationRow[],
   selectedId?: string | null,
+  humanOnly = false,
 ): ConversationRow | null {
   if ((selectedId ?? "").trim()) return null;
   let best: ConversationRow | null = null;
   for (const row of rows) {
     if (row.browseOnly) continue;
-    if (!best || row.lastActivityAt > best.lastActivityAt) best = row;
+    if (!best || compareRowRecency(row, best, humanOnly) < 0) best = row;
   }
   return best;
 }
@@ -1705,11 +1746,13 @@ export function pickWelcomeFirstConversation(
 export function pickSettledBootConversation(
   rows: readonly ConversationRow[],
   selectedId?: string | null,
+  humanOnly = false,
 ): ConversationRow | null {
   if ((selectedId ?? "").trim()) return null;
   const live = pickAutoOpenConversation(
     rows.filter((row) => !isSetupChannel(row.channelId)),
     selectedId,
+    humanOnly,
   );
   if (live) return live;
   for (const row of rows) {
@@ -2288,16 +2331,21 @@ export function filterTypeahead(
   return sortConversations(base, "recent").slice(0, limit);
 }
 
-/** Client-side search over titles for the history view — newest first. */
+/**
+ * Client-side search over titles for the history view, newest first by the
+ * order the rail uses (`compareRowRecency`). With `humanOnly` off that is
+ * `lastActivityAt`, as before.
+ */
 export function searchHistory(
   rows: ConversationRow[],
   query: string,
+  humanOnly = false,
 ): ConversationRow[] {
   const q = query.trim().toLowerCase();
   const hits = q
     ? rows.filter((row) => row.title.toLowerCase().includes(q))
     : rows.slice();
-  return hits.sort((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0));
+  return hits.sort((a, b) => compareRowRecency(a, b, humanOnly));
 }
 
 export interface HistoryDayGroup {
@@ -2313,6 +2361,7 @@ export interface HistoryDayGroup {
 export function historyDayGroups(
   rows: ConversationRow[],
   now: Date = new Date(),
+  humanOnly = false,
 ): HistoryDayGroup[] {
   const labelFor = (at: number): string => {
     if (!at) return "Older";
@@ -2330,7 +2379,9 @@ export function historyDayGroups(
   };
   const groups: HistoryDayGroup[] = [];
   for (const row of rows) {
-    const label = labelFor(row.lastActivityAt ?? 0);
+    // The same key `searchHistory` orders by, so a row's day label cannot
+    // disagree with its position.
+    const label = labelFor(rowRecencyKey(row, humanOnly));
     const last = groups.at(-1);
     if (last && last.label === label) last.rows.push(row);
     else groups.push({ label, rows: [row] });

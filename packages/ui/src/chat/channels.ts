@@ -74,9 +74,10 @@ export interface Channel {
    */
   hasHumanMessage?: boolean | null;
   /**
-   * Creation stamp carried from the directory row. Used only to order
-   * channels known to hold no human message. Kept apart from `createdAt`,
-   * which counts as activity for day grouping.
+   * Creation stamp carried from the directory row. Used only to place
+   * channels known to hold no human message (it is their recency key in
+   * human-only mode). Kept apart from `createdAt`, which counts as activity
+   * for every other row.
    */
   directoryCreatedAt?: string | null;
   /** Client-only epoch-ms stamp of when this channel first entered the rail,

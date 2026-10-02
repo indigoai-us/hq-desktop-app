@@ -404,11 +404,11 @@
     onshowbotmessageschange?: (value: boolean) => void;
     /**
      * When true (the `desktop.human-only-conversations` flag is on), rows are
-     * ordered by the last message a person typed, in three states: a known
-     * `lastHumanMessageAt` sorts by that time; a row the server knows holds
-     * no human message sorts below, by creation time; a row the server sent
-     * neither field for falls back to `lastActivityAt`. Default off preserves
-     * legacy ordering.
+     * ordered and sectioned by the last message a person typed, in three
+     * states: a known `lastHumanMessageAt` places the row at that time; a
+     * row the server knows holds no human message is placed at its creation
+     * time (last when it has none); a row the server sent neither field for
+     * falls back to `lastActivityAt`. Default off preserves legacy ordering.
      */
     humanOnly?: boolean;
   }
@@ -1309,6 +1309,7 @@
     const live = pickAutoOpenConversation(
       filteredRows.filter((row) => !isSetupChannel(row.channelId)),
       selectedId,
+      humanOnly,
     );
     if (live) {
       autoOpenRequestedId = live.id;
@@ -1317,7 +1318,11 @@
     }
     if (!bootAttempted || loading) return;
     if (hasRosterCompany && !hasNonSetupRows && !companyRowsGraceElapsed) return;
-    const fallback = pickSettledBootConversation(filteredRows, selectedId);
+    const fallback = pickSettledBootConversation(
+      filteredRows,
+      selectedId,
+      humanOnly,
+    );
     if (!fallback) return;
     autoOpenRequestedId = fallback.id;
     sidebarLog("auto-open-fallback", {
@@ -1327,7 +1332,9 @@
     void openRow(fallback, undefined, true);
   });
   const grouped = $derived(
-    sortMode === "type" ? groupByType(railRows) : groupByDay(railRows),
+    sortMode === "type"
+      ? groupByType(railRows)
+      : groupByDay(railRows, Date.now(), { humanOnly }),
   );
   /** Rows in painted order — the selection model's range/keyboard order. */
   const renderedRows = $derived(flattenGrouped(grouped, lastWeekExpanded));
@@ -1522,9 +1529,11 @@
     }
   }
   const historyRows = $derived(
-    searchHistory(filteredRows, historyQueryDebounced),
+    searchHistory(filteredRows, historyQueryDebounced, humanOnly),
   );
-  const historyGroups = $derived(historyDayGroups(historyRows));
+  const historyGroups = $derived(
+    historyDayGroups(historyRows, new Date(), humanOnly),
+  );
   const historyScopeLabel = $derived(
     historySearchScopeLabel(scope, scopeCompanies),
   );

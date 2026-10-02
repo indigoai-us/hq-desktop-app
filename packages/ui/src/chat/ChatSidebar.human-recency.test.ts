@@ -113,6 +113,40 @@ async function waitForRows(idsOfInterest: string[]): Promise<void> {
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** The collapsed fold at the bottom of the rail (the last section). */
+function lastSectionToggle(): HTMLElement | null {
+  return host.querySelector<HTMLElement>('[data-testid="chat-last-week"]');
+}
+
+/** Open the last section, so the rows it holds are painted. */
+async function expandLastSection(): Promise<void> {
+  await vi.waitFor(() => expect(lastSectionToggle()).not.toBeNull());
+  const toggle = lastSectionToggle();
+  if (toggle?.getAttribute("aria-expanded") !== "true") toggle?.click();
+  await tick();
+}
+
+/**
+ * The section a painted row sits in: the first word of its day header
+ * ("TODAY", "YESTERDAY", a weekday), or "LAST" for the last section.
+ */
+function sectionOf(id: string): string | null {
+  const row = host.querySelector<HTMLElement>(
+    `[data-conversation-id="${id}"]`,
+  );
+  const list = row?.closest<HTMLElement>(".chat-list");
+  if (!list) return null;
+  if (list.getAttribute("aria-label") === "Last week") return "LAST";
+  const labelId = list.getAttribute("aria-labelledby");
+  const label = labelId ? document.getElementById(labelId) : null;
+  return label?.querySelector("span")?.textContent?.trim() ?? null;
+}
+
+/** A time `days` whole days before now. */
+function daysAgo(days: number): string {
+  return new Date(Date.now() - days * 86_400_000).toISOString();
+}
+
 describe("ChatSidebar human-only order: the three states on the rail", () => {
   it("1:1 DMs with no human fields keep their activity order (not title order)", async () => {
     // Today's server sends no human fields for any 1:1 DM. Titles are chosen
@@ -131,7 +165,7 @@ describe("ChatSidebar human-only order: the three states on the rail", () => {
     expect(railOrder(ids)).toEqual(["dm:prs_z", "dm:prs_m", "dm:prs_a"]);
   });
 
-  it("channels: known by human time, unknown by activity, known-none last by creation time", async () => {
+  it("channels: known by human time, unknown by activity, known-none by creation time", async () => {
     const rows = [
       channelRow("chn_none_old", "none-old", {
         hasHumanMessage: false,
@@ -159,6 +193,9 @@ describe("ChatSidebar human-only order: the three states on the rail", () => {
       props: { api: stub.api, humanOnly: true },
     });
     const ids = rows.map((row) => `ch:${row.channelId}`);
+    // The two known-none rows were created months ago, so they sit in the
+    // collapsed last section.
+    await expandLastSection();
     await waitForRows(ids);
     expect(railOrder(ids)).toEqual([
       "ch:chn_known_new", // typed 40 minutes ago
@@ -167,6 +204,8 @@ describe("ChatSidebar human-only order: the three states on the rail", () => {
       "ch:chn_none_new", // known none: created 2026-09
       "ch:chn_none_old", // known none: created 2026-06
     ]);
+    expect(sectionOf("ch:chn_none_new")).toBe("LAST");
+    expect(sectionOf("ch:chn_none_old")).toBe("LAST");
   });
 
   it("flag off: the same rows order by activity", async () => {
@@ -226,7 +265,7 @@ describe("ChatSidebar human-only order: 1:1 DM fields from the DM thread listing
     expect(railOrder(ids)).toEqual(["dm:prs_bob", "dm:prs_ann"]);
   });
 
-  it("a DM known to hold no human message sorts below, and moves up once a person types", async () => {
+  it("a DM known to hold no human message has no creation time, so it sorts last, and moves up once a person types", async () => {
     const wakes = createChatWakeBus();
     const stub = stubApi([], [
       { personUid: "prs_ann", displayName: "Ann", lastMessageAt: today(60) },
@@ -245,9 +284,15 @@ describe("ChatSidebar human-only order: 1:1 DM fields from the DM thread listing
         { personUid: "prs_notices", lastMessageAt: today(2), hasHumanMessage: false },
       ],
     });
+    // It leaves its day section for the collapsed last section.
+    await vi.waitFor(() => {
+      expect(railOrder(ids)).toEqual(["dm:prs_ann"]);
+    });
+    await expandLastSection();
     await vi.waitFor(() => {
       expect(railOrder(ids)).toEqual(["dm:prs_ann", "dm:prs_notices"]);
     });
+    expect(sectionOf("dm:prs_notices")).toBe("LAST");
 
     wakes.emit("dm:pair-unreads", {
       activity: [
@@ -257,6 +302,134 @@ describe("ChatSidebar human-only order: 1:1 DM fields from the DM thread listing
     await vi.waitFor(() => {
       expect(railOrder(ids)).toEqual(["dm:prs_notices", "dm:prs_ann"]);
     });
+    expect(sectionOf("dm:prs_notices")).not.toBe("LAST");
+  });
+});
+
+describe("ChatSidebar human-only day sections follow the same key as the order", () => {
+  let rows: ChannelDirectoryRow[] = [];
+  let ids: string[] = [];
+
+  beforeEach(() => {
+    // Local noon on Wednesday 16 September 2026, so "a few minutes ago" is
+    // always today and the weekday sections are known. Only `Date` is faked:
+    // timers stay real for the rail's async work.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 8, 16, 12, 0, 0));
+    rows = [
+      channelRow("chn_mesh_busy", "mesh-busy", {
+        lastHumanMessageAt: daysAgo(3),
+        lastActivityAt: today(1), // a work session posted a minute ago
+      }),
+      channelRow("chn_bot_only_old", "bot-only-old", {
+        hasHumanMessage: false,
+        createdAt: "2026-06-01T00:00:00.000Z",
+        lastActivityAt: today(2), // a bot posted two minutes ago
+      }),
+      channelRow("chn_unknown", "unknown", { lastActivityAt: today(5) }),
+      channelRow("chn_typed_today", "typed-today", {
+        lastHumanMessageAt: today(10),
+        lastActivityAt: today(10),
+      }),
+      channelRow("chn_new_empty", "new-empty", {
+        hasHumanMessage: false,
+        createdAt: today(30), // created half an hour ago, nothing typed yet
+        lastActivityAt: null,
+      }),
+      channelRow("chn_typed_yesterday", "typed-yesterday", {
+        lastHumanMessageAt: daysAgo(1),
+        lastActivityAt: daysAgo(1),
+      }),
+      channelRow("chn_old_human", "old-human", {
+        lastHumanMessageAt: daysAgo(20),
+        lastActivityAt: today(3), // a bot posted three minutes ago
+      }),
+    ];
+    ids = rows.map((row) => `ch:${row.channelId}`);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("rows on different days: each sits under the day of its own key, and the rail reads top to bottom in sort order", async () => {
+    const stub = stubApi(rows);
+    component = mount(ChatSidebar, {
+      target: host,
+      props: { api: stub.api, humanOnly: true },
+    });
+    await expandLastSection();
+    await waitForRows(ids);
+
+    expect(sectionOf("ch:chn_unknown")).toBe("TODAY");
+    expect(sectionOf("ch:chn_typed_today")).toBe("TODAY");
+    expect(sectionOf("ch:chn_typed_yesterday")).toBe("YESTERDAY");
+    // Typed three days ago (Sunday 13 September 2026): that day's section,
+    // despite activity a minute ago.
+    expect(sectionOf("ch:chn_mesh_busy")).toBe("SUNDAY");
+    // Typed twenty days ago: the last section, despite activity today.
+    expect(sectionOf("ch:chn_old_human")).toBe("LAST");
+
+    expect(railOrder(ids)).toEqual([
+      "ch:chn_unknown", // TODAY: activity five minutes ago
+      "ch:chn_typed_today", // TODAY: typed ten minutes ago
+      "ch:chn_new_empty", // TODAY: created thirty minutes ago
+      "ch:chn_typed_yesterday", // YESTERDAY
+      "ch:chn_mesh_busy", // SUNDAY
+      "ch:chn_old_human", // last section: typed 27 August
+      "ch:chn_bot_only_old", // last section: created 1 June
+    ]);
+  });
+
+  it("a channel created today with nothing typed sits under TODAY, above older human rows; an old bot-only channel does not", async () => {
+    const stub = stubApi(rows);
+    component = mount(ChatSidebar, {
+      target: host,
+      props: { api: stub.api, humanOnly: true },
+    });
+    await expandLastSection();
+    await waitForRows(ids);
+
+    expect(sectionOf("ch:chn_new_empty")).toBe("TODAY");
+    const order = railOrder(ids);
+    expect(order.indexOf("ch:chn_new_empty")).toBeLessThan(
+      order.indexOf("ch:chn_typed_yesterday"),
+    );
+    expect(order.indexOf("ch:chn_new_empty")).toBeLessThan(
+      order.indexOf("ch:chn_mesh_busy"),
+    );
+    // Created in June, a bot posted two minutes ago: not under TODAY, and
+    // below every row a person typed in.
+    expect(sectionOf("ch:chn_bot_only_old")).toBe("LAST");
+    expect(order.at(-1)).toBe("ch:chn_bot_only_old");
+  });
+
+  it("flag off: the same rows sit under the day of their activity", async () => {
+    const stub = stubApi(rows);
+    component = mount(ChatSidebar, {
+      target: host,
+      props: { api: stub.api, humanOnly: false },
+    });
+    const withActivity = ids.filter((id) => id !== "ch:chn_new_empty");
+    await waitForRows(withActivity);
+    for (const id of [
+      "ch:chn_mesh_busy",
+      "ch:chn_bot_only_old",
+      "ch:chn_old_human",
+      "ch:chn_unknown",
+      "ch:chn_typed_today",
+    ]) {
+      expect(sectionOf(id)).toBe("TODAY");
+    }
+    expect(sectionOf("ch:chn_typed_yesterday")).toBe("YESTERDAY");
+    expect(railOrder(withActivity)).toEqual([
+      "ch:chn_mesh_busy", // activity one minute ago
+      "ch:chn_bot_only_old", // two
+      "ch:chn_old_human", // three
+      "ch:chn_unknown", // five
+      "ch:chn_typed_today", // ten
+      "ch:chn_typed_yesterday",
+    ]);
   });
 });
 

@@ -13,17 +13,21 @@ The release moves it under the version it ships in.
 - Desktop company-creation invites identify the desktop surface in the hq-pro team invite action.
 - Windows setup now detects Claude Code from the current user PATH and
   Anthropic's user-local install directory, including on Retry.
-- The sidebar orders DMs and channels by the latest message a person typed.
-  A conversation the server has not reported that time for, which includes
-  every direct message today, keeps its place by latest activity instead of
-  dropping to the bottom in alphabetical order. A conversation known to hold
-  no typed message sorts below the rest, by when it was created.
+- The sidebar orders DMs and channels by the latest message a person typed,
+  where the server reports it, and the day headings follow the same time: a
+  channel that only bots posted in today is listed under the day a person
+  last typed in it. A conversation with no typed message is placed by when it
+  was created, so a channel made today appears under Today. A conversation
+  the server has not classified yet, which today includes every direct
+  message, is still placed by its latest activity. That stays the case until
+  the server update and its one-time fill-in are in place.
 
 - Channels and direct messages that hide bot and session activity now ask the
-  server for the filtered history. A channel with a long run of hidden
-  activity opens on its messages, or keeps loading until it finds them,
-  instead of showing an empty pane with a "load earlier" button. With an
-  older server the app filters on its side, as before.
+  server for the filtered history. When a conversation opens on a long run of
+  hidden activity, the app loads earlier history automatically up to a limit
+  and then offers "Look further back", instead of showing an empty pane with
+  a "load earlier" button. With an older server the app filters on its side,
+  as before.
 
 - HQ no longer restarts for an update, or at support's request, while a meeting
   is being recorded; it waits until the recording finishes.

@@ -21,6 +21,7 @@ export {
   filterHumanMessages,
   humanRecencyKey,
   humanRecencyState,
+  isUndatedNoHumanRow,
   isHumanMessage,
   orderChannelsForViewer,
 } from "./humanMessage.js";

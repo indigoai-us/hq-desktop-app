@@ -1215,6 +1215,41 @@ mod tests {
     }
 
     #[test]
+    fn known_no_human_channel_keeps_its_creation_time_for_the_webview() {
+        // In human-only mode the sidebar places a channel known to hold no
+        // human message at its creation time. The server sends `createdAt`
+        // at the top level of the list row (the stored channel), never on
+        // `directoryRow`, for project channels and group DMs alike.
+        for scope in ["project", "group"] {
+            let json = format!(
+                r#"{{
+                    "channelId": "chn_1",
+                    "scope": "{scope}",
+                    "createdAt": "2026-09-30T08:00:00.000Z",
+                    "lastActivityAt": "2026-10-01T09:00:00.000Z",
+                    "directoryRow": {{
+                        "lastActivityAt": "2026-10-01T09:00:00.000Z",
+                        "hasHumanMessage": false
+                    }}
+                }}"#
+            );
+            let c: Channel = serde_json::from_str(&json).unwrap();
+            assert_eq!(c.has_human_message, Some(false));
+            assert_eq!(c.created_at.as_deref(), Some("2026-09-30T08:00:00.000Z"));
+            let v = serde_json::to_value(&c).unwrap();
+            assert_eq!(v["createdAt"], "2026-09-30T08:00:00.000Z");
+            assert_eq!(v["hasHumanMessage"], false);
+        }
+
+        // A row without `createdAt` sends none on: the sidebar then has no
+        // creation time for it.
+        let c: Channel =
+            serde_json::from_str(r#"{ "channelId": "chn_2", "hasHumanMessage": false }"#).unwrap();
+        assert!(c.created_at.is_none());
+        assert!(serde_json::to_value(&c).unwrap().get("createdAt").is_none());
+    }
+
+    #[test]
     fn channel_carries_known_no_human_message_and_keeps_unknown_absent() {
         // Known none: `hasHumanMessage: false`, at either level.
         for json in [

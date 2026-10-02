@@ -65,6 +65,37 @@ interface HostProps {
   onloadearlier: () => Promise<void>;
   onsend?: (body: string) => Promise<void>;
   selfPersonUid?: string;
+  conversationKey?: string | null;
+}
+
+/**
+ * A retired lifecycle card (the "Create a bot" form). The human-only filter
+ * keeps it, and the timeline then drops it, so it is a row the pane holds
+ * but never paints.
+ */
+function retiredCard(): ConversationMessageWire {
+  return {
+    eventId: "evt_retired_card",
+    direction: "in",
+    fromPersonUid: "prs_ada",
+    fromDisplayName: "Ada",
+    body: "",
+    createdAt: new Date(Date.UTC(2026, 7, 28, 8, 0)).toISOString(),
+    systemEvent: {
+      v: 1,
+      type: "lifecycle_card",
+      cardId: "card_create_agent_1",
+      kind: "create_agent",
+      companyUid: "cmp_acme",
+      state: "open",
+      title: "Create a bot",
+      fields: [
+        { id: "name", label: "Name", control: "text", required: true, value: "" },
+      ],
+      actions: [{ id: "submit", label: "Continue", style: "primary" }],
+      viewer: { canAct: true },
+    },
+  } as unknown as ConversationMessageWire;
 }
 
 /** One history page as the host would apply it. */
@@ -85,6 +116,7 @@ function mountWithPages(
     hasEarlier: boolean;
     serverHumanView?: boolean;
     humanOnly?: boolean;
+    conversationKey?: string | null;
   },
   pages: Page[] | ((call: number) => Page),
   hold?: () => Promise<void>,
@@ -95,6 +127,7 @@ function mountWithPages(
     serverHumanView: initial.serverHumanView ?? true,
     hasEarlier: initial.hasEarlier,
     messages: initial.messages,
+    conversationKey: initial.conversationKey ?? null,
     onloadearlier: async () => {
       const index = calls.count;
       calls.count += 1;
@@ -312,6 +345,121 @@ describe("ChannelConversation: server human view (view: \"human\" echoed)", () =
     // The optimistic row is on screen before any server echo of the send.
     expect(host.textContent).toContain("my-just-sent-message-xyz");
     expect(calls.count).toBe(0);
+  });
+});
+
+describe("ChannelConversation: server human view, one visible set for every gate", () => {
+  it("a cached conversation whose only row is a retired card still runs the open-time fetch", async () => {
+    // The human-only filter keeps a retired card and the timeline drops it.
+    // The pane paints nothing, so the open-time run must start.
+    const { calls } = mountWithPages(
+      { messages: [retiredCard()], hasEarlier: true },
+      [{ cursor: true }, { add: [human(1)], cursor: false }],
+    );
+    await settle(30);
+    expect(calls.count).toBe(2);
+    expect(host.textContent).toContain("human-row-1-xyz");
+    expect(q("conversation-loading-earlier")).toBeNull();
+    expect(q("conversation-scan-paused")).toBeNull();
+  });
+
+  it("a retired card with a cursor left never rests on 'Loading earlier messages' with no button", async () => {
+    // Every page comes back empty with a cursor: the run spends its budget.
+    const { calls } = mountWithPages(
+      { messages: [retiredCard()], hasEarlier: true },
+      () => ({ cursor: true }),
+    );
+    await settle(60);
+    expect(calls.count).toBe(8);
+    // At rest: not the loading state. The pane says it stopped and offers
+    // to keep looking.
+    expect(q("conversation-loading-earlier")).toBeNull();
+    expect(q("conversation-scan-paused")).not.toBeNull();
+    expect(loadEarlierButton()?.textContent).toContain("Look further back");
+  });
+
+  it("a retired card and no cursor is the empty state, with no fetch", async () => {
+    const { calls } = mountWithPages(
+      { messages: [retiredCard()], hasEarlier: false },
+      [],
+    );
+    await settle();
+    expect(calls.count).toBe(0);
+    expect(q("conversation-empty")).not.toBeNull();
+    expect(loadEarlierButton()).toBeNull();
+    expect(q("conversation-loading-earlier")).toBeNull();
+  });
+
+  it("a page that brings only a retired card does not end the run", async () => {
+    const { calls } = mountWithPages(
+      { messages: [], hasEarlier: true },
+      [
+        { add: [retiredCard()], cursor: true },
+        { add: [human(1)], cursor: false },
+      ],
+    );
+    await settle(30);
+    expect(calls.count).toBe(2);
+    expect(host.textContent).toContain("human-row-1-xyz");
+  });
+});
+
+describe("ChannelConversation: server human view, a run stops with its conversation", () => {
+  /** A scripted host whose every request waits for the test to release it. */
+  function gatedPages() {
+    const releases: Array<() => void> = [];
+    const hold = () =>
+      new Promise<void>((resolve) => {
+        releases.push(resolve);
+      });
+    return { releases, hold };
+  }
+
+  it("unmounting during a run issues no further request", async () => {
+    const { releases, hold } = gatedPages();
+    const { calls } = mountWithPages(
+      { messages: [], hasEarlier: true, conversationKey: "ch:one" },
+      () => ({ cursor: true }),
+      hold,
+    );
+    await settle();
+    // The open-time run has its first request in flight.
+    expect(calls.count).toBe(1);
+
+    await unmount(component!);
+    component = null;
+    // The request answers after the pane is gone: empty, with a cursor, which
+    // would otherwise make the run ask again.
+    releases[0]();
+    await settle(30);
+    expect(calls.count).toBe(1);
+  });
+
+  it("a change of conversation during a run issues no further request for the old one", async () => {
+    const { releases, hold } = gatedPages();
+    const { props, calls } = mountWithPages(
+      { messages: [], hasEarlier: true, conversationKey: "ch:one" },
+      () => ({ cursor: true }),
+      hold,
+    );
+    await settle();
+    expect(calls.count).toBe(1);
+
+    // The host now shows another conversation in the same pane.
+    props.conversationKey = "ch:two";
+    await settle();
+    releases[0]();
+    await settle(30);
+    expect(calls.count).toBe(1);
+  });
+
+  it("a run that keeps its conversation still continues to the bound", async () => {
+    const { calls } = mountWithPages(
+      { messages: [], hasEarlier: true, conversationKey: "ch:one" },
+      () => ({ cursor: true }),
+    );
+    await settle(60);
+    expect(calls.count).toBe(8);
   });
 });
 

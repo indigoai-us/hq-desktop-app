@@ -81,7 +81,10 @@ export interface HumanRecencyChannel {
    * be read as "none".
    */
   hasHumanMessage?: boolean | null;
-  /** Creation time. Orders rows that are known to hold no human message. */
+  /**
+   * Creation time. The recency key of a row known to hold no human message,
+   * on the same timeline as human times.
+   */
   createdAt?: string | number | null;
 }
 
@@ -110,14 +113,16 @@ export function humanRecencyState(row: HumanRecencyChannel): HumanRecencyState {
 
 /**
  * Return the recency key (epoch-ms, 0 when there is none) the sidebar should
- * sort by.
+ * sort by and section by.
  *
  * In `humanOnly` mode there are three states (see `humanRecencyState`):
  *
  *  - `known`: the key is `lastHumanMessageAt`.
- *  - `none`: the key is 0. Bot and session activity never moves such a row.
- *    `compareHumanRecency` places these rows below the others and orders
- *    them by creation time.
+ *  - `none`: the key is the creation time, on the same timeline as human
+ *    times. A conversation created today sits where "today" puts it, and one
+ *    created a month ago that only bots post in sits a month back. Bot and
+ *    session activity never moves such a row. Without a creation time the
+ *    key is 0 and `compareHumanRecency` places the row below every other.
  *  - `unknown`: the key falls back to `lastActivityAt` / `lastMessageAt`.
  *    An older server sends no human fields at all, and a current server
  *    sends none for a conversation it has not examined, so treating absent
@@ -132,7 +137,7 @@ export function humanRecencyKey<T extends HumanRecencyChannel>(
   if (humanOnly) {
     const state = humanRecencyState(row);
     if (state === "known") return toStamp(row.lastHumanMessageAt);
-    if (state === "none") return 0;
+    if (state === "none") return toStamp(row.createdAt);
   }
   const activity = toStamp(row.lastActivityAt);
   if (activity > 0) return activity;
@@ -140,25 +145,39 @@ export function humanRecencyKey<T extends HumanRecencyChannel>(
 }
 
 /**
+ * True for a row that has no place on the timeline in `humanOnly` mode: it
+ * is known to hold no human message and carries no creation time. Such rows
+ * form the bottom tier.
+ */
+export function isUndatedNoHumanRow(
+  row: HumanRecencyChannel,
+  humanOnly: boolean,
+): boolean {
+  return (
+    humanOnly &&
+    humanRecencyState(row) === "none" &&
+    toStamp(row.createdAt) <= 0
+  );
+}
+
+/**
  * Comparator for sidebar order: negative when `a` sorts before `b`, 0 when
  * the two rows tie (the caller applies its own tie-break).
  *
- * In `humanOnly` mode rows known to hold no human message sort below every
- * other row. Among themselves they are ordered by creation time, newest
- * first, and rows without a creation time come last. All other rows are
- * ordered by `humanRecencyKey`, newest first.
+ * Rows are ordered by `humanRecencyKey`, newest first. In `humanOnly` mode a
+ * row known to hold no human message that also has no creation time sorts
+ * below every other row; such rows tie among themselves, which leaves them
+ * in the caller's tie-break order (title).
  */
 export function compareHumanRecency(
   a: HumanRecencyChannel,
   b: HumanRecencyChannel,
   humanOnly: boolean,
 ): number {
-  if (humanOnly) {
-    const aNone = humanRecencyState(a) === "none";
-    const bNone = humanRecencyState(b) === "none";
-    if (aNone !== bNone) return aNone ? 1 : -1;
-    if (aNone && bNone) return toStamp(b.createdAt) - toStamp(a.createdAt);
-  }
+  const aBottom = isUndatedNoHumanRow(a, humanOnly);
+  const bBottom = isUndatedNoHumanRow(b, humanOnly);
+  if (aBottom !== bBottom) return aBottom ? 1 : -1;
+  if (aBottom && bBottom) return 0;
   return humanRecencyKey(b, humanOnly) - humanRecencyKey(a, humanOnly);
 }
 

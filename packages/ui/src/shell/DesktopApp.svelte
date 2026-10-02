@@ -3751,6 +3751,20 @@
    * sends neither field and keeps the single backfill read.
    */
   let dmThreadsCarryHumanRecency = false;
+  /**
+   * Re-reads of the DM thread listing for human recency are throttled the
+   * way the rail throttles its directory read: an arriving DM asks for one
+   * read per interval, and the person's own send is read at once.
+   */
+  const DM_HUMAN_RECENCY_MIN_INTERVAL_MS = 20_000;
+  let dmHumanRecencyTimer: ReturnType<typeof setTimeout> | null = null;
+  let dmHumanRecencyLastRunAt = 0;
+  /**
+   * Counts DM thread listing requests. A response is applied only when it
+   * answers the newest request, so two reads in flight cannot land out of
+   * order and leave an older listing on the rail.
+   */
+  let dmThreadsRequestSeq = 0;
 
   // Client-side "agent is thinking" rows, keyed by conversation row id.
   // Local only — the backend has no typing/ack events. Per-conversation so
@@ -7094,8 +7108,7 @@
     timelineHydrating = false;
     lastDmTimelineStampByUid.clear();
     lastChannelTimelineStampById.clear();
-    dmThreadsUnsupported = false;
-    dmThreadsCarryHumanRecency = false;
+    resetDmThreadsState();
     thinkingByRow = {};
     answeredWhileBusy = {};
     openReplyRootId = null;
@@ -7472,9 +7485,10 @@
     // directions. Feature-detected: a 404 (older server) or a host without
     // the method falls back to inbox-only, so old servers keep working.
     const wantThreads =
-      (backfill || dmThreadsCarryHumanRecency) &&
+      backfill &&
       !dmThreadsUnsupported &&
       typeof notifications.fetchDmThreads === "function";
+    const threadsSeq = wantThreads ? ++dmThreadsRequestSeq : 0;
     const [res, threadsRes] = await Promise.all([
       raceTimeout(
         notifications.fetchDmInbox({
@@ -7499,7 +7513,9 @@
       return;
     }
     let threadActivity: InboxDmActivity[] = [];
-    if (threadsRes) {
+    // A newer listing request was issued while this one was in flight: its
+    // answer is the one to apply, so this one is dropped.
+    if (threadsRes && threadsSeq === dmThreadsRequestSeq) {
       if (threadsRes.ok) {
         threadActivity = dmActivityFromThreadsPage(threadsRes.value, {
           selfUid: self?.uid,
@@ -7521,10 +7537,16 @@
       since,
       selfUid: self?.uid,
     });
-    const activity = mergeDmActivity(
-      dmActivityFromInboxPage(res.value, { selfUid: self?.uid }),
-      threadActivity,
-    );
+    const inboxActivity = dmActivityFromInboxPage(res.value, {
+      selfUid: self?.uid,
+    });
+    // An incremental pass does not read the listing itself. When it found
+    // new DMs (a wake this client missed), and the listing also supplies
+    // human recency, it asks for the throttled re-read.
+    if (!backfill && inboxActivity.length > 0) {
+      scheduleDmHumanRecencyRefresh(false);
+    }
+    const activity = mergeDmActivity(inboxActivity, threadActivity);
     const hasUnreads = Boolean(
       parsed.pairUnreads && parsed.pairUnreads.length > 0,
     );
@@ -7544,27 +7566,82 @@
       storage?.setItem(DM_INBOX_SINCE_KEY, parsed.nextSince);
   }
 
+  /** Forget what the previous tenant's DM thread listing said, and its reads. */
+  function resetDmThreadsState(): void {
+    dmThreadsUnsupported = false;
+    dmThreadsCarryHumanRecency = false;
+    dmHumanRecencyLastRunAt = 0;
+    // Any read still in flight belongs to the previous tenant.
+    dmThreadsRequestSeq += 1;
+    if (dmHumanRecencyTimer != null) {
+      clearTimeout(dmHumanRecencyTimer);
+      dmHumanRecencyTimer = null;
+    }
+  }
+
   /**
-   * Re-read the DM thread listing after the owner sends a DM, so the pair's
-   * last human message (which only the server computes) follows the send. An
-   * outgoing DM raises no wake on this client, so nothing else would. No-op
-   * unless the server has shown it maintains the value.
+   * The rail orders 1:1 DMs by a value from the DM thread listing only in
+   * human-only mode, and only a server that reports the value is worth
+   * reading again.
    */
+  function dmHumanRecencyWanted(): boolean {
+    return (
+      humanOnlyConversations &&
+      dmThreadsCarryHumanRecency &&
+      !dmThreadsUnsupported &&
+      typeof adapter.notifications?.fetchDmThreads === "function"
+    );
+  }
+
+  /**
+   * Ask for a re-read of the DM thread listing so a pair's last human message
+   * (which only the server computes) follows a new DM. `immediate` is the
+   * person's own send: an outgoing DM raises no wake on this client, and it
+   * is known to be typed, so it is read at once and replaces a pending
+   * throttled read. Anything else shares one read per interval.
+   */
+  function scheduleDmHumanRecencyRefresh(immediate: boolean): void {
+    if (!dmHumanRecencyWanted()) return;
+    if (immediate) {
+      if (dmHumanRecencyTimer != null) {
+        clearTimeout(dmHumanRecencyTimer);
+        dmHumanRecencyTimer = null;
+      }
+      dmHumanRecencyLastRunAt = Date.now();
+      void refreshDmHumanRecency();
+      return;
+    }
+    if (dmHumanRecencyTimer != null) return;
+    const wait = Math.max(
+      400,
+      dmHumanRecencyLastRunAt + DM_HUMAN_RECENCY_MIN_INTERVAL_MS - Date.now(),
+    );
+    dmHumanRecencyTimer = setTimeout(() => {
+      dmHumanRecencyTimer = null;
+      dmHumanRecencyLastRunAt = Date.now();
+      void refreshDmHumanRecency();
+    }, wait);
+  }
+
+  /** One read of the DM thread listing, applied only if it is still the newest. */
   async function refreshDmHumanRecency(): Promise<void> {
     const bus = wakes;
     const notifications = adapter.notifications;
-    if (!bus || !dmThreadsCarryHumanRecency || dmThreadsUnsupported) return;
+    if (!bus || !dmHumanRecencyWanted()) return;
     if (!notifications || typeof notifications.fetchDmThreads !== "function") {
       return;
     }
     const expectedGeneration = tenantGeneration;
     const expectedCompanyId = tenantCompanyId;
+    const seq = ++dmThreadsRequestSeq;
     const res = await raceTimeout(
       notifications.fetchDmThreads({ limit: 100 }),
       bootTimeoutMs,
       "dm-threads",
     ).catch(() => null);
     if (!res || !res.ok) return;
+    // A newer request was issued while this one was in flight: drop this one.
+    if (seq !== dmThreadsRequestSeq) return;
     if (
       expectedGeneration !== tenantGeneration ||
       expectedCompanyId !== tenantCompanyId
@@ -7577,6 +7654,17 @@
     if (activity.length > 0) bus.emit?.("dm:pair-unreads", { activity });
   }
 
+  // The throttled read must not fire after the shell is gone.
+  $effect(() => {
+    return () => {
+      if (dmHumanRecencyTimer != null) {
+        clearTimeout(dmHumanRecencyTimer);
+        dmHumanRecencyTimer = null;
+      }
+      dmThreadsRequestSeq += 1;
+    };
+  });
+
   $effect(() => {
     const bus = wakes;
     if (!bus) return;
@@ -7587,6 +7675,7 @@
       bus.on("dm:new-message", (wake) => {
         void applyDmWake(wake);
         void catchUpDmInbox();
+        scheduleDmHumanRecencyRefresh(false);
       }),
       bus.on("mesh:catchup", () => {
         const row = selectedRow;
@@ -7619,8 +7708,7 @@
     void tenantCompanyId;
     lastDmTimelineStampByUid.clear();
     lastChannelTimelineStampById.clear();
-    dmThreadsUnsupported = false;
-    dmThreadsCarryHumanRecency = false;
+    resetDmThreadsState();
     if (!wakes) return;
     untrack(() => {
       void catchUpDmInbox({ backfill: true });
@@ -7736,7 +7824,7 @@
         const wire = sentMessageFromResult(res.value, extras);
         if (wire)
           commitTimeline(row, mergeTimelineMessages(liveTimeline, [wire]));
-        void refreshDmHumanRecency();
+        scheduleDmHumanRecencyRefresh(true);
         // A 1:1 DM with an agent is inherently addressed to that agent, so
         // any send starts the indicator — no @mention required (unlike a
         // channel, where only an explicit mention wakes an agent). Started
@@ -9868,6 +9956,7 @@
                   serverHumanView={humanOnlyConversations &&
                     Boolean(historyServerView[selectedRow.id])}
                   onloadearlier={loadEarlierTimeline}
+                  conversationKey={selectedRow.id}
                   emptyLabel={conversationEmptyLabel}
                   reactions={rowReactions}
                   placeholder={composerPlaceholder}
