@@ -304,7 +304,7 @@ pub(crate) fn handle_watch_stdout_line<R: tauri::Runtime>(
     observe_watcher_phase_from_event(phase_context, &event);
     {
         let mut t = totals.lock().unwrap_or_else(|e| e.into_inner());
-        t.accumulate(&event);
+        crate::commands::sync::accumulate_runner_event_for_health(&mut t, &event, line);
     }
     // Record each per-file transfer into the session activity log (Recent
     // Changes window). The watch daemon is the primary instant-sync path, so

@@ -21,6 +21,11 @@ The release moves it under the version it ships in.
   then picks Starter or Workforce. Workforce opens checkout in your browser
   and HQ picks up when you come back. Someone who was invited can join that
   company instead.
+- Sync health no longer counts runner diagnostics as failed syncs. The runner
+  pin now starts at hq-cloud 6.18.31 and accepts later 6.18 patch releases.
+- Automatic Core updates wait for sync to finish after 10 deferrals or 6 hours.
+  The wait ends after 15 minutes, and a failed update backs off before retrying.
+  Updates also report when Git 2.19.0 or newer is required.
 - Desktop sign-in can open the website first to link the new account to the native app; if that check fails, it opens Cognito directly as before.
 - Library Back now leaves internal Library tab history and returns to the prior app screen.
 
