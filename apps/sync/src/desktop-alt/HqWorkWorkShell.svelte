@@ -59,6 +59,7 @@
   import { startDesktopMeshPresence } from './mesh-presence';
   import { startMeetingRecordingBridge } from './meeting-recording-bridge';
   import { SETUP_PROMPT } from './lib/setup-launch';
+  import { watcherLockNoticeFromStatus } from './watcher-lock-status';
   import {
     createNativeWorkShellCapabilities,
     type NativeInvokeFn,
@@ -186,6 +187,7 @@
     statusPush?: boolean;
   }
   let planLimitNotices = $state<PlanLimitNotice[]>([]);
+  let watcherLockNotice = $state<string | null>(null);
   // Notices the person dismissed while the pause is still in effect. A
   // dismissal lasts until the company's uploads resume (it leaves the native
   // snapshot), so a pause that comes back later is shown again.
@@ -770,6 +772,16 @@
 
     const bootRevealTimeoutId = setTimeout(() => void reveal(), IDENTITY_SETTLE_TIMEOUT_MS);
 
+    const unlistenWatcherStatusPromise = listen<{
+      state: string;
+      holderCommand?: string;
+    }>('sync:watcher-status', (event) => {
+      if (!cancelled) watcherLockNotice = watcherLockNoticeFromStatus(event.payload);
+    }).catch((error) => {
+      console.error('Could not subscribe to watcher lock status.', error);
+      return () => {};
+    });
+
     const restoreInitialNavigation = async () => {
       try {
         const pending = await invokeFn('desktop_alt_consume_pending_route');
@@ -1048,6 +1060,7 @@
       void unlistenRecommendClearPromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenForcePromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenAuthSessionPromise.then((unlisten) => safeUnlisten(unlisten)());
+      void unlistenWatcherStatusPromise.then((unlisten) => safeUnlisten(unlisten)());
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('focus', revalidateOnRecovery);
       window.removeEventListener('online', revalidateOnRecovery);
@@ -1230,6 +1243,11 @@
     {#if signOutError}
       <div class="workspace-warning" data-testid="hq-work-sign-out-error" role="alert">
         <span>{signOutError}</span>
+      </div>
+    {/if}
+    {#if watcherLockNotice}
+      <div class="workspace-warning" data-testid="sync-watcher-lock-status" role="status">
+        {watcherLockNotice}
       </div>
     {/if}
     {#if planLimitNotices.length > 0}
