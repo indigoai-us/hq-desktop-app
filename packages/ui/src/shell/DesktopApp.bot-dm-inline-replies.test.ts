@@ -66,7 +66,7 @@ async function settle(times = 10): Promise<void> {
   }
 }
 
-async function mountDm(peerUid: string): Promise<string> {
+async function mountDm(peerUid: string, seeded: Array<Record<string, unknown>> = []): Promise<string> {
   host = document.createElement("div");
   document.body.appendChild(host);
   const row = { id: `dm:${peerUid}`, kind: "dm", title: "Nova", personUid: peerUid, companyUid: null } as ConversationRow;
@@ -78,6 +78,7 @@ async function mountDm(peerUid: string): Promise<string> {
       notificationsApi: createEmptyNotificationsApi(),
       self: { uid: "prs_me", displayName: "Corey", email: "me@example.com" },
       initialRow: row,
+      ...(seeded.length > 0 ? { messagesByRow: () => seeded as never } : {}),
       wakes: createChatWakeBus(),
       coreFixtures: false,
     },
@@ -102,6 +103,17 @@ describe("DesktopApp direct message with a bot", () => {
   it("never shows the request the app sent the bot for its first message", async () => {
     const text = await mountDm("agt_nova");
     expect(text).not.toContain("Automatic message from HQ");
+  });
+
+  it("never shows that request when the host seeded the thread from its own store", async () => {
+    // Regression (owner, 2026-10-02): the request was visible in the bot's
+    // direct message. The host's stored rows carry no lane and were shown as
+    // they were.
+    const seeded = [...THREAD].reverse().map(({ audience: _lane, ...row }) => row);
+    const text = await mountDm("agt_nova", seeded);
+    expect(text).toContain("Hi Corey, I am Nova.");
+    expect(text).not.toContain("Automatic message from HQ");
+    expect(text).not.toMatch(/\b1 reply\b/);
   });
 
   it("keeps threads under their root in a conversation between two people", async () => {

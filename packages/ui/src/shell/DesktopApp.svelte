@@ -551,6 +551,7 @@
     resolveConversationTitle,
   } from "../chat/conversation-title.js";
   import {
+    inlineReplyRows,
     mergeFetchedTimeline,
     mergeTimelineMessages,
     messagesForDisplay,
@@ -4376,8 +4377,11 @@
         : injected.length > 0
           ? injected
           : [];
+    // One flat exchange with a bot: whichever path put a row on the timeline
+    // (a fetched page, the host's stored thread, a live update), replies show
+    // in line and rows written for the bot only are left out.
+    if (timelineDisplayFor(selectedRow).inlineReplies) return inlineReplyRows(rows);
     if (Object.keys(replyCountOverride).length === 0) return rows;
-    if (timelineDisplayFor(selectedRow).inlineReplies) return rows;
     return rows.map((msg) =>
       replyCountOverride[msg.eventId] != null
         ? { ...msg, replyCount: replyCountOverride[msg.eventId] }

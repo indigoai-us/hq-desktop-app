@@ -3,6 +3,7 @@
  * REST pages are newest-first; callers reverse for oldest → newest display.
  */
 
+import { AGENT_HELLO_REQUEST_LEAD } from "./agent-channel.js";
 import type { ConversationMessageWire } from "./chat-api.js";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -376,8 +377,17 @@ export function inlineReplyRows(
   rows: readonly ConversationMessageWire[],
 ): ConversationMessageWire[] {
   const out: ConversationMessageWire[] = [];
+  let changed = false;
   for (const row of rows) {
-    if ((row.audience ?? "").trim().toLowerCase() === "agent") continue;
+    // The app's own hello request is recognised by its opening words as well:
+    // a row seeded from the host's stored thread may not carry the lane.
+    if (
+      (row.audience ?? "").trim().toLowerCase() === "agent" ||
+      (row.body ?? "").startsWith(AGENT_HELLO_REQUEST_LEAD)
+    ) {
+      changed = true;
+      continue;
+    }
     if (
       row.rootEventId === undefined &&
       row.replyCount === undefined &&
@@ -389,8 +399,11 @@ export function inlineReplyRows(
     }
     const { rootEventId: _root, replyCount: _count, lastReplyAt: _last, replyAuthors: _authors, ...flat } = row;
     out.push(flat);
+    changed = true;
   }
-  return out;
+  // Nothing to change: hand back the caller's own array so reactive readers
+  // of an already flat timeline are not re-run.
+  return changed ? out : (rows as ConversationMessageWire[]);
 }
 
 /** REST returns newest-first; ChannelConversation wants oldest → newest. */
@@ -498,7 +511,11 @@ export function mergeFetchedTimeline(
   options: TimelineDisplayOptions = {},
 ): ConversationMessageWire[] {
   if (options.inlineReplies) {
-    const merged = mergeTimelineMessages(existing, messagesForDisplay(raw, options));
+    // Rows already on the timeline (a cached thread, rows the host seeded) get
+    // the same treatment as the page, so a bot-only row cannot linger.
+    const merged = inlineReplyRows(
+      mergeTimelineMessages(inlineReplyRows(existing), messagesForDisplay(raw, options)),
+    );
     if (merged === existing) return existing;
     return timelinesContentEqual(existing, merged) ? existing : merged;
   }

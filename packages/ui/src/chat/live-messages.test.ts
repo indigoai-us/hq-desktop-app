@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   collectTimelineRoots,
+  inlineReplyRows,
   isReplyMessage,
   mergeFetchedTimeline,
   mergeTimelineMessages,
@@ -516,5 +517,22 @@ describe("a one-to-one conversation with a bot", () => {
     const merged = mergeFetchedTimeline(first, PAGE, { inlineReplies: true });
     expect(merged.map((row) => row.eventId)).toEqual(["e0", "e2", "e3", "e4"]);
     expect(mergeFetchedTimeline(merged, PAGE, { inlineReplies: true })).toBe(merged);
+  });
+  it("hides the app's hello request even when a row carries no lane", () => {
+    // Regression (owner, 2026-10-02): "this 'automatic message' thing - that's
+    // not great to be able to see that". The row came from the host's stored
+    // thread, which had no audience on it, and the merge kept it.
+    const seeded = [
+      { eventId: "e0", fromPersonUid: "agt_nova", body: "Nova just joined.", createdAt: "2026-10-02T13:50:42.000Z" },
+      { eventId: "e1", fromPersonUid: "prs_me", body: "Automatic message from HQ: your setup has just finished", createdAt: "2026-10-02T13:53:50.000Z" },
+    ];
+    expect(inlineReplyRows(seeded).map((row) => row.eventId)).toEqual(["e0"]);
+    const merged = mergeFetchedTimeline(seeded, PAGE, { inlineReplies: true });
+    expect(merged.map((row) => row.eventId)).toEqual(["e0", "e2", "e3", "e4"]);
+  });
+
+  it("hands back the same array when a timeline is already flat", () => {
+    const flat = messagesForDisplay(PAGE, { inlineReplies: true });
+    expect(inlineReplyRows(flat)).toBe(flat);
   });
 });
