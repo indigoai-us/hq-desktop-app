@@ -42,11 +42,13 @@
     brainPageDoor,
     filesConnectDoor,
     moreCompaniesDoor,
+    newCompanyDoor,
     notificationsPopoverDoor,
     preloadDoorsWhenIdle,
     profilePaneDoor,
   } from "./lazy-doors.js";
-  import type { MoreCompany } from "./more-companies.js";
+  import { pinCompany, type MoreCompany } from "./more-companies.js";
+  import type { NewCompanyPlan, ProjectTemplate } from "./new-company/new-company.js";
   import TelemetryRailHost from "./TelemetryRailHost.svelte";
   import LibraryRailHost from "./LibraryRailHost.svelte";
   import DeploymentsRailHost from "./DeploymentsRailHost.svelte";
@@ -188,8 +190,11 @@
   } from "../chat/lifecycle-entry-points.js";
   import {
     openCreateCompanyDraft,
+    sendCompanyInvites,
+    slugFieldOf,
     submitCreateCompany,
     type CompanyCreateSeam,
+    type CompanyInvite,
   } from "../chat/create-company/create-company-flow.js";
   import {
     patchLifecycleCardState,
@@ -5894,6 +5899,58 @@
   });
   /** The user explicitly asked for another company this session. */
   let createCompanyRequested = $state(false);
+  /** US-037: New company sheet from the More popover. */
+  let newCompanyOpen = $state(false);
+
+  async function createCompanyFromSheet(input: {
+    name: string;
+    slug: string;
+    plan: NewCompanyPlan;
+    invites: string[];
+  }): Promise<{ ok: true; companyUid: string | null } | { ok: false; reason: string }> {
+    const seam = companyCreateSeam;
+    if (!seam) return { ok: false, reason: "Creating a company isn't available yet." };
+    const draft = await seam.open();
+    if (!draft.ok) return { ok: false, reason: draft.reason };
+    const values: Record<string, string> = {};
+    if (draft.form.nameFieldId) values[draft.form.nameFieldId] = input.name;
+    const slugId = slugFieldOf(draft.form.fields);
+    if (slugId) values[slugId] = input.slug;
+    const invites: CompanyInvite[] = input.invites.map((email) => ({ email, role: "member" }));
+    const result = await seam.submit(draft.form, values, invites);
+    if (!result.ok) return { ok: false, reason: result.reason };
+    createCompanyRequested = true;
+    return { ok: true, companyUid: result.company.companyUid };
+  }
+
+  function finishNewCompany(result: {
+    companyUid: string | null;
+    pin: boolean;
+    pinnedIds: string[];
+    invites: string[];
+    projectSlug: string | null;
+    template: ProjectTemplate;
+  }): void {
+    newCompanyOpen = false;
+    if (result.pin && result.companyUid) {
+      const pinned = pinCompany(pinnedCompanyIds ?? [], result.companyUid);
+      if (pinned.status === "pinned") setPinnedCompanies(pinned.ids);
+    }
+    if (!result.companyUid) return;
+    if (result.invites.length > 0) {
+      void sendCompanyInvites(
+        conversationApi,
+        result.companyUid,
+        result.invites.map((email) => ({ email, role: "member" })),
+      );
+    }
+    const nextRecent = rememberCompanyId(companyRecentIds, result.companyUid);
+    companyRecentIds = nextRecent;
+    writeSettingsPrefs({ companyRecentIds: nextRecent });
+    companyPaneOpen = true;
+    changeTenantCompany(result.companyUid);
+    void navigate(companyRowDestination("atlas", result.companyUid));
+  }
 
   /** Sidebar / switcher / #welcome "New company": summary card action, then #setup. */
   async function createCompanyEntry(): Promise<EntryPointResult> {
@@ -9255,10 +9312,35 @@
           onpins: setPinnedCompanies,
           onnewcompany: () => {
             moreCompaniesOpen = false;
-            if (canRunEntryPoints) void createCompanyEntry();
+            newCompanyOpen = true;
           },
         }}
       />
+    {/if}
+    {#if newCompanyOpen}
+      <LazyDoor
+        door={newCompanyDoor}
+        props={{
+          pinnedIds: pinnedCompanyIds ?? [],
+          pinnedInitials: (pinnedCompanyIds ?? [])
+            .map((id) => railCompanyRoster.find((company) => company.uid === id)?.label ?? "")
+            .filter(Boolean)
+            .map((label) => label.slice(0, 2).toUpperCase()),
+          onclose: () => (newCompanyOpen = false),
+          oncheckout: (url: string) => onopenurl?.(url),
+          oncreate: createCompanyFromSheet,
+          onfinish: finishNewCompany,
+        }}
+      >
+        {#snippet skeleton()}
+          <div
+            role="dialog"
+            aria-label="New company"
+            data-testid="new-company-skeleton"
+            style="position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:480px;height:240px;background:var(--v4-popover);border:1px solid var(--v4-hairline);border-radius:8px;z-index:71"
+          ></div>
+        {/snippet}
+      </LazyDoor>
     {/if}
   {/if}
   <div class="shell-column">

@@ -60,6 +60,9 @@ export const brainPageDoor = door(
 export const filesConnectDoor = door(
   () => import("../company/files-connect/FilesConnectPage.svelte"),
 );
+export const newCompanyDoor = door(
+  () => import("./new-company/NewCompanySheet.svelte"),
+);
 
 /** Warm every door once the first frame is up, so later clicks skip the skeleton. */
 export function preloadDoorsWhenIdle(): void {
@@ -71,6 +74,7 @@ export function preloadDoorsWhenIdle(): void {
     newChannelSheetDoor,
     brainPageDoor,
     filesConnectDoor,
+    newCompanyDoor,
   ];
   const run = () => all.forEach((d) => d.preload());
   if (typeof requestIdleCallback === "function") {
