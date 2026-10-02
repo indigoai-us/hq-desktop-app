@@ -1132,11 +1132,24 @@ export interface AtlasLocalApi {
   readText(companySlug: string, key: string): AdapterPromise<string | null>;
 }
 
+/** Result of `FilesApi.createFile`. */
+export interface CreatedFile {
+  path: string;
+  cloudSync: boolean;
+}
+
 export interface FilesApi {
   listDir(relPath: string): AdapterPromise<Json[]>;
   /** Files explorer vault index. Desktop only; hosts without it omit it. */
   vault?: VaultApi;
   getFileContent(path: string): AdapterPromise<string>;
+  /**
+   * Create a new text file at an HQ-relative path in the synced HQ folder
+   * (QA-072). Refuses an existing file. `cloudSync` is true when the company
+   * is cloud-backed and syncing, so HQ Sync carries the file to the vault.
+   * Desktop only; hosts without it omit it.
+   */
+  createFile?(path: string, contents: string): AdapterPromise<CreatedFile>;
   /**
    * ACL-filtered vault browse (hq-pro GET /v1/files/list). Pass the previous
    * page's `cursor` to continue a listing.

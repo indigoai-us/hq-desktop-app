@@ -22,6 +22,8 @@
     resolveUploadName,
     rowMarkForPath,
     filesErrorReason,
+    newFileDestination,
+    NEW_FILE_LOCAL_NOTICE,
     visibleFileRoots,
     type ConflictPolicy,
     type FileTemplate,
@@ -58,6 +60,9 @@
   let newFolder = $state("");
   let template = $state<FileTemplate>("knowledge");
   let createError = $state<string | null>(null);
+  let creating = $state(false);
+  /** Plain note shown over the preview after Create (QA-072). */
+  let createNotice = $state<string | null>(null);
 
   let uploadFolder = $state("");
   let conflict = $state<ConflictPolicy>("keep-both");
@@ -214,25 +219,52 @@
 
   const preview = $derived(fileTemplateBody(template, ownerName));
 
+  const createHelp = $derived(
+    newFileDestination(normalizeNewFileName(newName) || "the file", vaultRoot, newFolder),
+  );
+
+  // QA-072: Create writes the file into the synced HQ folder, then opens it.
+  // HQ Sync carries it to the company vault; when the company is not syncing
+  // to the cloud the note says it is saved on this computer for now.
   async function createFile(): Promise<void> {
+    if (creating) return;
     createError = null;
     const name = normalizeNewFileName(newName);
     if (!name) {
       createError = "Use a lowercase file name with hyphens.";
       return;
     }
-    const path = `${newFolder.replace(/\/$/, "")}/${name}`;
-    const result = await adapter.files.getFileContent(path);
-    if (result.ok) {
-      createError = "A file with that name is already in this folder.";
+    const create = adapter.files.createFile;
+    if (!create) {
+      createError = "New files can be created in the HQ desktop app.";
       return;
     }
-    selectedPath = path;
-    sheet = null;
+    const path = `${newFolder.replace(/\/$/, "")}/${name}`;
+    creating = true;
     try {
-      await navigator.clipboard.writeText(preview);
+      const existing = await adapter.files.getFileContent(path);
+      if (existing.ok) {
+        createError = "A file with that name is already in this folder.";
+        return;
+      }
+      const result = await create(path, preview);
+      if (!result.ok) {
+        console.error("create file failed:", result.message);
+        createError = /already/i.test(result.message ?? "")
+          ? "A file with that name is already in this folder."
+          : "Couldn't create the file. Try again.";
+        return;
+      }
+      createNotice = result.value.cloudSync ? null : NEW_FILE_LOCAL_NOTICE;
+      newName = "";
+      sheet = null;
+      treeNonce += 1;
+      selectedPath = result.value.path;
     } catch (err) {
-      console.error("copy template failed:", err);
+      console.error("create file failed:", err);
+      createError = "Couldn't create the file. Try again.";
+    } finally {
+      creating = false;
     }
   }
 
@@ -325,6 +357,9 @@
     </div>
   </aside>
   <section class="files-preview" aria-label="File preview">
+    {#if createNotice}
+      <p class="files-notice" role="status" data-testid="new-file-notice">{createNotice}</p>
+    {/if}
     {#if selectedPath}
       <FilePreviewPane {adapter} path={selectedPath} />
     {:else}
@@ -363,9 +398,9 @@
           {#if createError}<p class="err" role="alert">{createError}</p>{/if}
         </div>
         <footer class="sheet-f">
-          <span>Template is copied to the clipboard. Writing the vault file uses the existing presign path when a company upload is available.</span>
+          <span data-testid="new-file-help">{createHelp}</span>
           <button type="button" onclick={() => (sheet = null)}>Cancel</button>
-          <button type="button" class="primary" data-testid="new-file-create" onclick={() => void createFile()}>Create</button>
+          <button type="button" class="primary" data-testid="new-file-create" disabled={creating} aria-busy={creating || undefined} onclick={() => void createFile()}>{creating ? "Creating…" : "Create"}</button>
         </footer>
       {:else if sheet === "folder-picker"}
         <header class="sheet-h">Choose folder<button type="button" class="icon-x" aria-label="Close" onclick={() => (sheet = folderTarget)}>✕</button></header>
@@ -496,6 +531,7 @@
     flex: none;
   }
   .files-preview { min-width: 0; min-height: 0; overflow: auto; }
+  .files-notice { margin: 0; padding: 8px 16px; font-size: 13px; color: var(--v4-text-2); border-bottom: 1px solid var(--v4-rowline); }
   .files-empty { padding: 24px 16px; color: var(--v4-text-3); }
   .files-empty p { margin: 2px 0 0; font-size: 13px; }
   .files-empty-path { font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

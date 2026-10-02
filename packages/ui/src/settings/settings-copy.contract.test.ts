@@ -17,6 +17,10 @@ const PANES = [
   "company/CompanySettingsPage.svelte",
 ];
 
+/** QA-072: the Project Files New file form, with its own extra terms. */
+const NEW_FILE_FORM = "projects/ProjectFilesBody.svelte";
+const NEW_FILE_DENYLIST: RegExp[] = [/presign/i, /clipboard/i, /\bpath\b/i];
+
 const DENYLIST: RegExp[] = [
   /currentColor/i,
   /\bchrome\b/i,
@@ -34,7 +38,9 @@ function settingsCopy(source: string): string[] {
   const markup = source
     .replace(/<script[\s\S]*?<\/script>/g, "")
     .replace(/<style[\s\S]*?<\/style>/g, "")
-    .replace(/<!--[\s\S]*?-->/g, "");
+    .replace(/<!--[\s\S]*?-->/g, "")
+    // Arrow handlers inside attributes would otherwise end the tag early.
+    .replace(/=>/g, "");
   const attrs = [...markup.matchAll(COPY_ATTR)].map((m) => m[1]);
   const text = markup
     .replace(/<[^>]*>/g, "\n")
@@ -58,4 +64,11 @@ describe("settings copy contract", () => {
       expect(hits).toEqual([]);
     });
   }
+
+  it(`${NEW_FILE_FORM} uses plain product language`, () => {
+    const copy = settingsCopy(readFileSync(join(ROOT, NEW_FILE_FORM), "utf8"));
+    const rules = [...DENYLIST, ...NEW_FILE_DENYLIST];
+    const hits = copy.filter((line) => rules.some((re) => re.test(line)));
+    expect(hits).toEqual([]);
+  });
 });

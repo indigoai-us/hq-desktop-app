@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  newFileDestination,
   fileTemplateBody,
   folderSummary,
   normalizeNewFileName,
@@ -105,5 +106,17 @@ describe("folderSummary", () => {
     );
     expect(folderSummary([{ isDir: true }, { isDir: true }])).toBe("2 folders");
     expect(folderSummary([])).toBe("Empty folder");
+  });
+});
+
+describe("newFileDestination (QA-072)", () => {
+  it("names the project and folder in plain words", () => {
+    const root = "companies/indigo/projects/demo";
+    expect(newFileDestination("a.md", root, root)).toBe(
+      "Creates a.md in demo. It syncs to the company vault.",
+    );
+    expect(newFileDestination("a.md", root, `${root}/notes/`)).toBe(
+      "Creates a.md in demo/notes. It syncs to the company vault.",
+    );
   });
 });

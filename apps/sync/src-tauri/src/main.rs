@@ -967,6 +967,7 @@ fn main() {
             commands::projects_local::atlas_local_read_text,
             commands::projects_local::set_local_project_status,
             commands::projects_local::set_local_story_passes,
+            commands::projects_local::create_project_file,
             commands::library_local::get_library_root,
             commands::library_local::get_library_company,
             commands::library_local::get_library_worker_detail,

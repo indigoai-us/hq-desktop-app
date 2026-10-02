@@ -11,7 +11,7 @@ use hq_desktop_core::desktop_alt::{
     workspace_grants_company_file_access,
 };
 use hq_desktop_core::projects_local::{
-    read_company_goals, read_crm_projection, read_project_prd, read_project_readme,
+    create_project_text_file, read_company_goals, read_crm_projection, read_project_prd, read_project_readme,
     resolve_project_path, resolve_project_write_path, scan_local_projects_for_companies,
     write_project_status, write_story_passes,
 };
@@ -233,6 +233,51 @@ pub async fn set_local_story_passes(
     write_story_passes(&hq, &target.relative_path, &story_id, passes)
 }
 
+/// Result of the Project Files New file form (QA-072).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatedProjectFile {
+    pub path: String,
+    /// True when the company is cloud-backed and syncing on this machine, so
+    /// HQ Sync carries the new file to the company vault.
+    pub cloud_sync: bool,
+}
+
+fn company_cloud_sync(workspaces: &[Workspace], slug: Option<&str>) -> bool {
+    let Some(slug) = slug else { return false };
+    workspaces
+        .iter()
+        .any(|w| w.slug == slug && w.cloud_uid.is_some() && w.sync_enabled)
+}
+
+/// Create a new text file in the synced HQ folder (QA-072). The company must
+/// be authorized and match the window's active company; the core writer
+/// refuses existing files, symlinked folders, and cross-company resolution.
+#[tauri::command]
+pub async fn create_project_file(
+    path: String,
+    contents: String,
+    scope: tauri::State<'_, crate::commands::desktop_alt::DesktopSessionScope>,
+) -> Result<CreatedProjectFile, String> {
+    if !crate::util::feature_gate::desktop_features_enabled().await {
+        return Err("projects writer requires a signed-in user".to_string());
+    }
+    let normalized = validate_hq_relative_path(&path, false)?;
+    let slug = company_slug_for_hq_path(&normalized)?;
+    let (hq, workspaces) = hydrated_project_context().await?;
+    if let Some(slug) = slug.as_deref() {
+        if !workspace_grants_company_file_access(&workspaces, slug) {
+            return Err(format!("company projects are not authorized: {slug:?}"));
+        }
+    }
+    crate::commands::desktop_alt::enforce_desktop_read_scope(&normalized, &scope)?;
+    let written = create_project_text_file(&hq, &normalized, &contents)?;
+    Ok(CreatedProjectFile {
+        path: written,
+        cloud_sync: company_cloud_sync(&workspaces, slug.as_deref()),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,6 +309,19 @@ mod tests {
             brand: None,
             home_channel_id: None,
         }
+    }
+
+    #[test]
+    fn new_file_cloud_sync_needs_a_cloud_backed_syncing_company() {
+        let cloud = project_workspace("indigo", WorkspaceState::Synced, Some("active"), Some("cmp_1"));
+        let local = project_workspace("solo", WorkspaceState::Synced, Some("active"), None);
+        let mut paused = project_workspace("paused", WorkspaceState::Synced, Some("active"), Some("cmp_2"));
+        paused.sync_enabled = false;
+        let all = [cloud, local, paused];
+        assert!(company_cloud_sync(&all, Some("indigo")));
+        assert!(!company_cloud_sync(&all, Some("solo")));
+        assert!(!company_cloud_sync(&all, Some("paused")));
+        assert!(!company_cloud_sync(&all, None));
     }
 
     #[test]

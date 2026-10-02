@@ -113,6 +113,23 @@ export function normalizeNewFileName(raw: string): string | null {
   return slug.includes(".") ? slug : `${slug}.md`;
 }
 
+/** Shown after Create when the company is not syncing to the cloud (QA-072). */
+export const NEW_FILE_LOCAL_NOTICE =
+  "Saved on this computer. It syncs to the cloud when sync is next connected.";
+
+/**
+ * Plain helper above Cancel/Create (QA-072): where the new file goes, named
+ * by project and folder, never by vault internals.
+ */
+export function newFileDestination(name: string, projectRoot: string, folder: string): string {
+  const root = projectRoot.replace(/\/+$/, "");
+  const dir = folder.replace(/\/+$/, "");
+  const project = root.split("/").pop() || root;
+  const sub = dir.startsWith(`${root}/`) ? dir.slice(root.length + 1) : "";
+  const where = sub ? `${project}/${sub}` : project;
+  return `Creates ${name} in ${where}. It syncs to the company vault.`;
+}
+
 function splitName(name: string): { stem: string; ext: string } {
   const dot = name.lastIndexOf(".");
   if (dot <= 0) return { stem: name, ext: "" };
