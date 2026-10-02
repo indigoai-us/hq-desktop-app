@@ -128,6 +128,8 @@
   //   ?view=shell|signin|banner   ?theme=light|dark
   //   banner view also takes ?kind=share|meeting|dm|update (default share)
   //   shell view takes ?persona=empty-inbox|personal-only|multi-company|indigo
+  //   shell view also takes ?state=empty|loading|error (dev-harness/state-flags.ts):
+  //     empty lists, a held skeleton (?loadingMs=N to release), or failed loads
   //   shell view also takes ?tour=1: a fresh install that has not seen the
   //     first-run guided tour, so the tour starts by itself (clears the
   //     local "seen" key on load)

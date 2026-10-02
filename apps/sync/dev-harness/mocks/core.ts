@@ -3,6 +3,7 @@
 // without a Tauri backend. Design-only: no real side effects.
 import type { Workspace } from '../../src/lib/workspaces';
 import { resolveHarnessPersona, type ShellPersona } from '../personas';
+import { resolveHarnessState, resolveLoadingMs, withHarnessState } from '../state-flags';
 import { emit } from './event';
 import { deployAppsFixture } from '../../../../packages/ui/src/library/personal-deployments.fixture';
 
@@ -1785,11 +1786,14 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
       await new Promise(resolve => setTimeout(resolve, SHIFT_TEST_REACTION_DELAY_MS));
     }
   }
-  const handler = handlers[cmd];
-  if (handler) return handler(args) as T;
-  // Unknown command: log once and resolve null so mount paths don't throw.
-  console.debug('[harness] unhandled invoke:', cmd, args);
-  return null as T;
+  const search = typeof window === 'undefined' ? null : window.location.search;
+  return withHarnessState<T>(resolveHarnessState(search), cmd, () => {
+    const handler = handlers[cmd];
+    if (handler) return handler(args) as T;
+    // Unknown command: log once and resolve null so mount paths don't throw.
+    console.debug('[harness] unhandled invoke:', cmd, args);
+    return null as T;
+  }, resolveLoadingMs(search));
 }
 
 export class Channel<T = unknown> {
