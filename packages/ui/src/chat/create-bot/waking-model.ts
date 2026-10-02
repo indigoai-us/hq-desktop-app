@@ -9,10 +9,20 @@
 
 import { brainApprovalFromStatus, type BrainApproval, type BrainProvider } from "./bot-brain-approval.js";
 
-/** US-001 recorded median create-to-audit time, measured 2026-10-01. */
+/**
+ * US-001 recorded median create-to-audit time, measured 2026-10-01. Kept as a
+ * record only. Those bots spent most of that time waiting on a person (brain
+ * approval, Slack setup), so it is not how long the machine work takes and
+ * must not be shown as a countdown.
+ */
 export const US001_MEDIAN_WAKING_ESTIMATE_MS = 1_244_000;
-/** Default estimate used in production; fixtures can override per session. */
-export const WAKING_ESTIMATE_MS = US001_MEDIAN_WAKING_ESTIMATE_MS;
+/**
+ * Default estimate of the machine work, used in production; fixtures can
+ * override per session. The first bot created through this flow (2026-10-02)
+ * reached the approval step 49 seconds after the create request. Time the bot
+ * spends waiting on the person's approval does not count against it.
+ */
+export const WAKING_ESTIMATE_MS = 120_000;
 export const WAKING_POLL_MS = 3_000;
 export const WAKING_RECONNECT_AFTER_FAILURES = 3;
 
@@ -31,6 +41,16 @@ export interface WakingBotSession {
   progress: number;
   consecutiveCheckFailures: number;
   approval: BrainApproval | null;
+  /**
+   * When the current approval request first appeared. While it is set the
+   * clock is stopped: the bot is waiting on the person, not the reverse.
+   */
+  approvalSince?: number | null;
+}
+
+/** The moment the estimate is measured against: frozen while an approval is open. */
+function wakingClock(session: WakingBotSession, now: number): number {
+  return session.approvalSince ?? now;
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -87,6 +107,7 @@ export function beginWakingSession(input: {
     progress: wakingProgress(startedAt, startedAt, estimateMs),
     consecutiveCheckFailures: 0,
     approval: null,
+    approvalSince: null,
   };
 }
 
@@ -96,12 +117,24 @@ export function applyWakingStatus(
   now: number = Date.now(),
 ): WakingBotSession {
   const phase = phaseFromStatus(payload);
+  const approval = phase === "ready" ? null : brainApprovalFromStatus(payload);
+  let startedAt = session.startedAt;
+  let approvalSince = session.approvalSince ?? null;
+  if (approval && approvalSince === null) {
+    approvalSince = now;
+  } else if (!approval && approvalSince !== null) {
+    // Approved: take the time spent waiting on the person out of the elapsed
+    // time, so the rest of the work is measured against the same estimate.
+    startedAt += Math.max(0, now - approvalSince);
+    approvalSince = null;
+  }
+  const next = { ...session, startedAt, approvalSince };
   return {
-    ...session,
+    ...next,
     phase,
-    progress: phase === "ready" ? 100 : wakingProgress(session.startedAt, now, session.estimateMs),
+    progress: phase === "ready" ? 100 : wakingProgress(startedAt, wakingClock(next, now), session.estimateMs),
     consecutiveCheckFailures: 0,
-    approval: phase === "ready" ? null : brainApprovalFromStatus(payload),
+    approval,
   };
 }
 
@@ -111,7 +144,7 @@ export function recordWakingCheckFailure(
 ): WakingBotSession {
   return {
     ...session,
-    progress: wakingProgress(session.startedAt, now, session.estimateMs),
+    progress: wakingProgress(session.startedAt, wakingClock(session, now), session.estimateMs),
     consecutiveCheckFailures: session.consecutiveCheckFailures + 1,
   };
 }
@@ -145,5 +178,6 @@ export function resumeWakingSession(
     phase: "waking",
     progress: wakingProgress(now, now, session.estimateMs),
     consecutiveCheckFailures: 0,
+    approvalSince: null,
   };
 }

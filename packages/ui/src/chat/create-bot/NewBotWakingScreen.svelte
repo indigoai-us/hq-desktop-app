@@ -137,7 +137,7 @@
         approvalOpened = false;
         showCodexCode = false;
         claudeCode = "";
-        onupdate(applyWakingStatus({ ...session, startedAt: Date.now(), approval: null }, response.value));
+        onupdate(applyWakingStatus({ ...session, approval: null }, response.value));
         return;
       }
       actionMessage = "We couldn't start a fresh approval. Try again.";
