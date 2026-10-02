@@ -5065,6 +5065,43 @@
   }
 
   /**
+   * Bots / Team / Atlas "Message": open (or create) the 1:1 DM with a UID in
+   * the viewing company. A bare `navigate({ kind: "dm" })` only resolves when
+   * the rail already lists that DM, so a bot nobody has messaged yet fell
+   * through to "This destination is no longer available" (QA-090). With cold
+   * caches the DM opens from a synthesized row and the conversation hydrates.
+   */
+  function messagePersonByUid(
+    personUid: string,
+    options: { name?: string | null; companyUid?: string | null } = {},
+  ): void {
+    const uid = personUid.trim();
+    if (!uid) return;
+    const existing = [...railRows, ...searchRows].find(
+      (row) => row.kind === "dm" && row.personUid === uid && !row.channelId,
+    );
+    const bot = localBots.find((b) => b.agentUid === uid);
+    handleSelect(
+      existing ?? {
+        id: `dm:${uid}`,
+        kind: "dm",
+        title:
+          botSubjectName(uid, [
+            options.name,
+            bot?.displayName,
+            bot?.name,
+            displayNameByUid[uid],
+          ]) || uid,
+        companyUid: options.companyUid?.trim() || null,
+        unreadDot: false,
+        lastActivityAt: Date.now(),
+        pinned: false,
+        personUid: uid,
+      },
+    );
+  }
+
+  /**
    * The bot's name for a profile opened from a DM header, resolved from its
    * UID: the local bot record, then the channel roster, then the rail row's
    * own title. Never the conversation placeholder (QA-087); an unknown name
@@ -10252,7 +10289,7 @@
               void navigate(destination);
             }}
             onopenperson={(personUid) => {
-              void navigate({ kind: "dm", personUid });
+              messagePersonByUid(personUid, { companyUid: companyPaneCompany?.uid });
             }}
           />
         {:else if railPlaceholder?.id === "team" && companyPaneCompany}
@@ -10266,7 +10303,7 @@
             inviteSeq={teamInviteSeq}
             onaddagent={addAgentFromTeam}
             onmessage={(uid) => {
-              void navigate({ kind: "dm", personUid: uid });
+              messagePersonByUid(uid, { companyUid: companyPaneCompany?.uid });
             }}
           />
         {:else if railPlaceholder?.id === "projects" && companyPaneCompany}
@@ -10301,8 +10338,8 @@
             {localBots}
             companyLabel={companyPaneCompany.label}
             ownerName={self?.displayName ?? null}
-            onmessage={(uid) => {
-              void navigate({ kind: "dm", personUid: uid });
+            onmessage={(uid, name) => {
+              messagePersonByUid(uid, { name, companyUid: companyPaneCompany?.uid });
             }}
             onaddbot={addAgentFromTeam}
           />

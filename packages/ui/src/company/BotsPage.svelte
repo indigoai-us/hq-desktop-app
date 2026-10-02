@@ -34,7 +34,7 @@
     localBots?: ReadonlyArray<LocalBotRow> | null;
     companyLabel?: string | null;
     ownerName?: string | null;
-    onmessage?: (uid: string) => void;
+    onmessage?: (uid: string, name?: string) => void;
     /** Opens the shared 3-step New bot sheet. */
     onaddbot?: () => void;
   }
@@ -192,7 +192,7 @@
                 companyUid,
                 agents: adapter?.agents ?? null,
                 onclose: () => (selected = null),
-                onmessage: () => onmessage?.(current.uid),
+                onmessage: () => onmessage?.(current.uid, current.name),
               }}
             >
               {#snippet skeleton()}
