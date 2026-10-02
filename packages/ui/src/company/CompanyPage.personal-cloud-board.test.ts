@@ -88,6 +88,7 @@ async function render(company: Workspace, adapter: PlatformAdapter) {
 }
 
 afterEach(async () => {
+  Reflect.deleteProperty(globalThis, "__HQ_HOST_OS__");
   if (component) await unmount(component);
   component = null;
   host?.remove();
@@ -95,6 +96,23 @@ afterEach(async () => {
 });
 
 describe("CompanyPage personal cloud board", () => {
+  it("uses the Windows computer noun in the pending invite explanation", async () => {
+    Object.defineProperty(globalThis, "__HQ_HOST_OS__", { value: "windows", configurable: true });
+    const company = personalWorkspace({
+      slug: "example",
+      displayName: "Example",
+      kind: "company",
+      state: "cloud-only",
+      cloudUid: "cmp_example",
+      membershipStatus: "pending",
+    });
+    const { adapter } = adapterWithFlag(false);
+    const el = await render(company, adapter);
+    expect(el.querySelector('[data-testid="company-invite-gate"]')?.textContent).toContain(
+      "members, or settings on this PC.",
+    );
+  });
+
   it("enables board and summary reads and hides local-only when flagged on", async () => {
     const { adapter, hasFeature } = adapterWithFlag(true);
     const el = await render(personalWorkspace(), adapter);

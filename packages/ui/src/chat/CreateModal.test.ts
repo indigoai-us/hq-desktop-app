@@ -14,6 +14,7 @@ import type { ConversationRow, DmContactInput } from "./sidebar-model.js";
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
+const originalUserAgent = navigator.userAgent;
 
 function stubApi(overrides: Partial<ChatSidebarApi> = {}): ChatSidebarApi {
   return {
@@ -155,6 +156,7 @@ afterEach(async () => {
     .querySelectorAll('[data-testid="chat-create-modal"]')
     .forEach((node) => node.remove());
   vi.useRealTimers();
+  Object.defineProperty(navigator, "userAgent", { configurable: true, value: originalUserAgent });
 });
 
 describe("CreateModal find step", () => {
@@ -305,6 +307,17 @@ describe("CreateModal find step", () => {
 });
 
 describe("CreateModal create step", () => {
+  it("uses Ctrl+Enter in the Windows create hint", async () => {
+    Object.defineProperty(navigator, "userAgent", {
+      configurable: true,
+      value: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    });
+    open();
+    await tick();
+    await gotoCreate("Growth");
+    expect(host.querySelector(".create-hint")?.textContent).toContain("Ctrl+↵ TO CREATE");
+  });
+
   it("Escape returns to the find step with the name preserved in the query", async () => {
     open();
     await tick();
