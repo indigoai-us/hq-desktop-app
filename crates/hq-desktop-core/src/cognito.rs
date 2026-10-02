@@ -171,25 +171,58 @@ fn classify_refresh_failure(status: u16, body: &str) -> (bool, bool) {
 }
 
 fn redact_refresh_message(message: &str) -> String {
-    message.split_whitespace().map(|word| {
+    let words = message.split_whitespace().collect::<Vec<_>>();
+    let mut redacted = Vec::with_capacity(words.len());
+    let mut skip_words = 0;
+    for word in words {
+        if skip_words > 0 {
+            skip_words -= 1;
+            continue;
+        }
         let clean = word.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '.' && c != '-' && c != '_' && c != '@');
+        let credential_key = word
+            .split_once(['=', ':'])
+            .map(|(key, value)| (key, !value.is_empty()))
+            .or_else(|| {
+                let key = clean.trim_matches(['"', '\'', '`']);
+                is_credential_key(key).then_some((key, false))
+            });
+        if let Some((key, has_inline_value)) = credential_key.filter(|(key, _)| is_credential_key(key)) {
+            redacted.push(format!("{}=[redacted]", key.trim_matches(['"', '\'', '`'])));
+            if !has_inline_value {
+                skip_words = if key.eq_ignore_ascii_case("authorization") { 2 } else { 1 };
+            }
+            continue;
+        }
         if word.contains('@') {
-            word.replace(clean, "[redacted email]")
+            redacted.push(word.replace(clean, "[redacted email]"));
         } else if clean.matches('.').count() >= 2 && clean.len() > 30 {
-            word.replace(clean, "[redacted token]")
+            redacted.push(word.replace(clean, "[redacted token]"));
         } else if clean.matches('-').count() == 4 && clean.len() >= 32 {
-            word.replace(clean, "[redacted id]")
-        } else if let Some((key, _)) = word.split_once('=') {
-            if matches!(key.to_ascii_lowercase().as_str(), "refresh_token" | "access_token" | "id_token" | "token" | "user_id" | "sub") {
-                format!("{key}=[redacted]")
-            } else { word.to_string() }
-        } else { word.to_string() }
-    }).collect::<Vec<_>>().join(" ")
+            redacted.push(word.replace(clean, "[redacted id]"));
+        } else {
+            redacted.push(word.to_string());
+        }
+    }
+    redacted.join(" ")
 }
 
-fn refresh_diagnostic(status: u16, body: &str) -> (Option<String>, String) {
+fn is_credential_key(key: &str) -> bool {
+    matches!(
+        key.trim_matches(['"', '\'', '`']).to_ascii_lowercase().as_str(),
+        "refresh_token" | "access_token" | "id_token" | "token" | "user_id" | "sub"
+            | "authorization" | "client_secret" | "password" | "secret" | "credential"
+    )
+}
+
+fn refresh_diagnostic(status: u16, body: &str, refresh_token: &str) -> (Option<String>, String) {
     let code = cognito_error_code(body);
     let message = cognito_error_message(body);
+    let message = if refresh_token.is_empty() {
+        message
+    } else {
+        message.replace(refresh_token, "[redacted token]")
+    };
     let diagnostic = format!(
         "Cognito refresh failed status={status} code={} message={message}",
         code.as_deref().unwrap_or("unknown")
@@ -359,6 +392,63 @@ fn lock_owner_pid(lock_path: &Path) -> Option<u32> {
     std::fs::read_to_string(lock_path).ok()?.trim().parse().ok()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LockFileIdentity {
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(windows)]
+    volume_serial_number: Option<u32>,
+    #[cfg(windows)]
+    file_index: Option<u64>,
+    #[cfg(not(any(unix, windows)))]
+    length: u64,
+    #[cfg(not(any(unix, windows)))]
+    modified: Option<SystemTime>,
+}
+
+fn lock_file_identity(path: &Path) -> Option<LockFileIdentity> {
+    let metadata = std::fs::metadata(path).ok()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Some(LockFileIdentity {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        Some(LockFileIdentity {
+            volume_serial_number: metadata.volume_serial_number(),
+            file_index: metadata.file_index(),
+        })
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        Some(LockFileIdentity {
+            length: metadata.len(),
+            modified: metadata.modified().ok(),
+        })
+    }
+}
+
+fn remove_stale_lock_if_unchanged(
+    lock_path: &Path,
+    observed_owner: Option<u32>,
+    observed_identity: &LockFileIdentity,
+) -> bool {
+    if lock_owner_pid(lock_path) != observed_owner
+        || lock_file_identity(lock_path).as_ref() != Some(observed_identity)
+        || observed_owner.is_some_and(lock_owner_is_alive)
+    {
+        return false;
+    }
+    std::fs::remove_file(lock_path).is_ok()
+}
+
 fn lock_owner_is_alive(pid: u32) -> bool {
     if pid == std::process::id() {
         return true;
@@ -381,6 +471,10 @@ fn lock_owner_is_alive(pid: u32) -> bool {
 }
 
 fn lock_token_file_at(path: &Path) -> Result<TokenFileLock, String> {
+    lock_token_file_with_timeout(path, std::time::Duration::from_secs(20))
+}
+
+fn lock_token_file_with_timeout(path: &Path, timeout: std::time::Duration) -> Result<TokenFileLock, String> {
     if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create token directory: {e}"))?;
@@ -388,12 +482,13 @@ fn lock_token_file_at(path: &Path) -> Result<TokenFileLock, String> {
     let lock_path = token_file_lock_path(path);
     let owner_pid = std::process::id();
     static NEXT_CANDIDATE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let candidate_path = PathBuf::from(format!(
-        "{}.candidate.{}.{}",
-        lock_path.display(),
+    let candidate_nonce = uuid::Uuid::new_v4().simple().to_string();
+    let candidate_path = token_lock_candidate_path(
+        &lock_path,
         owner_pid,
-        NEXT_CANDIDATE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
+        &candidate_nonce,
+        NEXT_CANDIDATE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+    );
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -411,14 +506,28 @@ fn lock_token_file_at(path: &Path) -> Result<TokenFileLock, String> {
         .map_err(|e| format!("Failed to flush token lock candidate: {e}"))?;
     drop(candidate);
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let deadline = std::time::Instant::now() + timeout;
     loop {
         match std::fs::hard_link(&candidate_path, &lock_path) {
             Ok(()) => return Ok(TokenFileLock { lock_path, candidate_path, owner_pid }),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                 let existing_owner = lock_owner_pid(&lock_path);
                 if existing_owner.is_none_or(|pid| !lock_owner_is_alive(pid)) {
-                    let _ = std::fs::remove_file(&lock_path);
+                    let removed = lock_file_identity(&lock_path).is_some_and(|identity| {
+                        remove_stale_lock_if_unchanged(
+                            &lock_path,
+                            existing_owner,
+                            &identity,
+                        )
+                    });
+                    if removed {
+                        continue;
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        let _ = std::fs::remove_file(&candidate_path);
+                        return Err(format!("Timed out waiting for token lock {}", lock_path.display()));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
                     continue;
                 }
                 if std::time::Instant::now() >= deadline {
@@ -433,6 +542,12 @@ fn lock_token_file_at(path: &Path) -> Result<TokenFileLock, String> {
             }
         }
     }
+}
+
+fn token_lock_candidate_path(lock_path: &Path, owner_pid: u32, nonce: &str, counter: u64) -> PathBuf {
+    let mut name = lock_path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".candidate.{owner_pid}.{nonce}.{counter}"));
+    lock_path.with_file_name(name)
 }
 
 #[derive(Debug)]
@@ -1481,7 +1596,7 @@ async fn refresh_access_token_classified_at(
                 .text()
                 .await
                 .unwrap_or_else(|_| "unknown".to_string());
-            let (error_code, diagnostic) = refresh_diagnostic(status, &body_text);
+            let (error_code, diagnostic) = refresh_diagnostic(status, &body_text, refresh_token);
             let (retryable, requires_reauth) = classify_refresh_failure(status, &body_text);
             eprintln!("{diagnostic}");
             let failure = CognitoRefreshError {
@@ -2275,7 +2390,7 @@ mod tests {
     async fn refresh_diagnostic_includes_status_and_code_but_redacts_tokens_emails_and_ids() {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
-        let body = r#"{"__type":"aws#NotAuthorizedException","message":"Refresh rejected for alice@example.com user_id=12345678-1234-1234-1234-123456789012 token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhYmMiLCJlbWFpbCI6ImFsaWNlQGV4YW1wbGUuY29tIn0.signature"}"#;
+        let body = r#"{"__type":"aws#NotAuthorizedException","message":"Refresh rejected for alice@example.com user_id=12345678-1234-1234-1234-123456789012 token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhYmMiLCJlbWFpbCI6ImFsaWNlQGV4YW1wbGUuY29tIn0.signature refresh_token: secret-value token secret-value refresh_token=\"quoted-secret\" refresh-secret"}"#;
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/"))
@@ -2292,6 +2407,59 @@ mod tests {
         assert!(!diagnostic.contains("12345678-1234-1234-1234-123456789012"));
         assert!(!diagnostic.contains("eyJhbGci"));
         assert!(!diagnostic.contains("refresh-secret"));
+        assert!(!diagnostic.contains("secret-value"));
+        assert!(!diagnostic.contains("quoted-secret"));
+    }
+
+    #[test]
+    fn stale_lock_reclaimer_leaves_a_replacement_owner_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock_path = dir.path().join("cognito-tokens.json.lock");
+        let observed_path = dir.path().join("observed-stale-lock");
+        let stale_owner = u32::MAX - 1;
+        assert!(!lock_owner_is_alive(stale_owner));
+        std::fs::write(&lock_path, stale_owner.to_string()).unwrap();
+        let observed_identity = lock_file_identity(&lock_path).unwrap();
+        std::fs::hard_link(&lock_path, &observed_path).unwrap();
+
+        std::fs::remove_file(&lock_path).unwrap();
+        std::fs::write(&lock_path, std::process::id().to_string()).unwrap();
+
+        assert!(!remove_stale_lock_if_unchanged(
+            &lock_path,
+            Some(stale_owner),
+            &observed_identity,
+        ));
+        assert_eq!(lock_owner_pid(&lock_path), Some(std::process::id()));
+    }
+
+    #[test]
+    fn token_lock_candidate_preserves_non_utf8_parent_and_uses_restart_nonce() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::{OsStrExt, OsStringExt};
+            let parent = PathBuf::from(std::ffi::OsString::from_vec(vec![b'd', b'-', 0xff]));
+            let lock_path = parent.join("cognito-tokens.json.lock");
+            let first = token_lock_candidate_path(&lock_path, 123, "nonce-a", 0);
+            let second = token_lock_candidate_path(&lock_path, 123, "nonce-b", 0);
+            assert_eq!(first.parent(), Some(parent.as_path()));
+            assert_ne!(first, second);
+            assert!(first.as_os_str().as_bytes().contains(&0xff));
+        }
+    }
+
+    #[test]
+    fn stale_lock_reclamation_failure_is_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let tokens_path = dir.path().join("cognito-tokens.json");
+        std::fs::create_dir(token_file_lock_path(&tokens_path)).unwrap();
+        let started = std::time::Instant::now();
+        let result = lock_token_file_with_timeout(
+            &tokens_path,
+            std::time::Duration::from_millis(100),
+        );
+        assert!(result.is_err());
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
     }
 
     #[test]
