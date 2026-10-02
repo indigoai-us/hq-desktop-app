@@ -46,6 +46,13 @@
   const id = `tooltip-${Math.random().toString(36).slice(2, 10)}`;
   let open = $state(false);
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let wrap: HTMLSpanElement | null = $state(null);
+
+  /** A control whose menu or popover is open must not keep its tooltip on
+   *  top of that menu (the Launch tooltip sat over the open Launch menu). */
+  function controlExpanded(): boolean {
+    return wrap?.querySelector('[aria-expanded="true"]') != null;
+  }
 
   function clearTimer(): void {
     if (timer !== null) {
@@ -55,17 +62,17 @@
   }
 
   function showAfterDelay(): void {
-    if (!label) return;
+    if (!label || controlExpanded()) return;
     clearTimer();
     timer = setTimeout(() => {
-      open = true;
+      open = !controlExpanded();
       timer = null;
     }, delay);
   }
 
   /** Focus is intentional — no dwell delay. */
   function showNow(): void {
-    if (!label) return;
+    if (!label || controlExpanded()) return;
     clearTimer();
     open = true;
   }
@@ -85,7 +92,9 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <span
   class="tooltip-wrap"
+  bind:this={wrap}
   onpointerenter={showAfterDelay}
+  onpointerdown={hide}
   onpointerleave={hide}
   onfocusin={showNow}
   onfocusout={hide}
