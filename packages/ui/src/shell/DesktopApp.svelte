@@ -61,6 +61,7 @@
   import GoalsRailHost from "./GoalsRailHost.svelte";
   import TeamPage from "../company/TeamPage.svelte";
   import BotsPage from "../company/BotsPage.svelte";
+  import { botSubjectName } from "./profile-panes/profile-pane-model.js";
   import CompanySettingsHost from "./CompanySettingsHost.svelte";
   import AccountHost from "./AccountHost.svelte";
   import {
@@ -5063,12 +5064,31 @@
     );
   }
 
+  /**
+   * The bot's name for a profile opened from a DM header, resolved from its
+   * UID: the local bot record, then the channel roster, then the rail row's
+   * own title. Never the conversation placeholder (QA-087); an unknown name
+   * stays empty so the pane shimmers until its status refresh names it.
+   */
+  function headerAgentName(uid: string): string {
+    const bot = localBots.find((b) => b.agentUid === uid);
+    const roster =
+      channelRosterById[selectedRow?.channelId?.trim() ?? ""] ?? [];
+    return botSubjectName(uid, [
+      bot?.displayName,
+      bot?.name,
+      roster.find((m) => m.personUid === uid)?.displayName,
+      displayNameByUid[uid],
+      selectedRow?.title,
+    ]);
+  }
+
   function openAgentProfileFromHeader(): void {
     const uid = selectedRow?.personUid?.trim();
     if (!uid) return;
     openMemberProfile({
       personUid: uid,
-      displayName: headerTitle,
+      displayName: headerAgentName(uid),
       email: selectedRow?.email?.trim() || null,
       avatarUrl: avatarByUid[uid] ?? null,
       description: null,
@@ -5158,7 +5178,7 @@
     if (!uid || !isAgentUid(uid) || selectedRow?.kind !== "dm") return;
     openMemberProfile({
       personUid: uid,
-      displayName: headerTitle,
+      displayName: headerAgentName(uid),
       email: selectedRow.email ?? null,
       avatarUrl: avatarByUid[uid] ?? null,
       description: null,

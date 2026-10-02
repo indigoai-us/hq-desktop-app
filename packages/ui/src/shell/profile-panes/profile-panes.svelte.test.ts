@@ -1,5 +1,7 @@
 // @vitest-environment happy-dom
 import { mount, tick } from "svelte";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import ProfilePaneHost from "./ProfilePaneHost.svelte";
 import BotSessionPane from "./BotSessionPane.svelte";
@@ -110,5 +112,47 @@ describe("BotSessionPane virtualization", () => {
     (host.querySelector('[data-testid="bot-session-tool"]') as HTMLButtonElement | null)?.click();
     await tick();
     expect(host.querySelector('[data-testid="bot-session-tool-body"]')).not.toBeNull();
+  });
+});
+
+describe("bot profile opened from a DM header (QA-087)", () => {
+  it("names the bot from its UID refresh, never the conversation title", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    const agents = {
+      getStatus: async () => ({ ok: true, value: { agent: { displayName: "dr-love" } } }),
+      listJobs: async () => ({ ok: true, value: [] }),
+      getCompanyTelemetry: async () => ({ ok: false, reason: "unavailable", message: "n/a" }),
+    };
+    mount(ProfilePaneHost, {
+      target: host,
+      props: {
+        kind: "bot",
+        name: "",
+        company: "Indigo",
+        agentUid: "agt_drlove",
+        companyUid: "cmp_indigo",
+        runtimeKind: "cloud",
+        agents: agents as never,
+      },
+    });
+    for (let i = 0; i < 5; i += 1) await tick();
+    await new Promise((r) => setTimeout(r, 0));
+    await tick();
+    const text = host.textContent ?? "";
+    expect(text).toContain("dr-love");
+    expect(text).toContain("@dr-love");
+    expect(text).toContain("Indigo");
+    expect(text).not.toContain("Direct message");
+    expect(text).not.toContain("direct-message");
+  });
+
+  it("the shell's header openers resolve the name by UID, not the header title", () => {
+    const src = readFileSync(resolve(process.cwd(), "src/shell/DesktopApp.svelte"), "utf8");
+    for (const fn of ["function openAgentProfileFromHeader", "function openAgentFromHeader"]) {
+      const body = src.slice(src.indexOf(fn), src.indexOf(fn) + 700);
+      expect(body).toContain("displayName: headerAgentName(uid)");
+      expect(body).not.toContain("displayName: headerTitle");
+    }
   });
 });

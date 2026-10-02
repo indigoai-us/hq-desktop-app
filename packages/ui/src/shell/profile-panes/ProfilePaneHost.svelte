@@ -18,6 +18,7 @@
   import {
     botMembershipsFromPayload,
     botProfileFromCache,
+    botNameFromPayload,
     withBotMemberships,
     userProfileFromCache,
     type BotProfileSnapshot,
@@ -77,6 +78,8 @@
   let jobs = $state<ProfileRun[] | null>(null);
   let usage = $state<{ status: "loading" | "ready" | "unavailable"; tokens?: string; sessions?: number | null; daily?: number[]; message?: string } | null>(null);
   let memberships = $state<ProfileCompany[] | null>(null);
+  /** Name from the bot's own status record; wins over the cached name. */
+  let refreshedName = $state("");
   let paused = $state(false);
   let controlBusy = $state(false);
   let actionError = $state<string | null>(null);
@@ -89,6 +92,7 @@
     const company = companyUid ?? null;
     jobs = null;
     memberships = null;
+    refreshedName = "";
     actionError = null;
     if (!uid || !api) {
       usage = null;
@@ -104,7 +108,10 @@
       .then(() => api.getStatus(uid))
       .then((res) => {
         if (cancelled) return;
-        if (res.ok) memberships = botMembershipsFromPayload(res.value);
+        if (res.ok) {
+          memberships = botMembershipsFromPayload(res.value);
+          refreshedName = botNameFromPayload(res.value);
+        }
         else console.warn("[hq-desktop] bot memberships refresh failed", res.message ?? res.reason);
       })
       .catch((err: unknown) => {
@@ -176,8 +183,9 @@
   }
   let phase = $state<SessionPhase>("live");
 
+  const botName = $derived(kind === "bot" && refreshedName ? refreshedName : name);
   const cachedBot = $derived(
-    bot ?? (name.trim() ? botProfileFromCache({ name, email, owner, live, company }) : null),
+    bot ?? (botName.trim() ? botProfileFromCache({ name: botName, email, owner, live, company }) : null),
   );
   const botView = $derived.by(() => {
     if (!cachedBot) return cachedBot;

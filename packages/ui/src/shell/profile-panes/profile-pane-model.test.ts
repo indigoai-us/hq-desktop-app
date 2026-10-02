@@ -4,7 +4,9 @@ import {
   EDIT_BOT_TABS,
   TRANSCRIPT_VIRTUALIZE_THRESHOLD,
   appendTranscript,
+  botNameFromPayload,
   botProfileFromCache,
+  botSubjectName,
   cancelStop,
   confirmStop,
   editBotTabLabel,
@@ -93,5 +95,18 @@ describe("cache snapshots", () => {
     });
     expect(person.roleChips[0]).toContain("Indigo");
     expect(person.now).toBe("Live");
+  });
+});
+
+describe("bot profile subject from a DM header (QA-087)", () => {
+  it("skips the conversation placeholder and the raw UID", () => {
+    expect(botSubjectName("agt_1", [null, "Direct message", "agt_1", "dr-love"])).toBe("dr-love");
+    expect(botSubjectName("agt_1", ["Direct message", ""])).toBe("");
+  });
+
+  it("reads the bot's own name from a status payload", () => {
+    expect(botNameFromPayload({ agent: { displayName: "dr-love" } })).toBe("dr-love");
+    expect(botNameFromPayload({ name: "deacon" })).toBe("deacon");
+    expect(botNameFromPayload({})).toBe("");
   });
 });
