@@ -319,7 +319,7 @@ pub(crate) fn handle_watch_stdout_line<R: tauri::Runtime>(
         crate::commands::client_health::set_watcher_waiting_for_lock(
             status.state == "waiting-for-lock",
         );
-        if let Err(error) = app.emit(crate::events::EVENT_SYNC_WATCHER_STATUS, status) {
+        if let Err(error) = app.emit_to("main", crate::events::EVENT_SYNC_WATCHER_STATUS, status) {
             log("daemon", &format!("failed to emit watcher status: {error}"));
         }
         return true;
@@ -7824,12 +7824,15 @@ mod tests {
 
         let app = tauri::test::mock_app();
         let handle = app.handle().clone();
+        let window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
         let hq_folder = TempDir::new().unwrap();
         let totals = Mutex::new(RunTotals::default());
         let phase = Mutex::new(WatcherPhaseContext::default());
         let seen = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
         let seen_w = seen.clone();
-        handle.listen(crate::events::EVENT_SYNC_WATCHER_STATUS, move |event| {
+        window.listen(crate::events::EVENT_SYNC_WATCHER_STATUS, move |event| {
             seen_w
                 .lock()
                 .unwrap()
