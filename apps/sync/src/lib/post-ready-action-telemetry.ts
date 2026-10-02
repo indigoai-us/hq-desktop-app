@@ -68,6 +68,13 @@ export function markPostReadyActionReady(
   saveState(storage, { ...state, ready: true });
 }
 
+/** Read the same persisted ready marker used to admit post-ready telemetry. */
+export function isPostReadyActionReady(
+  storage: PostReadyActionStorage | null = safeStorage(),
+): boolean {
+  return loadState(storage).ready;
+}
+
 export function createPostReadyActionTelemetry(
   options: PostReadyActionTelemetryOptions,
 ): PostReadyActionTelemetry {
