@@ -63,6 +63,8 @@ export interface SidepaneRow {
   live?: boolean;
   /** Trailing count (unread or item count). */
   count?: number;
+  /** Plain-language scope of the count, shown as its tooltip. */
+  countScope?: string;
 }
 
 export interface SidepaneSection {

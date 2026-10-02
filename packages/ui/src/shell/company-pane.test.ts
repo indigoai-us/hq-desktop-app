@@ -81,3 +81,12 @@ describe("companyPaneCounts with a partial summary (US-039)", () => {
     });
   });
 });
+
+describe("company pane project count scope (QA-006)", () => {
+  it("labels the Projects count as the company board so it is not read as the local page count", () => {
+    const model = companyPaneModel({ uid: "co", label: "Indigo", liveCount: 0 }, summary, null);
+    const row = model.sections.flatMap((s) => s.rows).find((r) => r.id === "projects");
+    expect(row?.count).toBe(7);
+    expect(row?.countScope).toBe("7 on the company board");
+  });
+});

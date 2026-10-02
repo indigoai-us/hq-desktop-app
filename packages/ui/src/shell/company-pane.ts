@@ -121,6 +121,12 @@ export function companyPaneModel(
       if (row.id === "atlas") row.live = model.liveCount > 0;
       const n = counts[row.id];
       if (n && n > 0) row.count = n;
+      // The Projects page counts PRDs on this computer; the pane counts the
+      // shared company board. Name the scope so the two numbers never read as
+      // the same thing.
+      if (row.id === "projects" && row.count) {
+        row.countScope = `${row.count} on the company board`;
+      }
       else if (row.id === "atlas" && model.liveCount > 0) row.count = model.liveCount;
     }
   }

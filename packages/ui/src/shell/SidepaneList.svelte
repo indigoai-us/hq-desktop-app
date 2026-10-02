@@ -113,7 +113,7 @@
           </span>
         {/if}
         <span class="label">{item.row.label}</span>
-        {#if item.row.count}<span class="count">{item.row.count}</span>{/if}
+        {#if item.row.count}<span class="count" title={item.row.countScope}>{item.row.count}</span>{/if}
       </button>
     {/if}
   {/each}
