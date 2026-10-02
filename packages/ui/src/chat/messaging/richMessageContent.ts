@@ -204,9 +204,27 @@ export interface SuggestionsBlock {
   items: string[];
 }
 
+/** What a {@link ConnectBlock} can offer to connect. A closed list. */
+export type ConnectTarget = "slack" | "tools";
+
+/**
+ * A bot's offer to connect Slack or the company's tools, drawn as one card per
+ * target inside the message. Data-only and deliberately bare: `targets` is the
+ * ONLY field read, and only its two known names. The bot never supplies a
+ * link, a label or a style. The app writes every word on a card and builds
+ * every link it opens itself, so nothing an agent emits can send a person to
+ * a page of the agent's choosing. A press does NOT run agent code; it goes to
+ * the host through {@link RichMessageContent}'s `connections.onaction`.
+ */
+export interface ConnectBlock {
+  kind: "connect";
+  targets: ConnectTarget[];
+}
+
 export type RichBlock =
   | SetupDoneBlock
   | SuggestionsBlock
+  | ConnectBlock
   | StatBlock
   | TableBlock
   | ChartBlock
@@ -225,6 +243,7 @@ export interface RichContentModel {
 export const KNOWN_BLOCK_KINDS = new Set<string>([
   "setupDone",
   "suggestions",
+  "connect",
   "stat",
   "table",
   "chart",
@@ -519,6 +538,22 @@ function parseSuggestionsBlock(raw: Record<string, unknown>): SuggestionsBlock |
   return items.length > 0 ? { kind: "suggestions", items } : null;
 }
 
+/** The targets a `connect` block may name, in the order cards are drawn. */
+const CONNECT_TARGETS: readonly ConnectTarget[] = ["slack", "tools"];
+
+function parseConnectBlock(raw: Record<string, unknown>): ConnectBlock | null {
+  // Only `targets` is read. A url, label or style the agent adds is ignored:
+  // the app builds every link and writes every word on a card itself.
+  const rawTargets = Array.isArray(raw.targets) ? raw.targets : [];
+  const targets: ConnectTarget[] = [];
+  for (const entry of rawTargets) {
+    const target = CONNECT_TARGETS.find((known) => known === entry);
+    if (!target || targets.includes(target)) continue;
+    targets.push(target);
+  }
+  return targets.length > 0 ? { kind: "connect", targets } : null;
+}
+
 function parseBlock(raw: unknown): RichBlock | null {
   if (!isRecord(raw)) return null;
   const kind = typeof raw.kind === "string" ? raw.kind : "";
@@ -527,6 +562,8 @@ function parseBlock(raw: unknown): RichBlock | null {
       return raw.slackAgent === true ? { kind: "setupDone", slackAgent: true } : { kind: "setupDone" };
     case "suggestions":
       return parseSuggestionsBlock(raw);
+    case "connect":
+      return parseConnectBlock(raw);
     case "stat":
       return parseStatBlock(raw);
     case "table":
@@ -763,6 +800,12 @@ function blockToPlainText(block: RichBlock): string {
       return `${block.label ? `${block.label}: ` : ""}${block.value}%`;
     case "callout":
       return `${block.title ? `${block.title} — ` : ""}${block.body}`;
+    case "connect": {
+      const slack = block.targets.includes("slack");
+      const tools = block.targets.includes("tools");
+      if (slack && tools) return "Connect Slack or your tools from the HQ app.";
+      return slack ? "Connect Slack from the HQ app." : "Connect your tools from the HQ app.";
+    }
     case "decision":
       return [
         block.question,
@@ -827,4 +870,23 @@ export function suggestionsForMessage(message: { body?: string | null; richConte
     (b): b is SuggestionsBlock => b.kind === "suggestions",
   );
   return block ? [...block.items] : [];
+}
+
+/** True when this message carries a `connect` block of its own. */
+export function messageHasConnectBlock(message: { body?: string | null; richContent?: unknown }): boolean {
+  return richContentForMessage(message).rich?.blocks.some((block) => block.kind === "connect") ?? false;
+}
+
+/**
+ * Add blocks the host attaches to a message that did not carry them (the
+ * connection cards under a new bot's first message). The message's own blocks
+ * come first; a message with none gets just the extra ones. Nothing to add
+ * hands back the model it was given.
+ */
+export function withExtraBlocks(
+  rich: RichContentModel | null,
+  extra: readonly RichBlock[] | null | undefined,
+): RichContentModel | null {
+  if (!extra || extra.length === 0) return rich;
+  return { blocks: [...(rich?.blocks ?? []), ...extra] };
 }

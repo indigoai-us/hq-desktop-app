@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   extractRichContentFromBody,
+  HOST_PLACED_BLOCK_KINDS,
+  KNOWN_BLOCK_KINDS,
+  messageHasConnectBlock,
+  messageHasVisibleContent,
   parseRichContent,
   richContentForMessage,
   richContentToPlainText,
   toSafeText,
+  withExtraBlocks,
 } from "./richMessageContent.js";
 
 describe("parseRichContent — version + envelope gating", () => {
@@ -630,5 +635,89 @@ describe("parseRichContent — decision block", () => {
     expect(text).toContain("Append the smoke-test line to core.yaml?");
     expect(text).toContain("1. Yes, append it (Recommended)");
     expect(text).toContain("2. No, use a scratch file");
+  });
+});
+
+describe("parseRichContent: connect block", () => {
+  const connect = (targets: unknown, extra: Record<string, unknown> = {}) => ({
+    v: 1,
+    blocks: [{ kind: "connect", targets, ...extra }],
+  });
+
+  it("keeps the two known targets in the order given", () => {
+    expect(parseRichContent(connect(["slack", "tools"]))?.blocks).toEqual([
+      { kind: "connect", targets: ["slack", "tools"] },
+    ]);
+    expect(parseRichContent(connect(["tools", "slack"]))?.blocks).toEqual([
+      { kind: "connect", targets: ["tools", "slack"] },
+    ]);
+    expect(parseRichContent(connect(["slack"]))?.blocks).toEqual([{ kind: "connect", targets: ["slack"] }]);
+  });
+
+  it("drops unknown targets and duplicates", () => {
+    expect(parseRichContent(connect(["github", "tools", "tools", 7, null, "Slack", "slack"]))?.blocks).toEqual([
+      { kind: "connect", targets: ["tools", "slack"] },
+    ]);
+  });
+
+  it("drops the block when no target is valid", () => {
+    expect(parseRichContent(connect([]))).toBeNull();
+    expect(parseRichContent(connect(["github"]))).toBeNull();
+    expect(parseRichContent(connect("slack"))).toBeNull();
+    expect(parseRichContent(connect(undefined))).toBeNull();
+  });
+
+  it("reads nothing but the targets: no link, label or style from the bot", () => {
+    const model = parseRichContent(
+      connect(["slack"], {
+        url: "https://evil.example/login",
+        href: "https://evil.example",
+        label: "Click here",
+        title: "Free tokens",
+        style: "color:red",
+        links: { slack: "https://evil.example" },
+      }),
+    );
+    expect(model?.blocks).toEqual([{ kind: "connect", targets: ["slack"] }]);
+    expect(JSON.stringify(model)).not.toContain("evil");
+  });
+
+  it("is a known kind drawn inside the bubble, not placed by the host", () => {
+    expect(KNOWN_BLOCK_KINDS.has("connect")).toBe(true);
+    expect(HOST_PLACED_BLOCK_KINDS.has("connect")).toBe(false);
+    const body = 'Sure.\n```hq-block\n{"v":1,"blocks":[{"kind":"connect","targets":["slack"]}]}\n```';
+    expect(messageHasVisibleContent({ body })).toBe(true);
+    expect(messageHasConnectBlock({ body })).toBe(true);
+    expect(messageHasConnectBlock({ body: "Sure." })).toBe(false);
+    expect(richContentForMessage({ body }).text).toBe("Sure.");
+  });
+
+  it("projects to one plain line that matches the targets", () => {
+    const line = (targets: string[]) => richContentToPlainText(parseRichContent(connect(targets))!);
+    expect(line(["slack", "tools"])).toBe("Connect Slack or your tools from the HQ app.");
+    expect(line(["slack"])).toBe("Connect Slack from the HQ app.");
+    expect(line(["tools"])).toBe("Connect your tools from the HQ app.");
+  });
+});
+
+describe("withExtraBlocks", () => {
+  const extra = [{ kind: "connect" as const, targets: ["slack" as const, "tools" as const] }];
+
+  it("appends the host's blocks after the message's own", () => {
+    const own = parseRichContent({ v: 1, blocks: [{ kind: "markdown", text: "hi" }] });
+    expect(withExtraBlocks(own, extra)?.blocks).toEqual([{ kind: "markdown", text: "hi" }, ...extra]);
+    // The parsed model is not changed in place.
+    expect(own?.blocks).toHaveLength(1);
+  });
+
+  it("gives a message with no blocks just the extra ones", () => {
+    expect(withExtraBlocks(null, extra)).toEqual({ blocks: extra });
+  });
+
+  it("hands back the model it was given when there is nothing to add", () => {
+    const own = parseRichContent({ v: 1, blocks: [{ kind: "markdown", text: "hi" }] });
+    expect(withExtraBlocks(own, undefined)).toBe(own);
+    expect(withExtraBlocks(own, [])).toBe(own);
+    expect(withExtraBlocks(null, null)).toBeNull();
   });
 });
