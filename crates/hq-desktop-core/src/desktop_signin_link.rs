@@ -9,6 +9,9 @@ use url::Url;
 pub const SIGNIN_CONFIG_URL: &str = "https://hqforwork.com/api/desktop/signin-config";
 pub const SIGNIN_START_URL: &str = "https://hqforwork.com/api/desktop/signin-start";
 pub const SIGNIN_LINK_URL: &str = "https://hqforwork.com/api/desktop/signin-link";
+/// `linkSource` the website reports on `install_linked` for a visitor id the
+/// app recovered from its download URL.
+pub const LINK_SOURCE_DOWNLOAD_URL: &str = "download_url";
 pub const CONFIG_TIMEOUT: Duration = Duration::from_millis(1500);
 
 /// Fail open: only a successful, valid response with `bounce: true` changes the URL.
@@ -37,9 +40,13 @@ where
 /// successfully built. Every config failure returns the original URL verbatim.
 /// `install_id` rides along so the browser request, which carries the
 /// website's `hq_install_aid` cookie, can link this install to the visitor.
+/// `download_aid` is the visitor id recovered from the installer's download
+/// URL (`download_tag`); it rides as `aid` with `aidSource=download_url` so the
+/// website can link the install even when the cookie is gone.
 pub async fn select_browser_url<F, Fut, E>(
     authorize_url: &str,
     install_id: Option<&str>,
+    download_aid: Option<&str>,
     fetch: F,
 ) -> (String, Option<String>)
 where
@@ -48,7 +55,7 @@ where
 {
     if should_bounce(fetch).await {
         let link = new_link_nonce();
-        if let Some(url) = signin_start_url(authorize_url, &link, install_id) {
+        if let Some(url) = signin_start_url(authorize_url, &link, install_id, download_aid) {
             return (url, Some(link));
         }
     }
@@ -68,6 +75,7 @@ pub fn signin_start_url(
     authorize_url: &str,
     link: &str,
     install_id: Option<&str>,
+    download_aid: Option<&str>,
 ) -> Option<String> {
     let mut url = Url::parse(SIGNIN_START_URL).ok()?;
     {
@@ -75,6 +83,10 @@ pub fn signin_start_url(
         pairs.append_pair("link", link);
         if let Some(install) = install_id.map(str::trim).filter(|id| !id.is_empty()) {
             pairs.append_pair("install", install);
+        }
+        if let Some(aid) = download_aid.map(str::trim).filter(|id| !id.is_empty()) {
+            pairs.append_pair("aid", aid);
+            pairs.append_pair("aidSource", LINK_SOURCE_DOWNLOAD_URL);
         }
         pairs.append_pair("authorize", authorize_url);
     }
@@ -96,6 +108,18 @@ pub fn parse_link_anon_id(status: u16, body: &str) -> Option<String> {
         .map(str::trim)
         .filter(|id| !id.is_empty() && id.len() <= 128)
         .map(str::to_owned)
+}
+
+/// Body for `POST /api/desktop/signin-link`. A download-tagged visitor id is
+/// sent with `linkSource: "download_url"` so the website can emit
+/// `install_linked` for it even when the browser hop carried no cookie.
+pub fn signin_link_body(link: &str, download_aid: Option<&str>) -> serde_json::Value {
+    let mut body = serde_json::json!({ "link": link });
+    if let Some(aid) = download_aid.map(str::trim).filter(|id| !id.is_empty()) {
+        body["anonId"] = serde_json::json!(aid);
+        body["linkSource"] = serde_json::json!(LINK_SOURCE_DOWNLOAD_URL);
+    }
+    body
 }
 
 /// Run a credential-bearing POST detached from sign-in. Its result is never
@@ -134,7 +158,7 @@ mod tests {
     #[tokio::test]
     async fn config_timeout_keeps_the_existing_authorize_url_path() {
         let authorize = "https://cognito.example/authorize?client_id=abc";
-        let (result, nonce) = select_browser_url(authorize, None, || async {
+        let (result, nonce) = select_browser_url(authorize, None, None, || async {
             tokio::time::sleep(CONFIG_TIMEOUT + Duration::from_millis(50)).await;
             Ok::<_, ()>((200, r#"{"bounce":true}"#.into()))
         })
@@ -146,15 +170,17 @@ mod tests {
     #[tokio::test]
     async fn config_false_or_error_keeps_the_existing_authorize_url() {
         let authorize = "https://cognito.example/authorize?client_id=abc";
-        let (url, nonce) = select_browser_url(authorize, None, || async {
+        let (url, nonce) = select_browser_url(authorize, None, None, || async {
             Ok::<_, ()>((200, r#"{"bounce":false}"#.into()))
         })
         .await;
         assert_eq!(url, authorize);
         assert_eq!(nonce, None);
 
-        let (url, nonce) =
-            select_browser_url(authorize, None, || async { Err::<(u16, String), _>(()) }).await;
+        let (url, nonce) = select_browser_url(authorize, None, None, || async {
+            Err::<(u16, String), _>(())
+        })
+        .await;
         assert_eq!(url, authorize);
         assert_eq!(nonce, None);
     }
@@ -162,7 +188,8 @@ mod tests {
     #[test]
     fn start_url_encodes_authorize_url_and_contains_no_token() {
         let authorize = "https://cognito.example/authorize?client_id=abc&redirect_uri=http%3A%2F%2Flocalhost%2Fcallback";
-        let url = Url::parse(&signin_start_url(authorize, "nonce-value", None).unwrap()).unwrap();
+        let url =
+            Url::parse(&signin_start_url(authorize, "nonce-value", None, None).unwrap()).unwrap();
         assert!(url.query_pairs().all(|(k, _)| k != "install"));
         assert_eq!(
             url.query_pairs().find(|(k, _)| k == "link").unwrap().1,
@@ -180,7 +207,7 @@ mod tests {
     async fn bounced_start_url_carries_the_install_id() {
         let authorize = "https://cognito.example/authorize?client_id=abc";
         let install = "1b4e28ba-2fa1-4d01-8a1c-9c1c0d2b3e4f";
-        let (url, nonce) = select_browser_url(authorize, Some(install), || async {
+        let (url, nonce) = select_browser_url(authorize, Some(install), None, || async {
             Ok::<_, ()>((200, r#"{"bounce":true}"#.into()))
         })
         .await;
@@ -189,7 +216,7 @@ mod tests {
         assert_eq!(pairs.get("install").map(String::as_str), Some(install));
         assert_eq!(pairs.get("link"), nonce.as_ref());
         assert_eq!(pairs.get("authorize").map(String::as_str), Some(authorize));
-        let blank = signin_start_url(authorize, "n", Some("  ")).unwrap();
+        let blank = signin_start_url(authorize, "n", Some("  "), Some(" ")).unwrap();
         assert!(!blank.contains("install="));
     }
 
@@ -226,5 +253,24 @@ mod tests {
         started_rx.await.expect("background request was started");
         let signin_result = Ok::<_, ()>("authenticated");
         assert_eq!(signin_result.unwrap(), "authenticated");
+    }
+
+    #[test]
+    fn download_aid_rides_on_start_url_and_link_body() {
+        let url = signin_start_url("https://auth/x", "n", Some("i-1"), Some("vyg-7")).unwrap();
+        let url = Url::parse(&url).unwrap();
+        let pairs: Vec<(String, String)> = url.query_pairs().into_owned().collect();
+        assert!(pairs.contains(&("aid".into(), "vyg-7".into())));
+        assert!(pairs.contains(&("aidSource".into(), "download_url".into())));
+        let none = signin_start_url("https://auth/x", "n", Some("i-1"), None).unwrap();
+        assert!(!none.contains("aid="));
+
+        let body = signin_link_body("l", Some("vyg-7"));
+        assert_eq!(body["anonId"], "vyg-7");
+        assert_eq!(body["linkSource"], "download_url");
+        assert_eq!(
+            signin_link_body("l", None),
+            serde_json::json!({ "link": "l" })
+        );
     }
 }

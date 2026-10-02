@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - The "Name your company" setup form no longer shows "(optional)" twice on the Website label, and the Invite teammates box now matches the other fields.
+- On first launch, HQ reads the website visitor id and download surface from the address the installer was downloaded from (macOS download metadata, Windows Zone.Identifier), so a download can be linked to its website visit before sign-in. Only those two values are kept; the address itself is never stored or logged, and an id already linked through sign-in is never replaced.
 
 ## [0.10.380] — 2026-10-02
 
