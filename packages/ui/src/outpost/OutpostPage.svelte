@@ -27,6 +27,7 @@
     previewCron,
     readOutpostCache,
     visibleLogWindow,
+    withReadTimeout,
     writeOutpostCache,
     type JobAlert,
     type JobCadence,
@@ -89,7 +90,7 @@
     const run = async (): Promise<void> => {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
       try {
-        const next = await read();
+        const next = await withReadTimeout(read());
         if (!live) return;
         const merged = { ...next, fetchedAt: next.fetchedAt ?? new Date().toISOString() };
         writeOutpostCache("personal", merged);
@@ -250,7 +251,12 @@
         <span class="sub">An Outpost is your always-on machine in the cloud for scheduled jobs.</span>
         <button type="button" class="btn primary" data-testid="outpost-setup" onclick={() => openExternal?.(OUTPOST_SETUP_URL)}>Set one up</button>
       </div>
-    {:else if data.provisioned === null}
+    {:else if data.provisioned === null && refreshFailed}
+      <div class="empty" role="alert" data-testid="outpost-load-error">
+        <span class="nm">Couldn't read your Outpost</span>
+        <button type="button" class="btn" data-testid="outpost-try-again" onclick={() => retry()}>Try again</button>
+      </div>
+    {:else if data.provisioned === null && tab !== "logs"}
       <div class="empty sub" data-testid="outpost-loading">Reading your Outpost…</div>
     {:else if offline}
       <div class="banner" role="alert" data-testid="outpost-offline-banner">
@@ -306,7 +312,9 @@
       </section>
     {/if}
 
-    {#if tab === "logs"}
+    {/if}
+
+    {#if tab === "logs" && data.provisioned !== false && !(data.provisioned === null && refreshFailed)}
       <section data-testid="outpost-logs">
         <div class="tabs">
           {#each ["all", "info", "warn", "err"] as name (name)}
@@ -333,7 +341,7 @@
       </section>
     {/if}
 
-    {#if tab === "settings"}
+    {#if provisioned && tab === "settings"}
       <section data-testid="outpost-settings">
         <h2>Host</h2>
         <p>{data.host.name}{data.host.hostname ? ` · ${data.host.hostname}` : ""}</p>
@@ -341,7 +349,6 @@
         {#if data.host.diskUsed}<p>Disk {data.host.diskUsed} of {data.host.diskTotal}</p>{/if}
         <p>Per-job alerts are dm or none. Secret values are not stored on the Outpost disk.</p>
       </section>
-    {/if}
     {/if}
   </main>
 

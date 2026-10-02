@@ -2,7 +2,7 @@
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import OutpostPage from "./OutpostPage.svelte";
-import { writeOutpostCache, lastResultLabel, type OutpostRefresher } from "./outpost-model.js";
+import { clearOutpostCache, OUTPOST_READ_TIMEOUT_MS, writeOutpostCache, lastResultLabel, type OutpostRefresher } from "./outpost-model.js";
 import { fixtureOutpost } from "./outpost.fixture.js";
 
 describe("US-034 OutpostPage", () => {
@@ -22,6 +22,41 @@ describe("US-034 OutpostPage", () => {
     flushSync();
     return target;
   }
+
+  function openTab(target: HTMLElement, label: string): void {
+    [...target.querySelectorAll("nav button")].find((b) => b.textContent === label)?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    flushSync();
+  }
+
+  it("Logs shows the no-logs empty state at once, and a hung read clears Refreshing within the timeout (QA-084)", async () => {
+    vi.useFakeTimers();
+    clearOutpostCache("personal");
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const target = mountPage(() => new Promise(() => {}));
+    openTab(target, "Logs");
+    expect(target.querySelector("[data-testid='outpost-no-logs']")?.textContent).toBe("No logs from the Outpost yet");
+    expect(target.querySelector("[data-testid='outpost-loading']")).toBeNull();
+    expect(target.querySelector("[data-testid='outpost-freshness']")?.textContent).toBe("Refreshing…");
+    await vi.advanceTimersByTimeAsync(OUTPOST_READ_TIMEOUT_MS + 1);
+    flushSync();
+    expect(target.querySelector("[data-testid='outpost-freshness']")?.textContent).not.toBe("Refreshing…");
+    expect(errors).toHaveBeenCalledWith("[outpost] refresh failed", expect.any(Error));
+    expect(target.querySelector("[data-testid='outpost-try-again']")).not.toBeNull();
+  });
+
+  it("a failed first read shows an error with Try again instead of loading forever (QA-084)", async () => {
+    clearOutpostCache("personal");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    let calls = 0;
+    const target = mountPage(async () => {
+      calls += 1;
+      throw new Error("boom");
+    });
+    await vi.waitFor(() => expect(target.querySelector("[data-testid='outpost-load-error']")).not.toBeNull());
+    expect(target.querySelector("[data-testid='outpost-loading']")).toBeNull();
+    (target.querySelector("[data-testid='outpost-try-again']") as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(calls).toBe(2));
+  });
 
   it("disables actions and shows the retry banner when the host is unreachable", () => {
     const cache = fixtureOutpost();
