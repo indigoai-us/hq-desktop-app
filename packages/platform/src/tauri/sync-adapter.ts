@@ -29,6 +29,8 @@ import {
   validateFetchReplyThread,
   validateSendReply,
   vaultPutIntegrityFields,
+  withHttpStatus,
+  withoutSecret,
 } from '../adapter.js';
 import { TAURI_CAPABILITIES, type Capability } from '../capabilities.js';
 import { WEB_PATHS } from '../web/index.js';
@@ -420,6 +422,26 @@ export function createSyncPlatformAdapter(
       requestPolicy,
     );
     return attempted.result;
+  }
+
+  /**
+   * POST whose failure also carries the HTTP status, for the callers that
+   * tell a 403 or 404 from a refusal with a server code. Same 429/503 policy.
+   */
+  async function hqProPostWithStatus<T>(
+    path: string,
+    body?: unknown,
+  ): AdapterPromise<T> {
+    const attempted = await retryThrottled(
+      () => hqProAttempt<T>('POST', path, body),
+      (outcome) => ({ status: outcome.status, retryAfter: outcome.retryAfter }),
+      requestPolicy,
+    );
+    // A reply that was not JSON is not the server refusing: it keeps no status.
+    if (!attempted.result.ok && attempted.result.code === 'network') {
+      return attempted.result;
+    }
+    return withHttpStatus(attempted.result, attempted.status);
   }
 
   /**
@@ -1045,6 +1067,14 @@ export function createSyncPlatformAdapter(
         hqProJson('POST', AGENT_PATHS.reauth(agentUid), { brain }),
       submitClaudeLoginCode: (agentUid, code) =>
         hqProJson('POST', AGENT_PATHS.loginCode(agentUid), { code }),
+      attachSlack: (agentUid) =>
+        hqProPostWithStatus(AGENT_PATHS.slackChannel(agentUid), {}),
+      // The token goes in the body only. The path names the bot, nothing else.
+      submitSlackAppToken: async (agentUid, appToken) =>
+        withoutSecret(
+          await hqProPostWithStatus<Json>(AGENT_PATHS.slackAppToken(agentUid), { appToken }),
+          appToken,
+        ),
       listMobileRoster: (companyUid) =>
         hqProJson('GET', AGENT_PATHS.mobileRoster(companyUid)),
       listJobs: (agentUid) => hqProJson('GET', AGENT_PATHS.jobs(agentUid)),

@@ -50,6 +50,19 @@ export interface AdapterFailure {
    * every other failure.
    */
   instanceId?: string;
+  /**
+   * The HTTP status of the refused request. Set only by the two Slack channel
+   * calls (`AgentsApi.attachSlack`, `AgentsApi.submitSlackAppToken`), whose
+   * callers tell a 403 or 404 from a refusal that carries a server code.
+   * Absent on every other failure, and on a request that never got an answer.
+   */
+  status?: number;
+  /**
+   * The code of the service behind hq-pro that refused, when the body names
+   * one (`upstreamCode`, sent with `CHANNEL_ATTACH_FAILED`). A short machine
+   * code, never text from the request.
+   */
+  upstreamCode?: string;
 }
 
 export function ok<T>(value: T): AdapterResult<T> {
@@ -62,6 +75,56 @@ export function unavailable(code?: string, message?: string): AdapterFailure {
 
 export function failure(code?: string, message?: string): AdapterFailure {
   return { ok: false, reason: "error", code, message };
+}
+
+/**
+ * Put the HTTP status on a failed result. A success, and a failure with no
+ * status (the request never got an answer), come back unchanged.
+ */
+export function withHttpStatus<T>(
+  result: AdapterResult<T>,
+  status: number | null | undefined,
+): AdapterResult<T> {
+  if (result.ok || typeof status !== "number") return result;
+  return { ...result, status };
+}
+
+/** What stands in for a secret that a failure's text repeated. */
+export const REDACTED_SECRET = "[redacted]";
+
+/**
+ * Take a secret out of a failed result's text. A server or a transport could
+ * repeat part of the request in its error; a secret the caller sent must not
+ * leave the request body that way. A success comes back unchanged: the
+ * caller owns what the server answered.
+ */
+export function withoutSecret<T>(
+  result: AdapterResult<T>,
+  secret: string,
+): AdapterResult<T> {
+  if (result.ok) return result;
+  const secrets = [...new Set([secret, secret.trim()])].filter((s) => s.length > 0);
+  if (secrets.length === 0) return result;
+  const clean = (text: string | undefined): string | undefined =>
+    text === undefined
+      ? undefined
+      : secrets.reduce((out, s) => out.split(s).join(REDACTED_SECRET), text);
+  const code = clean(result.code);
+  const message = clean(result.message);
+  const upstreamCode = clean(result.upstreamCode);
+  if (
+    code === result.code &&
+    message === result.message &&
+    upstreamCode === result.upstreamCode
+  ) {
+    return result;
+  }
+  return {
+    ...result,
+    ...(code !== undefined ? { code } : {}),
+    ...(message !== undefined ? { message } : {}),
+    ...(upstreamCode !== undefined ? { upstreamCode } : {}),
+  };
 }
 
 /** Pragmatic payload type where the real shape is still TBD (US-002 audit). */
@@ -1110,6 +1173,10 @@ export const AGENT_PATHS = {
     `/v1/agents/${encodeURIComponent(agentUid)}/reauth`,
   loginCode: (agentUid: string) =>
     `/v1/agents/${encodeURIComponent(agentUid)}/login-code`,
+  slackChannel: (agentUid: string) =>
+    `/v1/agents/${encodeURIComponent(agentUid)}/channels/slack`,
+  slackAppToken: (agentUid: string) =>
+    `/v1/agents/${encodeURIComponent(agentUid)}/channels/slack/app-token`,
   deprovision: (agentUid: string, confirmDestroyInstanceId?: string | null) => {
     const path = `/v1/agents/${encodeURIComponent(agentUid)}`;
     const confirm = (confirmDestroyInstanceId ?? "").trim();
@@ -1171,6 +1238,25 @@ export interface AgentsApi {
   restartBrainApproval?(agentUid: string, brain: "grok" | "codex" | "claude"): AdapterPromise<Json>;
   /** Submit Claude's browser-issued code to the waiting cloud bot. */
   submitClaudeLoginCode?(agentUid: string, code: string): AdapterPromise<Json>;
+  /**
+   * POST /v1/agents/{uid}/channels/slack with `{}`: start connecting the bot
+   * to Slack. Owner or admin only. NOT a probe: on most companies it creates
+   * a real Slack app for the bot, so call it only when a person asked.
+   *
+   * A failure carries the HTTP status (`status`), the server's `code`
+   * (e.g. `SLACK_ATTACH_ALREADY_CONNECTED`, or `http-404` when the body has
+   * none) and `upstreamCode` when the server sent one.
+   */
+  attachSlack(agentUid: string): AdapterPromise<Json>;
+  /**
+   * POST /v1/agents/{uid}/channels/slack/app-token with `{ appToken }`: hand
+   * the server the app-level token a person made on Slack's site.
+   *
+   * The token is a secret. It travels in the request body and nowhere else:
+   * never in the URL, a log line or a failure's text. A failure carries the
+   * HTTP status and the server's `code` (e.g. `SLACK_APP_TOKEN_REJECTED`).
+   */
+  submitSlackAppToken(agentUid: string, appToken: string): AdapterPromise<Json>;
   /** GET /v1/agents/mobile-roster — member-safe directory. */
   listMobileRoster(companyUid?: string | null): AdapterPromise<Json>;
   /** GET /v1/agents/{uid}/jobs — owner/admin operator list. */

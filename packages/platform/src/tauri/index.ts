@@ -20,7 +20,10 @@ import {
   unavailable,
   validateFetchReplyThread,
   validateSendReply,
+  withHttpStatus,
+  withoutSecret,
   type AdapterPromise,
+  type AdapterResult,
   type AgentProvisionOptionsView,
   type Json,
   type PlatformAdapter,
@@ -158,12 +161,21 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     path: string,
     body?: unknown,
   ): AdapterPromise<T> {
+    return (await this.hqProAttempt<T>(method, path, body)).result;
+  }
+
+  /** One hq-pro request, with the HTTP status of its answer when there was one. */
+  private async hqProAttempt<T>(
+    method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
+    path: string,
+    body?: unknown,
+  ): Promise<{ result: AdapterResult<T>; status: number | null }> {
     const raw = await this.call<unknown>("hq_pro_fetch", {
       url: path,
       method,
       body: body === undefined ? null : JSON.stringify(body),
     });
-    if (!raw.ok) return raw;
+    if (!raw.ok) return { result: raw, status: null };
     const rec =
       raw.value && typeof raw.value === "object" && !Array.isArray(raw.value)
         ? (raw.value as Record<string, unknown>)
@@ -171,20 +183,40 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     if (rec && typeof rec.status === "number") {
       const text = typeof rec.body === "string" ? rec.body : "";
       if (rec.status < 200 || rec.status >= 300) {
-        return hqProFailure(
-          parseHqProErrorBody(rec.status, text, `${method} ${path} failed`),
-        );
+        return {
+          result: hqProFailure(
+            parseHqProErrorBody(rec.status, text, `${method} ${path} failed`),
+          ),
+          status: rec.status,
+        };
       }
       try {
-        return ok((text ? JSON.parse(text) : undefined) as T);
+        return {
+          result: ok((text ? JSON.parse(text) : undefined) as T),
+          status: rec.status,
+        };
       } catch (err) {
-        return failure(
-          "network",
-          err instanceof Error ? err.message : String(err),
-        );
+        return {
+          result: failure(
+            "network",
+            err instanceof Error ? err.message : String(err),
+          ),
+          status: rec.status,
+        };
       }
     }
-    return ok(raw.value as T);
+    return { result: ok(raw.value as T), status: null };
+  }
+
+  /**
+   * POST whose failure also carries the HTTP status, for the callers that
+   * tell a 403 or 404 from a refusal with a server code.
+   */
+  private async hqProPostWithStatus<T>(path: string, body?: unknown): AdapterPromise<T> {
+    const attempted = await this.hqProAttempt<T>("POST", path, body);
+    // A reply that was not JSON is not the server refusing: it keeps no status.
+    if (!attempted.result.ok && attempted.result.code === "network") return attempted.result;
+    return withHttpStatus(attempted.result, attempted.status);
   }
 
   /**
@@ -489,6 +521,14 @@ export class TauriPlatformAdapter implements PlatformAdapter {
       this.hqProJson("POST", AGENT_PATHS.reauth(agentUid), { brain }),
     submitClaudeLoginCode: (agentUid, code) =>
       this.hqProJson("POST", AGENT_PATHS.loginCode(agentUid), { code }),
+    attachSlack: (agentUid) =>
+      this.hqProPostWithStatus(AGENT_PATHS.slackChannel(agentUid), {}),
+    // The token goes in the body only. The path names the bot, nothing else.
+    submitSlackAppToken: async (agentUid, appToken) =>
+      withoutSecret(
+        await this.hqProPostWithStatus<Json>(AGENT_PATHS.slackAppToken(agentUid), { appToken }),
+        appToken,
+      ),
     listMobileRoster: (companyUid) =>
       this.hqProJson("GET", AGENT_PATHS.mobileRoster(companyUid)),
     listJobs: (agentUid) => this.hqProJson("GET", AGENT_PATHS.jobs(agentUid)),

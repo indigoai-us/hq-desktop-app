@@ -22,6 +22,8 @@ import {
   validateFetchReplyThread,
   validateSendReply,
   vaultPutIntegrityFields,
+  withHttpStatus,
+  withoutSecret,
   type AdapterFailure,
   type AdapterPromise,
   type AdapterResult,
@@ -516,7 +518,16 @@ export class WebPlatformAdapter implements PlatformAdapter {
     // Shared policy (R2): 429/503 are honoured — `Retry-After` when the server
     // sends one, jittered exponential backoff otherwise — and the result the
     // caller finally sees is the same AdapterResult it saw before.
-    const attempted = await retryThrottled<WebAttempt<T>>(
+    return (await this.requestAttempt<T>(method, path, body)).result;
+  }
+
+  /** {@link request}, with the HTTP status of the answer the caller ends up with. */
+  private requestAttempt<T>(
+    method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
+    path: string,
+    body?: unknown,
+  ): Promise<WebAttempt<T>> {
+    return retryThrottled<WebAttempt<T>>(
       () => this.attempt<T>(method, path, body),
       (outcome) => ({
         status: outcome.status,
@@ -524,7 +535,15 @@ export class WebPlatformAdapter implements PlatformAdapter {
       }),
       this.requestPolicy,
     );
-    return attempted.result;
+  }
+
+  /**
+   * POST whose failure also carries the HTTP status, for the callers that
+   * tell a 403 or 404 from a refusal with a server code.
+   */
+  private async postWithStatus<T>(path: string, body?: unknown): AdapterPromise<T> {
+    const attempted = await this.requestAttempt<T>("POST", path, body);
+    return withHttpStatus(attempted.result, attempted.status);
   }
 
   private async attempt<T>(
@@ -972,6 +991,14 @@ export class WebPlatformAdapter implements PlatformAdapter {
       this.post(WEB_PATHS.agentReauth(agentUid), { brain }),
     submitClaudeLoginCode: (agentUid, code) =>
       this.post(WEB_PATHS.agentLoginCode(agentUid), { code }),
+    attachSlack: (agentUid) =>
+      this.postWithStatus(AGENT_PATHS.slackChannel(agentUid), {}),
+    // The token goes in the body only. The path names the bot, nothing else.
+    submitSlackAppToken: async (agentUid, appToken) =>
+      withoutSecret(
+        await this.postWithStatus<Json>(AGENT_PATHS.slackAppToken(agentUid), { appToken }),
+        appToken,
+      ),
     listMobileRoster: (companyUid) =>
       this.get(WEB_PATHS.agentMobileRoster(companyUid)),
     listJobs: (agentUid) => this.get(WEB_PATHS.agentJobs(agentUid)),
