@@ -436,7 +436,10 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
                             // for this window. This is the canonical clear path
                             // (covers both explicit Stop and the SDK
                             // auto-stopping when the meeting window closes).
-                            if let Err(e) = recordings_ledger::record_ended(&payload.window_id) {
+                            if let Err(e) = recordings_ledger::record_local_event(
+                                &payload.window_id,
+                                recordings_ledger::RecordingLedgerEvent::Ended,
+                            ) {
                                 log(
                                     LOG_TAG,
                                     &format!(
@@ -476,18 +479,21 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
                                     payload.cmd, payload.window_id, payload.message
                                 ),
                             );
-                            // Terminal error: release the update hold and clear the
-                            // reconciliation ledger so neither leaks past this event.
+                            // Release the update hold, but preserve the reconciliation
+                            // ledger: a local SDK error does not prove server processing ended.
                             if active_recording_ids.remove(&payload.window_id) {
                                 if let Some(holds) = app_bg.try_state::<crate::commands::update_gate::UpdateHoldsState>() {
                                     holds.0.release(hq_desktop_core::update_gate::HoldReason::MeetingRecording);
                                 }
                             }
-                            if let Err(e) = recordings_ledger::record_ended(&payload.window_id) {
+                            if let Err(e) = recordings_ledger::record_local_event(
+                                &payload.window_id,
+                                recordings_ledger::RecordingLedgerEvent::Error,
+                            ) {
                                 log(
                                     LOG_TAG,
                                     &format!(
-                                        "recording:error — failed to clear ledger entry for windowId={}: {e}",
+                                        "recording:error — failed to retain ledger entry for windowId={}: {e}",
                                         payload.window_id
                                     ),
                                 );
@@ -620,29 +626,27 @@ pub fn stop_recall_sdk() {
 /// the same death.
 ///
 /// Best-effort: a ledger read/clear failure is logged, not propagated (the SDK
-/// task is already unwinding). Emitting the terminal events is the user-facing
-/// priority; ledger hygiene is secondary.
+/// task is already unwinding). Emitting the error events is the user-facing
+/// priority; entries remain available for status reconciliation.
 fn fail_active_recordings_on_exit(app: &AppHandle, code: Option<i32>, signal: Option<i32>) {
-    // Clear-and-take the open windowIds in one shot so the entries can't also
-    // re-surface through the launch reconcile (the terminal event below IS the
-    // resolution). On a read/clear failure fall back to a plain read so we can
-    // still emit — losing the clear is acceptable (reconcile would re-report,
-    // not lose data); losing the emit is the actual hang we're fixing.
+    // Snapshot open windowIds so the user can be notified immediately while
+    // retaining the ledger for launch reconcile against hq-pro's server status.
+    // On a read failure, emit from an empty snapshot and keep the ledger untouched.
     let window_ids = match recordings_ledger::record_bridge_died() {
         Ok(ids) => ids,
         Err(e) => {
             log(
                 LOG_TAG,
-                &format!("bridge-exit: failed to clear recordings ledger: {e}"),
+                &format!("bridge-exit: failed to read recordings ledger: {e}"),
             );
-            recordings_ledger::open_window_ids().unwrap_or_default()
+            Vec::new()
         }
     };
 
     if window_ids.is_empty() {
         log(
             LOG_TAG,
-            "bridge-exit: no in-flight recordings to fail (nothing to surface)",
+            "bridge-exit: no in-flight recordings to surface",
         );
         return;
     }
@@ -651,7 +655,7 @@ fn fail_active_recordings_on_exit(app: &AppHandle, code: Option<i32>, signal: Op
     log(
         LOG_TAG,
         &format!(
-            "bridge-exit: synthesizing terminal recording:error for {} in-flight recording(s)",
+            "bridge-exit: synthesizing recording:error for {} in-flight recording(s); ledger retained for reconcile",
             events.len()
         ),
     );

@@ -195,6 +195,7 @@ fn now_iso() -> String {
 /// True while a manual/launch sync runner is executing (set by the sync
 /// command seams below).
 static SYNC_RUNNING: AtomicBool = AtomicBool::new(false);
+static WATCHER_WAITING_FOR_LOCK: AtomicBool = AtomicBool::new(false);
 
 fn state_change_notify() -> &'static Notify {
     static NOTIFY: OnceLock<Notify> = OnceLock::new();
@@ -205,6 +206,14 @@ fn state_change_notify() -> &'static Notify {
 /// updater, authentication, pause, conflict, or repair state change.
 pub(crate) fn notify_client_health_state_changed() {
     state_change_notify().notify_one();
+}
+
+/// A watcher waiting for the shared operation lock is still syncing. This uses
+/// the existing `syncState` field and does not add wire-contract fields.
+pub(crate) fn set_watcher_waiting_for_lock(waiting: bool) {
+    if WATCHER_WAITING_FOR_LOCK.swap(waiting, Ordering::SeqCst) != waiting {
+        notify_client_health_state_changed();
+    }
 }
 
 // ─── Recorders (called from the sync / updater / settings seams) ─────────────
@@ -396,8 +405,14 @@ pub(crate) fn diagnostics_installation_id() -> Result<String, String> {
 /// Current derived sync state + failure reason + conflict count, for the
 /// `sync` and `conflicts` probes. Read-only: does not touch `SYNC_RUNNING`
 /// beyond an atomic load, and never persists anything.
-pub(crate) fn diagnostics_sync_snapshot(
-) -> Result<(ClientHealthSyncState, Option<ClientHealthFailureReason>, u64), String> {
+pub(crate) fn diagnostics_sync_snapshot() -> Result<
+    (
+        ClientHealthSyncState,
+        Option<ClientHealthFailureReason>,
+        u64,
+    ),
+    String,
+> {
     let paused = hq_desktop_core::daemon::is_cloud_paused();
     let syncing = SYNC_RUNNING.load(Ordering::SeqCst);
     let state = with_state(|state| state.clone())?;
@@ -415,6 +430,18 @@ pub(crate) fn diagnostics_updater_snapshot() -> Result<ClientHealthUpdaterState,
 // ─── Snapshot derivation (pure) ──────────────────────────────────────────────
 
 fn derive_sync_state(
+    paused: bool,
+    syncing: bool,
+    state: &ClientHealthState,
+) -> ClientHealthSyncState {
+    derive_sync_state_with_watcher(
+        paused,
+        syncing || WATCHER_WAITING_FOR_LOCK.load(Ordering::SeqCst),
+        state,
+    )
+}
+
+fn derive_sync_state_with_watcher(
     paused: bool,
     syncing: bool,
     state: &ClientHealthState,
@@ -713,7 +740,10 @@ async fn emit_client_health_heartbeat_with_desktop(
             HeartbeatOutcome::Sent
         }
         Err(_) => {
-            eprintln!("[client-health] heartbeat seq={} failed", heartbeat.sequence);
+            eprintln!(
+                "[client-health] heartbeat seq={} failed",
+                heartbeat.sequence
+            );
             HeartbeatOutcome::Failed
         }
     }
@@ -930,14 +960,15 @@ mod tests {
         ] {
             let token = reason.wire_value();
             assert!(
-                token
-                    .chars()
-                    .all(|c| c.is_ascii_uppercase() || c == '_'),
+                token.chars().all(|c| c.is_ascii_uppercase() || c == '_'),
                 "reason token must be a closed code, got {token}"
             );
             assert_eq!(failure_reason_from_wire(token), Some(reason));
         }
-        assert_eq!(failure_reason_from_wire("disk was full at /Users/jane"), None);
+        assert_eq!(
+            failure_reason_from_wire("disk was full at /Users/jane"),
+            None
+        );
     }
 
     // ── Sync-state + reason derivation ───────────────────────────────────────
@@ -997,7 +1028,25 @@ mod tests {
             derive_sync_state(false, false, &idle),
             ClientHealthSyncState::Idle
         );
-        assert_eq!(derive_failure_reason(ClientHealthSyncState::Idle, &idle), None);
+        assert_eq!(
+            derive_failure_reason(ClientHealthSyncState::Idle, &idle),
+            None
+        );
+    }
+
+    #[test]
+    fn watcher_waiting_for_lock_uses_existing_syncing_state() {
+        let state = state_with_id(1);
+        assert_eq!(
+            derive_sync_state_with_watcher(true, true, &state),
+            ClientHealthSyncState::Paused,
+            "an intentional pause remains the highest-priority state"
+        );
+        assert_eq!(
+            derive_sync_state_with_watcher(false, true, &state),
+            ClientHealthSyncState::Syncing,
+            "lock wait is an in-progress sync, using the existing wire value"
+        );
     }
 
     #[test]
@@ -1044,8 +1093,7 @@ mod tests {
     #[test]
     fn never_observed_updater_reports_unchecked_not_absent_field() {
         let state = state_with_id(1);
-        let heartbeat =
-            build_heartbeat_payload(&state, full_versions(), false, false, now_iso());
+        let heartbeat = build_heartbeat_payload(&state, full_versions(), false, false, now_iso());
         assert_eq!(
             heartbeat.updater_state,
             Some(ClientHealthUpdaterState::Unchecked),
@@ -1109,13 +1157,8 @@ mod tests {
         ];
         for (index, state) in scenarios.iter().enumerate() {
             for paused in [false, true] {
-                let heartbeat = build_heartbeat_payload(
-                    state,
-                    full_versions(),
-                    paused,
-                    false,
-                    now_iso(),
-                );
+                let heartbeat =
+                    build_heartbeat_payload(state, full_versions(), paused, false, now_iso());
                 let value = serde_json::to_value(&heartbeat).unwrap();
                 let parsed = parse_client_health_heartbeat(&value);
                 assert!(
@@ -1150,7 +1193,10 @@ mod tests {
 
         std::env::remove_var("HQ_TEST_HOME");
 
-        assert_eq!(first, "mid-stable-1234-abcd", "reuses the stable random machineId");
+        assert_eq!(
+            first, "mid-stable-1234-abcd",
+            "reuses the stable random machineId"
+        );
         assert_eq!(first, second, "identity survives reloads");
         assert!(is_wire_id(&first));
     }
@@ -1167,7 +1213,10 @@ mod tests {
 
         std::env::remove_var("HQ_TEST_HOME");
 
-        assert!(is_wire_id(&id), "generated id must satisfy the wire shape: {id}");
+        assert!(
+            is_wire_id(&id),
+            "generated id must satisfy the wire shape: {id}"
+        );
         assert_eq!(id, again, "generated identity is pinned, not re-rolled");
     }
 
@@ -1417,7 +1466,10 @@ mod tests {
             after.last_sync_success_at, stamp,
             "auth-expired watch exit must not advance lastSyncSuccessAt"
         );
-        assert!(after.sync_run_failed, "watch auth expiry must mark the run failed");
+        assert!(
+            after.sync_run_failed,
+            "watch auth expiry must mark the run failed"
+        );
         assert_eq!(after.last_failure_reason.as_deref(), Some("AUTH_EXPIRED"));
         assert_eq!(after.consecutive_failures, 1);
         assert_eq!(
@@ -1444,8 +1496,14 @@ mod tests {
         // Mid-pass crash: process failure with no error events accumulated.
         record_auto_sync_watch_exited(false, &RunTotals::default());
         let after_crash = with_state(|s| s.clone()).unwrap();
-        assert!(after_crash.sync_run_failed, "watcher crash must mark the run failed");
-        assert_eq!(after_crash.last_failure_reason.as_deref(), Some("RUNNER_FAILED"));
+        assert!(
+            after_crash.sync_run_failed,
+            "watcher crash must mark the run failed"
+        );
+        assert_eq!(
+            after_crash.last_failure_reason.as_deref(),
+            Some("RUNNER_FAILED")
+        );
         assert_eq!(after_crash.consecutive_failures, 1);
         assert_eq!(after_crash.last_sync_success_at, stamp);
 
@@ -1554,13 +1612,8 @@ mod tests {
     #[tokio::test]
     async fn transport_error_retries_once_and_http_error_does_not() {
         // Transport (connection refused) → one retry, still an error.
-        let heartbeat = build_heartbeat_payload(
-            &state_with_id(1),
-            full_versions(),
-            false,
-            false,
-            now_iso(),
-        );
+        let heartbeat =
+            build_heartbeat_payload(&state_with_id(1), full_versions(), false, false, now_iso());
         let result = post_with_retry("http://127.0.0.1:1", "tok", &heartbeat).await;
         assert!(result.is_err());
         assert!(heartbeat_error_is_retryable(result.as_ref().unwrap_err()));
