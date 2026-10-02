@@ -79,14 +79,6 @@ export function companyAgentsUrl(slug: string | null | undefined): string {
   return known ? `${companyConsoleUrl(known)}/agents` : HQ_CONSOLE_BASE;
 }
 
-/**
- * One bot's settings in the console, where it is connected to Slack: the
- * company's bots page with `?settings={agentUid}` naming the bot to open.
- */
-export function agentSlackSettingsUrl(slugOrUid: string, agentUid: string): string {
-  return `${companyConsoleUrl(slugOrUid)}/agents?settings=${encodeURIComponent(agentUid)}`;
-}
-
 /** Personal Console Integrations (calendar / meeting-bot connect). */
 export const HQ_CONSOLE_INTEGRATIONS_URL = `${HQ_CONSOLE_BASE}/personal/integrations`;
 

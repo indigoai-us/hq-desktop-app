@@ -8,7 +8,6 @@ import {
   companyIntegrationsUrl,
   companyAgentsUrl,
   consoleCompanySlug,
-  agentSlackSettingsUrl,
   HQ_CONSOLE_INTEGRATIONS_URL,
   HQ_CONSOLE_CREATORS_URL,
   creatorProfileUrl,
@@ -89,15 +88,6 @@ describe("hq-console URLs", () => {
     expect(consoleCompanySlug(" indigo ")).toBe("indigo");
     // A slug that only contains the letters is still a slug.
     expect(consoleCompanySlug("acmp_co")).toBe("acmp_co");
-  });
-
-  it("Slack setup link opens the bot's settings on the company's bots page", () => {
-    expect(agentSlackSettingsUrl("cmp_01ABC", "agt_01XYZ")).toBe(
-      `${HQ_CONSOLE_BASE}/companies/cmp_01ABC/agents?settings=agt_01XYZ`,
-    );
-    expect(agentSlackSettingsUrl("a b", "agt_x&y=1")).toBe(
-      `${HQ_CONSOLE_BASE}/companies/a%20b/agents?settings=agt_x%26y%3D1`,
-    );
   });
 
   it("non-company console links are unchanged", () => {

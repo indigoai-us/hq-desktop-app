@@ -17,6 +17,7 @@
  */
 
 import type { ConnectTarget } from "./richMessageContent.js";
+import { slackCapabilityFromStatus, slackRowFromStatus, slackRowStage, type SlackPendingStage } from "./slack-status.js";
 
 export type ConnectionCardState = "offered" | "connecting" | "connected" | "declined";
 
@@ -38,9 +39,10 @@ export type ConnectionCardPrimaryAction = "connect" | "open";
  * A target listed here with no registered content has a button that does
  * nothing, so always do both.
  *
- * Empty for now: both cards still open a page in the browser.
+ * Slack connects in its modal (SlackConnectModal.svelte). The tools card
+ * still opens a page in the browser.
  */
-export const CARD_MODAL_TARGETS: ReadonlySet<ConnectTarget> = new Set<ConnectTarget>([]);
+export const CARD_MODAL_TARGETS: ReadonlySet<ConnectTarget> = new Set<ConnectTarget>(["slack"]);
 
 /** Whether a card's main button opens its modal. */
 export function cardOpensModal(
@@ -53,7 +55,11 @@ export function cardOpensModal(
 /** Storage key of the per-bot record. */
 export const BOT_CONNECTION_CARDS_STORAGE_KEY = "hq.chat.botConnectionCards.v1";
 
-/** A card left "connecting" this long goes back to offered, with a reason. */
+/**
+ * A card left "connecting" this long goes back to offered, with a reason.
+ * For Slack this holds only while the server has no Slack set up for the
+ * bot: once it has, the server is the truth and the card waits with it.
+ */
 export const CONNECTING_TIMEOUT_MS = 10 * 60_000;
 
 /** How many bots the record keeps, newest first. */
@@ -294,8 +300,11 @@ export function markSlackAnnounced(record: BotConnectionRecord | null | undefine
 
 export interface SlackFacts {
   state: "connected" | "pending" | "none";
-  /** One sentence on why Slack is set up but not working yet. */
-  note?: string;
+  /**
+   * `pending` only: what the setup is waiting for. The person approving the
+   * bot in Slack, the person's token, or the bot's computer connecting.
+   */
+  stage?: SlackPendingStage;
 }
 
 function agentOf(json: unknown): Record<string, unknown> | null {
@@ -310,25 +319,29 @@ function agentOf(json: unknown): Record<string, unknown> | null {
  * "Connected" means the bot can receive a message in Slack and answer it. An
  * app that is installed but cannot receive is not connected, so only the two
  * capabilities that mean "messages arrive" count. Every field may be missing.
+ *
+ * "Pending" means the server has Slack set up for the bot and it is not
+ * connected yet. `stage` says what it is waiting for, read the same way the
+ * Connect Slack modal reads it (slack-status.ts).
  */
-export function slackFactsFromStatus(json: unknown, botName?: string | null): SlackFacts {
+export function slackFactsFromStatus(json: unknown): SlackFacts {
   const agent = agentOf(json);
   if (!agent) return { state: "none" };
-  const diagnostics = isRecord(agent.channelDiagnostics) ? agent.channelDiagnostics : null;
-  const slack = isRecord(diagnostics?.slack) ? diagnostics.slack : null;
-  const capability = text(slack?.inboundCapability);
+  const capability = slackCapabilityFromStatus(json);
   if (capability === "ok" || capability === "socket-mode") return { state: "connected" };
   const channels = isRecord(agent.channels) ? agent.channels : null;
   const configured = channels?.slack !== undefined && channels.slack !== null && channels.slack !== false;
   if (!configured) return { state: "none" };
-  const bot = botName?.trim() || "your bot";
-  return {
-    state: "pending",
-    note:
-      capability === "pending-install"
-        ? "Waiting for the app to be approved in Slack."
-        : `Slack is set up but ${bot} cannot receive messages there yet.`,
-  };
+  const row = slackRowFromStatus(json);
+  return { state: "pending", stage: row ? slackRowStage(row) : "finishing" };
+}
+
+/** The Slack card's one-line hint for what a setup that is not finished waits for. */
+export function slackPendingHint(stage: SlackPendingStage | null | undefined, botName: string): string {
+  const bot = botName.trim() || "your bot";
+  if (stage === "approve") return `Approve ${bot} in Slack.`;
+  if (stage === "token") return "Paste the token to finish.";
+  return "Connecting.";
 }
 
 /** The company a bot belongs to, from its status answer. */
@@ -526,6 +539,8 @@ export interface ConnectionCardInput {
   modalTargets?: ReadonlySet<ConnectTarget> | null;
 }
 
+/** The Slack card's line while its setup has been started and is not done. */
+export const SLACK_UNFINISHED_LINE = "Setup is not finished.";
 export const SLACK_TIMEOUT_NOTE = "Slack was not connected. You can try again any time.";
 export const TOOLS_TIMEOUT_NOTE = "No new tool was connected. You can try again any time.";
 
@@ -581,16 +596,32 @@ function slackView(input: ConnectionCardInput): ConnectionCardView {
       note: null,
     };
   }
-  const pendingNote = facts?.state === "pending" ? (facts.note ?? null) : null;
+  // The server has Slack set up for this bot and it is not connected yet.
+  // That is the truth whatever this device remembers, and it does not time
+  // out: the card says what the setup is waiting for until the server says
+  // otherwise.
+  if (facts?.state === "pending") {
+    return {
+      ...base,
+      state: "connecting",
+      line: `${SLACK_UNFINISHED_LINE} ${slackPendingHint(facts.stage, bot)}`,
+      primaryLabel: "Continue",
+      declineLabel: "Not now",
+      mark: null,
+      note: hostNote,
+    };
+  }
+  // The person started here and the server shows nothing yet (or could not be
+  // asked). This wait does run out.
   if (entry?.state === "connecting" && !timedOut(entry.since, input.now)) {
     return {
       ...base,
       state: "connecting",
-      line: "Finish in your browser. This card updates when Slack is connected.",
-      primaryLabel: "Open again",
+      line: SLACK_UNFINISHED_LINE,
+      primaryLabel: "Continue",
       declineLabel: "Not now",
       mark: null,
-      note: hostNote ?? pendingNote,
+      note: hostNote,
     };
   }
   return {
@@ -600,7 +631,7 @@ function slackView(input: ConnectionCardInput): ConnectionCardView {
     primaryLabel: "Connect Slack",
     declineLabel: "Not now",
     mark: null,
-    note: hostNote ?? pendingNote ?? (entry?.state === "connecting" ? SLACK_TIMEOUT_NOTE : null),
+    note: hostNote ?? (entry?.state === "connecting" ? SLACK_TIMEOUT_NOTE : null),
   };
 }
 

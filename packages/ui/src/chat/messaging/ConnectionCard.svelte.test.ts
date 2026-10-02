@@ -156,14 +156,15 @@ describe("a connection card", () => {
 
   it("disables Connect at once and tells the host once, even on a double click", () => {
     const onaction = vi.fn(() => new Promise<void>(() => {}));
-    const el = renderCard(connectionCardView("slack", input()), onaction);
+    // The tools card is the one that still connects at once.
+    const el = renderCard(connectionCardView("tools", input()), onaction);
     const button = primary(el)!;
     expect(button.disabled).toBe(false);
     button.click();
     button.click();
     flushSync();
     expect(onaction).toHaveBeenCalledTimes(1);
-    expect(onaction).toHaveBeenCalledWith({ target: "slack", action: "connect" });
+    expect(onaction).toHaveBeenCalledWith({ target: "tools", action: "connect" });
     expect(button.disabled).toBe(true);
   });
 
@@ -181,7 +182,7 @@ describe("a connection card", () => {
   it("can be pressed again once the host has handled the press", async () => {
     vi.useFakeTimers();
     const onaction = vi.fn(async () => {});
-    const el = renderCard(connectionCardView("slack", input({ record: markConnecting(null, "slack", NOW) })), onaction);
+    const el = renderCard(connectionCardView("tools", input({ record: markConnecting(null, "tools", NOW, []) })), onaction);
     primary(el)!.click();
     flushSync();
     expect(primary(el)!.disabled).toBe(true);
@@ -205,14 +206,15 @@ describe("a connection card", () => {
   });
 
   it("a card that connects says nothing about a dialog", () => {
-    const el = renderCard(connectionCardView("slack", input()));
+    const el = renderCard(connectionCardView("tools", input()));
     expect(primary(el)!.hasAttribute("aria-haspopup")).toBe(false);
     expect(primary(el)!.dataset.action).toBe("connect");
   });
 
   it("a main button that opens a modal says so and tells the host to open it, once", async () => {
-    // A view built by hand: no card is switched over yet.
-    const view = { ...connectionCardView("slack", input()), primaryAction: "open" as const };
+    // The Slack card is switched over: its view says so by itself.
+    const view = connectionCardView("slack", input());
+    expect(view.primaryAction).toBe("open");
     const onaction = vi.fn();
     const el = renderCard(view, onaction);
     const button = primary(el)!;
@@ -271,7 +273,7 @@ describe("a connection card", () => {
   });
 
   it("shows the host's in-flight press as a disabled button", () => {
-    const el = renderCard(connectionCardView("slack", input({ inFlight: new Set(["slack:connect"]) })));
+    const el = renderCard(connectionCardView("tools", input({ inFlight: new Set(["tools:connect"]) })));
     expect(primary(el)!.disabled).toBe(true);
   });
 
@@ -538,6 +540,7 @@ describe("ChannelConversation with connection cards", () => {
     const onaction = vi.fn();
     const root = mountConversation({ connections: { viewsFor: () => views(), onaction } });
     primary(card(message(root, "evt_offer"), "slack"))!.click();
-    expect(onaction).toHaveBeenCalledWith({ target: "slack", action: "connect" });
+    // The Slack card's main button opens its modal.
+    expect(onaction).toHaveBeenCalledWith({ target: "slack", action: "open" });
   });
 });

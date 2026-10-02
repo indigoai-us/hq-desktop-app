@@ -18,6 +18,7 @@ import {
   cardModalTargets,
   registerCardModalContentForTest,
 } from "../chat/messaging/card-modal-registry.js";
+import SlackConnectModal from "../chat/messaging/SlackConnectModal.svelte";
 import type { ConversationRow } from "../chat/sidebar-model.js";
 
 /**
@@ -25,8 +26,9 @@ import type { ConversationRow } from "../chat/sidebar-model.js";
  * card's button opens it at the shell, over the whole window; closing it
  * gives focus back to the button; leaving the conversation closes it.
  *
- * No card has a modal yet, so the content here is a probe registered through
- * the registry's test seam.
+ * This is about the shell and the dialog, not about what a modal shows, so
+ * the content here is a probe registered through the registry's test seam.
+ * The Slack card's own content has DesktopApp.cloud-bot-slack-connect.test.ts.
  */
 
 const NOVA = "agt_nova";
@@ -183,36 +185,41 @@ async function open(target: "slack" | "tools"): Promise<void> {
 }
 
 describe("the registry of card modals", () => {
-  it("gives no card a modal yet", () => {
-    expect(cardModalContentFor("slack")).toBeNull();
+  it("gives the Slack card its modal, and the tools card none", () => {
+    expect(cardModalContentFor("slack")).toBe(SlackConnectModal);
     expect(cardModalContentFor("tools")).toBeNull();
-    expect([...cardModalTargets()]).toEqual([]);
+    expect([...cardModalTargets()]).toEqual(["slack"]);
   });
 
   it("gives a card a modal for the length of a test, and takes it back", () => {
+    const undo = registerCardModalContentForTest("tools", CardModalProbe);
+    expect(cardModalContentFor("tools")).toBe(CardModalProbe);
+    expect([...cardModalTargets()]).toEqual(["slack", "tools"]);
+    undo();
+    expect(cardModalContentFor("tools")).toBeNull();
+    expect([...cardModalTargets()]).toEqual(["slack"]);
+  });
+
+  it("lets a test stand in for a card's own content, and puts the real one back", () => {
     const undo = registerCardModalContentForTest("slack", CardModalProbe);
     expect(cardModalContentFor("slack")).toBe(CardModalProbe);
     expect([...cardModalTargets()]).toEqual(["slack"]);
-    expect(cardModalContentFor("tools")).toBeNull();
     undo();
-    expect(cardModalContentFor("slack")).toBeNull();
-    expect([...cardModalTargets()]).toEqual([]);
+    expect(cardModalContentFor("slack")).toBe(SlackConnectModal);
   });
 });
 
 describe("DesktopApp: a connection card that opens a modal", () => {
-  it("leaves both cards as they are while no card has a modal", async () => {
+  it("leaves the tools card as it is: it has no modal and still opens its page", async () => {
     const w = world();
     await mountNewBotDm(w);
-    for (const target of ["slack", "tools"] as const) {
-      expect(primary(target).hasAttribute("aria-haspopup")).toBe(false);
-      expect(primary(target).dataset.action).toBe("connect");
-    }
-    primary("slack").click();
+    expect(primary("tools").hasAttribute("aria-haspopup")).toBe(false);
+    expect(primary("tools").dataset.action).toBe("connect");
+    primary("tools").click();
     await settle();
     expect(dialog()).toBeNull();
     expect(w.openUrl).toHaveBeenCalledTimes(1);
-    expect(card("slack").dataset.state).toBe("connecting");
+    expect(card("tools").dataset.state).toBe("connecting");
   });
 
   it("opens the card's modal at the shell from the card's button, and opens no page", async () => {

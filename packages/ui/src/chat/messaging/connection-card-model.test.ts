@@ -14,6 +14,7 @@ import {
   MAX_BOT_CONNECTION_RECORDS,
   MAX_WAITING_ROWS,
   SLACK_TIMEOUT_NOTE,
+  SLACK_UNFINISHED_LINE,
   cardOpensModal,
   TOOLS_TIMEOUT_NOTE,
   companyUidFromStatus,
@@ -28,12 +29,14 @@ import {
   recordGrant,
   saveConnectionRecords,
   slackFactsFromStatus,
+  slackPendingHint,
   toolFacts,
   withBotRecord,
   withoutBotRecord,
   type BotConnectionRecord,
   type BotConnectionRecords,
   type ConnectionCardInput,
+  type SlackFacts,
 } from "./connection-card-model.js";
 
 const NOW = Date.parse("2026-10-02T15:00:00.000Z");
@@ -232,29 +235,56 @@ describe("slackFactsFromStatus", () => {
     }
   });
 
-  it("is pending when Slack is set up but waiting for approval", () => {
+  it("is pending, waiting for approval, while the app has not been approved in Slack", () => {
     expect(
       slackFactsFromStatus(
-        status({ channels: { slack: { appId: "A1" } }, channelDiagnostics: { slack: { inboundCapability: "pending-install" } } }),
-        "Nova",
+        status({
+          channels: { slack: { appId: "A1", workspace: "pending-install", installUrl: "https://slack.com/oauth/v2/authorize?client_id=1" } },
+          channelDiagnostics: { slack: { inboundCapability: "pending-install" } },
+        }),
       ),
-    ).toEqual({ state: "pending", note: "Waiting for the app to be approved in Slack." });
+    ).toEqual({ state: "pending", stage: "approve" });
+  });
+
+  it("is pending, waiting for the token, once the app is approved and the server asks for one", () => {
+    for (const waiting of [
+      { appTokenPendingUrl: "https://api.slack.com/apps/A1" },
+      { appTokenAccessPending: "HQ is adding you to the app." },
+    ]) {
+      expect(
+        slackFactsFromStatus(
+          status({
+            channels: { slack: { appId: "A1", workspace: "acme", teamId: "T1", connectionMode: "socket", ...waiting } },
+            channelDiagnostics: { slack: { inboundCapability: "socket-mode-degraded" } },
+          }),
+        ),
+      ).toEqual({ state: "pending", stage: "token" });
+    }
   });
 
   it("is pending, never connected, when the app is installed but cannot receive", () => {
-    for (const capability of ["outbound-only", "missing-signing-secret", "missing-event-subscription", "legacy-runtime", "unknown", ""]) {
+    for (const capability of ["outbound-only", "missing-signing-secret", "missing-event-subscription", "legacy-runtime", "socket-mode-degraded", "unknown", ""]) {
       expect(
         slackFactsFromStatus(
           status({ channels: { slack: { appId: "A1" } }, channelDiagnostics: { slack: { inboundCapability: capability } } }),
-          "Nova",
         ),
-      ).toEqual({ state: "pending", note: "Slack is set up but Nova cannot receive messages there yet." });
+      ).toEqual({ state: "pending", stage: "finishing" });
     }
     // No diagnostics at all, but the channel is configured.
-    expect(slackFactsFromStatus(status({ channels: { slack: {} } }), "Nova").state).toBe("pending");
-    expect(slackFactsFromStatus(status({ channels: { slack: {} } })).note).toBe(
-      "Slack is set up but your bot cannot receive messages there yet.",
-    );
+    expect(slackFactsFromStatus(status({ channels: { slack: {} } }))).toEqual({ state: "pending", stage: "finishing" });
+    // Set up in a form this version cannot read: still pending, nothing for the person to do.
+    expect(slackFactsFromStatus(status({ channels: { slack: true } }))).toEqual({ state: "pending", stage: "finishing" });
+  });
+
+  it("stays connected by the capability alone, whatever the row still says", () => {
+    expect(
+      slackFactsFromStatus(
+        status({
+          channels: { slack: { workspace: "pending-install", installUrl: "https://slack.com/oauth/v2/authorize?client_id=1" } },
+          channelDiagnostics: { slack: { inboundCapability: "socket-mode" } },
+        }),
+      ),
+    ).toEqual({ state: "connected" });
   });
 
   it("is none when Slack is not set up or the answer is unreadable", () => {
@@ -461,7 +491,8 @@ describe("connectionCardView: Slack", () => {
       title: "Slack",
       line: "Talk to Nova in Slack and let it post there.",
       primaryLabel: "Connect Slack",
-      primaryAction: "connect",
+      // The Slack card's main button opens its modal.
+      primaryAction: "open",
       primaryPending: false,
       declineLabel: "Not now",
       mark: null,
@@ -472,20 +503,52 @@ describe("connectionCardView: Slack", () => {
     });
   });
 
-  it("shows connecting after Connect, with the server's reason when there is one", () => {
+  it("shows the setup as not finished once it was started here", () => {
     const record = markConnecting(null, "slack", NOW - 60_000);
     const view = connectionCardView("slack", input({ record }));
     expect(view.state).toBe("connecting");
-    expect(view.line).toBe("Finish in your browser. This card updates when Slack is connected.");
-    expect(view.primaryLabel).toBe("Open again");
+    expect(view.line).toBe("Setup is not finished.");
+    expect(view.primaryLabel).toBe("Continue");
     expect(view.declineLabel).toBe("Not now");
     expect(view.note).toBeNull();
-    const pending = connectionCardView(
+  });
+
+  it("says what a setup the server has is waiting for, whether or not it was started here", () => {
+    const lines: Array<[SlackFacts, string]> = [
+      [{ state: "pending", stage: "approve" }, "Setup is not finished. Approve Nova in Slack."],
+      [{ state: "pending", stage: "token" }, "Setup is not finished. Paste the token to finish."],
+      [{ state: "pending", stage: "finishing" }, "Setup is not finished. Connecting."],
+      [{ state: "pending" }, "Setup is not finished. Connecting."],
+    ];
+    for (const [slack, line] of lines) {
+      for (const record of [null, markConnecting(null, "slack", NOW - 60_000)]) {
+        const view = connectionCardView("slack", input({ record, slack }));
+        expect(view.state).toBe("connecting");
+        expect(view.line).toBe(line);
+        expect(view.primaryLabel).toBe("Continue");
+        expect(view.declineLabel).toBe("Not now");
+        expect(view.mark).toBeNull();
+        expect(view.note).toBeNull();
+      }
+    }
+    expect(SLACK_UNFINISHED_LINE).toBe("Setup is not finished.");
+    expect(slackPendingHint("approve", " ")).toBe("Approve your bot in Slack.");
+  });
+
+  it("never times a setup out while the server has one", () => {
+    const longAgo = markConnecting(null, "slack", NOW - CONNECTING_TIMEOUT_MS - 60 * 60_000);
+    const view = connectionCardView("slack", input({ record: longAgo, slack: { state: "pending", stage: "token" } }));
+    expect(view.state).toBe("connecting");
+    expect(view.primaryLabel).toBe("Continue");
+    expect(view.note).toBeNull();
+  });
+
+  it("keeps Not now over a setup the server has", () => {
+    const view = connectionCardView(
       "slack",
-      input({ record, slack: { state: "pending", note: "Waiting for the app to be approved in Slack." } }),
+      input({ record: markDeclined(null, "slack", NOW - 1000), slack: { state: "pending", stage: "approve" } }),
     );
-    expect(pending.state).toBe("connecting");
-    expect(pending.note).toBe("Waiting for the app to be approved in Slack.");
+    expect(view.state).toBe("declined");
   });
 
   it("shows connected from the server, whatever was pressed here", () => {
@@ -524,32 +587,28 @@ describe("connectionCardView: Slack", () => {
     expect(again.primaryLabel).toBe("Connect Slack");
   });
 
-  it("goes back to offered with a reason after ten minutes of connecting", () => {
+  it("goes back to offered with a reason after ten minutes, while the server has nothing", () => {
     const record = markConnecting(null, "slack", NOW - CONNECTING_TIMEOUT_MS);
     expect(connectionCardView("slack", input({ record })).state).toBe("connecting");
-    const late = connectionCardView("slack", input({ record, now: NOW + 1 }));
-    expect(late.state).toBe("offered");
-    expect(late.primaryLabel).toBe("Connect Slack");
-    expect(late.note).toBe(SLACK_TIMEOUT_NOTE);
+    for (const slack of [null, { state: "none" } as const]) {
+      const late = connectionCardView("slack", input({ record, slack, now: NOW + 1 }));
+      expect(late.state).toBe("offered");
+      expect(late.primaryLabel).toBe("Connect Slack");
+      expect(late.note).toBe(SLACK_TIMEOUT_NOTE);
+    }
     expect(SLACK_TIMEOUT_NOTE).toBe("Slack was not connected. You can try again any time.");
   });
 
-  it("shows the server's reason on an offered card too", () => {
-    const view = connectionCardView("slack", input({ slack: { state: "pending", note: "Waiting for the app to be approved in Slack." } }));
-    expect(view.state).toBe("offered");
-    expect(view.note).toBe("Waiting for the app to be approved in Slack.");
-  });
-
-  it("shows the host's sentence first, and marks a press in flight", () => {
+  it("shows the host's sentence, and marks a press in flight", () => {
     const view = connectionCardView(
       "slack",
       input({
-        notes: { slack: "Could not open Slack setup. Try again in a moment." },
-        slack: { state: "pending", note: "Waiting for the app to be approved in Slack." },
-        inFlight: new Set([connectionActionKey("slack", "connect")]),
+        notes: { slack: "Could not check Slack right now. You can still connect it." },
+        slack: { state: "pending", stage: "approve" },
+        inFlight: new Set([connectionActionKey("slack", "open")]),
       }),
     );
-    expect(view.note).toBe("Could not open Slack setup. Try again in a moment.");
+    expect(view.note).toBe("Could not check Slack right now. You can still connect it.");
     expect(view.primaryPending).toBe(true);
     expect(connectionCardView("slack", input({ inFlight: new Set([connectionActionKey("tools", "connect")]) })).primaryPending).toBe(false);
   });
@@ -778,18 +837,21 @@ describe("connectionCardView: tools", () => {
 describe("a card whose main button opens a modal", () => {
   const slackOnly = new Set(["slack"] as const);
 
-  it("marks no card yet: both cards still connect", () => {
-    expect([...CARD_MODAL_TARGETS]).toEqual([]);
-    expect(cardOpensModal("slack")).toBe(false);
+  const none = new Set<"slack" | "tools">();
+
+  it("marks the Slack card: it opens its modal, the tools card still connects", () => {
+    expect([...CARD_MODAL_TARGETS]).toEqual(["slack"]);
+    expect(cardOpensModal("slack")).toBe(true);
     expect(cardOpensModal("tools")).toBe(false);
     const states: ConnectionCardInput[] = [
       input(),
       input({ record: markConnecting(null, "slack", NOW) }),
       input({ record: markConnecting(null, "tools", NOW, []) }),
+      input({ slack: { state: "pending", stage: "token" } }),
       input({ slack: { state: "connected" } }),
     ];
     for (const state of states) {
-      expect(connectionCardView("slack", state).primaryAction).toBe("connect");
+      expect(connectionCardView("slack", state).primaryAction).toBe("open");
       expect(connectionCardView("tools", state).primaryAction).toBe("connect");
     }
   });
@@ -797,9 +859,11 @@ describe("a card whose main button opens a modal", () => {
   it("reads the switch from the set it is given", () => {
     expect(cardOpensModal("slack", slackOnly)).toBe(true);
     expect(cardOpensModal("tools", slackOnly)).toBe(false);
+    expect(cardOpensModal("slack", none)).toBe(false);
     // Nothing given means the model's own set.
-    expect(cardOpensModal("slack", null)).toBe(false);
-    expect(cardOpensModal("slack", undefined)).toBe(false);
+    expect(cardOpensModal("slack", null)).toBe(true);
+    expect(cardOpensModal("slack", undefined)).toBe(true);
+    expect(cardOpensModal("tools", null)).toBe(false);
   });
 
   it("makes the main button of a marked card open its modal, and only that card", () => {
@@ -812,7 +876,7 @@ describe("a card whose main button opens a modal", () => {
 
   it("changes nothing else on the card", () => {
     for (const state of [input(), input({ record: markConnecting(null, "slack", NOW) })]) {
-      const { primaryAction: _plain, ...plain } = connectionCardView("slack", state);
+      const { primaryAction: _plain, ...plain } = connectionCardView("slack", { ...state, modalTargets: none });
       const { primaryAction: _marked, ...marked } = connectionCardView("slack", { ...state, modalTargets: slackOnly });
       expect(marked).toEqual(plain);
     }
@@ -823,7 +887,7 @@ describe("a card whose main button opens a modal", () => {
     const opening = new Set([connectionActionKey("slack", "open")]);
     expect(connectionCardView("slack", input({ modalTargets: slackOnly, inFlight: opening })).primaryPending).toBe(true);
     // The same press does not hold a card that connects.
-    expect(connectionCardView("slack", input({ inFlight: opening })).primaryPending).toBe(false);
+    expect(connectionCardView("slack", input({ modalTargets: none, inFlight: opening })).primaryPending).toBe(false);
   });
 });
 
@@ -836,7 +900,7 @@ describe("asking for the cards again", () => {
     expect(CONNECT_FIRST_LABEL).toBe("Connect Slack or tools");
     expect(connectMoreLabel({ state: "none" }, facts([]))).toBe("Connect Slack or tools");
     // Slack set up but not working, and a connection the bot may not use yet: still nothing connected.
-    expect(connectMoreLabel({ state: "pending", note: "Waiting." }, facts([waiting]))).toBe("Connect Slack or tools");
+    expect(connectMoreLabel({ state: "pending", stage: "approve" }, facts([waiting]))).toBe("Connect Slack or tools");
   });
 
   it("words the button for something connected, or not known yet", () => {

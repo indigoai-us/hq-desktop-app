@@ -23,6 +23,7 @@
 import type { Component } from "svelte";
 import type { PlatformAdapter } from "@hq/platform";
 import { CARD_MODAL_TARGETS } from "./connection-card-model.js";
+import SlackConnectModal from "./SlackConnectModal.svelte";
 import type { ConnectTarget } from "./richMessageContent.js";
 
 /** The props CardModal takes from the shell. Spread it: `<CardModal {...frame}>`. */
@@ -79,9 +80,9 @@ export interface CardModalContentProps {
 
 export type CardModalContent = Component<CardModalContentProps>;
 
-/** The content of each card's modal. Empty for now. */
+/** The content of each card's modal. */
 const CARD_MODAL_CONTENT: Partial<Record<ConnectTarget, CardModalContent>> = {
-  // slack: SlackConnectModal,
+  slack: SlackConnectModal,
 };
 
 /** Content a test put in. See {@link registerCardModalContentForTest}. */

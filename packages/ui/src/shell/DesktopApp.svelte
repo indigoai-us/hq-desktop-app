@@ -44,6 +44,7 @@
   import {
     formatShortcut,
     registerShortcuts,
+    shortcutsSuspended,
     type ShortcutBinding,
   } from "../common/keyboard-shortcuts.js";
   import {
@@ -387,7 +388,6 @@
   } from "./live-channel-tabs.js";
   import {
     HQ_CONSOLE_BASE,
-    agentSlackSettingsUrl,
     companyIntegrationsUrl,
     consoleCompanySlug,
   } from "../common/hq-console.js";
@@ -4722,7 +4722,7 @@
       uid,
       botName,
       record,
-      slack: facts?.status != null ? slackFactsFromStatus(facts.status, botName) : null,
+      slack: facts?.status != null ? slackFactsFromStatus(facts.status) : null,
       tools: facts?.connections != null ? toolFacts(facts.connections, record) : null,
       now: connectionClock,
       inFlight: connectionInFlight[uid] ?? null,
@@ -4820,11 +4820,14 @@
       void refreshBotConnectionFacts(uid, selectedRow?.companyUid ?? null);
     });
   });
-  // While a card waits for the browser, ask again every few seconds and when
-  // the window comes back to the front. Nothing is polled otherwise.
+  // While a card waits (for the browser, or for a Slack setup the server has
+  // and that is not finished), or while a card's modal is open, ask again
+  // every few seconds and when the window comes back to the front. This is
+  // the one timer: the modal reads what it finds. Nothing is polled otherwise.
+  const cardModalOpenHere = $derived(openCardModal !== null && openCardModal.agentUid === dmCloudBotUid);
   $effect(() => {
     const uid = dmCloudBotUid;
-    if (!uid || !cloudBotConnecting) return;
+    if (!uid || !(cloudBotConnecting || cardModalOpenHere)) return;
     const rowCompanyUid = untrack(() => selectedRow?.companyUid ?? null);
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -4942,40 +4945,37 @@
     if (!uid) return null;
     return consoleCompanySlug((companies ?? []).find((c) => (c.cloudUid ?? "").trim() === uid)?.slug);
   }
-  /** Connect (or Open again): open the right console page and start waiting. */
+  /**
+   * Connect (or Open again) on the tools card: open HQ Integrations in the
+   * browser and start waiting. Slack never opens a page: it connects in its
+   * modal.
+   */
   function connectFromCard(agentUid: string, target: ConnectTarget): void {
+    if (target === "slack") {
+      openConnectionModal(agentUid, "slack");
+      return;
+    }
     const facts = botConnectionFacts[agentUid] ?? null;
     const row = selectedRow;
     const rowCompanyUid = row?.kind === "dm" && row.personUid === agentUid ? (row.companyUid?.trim() ?? "") : "";
     const companyUid = facts?.companyUid || rowCompanyUid || null;
     if (!companyUid) {
       // The link needs the bot's company, and the server has not said yet.
-      setConnectionNote(
-        agentUid,
-        target,
-        target === "slack"
-          ? "Could not open Slack setup. Try again in a moment."
-          : "Could not open HQ Integrations. Try again in a moment.",
-      );
+      setConnectionNote(agentUid, target, "Could not open HQ Integrations. Try again in a moment.");
       void refreshBotConnectionFacts(agentUid, null);
       return;
     }
     setConnectionNote(agentUid, target, null);
     const now = Date.now();
     const record = connectionRecords[agentUid] ?? null;
-    if (target === "slack") {
-      openConnectionUrl(agentSlackSettingsUrl(companyUid, agentUid));
-      setBotConnectionRecord(agentUid, markConnecting(record, "slack", now));
-    } else {
-      const tools = facts?.connections != null ? toolFacts(facts.connections, record) : null;
-      const waiting = connectionCardView("tools", { botName: "", record, tools, now }).state === "connecting";
-      openConnectionUrl(companyIntegrationsUrl(companySlugForUid(companyUid)));
-      // What is connected now is the baseline: anything after it is new.
-      setBotConnectionRecord(
-        agentUid,
-        markConnecting(record, "tools", now, waiting ? "keep" : tools ? tools.ids : null),
-      );
-    }
+    const tools = facts?.connections != null ? toolFacts(facts.connections, record) : null;
+    const waiting = connectionCardView("tools", { botName: "", record, tools, now }).state === "connecting";
+    openConnectionUrl(companyIntegrationsUrl(companySlugForUid(companyUid)));
+    // What is connected now is the baseline: anything after it is new.
+    setBotConnectionRecord(
+      agentUid,
+      markConnecting(record, "tools", now, waiting ? "keep" : tools ? tools.ids : null),
+    );
     connectionClock = now;
   }
   /** "Let {bot} use it": share one connection with the bot, then tell the bot. */
@@ -9359,6 +9359,9 @@
     const unregisterShortcuts = registerShortcuts(shellShortcuts);
 
     function onKey(event: KeyboardEvent) {
+      // A modal dialog owns the keyboard while it is open: no going back or
+      // forward under it.
+      if (shortcutsSuspended()) return;
       // Back/forward stay OUTSIDE the registry on purpose. The registry keys
       // off a declared chord string; `consumeNavigationShortcut` owns a set of
       // bindings that includes non-chord inputs, and re-declaring a subset of

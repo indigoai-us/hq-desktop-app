@@ -408,31 +408,37 @@ describe("DesktopApp connection cards in a cloud bot's direct message", () => {
     expect(hiddenNotices(w)).toHaveLength(0);
   });
 
-  it("opens the bot's Slack setup from Connect Slack and tells the bot once when it connects", async () => {
+  // Connecting Slack happens in the card's modal, never on a page in the
+  // browser. The flow itself is in DesktopApp.cloud-bot-slack-connect.test.ts.
+  it("opens no page from Connect Slack: the card opens its modal, and opening it starts nothing", async () => {
     const w = world();
     await mountNewBotDm(w);
+    expect(primary("slack")!.textContent?.trim()).toBe("Connect Slack");
+    expect(primary("slack")!.getAttribute("aria-haspopup")).toBe("dialog");
     primary("slack")!.click();
     await settle();
-    expect(w.openUrl).toHaveBeenCalledWith(`https://hq.computer/companies/cmp_acme/agents?settings=${NOVA}`);
-    expect(card("slack").dataset.state).toBe("connecting");
-
-    // Installed, waiting for approval: still not connected.
-    w.slackCapability = "pending-install";
-    await refocus();
-    expect(card("slack").dataset.state).toBe("connecting");
-    await vi.waitFor(() => expect(note("slack")).toBe("Waiting for the app to be approved in Slack."));
+    expect(w.openUrl).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="card-modal"]')).not.toBeNull());
+    expect(card("slack").dataset.state).toBe("offered");
     expect(hiddenNotices(w)).toHaveLength(0);
+  });
 
+  it("shows a Slack setup the server has as not finished, and tells the bot nothing when it was not started here", async () => {
+    const w = world({ slackCapability: "socket-mode-degraded" });
+    await mountNewBotDm(w);
+    await vi.waitFor(() => expect(card("slack").dataset.state).toBe("connecting"));
+    expect(card("slack").textContent).toContain("Setup is not finished. Connecting.");
+    expect(primary("slack")!.textContent?.trim()).toBe("Continue");
+    expect(decline("slack")!.textContent?.trim()).toBe("Not now");
+    expect(note("slack")).toBe("");
+
+    // The card keeps asking while the setup is not finished, and sees it end.
     w.slackCapability = "ok";
     await refocus();
     await vi.waitFor(() => expect(card("slack").dataset.state).toBe("connected"));
-    await vi.waitFor(() => expect(hiddenNotices(w)).toHaveLength(1));
-    const [to, body, extras] = hiddenNotices(w)[0]!;
-    expect(to).toBe(NOVA);
-    expect(extras).toEqual({ audience: "agent", idempotencyKey: `new-bot-slack-${NOVA}` });
-    expect(body).toMatch(/^Automatic message from HQ: Corey just connected you to Slack\./);
-    await refocus();
-    expect(hiddenNotices(w)).toHaveLength(1);
+    // Nobody pressed anything here: the notice says "{person} just connected you".
+    expect(hiddenNotices(w)).toHaveLength(0);
+    expect(w.openUrl).not.toHaveBeenCalled();
   });
 
   it("keeps Not now across a remount", async () => {
