@@ -1396,3 +1396,38 @@ export function projectFilesRootFromPrdPath(
   }
   return parts.join("/");
 }
+
+/**
+ * The status the project detail header shows (QA-062). It is the same value
+ * the board column uses ({@link projectListStatus}), mapped onto the editable
+ * enum, so a project the board files under Complete never reads "Planned".
+ * Only a pending rollup falls back to the raw board status (planned vs PRD).
+ */
+export function headerEditableStatus(
+  project: Pick<Project, "status" | "storiesComplete" | "storiesTotal">,
+): EditableProjectStatus {
+  switch (projectListStatus(project)) {
+    case "complete":
+      return "completed";
+    case "archived":
+      return "archived";
+    case "live":
+    case "in-progress":
+      return "in_progress";
+    default:
+      return toEditableStatus(project.status);
+  }
+}
+
+/**
+ * The separately recorded planning status, shown as a secondary "Plan: …"
+ * label only when it differs from the header status. Null when they agree.
+ */
+export function secondaryPlanStatusLabel(
+  project: Pick<Project, "status" | "storiesComplete" | "storiesTotal">,
+): string | null {
+  if (!(project.status ?? "").trim()) return null;
+  const raw = toEditableStatus(project.status);
+  if (raw === headerEditableStatus(project)) return null;
+  return `Plan: ${EDITABLE_PROJECT_STATUS_LABEL[raw]}`;
+}

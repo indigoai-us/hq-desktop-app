@@ -197,3 +197,29 @@ export function aboutUpdateLine(state: {
     ? "Automatic updates are off in this build. Use Check for updates to look for a new version."
     : "HQ has not checked for updates yet.";
 }
+
+/**
+ * The Automatic updates row in Settings → Updates (QA-061). Reads the same
+ * build capability as the About line (`background_updates_off`, mirrored in
+ * update-store), so the two never disagree. When the build has no updater the
+ * toggle is disabled and the saved preference is shown as pending.
+ */
+export function autoUpdateRow(state: {
+  autoUpdate: boolean;
+  backgroundUpdatesOff: boolean;
+}): { disabled: boolean; checked: boolean; description: string } {
+  if (state.backgroundUpdatesOff) {
+    return {
+      disabled: true,
+      checked: false,
+      description: `Automatic updates are not available in this build. Saved preference: ${
+        state.autoUpdate ? "on" : "off"
+      } (will apply in a release build).`,
+    };
+  }
+  return {
+    disabled: false,
+    checked: state.autoUpdate,
+    description: "Install HQ Core, desktop app, and CLI updates automatically in the background — no prompts.",
+  };
+}

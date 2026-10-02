@@ -33,6 +33,8 @@
     appearanceThemeOptions,
   } from "./shell-settings-model";
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
+  import { updateStore } from "./update-store.svelte.js";
+  import { autoUpdateRow } from "../account/account-pages.js";
   import "../chat/tokens.css";
   import "../chat/chat-tokens.css";
 
@@ -283,6 +285,10 @@
   // app, CLI, and hq-core. Default ON. Read fresh by the native auto-installers
   // and re-read on popover focus, so it takes effect without a restart.
   let autoUpdate = $state(true);
+  // QA-061: same build capability the About line reads.
+  const autoRow = $derived(
+    autoUpdateRow({ autoUpdate, backgroundUpdatesOff: updateStore.backgroundUpdatesOff }),
+  );
   let stagingChannel = $state(true);
   let releaseChannel = $state<Channel | null>(null);
   let startAtLogin = $state(true);
@@ -2071,19 +2077,20 @@
                 <label class="setting-row">
                   <span
                     ><strong>Automatic updates</strong><small
-                      >Install HQ Core, desktop app, and CLI updates
-                      automatically in the background — no prompts.</small
+                      data-testid="auto-update-description">{autoRow.description}</small
                     ></span
                   >
                   <input
                     id="toggle-auto-update"
                     type="checkbox"
-                    bind:checked={autoUpdate}
-                    onchange={() =>
+                    checked={autoRow.checked}
+                    onchange={(e) => {
+                      autoUpdate = (e.currentTarget as HTMLInputElement).checked;
                       void persistSettingsControl("auto-update", {
                         autoUpdate,
-                      })}
-                    disabled={isSettingsControlPending("auto-update")}
+                      });
+                    }}
+                    disabled={autoRow.disabled || isSettingsControlPending("auto-update")}
                     aria-busy={isSettingsControlPending("auto-update")}
                     aria-label="Automatic updates"
                   />

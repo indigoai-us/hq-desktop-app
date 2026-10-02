@@ -41,6 +41,8 @@
     TASK_COLUMNS,
     TASK_COLUMN_LABEL,
     toEditableStatus,
+    headerEditableStatus,
+    secondaryPlanStatusLabel,
     EDITABLE_PROJECT_STATUSES,
     EDITABLE_PROJECT_STATUS_LABEL,
     type EditableProjectStatus,
@@ -285,7 +287,10 @@
     storyRetrying = false;
   });
   const currentStatus = $derived(
-    statusOverride ?? toEditableStatus(project.status),
+    statusOverride ?? headerEditableStatus(project),
+  );
+  const planStatusLabel = $derived(
+    statusOverride ? null : secondaryPlanStatusLabel(project),
   );
 
   function rehydrateCurrentStatus(identity: string): void {
@@ -735,6 +740,10 @@
           </ul>
         {/if}
       </div>
+
+      {#if planStatusLabel}
+        <span class="badge plan-status" data-testid="plan-status">{planStatusLabel}</span>
+      {/if}
 
       {#if statusError}
         <span class="status-error" role="alert" data-testid="status-error">
