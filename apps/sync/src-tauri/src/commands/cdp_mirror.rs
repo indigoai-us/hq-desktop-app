@@ -312,7 +312,7 @@ pub fn note_login_completed(provider: &str) {
     flush_install_tag_report();
 }
 
-/// Hook for the sign-in link completion (`post_signin_link_best_effort`):
+/// Hook for the sign-in link completion (`post_desktop_referral_receipt`):
 /// adopt the visitor id the website returned and send what is queued.
 pub fn note_signin_link_visitor(anon_id: &str) {
     let Some(mirror) = mirror().cloned() else {
@@ -584,23 +584,23 @@ mod tests {
             "login_completed: the receipt builder must call the mirror"
         );
         let post = auth
-            .split("fn post_signin_link_best_effort(")
+            .split("async fn post_desktop_referral_receipt(")
             .nth(1)
-            .expect("sign-in link post");
+            .expect("desktop referral post");
         let post_body = post.split("\n}\n").next().unwrap();
         assert!(
-            post_body.contains("parse_link_anon_id(")
-                && post_body.contains("cdp_mirror::note_signin_link_visitor(&anon_id);"),
+            post_body.contains("parse_referral_ack(")
+                && post_body.contains("cdp_mirror::note_signin_link_visitor(anon_id)"),
             "install_linked: the anonId from the link completion must reach the mirror"
         );
         let start = auth
-            .split("select_browser_url(")
+            .split("signin_start_url(")
             .nth(1)
             .expect("sign-in start URL selection");
         assert!(
             start
                 .split(',')
-                .nth(1)
+                .nth(2)
                 .unwrap()
                 .contains("install_attempt_id"),
             "the sign-in start URL must carry the install id"

@@ -551,6 +551,7 @@ pub async fn get_auth_state(app: AppHandle) -> Result<AuthState, String> {
         // receipt and sending it. Retries are native and non-blocking, so the
         // renderer never receives a bearer token or waits on analytics.
         crate::commands::desktop_auth::flush_pending_authenticated_desktop_receipts();
+        crate::commands::desktop_auth::flush_pending_desktop_referrals(&app);
     }
     startup_auth_state_result(state, &envelope.status)
 }
