@@ -13,7 +13,7 @@
     "dev": "turbo run dev",
     "test": "turbo run test",
     "coverage": "turbo run coverage",
-    "test:scripts": "vitest run scripts/*.test.ts",
+    "test:scripts": "vitest run scripts/*.test.ts && node --test scripts/startup-window-order.test.mjs",
     "perf": "node scripts/perf-run.mjs",
     "perf:lint": "vitest run scripts/perf-budget-contract.test.ts scripts/perf-stats.test.ts",
     "lint": "turbo run lint",

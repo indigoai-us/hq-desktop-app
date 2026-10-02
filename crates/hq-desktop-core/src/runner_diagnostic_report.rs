@@ -115,6 +115,14 @@ pub struct RunnerDiagnosticReport {
     pub stack: RunnerStackShape,
     /// How the report read resolved.
     pub read: RunnerReportRead,
+    /// Which Node entrypoint the report's argv identifies. This is a fixed
+    /// vocabulary; commandLine itself is never retained.
+    pub exit_producer: String,
+    /// Error identity from the message prefix, with all free-form text discarded.
+    pub node_error_code: String,
+    pub node_error_name: String,
+    /// First JavaScript frame as basename:line:column, or `unknown`.
+    pub node_top_frame: String,
 }
 
 impl RunnerDiagnosticReport {
@@ -125,6 +133,10 @@ impl RunnerDiagnosticReport {
             // envelope (`all_redacted` / `unknown`).
             stack: runner_stack_shape_from_native_symbols(&[]),
             read,
+            exit_producer: "unknown".to_string(),
+            node_error_code: "unknown".to_string(),
+            node_error_name: "unknown".to_string(),
+            node_top_frame: "unknown".to_string(),
         }
     }
 
@@ -246,6 +258,7 @@ pub fn parse_runner_diagnostic_report(bytes: &[u8]) -> RunnerDiagnosticReport {
         .and_then(Value::as_str)
         .unwrap_or_default();
     let native = value.get("nativeStack").and_then(Value::as_array);
+    let javascript_stack = value.get("javascriptStack");
 
     // Schema-drift guard: a JSON document that carries neither a header
     // trigger/event NOR a native stack is not a Node diagnostic report. Refuse it
@@ -264,7 +277,150 @@ pub fn parse_runner_diagnostic_report(bytes: &[u8]) -> RunnerDiagnosticReport {
         fatal_class,
         stack,
         read: RunnerReportRead::Read,
+        exit_producer: classify_report_exit_producer(header.and_then(|h| h.get("commandLine")))
+            .to_string(),
+        node_error_code: javascript_stack
+            .and_then(|s| s.get("message"))
+            .and_then(Value::as_str)
+            .map(node_error_code)
+            .unwrap_or_else(|| "unknown".to_string()),
+        node_error_name: javascript_stack
+            .and_then(|s| s.get("message"))
+            .and_then(Value::as_str)
+            .map(node_error_name)
+            .unwrap_or_else(|| "unknown".to_string()),
+        node_top_frame: javascript_stack
+            .and_then(|s| s.get("stack"))
+            .and_then(Value::as_array)
+            .and_then(|frames| frames.first())
+            .map(node_top_frame)
+            .unwrap_or_else(|| "unknown".to_string()),
     }
+}
+
+fn classify_report_exit_producer(command_line: Option<&Value>) -> &'static str {
+    let Some(arguments) = command_line.and_then(Value::as_array) else {
+        return "unknown";
+    };
+    for argument in arguments.iter().skip(1).filter_map(Value::as_str) {
+        let basename = argument.rsplit(['/', '\\']).next().unwrap_or_default();
+        match basename.to_ascii_lowercase().as_str() {
+            "sync-runner.js" | "hq-sync-runner" | "hq-sync-runner.js" => return "runner",
+            "npx-cli.js" | "npm-cli.js" | "npx.js" | "npm.js" => return "launcher",
+            _ => {}
+        }
+    }
+    "unknown"
+}
+
+fn node_error_code(message: &str) -> String {
+    let prefix = message.split(':').next().unwrap_or(message);
+    let Some(start) = prefix.find("[ERR_") else {
+        return "unknown".to_string();
+    };
+    let Some(relative_end) = prefix[start + 1..].find(']') else {
+        return "unknown".to_string();
+    };
+    let candidate = &prefix[start + 1..start + 1 + relative_end];
+    if candidate.len() > 4
+        && candidate.len() <= 64
+        && candidate.starts_with("ERR_")
+        && candidate
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+    {
+        candidate.to_string()
+    } else {
+        "unknown".to_string()
+    }
+}
+
+fn node_error_name(message: &str) -> String {
+    let message = message
+        .trim()
+        .strip_prefix("Uncaught ")
+        .unwrap_or(message.trim());
+    let end = message
+        .find(|character: char| character == ':' || character == '[' || character.is_whitespace())
+        .unwrap_or(message.len());
+    let candidate = &message[..end];
+    let looks_like_error_type =
+        candidate == "Error" || candidate.ends_with("Error") || candidate.ends_with("Exception");
+    if !candidate.is_empty()
+        && candidate.len() <= 64
+        && candidate
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        && looks_like_error_type
+    {
+        candidate.to_string()
+    } else {
+        "unknown".to_string()
+    }
+}
+
+fn node_top_frame(frame: &Value) -> String {
+    let object_parts = frame.as_object().and_then(|object| {
+        Some((
+            object.get("scriptName")?.as_str()?,
+            object.get("lineNumber")?.as_u64()?,
+            object
+                .get("columnNumber")
+                .or_else(|| object.get("column"))?
+                .as_u64()?,
+        ))
+    });
+    let (file, line, column) = if let Some(parts) = object_parts {
+        parts
+    } else if let Some(text) = frame.as_str() {
+        let location = text
+            .rsplit_once('(')
+            .map(|(_, suffix)| suffix.trim_end_matches(')').trim())
+            .unwrap_or(text.trim());
+        let Some((file_and_line, column)) = location.rsplit_once(':') else {
+            return "unknown".to_string();
+        };
+        let Some((file, line)) = file_and_line.rsplit_once(':') else {
+            return "unknown".to_string();
+        };
+        let (Ok(line), Ok(column)) = (line.parse::<u64>(), column.parse::<u64>()) else {
+            return "unknown".to_string();
+        };
+        (file, line, column)
+    } else {
+        return "unknown".to_string();
+    };
+    if file.is_empty() || line == 0 || column == 0 {
+        return "unknown".to_string();
+    }
+    if !is_trusted_node_script_path(file) {
+        return "external".to_string();
+    }
+    let basename = file.rsplit(['/', '\\']).next().unwrap_or_default();
+    if basename.is_empty()
+        || basename.len() > 128
+        || !basename
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return "unknown".to_string();
+    }
+    format!("{basename}:{line}:{column}")
+}
+
+fn is_trusted_node_script_path(file: &str) -> bool {
+    if let Some(internal_path) = file.strip_prefix("node:") {
+        return internal_path == "internal"
+            || internal_path.starts_with("internal/")
+            || internal_path.starts_with("internal\\");
+    }
+
+    file.split(['/', '\\'])
+        .collect::<Vec<_>>()
+        .windows(3)
+        .any(|parts| {
+            parts[0] == "node_modules" && parts[1] == "@indigoai-us" && !parts[2].is_empty()
+        })
 }
 
 /// Hard cap on libuv handle entries counted from a report, so a hostile or runaway
@@ -435,6 +591,104 @@ mod tests {
                 "unexpected non-allow-list shape token {token:?}"
             );
         }
+    }
+
+    #[test]
+    fn node_error_identity_and_top_frame_are_bounded_and_content_safe() {
+        let report = parse_runner_diagnostic_report(
+            serde_json::json!({
+                "header": {
+                    "trigger": "Exception",
+                    "event": "Uncaught Error [ERR_MODULE_NOT_FOUND]: PRIVATE_MESSAGE_MARKER",
+                    "commandLine": [
+                        "/opt/node/bin/node",
+                        "/Users/alice/.npm/_npx/private/node_modules/@indigoai-us/hq-cloud/dist/bin/sync-runner.js",
+                        "--watch"
+                    ]
+                },
+                "javascriptStack": {
+                    "message": "Uncaught Error [ERR_MODULE_NOT_FOUND]: PRIVATE_MESSAGE_MARKER",
+                    "stack": [{
+                        "functionName": "privateFunction",
+                        "scriptName": "/Users/alice/hq/secrets/private-file.js",
+                        "lineNumber": 23,
+                        "column": 17
+                    }]
+                },
+                "nativeStack": []
+            })
+            .to_string()
+            .as_bytes(),
+        );
+        let rendered = format!("{report:?}");
+        for expected in [
+            "exit_producer: \"runner\"",
+            "node_error_code: \"ERR_MODULE_NOT_FOUND\"",
+            "node_error_name: \"Error\"",
+            "node_top_frame: \"external\"",
+        ] {
+            assert!(
+                rendered.contains(expected),
+                "missing {expected} in {rendered}"
+            );
+        }
+        assert!(!rendered.contains("PRIVATE_MESSAGE_MARKER"));
+        assert!(!rendered.contains("/Users/alice"));
+
+        let launcher_report = serde_json::json!({
+            "header": {
+                "trigger": "Exception",
+                "event": "Uncaught TypeError: PRIVATE_MESSAGE_MARKER",
+                "commandLine": ["/usr/local/bin/node", "/opt/node/lib/node_modules/npm/bin/npx-cli.js"]
+            },
+            "javascriptStack": {
+                "message": "Uncaught TypeError: PRIVATE_MESSAGE_MARKER",
+                "stack": ["at launch (/Users/alice/private-launcher.js:7:4)"]
+            },
+            "nativeStack": []
+        });
+        let launcher = parse_runner_diagnostic_report(launcher_report.to_string().as_bytes());
+        let launcher_debug = format!("{launcher:?}");
+        assert!(launcher_debug.contains("exit_producer: \"launcher\""));
+        assert!(launcher_debug.contains("node_error_name: \"TypeError\""));
+        assert!(launcher_debug.contains("node_top_frame: \"external\""));
+        assert!(!launcher_debug.contains("PRIVATE_MESSAGE_MARKER"));
+        assert!(!launcher_debug.contains('/'));
+
+        let package_report = serde_json::json!({
+            "header": {
+                "trigger": "Exception",
+                "event": "Uncaught Error: PRIVATE_MESSAGE_MARKER",
+                "commandLine": ["/usr/local/bin/node", "sync-runner.js"]
+            },
+            "javascriptStack": {
+                "message": "Uncaught Error: PRIVATE_MESSAGE_MARKER",
+                "stack": [{
+                    "scriptName": r"C:\Users\user\AppData\Roaming\npm\node_modules\@indigoai-us\hq-cloud\dist\bin\sync-runner.js",
+                    "lineNumber": 23,
+                    "columnNumber": 17
+                }]
+            },
+            "nativeStack": []
+        });
+        let package_report = parse_runner_diagnostic_report(package_report.to_string().as_bytes());
+        assert_eq!(package_report.node_top_frame, "sync-runner.js:23:17");
+
+        let internal_report = serde_json::json!({
+            "header": {
+                "trigger": "Exception",
+                "event": "Uncaught Error: PRIVATE_MESSAGE_MARKER",
+                "commandLine": ["/usr/local/bin/node", "sync-runner.js"]
+            },
+            "javascriptStack": {
+                "message": "Uncaught Error: PRIVATE_MESSAGE_MARKER",
+                "stack": ["at ModuleLoader.moduleProvider (node:internal/modules/esm/loader:273:14)"]
+            },
+            "nativeStack": []
+        });
+        let internal_report =
+            parse_runner_diagnostic_report(internal_report.to_string().as_bytes());
+        assert_eq!(internal_report.node_top_frame, "loader:273:14");
     }
 
     #[test]

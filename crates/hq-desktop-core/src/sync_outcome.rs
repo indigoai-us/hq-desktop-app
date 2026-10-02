@@ -1656,6 +1656,13 @@ pub struct RunnerFatalSignature {
     pub class: RunnerFatalClass,
     pub syscall: Option<&'static str>,
     pub errno: Option<i64>,
+    /// Reporting-only stderr cause. Unlike `class`, this also distinguishes
+    /// expected owner-busy and lease-lost messages; neither is a fatal class.
+    pub stderr_cause: &'static str,
+    /// Owner lease outcome explicitly evidenced by the stderr line.
+    pub watch_owner_result: &'static str,
+    /// Process attribution evidenced by this stderr classifier.
+    pub exit_producer: &'static str,
 }
 
 /// Fixed allow-list of libuv/Win32 syscall identifiers that libuv's
@@ -1880,12 +1887,17 @@ fn is_libuv_source_marker(lowercased: &str) -> bool {
 /// application assertions remain `none`.
 pub fn classify_runner_fatal_signature(line: &str) -> RunnerFatalSignature {
     let class = classify_runner_fatal_class(line);
+    let (stderr_cause, watch_owner_result, exit_producer) =
+        classify_runner_exit_diagnostics(line, class);
     if class == RunnerFatalClass::LibuvFatalSyscall {
         if let Some((syscall, errno)) = parse_libuv_fatal_syscall(line) {
             return RunnerFatalSignature {
                 class,
                 syscall: Some(syscall),
                 errno: Some(errno),
+                stderr_cause,
+                watch_owner_result,
+                exit_producer,
             };
         }
     }
@@ -1893,7 +1905,37 @@ pub fn classify_runner_fatal_signature(line: &str) -> RunnerFatalSignature {
         class,
         syscall: None,
         errno: None,
+        stderr_cause,
+        watch_owner_result,
+        exit_producer,
     }
+}
+
+fn classify_runner_exit_diagnostics(
+    line: &str,
+    class: RunnerFatalClass,
+) -> (&'static str, &'static str, &'static str) {
+    let lowered = line.to_ascii_lowercase();
+    if lowered.contains("hq-sync-runner already owned") {
+        return ("already_owned", "busy", "runner");
+    }
+    if lowered.contains("watch-owner lease lost") || lowered.contains("watch owner lease lost") {
+        return ("owner_lease_lost", "lost", "runner");
+    }
+    let stderr_cause = if class.seen() {
+        class.as_str()
+    } else {
+        "other"
+    };
+    // npm's own prefix is the classifier's explicit relay marker. Other Node or
+    // launcher failures remain unknown until protocol output or a Node report
+    // identifies which descendant supplied the status.
+    let exit_producer = if class == RunnerFatalClass::NpmInstallRelay {
+        "launcher"
+    } else {
+        "unknown"
+    };
+    (stderr_cause, "unknown", exit_producer)
 }
 
 /// Classify untrusted runner stderr without retaining any of it. The libuv
@@ -5517,6 +5559,43 @@ mod tests {
             ),
             RunnerFatalClass::ExecNotFound
         );
+    }
+
+    #[test]
+    fn watcher_owner_stderr_reports_safe_cause_producer_and_lease_result() {
+        let busy = classify_runner_fatal_signature(
+            "[sync] hq-sync-runner already owned for this HQ root (owner=PRIVATE_OWNER, pid=123); exiting.",
+        );
+        assert_eq!(busy.class, RunnerFatalClass::None);
+        let busy_debug = format!("{busy:?}");
+        for expected in [
+            "stderr_cause: \"already_owned\"",
+            "watch_owner_result: \"busy\"",
+            "exit_producer: \"runner\"",
+        ] {
+            assert!(
+                busy_debug.contains(expected),
+                "missing {expected} in {busy_debug}"
+            );
+        }
+        assert!(!busy_debug.contains("PRIVATE_OWNER"));
+
+        let lost = classify_runner_fatal_signature(
+            "[sync] watch-owner lease lost; stopping watch runner: PRIVATE_DETAIL",
+        );
+        assert_eq!(lost.class, RunnerFatalClass::None);
+        let lost_debug = format!("{lost:?}");
+        for expected in [
+            "stderr_cause: \"owner_lease_lost\"",
+            "watch_owner_result: \"lost\"",
+            "exit_producer: \"runner\"",
+        ] {
+            assert!(
+                lost_debug.contains(expected),
+                "missing {expected} in {lost_debug}"
+            );
+        }
+        assert!(!lost_debug.contains("PRIVATE_DETAIL"));
     }
 
     #[test]

@@ -3,6 +3,8 @@ export const POST_READY_ACTIONS = [
   'start_sync',
   'open_cli',
   'invite',
+  'ready_first_action_shown',
+  'ready_first_action_clicked',
   'close_window',
 ] as const;
 

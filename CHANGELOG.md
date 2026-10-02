@@ -10,8 +10,27 @@ The release moves it under the version it ships in.
 
 - The git mirror commits deletions from readable roots in the same sync pass; verified scope-quarantine moves remain preserved.
 
+- Automatic updates now install after the idle cap even when sync stays busy. HQ pauses new sync cycles and waits up to a minute for active transfers before installing. A meeting recording, transcript processing, or another core update can still delay installation.
+
+- Desktop setup completion telemetry now carries the persisted install attempt ID so it can join to first launch.
+- Auto-sync watcher reports now identify launcher and runner exits and owner-lease
+  outcomes. When a Node report is available, they add a safe error identifier and
+  the top frame's file name for HQ's own scripts only; frames from other files
+  report "external", so a user's file names are never sent.
+
+- Behind `desktop.ready-first-action-v1`, the post-setup welcome screen can offer a one-click first sync and record whether the action was shown and used.
+
+- Reinstalling HQ setup preserves files already present in your HQ folder.
+
+## [0.10.376] — 2026-10-02
+
+- Core update failures now report a specific snapshot failure class, such as
+  insufficient space, a protected recovery snapshot, a permission error, a
+  symlink, or a copy failure.
+
 - First-run onboarding events now use the same installation identifier as launch and sign-in receipts, so those steps can be joined without adding personal data.
 - Log in with Microsoft now works for work and school Microsoft accounts, not only personal Microsoft accounts.
+- Fresh desktop installs show the welcome window before startup checks finish.
 
 
 
