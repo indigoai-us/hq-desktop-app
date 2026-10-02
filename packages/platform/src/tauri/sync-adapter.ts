@@ -32,6 +32,7 @@ import { TAURI_CAPABILITIES, type Capability } from '../capabilities.js';
 import { WEB_PATHS } from '../web/index.js';
 import {
   CLAUDE_PROVIDER_FLAG,
+  DESKTOP_AGENT_CREATION_FLAG,
   DESKTOP_LIMIT_STATUS_PUSH_FLAG,
   FIRST_FOLDER_SYNC_STEP_FLAG,
   HUMAN_ONLY_CONVERSATIONS_FLAG,
@@ -41,8 +42,9 @@ import {
   POST_READY_ACTION_TELEMETRY_FLAG,
   READY_FIRST_ACTION_FLAG,
   SETUP_DEPS_TIMEOUT_RETRY_FLAG,
-  createFeatureFlagGate,
   createHqProFlagFetch,
+  createHqProRestFetch,
+  createScopedFeatureFlagGates,
   MIRROR_QUARANTINE_MOVE_NOT_DELETION_FLAG,
   type FeatureFlagGateOptions,
 } from '../flags.js';
@@ -178,13 +180,14 @@ export function createSyncPlatformAdapter(
   let mirrorQuarantineDisposePromise: Promise<void> | null = null;
   let mirrorQuarantineWindowLifecycleInstalled = false;
   let unsubscribeMirrorQuarantineFlag: (() => void) | null = null;
-  const flags = createFeatureFlagGate({
+  const flagsFor = createScopedFeatureFlagGates({
     // Rust `hq_pro_fetch` already prefixes the hq-pro base URL.
     endpoint: '',
     getToken: () => '',
     fetch: createHqProFlagFetch(invokeFn),
     createClient: config.createFlagClient,
   });
+  const flags = flagsFor(null);
 
   function hasFeatureLegacy(flag: string): AdapterPromise<boolean> {
     if (flag === POST_READY_ACTION_TELEMETRY_FLAG) {
@@ -226,7 +229,7 @@ export function createSyncPlatformAdapter(
       // branch keeps the legacy path consistent.
       return Promise.resolve(ok(HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT));
     }
-    if (flag === CLAUDE_PROVIDER_FLAG) {
+    if (flag === CLAUDE_PROVIDER_FLAG || flag === DESKTOP_AGENT_CREATION_FLAG) {
       return Promise.resolve(ok(false));
     }
     if (flag === 'meetings') {
@@ -556,11 +559,11 @@ export function createSyncPlatformAdapter(
         });
       },
       isAdmin: () => call<boolean>('desktop_alt_is_admin'),
-      hasFeature: (flag) =>
+      hasFeature: (flag, scope) =>
         flag === HUMAN_ONLY_CONVERSATIONS_FLAG
           ? // Pinned per release; the registry cannot turn it off.
             Promise.resolve(ok(HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT))
-          : flags.resolve(flag, () => hasFeatureLegacy(flag)),
+          : flagsFor(scope?.companyUid).resolve(flag, () => hasFeatureLegacy(flag)),
       subscribeFeature: (flag, onChange) =>
         flag === HUMAN_ONLY_CONVERSATIONS_FLAG
           ? () => {}
@@ -1051,6 +1054,7 @@ export function createSyncPlatformAdapter(
     },
 
     agents: {
+      fetch: createHqProRestFetch(invokeFn),
       getProvisionOptions: (companyUid) =>
         hqProJson<AgentProvisionOptionsView>(
           'GET',

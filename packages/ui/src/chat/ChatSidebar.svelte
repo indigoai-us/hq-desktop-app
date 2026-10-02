@@ -286,6 +286,8 @@
       | null;
     loadClaudeProviderFlag?: (() => AdapterPromise<boolean>) | null;
     loadCloudProvisionOptions?: ((companyUid: string) => AdapterPromise<AgentProvisionOptionsView>) | null;
+    /** `agents.desktop-agent-creation` seam, passed through to the New bot flow. */
+    directCloud?: import("./create-bot/cloud-create.js").DirectCloudCreate | null;
     /** Personal local bot (local-bots): desktop hosts only; see CreateModal. */
     oncreatebot?:
       | ((input: LocalBotCreateInput, extras?: CreateBotExtras) => Promise<LocalBotEntryResult>)
@@ -444,6 +446,7 @@
     oncreateagent = null,
     loadClaudeProviderFlag = null,
     loadCloudProvisionOptions = null,
+    directCloud = null,
     oncreatebot = null,
     botRuntimeReady = null,
     botRuntimeStatus = null,
@@ -3802,6 +3805,7 @@
       {oncreateagent}
       {loadClaudeProviderFlag}
       {loadCloudProvisionOptions}
+      {directCloud}
       {agentCompanies}
       {oncreatebot}
       {botRuntimeReady}

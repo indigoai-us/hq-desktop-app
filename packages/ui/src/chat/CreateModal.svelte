@@ -29,6 +29,8 @@
   import type { AvatarPack } from "../avatars/types.js";
   import CreateBotFlow, { type CreateBotExtras } from "./create-bot/CreateBotFlow.svelte";
   import type { BotRuntime } from "./create-bot/create-bot-model.js";
+  import type { DirectCloudCreate } from "./create-bot/cloud-create.js";
+  import type { CreateErrorFix } from "@hq/agents";
   import type { RuntimeSignInApi } from "./create-bot/RuntimeSignIn.svelte";
   import type { ChatSidebarApi } from "./chat-api.js";
   import type {
@@ -141,6 +143,8 @@
       | null;
     loadClaudeProviderFlag?: (() => AdapterPromise<boolean>) | null;
     loadCloudProvisionOptions?: ((companyUid: string) => AdapterPromise<AgentProvisionOptionsView>) | null;
+    /** `agents.desktop-agent-creation` seam for the New bot flow. */
+    directCloud?: DirectCloudCreate | null;
     /** Companies an agent can be added to (cloud companies the user is in). */
     agentCompanies?: ScopeCompany[] | null;
     /**
@@ -219,6 +223,7 @@
     oncreateagent = null,
     loadClaudeProviderFlag = null,
     loadCloudProvisionOptions = null,
+    directCloud = null,
     agentCompanies = null,
     oncreatebot = null,
     botRuntimeReady = null,
@@ -265,6 +270,8 @@
   );
   let entryBusy = $state<"company" | "agent" | "bot" | null>(null);
   let entryError = $state<string | null>(null);
+  /** The fix for `entryError`, when the direct cloud create named one. */
+  let entryFix = $state<CreateErrorFix | null>(null);
 
   async function runEntry(
     kind: "company" | "agent" | "bot",
@@ -273,6 +280,7 @@
     if (entryBusy) return;
     entryBusy = kind;
     entryError = null;
+    entryFix = null;
     try {
       const result = await run();
       if (result.ok) {
@@ -280,6 +288,7 @@
         return;
       }
       entryError = result.reason;
+      entryFix = "fix" in result ? (result.fix ?? null) : null;
     } catch (err) {
       entryError = err instanceof Error ? err.message : String(err);
     } finally {
@@ -2550,6 +2559,7 @@
         onCloudCreate={canCreateCloudBot ? newAgentFor : null}
         {loadClaudeProviderFlag}
         {loadCloudProvisionOptions}
+        {directCloud}
         oncreate={canCreateLocalBot ? submitLocalBot : null}
         onback={() => {
           entryError = null;
@@ -2557,6 +2567,7 @@
         }}
         {entryBusy}
         {entryError}
+        {entryFix}
         signInApi={botSignIn}
         onsignedin={onbotsignedin}
         {avatarPacks}

@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Behind `agents.desktop-agent-creation` (Indigo only): New bot → Cloud creates the bot directly, without Slack, and opens its DM. Cloud stays visible when it can't be used and says why (admin role, plan, or no company), and Settings › Bots can create cloud bots too.
+
 - The desktop setup funnel can now be followed end to end in the vyg CDP. When you sign in through the browser, hqforwork.com tells the app which website visitor downloaded it, and the app mirrors first launch, each onboarding step shown, sign-in, company creation, first sync, and a quit before sign-in to the CDP under that visitor, with app version, OS version, chip, and install source. Off by default; turned on remotely with the `desktop.cdp-mirror` flag. No email, name, or token is ever sent.
 
 - New cloud bots created from the desktop New bot flow sign in with your model subscription. The API key option is no longer offered there.
