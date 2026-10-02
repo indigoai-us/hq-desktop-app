@@ -12,8 +12,10 @@ use sha1::{Digest, Sha1};
 pub const OWNER_ARGUMENT_MIN_VERSION: &str = "6.18.13";
 /// First hq-cloud release that accepts `sync-runner --exit-with-parent`.
 pub const EXIT_WITH_PARENT_ARGUMENT_MIN_VERSION: &str = "6.18.24";
-/// First hq-cloud release that accepts `sync-runner --watch-parent-pid`.
-pub const WATCH_PARENT_PID_ARGUMENT_MIN_VERSION: &str = "6.18.25";
+/// First hq-cloud release whose watch loop works with `--watch-parent-pid`.
+/// 6.18.25 through 6.18.37 accept the flag at launch but copy it into every
+/// pass argv without `--watch`, so every pass fails (hq-cloud #786).
+pub const WATCH_PARENT_PID_ARGUMENT_MIN_VERSION: &str = "6.18.38";
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -715,18 +717,46 @@ mod tests {
         assert_eq!(one_shot, ["--companies"]);
     }
 
+    /// Regression (2026-10-02): hq-cloud 6.18.25 through 6.18.37 parse
+    /// `--watch-parent-pid` at launch but also copy it into every pass argv
+    /// without `--watch`, so each pass exits 1 ("--watch-parent-pid requires
+    /// --watch") and an app-hosted runner never syncs. hq-cloud #786 fixes the
+    /// pass argv in 6.18.38; older runners must not receive the flag.
+    #[test]
+    fn watch_parent_pid_argument_is_withheld_from_runners_that_break_every_pass() {
+        for broken in ["6.18.25", "6.18.31", "6.18.32", "6.18.37"] {
+            let mut args = vec!["--watch".to_string(), "--exit-with-parent".to_string()];
+            assert!(
+                !append_desktop_watch_parent_pid_argument(&mut args, broken),
+                "{broken} must not receive --watch-parent-pid"
+            );
+            assert_eq!(args, ["--watch", "--exit-with-parent"]);
+        }
+        let mut fixed = vec!["--watch".to_string(), "--exit-with-parent".to_string()];
+        assert!(append_desktop_watch_parent_pid_argument(&mut fixed, "6.18.38"));
+        assert_eq!(
+            fixed,
+            [
+                "--watch",
+                "--exit-with-parent",
+                "--watch-parent-pid",
+                &std::process::id().to_string()
+            ]
+        );
+    }
+
     #[test]
     fn watch_parent_pid_argument_is_watch_only_and_version_gated() {
         let mut below = vec!["--watch".to_string()];
         assert!(!append_desktop_watch_parent_pid_argument(
-            &mut below, "6.18.24"
+            &mut below, "6.18.37"
         ));
         assert_eq!(below, ["--watch"]);
 
         let mut at_minimum = vec!["--watch".to_string()];
         assert!(append_desktop_watch_parent_pid_argument(
             &mut at_minimum,
-            "6.18.25"
+            "6.18.38"
         ));
         assert_eq!(
             at_minimum,
@@ -740,7 +770,7 @@ mod tests {
         let mut above_minimum = vec!["--watch".to_string()];
         assert!(append_desktop_watch_parent_pid_argument(
             &mut above_minimum,
-            "6.18.26"
+            "6.18.39"
         ));
         assert_eq!(
             above_minimum,

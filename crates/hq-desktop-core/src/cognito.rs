@@ -392,47 +392,11 @@ fn lock_owner_pid(lock_path: &Path) -> Option<u32> {
     std::fs::read_to_string(lock_path).ok()?.trim().parse().ok()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct LockFileIdentity {
-    #[cfg(unix)]
-    device: u64,
-    #[cfg(unix)]
-    inode: u64,
-    #[cfg(windows)]
-    volume_serial_number: Option<u32>,
-    #[cfg(windows)]
-    file_index: Option<u64>,
-    #[cfg(not(any(unix, windows)))]
-    length: u64,
-    #[cfg(not(any(unix, windows)))]
-    modified: Option<SystemTime>,
-}
+#[derive(Debug, PartialEq, Eq)]
+struct LockFileIdentity(same_file::Handle);
 
 fn lock_file_identity(path: &Path) -> Option<LockFileIdentity> {
-    let metadata = std::fs::metadata(path).ok()?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        Some(LockFileIdentity {
-            device: metadata.dev(),
-            inode: metadata.ino(),
-        })
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        Some(LockFileIdentity {
-            volume_serial_number: metadata.volume_serial_number(),
-            file_index: metadata.file_index(),
-        })
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        Some(LockFileIdentity {
-            length: metadata.len(),
-            modified: metadata.modified().ok(),
-        })
-    }
+    same_file::Handle::from_path(path).ok().map(LockFileIdentity)
 }
 
 fn remove_stale_lock_if_unchanged(
