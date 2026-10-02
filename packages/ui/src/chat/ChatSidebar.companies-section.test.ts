@@ -203,8 +203,44 @@ describe("ChatSidebar Companies section — click opens the home channel", () =>
     // "open a channel by id" event fires with the roster's homeChannelId,
     // the same path deep links and notifications use.
     expect(openSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ channelId: "chn_home_stalled" }),
+      expect.objectContaining({
+        channelId: "chn_home_stalled",
+        title: "Stalled Co",
+      }),
     );
+  });
+
+  it("shows a company's display name instead of its home-channel slug in TODAY", async () => {
+    const xyCompany: Workspace = {
+      ...INDIGO,
+      slug: "xy",
+      displayName: "Two Word Company",
+      cloudUid: "cmp_xy",
+      homeChannelId: "chn_home_xy",
+    };
+    const xyHome: ChannelDirectoryRow = {
+      ...homeChannelRow,
+      channelId: "chn_home_xy",
+      companyUid: "cmp_xy",
+      name: "xy",
+    };
+    component = mount(ChatSidebar, {
+      target: host,
+      props: {
+        api: stubApi(),
+        seedDirectory: [xyHome],
+        companies: [xyCompany],
+        scopeUid: "all",
+      },
+    });
+
+    const rowTitle = () =>
+      host.querySelector(
+        '[data-conversation-id="ch:chn_home_xy"] .chat-row-title',
+      );
+    await vi.waitFor(() => expect(rowTitle()).toBeTruthy());
+    expect(rowTitle()?.textContent?.trim()).toBe("Two Word Company");
+    expect(rowTitle()?.textContent?.trim()).not.toBe("xy");
   });
 
   it("ensureCompanyHomeChannel and logToFile are required: a no-homeChannelId row still attempts ensure on click, never silently disables", async () => {
