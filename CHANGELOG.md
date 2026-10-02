@@ -7,6 +7,7 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+- Daemon sync controls explain paused, disabled, and stopped states. Resume also re-enables sync for machines migrated from the older daemon setting. Instant Sync changes reach an existing daemon and require HQ CLI 5.312.0 or later. Sync actions wait briefly for host selection at launch, then use the legacy or daemon path. Company-specific Sync Now no longer starts a sync across every company when the daemon owns sync.
 
 - Fixes the sidebar order shipped in 0.10.373 and 0.10.374, which listed
   conversations by unread count and then by name within each day instead of
@@ -63,7 +64,6 @@ The release moves it under the version it ships in.
   "Sign in above, then Retry". It no longer says "Sign-in did not complete"
   while your browser sign-in is still open, and if a sign-in does fail you
   can try again, switch tools, or reopen the sign-in page.
-
 - Core Drift ignores setup PATH changes and generated wrapper markers while retaining raw-hash fallback when settings JSON cannot be parsed.
 - Core Drift ignores the desktop-generated `env.PATH` in `.claude/settings.json` and the company skill-wrapper marker, while continuing to report other settings edits.
 
@@ -75,6 +75,7 @@ The release moves it under the version it ships in.
 - HQ no longer restarts for an update, or at support's request, while a meeting
   is being recorded; it waits until the recording finishes.
 
+- When HQ daemon owns sync, Sync Now, pause/resume, and company sync modes go through the daemon. Instant Sync follows its setting, and sync help points to the daemon log while preserving the old log for history.
 - On macOS 26.2 and later, the installer window shows its background artwork again instead of a plain white window behind the HQ and Applications icons.
 
 - Internal: removed two unused packages/ui helpers and made three module-only helpers private (TD-60, #1198). No user-visible change.

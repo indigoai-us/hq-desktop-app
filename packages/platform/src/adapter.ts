@@ -194,6 +194,23 @@ export interface DaemonStatus {
   source?: string;
 }
 
+export interface DaemonSyncStatus {
+  running: boolean;
+  paused: boolean;
+  syncOwner: string;
+  owner: string | null;
+  lastHeartbeat: string | null;
+  lastPassResult: {
+    status?: string;
+    completedAt?: string;
+    errors?: number;
+    [key: string]: unknown;
+  } | null;
+  unitStatus: string;
+  reason: string | null;
+  logPath: string;
+}
+
 export interface VersionInfo {
   app?: string;
   core?: string;
@@ -1186,6 +1203,7 @@ export interface SyncApi {
   startDaemon(): AdapterPromise<void>;
   stopDaemon(): AdapterPromise<void>;
   daemonStatus(): AdapterPromise<DaemonStatus>;
+  daemonSyncStatus(): AdapterPromise<DaemonSyncStatus | null>;
   startSync(slug?: string): AdapterPromise<void>;
   cancelSync(): AdapterPromise<void>;
   getSyncStatus(): AdapterPromise<SyncStatus>;

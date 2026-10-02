@@ -589,6 +589,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     startDaemon: () => this.call("start_daemon"),
     stopDaemon: () => this.call("stop_daemon"),
     daemonStatus: () => this.call("daemon_status"),
+    daemonSyncStatus: () => this.call("daemon_sync_status"),
     startSync: (slug) => this.call("start_sync", { slug }),
     cancelSync: () => this.call("cancel_sync"),
     getSyncStatus: () => this.call("get_sync_status"),
