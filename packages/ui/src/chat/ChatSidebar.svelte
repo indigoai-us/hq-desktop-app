@@ -191,7 +191,6 @@
   import LazyDoor from "../shell/LazyDoor.svelte";
   import { newChannelSheetDoor, newMessageSheetDoor } from "../shell/lazy-doors.js";
   import { CREATE_MENU_ITEMS, type CreateMenuAction } from "./create-menu.js";
-  import { formatShortcut } from "../common/keyboard-shortcuts";
   import type { CompanyCreateSeam } from "./create-company/create-company-flow.js";
   import { registerShortcuts } from "../common/keyboard-shortcuts";
   import { titleWhenTruncated } from "../common/truncation-title";

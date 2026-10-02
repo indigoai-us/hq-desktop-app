@@ -452,7 +452,13 @@ describe("DesktopApp settings Back button", () => {
     await openSettingsSection("notifications");
     expect(host.querySelector('[data-testid="settings-host"]')).toBeTruthy();
 
-    host.querySelector<HTMLButtonElement>('[data-testid="settings-back"]')?.click();
+    // Settings loads as its own chunk, so wait for its Back button to mount.
+    const back = await vi.waitFor(() => {
+      const el = host.querySelector<HTMLButtonElement>('[data-testid="settings-back"]');
+      if (!el) throw new Error("settings-back not mounted yet");
+      return el;
+    });
+    back.click();
     await tick();
     await tick();
 
@@ -466,7 +472,13 @@ describe("DesktopApp settings Back button", () => {
     await openSettingsSection("appearance");
     expect(host.querySelector('[data-testid="settings-host"]')).toBeTruthy();
 
-    host.querySelector<HTMLButtonElement>('[data-testid="settings-back"]')?.click();
+    // Settings loads as its own chunk, so wait for its Back button to mount.
+    const back = await vi.waitFor(() => {
+      const el = host.querySelector<HTMLButtonElement>('[data-testid="settings-back"]');
+      if (!el) throw new Error("settings-back not mounted yet");
+      return el;
+    });
+    back.click();
     await tick();
     await tick();
 

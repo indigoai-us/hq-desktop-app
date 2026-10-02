@@ -247,9 +247,8 @@
   import CommandPalette, {
     type CommandPaletteItem,
   } from "../common/CommandPalette.svelte";
-  import ShellSettings, {
-    type ShellSettingsProfile,
-  } from "../settings/ShellSettings.svelte";
+  import type { ShellSettingsProfile } from "../settings/ShellSettings.svelte";
+  import { loadShellSettings } from "./settings-lazy.js";
   import RecommendedUpdateBanner from "../settings/RecommendedUpdateBanner.svelte";
   import MembershipSyncBanner from "./MembershipSyncBanner.svelte";
   import SessionExpiredBanner from "./SessionExpiredBanner.svelte";
@@ -1659,6 +1658,8 @@
   ] as const;
   type AgentChannelTab = (typeof AGENT_CHANNEL_TABS)[number]["id"];
 
+  // Bumped by the Settings retry control to re-run a failed chunk load.
+  let settingsLoadAttempt = $state(0);
   let view = $state<
     | "conversation"
     | "notifications"
@@ -9641,25 +9642,35 @@
          titlebar. The channel rail is hidden and the whole area becomes the
          two-column Settings surface. -->
     <div class="desktop-body" data-testid="settings-host">
-      <ShellSettings
-        profile={resolvedSettingsProfile}
-        {companies}
-        {adapter}
-        sessionGeneration={tenantGeneration}
-        storage={tenantStorage}
-        {version}
-        initialSection={settingsSection}
-        onsectionchange={(section) => openSettings(section)}
-        onback={closeSettings}
-        onsignout={onsignout ? signOutWithImageCleanup : undefined}
-        onopenconsole={onOpenConsole
-          ? (url) => onOpenConsole(url ?? HQ_CONSOLE_BASE)
-          : undefined}
-        consoleBase={HQ_CONSOLE_BASE}
-        {updateWakeSeq}
-        {refreshAppVersion}
-        {uiVersion}
-      />
+      {#key settingsLoadAttempt}
+      {#await loadShellSettings() then { default: ShellSettings }}
+        <ShellSettings
+          profile={resolvedSettingsProfile}
+          {companies}
+          {adapter}
+          sessionGeneration={tenantGeneration}
+          storage={tenantStorage}
+          {version}
+          initialSection={settingsSection}
+          onsectionchange={(section) => openSettings(section)}
+          onback={closeSettings}
+          onsignout={onsignout ? signOutWithImageCleanup : undefined}
+          onopenconsole={onOpenConsole
+            ? (url) => onOpenConsole(url ?? HQ_CONSOLE_BASE)
+            : undefined}
+          consoleBase={HQ_CONSOLE_BASE}
+          {updateWakeSeq}
+          {refreshAppVersion}
+          {uiVersion}
+        />
+      {:catch}
+        <button
+          type="button"
+          class="settings-retry"
+          onclick={() => settingsLoadAttempt++}>Tap to retry</button
+        >
+      {/await}
+      {/key}
     </div>
   {:else if view === "explorer"}
     <!-- Full destination, like Settings. -->
@@ -11348,6 +11359,14 @@
   .rail-placeholder-story {
     color: var(--v4-text-3);
     font: 400 12px/1.4 var(--font-mono, monospace);
+  }
+
+  .settings-retry {
+    margin: auto;
+    color: var(--text-muted);
+    background: none;
+    border: none;
+    cursor: pointer;
   }
 
   .desktop-body {

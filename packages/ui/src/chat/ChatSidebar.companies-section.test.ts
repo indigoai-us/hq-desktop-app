@@ -221,7 +221,7 @@ describe("ChatSidebar Companies section — click opens the home channel", () =>
     );
   });
 
-  it("shows a company's display name instead of its home-channel slug in TODAY", async () => {
+  it("shows a company's display name instead of its home-channel slug in Activity", async () => {
     const xyCompany: Workspace = {
       ...INDIGO,
       slug: "xy",
@@ -241,7 +241,8 @@ describe("ChatSidebar Companies section — click opens the home channel", () =>
         api: stubApi(),
         seedDirectory: [xyHome],
         companies: [xyCompany],
-        scopeUid: "all",
+        // Company channels list under Activity when their company is selected.
+        scopeUid: "cmp_xy",
       },
     });
 
