@@ -1,4 +1,6 @@
 // @vitest-environment happy-dom
+import type { SettingsApi, ShellApi } from "@hq/platform";
+import { ok } from "@hq/platform";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import FilesConnectPage from "./FilesConnectPage.svelte";
@@ -38,8 +40,25 @@ describe("US-029 FilesConnectPage", () => {
         page,
         slug: "indigo",
         files: null,
-        shell: { openClaudeCodeLink: vi.fn() },
-        settings: { getConfig: vi.fn() },
+        shell: {
+          openInEditor: vi.fn(async () => ok(undefined)),
+          openClaudeCodeLink: vi.fn(async () => ok(undefined)),
+          openCodexDeepLink: vi.fn(async () => ok(undefined)),
+          openFileInClaude: vi.fn(async () => ok(undefined)),
+          launchClaudeCode: vi.fn(async () => ok(undefined)),
+          launchCodexWorkspace: vi.fn(async () => ok(undefined)),
+          launchCliInTerminal: vi.fn(async () => ok(undefined)),
+          detectAiTools: vi.fn(async () => ok({})),
+          pickFolder: vi.fn(async () => ok(null)),
+          pickFile: vi.fn(async () => ok(null)),
+        } satisfies ShellApi,
+        settings: {
+          getConfig: vi.fn(async () => ok({})),
+          getSettings: vi.fn(async () => ok({})),
+          updateSettings: vi.fn(async () => ok(undefined)),
+          getSetupStatus: vi.fn(async () => ok({})),
+          getTelemetryConsent: vi.fn(async () => ok(null)),
+        } satisfies SettingsApi,
         openExternal: vi.fn(),
       },
     });
