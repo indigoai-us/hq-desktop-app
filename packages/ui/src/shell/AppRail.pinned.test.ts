@@ -49,6 +49,40 @@ describe("pinned company tiles (US-004)", () => {
     expect(host.innerHTML).not.toContain("co_quiet");
   });
 
+  it("draws hairlines between the rail groups, logomarks in tiles, and the own live dot", async () => {
+    const withIcon = railItems(
+      [
+        { uid: "co_a", label: "Indigo", liveCount: 0, iconUrl: "data:image/svg+xml,%3Csvg/%3E" },
+        { uid: "co_b", label: "LiveRecover", liveCount: 0 },
+      ],
+      "You",
+    );
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(AppRail, {
+      target: host,
+      props: { items: withIcon, activeId: null, youLive: true, onselect: () => {} },
+    });
+    await tick();
+    const nav = host.querySelector("[data-testid='app-rail']")!;
+    const order = [...nav.children].map((el) =>
+      el.getAttribute("data-testid") === "rail-sep"
+        ? "|"
+        : (el.querySelector("button")?.getAttribute("data-rail-id") ??
+          el.getAttribute("data-rail-id") ??
+          el.getAttribute("data-testid")),
+    );
+    const seps = order.map((id, i) => (id === "|" ? i : -1)).filter((i) => i >= 0);
+    expect(seps).toHaveLength(3);
+    expect(order[seps[0]! - 1]).toBe("meetings");
+    expect(order[seps[1]! - 1]).toBe("more-companies");
+    expect(order[seps[2]! + 1]).toBe("you");
+    const tiles = host.querySelectorAll("[data-testid='rail-company']");
+    expect(tiles[0]!.querySelector("img, svg, .company-icon")).not.toBeNull();
+    expect(tiles[1]!.textContent).toContain("LI");
+    expect(host.querySelector("[data-testid='rail-you-live']")).not.toBeNull();
+  });
+
   it("stops the live-dot pulse under reduced motion", () => {
     expect(source).toContain("@keyframes dot-pulse");
     expect(source).toContain("prefers-reduced-motion: reduce");

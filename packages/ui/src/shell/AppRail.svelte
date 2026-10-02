@@ -80,6 +80,13 @@
     if (from !== item.companyUid) onreorderpins?.(from, item.companyUid);
   }
 
+  /** Hairline groups: Home+Meetings | companies+More | personal pages. */
+  function railGroup(item: RailItem): number {
+    if (item.kind === "home" || item.kind === "meetings") return 0;
+    if (item.kind === "company" || item.kind === "more-companies") return 1;
+    return 2;
+  }
+
   function shortcutHint(item: RailItem): string | null {
     const index = items.indexOf(item);
     return index >= 0 && index < 9 ? `⌘${index + 1}` : null;
@@ -171,11 +178,17 @@
 {/snippet}
 
 <nav class="app-rail" aria-label="Primary" data-testid="app-rail">
-  {#each top as item (item.id)}
+  {#each top as item, index (item.id)}
+    {#if index > 0 && railGroup(item) !== railGroup(top[index - 1]!)}
+      <div class="sep" data-testid="rail-sep" aria-hidden="true"></div>
+    {/if}
     {@render railButton(item)}
   {/each}
   <div class="spacer" data-testid="rail-spacer"></div>
-  {#if you}{@render railButton(you)}{/if}
+  {#if you}
+    <div class="sep" data-testid="rail-sep" aria-hidden="true"></div>
+    {@render railButton(you)}
+  {/if}
 </nav>
 
 <style>
@@ -199,6 +212,14 @@
 
   .spacer {
     flex: 1 1 auto;
+  }
+
+  .sep {
+    flex: 0 0 1px;
+    width: 24px;
+    height: 1px;
+    margin: 4px 0;
+    background: var(--v4-hairline);
   }
 
   .rail-btn {
