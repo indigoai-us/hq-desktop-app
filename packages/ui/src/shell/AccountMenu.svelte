@@ -88,20 +88,23 @@
     </span>
     <span class="copy">
       <span class="name">{name}</span>
-      {#if email || work}
-        <span class="meta">{email}{email && work ? " · " : ""}{work}</span>
-      {/if}
+      {#if email}<span class="meta">{email}</span>{/if}
     </span>
-    {#if live}<span class="chip" data-testid="account-menu-live-chip">live</span>{/if}
+    {#if live}
+      <span class="chip" data-testid="account-menu-live-chip" title={work || undefined}><i aria-hidden="true"></i>{work || "Live"}</span>
+    {/if}
   </div>
   <button type="button" class="row" role="menuitem" data-testid="account-profile" onclick={() => choose("profile")}>
-    Profile
+    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4" /><path d="M4 21a8 8 0 0 1 16 0" /></svg>
+    <span class="t">Profile</span>
   </button>
   <button type="button" class="row" role="menuitem" data-testid="account-billing" onclick={() => choose("billing")}>
-    Billing
+    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="18" height="12" rx="2" /><path d="M3 10h18M7 15h3" /></svg>
+    <span class="t">Billing</span>
   </button>
   <button type="button" class="row" role="menuitem" data-testid="account-settings" onclick={() => choose("settings")}>
-    Settings
+    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1" /></svg>
+    <span class="t">Settings</span>
   </button>
   {#if roles.length > 0}
     <div class="sec">Companies</div>
@@ -121,7 +124,7 @@
   {/if}
   <div class="foot">
     <button type="button" class="row signout" role="menuitem" data-testid="account-sign-out" onclick={signOut}>
-      Sign out
+      <span class="t indent">Sign out</span>
     </button>
   </div>
 </div>
@@ -206,10 +209,44 @@
 
   .chip {
     margin-left: auto;
-    font: 500 10px/1 var(--font-mono, ui-monospace, monospace);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--v4-ok);
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 140px;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 7px;
+    border-radius: 999px;
+    background: var(--v4-control-bg);
+    font: 500 11px/1.2 var(--font-ui);
+    color: var(--v4-text-2);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .chip i {
+    flex: 0 0 auto;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--v4-ok);
+  }
+
+  .row svg {
+    flex: 0 0 auto;
+    width: 15px;
+    height: 15px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    color: var(--v4-text-2);
+  }
+
+  .indent {
+    padding-left: 23px;
   }
 
   .sec {
