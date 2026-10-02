@@ -32,8 +32,13 @@ import { TAURI_CAPABILITIES, type Capability } from '../capabilities.js';
 import { WEB_PATHS } from '../web/index.js';
 import {
   CLAUDE_PROVIDER_FLAG,
+  DESKTOP_LIMIT_STATUS_PUSH_FLAG,
   FIRST_FOLDER_SYNC_STEP_FLAG,
+  HUMAN_ONLY_CONVERSATIONS_FLAG,
+  HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT,
   INVITE_TEAMMATE_STEP_FLAG,
+  LOGIN_RECEIPT_DURABILITY_FLAG,
+  PERSONAL_WORKSPACE_BOARD_FLAG,
   createFeatureFlagGate,
   createHqProFlagFetch,
   MIRROR_QUARANTINE_MOVE_NOT_DELETION_FLAG,
@@ -48,6 +53,7 @@ import {
   retryThrottled,
   type RequestPolicyOptions,
 } from '../request-policy.js';
+import { hqProFailure, parseHqProErrorBody } from '../plan-limit.js';
 
 export type SyncInvokeFn = (
   cmd: string,
@@ -178,6 +184,59 @@ export function createSyncPlatformAdapter(
     fetch: createHqProFlagFetch(invokeFn),
     createClient: config.createFlagClient,
   });
+
+  function hasFeatureLegacy(flag: string): AdapterPromise<boolean> {
+    if (flag === DESKTOP_LIMIT_STATUS_PUSH_FLAG) {
+      // Missing rows and registry outages preserve event-only behavior.
+      return Promise.resolve(ok(false));
+    }
+    if (flag === SETUP_DIRECTORY_PARENT_FALLBACK_FLAG) {
+      // This rollout is opt-in. A missing registry value or unavailable
+      // registry stays off until the manager creates and enables it.
+      return Promise.resolve(ok(false));
+    }
+    if (flag === FIRST_FOLDER_SYNC_STEP_FLAG) {
+      // The first-folder onboarding step is a rollout; fail closed until
+      // a manager explicitly enables its hq-flags value.
+      return Promise.resolve(ok(false));
+    }
+    if (flag === INVITE_TEAMMATE_STEP_FLAG) {
+      // This optional onboarding step stays off on missing or unreadable
+      // registry values until a manager explicitly enables it.
+      return Promise.resolve(ok(false));
+    }
+    if (flag === SETUP_STAGE_TIMEOUT_FIX_FLAG) {
+      // Setup timeout mitigation is opt-in and stays off until a manager
+      // explicitly enables its hq-flags value.
+      return Promise.resolve(ok(false));
+    }
+    if (flag === PERSONAL_WORKSPACE_BOARD_FLAG) {
+      // Personal board reads stay disabled until the hq-flags registry
+      // explicitly enables this rollout.
+      return Promise.resolve(ok(false));
+    }
+    if (flag === LOGIN_RECEIPT_DURABILITY_FLAG) {
+      // Sign-in receipt durability is opt-in; an absent or unreadable registry
+      // leaves the existing asynchronous queue behavior unchanged.
+      return Promise.resolve(ok(false));
+    }
+    if (flag === HUMAN_ONLY_CONVERSATIONS_FLAG) {
+      // Human-only conversations is on by default in the desktop app.
+      // `identity.hasFeature` short-circuits before the registry; this
+      // branch keeps the legacy path consistent.
+      return Promise.resolve(ok(HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT));
+    }
+    if (flag === CLAUDE_PROVIDER_FLAG) {
+      return Promise.resolve(ok(false));
+    }
+    if (flag === 'meetings') {
+      return call<boolean>('meetings_feature_enabled');
+    }
+    if (flag === 'is_indigo_user') {
+      return call<boolean>('is_indigo_user');
+    }
+    return hqProJson<boolean>('GET', WEB_PATHS.hasFeature(flag));
+  }
 
   async function call<T>(
     cmd: string,
@@ -320,23 +379,14 @@ export function createSyncPlatformAdapter(
       const retryAfter =
         typeof rec.retryAfter === 'string' ? rec.retryAfter : null;
       if (rec.status < 200 || rec.status >= 300) {
-        let code = `http-${rec.status}`;
-        let message = `${method} ${path} failed`;
-        try {
-          const parsed = text ? JSON.parse(text) : null;
-          const err = asRecord(parsed);
-          if (err) {
-            if (typeof err.code === 'string' && err.code.trim()) {
-              code = err.code.trim();
-            }
-            if (typeof err.error === 'string' && err.error.trim()) {
-              message = err.error.trim();
-            }
-          }
-        } catch {
-          /* keep http-status defaults */
-        }
-        return { result: failure(code, message), status: rec.status, retryAfter };
+        // A plan-limit 402 keeps the server's sentence and upgrade link; it is
+        // an expected refusal, so it is returned, never reported to Sentry.
+        const details = parseHqProErrorBody(
+          rec.status,
+          text,
+          `${method} ${path} failed`,
+        );
+        return { result: hqProFailure(details), status: rec.status, retryAfter };
       }
       if (rec.status === 204 || !text.trim()) {
         return { result: ok(undefined as T), status: rec.status };
@@ -507,38 +557,14 @@ export function createSyncPlatformAdapter(
       },
       isAdmin: () => call<boolean>('desktop_alt_is_admin'),
       hasFeature: (flag) =>
-        flags.resolve(flag, () => {
-          if (flag === SETUP_DIRECTORY_PARENT_FALLBACK_FLAG) {
-            // This rollout is opt-in. A missing registry value or unavailable
-            // registry stays off until the manager creates and enables it.
-            return Promise.resolve(ok(false));
-          }
-          if (flag === FIRST_FOLDER_SYNC_STEP_FLAG) {
-            // The first-folder onboarding step is a rollout; fail closed until
-            // a manager explicitly enables its hq-flags value.
-            return Promise.resolve(ok(false));
-          }
-          if (flag === INVITE_TEAMMATE_STEP_FLAG) {
-            // This optional onboarding step stays off on missing or unreadable
-            // registry values until a manager explicitly enables it.
-            return Promise.resolve(ok(false));
-          }
-          if (flag === SETUP_STAGE_TIMEOUT_FIX_FLAG) {
-            // Setup timeout mitigation is opt-in and stays off until a manager
-            // explicitly enables its hq-flags value.
-            return Promise.resolve(ok(false));
-          }
-          if (flag === CLAUDE_PROVIDER_FLAG) {
-            return Promise.resolve(ok(false));
-          }
-          if (flag === 'meetings') {
-            return call<boolean>('meetings_feature_enabled');
-          }
-          if (flag === 'is_indigo_user') {
-            return call<boolean>('is_indigo_user');
-          }
-          return hqProJson<boolean>('GET', WEB_PATHS.hasFeature(flag));
-        }),
+        flag === HUMAN_ONLY_CONVERSATIONS_FLAG
+          ? // Pinned per release; the registry cannot turn it off.
+            Promise.resolve(ok(HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT))
+          : flags.resolve(flag, () => hasFeatureLegacy(flag)),
+      subscribeFeature: (flag, onChange) =>
+        flag === HUMAN_ONLY_CONVERSATIONS_FLAG
+          ? () => {}
+          : flags.subscribe(flag, () => hasFeatureLegacy(flag), onChange),
       listWorkspaces: async () => {
         const result = await call<unknown>('list_syncable_workspaces');
         if (!result.ok) return result;
@@ -669,7 +695,7 @@ export function createSyncPlatformAdapter(
         if (!result.ok) return result;
         return ok(unwrapNamedArray(result.value, ['results', 'hits']));
       },
-      fetchChannel: ({ channelId, limit, cursor, since }) => {
+      fetchChannel: ({ channelId, limit, cursor, since, view }) => {
         if (since) {
           return hqProJson(
             'GET',
@@ -677,13 +703,19 @@ export function createSyncPlatformAdapter(
               limit,
               cursor,
               since,
+              view,
             }),
           );
         }
+        // `view` rides the same native command as every other history page,
+        // so an older server (which ignores it) answers exactly as before.
+        // The command forwards it and returns the echoed `view` and
+        // `viewScanTruncated`. The key is only sent when set.
         return call('fetch_channel', {
           channelId,
           limit,
           cursor: cursor ?? null,
+          ...(view ? { view } : {}),
         });
       },
       listChannelMembers: (channelId) =>
@@ -726,14 +758,27 @@ export function createSyncPlatformAdapter(
           values: args.values,
           idempotencyKey: args.idempotencyKey ?? null,
         }),
-      fetchDmThread: ({ withPersonUid, limit, since }) => {
+      fetchDmThread: ({ withPersonUid, limit, since, cursor, view }) => {
         if (since) {
           return hqProJson(
             'GET',
-            withQuery(WEB_PATHS.dmThread, { withPersonUid, limit, since }),
+            withQuery(WEB_PATHS.dmThread, {
+              withPersonUid,
+              limit,
+              since,
+              cursor,
+              view,
+            }),
           );
         }
-        return call('fetch_dm_thread', { withPersonUid, limit });
+        // As on fetchChannel: the native command forwards `cursor` and
+        // `view`, and both keys are only sent when set.
+        return call('fetch_dm_thread', {
+          withPersonUid,
+          limit,
+          ...(cursor ? { cursor } : {}),
+          ...(view ? { view } : {}),
+        });
       },
       sendDm: (toPersonUid, body, extras) => {
         const attachments = extras?.attachments;
@@ -1186,6 +1231,7 @@ export function createSyncPlatformAdapter(
       },
       stopDaemon: () => call('stop_daemon'),
       daemonStatus: () => call('daemon_status'),
+      daemonSyncStatus: () => call('daemon_sync_status'),
       startSync: async (slug) => {
         const configured = await updateMirrorQuarantineFlag();
         if (!configured.ok) return configured;
@@ -1377,6 +1423,7 @@ export function createSyncPlatformAdapter(
         }
       },
       getSetupStatus: () => call('get_setup_status'),
+      markWelcomeTourShown: () => call('mark_welcome_tour_shown'),
       getTelemetryConsent: () => call('get_telemetry_consent_status'),
     },
 

@@ -683,7 +683,39 @@
 /// passes. `RESCUE_CONTRACT_FLOOR` moves to 6.18.0 in lockstep, mirrored in
 /// hq-cli's rescue parity test. The runner-error vocabulary was re-derived for
 /// this pin (see `runner_error_shape::CAUSE_VOCABULARY_SOURCE_VERSION`).
-pub const HQ_CLOUD_VERSION: &str = "~6.18.5";
+///
+/// `~6.18.5` -> `~6.18.16`: floors the runner at the watcher fix
+/// (hq-cloud#715). When an ignored folder such as `node_modules/` or `build/`
+/// appeared inside a whole-subtree watch, the watcher closed that watch before
+/// attaching its replacement and lost the events still queued on it. On macOS
+/// every directory watch shares one FSEvents stream that is recreated on each
+/// add or close, which dropped about 35 ms of events for the whole process.
+/// Files saved in either window were not uploaded until the six-hourly
+/// rescan. 6.18.16 attaches the new watches before the old ones close and
+/// sweeps the re-planned root for files changed during the switch. It also
+/// carries the 6.18.6-6.18.15 runner fixes. The runner adds optional flags
+/// (`--owner`, `--scope-upsert-path`, `--scope-content-hashes-file`) and removes
+/// none, so no flag the desktop passes changes. Runner bug fixes, not a new
+/// desktop-visible capability, so this bump adds no `*_MIN_HQ_CLOUD` floor.
+/// It stays on the 6.18 minor line, so `RESCUE_CONTRACT_FLOOR` stays 6.18.0.
+/// A desktop holding a cached 6.18.x below 6.18.16 satisfies `~6.18.5`
+/// forever; changing this requested spec is what moves npm's cache key and
+/// delivers the fix.
+///
+/// `~6.18.16` -> `~6.18.17`: floors the runner at the hard-stop readiness
+/// release (hq-cloud#709, US-012). The runner recognises every plan-limit
+/// refusal body, treats a refused upload as a skipped file instead of a sync
+/// error (the company stays `complete` and a plan-limit-only pass exits 0),
+/// reports the refused paths once per pass on the `plan-limit` event, adds
+/// `filesPlanLimited` to the `complete` event, and pauses refused keys for up
+/// to an hour. The desktop side (US-019) already handled both the older runner
+/// (plan-limit errors are non-alertable) and this one (`plan-limit` notices
+/// drive the uploads-paused state), so this bump adds no `*_MIN_HQ_CLOUD`
+/// floor. The runner adds no flag and no runner-error identity. It stays on
+/// the 6.18 minor line, so `RESCUE_CONTRACT_FLOOR` stays 6.18.0. Raising the
+/// lower bound moves npm's cache key so installed copies refresh their cached
+/// runner.
+pub const HQ_CLOUD_VERSION: &str = "~6.18.31";
 
 /// First `@indigoai-us/hq-cloud` version that ships the post-sync
 /// manifest-upload pass (US-004, sync-reconciliation-audit).
@@ -811,7 +843,7 @@ mod tests {
     /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
     fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.18.5");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.18.31");
     }
 
     /// Root-`bin/` exclusion floor (hq-cloud#501). Below this floor a personal

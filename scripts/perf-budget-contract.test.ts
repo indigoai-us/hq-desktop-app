@@ -370,6 +370,16 @@ const SESSIONS_HIDDEN_POLL_FLOOR_SECS = 120;
  */
 const FAST_POLLER_ALLOWLIST = new Map<string, string>([
   [
+    "packages/ui/src/tour/GuidedTour.svelte",
+    "250ms re-measure of the spotlight target while the guided tour is on " +
+      "screen, so the cutout follows layout shifts that fire no resize or " +
+      "scroll event (a sidebar row mounting, the Launch menu opening). Not a " +
+      "long-lived poller: it exists only while the tour layer is mounted (once " +
+      "on a fresh install, or when replayed from the palette), is cleared on " +
+      "every step change, Done, Skip and Esc, and only reads layout; it writes " +
+      "state when the target rect actually changed.",
+  ],
+  [
     "packages/ui/src/chat/messaging/AgentThinkingRow.svelte",
     "1s tick driving the visible 'working for 42s' counter while an agent is " +
       "mid-turn. Not a long-lived poller: the $effect returns early when there " +

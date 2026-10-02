@@ -33,6 +33,9 @@ export const WORK_MESH_PATHS = {
   workSessions: "/v1/work-mesh/work-sessions",
 } as const;
 
+// Bound thread reads so a stalled list or detail request cannot freeze Board.
+const BOARD_THREAD_GET_TIMEOUT_MS = 15_000;
+
 type FetchLike = typeof fetch;
 
 /**
@@ -42,11 +45,59 @@ type FetchLike = typeof fetch;
 async function getJson(
   fetchFn: FetchLike,
   path: string,
+  options: { timeoutMs?: number; diagnostic?: string } = {},
 ): Promise<unknown | null> {
-  const res = await fetchFn(path);
-  if (res.status === 404 || res.status === 501) return null;
-  if (!res.ok) throw new Error(`[http-${res.status}] GET ${path} failed`);
-  return res.json().catch(() => null);
+  const controller = new AbortController();
+  let timeoutElapsed = false;
+  let rejectDeadline: ((reason: Error) => void) | undefined;
+  const deadline = options.timeoutMs
+    ? new Promise<never>((_resolve, reject) => {
+        rejectDeadline = reject;
+      })
+    : undefined;
+  let phase: "request" | "body" = "request";
+  const timeout = options.timeoutMs
+    ? setTimeout(() => {
+        timeoutElapsed = true;
+        controller.abort();
+        rejectDeadline?.(new Error("Board thread request timed out"));
+      }, options.timeoutMs)
+    : undefined;
+  try {
+    const response = fetchFn(
+      path,
+      options.timeoutMs ? { signal: controller.signal } : undefined,
+    );
+    const res = deadline
+      ? await Promise.race([response, deadline])
+      : await response;
+    if (res.status === 404 || res.status === 501) return null;
+    if (!res.ok) throw new Error(`[http-${res.status}] GET ${path} failed`);
+    phase = "body";
+    const body = res.json();
+    return deadline ? await Promise.race([body, deadline]) : await body;
+  } catch (error) {
+    if (options.diagnostic) {
+      const status =
+        error instanceof Error
+          ? /^\[http-(\d+)\]/.exec(error.message)?.[1]
+          : undefined;
+      console.warn("[hq-work-board] thread request failed", {
+        endpoint: options.diagnostic,
+        event: timeoutElapsed
+          ? "timeout"
+          : status
+            ? "http-error"
+            : phase === "body"
+              ? "body-error"
+              : "transport-error",
+        ...(status ? { status: Number(status) } : {}),
+      });
+    }
+    throw error;
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }
 
 function sessionsFromState(state: unknown): BoardSessionInput[] {
@@ -86,9 +137,10 @@ export function createBoardDataApi(
 ): BoardDataApi {
   return {
     async listThreads(): Promise<WorkMeshThread[]> {
-      const state = await getJson(fetchFn, WORK_MESH_PATHS.threads).catch(
-        () => null,
-      );
+      const state = await getJson(fetchFn, WORK_MESH_PATHS.threads, {
+        timeoutMs: BOARD_THREAD_GET_TIMEOUT_MS,
+        diagnostic: "threads",
+      }).catch(() => null);
       return normalizeThreads(state);
     },
 
@@ -99,6 +151,7 @@ export function createBoardDataApi(
       const state = await getJson(
         fetchFn,
         WORK_MESH_PATHS.thread(companyUid, threadId),
+        { timeoutMs: BOARD_THREAD_GET_TIMEOUT_MS, diagnostic: "thread" },
       ).catch(() => null);
       if (state == null) return null;
       const rec = state as Record<string, unknown>;

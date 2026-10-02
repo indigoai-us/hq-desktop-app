@@ -34,8 +34,8 @@ import { SETUP_CHANNEL_ID } from "./setup-channel.js";
 export const COMPANIES_SUMMARY_CARD_ID = "companies_summary";
 export const CREATE_COMPANY_ACTION_ID = "create_company";
 /** Team tab spend row + its action that opens the cloud-bot sequence. */
-export const TEAM_SPEND_CARD_ID = "team:spend";
-export const ADD_AGENT_ACTION_ID = "add_agent";
+const TEAM_SPEND_CARD_ID = "team:spend";
+const ADD_AGENT_ACTION_ID = "add_agent";
 
 /** Where the shell should land after an entry-point action. */
 export interface EntryPointTarget {
@@ -163,7 +163,7 @@ export const CLOUD_BOT_NO_NEXT_STEP_REASON =
   "The server didn't send the next step for the new bot. Try again in a moment.";
 
 /** Fallback when the server refused without saying why. */
-export const CLOUD_BOT_REFUSED_REASON = "The server refused the new bot.";
+const CLOUD_BOT_REFUSED_REASON = "The server refused the new bot.";
 
 /**
  * Shown when the company channel still holds a half-finished sequence that

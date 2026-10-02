@@ -142,6 +142,8 @@
     mergeContactActivity,
     isAgentJoinNoticeEvent,
     mergeContactsWithInbox,
+    applyDmHumanRecency,
+    wakeMayChangeHumanRecency,
     normalizeChannel,
     normalizeConversations,
     rememberRecentDm,
@@ -305,6 +307,8 @@
     onassistedinstall?: (
       tool: import("../install-choice/install-choice.js").CodingTool,
     ) => Promise<import("../install-choice/install-choice.js").InstallOutcome>;
+    /** Ask the host to (re-)probe `detect_ai_tools` lazily when CreateModal opens. */
+    onrequestaitools?: () => void;
     botWorkers?: readonly LocalBotWorkerOption[] | null;
     /** New bot flow extras (see CreateModal): taken names, sign-in, avatars. */
     existingBotNames?: readonly string[] | null;
@@ -398,6 +402,16 @@
     bottomContent?: Snippet;
     /** Fires when the user clicks the bot-message toggle in the sidebar header. */
     onshowbotmessageschange?: (value: boolean) => void;
+    /**
+     * When true (the `desktop.human-only-conversations` flag is on), rows are
+     * ordered and sectioned by the last message a person typed, in three
+     * states: a known `lastHumanMessageAt` places the row at that time; a
+     * row the server knows holds no human message is placed at its creation
+     * time (by `lastActivityAt` when it has none, as a 1:1 DM does today); a
+     * row the server sent neither field for falls back to `lastActivityAt`.
+     * Default off preserves legacy ordering.
+     */
+    humanOnly?: boolean;
   }
 
   let {
@@ -437,6 +451,7 @@
     hqFolderPath = "",
     onopenassistant,
     onassistedinstall,
+    onrequestaitools,
     botWorkers = null,
     existingBotNames = null,
     botSignIn = null,
@@ -462,6 +477,7 @@
     showBotMessages = false,
     bottomContent,
     onshowbotmessageschange,
+    humanOnly = false,
   }: Props = $props();
   // Host still reports load failures; the sidebar no longer paints them.
   void rowExtrasError;
@@ -979,6 +995,15 @@
     }
     return map;
   });
+  const companyDisplayNamesByUid = $derived.by(() => {
+    const map = new Map<string, string>();
+    for (const company of companies ?? []) {
+      const uid = (company.cloudUid ?? "").trim();
+      const displayName = (company.displayName ?? "").trim();
+      if (uid && displayName) map.set(uid, displayName);
+    }
+    return map;
+  });
 
   const allRows = $derived(
     normalizeConversations(channelsWithSetup, contactsWithUnreads, {
@@ -988,6 +1013,7 @@
       engagedAgentUids: engagedAgents,
       ownAgentUids,
       homeChannelIdByUid,
+      companyDisplayNamesByUid,
     }),
   );
 
@@ -1082,11 +1108,11 @@
     } else {
       // Not in the loaded rows yet: the stub row would otherwise paint the
       // raw `chn_…` id as the title/composer placeholder until the full
-      // directory catches up. Seed it with the company's slug — the same
-      // label the row itself will carry once loaded — so the header never
+      // directory catches up. Seed it with the company's display label,
+      // matching the home-channel row once loaded, so the header never
       // shows a raw id.
       requestChannelOpen(homeChannelId, {
-        title: company?.slug || company?.label || null,
+        title: company?.label || company?.slug || null,
         companyUid: company?.companyUid ?? null,
       });
     }
@@ -1217,6 +1243,7 @@
         show: showFilter,
         sort: sortMode,
         personUid: personFilter,
+        humanOnly,
       },
     ),
   );
@@ -1293,6 +1320,7 @@
     const live = pickAutoOpenConversation(
       filteredRows.filter((row) => !isSetupChannel(row.channelId)),
       selectedId,
+      humanOnly,
     );
     if (live) {
       autoOpenRequestedId = live.id;
@@ -1301,7 +1329,11 @@
     }
     if (!bootAttempted || loading) return;
     if (hasRosterCompany && !hasNonSetupRows && !companyRowsGraceElapsed) return;
-    const fallback = pickSettledBootConversation(filteredRows, selectedId);
+    const fallback = pickSettledBootConversation(
+      filteredRows,
+      selectedId,
+      humanOnly,
+    );
     if (!fallback) return;
     autoOpenRequestedId = fallback.id;
     sidebarLog("auto-open-fallback", {
@@ -1311,7 +1343,9 @@
     void openRow(fallback, undefined, true);
   });
   const grouped = $derived(
-    sortMode === "type" ? groupByType(railRows) : groupByDay(railRows),
+    sortMode === "type"
+      ? groupByType(railRows)
+      : groupByDay(railRows, Date.now(), { humanOnly }),
   );
   /** Rows in painted order — the selection model's range/keyboard order. */
   const renderedRows = $derived(flattenGrouped(grouped, lastWeekExpanded));
@@ -1506,9 +1540,11 @@
     }
   }
   const historyRows = $derived(
-    searchHistory(filteredRows, historyQueryDebounced),
+    searchHistory(filteredRows, historyQueryDebounced, humanOnly),
   );
-  const historyGroups = $derived(historyDayGroups(historyRows));
+  const historyGroups = $derived(
+    historyDayGroups(historyRows, new Date(), humanOnly),
+  );
   const historyScopeLabel = $derived(
     historySearchScopeLabel(scope, scopeCompanies),
   );
@@ -1965,6 +2001,41 @@
     }, 400);
   }
 
+  // Human-recency refresh. In humanOnly mode a row whose last human message
+  // is known (or known to be absent) is ordered by a value only the server
+  // computes, and a channel-message wake does not reconcile the directory. A
+  // message a person just typed would then leave the row where it was until
+  // the next unrelated reconcile. A wake that could change that value
+  // (`wakeMayChangeHumanRecency`) asks for a directory read, at most once per
+  // interval: the wake cannot say whether a person typed the message, and
+  // work sessions post often. The person's own send from the composer
+  // (`channel:own-send`) is known to be typed and is read at once.
+  const HUMAN_RECENCY_RECONCILE_MIN_INTERVAL_MS = 20_000;
+  let humanRecencyTimer: ReturnType<typeof setTimeout> | null = null;
+  let humanRecencyLastRunAt = 0;
+  function scheduleHumanRecencyReconcile(immediate: boolean): void {
+    if (immediate) {
+      // Replaces a pending throttled read, so one send costs one read.
+      if (humanRecencyTimer != null) {
+        clearTimeout(humanRecencyTimer);
+        humanRecencyTimer = null;
+      }
+      humanRecencyLastRunAt = Date.now();
+      scheduleDirectoryReconcile();
+      return;
+    }
+    if (humanRecencyTimer != null) return;
+    const wait = Math.max(
+      400,
+      humanRecencyLastRunAt + HUMAN_RECENCY_RECONCILE_MIN_INTERVAL_MS - Date.now(),
+    );
+    humanRecencyTimer = setTimeout(() => {
+      humanRecencyTimer = null;
+      humanRecencyLastRunAt = Date.now();
+      void directoryReconciler.reconcile("wake").catch(() => {});
+    }, wait);
+  }
+
   async function refreshLists(): Promise<void> {
     const firstPaint = channels.length === 0 && contacts.length === 0;
     if (firstPaint) loading = true;
@@ -2169,6 +2240,9 @@
           fromDisplayName: entry.displayName,
         })),
       );
+      // The DM thread listing may also report each pair's last human
+      // message. Entries without those fields change nothing.
+      contacts = applyDmHumanRecency(contacts, activity);
       void resolveUnnamedDmPeers();
     }
     const entries = payload?.pairUnreads;
@@ -2220,6 +2294,15 @@
           // under TODAY. The unread gate used to be the only caller, which
           // left the row in an older day fold.
           if (stamp) {
+            if (
+              humanOnly &&
+              wakeMayChangeHumanRecency(
+                channels.find((c) => c.channelId === channelId),
+                { createdAt: stamp, fromPersonUid: payload.fromPersonUid },
+              )
+            ) {
+              scheduleHumanRecencyReconcile(false);
+            }
             channels = applyChannelMessageWake(channels, {
               channelId,
               createdAt: stamp,
@@ -2238,6 +2321,19 @@
             unread: absoluteUnread ? payload.unread : bump ? undefined : payload.unread,
             unreadDelta: absoluteUnread ? 0 : bump ? 1 : 0,
           });
+        }),
+      );
+
+      track(
+        wakes.on("channel:own-send", ({ channelId }) => {
+          if (!humanOnly) return;
+          const channel = channels.find((c) => c.channelId === channelId);
+          // A row in the unknown state is ordered by activity, which the
+          // send has already stamped.
+          const known =
+            Boolean((channel?.lastHumanMessageAt ?? "").trim()) ||
+            channel?.hasHumanMessage === false;
+          if (known) scheduleHumanRecencyReconcile(true);
         }),
       );
 
@@ -2423,6 +2519,10 @@
       if (refreshTimer != null) {
         clearTimeout(refreshTimer);
         refreshTimer = null;
+      }
+      if (humanRecencyTimer != null) {
+        clearTimeout(humanRecencyTimer);
+        humanRecencyTimer = null;
       }
       if (reconcileTimer != null) {
         clearTimeout(reconcileTimer);
@@ -3710,6 +3810,7 @@
       {hqFolderPath}
       {onopenassistant}
       {onassistedinstall}
+      {onrequestaitools}
       {botWorkers}
       {existingBotNames}
       {botCompanies}

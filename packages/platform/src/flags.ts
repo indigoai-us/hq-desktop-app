@@ -81,6 +81,20 @@ export const INVITE_TEAMMATE_STEP_FLAG =
   "desktop.invite-teammate-step-v1";
 export const SETUP_STAGE_TIMEOUT_FIX_FLAG =
   "desktop.setup-stage-timeout-fix-v1";
+export const PERSONAL_WORKSPACE_BOARD_FLAG =
+  "desktop.personal-workspace-board-v1";
+export const LOGIN_RECEIPT_DURABILITY_FLAG =
+  "desktop.login-receipt-durable-before-return-v1";
+export const DESKTOP_LIMIT_STATUS_PUSH_FLAG = "desktop.limit-status-push";
+export const HUMAN_ONLY_CONVERSATIONS_FLAG =
+  "desktop.human-only-conversations";
+/**
+ * Desktop value for `desktop.human-only-conversations`. The desktop (Tauri)
+ * adapters answer this flag with this constant and do not consult the
+ * registry, so a missing, stale, or `false` registry value cannot turn the
+ * filter off. Set to `false` in a later release to turn it back off.
+ */
+export const HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT = true;
 
 /** Caller-visible names that may consult the registry. */
 export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
@@ -90,6 +104,10 @@ export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
   [FIRST_FOLDER_SYNC_STEP_FLAG]: FIRST_FOLDER_SYNC_STEP_FLAG,
   [INVITE_TEAMMATE_STEP_FLAG]: INVITE_TEAMMATE_STEP_FLAG,
   [SETUP_STAGE_TIMEOUT_FIX_FLAG]: SETUP_STAGE_TIMEOUT_FIX_FLAG,
+  [PERSONAL_WORKSPACE_BOARD_FLAG]: PERSONAL_WORKSPACE_BOARD_FLAG,
+  [LOGIN_RECEIPT_DURABILITY_FLAG]: LOGIN_RECEIPT_DURABILITY_FLAG,
+  [DESKTOP_LIMIT_STATUS_PUSH_FLAG]: DESKTOP_LIMIT_STATUS_PUSH_FLAG,
+  [HUMAN_ONLY_CONVERSATIONS_FLAG]: HUMAN_ONLY_CONVERSATIONS_FLAG,
   "desktop.mirror-quarantine-move-not-deletion":
     "desktop.mirror-quarantine-move-not-deletion",
 };

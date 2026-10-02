@@ -276,7 +276,7 @@ fn cancel_pending_listener(expected_state: Option<&str>) -> Result<bool, String>
     let pending = {
         let mut guard = listener_store()
             .lock()
-            .map_err(|e| format!("Listener lock poisoned: {e}"))?;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         match guard.as_ref() {
             Some(pending) if expected_state.map_or(true, |state| pending.state == state) => {
                 guard.take()
@@ -492,7 +492,7 @@ pub(crate) fn arm_oauth_flow(
     {
         let mut guard = listener_store()
             .lock()
-            .map_err(|e| format!("Listener lock poisoned: {e}"))?;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         *guard = Some(start_loopback_listener(listeners, state.clone()));
     }
     set_oauth_flow_active(true);
@@ -503,7 +503,7 @@ pub(crate) fn arm_oauth_flow(
     {
         let mut guard = pkce_store()
             .lock()
-            .map_err(|e| format!("PKCE lock poisoned: {e}"))?;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         *guard = Some(PendingPkce {
             verifier,
             identity_provider: selected_identity_provider,
@@ -533,9 +533,10 @@ pub(crate) fn arm_oauth_flow(
 pub fn oauth_cancel_listen(state: Option<String>) -> Result<(), String> {
     let cancelled = cancel_pending_listener(state.as_deref())?;
     if cancelled || state.is_none() {
-        if let Ok(mut guard) = pkce_store().lock() {
-            *guard = None;
-        }
+        let mut guard = pkce_store()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *guard = None;
         set_oauth_flow_active(false);
     }
     eprintln!("[oauth] sign-in cancelled");
@@ -554,7 +555,7 @@ pub(crate) async fn exchange_code_for_tokens(code: &str) -> Result<ExchangedOAut
     let pending_pkce = {
         let mut guard = pkce_store()
             .lock()
-            .map_err(|e| format!("PKCE lock poisoned: {e}"))?;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         guard
             .take()
             .ok_or_else(|| "No PKCE verifier found — was start_oauth_login called?".to_string())?
@@ -649,16 +650,17 @@ pub async fn oauth_exchange_code(app: AppHandle, code: String) -> Result<AuthSta
     // also ends on, so there is exactly one definition of "signed in".
     let state = crate::commands::auth::complete_auth_session(&app, &tokens).await?;
     // The control cohort needs the same durable login-completed edge as the
-    // continuation cohort. Persist before background delivery so a transient
-    // telemetry failure cannot make its completed sign-in disappear.
+    // continuation cohort. The flag-gated path waits for its local queue write
+    // before returning to the wizard; network delivery remains asynchronous.
     if let Some(account_id) = state.account_id.as_deref() {
-        let _ = crate::commands::desktop_auth::record_desktop_login_completed(
+        crate::commands::desktop_auth::record_desktop_login_completed_gated(
             &app,
             account_id,
             "manual_oauth",
             "control",
             identity_provider.as_deref(),
-        );
+        )
+        .await;
     } else {
         eprintln!("[desktop-onboarding] login_completed receipt not queued without an authenticated account");
     }
@@ -685,7 +687,7 @@ pub(crate) async fn oauth_listen_for_code_internal(
     let state = {
         let guard = listener_store()
             .lock()
-            .map_err(|e| format!("Listener lock poisoned: {e}"))?;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         guard
             .as_ref()
             .ok_or_else(|| "No pending sign-in listener.".to_string())?
@@ -708,7 +710,7 @@ pub async fn oauth_listen_for_code(app: AppHandle, state: String) -> Result<OAut
     let receiver = {
         let mut guard = listener_store()
             .lock()
-            .map_err(|e| format!("Listener lock poisoned: {e}"))?;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let pending = guard.as_mut().ok_or_else(|| {
             "No pending sign-in listener — was start_oauth_login called?".to_string()
         })?;
@@ -732,7 +734,7 @@ pub async fn oauth_listen_for_code(app: AppHandle, state: String) -> Result<OAut
     let thread = {
         let mut guard = listener_store()
             .lock()
-            .map_err(|e| format!("Listener lock poisoned: {e}"))?;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         match guard.as_ref() {
             Some(pending) if pending.state == state && pending.result.is_none() => {
                 guard.take().and_then(|mut pending| pending.thread.take())
@@ -860,6 +862,24 @@ mod tests {
             let guard = listener_store().lock().unwrap();
             assert!(guard.is_none());
         }
+    }
+
+    #[test]
+    fn cancel_pending_listener_recovers_a_poisoned_store() {
+        let _serialize = STORE_TEST_LOCK.lock().unwrap();
+        *listener_store()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+
+        let panic = std::thread::spawn(|| {
+            let _guard = listener_store().lock().unwrap();
+            panic!("poison pending OAuth listener store");
+        })
+        .join();
+        assert!(panic.is_err());
+
+        assert_eq!(cancel_pending_listener(None), Ok(false));
+        listener_store().clear_poison();
     }
 
     #[test]

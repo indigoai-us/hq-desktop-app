@@ -89,6 +89,7 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   goBack: "replace",
   goForward: "replace",
   leaveCurrentDestination: "replace",
+  leaveLibrary: "replace",
   handleRecommendedUpdateNow: "none",
   applyFetchedTimeline: "none",
   openMemberProfile: "none",
@@ -138,6 +139,9 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   handleHomeChannelResolved: "none",
   closeSettings: "replace",
   closeFiles: "replace",
+  // Guided tour: shuts the command palette it opened. The tour never
+  // navigates.
+  closeTourSurfaces: "none",
   applyEmbeddedNavigation: "push",
   applyInboxDeepLink: "push",
   applyCompanyDeepLink: "push",

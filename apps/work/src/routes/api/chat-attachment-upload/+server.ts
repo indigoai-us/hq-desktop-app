@@ -21,6 +21,9 @@ import {
   s3UploadHeadersFrom,
 } from "$lib/server/s3-presign-url";
 
+// The 4 MiB web upload cap gets 30 seconds for a slow S3 PUT before the request is released.
+const CHAT_ATTACHMENT_S3_PUT_DEADLINE_MS = 30_000;
+
 function jsonError(status: number, error: string, code: string): Response {
   return new Response(JSON.stringify({ error, code }), {
     status,
@@ -98,14 +101,22 @@ export const PUT: RequestHandler = async ({ request, cookies }) => {
     return jsonError(413, "Upload is too large", "PAYLOAD_TOO_LARGE");
   }
   let upstream: Response;
+  const controller = new AbortController();
+  const deadline = setTimeout(
+    () => controller.abort(),
+    CHAT_ATTACHMENT_S3_PUT_DEADLINE_MS,
+  );
   try {
     upstream = await fetch(target, {
       method: "PUT",
       headers,
       body,
+      signal: controller.signal,
     });
   } catch {
     return jsonError(502, "Upload upstream failed", "UPLOAD_UNREACHABLE");
+  } finally {
+    clearTimeout(deadline);
   }
 
   return new Response(null, {

@@ -259,7 +259,38 @@ const ROLLUP_TAG_TOP_N: usize = 3;
 /// `PushScopeForbiddenError` exclusion. `src/bin/sync-runner-events.ts` is
 /// untouched, so `ERROR_TYPES` remains (`error`, `auth-error`). The
 /// source-version marker moves with the verified runner pin.
-pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.18.5";
+///
+/// The `~6.18.5` -> `~6.18.16` bump was re-derived from both published runner
+/// trees (`git diff v6.18.5..v6.18.16 -- src`, excluding tests). It adds two literal
+/// `this.name` identities and removes none, and no `readonly name` identity
+/// changes. Neither reaches the desktop runner-error event surface.
+/// `OutpostExecWaitError` (src/outposts/errors.ts) is thrown by
+/// `OutpostsClient.waitForExecResult` and caught by the `outposts exec`
+/// command, which prints a fetch-later hint and exits; no bin the desktop
+/// spawns (`hq-sync-runner`, `hq-rescue`) reaches that code.
+/// `ReceiverDispatchError` (src/sync/push-receiver.ts) is thrown by the watch
+/// loop's receiver batch function (src/bin/sync-runner-watch-loop.ts) after a
+/// targeted pull fails; `SqsPushReceiver` catches it, uses its failure class to
+/// decide whether to bisect the batch, and logs only its message and code on a
+/// `type: "receiver"` diagnostic line. The failed pull pass has already emitted
+/// its own error events. Both are excluded like `PushScopeForbiddenError`, so
+/// `HQ_CLOUD_IDENTITIES` remains 57. `src/bin/sync-runner-events.ts` is
+/// untouched, so `ERROR_TYPES` remains (`error`, `auth-error`). The
+/// source-version marker moves with the runner pin. v6.18.16 also adds a
+/// `secret-excluded` runner event, which `parse_sync_line` skips as an unknown
+/// additive type.
+///
+/// The `~6.18.16` -> `~6.18.17` bump was re-derived from both published runner
+/// trees (`git diff v6.18.16..v6.18.17 -- src`, excluding tests). It adds no
+/// literal `this.name` identity and no `readonly name` identity, so
+/// `HQ_CLOUD_IDENTITIES` remains 57 with the same exclusions.
+/// `src/bin/sync-runner-events.ts` is untouched, so `ERROR_TYPES` remains
+/// (`error`, `auth-error`). Plan-limit refusals now ride the existing
+/// `plan-limit` event (with added `paths`, `count` and related fields) and the
+/// `complete` event's new optional `filesPlanLimited` counter instead of
+/// per-file `error` events. The source-version marker moves with the runner
+/// pin.
+pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.18.31";
 
 /// Compile-time byte-equality for two `&str`, used only by the vocabulary-drift
 /// guard below. A stable-Rust `const fn` (a `while` byte loop, no new
@@ -3290,7 +3321,9 @@ mod tests {
     /// the pinned hq-cloud source, then excludes `PushScopeForbiddenError`:
     /// that internal error is caught by
     /// `PushEventEmitter` and reaches `onError` without being serialized as an
-    /// error identity. Re-derive when the pin bumps — the
+    /// error identity. The ~6.18.16 additions `ReceiverDispatchError` (caught
+    /// by `SqsPushReceiver`) and `OutpostExecWaitError` (caught by the
+    /// `outposts exec` command) are excluded for the same reason. Re-derive when the pin bumps — the
     /// `cause_vocabulary_source_version_is_pinned_to_the_runner` guard fails the
     /// build if the pin moves without this list (and the vocabulary) refreshed.
     const HQ_CLOUD_IDENTITIES: &[&str] = &[
@@ -3398,6 +3431,37 @@ mod tests {
             );
         }
         assert_eq!(tokens.len(), 57, "expected 57 distinct cause tokens");
+    }
+
+    /// hq-cloud identities deliberately left out of the vocabulary because the
+    /// runner catches them before runner-event serialization (see
+    /// `CAUSE_VOCABULARY_SOURCE_VERSION`). If one ever does reach the event
+    /// surface it must still be describable: an `unknown_named` cause plus a
+    /// stable signature, never a flat residual.
+    #[test]
+    fn excluded_hq_cloud_identities_stay_out_of_the_vocabulary() {
+        const EXCLUDED: &[&str] = &[
+            "PushScopeForbiddenError",
+            // Added at ~6.18.16 (git diff v6.18.5..v6.18.16).
+            "ReceiverDispatchError",
+            "OutpostExecWaitError",
+        ];
+        for name in EXCLUDED {
+            assert!(
+                !HQ_CLOUD_IDENTITIES.contains(name),
+                "{name:?} is excluded from the event-surface identity set"
+            );
+            let message = format!("{name} something went wrong on the company leg");
+            assert_eq!(
+                classify_runner_error_cause(&message),
+                RunnerErrorCause::UnknownNamed,
+                "{name:?} must fall to the named residual"
+            );
+            assert!(
+                runner_error_cause_signature(&message).is_some(),
+                "{name:?} must carry a cause signature"
+            );
+        }
     }
 
     #[test]

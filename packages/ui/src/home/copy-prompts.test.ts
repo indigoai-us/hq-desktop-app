@@ -47,6 +47,13 @@ describe("buildPrompt", () => {
     expect(out).not.toContain("1 file conflicts");
   });
 
+  it("directs daemon-owned sync diagnosis to the daemon log and keeps the legacy log for history", () => {
+    const out = buildPrompt({ kind: "sync-failed" });
+    expect(out).toContain("~/.hq/daemon/logs/sync.log");
+    expect(out).toContain("~/.hq/logs/hq-sync.log");
+    expect(out).toContain("earlier runner history");
+  });
+
   it("mentions the offending company in sync-failed when provided", () => {
     const out = buildPrompt({
       kind: "sync-failed",

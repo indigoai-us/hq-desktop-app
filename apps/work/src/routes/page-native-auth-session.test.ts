@@ -56,6 +56,7 @@ import WorkShellHostTenantHarness from "./WorkShellHostTenantHarness.svelte";
 type AuthStatus =
   | "active"
   | "credentials_absent"
+  | "credentials_read_error"
   | "credentials_invalid"
   | "refresh_temporarily_unavailable";
 type AuthSession = {
@@ -453,25 +454,28 @@ describe("native desktop auth session transitions", () => {
     expect(projectRequests).toEqual(["acct_a", "acct_b"]);
   });
 
-  it("clears state for credentials_absent without starting identity hydration", async () => {
-    await mountDesktop();
-    await vi.waitFor(() => expect(capturedProps().self?.uid).toBe("prs_acct_a"));
-    const identityQueriesBefore = identityQueries.length;
+  it.each(["credentials_absent", "credentials_read_error"] as const)(
+    "clears state for %s without starting identity hydration",
+    async (status) => {
+      await mountDesktop();
+      await vi.waitFor(() => expect(capturedProps().self?.uid).toBe("prs_acct_a"));
+      const identityQueriesBefore = identityQueries.length;
 
-    emitAuthSession({
-      accountId: null,
-      generation: 2,
-      status: "credentials_absent",
-    });
-    await tick();
+      emitAuthSession({
+        accountId: null,
+        generation: 2,
+        status,
+      });
+      await tick();
 
-    expect(capturedProps().tenantAccountId).toBeNull();
-    expect(capturedProps().tenantGeneration).toBe(2);
-    expect(capturedProps().self).toBeNull();
-    expect(capturedProps().companies).toEqual([]);
-    expect(identityQueries).toHaveLength(identityQueriesBefore);
-    expect(listWorkspaceCalls).not.toContain("signed_out");
-  });
+      expect(capturedProps().tenantAccountId).toBeNull();
+      expect(capturedProps().tenantGeneration).toBe(2);
+      expect(capturedProps().self).toBeNull();
+      expect(capturedProps().companies).toEqual([]);
+      expect(identityQueries).toHaveLength(identityQueriesBefore);
+      expect(listWorkspaceCalls).not.toContain("signed_out");
+    },
+  );
 
   it("ignores a stale session envelope without changing state", async () => {
     initialSession = {

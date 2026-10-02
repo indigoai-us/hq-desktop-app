@@ -8,6 +8,7 @@
  * events fill gaps for history that pre-dates emitNotification.
  */
 
+import { isRecord } from "../common/is-record";
 import type { AdapterResult, PlatformAdapter } from "@hq/platform";
 import type { NotificationsApi } from "../chat/chat-api";
 
@@ -75,10 +76,6 @@ export interface ComposedNotificationsFeed {
   notifications: Record<string, unknown>[];
   unreadCount: number;
   nextCursor: string | null;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function asString(value: unknown): string {

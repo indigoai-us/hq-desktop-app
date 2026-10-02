@@ -7,11 +7,284 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+- Daemon sync controls explain paused, disabled, and stopped states. Resume also re-enables sync for machines migrated from the older daemon setting. Instant Sync changes reach an existing daemon and require HQ CLI 5.312.0 or later. Sync actions wait briefly for host selection at launch, then use the legacy or daemon path. Company-specific Sync Now no longer starts a sync across every company when the daemon owns sync.
 
+- Fixes the sidebar order shipped in 0.10.373 and 0.10.374, which listed
+  conversations by unread count and then by name within each day instead of
+  by time. The order and the day headings now both follow the latest message
+  a person typed, where the server reports it: a channel that only bots
+  posted in today is listed under the day a person last typed in it. A
+  channel or group conversation the server reports as having no typed
+  message is placed by when it was created, so a channel made today appears
+  under Today. A direct message with no typed message yet is placed by its
+  latest activity for now, so a new teammate's or a bot's first direct
+  message appears under Today. A conversation the server has not classified
+  yet is still placed by its latest activity, bot and session activity
+  included, until a one-time server fill-in has run.
+
+- Channels and direct messages that hide bot and session activity now ask the
+  server for the filtered history. When a conversation opens on a long run of
+  hidden activity, the app continues loading earlier history automatically,
+  up to a limit of eight requests, and then offers "Look further back",
+  instead of showing an empty pane with a "load earlier" button. With an
+  older server the app filters on its side, as before.
+
+- On refresh, HQ Desktop can show the existing plan-limit notice when a free company is nearing or over a resource limit.
+
+- Desktop now uses the current cloud company name for workspace rows and
+  home-channel labels before falling back to cached names or slugs.
+
+## [0.10.374] — 2026-10-02
+
+- On a fresh install, HQ now shows its logo and "Starting HQ..." right away instead of a blank, frozen window while it starts up.
+- Sign-in and workspace-selection receipts reach HQ again. Since late September the app could not read the `email_verified` claim on Cognito access tokens (it arrives as text, not true/false), so every receipt was held on disk instead of sent. Receipts already held on your machine are sent on the next signed-in start.
+- A first-ever sign-in's receipt is no longer discarded when HQ has not created the person record yet. The app keeps it and resends it once the record exists (HQ stops accepting it after 30 days).
+- First run now sets up your company. After the install finishes, someone
+  with no company names one (with an optional website and teammate invites),
+  then picks Starter or Workforce. Workforce opens checkout in your browser
+  and HQ picks up when you come back. Someone who was invited can join that
+  company instead.
+- Sync health no longer counts runner diagnostics as failed syncs. The runner
+  pin now starts at hq-cloud 6.18.31 and accepts later 6.18 patch releases.
+- Automatic Core updates wait for sync to finish after 10 deferrals or 6 hours.
+  The wait ends after 15 minutes, and a failed update backs off before retrying.
+  Updates also report when Git 2.19.0 or newer is required.
+- Desktop sign-in can open the website first to link the new account to the native app; if that check fails, it opens Cognito directly as before.
+- Library Back now leaves internal Library tab history and returns to the prior app screen.
+
+- Setup diagnostics now identify the resolved CLI copy and settings PATH source using path-free values.
+
+## [0.10.373] — 2026-10-01
+
+- Setting up a coding tool after onboarding is smoother. You can choose
+  Claude Code or Codex, and one button ("Install Claude" or "Install Codex")
+  installs it and opens its sign-in page, with no second Sign in click.
+  HQ notices by itself when a coding tool is already signed in, or when you
+  finish signing in in your browser, and shows one Continue button instead of
+  "Sign in above, then Retry". It no longer says "Sign-in did not complete"
+  while your browser sign-in is still open, and if a sign-in does fail you
+  can try again, switch tools, or reopen the sign-in page.
+- Core Drift ignores setup PATH changes and generated wrapper markers while retaining raw-hash fallback when settings JSON cannot be parsed.
+- Core Drift ignores the desktop-generated `env.PATH` in `.claude/settings.json` and the company skill-wrapper marker, while continuing to report other settings edits.
+
+- Desktop company-creation invites identify the desktop surface in the hq-pro team invite action.
+- Windows setup now detects Claude Code from the current user PATH and
+  Anthropic's user-local install directory, including on Retry.
+- The sidebar orders DMs and channels by the latest message a person typed.
+
+- HQ no longer restarts for an update, or at support's request, while a meeting
+  is being recorded; it waits until the recording finishes.
+
+- When HQ daemon owns sync, Sync Now, pause/resume, and company sync modes go through the daemon. Instant Sync follows its setting, and sync help points to the daemon log while preserving the old log for history.
+- On macOS 26.2 and later, the installer window shows its background artwork again instead of a plain white window behind the HQ and Applications icons.
+
+- Internal: removed two unused packages/ui helpers and made three module-only helpers private (TD-60, #1198). No user-visible change.
+
+- Internal: unused exports in the shared UI package are now module-private. No behaviour change.
+
+- Internal: unused exports in the work shell and installer are now module-private. No behaviour change.
+
+- With the Personal workspace board rollout enabled, HQ Desktop shows the
+  cloud-backed board alongside company workspaces.
+
+- Core drift ignores only the setup-managed `env.PATH` value in `.claude/settings.json`; other settings changes remain visible.
+
+- Work feed and Board reads now stop waiting after 15 seconds and keep their cached or empty states when requests fail.
+- On Apple Silicon Macs, the app now replaces a managed Node.js that was installed for Intel Macs instead of reusing it, so setup and repair install the right one.
+- Channel owners no longer see Leave while their channel role is unknown, and
+  a stale owner-role conflict gives a clear recovery message.
+- Goals with an empty company board now explain that the board has no goals yet.
+
+- Internal: unused UI exports are now module-private. No behaviour change.
+
+## [0.10.371] — 2026-10-01
+
+- Desktop sync now recovers legacy watcher processes left behind by an app update when their process path and ancestry prove they belong to the desktop. Other active sync owners continue to be left alone.
+- Home now lists projects from your Personal workspace, and Personal board and summary requests resolve with your Personal identity.
+- Usage telemetry now backs off after unaccepted batches and does not resend rows the server explicitly skipped.
+
+## [0.10.370] — 2026-10-01
+
+- First-run setup now retries a just-published npm package when the registry
+  briefly returns E404 or ETARGET, while keeping setup progress active.
+- Startup diagnostics now distinguish unreadable saved credentials from an empty token store.
+
+- With a compatible hq-cloud runner, auto-sync watches the desktop process directly and releases its lease when the app exits, including after a crash or force-quit.
+- A stalled attachment upload or download in the Work app now ends with the usual upload or download error instead of staying open indefinitely.
+- When a saved access token is rejected, HQ Desktop tries its stored refresh token before asking you to sign in. After Cognito rejects that refresh, HQ Desktop stops retrying the same token and keeps sign-in available.
+
+## [0.10.368] — 2026-10-01
+
+- Window opacity is reset to 100% once for existing installs, including anyone who had chosen a lower value. The theme is unchanged, and an opacity chosen after the update is kept.
+
+## [0.10.367] — 2026-09-30
+
+- Auto-sync identifies its watch-runner lease owner, stops a live orphan desktop runner once, and defers to hq-daemon when it owns the root. Lease-busy exits do not count as repeated runner failures.
+- A watch runner that exits during orphan recovery now counts as stopped, so auto-sync can finish recovery instead of reporting a false runner failure.
+- Fresh installs now open fully opaque until Window opacity is changed; saved
+  opacity values remain in effect.
+
+## [0.10.365] — 2026-09-30
+
+- Opening the desktop window no longer freezes the whole app for seconds
+  while it checks which AI tools are installed. That check (shell probes plus
+  a scan of the Claude, Codex, and Grok config folders) ran on the app's main
+  thread, so under disk load it stalled every window, every other request, and
+  the boot watchdog, which then showed the Recovery dialog. It now runs in the
+  background. The "HQ Work installed" probe moves off the main thread for the
+  same reason.
+
+- The Recovery dialog no longer stays open when the desktop window was only
+  slow to load. If the window finishes loading after the dialog appeared, the
+  dialog closes by itself, including when it finishes while Recovery is still
+  checking for updates. When the app notices its own timers running late
+  (the machine or the app was stalled), it waits an extra ten seconds before
+  showing Recovery instead of alarming right away. The log now records how long
+  each window took to load and when the app's background runtime stalls, so a
+  slow open can be told apart from a broken one.
+
+- On Windows, template installs now use safe file-copy and junction fallbacks when symlink creation is unavailable.
+
+- Added desktop regression tests for adapter results and call-window URL target rejection.
+
+- First-time setup shows when it is checking for AI tools instead of waiting silently.
+
+## [0.10.364] — 2026-09-30
+
+- The desktop app no longer checks which AI tools are installed every time it opens; it checks when you create a bot or run setup.
+
+- On macOS, HQ Sync restarts after an abnormal exit and waits at least 30
+  seconds between crash restarts. Existing enabled LaunchAgents are refreshed
+  on app startup, and the updater handoff avoids a duplicate restart.
+
+- Internal desktop regression tests now exercise runtime behavior instead of reading implementation source text.
+- Core update failures caused by low snapshot space now report a dedicated
+  diagnostic class and coarse required/available space buckets.
+
+- Startup reporting now treats pending first-run consent and confirmed
+  missing-root recovery as expected.
+- Desktop setup continues to report installation failures after an internal error interrupts its diagnostic cache.
+
+- The existing sync plan-limit notice can report gated exposure and Upgrade-click measurements.
+- Successful sign-ins can wait for their local receipt queue write behind a default-off flag before returning to the setup flow.
+
+## [0.10.363] — 2026-09-30
+
+- Opening a conversation no longer shows an empty pane when recent activity was hidden; older messages from people load automatically.
+
+## [0.10.362] — 2026-09-30
+
+- Conversations now hide work-mesh activity even when it is posted under a person's name, and the sidebar orders by messages people typed.
+- Channels and conversations now show only messages from people. Work-mesh activity (noted, started, and done lines), session cards, system events, and bot-only messages are hidden. A bot's reply in a conversation a person started still shows. A channel with only hidden activity shows "No messages yet".
+
+## [0.10.361] — 2026-09-30
+
+- When a company is over a Starter plan limit, a refused action now says why
+  in plain words and offers an "Upgrade plan" link. A chat attachment that
+  goes over the storage limit reads, for example, "Could not upload
+  report.pdf: New files are paused while Acme is over its Starter limits.
+  Storage: 10.2 GB of 10 GB used." Accepting an invite to a company that is
+  at its member limit shows the same kind of sentence instead of raw server
+  JSON. Plan-limit refusals are no longer reported as crashes.
+- When a sync pass skips new files because a company is over its storage
+  limit, HQ now says "Uploads paused" for that company instead of "All
+  synced". The desktop window shows the notice even if it was opened after
+  the sync ran, the Core status panel names the company with an "Upgrade
+  plan" button, and the menu bar (and the Windows tray) lists "Uploads paused
+  for Acme" with an "Upgrade plan for Acme…" item. The notice clears once
+  uploads go through again. Upgrade links open only for hq.computer, the
+  host HQ's billing uses.
+  The sync engine moves to hq-cloud 6.18.17, which skips files refused by a
+  plan limit instead of failing the sync.
+
+## [0.10.360] — 2026-09-29
+
+- Leaving a channel and removing a bot from a channel work again, and bots in the member list have a remove button.
+
+- Files saved while a folder like `node_modules` or `build` is being created,
+  or in the brief moment when HQ changes which folders it watches, now sync
+  right away. Before, they waited for the next full rescan, up to six hours
+  later. The sync engine moves to hq-cloud 6.18.16.
+
+- The "Syncing initial cloud data" step of a new install now finishes in
+  seconds instead of about two minutes. Once your personal vault is set up,
+  the step hands the upload to HQ's background sync, which was already
+  pushing the same files. The step only does this when background sync is
+  running, Auto-sync and Personal sync are on, sync is not paused, and you are
+  signed in. In every other case the step uploads the files itself, now eight
+  at a time instead of one at a time. When the step hands off, the app checks
+  that background sync actually saved your personal files and uploads them
+  itself if it did not. The `desktop.install-initial-sync-handoff` flag
+  controls this and is on by default; turning it off restores the previous
+  one-file-at-a-time upload.
+
+- Behind a flag (`desktop.human-only-conversations`, off by default): conversations can hide work-mesh and automated messages, and the sidebar can order by the latest message from a person.
+
+- When creating a cloud bot, each size now shows its own monthly price ($100, $250 or $500). If your company pays a different amount, that amount appears underneath.
+
+## [0.10.359] — 2026-09-29
+
+- First-time setup is now one five-screen welcome flow that fills the screen
+  (everything below the menu bar and beside the Dock) with no window
+  shadow. On macOS the background is your own desktop wallpaper, blurred
+  and dimmed; other app windows no longer show through. If the wallpaper
+  cannot be read, and on Windows, the window keeps a soft blur of whatever
+  is behind it. The same full-screen window is used for the sharing
+  re-prompt and "Replay welcome intro". The window has the standard close
+  and minimize buttons (top left on macOS). Minimize puts it in the Dock or
+  taskbar. Close hides it without quitting or cancelling setup: the install
+  keeps running, and clicking the menu-bar item or the Dock icon brings the
+  flow back on the same screen. You sign in with Google or Microsoft, pick
+  where HQ lives, and choose "Install here". If you are already signed in
+  to hq.computer in your browser, the sign-in screen shows one "Continue as
+  {your email}" button in place of the Google and Microsoft buttons and
+  waits for you to press it. The install then runs in the background while
+  two short screens explain cloud sync and the Option Shift O shortcut. A
+  small card in the corner shows the real install progress, and install
+  errors show there with a Retry. The last screen leads with a large white
+  HQ Desktop card ("Use HQ's own app"). Under it are smaller "Claude Code"
+  and "Codex" buttons that open HQ in that tool with setup ready. Each
+  shows only if the tool is installed, and appears if you install it
+  while the screen is open. If a tool fails to open, the screen says
+  what to do next in one line. HQ Desktop and the tool
+  buttons stay disabled until the install is done, and HQ Desktop says
+  "Getting ready..." meanwhile. The usage-sharing question is no
+  longer its own screen: the last screen has one "Share anonymous usage
+  data" checkbox, checked by default, with a "What's collected" link.
+  Nothing is sent until you finish from that screen, whichever option you
+  use. If sending your choice fails, the screen says so and offers Retry;
+  if you are offline, your choice is saved on this computer and you can
+  finish now and have it sent later. The separate full-screen intro film
+  is gone; "Replay welcome intro" now plays the first four screens with
+  Next and Done. The flow respects Reduce Motion, works from the keyboard
+  and with a screen reader, and pauses its animation when the window is
+  hidden.
+- After a fresh install, HQ Desktop shows an eight-step guided tour once,
+  starting on the setup page. It points out the setup bot, the Files button,
+  the "+" button for a new bot, the Companies section, Meetings, the web
+  console, the Launch menu and the Command-K palette. Next moves on; Skip,
+  Done or Esc ends the tour and leaves you on the page you were on.
+  "Take the tour" in the Command-K palette plays it again.
+
+- A local bot's model picker lists specific model versions: Claude Opus 5.5,
+  Opus 5, Sonnet 5 and Haiku 4.5; GPT-6 Astra and GPT-5.5 for Codex; and
+  Grok 4.7, 4.6 and 4.5. Bots that already use the older Opus, Sonnet or Haiku
+  setting show it as "(latest in Claude Code)". When a specific model is
+  picked, a note says to update the coding tool if the bot cannot start with
+  it, and a bot whose tool does not know its model now says so in plain words.
+
+- Personal workspaces with a cloud vault can show their board when the
+  `desktop.personal-workspace-board-v1` hq-flags rollout is enabled; it stays
+  off until explicitly enabled.
 - In a DM with a bot, the "is thinking" / "working on it" line now
   disappears as soon as the bot's reply appears, instead of staying under
   the reply for a few more seconds. It shows again when you send another
   message or the bot reports new work.
+
+- Setup uses HQ's managed Node.js and npm to install qmd and the HQ CLI.
+- Sign-in keeps working after an internal error during an earlier sign-in attempt, instead of failing until the app restarts.
+
+## [0.10.358] — 2026-09-29
 
 - Startup sign-in diagnostics now distinguish an invalidated saved token from a token-store read race without sending credential data.
 - Desktop sync commands now recover their valid state after a mutex is poisoned.

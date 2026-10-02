@@ -38,7 +38,7 @@ export const NOTIFY_LEVEL_OPTIONS: readonly NotifyLevelOption[] = [
   },
 ];
 
-export function isNotifyLevel(value: unknown): value is NotifyLevel {
+function isNotifyLevel(value: unknown): value is NotifyLevel {
   return (
     value === "all" ||
     value === "mentions" ||

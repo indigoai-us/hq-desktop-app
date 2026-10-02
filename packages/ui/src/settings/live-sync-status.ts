@@ -3,8 +3,24 @@
  * Desktop observes the on-disk contract. Web never reads a machine journal.
  */
 
-import type { AdapterResult, PlatformAdapter, SyncStatus } from "@hq/platform";
+import {
+  approvedPlanUpgradeUrl,
+  type AdapterResult,
+  type DaemonSyncStatus,
+  type PlatformAdapter,
+  type SyncStatus,
+} from "@hq/platform";
 import type { SyncState } from "../common/sync-model.js";
+
+/**
+ * A company whose new files are not uploading because it is over a plan
+ * limit (hard-stop-readiness US-019). Written by the native sync journal.
+ */
+export interface UploadsPausedCompany {
+  company: string;
+  /** Approved hq-pro upgrade link, or null when none came with the notice. */
+  upgradeUrl: string | null;
+}
 
 export interface LiveSyncStatus {
   lastSyncAt: string | null;
@@ -13,6 +29,23 @@ export interface LiveSyncStatus {
   daemonRunning: boolean;
   source: string;
   hqFolderPath: string | null;
+  /** Companies whose uploads are paused by a plan limit. Absent = none. */
+  uploadsPaused?: UploadsPausedCompany[];
+  daemonOwner: string | null;
+  daemonHealth: string | null;
+  daemonErrors: string[];
+  daemonLogPath: string | null;
+}
+
+const DEFAULT_DAEMON_LOG_PATH = "~/.hq/daemon/logs/sync.log";
+
+function newestSyncTimestamp(journal: string | null, daemon: string | null): string | null {
+  if (!journal) return daemon;
+  if (!daemon) return journal;
+  const journalMs = Date.parse(journal);
+  const daemonMs = Date.parse(daemon);
+  if (!Number.isFinite(journalMs) || !Number.isFinite(daemonMs)) return daemon;
+  return journalMs > daemonMs ? journal : daemon;
 }
 
 export const EMPTY_LIVE_SYNC: LiveSyncStatus = {
@@ -22,7 +55,28 @@ export const EMPTY_LIVE_SYNC: LiveSyncStatus = {
   daemonRunning: false,
   source: "none",
   hqFolderPath: null,
+  uploadsPaused: [],
+  daemonOwner: null,
+  daemonHealth: null,
+  daemonErrors: [],
+  daemonLogPath: null,
 };
+
+/** Parse the journal's `uploadsPaused` list; drops malformed rows. */
+export function parseUploadsPaused(raw: unknown): UploadsPausedCompany[] {
+  if (!Array.isArray(raw)) return [];
+  const rows: UploadsPausedCompany[] = [];
+  const seen = new Set<string>();
+  for (const entry of raw) {
+    const rec = asRecord(entry);
+    const company =
+      rec && typeof rec.company === "string" ? rec.company.trim() : "";
+    if (!company || seen.has(company)) continue;
+    seen.add(company);
+    rows.push({ company, upgradeUrl: approvedPlanUpgradeUrl(rec?.upgradeUrl) });
+  }
+  return rows;
+}
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -32,7 +86,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 export function parseLiveSyncStatus(raw: unknown): LiveSyncStatus {
   const rec = asRecord(raw);
-  if (!rec) return { ...EMPTY_LIVE_SYNC };
+  if (!rec) return { ...EMPTY_LIVE_SYNC, uploadsPaused: [] };
   const last =
     typeof rec.lastSyncAt === "string" && rec.lastSyncAt.trim()
       ? rec.lastSyncAt.trim()
@@ -57,12 +111,14 @@ export function parseLiveSyncStatus(raw: unknown): LiveSyncStatus {
         ? rec.watchPath.trim()
         : null;
   return {
+    ...EMPTY_LIVE_SYNC,
     lastSyncAt: last,
     pendingFiles: pending,
     conflicts,
     daemonRunning: daemon,
     source,
     hqFolderPath: folder,
+    uploadsPaused: parseUploadsPaused(rec.uploadsPaused),
   };
 }
 
@@ -92,8 +148,48 @@ export function lastSyncLabelFromLive(
 export async function readLiveSyncStatus(
   adapter: PlatformAdapter | null | undefined,
 ): Promise<LiveSyncStatus> {
-  if (!adapter?.isAvailable("canSync")) return { ...EMPTY_LIVE_SYNC };
-  const result: AdapterResult<SyncStatus> = await adapter.sync.getSyncStatus();
-  if (result.ok) return parseLiveSyncStatus(result.value);
-  return { ...EMPTY_LIVE_SYNC };
+  if (!adapter?.isAvailable("canSync")) {
+    return { ...EMPTY_LIVE_SYNC, uploadsPaused: [] };
+  }
+  const daemonStatusPromise = adapter.sync.daemonSyncStatus
+    ? adapter.sync.daemonSyncStatus()
+    : Promise.resolve({ ok: true as const, value: null });
+  const [result, daemonResult]: [
+    AdapterResult<SyncStatus>,
+    AdapterResult<DaemonSyncStatus | null>,
+  ] = await Promise.all([
+    adapter.sync.getSyncStatus(),
+    daemonStatusPromise,
+  ]);
+  const live = result.ok
+    ? parseLiveSyncStatus(result.value)
+    : { ...EMPTY_LIVE_SYNC, uploadsPaused: [] };
+  if (!daemonResult.ok) {
+    return {
+      ...live,
+      daemonErrors: [
+        daemonResult.message ?? "HQ daemon status could not be read. Tap to retry.",
+      ],
+      daemonLogPath: live.daemonLogPath ?? DEFAULT_DAEMON_LOG_PATH,
+    };
+  }
+  if (!daemonResult.value) return live;
+  const daemon = daemonResult.value;
+  const errors = [...live.daemonErrors];
+  const reasonIsFailure = daemon.unitStatus === "failed" && !daemon.paused;
+  const reasonIsCapabilityNotice = daemon.reason?.startsWith("Instant Sync is off,") === true;
+  if (daemon.reason && (reasonIsFailure || reasonIsCapabilityNotice)) errors.push(daemon.reason);
+  if ((daemon.lastPassResult?.errors ?? 0) > 0 && errors.length === 0) {
+    errors.push("The last daemon sync reported errors. See the daemon log for details.");
+  }
+  return {
+    ...live,
+    daemonRunning: daemon.running,
+    lastSyncAt: newestSyncTimestamp(live.lastSyncAt, daemon.lastPassResult?.completedAt ?? null),
+    source: "hq-daemon",
+    daemonOwner: daemon.owner ?? daemon.syncOwner,
+    daemonHealth: daemon.paused ? "paused" : daemon.unitStatus,
+    daemonErrors: errors,
+    daemonLogPath: daemon.logPath,
+  };
 }
