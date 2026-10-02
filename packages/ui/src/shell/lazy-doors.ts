@@ -54,6 +54,9 @@ export const newMessageSheetDoor = door(
 export const newChannelSheetDoor = door(
   () => import("../chat/NewChannelSheet.svelte"),
 );
+export const brainPageDoor = door(
+  () => import("../company/brain/BrainPage.svelte"),
+);
 
 /** Warm every door once the first frame is up, so later clicks skip the skeleton. */
 export function preloadDoorsWhenIdle(): void {
@@ -63,6 +66,7 @@ export function preloadDoorsWhenIdle(): void {
     moreCompaniesDoor,
     newMessageSheetDoor,
     newChannelSheetDoor,
+    brainPageDoor,
   ];
   const run = () => all.forEach((d) => d.preload());
   if (typeof requestIdleCallback === "function") {

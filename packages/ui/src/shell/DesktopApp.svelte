@@ -39,6 +39,7 @@
   import AppRail from "./AppRail.svelte";
   import LazyDoor from "./LazyDoor.svelte";
   import {
+    brainPageDoor,
     moreCompaniesDoor,
     notificationsPopoverDoor,
     preloadDoorsWhenIdle,
@@ -9637,6 +9638,26 @@
             {adapter}
             slug={companyPaneCompany.slug ?? ""}
           />
+        {:else if (railPlaceholder?.id === "knowledge" || railPlaceholder?.id === "policies" || railPlaceholder?.id === "skills" || railPlaceholder?.id === "workers") && companyPaneCompany}
+          <LazyDoor
+            door={brainPageDoor}
+            props={{
+              page: railPlaceholder.id,
+              slug: companyPaneCompany.slug ?? "",
+              files: adapter.files ?? null,
+              library: adapter.library ?? null,
+              shell: adapter.shell ?? null,
+              settings: adapter.settings ?? null,
+              onopenpage: selectCompanyPaneRow,
+            }}
+          >
+            {#snippet skeleton()}
+              <div class="rail-placeholder" data-testid="brain-door-skeleton" aria-busy="true">
+                <h1>{railPlaceholder.title}</h1>
+                <p>{railPlaceholder.summary}</p>
+              </div>
+            {/snippet}
+          </LazyDoor>
         {:else if railPlaceholder?.id === "telemetry"}
           <TelemetryRailHost />
         {:else if railPlaceholder}
