@@ -157,7 +157,7 @@
 
 <div class="page" data-testid="outpost-page" data-tab={tab} data-offline={offline ? "true" : "false"}>
   <aside class="pane" aria-label="Outpost">
-    <div class="pane-head">Outpost <span class="chip" class:live={!offline} class:err={offline}>{offline ? "down" : "up"}</span></div>
+    <div class="pane-head"><span class="status"><span class="dot" class:live={!offline} class:err={offline}></span>{data.host.name} · {offline ? "Down" : "Up"}</span></div>
     <nav>
       {#each [["overview", "Overview"], ["jobs", "Scheduled jobs"], ["runs", "Runs"], ["logs", "Logs"], ["settings", "Settings"]] as item (item[0])}
         <button type="button" class:on={tab === item[0]} aria-current={tab === item[0] ? "true" : undefined} onclick={() => (tab = item[0] as OutpostTab)}>{item[1]}</button>
@@ -168,7 +168,7 @@
     <header class="toolbar">
       <h1>{tab === "overview" ? "Outpost" : tab === "jobs" ? "Scheduled jobs" : tab === "runs" ? "Runs" : tab === "logs" ? "Logs" : "Settings"}</h1>
       <span class="sub">{data.host.name} · {data.host.region}</span>
-      <span class="chip" class:live={!offline} class:err={offline}>{offline ? "Unreachable" : "Online"}</span>
+      <span class="status"><span class="dot" class:live={!offline} class:err={offline}></span>{offline ? "Unreachable" : "Online"}</span>
       <span class="grow"></span>
       <button type="button" class="btn" disabled={offline} onclick={() => (notice = "terminal")}>Open terminal</button>
       <button type="button" class="btn" disabled={offline}>Self-update</button>
@@ -177,9 +177,9 @@
 
     {#if offline}
       <div class="banner" role="alert" data-testid="outpost-offline-banner">
-        <b>Host unreachable.</b>
+        <span class="nm">Host unreachable.</span>
         No heartbeat since {data.host.lastHeartbeatAt}.
-        <span class="mono">Retrying in {formatRetry(data.retryInSec)} · attempt {data.retryAttempt}</span>
+        <span class="sub">Retrying in {formatRetry(data.retryInSec)} · attempt {data.retryAttempt}</span>
         <button type="button" class="btn" onclick={retryNow}>Retry now</button>
         <button type="button" class="btn" onclick={() => (tab = "logs")}>Last logs</button>
       </div>
@@ -196,11 +196,11 @@
         <div class="jrow hd"><span>Job</span><span>Cadence</span><span>Next run</span><span>Last result</span><span>Alerts</span><span></span></div>
         {#each jobs as job (job.id)}
           <div class="jrow" class:paused={job.paused} aria-current={selectedJob === job.id ? "true" : undefined} role="button" tabindex="0" onclick={() => (selectedJob = job.id)} onkeydown={(e) => e.key === "Enter" && (selectedJob = job.id)}>
-            <span><b>{job.name}</b><small>{job.detail}</small></span>
-            <span class="mono">{job.cadenceLabel}</span>
-            <span class="mono">{job.nextRun}</span>
+            <span class="cell"><span class="nm">{job.name}</span><small>{job.detail}</small></span>
+            <span>{job.cadenceLabel}</span>
+            <span>{job.nextRun}</span>
             <span class="st {job.status}">{job.lastResult}</span>
-            <span class="mono" data-testid="job-alert">{alertLabel(job.alert, job.alertWhen)}</span>
+            <span data-testid="job-alert">{alertLabel(job.alert, job.alertWhen)}</span>
             <span class="act">
               <button type="button" class="tab" disabled={offline} onclick={(e) => { e.stopPropagation(); togglePause(job); }}>{job.paused ? "Resume" : "Pause"}</button>
               <button type="button" class="tab" onclick={(e) => { e.stopPropagation(); openEdit(job); }}>Edit</button>
@@ -218,7 +218,7 @@
           {/each}
         </div>
         {#each runs as run (run.id)}
-          <div class="run"><b>{run.job}</b><span>{run.when} · {run.detail}</span><span class="st {run.status}">{run.status}</span></div>
+          <div class="run"><span class="nm">{run.job}</span><span class="cell sub">{run.when} · {run.detail}</span><span class="st {run.status}"><span class="dot" class:live={run.status === "running"} class:err={run.status === "failed"}></span>{run.status}</span></div>
         {/each}
       </section>
     {/if}
@@ -322,35 +322,59 @@
 </div>
 
 <style>
-  .page { display: grid; grid-template-columns: 260px minmax(0, 1fr); height: 100%; min-height: 0; color: var(--v4-text-1); background: var(--v4-ground); font-family: var(--font-sans); position: relative; }
-  .pane { border-right: 1px solid var(--v4-hairline); padding: 12px; }
-  .pane-head, h1 { font-size: 15px; font-weight: 600; }
-  nav { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; }
-  nav button, .tabs button, .seg button, .tab, .btn { background: transparent; color: var(--v4-text-2); border: 0; border-radius: 6px; text-align: left; padding: 4px 8px; font: inherit; }
-  nav button.on, .jrow[aria-current="true"] { background: var(--v4-active-row); color: var(--v4-text-1); }
-  nav button:hover, .jrow:hover { background: var(--v4-hover); }
-  main { min-width: 0; overflow: auto; padding: 12px 16px 24px; }
-  .toolbar { display: flex; align-items: center; gap: 8px; }
+  /* Console-rail chrome measured from Messages (docs/design-standard-console-rail.md):
+     one 20px/500 title, 13px Geist everywhere else, 31px rows, status as dot plus
+     text, mono only for the fingerprint, cron, commands and log lines. */
+  .page { display: grid; grid-template-columns: 260px minmax(0, 1fr); height: 100%; min-height: 0; color: var(--t1, var(--v4-text-1)); background: var(--v4-ground); font: 400 13px/1.45 var(--font-ui, "Geist", -apple-system, sans-serif); position: relative; }
+  .pane { border-right: 1px solid var(--line, var(--v4-hairline)); padding: 12px 14px; }
+  .pane-head { height: 31px; display: flex; align-items: center; padding: 0 8px; color: var(--t2, var(--v4-text-2)); }
+  h1 { font-size: var(--type-title, 20px); font-weight: var(--type-title-weight, 500); line-height: var(--type-title-line, 1.25); margin: 0 4px 0 0; }
+  h2 { font-size: 13px; font-weight: 500; color: var(--t2, var(--v4-text-2)); margin: 16px 0 4px; }
+  nav { display: flex; flex-direction: column; gap: 1px; margin-top: 4px; }
+  button { font: inherit; font-size: 13px; cursor: pointer; }
+  nav button, .tabs button, .seg button, .tab, .btn, .sheet header button, .sheet footer button { background: transparent; color: var(--t2, var(--v4-text-2)); border: 0; border-radius: 6px; text-align: left; padding: 0 8px; height: 26px; }
+  nav button { height: 31px; padding: 7px 8px; border-radius: 8px; }
+  nav button.on, .jrow[aria-current="true"], .tabs button.on { background: var(--sel, var(--v4-active-row)); color: var(--t1, var(--v4-text-1)); box-shadow: none; }
+  nav button:hover, .jrow:hover, .tab:hover, .tabs button:hover { background: var(--hover, var(--v4-hover)); }
+  main { min-width: 0; overflow: auto; padding: 0 20px 24px; }
+  .toolbar { display: flex; align-items: center; gap: 8px; height: 52px; margin: 0 -20px 12px; padding: 0 20px; box-sizing: border-box; border-bottom: 1px solid var(--line, var(--v4-rowline)); }
+  section { margin-bottom: 20px; }
   .grow { flex: 1; }
-  .sub, small, .mono { color: var(--v4-text-3); font-size: 12px; }
-  .mono { font-family: var(--font-mono); }
-  .chip.live { color: var(--v4-ok); }
-  .chip.err, .st.failed, .err, .ln.err { color: var(--v4-error); }
-  .banner { display: flex; gap: 8px; align-items: center; height: 40px; padding: 0 8px; background: var(--v4-control-faint); border-bottom: 1px solid var(--v4-rowline); font-size: 12px; }
-  .jrow { display: grid; grid-template-columns: minmax(0, 1.8fr) 120px 100px minmax(0, 1fr) 90px 120px; gap: 8px; align-items: center; padding: 6px 8px; border-bottom: 1px solid var(--v4-rowline); font-size: 13px; }
-  .jrow small { display: block; }
-  .jrow.hd { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--v4-text-3); }
-  .act { display: flex; gap: 4px; justify-content: flex-end; }
-  .run { display: flex; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--v4-rowline); font-size: 12px; }
-  .log-view { overflow: auto; border-top: 1px solid var(--v4-rowline); font-family: var(--font-mono); font-size: 11px; }
-  .seg { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--v4-control-border); border-radius: 6px; background: var(--v4-control-faint); }
-  .seg button.on { background: var(--v4-active-row); color: var(--v4-text-1); }
+  .sub, small { color: var(--t3, var(--v4-text-3)); font-size: 13px; }
+  .mono { font-family: var(--font-mono, "Geist Mono", ui-monospace, monospace); color: var(--t2, var(--v4-text-2)); }
+  .nm { color: var(--t1, var(--v4-text-1)); font-weight: 400; }
+  .cell { display: flex; gap: 8px; min-width: 0; align-items: baseline; }
+  .status, .st { display: inline-flex; align-items: center; gap: 6px; color: var(--t2, var(--v4-text-2)); white-space: nowrap; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--t3, var(--v4-text-3)); flex: none; display: inline-block; }
+  .dot.live { background: var(--ok, var(--v4-ok)); }
+  .dot.err { background: var(--red, var(--v4-error)); }
+  .st.failed, .err, .ln.err { color: var(--red, var(--v4-error)); }
+  .banner { display: flex; gap: 8px; align-items: center; min-height: 40px; margin: 0 0 12px; padding: 0 12px; background: var(--raised, var(--v4-control-faint)); border-radius: 8px; }
+  .tabs { display: flex; align-items: center; gap: 2px; margin-bottom: 4px; }
+  .tabs .btn { margin-left: auto; }
+  .jrow { display: grid; grid-template-columns: minmax(0, 1.8fr) 120px 100px minmax(0, 1fr) 90px 120px; gap: 8px; align-items: center; height: 31px; box-sizing: border-box; padding: 0 8px; border-radius: 8px; cursor: pointer; }
+  .jrow > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .jrow.paused { color: var(--t3, var(--v4-text-3)); }
+  .jrow.hd { color: var(--t3, var(--v4-text-3)); cursor: default; }
+  .jrow.hd:hover { background: transparent; }
+  .act { display: flex; gap: 2px; justify-content: flex-end; }
+  .run { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto; gap: 8px; align-items: center; height: 31px; padding: 0 8px; }
+  .run > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .log-view { overflow: auto; border-top: 1px solid var(--line, var(--v4-rowline)); font-family: var(--font-mono, "Geist Mono", ui-monospace, monospace); font-size: 12px; }
+  .seg { display: inline-flex; gap: 2px; padding: 2px; width: max-content; border: 1px solid var(--panel-border, var(--v4-control-border)); border-radius: 6px; background: var(--hover, var(--v4-control-faint)); }
+  .seg button { height: auto; padding: 4px 8px; border-radius: 4px; }
+  .seg button.on { background: var(--sel, var(--v4-active-row)); color: var(--t1, var(--v4-text-1)); }
   .ov { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(0, 0, 0, 0.45); }
-  .sheet { width: 480px; max-height: calc(100% - 48px); overflow: auto; background: var(--v4-popover); border: 1px solid var(--v4-hairline); border-radius: 8px; box-shadow: var(--v4-shadow-popover); }
-  .sheet header, .sheet footer { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--v4-hairline); }
-  .sheet footer { border-bottom: 0; border-top: 1px solid var(--v4-hairline); }
-  .body { padding: 8px 16px 16px; display: flex; flex-direction: column; gap: 8px; }
-  input, textarea { background: var(--v4-control-faint); color: var(--v4-text-1); border: 1px solid var(--v4-control-border); border-radius: 6px; padding: 6px 8px; font: inherit; }
-  button:disabled { opacity: 0.45; }
-  .btn.primary { background: var(--v4-primary-bg); color: var(--v4-primary-fg); }
+  .sheet { width: 480px; max-height: calc(100% - 48px); overflow: auto; background: var(--panel-bg, var(--v4-popover)); border: 1px solid var(--panel-border, var(--v4-hairline)); border-radius: 8px; box-shadow: var(--panel-shadow, var(--v4-shadow-popover)); }
+  .sheet header { display: flex; align-items: center; gap: 8px; height: 52px; padding: 0 10px 0 20px; font-weight: 500; border-bottom: 1px solid var(--line, var(--v4-hairline)); }
+  .sheet header button { margin-left: auto; width: 24px; padding: 0; text-align: center; }
+  .sheet footer { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--line, var(--v4-hairline)); }
+  .body { padding: 12px 20px 16px; display: flex; flex-direction: column; gap: 8px; }
+  .lbl { color: var(--t2, var(--v4-text-2)); }
+  input, textarea { background: var(--btn-bg, var(--v4-control-faint)); color: var(--t1, var(--v4-text-1)); border: 1px solid var(--line2, var(--v4-control-border)); border-radius: 6px; padding: 0 8px; font: inherit; font-size: 13px; }
+  input { height: 28px; box-sizing: border-box; }
+  textarea { padding: 6px 8px; min-height: 80px; }
+  button:disabled { opacity: 0.45; cursor: default; }
+  .btn { height: 28px; padding: 0 10px; border: 1px solid var(--line2, var(--v4-control-border)); background: var(--btn-bg, var(--v4-control-faint)); color: var(--t1, var(--v4-text-1)); white-space: nowrap; flex: none; }
+  .btn.primary { background: var(--v4-primary-bg); color: var(--v4-primary-fg); border-color: transparent; }
 </style>

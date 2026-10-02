@@ -141,7 +141,6 @@
 
 <div class="page" data-testid="personal-deployments">
   <aside class="pane" aria-label="Deployments">
-    <div class="pane-head">Deployments</div>
     {#each filters as item (item.id)}
       <button type="button" class="row" class:active={filter === item.id} aria-current={filter === item.id ? "true" : undefined} onclick={() => pick(item.id)}>
         {item.label}
@@ -259,7 +258,7 @@
     flex-direction: column;
     gap: 1px;
   }
-  .pane-head { height: 28px; display: flex; align-items: center; padding: 0 8px; font-weight: 600; }
+  .pane-head { height: 28px; display: flex; align-items: center; padding: 0 8px; font-weight: 500; }
   .row, .drow {
     display: flex;
     align-items: center;
@@ -279,7 +278,7 @@
   main { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
   .toolbar, .act { display: flex; align-items: center; gap: 8px; }
   .toolbar { padding: 12px 16px 8px; }
-  h1 { font-size: 13px; line-height: 17px; margin: 0; font-weight: 600; }
+  h1 { font-size: var(--type-title, 20px); line-height: var(--type-title-line, 1.25); margin: 0; font-weight: var(--type-title-weight, 500); }
   .grow { flex: 1; }
   .chip { color: var(--t3); }
   .chip.live { color: var(--ok-ink); }
@@ -298,10 +297,10 @@
     gap: 8px;
   }
   .drow { contain: content; content-visibility: auto; contain-intrinsic-size: auto 48px; }
-  .hd { padding: 4px 8px; color: var(--t3); font-size: 12px; }
+  .hd { padding: 4px 8px; color: var(--t3); font-size: 13px; }
   .nm { display: flex; flex-direction: column; min-width: 0; }
   .nm .t { color: var(--t1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .nm small, .sub, .foot, .url { color: var(--t3); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .nm small, .sub, .foot, .url { color: var(--t3); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .foot { padding: 8px; white-space: normal; }
   .n { font-variant-numeric: tabular-nums; color: var(--t2); text-align: right; }
   .st.live { color: var(--ok-ink); }
@@ -320,17 +319,17 @@
     flex-direction: column;
     gap: 12px;
   }
-  .title { font-weight: 600; overflow-wrap: anywhere; }
+  .title { font-weight: 500; overflow-wrap: anywhere; }
   .url { white-space: normal; overflow-wrap: anywhere; }
   .prog { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: var(--raised); }
   .phd { display: flex; font-weight: 500; }
-  .phd span { margin-left: auto; color: var(--t3); font-weight: 400; font-size: 12px; }
+  .phd span { margin-left: auto; color: var(--t3); font-weight: 400; font-size: 13px; }
   .bar { height: 3px; background: var(--btn-bg); border-radius: 2px; margin: 8px 0; overflow: hidden; }
   .bar i { display: block; height: 100%; background: var(--t1); }
-  .steps { display: flex; gap: 10px; font-size: 12px; color: var(--t3); }
+  .steps { display: flex; gap: 10px; font-size: 13px; color: var(--t3); }
   .steps .done { color: var(--t2); }
   .steps .now { color: var(--t1); }
-  .prog p { margin: 8px 0 0; color: var(--t2); font-size: 12px; }
+  .prog p { margin: 8px 0 0; color: var(--t2); font-size: 13px; }
   .btn {
     height: 28px; padding: 0 12px; border: none; border-radius: 8px;
     background: var(--btn-bg); color: var(--t1); font: inherit; cursor: pointer;

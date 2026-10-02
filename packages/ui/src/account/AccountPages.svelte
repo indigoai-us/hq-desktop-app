@@ -80,6 +80,8 @@
 
   const invoice = $derived(data.invoices.find((row) => row.id === invoiceId) ?? null);
   const ready = $derived(updateReady(updateStore.installPhase, updateStore.appStatus));
+  // "Later" hides the restart card for this visit; the toolbar status stays.
+  let updateDeferred = $state(false);
   const mark = $derived(
     initials.trim().slice(0, 2).toUpperCase() ||
       name.trim().slice(0, 2).toUpperCase() ||
@@ -165,7 +167,7 @@
   <main class="content">
     {#if view === "profile"}
       <div class="toolbar">
-        <b>Profile</b>
+        <h1>Profile</h1>
         <span class="sub">Your identity across HQ</span>
         <span class="grow"></span>
         <span class="sub">{savedLabel}</span>
@@ -203,7 +205,7 @@
       </div>
     {:else if view === "billing"}
       <div class="toolbar">
-        <b>Billing</b>
+        <h1>Billing</h1>
         {#if invoice}<span class="sub">› Invoice</span>{/if}
         <span class="grow"></span>
         <button type="button" class="btn" data-testid="manage-payment" onclick={() => openUrl(managePaymentUrl())}>Manage payment</button>
@@ -220,10 +222,10 @@
                   data-testid="invoice-row"
                   onclick={() => (invoiceId = row.id)}
                 >
-                  <td class="mono">{row.date}</td>
+                  <td>{row.date}</td>
                   <td class="mono">{row.id}</td>
                   <td>{row.summary}</td>
-                  <td>{row.status}</td>
+                  <td><span class="status"><span class="dot" class:live={row.status.toLowerCase() === "paid"} class:err={/fail|due|unpaid/i.test(row.status)}></span>{row.status}</span></td>
                   <td>{row.amount}</td>
                 </tr>
               {/each}
@@ -232,20 +234,24 @@
         </div>
         {#if invoice}
           <aside class="invoice" data-testid="invoice-pane" aria-label="Invoice">
-            <h2>{invoice.id}</h2>
-            <p>{invoice.summary}</p>
-            <p class="amt">{invoice.amount} · {invoice.status}</p>
+            <header class="ph"><h2 class="mono">{invoice.id}</h2><button type="button" class="x" aria-label="Close invoice" onclick={() => (invoiceId = null)}>
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" /></svg></button></header>
+            <div class="pb">
+            <p class="amt">{invoice.amount}</p>
+            <p class="sub">{invoice.summary}</p>
+            <p class="status"><span class="dot" class:live={invoice.status.toLowerCase() === "paid"}></span>{invoice.status}</p>
             <div class="acts">
               <button type="button" class="btn primary" data-testid="invoice-pdf" onclick={() => openUrl(invoicePdfUrl(invoice.id))}>Download PDF</button>
               <button type="button" class="btn" data-testid="invoice-stripe" onclick={() => openUrl(invoiceStripeUrl(invoice.id))}>Open in Stripe</button>
+            </div>
             </div>
           </aside>
         {/if}
       </div>
     {:else}
       <div class="toolbar">
-        <b>Settings</b>
-        {#if ready}<span class="chip" data-testid="update-ready-chip">Update ready</span>{/if}
+        <h1>Settings</h1>
+        {#if ready}<span class="status" data-testid="update-ready-chip"><span class="dot"></span>Update ready</span>{/if}
         <span class="grow"></span>
       </div>
       <div class="canvas cols">
@@ -268,13 +274,13 @@
         </div>
         <div>
           <div class="sech">About</div>
-          {#if ready}
+          {#if ready && !updateDeferred}
             <div class="card" data-testid="update-card">
-              <div class="sech">Update downloaded</div>
+              <p class="nm">Update downloaded</p>
               <p>{updateStore.availableVersion ?? "A new version"} is ready. Restart to finish installing.</p>
               <div class="bar" style="width: {updateStore.downloadPercent ?? 100}%"></div>
               <div class="acts">
-                <button type="button" class="btn" data-testid="update-later">Later</button>
+                <button type="button" class="btn" data-testid="update-later" onclick={() => (updateDeferred = true)}>Later</button>
                 <button
                   type="button"
                   class="btn primary"
@@ -283,6 +289,8 @@
                 >Restart to update</button>
               </div>
             </div>
+          {:else if ready}
+            <p class="sub">An update is ready. It installs the next time HQ restarts.</p>
           {:else}
             <p class="sub">HQ is up to date.</p>
           {/if}
@@ -332,156 +340,170 @@
 </div>
 
 <style>
+  /* Console-rail chrome measured from Messages (docs/design-standard-console-rail.md):
+     one 20px/500 title, 13px Geist everywhere else, 31px nav rows, sentence-case
+     section labels, status as dot plus text, mono only for ids and shortcuts. */
   .account {
+    position: relative;
     display: grid;
     grid-template-columns: 260px minmax(0, 1fr);
     height: 100%;
     min-height: 0;
     background: var(--v4-bg, transparent);
-    color: var(--v4-text-1);
-    font-family: var(--font-ui);
+    color: var(--t1, var(--v4-text-1));
+    font: 400 13px/1.45 var(--font-ui, "Geist", -apple-system, sans-serif);
   }
+  button { font: inherit; font-size: 13px; }
   .pane {
     display: flex;
     flex-direction: column;
+    gap: 1px;
     min-height: 0;
     background: var(--side-bg);
-    border-right: 1px solid var(--v4-rowline);
+    border-right: 1px solid var(--line, var(--v4-rowline));
     overflow: auto;
-    padding: 8px;
+    padding: 12px 14px;
   }
-  .who { display: flex; gap: 10px; align-items: center; padding: 8px; }
+  .who { display: flex; gap: 10px; align-items: center; padding: 4px 8px 8px; }
   .av {
     position: relative;
     width: 32px; height: 32px; border-radius: 50%;
     display: grid; place-items: center;
-    background: var(--v4-control-bg);
-    font-size: 12px; font-weight: 600;
+    background: var(--btn-bg, var(--v4-control-bg));
+    font-size: 13px; font-weight: 500;
   }
   .ld {
     position: absolute; right: -1px; bottom: -1px;
     width: 8px; height: 8px; border-radius: 50%;
-    background: var(--v4-ok); border: 2px solid var(--v4-sidebar, var(--side-bg));
+    background: var(--ok, var(--v4-ok)); border: 2px solid var(--v4-sidebar, var(--side-bg));
   }
-  .nm { display: block; font-size: 13px; font-weight: 600; }
-  .em, .sub { display: block; font-size: 12px; color: var(--v4-text-3); }
-  .sec {
-    font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--v4-text-2);
-    padding: 10px 8px 4px;
-  }
+  .nm { display: block; font-weight: 500; color: var(--t1, var(--v4-text-1)); margin: 0; }
+  .em, .sub { display: block; color: var(--t3, var(--v4-text-3)); }
+  .sec { font-weight: 500; color: var(--t2, var(--v4-text-2)); padding: 12px 8px 4px; }
   .row {
     display: flex; align-items: center; gap: 8px;
-    width: 100%; text-align: left;
+    width: 100%; height: 31px; box-sizing: border-box; text-align: left;
     border: 0; background: transparent;
-    color: var(--v4-text-1);
+    color: var(--t2, var(--v4-text-2));
     border-radius: 8px;
-    padding: 6px 8px;
-    font-size: 14px;
+    padding: 7px 8px;
+    cursor: pointer;
   }
-  .row.on, .row[aria-current="true"] { background: var(--v4-active-row); }
-  .row:hover { background: var(--v4-hover); }
-  .count { margin-left: auto; font-size: 12px; color: var(--v4-text-3); }
+  .row.on, .row[aria-current="true"] { background: var(--sel, var(--v4-active-row)); color: var(--t1, var(--v4-text-1)); box-shadow: none; }
+  .row:hover { background: var(--hover, var(--v4-hover)); }
+  .count { margin-left: auto; color: var(--t3, var(--v4-text-3)); font-variant-numeric: tabular-nums; }
   .foot { margin-top: auto; }
-  .quiet { color: var(--v4-text-3); }
+  .quiet { color: var(--t3, var(--v4-text-3)); }
   .content { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
   .toolbar {
     display: flex; align-items: center; gap: 8px;
-    min-height: 52px; padding: 0 16px;
-    border-bottom: 1px solid var(--v4-rowline);
-    font-size: 15px;
+    height: 52px; flex: none; box-sizing: border-box; padding: 0 20px;
+    border-bottom: 1px solid var(--line, var(--v4-rowline));
   }
+  h1 { margin: 0 4px 0 0; font-size: var(--type-title, 20px); font-weight: var(--type-title-weight, 500); line-height: var(--type-title-line, 1.25); }
+  .toolbar .sub { display: inline; }
   .grow { flex: 1; }
-  .canvas { overflow: auto; padding: 16px 20px 32px; }
-  .split { display: grid; grid-template-columns: minmax(0, 1fr) 380px; min-height: 0; flex: 1; }
-  .split .canvas { border-right: 1px solid var(--v4-rowline); }
+  .canvas { overflow: auto; padding: 8px 20px 32px; }
+  .split { display: grid; grid-template-columns: minmax(0, 1fr) 340px; min-height: 0; flex: 1; }
+  .split .canvas { border-right: 1px solid var(--line, var(--v4-rowline)); }
   .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; }
-  .sech {
-    font-family: var(--font-mono);
-    font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
-    color: var(--v4-text-2); margin: 18px 0 6px;
-  }
+  .sech { font-weight: 500; color: var(--t2, var(--v4-text-2)); margin: 0; padding: 16px 0 6px; }
   .frow {
     display: grid; grid-template-columns: 168px minmax(0, 1fr);
     gap: 12px; align-items: center;
     min-height: 40px; padding: 6px 0;
-    border-bottom: 1px solid var(--v4-rowline);
-    font-size: 13px; color: var(--v4-text-2);
+    color: var(--t2, var(--v4-text-2));
   }
   .fld, .frow input, .frow textarea {
     max-width: 360px;
+    box-sizing: border-box;
+    min-height: 28px;
     border-radius: var(--v4-radius-field, 6px);
-    background: var(--v4-control-faint);
-    border: 1px solid var(--v4-control-border);
-    color: var(--v4-text-1);
+    background: var(--btn-bg, var(--v4-control-faint));
+    border: 1px solid var(--line2, var(--v4-control-border));
+    color: var(--t1, var(--v4-text-1));
     font: inherit;
+    font-size: 13px;
     padding: 4px 8px;
   }
   .ta { min-height: 56px; }
-  .pre { color: var(--v4-text-3); font-family: var(--font-mono); }
-  .ok { color: var(--v4-ok); margin-left: 8px; font-size: 12px; }
-  .tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
-  .tbl th {
-    font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em;
-    text-transform: uppercase; font-weight: 400; color: var(--v4-text-3); text-align: left;
-  }
-  .tbl td, .tbl th { padding: 8px 8px 8px 0; border-bottom: 1px solid var(--v4-rowline); }
-  .tbl tr[aria-current="true"] td { background: var(--v4-active-row); color: var(--v4-text-1); }
-  .mono { font-family: var(--font-mono); font-size: 12px; color: var(--v4-text-3); }
+  .pre { color: var(--t3, var(--v4-text-3)); }
+  .ok { color: var(--t2, var(--v4-text-2)); margin-left: 8px; }
+  .tbl { width: 100%; border-collapse: collapse; }
+  .tbl th { font-weight: 400; color: var(--t3, var(--v4-text-3)); text-align: left; }
+  .tbl td, .tbl th { height: 31px; padding: 0 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tbl tbody tr { cursor: pointer; }
+  .tbl tbody tr:hover td { background: var(--hover, var(--v4-hover)); }
+  .tbl tr[aria-current="true"] td { background: var(--sel, var(--v4-active-row)); color: var(--t1, var(--v4-text-1)); }
+  .tbl td:first-child { border-radius: 8px 0 0 8px; }
+  .tbl td:last-child { border-radius: 0 8px 8px 0; }
+  .mono { font-family: var(--font-mono, "Geist Mono", ui-monospace, monospace); }
+  .status { display: inline-flex; align-items: center; gap: 6px; color: var(--t2, var(--v4-text-2)); margin: 0; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--t3, var(--v4-text-3)); flex: none; display: inline-block; }
+  .dot.live { background: var(--ok, var(--v4-ok)); }
+  .dot.err { background: var(--red, var(--v4-error)); }
   .srow {
     display: flex; align-items: center; gap: 8px;
-    width: 100%; min-height: 40px; padding: 6px 8px;
-    border: 0; border-bottom: 1px solid var(--v4-rowline);
-    background: transparent; color: var(--v4-text-1);
-    font: 400 14px/1.2 var(--font-ui); text-align: left;
-    cursor: default;
+    width: 100%; height: 31px; box-sizing: border-box; padding: 7px 8px;
+    border: 0; border-radius: 8px;
+    background: transparent; color: var(--t1, var(--v4-text-1));
+    text-align: left;
+    cursor: pointer;
   }
-  .srow:hover, .srow:focus-visible { background: var(--v4-hover); outline: none; }
+  .srow:hover, .srow:focus-visible { background: var(--hover, var(--v4-hover)); outline: none; }
   .srow .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .chev {
     flex: 0 0 auto; width: 14px; height: 14px;
-    fill: none; stroke: var(--v4-text-3); stroke-width: 1.6;
+    fill: none; stroke: var(--t3, var(--v4-text-3)); stroke-width: 1.3;
     stroke-linecap: round; stroke-linejoin: round;
   }
   .link {
-    background: none; border: 0; padding: 0;
-    color: var(--v4-text-2); text-decoration: underline; text-underline-offset: 3px;
-    font-size: 12px; cursor: pointer;
+    height: 26px; padding: 0 8px; border: 0; border-radius: 6px;
+    background: transparent; color: var(--t2, var(--v4-text-2));
+    cursor: pointer;
   }
+  .link:hover { background: var(--hover, var(--v4-hover)); color: var(--t1, var(--v4-text-1)); }
   .danger {
-    margin-top: 22px; padding-top: 14px;
-    border-top: 1px solid var(--v4-rowline);
+    margin-top: 24px; padding-top: 14px;
+    border-top: 1px solid var(--line, var(--v4-rowline));
     display: flex; gap: 16px; align-items: center;
-    font-size: 12px; color: var(--v4-text-3);
+    color: var(--t3, var(--v4-text-3));
   }
-  .del { color: var(--v4-error); background: none; border: 0; font-weight: 500; cursor: pointer; }
+  .del { height: 28px; padding: 0 10px; border-radius: 6px; color: var(--red, var(--v4-error)); background: none; border: 0; font-weight: 500; cursor: pointer; white-space: nowrap; }
   .btn {
-    border: 1px solid var(--v4-control-border);
-    background: var(--v4-control-faint);
-    color: var(--v4-text-1);
+    height: 28px; box-sizing: border-box;
+    border: 1px solid var(--line2, var(--v4-control-border));
+    background: var(--btn-bg, var(--v4-control-faint));
+    color: var(--t1, var(--v4-text-1));
     border-radius: 6px;
-    padding: 4px 10px;
-    font-size: 13px;
+    padding: 0 10px;
+    white-space: nowrap;
+    cursor: pointer;
   }
-  .btn.primary { background: var(--v4-primary-bg); color: var(--v4-primary-fg); }
-  .invoice { padding: 16px; }
-  .amt { font-size: 20px; font-weight: 600; }
+  .btn.primary { background: var(--v4-primary-bg); color: var(--v4-primary-fg); border-color: transparent; }
+  .btn.del { color: var(--red, var(--v4-error)); }
+  .invoice { min-width: 0; overflow: auto; }
+  .ph { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--line, var(--v4-rowline)); }
+  .ph h2 { flex: 1; margin: 0; font-size: 13px; font-weight: 500; color: var(--t1, var(--v4-text-1)); }
+  .x { width: 24px; height: 24px; display: grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--t2, var(--v4-text-2)); cursor: pointer; padding: 0; }
+  .x:hover { background: var(--hover, var(--v4-hover)); color: var(--t1, var(--v4-text-1)); }
+  .x svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; }
+  .pb { padding: 24px 20px; display: flex; flex-direction: column; gap: 6px; }
+  .pb p { margin: 0; }
+  .amt { font-weight: 500; color: var(--t1, var(--v4-text-1)); }
   .acts { display: flex; gap: 8px; margin-top: 12px; }
   .card {
-    border: 1px solid var(--v4-hairline);
-    border-radius: 8px;
-    padding: 12px;
-    background: var(--v4-control-faint);
+    border-radius: 10px;
+    padding: 14px 16px;
+    background: var(--raised, var(--v4-control-faint));
   }
-  .bar { height: 3px; background: var(--v4-text-2); border-radius: 2px; }
-  .chip { font-size: 12px; color: var(--v4-text-2); }
+  .card p { margin: 4px 0 8px; color: var(--t2, var(--v4-text-2)); }
+  .bar { height: 3px; background: var(--t2, var(--v4-text-2)); border-radius: 2px; }
   kbd {
-    font-family: var(--font-mono); font-size: 11px;
-    border: 1px solid var(--v4-control-border);
-    background: var(--v4-control-faint);
+    justify-self: start;
+    font-family: var(--font-mono, "Geist Mono", ui-monospace, monospace); font-size: 12px;
+    border: 1px solid var(--line2, var(--v4-control-border));
+    background: var(--btn-bg, var(--v4-control-faint));
     border-radius: 4px; padding: 1px 6px;
   }
   .scrim {
@@ -491,14 +513,13 @@
   }
   .sheet {
     width: 480px; max-width: calc(100% - 32px);
-    background: var(--v4-popover);
-    border: 1px solid var(--v4-hairline);
+    background: var(--panel-bg, var(--v4-popover));
+    border: 1px solid var(--panel-border, var(--v4-hairline));
     border-radius: 8px;
-    box-shadow: var(--v4-shadow-popover);
+    box-shadow: var(--panel-shadow, var(--v4-shadow-popover));
     padding: 20px;
-    color: var(--v4-text-2);
+    color: var(--t2, var(--v4-text-2));
   }
-  .sheet h2 { margin: 0 0 8px; color: var(--v4-text-1); font-size: 15px; }
-  .hint { color: var(--v4-text-3); font-size: 12px; }
-  .account { position: relative; }
+  .sheet h2 { margin: 0 0 8px; color: var(--t1, var(--v4-text-1)); font-size: 13px; font-weight: 500; }
+  .hint { color: var(--t3, var(--v4-text-3)); }
 </style>
