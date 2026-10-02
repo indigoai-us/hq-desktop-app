@@ -56,6 +56,27 @@
     };
   });
 
+  const GLYPH: Record<string, string> = {
+    atlas: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="2.5"/><circle cx="5" cy="6" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="5" cy="18" r="2"/><circle cx="19" cy="18" r="2"/><path d="M6.6 7.3l3.6 3M17.4 7.3l-3.6 3M6.6 16.7l3.6-3M17.4 16.7l-3.6-3"/></svg>`,
+    projects: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="5" width="5" height="14" rx="1"/><rect x="10" y="5" width="5" height="9" rx="1"/><rect x="17" y="5" width="4" height="6" rx="1"/></svg>`,
+    activity: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 19h16M6 19V9M11 19V5M16 19v-8"/></svg>`,
+    goals: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/></svg>`,
+    team: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="9" cy="8" r="3.5"/><path d="M3 20a6 6 0 0 1 12 0M16 4a3.5 3.5 0 0 1 0 7M21 20a6 6 0 0 0-4-5.6"/></svg>`,
+    bots: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="5" y="7" width="14" height="12" rx="3"/><path d="M12 3v4M9 13h.01M15 13h.01"/></svg>`,
+    knowledge: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M5 5h10a4 4 0 0 1 4 4v10H9a4 4 0 0 0-4 4z"/><path d="M5 5v14"/></svg>`,
+    policies: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"/></svg>`,
+    skills: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M14 4l6 6-8 8H6v-6z"/></svg>`,
+    workers: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="8" width="16" height="10" rx="2"/><path d="M8 8V6h8v2M9 13h.01M15 13h.01"/></svg>`,
+    vault: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="4" width="16" height="16" rx="2"/><circle cx="12" cy="12" r="3"/></svg>`,
+    integrations: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 8h8v8H8z"/><path d="M12 3v5M12 16v5M3 12h5M16 12h5"/></svg>`,
+    secrets: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="14" r="3"/><path d="M11 14h9l-2-2 2-2h-4"/></svg>`,
+    deployments: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3v12M8 7l4-4 4 4"/><path d="M5 21h14"/></svg>`,
+  };
+
+  function sectionGlyph(id: string): string {
+    return GLYPH[id] ?? "";
+  }
+
   const range = $derived(windowRange(items.length, scrollTop, viewport || 900));
   const visible = $derived(items.slice(range.start, range.end));
 </script>
@@ -82,6 +103,9 @@
         data-row-id={item.row.id}
         onclick={() => onselect?.(item.row)}
       >
+        {#if !item.row.mark && sectionGlyph(item.row.id)}
+          <span class="glyph" aria-hidden="true">{@html sectionGlyph(item.row.id)}</span>
+        {/if}
         {#if item.row.mark}
           <span class="mark" class:square={item.row.mark === "square"} aria-hidden="true">
             {item.row.label.slice(0, 1).toUpperCase()}
@@ -153,6 +177,23 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .glyph {
+    display: inline-grid;
+    flex: 0 0 16px;
+    width: 16px;
+    height: 16px;
+    color: var(--t2);
+  }
+
+  .glyph :global(svg) {
+    width: 16px;
+    height: 16px;
+  }
+
+  .sidepane-row.is-selected .glyph {
+    color: var(--t1);
   }
 
   .mark {

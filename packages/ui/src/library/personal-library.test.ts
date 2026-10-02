@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   activeGrants,
   filesForSection,
+  libraryFolderTree,
   personalLibraryFixture,
   sharedGrantPreview,
 } from "./personal-library.js";
@@ -16,6 +17,15 @@ describe("personal library (US-031)", () => {
     expect(selected?.name).toBe("agent-billing-seams.md");
     expect(selected?.preview).toContain("Agent billing seams");
     expect(selected?.access).toBe("read");
+  });
+
+  it("nests files under expandable folders", () => {
+    const tree = libraryFolderTree(personalLibraryFixture().files);
+    const personal = tree.find((node) => node.name === "personal");
+    expect(personal?.file).toBeNull();
+    expect(personal?.children.some((child) => child.name === "projects")).toBe(true);
+    const knowledge = personal?.children.find((child) => child.name === "knowledge");
+    expect(knowledge?.children.some((child) => child.file?.id === "voice")).toBe(true);
   });
 
   it("keeps starred files as a subset of my files", () => {

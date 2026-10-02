@@ -13,10 +13,12 @@
     activeGrants,
     expiredGrants,
     filesForSection,
+    libraryFolderTree,
     personalLibraryFixture,
     readPersonalLibraryCache,
     sharedGrantPreview,
     writePersonalLibraryCache,
+    type LibraryTreeNode,
     type PersonalLibraryCache,
     type PersonalLibrarySection,
     type SharedGrant,
@@ -52,6 +54,7 @@
   let selectedGrantId = $state("billing");
   let sharedTab = $state<"active" | "expired">("active");
   let query = $state("");
+  let collapsed = $state<Record<string, boolean>>({});
 
   $effect(() => {
     const warm = readPersonalLibraryCache(accountId);
@@ -69,6 +72,7 @@
   });
 
   const mineFiles = $derived(filesForSection(cache, section === "starred" || section === "recent" ? section : "mine"));
+  const fileTree = $derived(libraryFolderTree(mineFiles.filter((file) => matches(`${file.name} ${file.path}`))));
   const selectedFile = $derived(
     mineFiles.find((file) => file.id === selectedFileId) ?? mineFiles[0] ?? null,
   );
@@ -162,17 +166,8 @@
         <input class="search" type="search" placeholder="Search my files" aria-label="Search my files" bind:value={query} />
       </div>
       <div class="split">
-        <div class="tree">
-          {#each mineFiles.filter((file) => matches(`${file.name} ${file.path}`)) as file (file.id)}
-            <button
-              type="button"
-              class="frow"
-              aria-current={selectedFile?.id === file.id ? "true" : undefined}
-              onclick={() => (selectedFileId = file.id)}
-            >
-              <span>{file.name}</span><span class="meta">{file.meta}</span>
-            </button>
-          {/each}
+        <div class="tree" data-testid="library-folder-tree">
+          {@render treeNodes(fileTree, 0)}
         </div>
         {#if selectedFile}
           {@render preview(selectedFile.name, selectedFile.path, selectedFile.meta, selectedFile.preview, null)}
@@ -182,11 +177,48 @@
   </main>
 </div>
 
+{#snippet treeNodes(nodes: LibraryTreeNode[], depth: number)}
+  {#each nodes as node (node.id)}
+    {#if node.file}
+      <button
+        type="button"
+        class="frow"
+        style:padding-left={`${10 + depth * 14}px`}
+        aria-current={selectedFile?.id === node.file.id ? "true" : undefined}
+        onclick={() => (selectedFileId = node.file!.id)}
+      >
+        <span>{node.name}</span>
+      </button>
+    {:else}
+      <button
+        type="button"
+        class="frow folder"
+        style:padding-left={`${10 + depth * 14}px`}
+        aria-expanded={!collapsed[node.id]}
+        data-testid="library-folder"
+        onclick={() => (collapsed = { ...collapsed, [node.id]: !collapsed[node.id] })}
+      >
+        <span>{collapsed[node.id] ? "▸" : "▾"} {node.name}</span>
+      </button>
+      {#if !collapsed[node.id]}
+        {@render treeNodes(node.children, depth + 1)}
+      {/if}
+    {/if}
+  {/each}
+{/snippet}
+
 {#snippet preview(name: string, path: string, meta: string, text: string, grant: SharedGrant | null)}
   <div class="preview" data-testid="library-preview">
     <div class="ph">
-      <b data-testid="library-preview-name">{name}</b>
-      <span class="meta">{meta}</span>
+      <div class="ph-copy">
+        <b data-testid="library-preview-name">{name}</b>
+        <span class="meta">{meta}</span>
+      </div>
+      <div class="act" data-testid="library-preview-actions">
+        <button type="button" class="btn">Open</button>
+        <button type="button" class="btn" onclick={() => void navigator.clipboard?.writeText(path)}>Copy path</button>
+        <button type="button" class="btn">Share</button>
+      </div>
     </div>
     {#if adapter?.files && typeof adapter.files.getFileContent === "function"}
       <FilePreviewPane {adapter} {path} />
@@ -207,7 +239,7 @@
 <style>
   .library {
     display: grid;
-    grid-template-columns: 240px minmax(0, 1fr);
+    grid-template-columns: 260px minmax(0, 1fr);
     height: 100%;
     min-height: 0;
     background: var(--v4-bg, transparent);
@@ -262,7 +294,20 @@
   .nm span, .meta, .foot, .empty { color: var(--v4-text-3); font-size: 12px; }
   .gone { opacity: 0.55; }
   .preview { border-left: 1px solid var(--v4-rowline); padding: 12px 16px; background: var(--v4-secondary-sidebar); }
-  .ph { display: flex; flex-wrap: wrap; gap: 6px 10px; margin-bottom: 8px; }
+  .ph { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 8px; min-width: 0; }
+  .ph-copy { min-width: 0; flex: 1 1 auto; }
+  .ph-copy b, .ph-copy .meta { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .act { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; flex: 0 1 auto; max-width: 100%; }
+  .btn {
+    border: 1px solid var(--v4-control-border);
+    background: var(--v4-control-faint);
+    color: var(--v4-text-1);
+    border-radius: 6px;
+    padding: 3px 8px;
+    font: inherit;
+    font-size: 12px;
+    white-space: nowrap;
+  }
   pre {
     margin: 0;
     white-space: pre-wrap;

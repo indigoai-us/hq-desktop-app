@@ -144,6 +144,48 @@ export function personalLibraryFixture(): PersonalLibraryCache {
   };
 }
 
+export interface LibraryTreeNode {
+  id: string;
+  name: string;
+  /** Directory path, or the file path when `file` is set. */
+  path: string;
+  file: PersonalLibraryFile | null;
+  children: LibraryTreeNode[];
+}
+
+/** Fold a flat file list into directories that can expand and collapse. */
+export function libraryFolderTree(files: readonly PersonalLibraryFile[]): LibraryTreeNode[] {
+  const roots: LibraryTreeNode[] = [];
+  const dirs = new Map<string, LibraryTreeNode>();
+
+  function dir(path: string): LibraryTreeNode {
+    const existing = dirs.get(path);
+    if (existing) return existing;
+    const slash = path.lastIndexOf("/");
+    const name = slash >= 0 ? path.slice(slash + 1) : path;
+    const node: LibraryTreeNode = { id: `dir:${path}`, name, path, file: null, children: [] };
+    dirs.set(path, node);
+    if (slash <= 0) roots.push(node);
+    else dir(path.slice(0, slash)).children.push(node);
+    return node;
+  }
+
+  for (const file of files) {
+    const slash = file.path.lastIndexOf("/");
+    const parent = slash > 0 ? file.path.slice(0, slash) : "";
+    const leaf: LibraryTreeNode = {
+      id: file.id,
+      name: file.name,
+      path: file.path,
+      file,
+      children: [],
+    };
+    if (!parent) roots.push(leaf);
+    else dir(parent).children.push(leaf);
+  }
+  return roots;
+}
+
 export function filesForSection(
   cache: PersonalLibraryCache,
   section: PersonalLibrarySection,
