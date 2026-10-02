@@ -458,11 +458,17 @@
           const plan = status.planLimits && typeof status.planLimits === 'object'
             ? (status.planLimits as Record<string, unknown>)
             : status;
-          if (plan.plan !== 'free') {
+          if (
+            plan.plan !== 'free' ||
+            plan.cohort !== 'enforceable' ||
+            plan.planLimitsExempt === true ||
+            plan.payingBypass === true
+          ) {
             removeStatusPushNotice(workspace.slug);
             continue;
           }
           const hasWarning = PLAN_LIMIT_STATUS_RESOURCES.some((resource) => {
+            if (resource === 'agents' && plan.agentsGrandfathered === true) return false;
             const value = plan[resource];
             if (!value || typeof value !== 'object') return false;
             const row = value as Record<string, unknown>;

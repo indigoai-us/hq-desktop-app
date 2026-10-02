@@ -270,6 +270,9 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
       limitStatusPushFlag: true,
       usageBody: {
         plan: 'free',
+        cohort: 'enforceable',
+        planLimitsExempt: false,
+        payingBypass: false,
         agents: { used: 8, limit: 10, over: false, pctUsed: 80 },
         upgradeUrl: 'https://hq.computer/companies/acme/billing?upgrade=team',
       },
@@ -296,7 +299,29 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
       limitStatusPushFlag: true,
       usageBody: {
         plan: 'free',
+        cohort: 'enforceable',
+        planLimitsExempt: false,
+        payingBypass: false,
         agents: { used: 4, limit: 10, over: false, pctUsed: 40 },
+      },
+    });
+    component = mount(HqWorkWorkShell, { target: host, props: { invokeFn } });
+    await flush();
+
+    expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeNull();
+  });
+
+  it('does not push a notice for a free company exempt from plan-limit enforcement', async () => {
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    const { invokeFn } = mockInvoke([() => ({ workspaces: [ACME] })], {
+      limitStatusPushFlag: true,
+      usageBody: {
+        plan: 'free',
+        cohort: 'enforceable',
+        planLimitsExempt: true,
+        payingBypass: false,
+        agents: { used: 11, limit: 10, over: false, pctUsed: 110 },
       },
     });
     component = mount(HqWorkWorkShell, { target: host, props: { invokeFn } });
