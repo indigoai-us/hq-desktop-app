@@ -4,7 +4,8 @@
    * zooms, double-click frames all. Keyboard (`0`, `Esc`) is owned by the
    * parent view so it also works while focus sits in the inspector.
    */
-  import type { AtlasRefEdge } from "./atlas-model.js";
+  import type { AtlasPresence, AtlasRefEdge } from "./atlas-model.js";
+  import { ATLAS_CHIP_SIZE, atlasDockedChips } from "./atlas-presence.js";
   import {
     atlasLabelIds,
     atlasRelatedIds,
@@ -23,14 +24,32 @@
     edges: AtlasRefEdge[];
     selected: string | null;
     live: Set<string>;
+    /** Live actors docked as chips beside their objects (US-013). */
+    presence?: AtlasPresence[];
+    /** People filter: objects to keep at full strength; null shows all. */
+    filterIds?: Set<string> | null;
+    /** Actor the people filter is on; their chips stay bright. */
+    filterActor?: string | null;
     nowMs: number;
     view: AtlasView;
     onselect: (id: string | null) => void;
     onview: (view: AtlasView) => void;
   }
 
-  let { placed, regions, edges, selected, live, nowMs, view, onselect, onview }: Props =
-    $props();
+  let {
+    placed,
+    regions,
+    edges,
+    selected,
+    live,
+    presence = [],
+    filterIds = null,
+    filterActor = null,
+    nowMs,
+    view,
+    onselect,
+    onview,
+  }: Props = $props();
 
   let hovered = $state<string | null>(null);
   let svgEl = $state<SVGSVGElement | null>(null);
@@ -42,6 +61,13 @@
   const shownEdges = $derived(atlasVisibleEdges(edges, selected, hovered));
   const labels = $derived(atlasLabelIds({ placed, selected, hovered, related, nowMs }));
   const focusIds = $derived(selected || hovered ? new Set([selected, hovered, ...related]) : null);
+  const chips = $derived(atlasDockedChips(placed, presence));
+  const half = ATLAS_CHIP_SIZE / 2;
+
+  function dimmed(id: string): boolean {
+    if (filterIds && !filterIds.has(id)) return true;
+    return focusIds !== null && !focusIds.has(id);
+  }
 
   export function frame(): void {
     const box = svgEl?.getBoundingClientRect();
@@ -119,7 +145,7 @@
       {#each placed as node (node.id)}
         <g
           class="node"
-          class:dim={focusIds !== null && !focusIds.has(node.id)}
+          class:dim={dimmed(node.id)}
           class:selected={node.id === selected}
           data-testid={`atlas-node-${node.id}`}
           data-kind={node.type}
@@ -142,7 +168,7 @@
             <circle class="sel-bg" cx={node.x} cy={node.y} r={node.r + 8} />
           {/if}
           {#if live.has(node.id)}
-            <circle class="halo" cx={node.x} cy={node.y} r={node.r + 4} vector-effect="non-scaling-stroke" />
+            <circle class="halo" data-testid={`atlas-halo-${node.id}`} cx={node.x} cy={node.y} r={node.r + 4} vector-effect="non-scaling-stroke" />
           {/if}
           <circle class="dot" cx={node.x} cy={node.y} r={node.r} />
           {#if labels.has(node.id)}
@@ -153,6 +179,32 @@
               y={node.y + 4}
             >{node.label}</text>
           {/if}
+        </g>
+      {/each}
+      {#each chips as chip (chip.key)}
+        <g
+          class="dock"
+          class:dim={filterActor ? chip.actorUid !== filterActor : dimmed(chip.nodeId)}
+          data-testid={`atlas-chip-${chip.actorUid ?? chip.name}`}
+          data-node={chip.nodeId}
+          data-kind={chip.bot ? "bot" : "human"}
+          aria-label={`${chip.name} on ${byId.get(chip.nodeId)?.label ?? chip.nodeId}`}
+        >
+          <line
+            class="connector"
+            x1={chip.x1}
+            y1={chip.y1}
+            x2={chip.x - half}
+            y2={chip.y + half}
+            vector-effect="non-scaling-stroke"
+          />
+          {#if chip.bot}
+            <rect class="mark" x={chip.x - half} y={chip.y - half} width={ATLAS_CHIP_SIZE} height={ATLAS_CHIP_SIZE} rx="5" />
+          {:else}
+            <circle class="mark" cx={chip.x} cy={chip.y} r={half} />
+          {/if}
+          <text class="initials" x={chip.x} y={chip.y + 3} text-anchor="middle">{chip.initials}</text>
+          <title>{chip.name}</title>
         </g>
       {/each}
     </g>
@@ -216,10 +268,45 @@
   .sel-bg {
     fill: var(--v4-active-row);
   }
+  /* Opacity-only pulse; stops under reduced motion. */
   .halo {
     fill: none;
     stroke: var(--v4-ok);
     stroke-width: 1.5;
+    opacity: 0.9;
+    animation: atlas-halo 1.8s ease-in-out infinite;
+  }
+  @keyframes atlas-halo {
+    50% {
+      opacity: 0.35;
+    }
+  }
+  .dock {
+    pointer-events: none;
+  }
+  .dock.dim {
+    opacity: 0.35;
+  }
+  .connector {
+    stroke: var(--v4-ok);
+    stroke-width: 1;
+    stroke-dasharray: 3 3;
+  }
+  .mark {
+    fill: var(--v4-control-bg);
+    stroke: var(--v4-ok);
+    stroke-width: 1.5;
+  }
+  .initials {
+    font-family: var(--font-mono, "Geist Mono", monospace);
+    font-size: 7px;
+    font-weight: 600;
+    fill: var(--v4-text-1);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .halo {
+      animation: none;
+    }
   }
   .label {
     font-family: var(--font-sans, "Geist", sans-serif);

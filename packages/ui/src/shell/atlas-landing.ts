@@ -67,3 +67,73 @@ export function atlasWorkingNow(roster: readonly SidepaneRosterEntry[]): AtlasWo
     .filter((p) => p.live)
     .map((p) => ({ nodeId: `person:${p.uid}`, name: p.name, bot: p.kind === "bot" }));
 }
+
+/**
+ * One live actor on the Atlas map (US-013), one row per project they have an
+ * open Work Mesh session on. Actors with no project-bound session appear once
+ * with no `projectId`; they stay in Working now but dock nowhere.
+ */
+export interface AtlasLiveActor {
+  actorUid: string;
+  name: string;
+  bot: boolean;
+  projectId?: string;
+  signal?: string;
+}
+
+type LiveReadLike = {
+  participants: readonly {
+    actorUid: string;
+    actorType: string;
+    displayName: string;
+    presence: string;
+    sessions: readonly { projectId?: string; taskId?: string; status: string }[];
+  }[];
+};
+
+/**
+ * Live actors for a company from the LiveReadStore projection, gated by the
+ * PresenceStore: an actor the presence snapshot knows about must be online
+ * there; otherwise the live read's own presence decides. Ended sessions never
+ * dock. Pure; the shell feeds it from the two existing store mirrors.
+ */
+export function atlasLiveActors(
+  live: LiveReadLike | null | undefined,
+  snapshot: PresenceSnapshot,
+  companyUid: string,
+  names: RosterNames,
+  selfUid: string | null = null,
+): AtlasLiveActor[] {
+  if (!live) return [];
+  const actors = snapshot.get(companyUid);
+  const out: AtlasLiveActor[] = [];
+  for (const p of live.participants) {
+    const known = actors?.get(p.actorUid);
+    const online = known ? known.status === "online" : p.presence === "online";
+    if (!online) continue;
+    const name =
+      names.get(p.actorUid) ||
+      p.displayName?.trim() ||
+      (p.actorUid === selfUid ? "You" : p.actorUid);
+    const bot = (known?.actorType ?? p.actorType) === "agent";
+    const projects = new Map<string, string | undefined>();
+    for (const s of p.sessions) {
+      const project = s.projectId?.trim().toLowerCase();
+      if (!project || s.status === "ended" || projects.has(project)) continue;
+      projects.set(project, s.taskId?.trim() || undefined);
+    }
+    if (!projects.size) {
+      out.push({ actorUid: p.actorUid, name, bot });
+      continue;
+    }
+    for (const [projectId, taskId] of projects) {
+      out.push({ actorUid: p.actorUid, name, bot, projectId, signal: taskId });
+    }
+  }
+  return out.sort(
+    (a, b) =>
+      a.name.localeCompare(b.name) ||
+      a.actorUid.localeCompare(b.actorUid) ||
+      (a.projectId ?? "").localeCompare(b.projectId ?? ""),
+  );
+}

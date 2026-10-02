@@ -9,6 +9,12 @@
   import AtlasInspector from "./AtlasInspector.svelte";
   import type { AtlasCache } from "./atlas-cache.js";
   import {
+    atlasActorNodeIds,
+    atlasDistinctActors,
+    atlasPresenceFromActors,
+    type AtlasLiveActorInput,
+  } from "./atlas-presence.js";
+  import {
     atlasEdges,
     atlasRelatedIds,
     frameAll,
@@ -27,6 +33,13 @@
     companyName?: string;
     cache: AtlasCache;
     presence?: AtlasPresence[];
+    /** Live actors from the shell's presence stores (US-013); mapped onto nodes here. */
+    actors?: readonly AtlasLiveActorInput[];
+    /** People filter from the sidepane roster: actor uid, or null for everyone. */
+    filterActor?: string | null;
+    onclearfilter?: () => void;
+    /** Working now rows for people with no object on the map. */
+    onopenperson?: (actorUid: string) => void;
     loadDetail?: (node: AtlasNode) => Promise<AtlasDetail | undefined>;
     nowMs?: number;
     onopenfiles?: (node: AtlasNode) => void;
@@ -38,7 +51,11 @@
     companyUid,
     companyName,
     cache,
-    presence = [],
+    presence: presenceProp = [],
+    actors,
+    filterActor = null,
+    onclearfilter,
+    onopenperson,
     loadDetail,
     nowMs = Date.now(),
     onopenfiles,
@@ -66,7 +83,15 @@
       .map((id) => byId.get(id))
       .filter((n): n is AtlasNode => Boolean(n)),
   );
+  const presence = $derived(
+    actors ? atlasPresenceFromActors(actors, graph?.nodes ?? []) : presenceProp,
+  );
+  const working = $derived(atlasDistinctActors(presence));
   const live = $derived(new Set(presence.map((p) => p.nodeId)));
+  const filterIds = $derived(atlasActorNodeIds(presence, filterActor));
+  const filterName = $derived(
+    filterActor ? (presence.find((p) => p.actorUid === filterActor)?.name ?? null) : null,
+  );
   const projectsInProgress = $derived(
     (graph?.nodes ?? []).filter(
       (n) => n.type === "project" && n.stories && n.stories.done < n.stories.total,
@@ -137,6 +162,11 @@
     });
   });
 
+  function selectId(id: string): void {
+    if (id.startsWith("person:")) onopenperson?.(id.slice("person:".length));
+    else selected = id;
+  }
+
   function onkeydown(event: KeyboardEvent): void {
     const target = event.target as HTMLElement | null;
     if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
@@ -158,14 +188,20 @@
 <section class="atlas-view" data-testid="atlas-view" data-company={companyUid}>
   <div class="toolbar">
     <h1>Atlas</h1>
-    {#if presence.length}
-      <span class="chip live"><i class="ldot"></i>{presence.length} live</span>
+    {#if working.length}
+      <span class="chip live"><i class="ldot"></i>{working.length} live</span>
     {/if}
     {#if graph}
       <span class="chip" data-testid="atlas-object-count">{graph.nodes.length} objects</span>
     {/if}
     {#if refreshError}
       <span class="chip" title="Showing the last saved map">offline copy</span>
+    {/if}
+    {#if filterActor}
+      <span class="chip" data-testid="atlas-filter-chip">
+        {filterName ?? "Person"} · {filterIds?.size ?? 0} live here
+        <button type="button" class="clear" aria-label="Clear people filter" onclick={() => onclearfilter?.()}>✕</button>
+      </span>
     {/if}
     <div class="grow"></div>
     <button type="button" class="btn" data-testid="atlas-frame-all" onclick={frame}>Frame all</button>
@@ -179,6 +215,9 @@
           {edges}
           {selected}
           {live}
+          {presence}
+          {filterIds}
+          {filterActor}
           {nowMs}
           {view}
           onselect={(id) => (selected = id)}
@@ -197,12 +236,12 @@
       {detail}
       {detailLoading}
       {related}
-      {presence}
+      presence={selectedNode ? presence : working}
       company={companyName ?? graph?.company ?? ""}
       objectCount={graph?.nodes.length ?? 0}
       {projectsInProgress}
       {nowMs}
-      onselect={(id) => (selected = id)}
+      onselect={selectId}
       {onopenfiles}
       {onopenboard}
       {onmessage}
@@ -246,6 +285,15 @@
     background: var(--v4-control-bg);
     color: var(--v4-text-2);
     font-size: 11px;
+  }
+  .clear {
+    margin-left: 2px;
+    padding: 0 2px;
+    border: 0;
+    background: none;
+    color: var(--v4-text-3);
+    font: inherit;
+    cursor: pointer;
   }
   .ldot {
     width: 6px;

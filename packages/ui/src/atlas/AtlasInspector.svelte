@@ -70,7 +70,7 @@
       <div class="hr"></div>
       <div class="kind">Here now</div>
       <div class="list">
-        {#each here as who (who.name)}
+        {#each here as who (who.actorUid ?? who.name)}
           <div class="li">
             <span class="mini" class:sq={who.bot}>{who.bot ? "⌁" : who.name.slice(0, 2).toUpperCase()}<span class="ld"></span></span>
             <div>

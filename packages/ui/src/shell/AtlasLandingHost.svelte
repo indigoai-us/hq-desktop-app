@@ -3,16 +3,19 @@
 
   The Atlas chunk loads through the lazy door; the first frame is the
   atlas-loading skeleton so the click never paints a blank or spinner-only
-  pane. Until the map ships (US-012) the page shows the inspector's
-  nothing-selected state: the company roll-up that used to be Overview.
+  pane. When the chunk resolves (US-013) the map mounts with the company's
+  cached graph and refreshes it in the background; live halos, docked actor
+  chips and the people filter come from the shell's presence stores.
 -->
 <script lang="ts">
   import { onMount } from "svelte";
   import { loadAtlas } from "./atlas-lazy.js";
-  import type { AtlasWorkingNow } from "./atlas-landing.js";
+  import type { AtlasLiveActor, AtlasWorkingNow } from "./atlas-landing.js";
+  import { HQ_CONSOLE_BASE } from "../common/hq-console.js";
   import { useCompanySummary } from "../company/company-summary.svelte.js";
 
   type AtlasModule = Awaited<ReturnType<typeof loadAtlas>>;
+  type AtlasCache = ReturnType<AtlasModule["createAtlasCache"]>;
 
   interface Props {
     companyLabel: string;
@@ -22,6 +25,15 @@
     /** False when the host has no company backend (summary stays empty). */
     summaryEnabled?: boolean;
     onopenperson?: (uid: string) => void;
+    /** Company uid for the Atlas graph; without one the map stays unmounted. */
+    companyUid?: string | null;
+    /** Live actors from PresenceStore + LiveReadStore (US-013). */
+    actors?: readonly AtlasLiveActor[];
+    /** Sidepane people filter (actor uid) and its clear action. */
+    filterActor?: string | null;
+    onclearfilter?: () => void;
+    /** Injected graph cache (tests); defaults to the shared Console cache. */
+    atlasCache?: AtlasCache | null;
   }
 
   let {
@@ -30,6 +42,11 @@
     slug = null,
     summaryEnabled = false,
     onopenperson,
+    companyUid = null,
+    actors = [],
+    filterActor = null,
+    onclearfilter,
+    atlasCache = null,
   }: Props = $props();
 
   // Shared cache with the company sidepane: paints the warm summary first and
@@ -41,6 +58,7 @@
   const projectsInProgress = $derived(summary.summary.board);
 
   let mod = $state<AtlasModule | null>(null);
+  const cache = $derived(mod ? (atlasCache ?? mod.sharedAtlasCache(HQ_CONSOLE_BASE)) : null);
 
   onMount(() => {
     let alive = true;
@@ -62,6 +80,20 @@
 </script>
 
 <section class="atlas-landing" data-testid="atlas-landing" aria-busy={mod ? undefined : "true"}>
+  {#if mod && cache && companyUid}
+    <mod.AtlasView
+      {companyUid}
+      companyName={companyLabel}
+      {cache}
+      {actors}
+      {filterActor}
+      {onclearfilter}
+      onopenperson={(uid) => onopenperson?.(uid)}
+      onmessage={(who) => {
+        if (who.actorUid) onopenperson?.(who.actorUid);
+      }}
+    />
+  {:else}
   <header class="toolbar">
     <h1>Atlas</h1>
   </header>
@@ -101,6 +133,7 @@
       </aside>
     {/if}
   </div>
+  {/if}
 </section>
 
 <style>

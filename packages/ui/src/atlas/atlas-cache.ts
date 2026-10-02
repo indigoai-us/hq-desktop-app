@@ -89,3 +89,21 @@ export function createAtlasCache(input: {
 }
 
 export type AtlasCache = ReturnType<typeof createAtlasCache>;
+
+const shared = new Map<string, AtlasCache>();
+
+/** One cache per Console base for the app session, backed by localStorage. */
+export function sharedAtlasCache(consoleBase: string): AtlasCache {
+  let cache = shared.get(consoleBase);
+  if (!cache) {
+    let storage: AtlasCacheStorage | null = null;
+    try {
+      storage = typeof localStorage === "undefined" ? null : localStorage;
+    } catch (err) {
+      console.warn("[atlas] localStorage unavailable", err);
+    }
+    cache = createAtlasCache({ fetcher: consoleAtlasFetcher(consoleBase), storage });
+    shared.set(consoleBase, cache);
+  }
+  return cache;
+}

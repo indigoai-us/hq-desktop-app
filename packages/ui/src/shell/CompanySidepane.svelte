@@ -34,6 +34,8 @@
     roster?: readonly SidepaneRosterEntry[];
     /** Atlas (US-009): names still loading; draw skeleton roster rows. */
     rosterLoading?: boolean;
+    /** Atlas (US-013): roster person filtering the map; highlighted instead of Atlas. */
+    rosterSelected?: string | null;
   }
 
   let {
@@ -44,6 +46,7 @@
     companyApi = null,
     roster = [],
     rosterLoading = false,
+    rosterSelected = null,
   }: Props = $props();
 
   // Same wiring CompanyPage does, minus the poller: counts load once per
@@ -70,7 +73,13 @@
     const rosterSections = atlasSidepaneModel(company, roster).sections.filter(
       (s) => s.id === "live-now" || s.id === "idle",
     );
-    return { ...base, sections: [...base.sections, ...rosterSections] };
+    const filtered = rosterSelected ? `person:${rosterSelected}` : null;
+    const hasRow = filtered && rosterSections.some((s) => s.rows.some((r) => r.id === filtered));
+    return {
+      ...base,
+      sections: [...base.sections, ...rosterSections],
+      selectedId: hasRow ? filtered : base.selectedId,
+    };
   });
   const iconSrc = $derived(companyIconSrc(company.iconUrl ?? null));
   const initial = $derived((model.title.trim()[0] ?? "?").toUpperCase());

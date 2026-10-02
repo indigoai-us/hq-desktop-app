@@ -76,4 +76,29 @@ describe("CompanySidepane (console-rail US-007)", () => {
     flushSync();
     expect(target.textContent).not.toContain("Live now");
   });
+
+  it("highlights the roster person filtering the map, and Atlas again when cleared (US-013)", () => {
+    const onselect = vi.fn();
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const props = $state({
+      company: { uid: "co_indigo", label: "Indigo", slug: null },
+      selectedId: "atlas" as string | null,
+      roster: [{ uid: "u_zed", name: "Zed", kind: "human" as const, live: true }],
+      rosterSelected: "u_zed" as string | null,
+      onselect,
+    });
+    mounted.push(mount(CompanySidepane, { target, props }));
+    flushSync();
+    const zed = target.querySelector("[data-row-id='person:u_zed']") as HTMLElement;
+    expect(zed.getAttribute("aria-current")).toBe("page");
+    expect(target.querySelector("[data-row-id='atlas']")?.getAttribute("aria-current")).toBeNull();
+    zed.click();
+    expect(onselect).toHaveBeenCalledWith("person:u_zed");
+
+    props.rosterSelected = null;
+    flushSync();
+    expect(target.querySelector("[data-row-id='atlas']")?.getAttribute("aria-current")).toBe("page");
+    expect(target.querySelector("[data-row-id='person:u_zed']")?.getAttribute("aria-current")).toBeNull();
+  });
 });

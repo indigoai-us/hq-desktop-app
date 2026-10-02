@@ -72,6 +72,8 @@ export type AtlasDetail = {
 /** Someone working on an object right now (from the desktop presence stores). */
 export type AtlasPresence = {
   nodeId: string;
+  /** Work Mesh actor uid; drives the sidepane people filter (US-013). */
+  actorUid?: string;
   name: string;
   bot: boolean;
   signal?: string;
