@@ -250,6 +250,58 @@ describe("DesktopApp DM human recency from the thread listing", () => {
     expect(fx.threadsCalls).toBe(before + 1);
   });
 
+  it("a DM that arrives inside the interval gets its read once the interval has passed, one read for all of them", async () => {
+    const fx: Fixture = { threads: NEW_SERVER_THREADS, threadsCalls: 0 };
+    const { wakes, latest } = await mountApp(fx);
+    const before = fx.threadsCalls;
+    wakes.emit("dm:new-message", {
+      fromPersonUid: "prs_ada",
+      eventId: "evt_first",
+      createdAt: "2026-10-01T13:00:00.000Z",
+      direction: "in",
+    });
+    await vi.waitFor(() => expect(fx.threadsCalls).toBe(before + 1), {
+      timeout: 3000,
+    });
+
+    // The first read has run, so the interval is open. From here the clock
+    // is the test's: the fake clock starts at the real time.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      fx.threads = [
+        {
+          ...NEW_SERVER_THREADS[0],
+          lastActivityAt: "2026-10-01T13:05:01.000Z",
+          lastHumanMessageAt: "2026-10-01T13:05:01.000Z",
+        },
+        ...NEW_SERVER_THREADS.slice(1),
+      ];
+      for (let i = 0; i < 2; i += 1) {
+        wakes.emit("dm:new-message", {
+          fromPersonUid: "prs_ada",
+          eventId: `evt_late_${i}`,
+          createdAt: `2026-10-01T13:05:0${i}.000Z`,
+          direction: "in",
+        });
+      }
+      // Inside the 20 second interval: held back.
+      await vi.advanceTimersByTimeAsync(18_000);
+      expect(fx.threadsCalls).toBe(before + 1);
+      // The interval has passed: the trailing read fires, once for both.
+      await vi.advanceTimersByTimeAsync(2_500);
+      expect(fx.threadsCalls).toBe(before + 2);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(latest("prs_ada")).toMatchObject({
+        lastHumanMessageAt: "2026-10-01T13:05:01.000Z",
+      });
+      // Nothing further follows without a new DM.
+      await vi.advanceTimersByTimeAsync(45_000);
+      expect(fx.threadsCalls).toBe(before + 2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("a server that reports the fields is read again after the person sends a DM", async () => {
     const fx: Fixture = { threads: NEW_SERVER_THREADS, threadsCalls: 0 };
     const { latest } = await mountApp(fx, DM_ROW);
