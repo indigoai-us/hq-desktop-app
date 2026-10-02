@@ -4,6 +4,8 @@
   import {
     channelPathPreview,
     entriesFromDirectory,
+    loadPickerRoster,
+    readPickerRoster,
     togglePickerId,
     type PeoplePickerEntry,
   } from "./people-picker.js";
@@ -45,7 +47,21 @@
   let creating = $state(false);
   let error = $state<string | null>(null);
 
-  const entries = $derived(entriesFromDirectory({ rows, contacts, groups, guests }));
+  let roster = $state<DmContactInput[]>([]);
+  // Cache-first, then refreshed: the company roster the Team page reads (QA-054).
+  $effect(() => {
+    const target = companyUid;
+    roster = target ? readPickerRoster(target) : [];
+    if (!target) return;
+    let cancelled = false;
+    void loadPickerRoster(api, target).then((fresh) => {
+      if (!cancelled) roster = fresh;
+    });
+    return () => {
+      cancelled = true;
+    };
+  });
+  const entries = $derived(entriesFromDirectory({ rows, contacts, groups, guests, roster }));
   const companyLabel = $derived(
     companies.find((company) => company.companyUid === companyUid)?.label ?? "Personal",
   );

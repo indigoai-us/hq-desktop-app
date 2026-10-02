@@ -7,6 +7,7 @@
 
 import { isAgentUid } from "./agent-thinking.js";
 import { channelSlug } from "./create-flow.js";
+import type { ChatSidebarApi } from "./chat-api.js";
 import type { ConversationRow, DmContactInput } from "./sidebar-model.js";
 
 export type PeoplePickerKind = "person" | "group" | "agent" | "guest";
@@ -85,6 +86,8 @@ export function entriesFromDirectory(args: {
   contacts: readonly DmContactInput[];
   groups?: readonly PeoplePickerEntry[];
   guests?: readonly PeoplePickerEntry[];
+  /** Company roster rows (see `loadPickerRoster`), already stamped with the company. */
+  roster?: readonly DmContactInput[];
 }): PeoplePickerEntry[] {
   const byId = new Map<string, PeoplePickerEntry>();
   const remember = (entry: PeoplePickerEntry) => {
@@ -117,7 +120,7 @@ export function entriesFromDirectory(args: {
       companyUid: row.companyUid,
     });
   }
-  for (const contact of args.contacts) {
+  for (const contact of [...args.contacts, ...(args.roster ?? [])]) {
     const uid = contact.personUid?.trim();
     if (!uid) continue;
     const agent = isAgentUid(uid);
@@ -142,4 +145,43 @@ export function channelPathPreview(companyLabel: string, name: string): string {
   const company = channelSlug(companyLabel) || "personal";
   const slug = channelSlug(name);
   return slug ? `companies/${company}/channels/${slug}` : `companies/${company}/channels/`;
+}
+
+/**
+ * Company rosters for the picker, keyed by company uid (QA-054). DM rows and
+ * contacts only cover people the caller has talked to, so a company channel
+ * picker built from them alone showed "No matches" for most of the company.
+ */
+const rosterCache = new Map<string, DmContactInput[]>();
+
+/** Cached roster for a company, or an empty list before the first read. */
+export function readPickerRoster(companyUid: string): DmContactInput[] {
+  return rosterCache.get(companyUid) ?? [];
+}
+
+/**
+ * Read the company roster from the same contacts route the Team page reads
+ * (`GET /v1/notify/contacts?companyUid=…`). Rows are stamped with the company
+ * uid so the company filter keeps them. The cache is updated on success; a
+ * failed read is logged and leaves the cached roster in place.
+ */
+export async function loadPickerRoster(
+  api: Pick<ChatSidebarApi, "listCompanyMembers" | "listContacts">,
+  companyUid: string,
+): Promise<DmContactInput[]> {
+  if (!companyUid) return [];
+  try {
+    const res = api.listCompanyMembers
+      ? await api.listCompanyMembers(companyUid)
+      : await api.listContacts({ companyUid });
+    const rows = Array.isArray(res?.contacts) ? res.contacts : [];
+    const roster = rows
+      .filter((row) => typeof row?.personUid === "string" && row.personUid.trim())
+      .map((row) => ({ ...row, companyUid }));
+    rosterCache.set(companyUid, roster);
+    return roster;
+  } catch (err) {
+    console.error("people-picker: company roster read failed", err);
+    return readPickerRoster(companyUid);
+  }
 }
