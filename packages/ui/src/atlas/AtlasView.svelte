@@ -75,6 +75,8 @@
 
   let graph = $state<AtlasGraph | null>(untrack(() => cache.cached(companyUid)));
   let refreshError = $state<AtlasFailReason | null>(null);
+  // True while a partial (first page) map is on screen and the full load runs.
+  let partial = $state(false);
   let selected = $state<string | null>(null);
   let view = $state<AtlasViewBox>({ x: 400, y: 280, k: 0.5 });
   let framedFor = "";
@@ -158,10 +160,17 @@
 
   function loadGraph(uid: string): void {
     refreshError = null;
+    partial = false;
     cache
-      .refresh(uid)
+      .refresh(uid, (first) => {
+        // A partial map only replaces the skeleton, never a saved full map.
+        if (uid !== companyUid || graph) return;
+        graph = first;
+        partial = true;
+      })
       .then((fresh) => {
         if (uid !== companyUid) return;
+        partial = false;
         if (fresh) graph = fresh;
         else if (!graph) refreshError = "unavailable";
       })
@@ -246,8 +255,11 @@
     {#if graph}
       <span class="chip" data-testid="atlas-object-count">{graph.nodes.length} objects</span>
     {/if}
+    {#if partial && !refreshError}
+      <span class="chip" data-testid="atlas-loading-more" aria-live="polite">loading more</span>
+    {/if}
     {#if refreshError && graph}
-      <span class="chip" title="Showing the last saved map">offline copy</span>
+      <span class="chip" title={partial ? "Only part of the map loaded" : "Showing the last saved map"}>{partial ? "partial map" : "offline copy"}</span>
     {/if}
     {#if filterActor}
       <span class="chip" data-testid="atlas-filter-chip">

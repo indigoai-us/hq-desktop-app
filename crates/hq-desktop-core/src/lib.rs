@@ -41,6 +41,7 @@ pub mod activity;
 pub mod agency;
 pub mod agent_join;
 pub mod agent_usage_scan;
+pub mod atlas_index;
 pub mod authenticated_receipts;
 pub mod bandwidth;
 pub mod banner;

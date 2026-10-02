@@ -5,9 +5,22 @@
  */
 
 import { parseAtlasGraph, type AtlasGraph } from "./atlas-model.js";
-import { buildAtlasGraph, type AtlasVaultSource } from "./atlas-build.js";
+import {
+  buildAtlasGraph,
+  listingVaultSource,
+  parseLocalListing,
+  type AtlasLocalSource,
+  type AtlasVaultSource,
+} from "./atlas-build.js";
 
 export type AtlasFetcher = (companyUid: string) => Promise<unknown>;
+
+/**
+ * A fetcher that can paint a partial map first (QA-016). `first` resolves a
+ * graph body, or null when it has nothing quick to offer (the full load then
+ * runs under the first-page timeout instead).
+ */
+export type AtlasStagedFetcher = { first: AtlasFetcher; full: AtlasFetcher };
 
 export interface AtlasCacheStorage {
   getItem(key: string): string | null;
@@ -23,6 +36,13 @@ export function atlasEndpoint(consoleBase: string, companyUid: string): string {
 
 /** Longest an Atlas refresh may run before it counts as failed (QA-016). */
 export const ATLAS_REFRESH_TIMEOUT_MS = 15_000;
+
+/**
+ * Ceiling for the full load once a partial map is on screen. The first-page
+ * timeout above is what decides "the map didn't load"; this only stops a
+ * stuck full load from spinning forever.
+ */
+export const ATLAS_FULL_LOAD_TIMEOUT_MS = 120_000;
 
 /** Why a refresh failed, in terms the failed state can explain to a person. */
 export type AtlasFailReason = "signed-out" | "no-access" | "timeout" | "offline" | "unavailable";
@@ -94,6 +114,43 @@ export function vaultAtlasFetcher(source: AtlasVaultSource): AtlasFetcher {
   };
 }
 
+/**
+ * Native path over the company folder synced to this machine (QA-016): the
+ * first page (district roots, no recursive walk) paints the map at once, the
+ * full listing (cached on disk by folder revision) fills counts and links.
+ * Without a local folder it falls back to the vault listing.
+ */
+export function localAtlasFetcher(
+  local: AtlasLocalSource,
+  companySlug: string,
+  fallback: AtlasVaultSource | null,
+): AtlasStagedFetcher {
+  const read = (key: string) => local.readText(companySlug, key);
+  const wrap = async <T>(job: () => Promise<T>): Promise<T> => {
+    try {
+      return await job();
+    } catch (err) {
+      if (err instanceof AtlasLoadError) throw err;
+      throw new AtlasLoadError(reasonForError(err), err instanceof Error ? err.message : String(err));
+    }
+  };
+  return {
+    first: (companyUid) =>
+      wrap(async () => {
+        const page = parseLocalListing(await local.firstPage(companySlug));
+        if (!page) return null;
+        return buildAtlasGraph(listingVaultSource(page, read), companyUid, { links: false });
+      }),
+    full: (companyUid) =>
+      wrap(async () => {
+        const listing = parseLocalListing(await local.listing(companySlug));
+        if (listing) return buildAtlasGraph(listingVaultSource(listing, read), companyUid);
+        if (fallback) return buildAtlasGraph(fallback, companyUid);
+        throw new AtlasLoadError("unavailable", "company folder is not on this machine");
+      }),
+  };
+}
+
 /** Reject when `job` has not settled within `ms`; the job itself is left alone. */
 function withTimeout<T>(job: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -111,15 +168,25 @@ function withTimeout<T>(job: Promise<T>, ms: number): Promise<T> {
   });
 }
 
+export type AtlasPartialListener = (graph: AtlasGraph) => void;
+
 export function createAtlasCache(input: {
-  fetcher: AtlasFetcher;
+  fetcher: AtlasFetcher | AtlasStagedFetcher;
   storage?: AtlasCacheStorage | null;
-  /** Upper bound for one refresh, whatever the fetcher does. */
+  /** Upper bound for the first paint (or the whole refresh without a first page). */
   timeoutMs?: number;
+  /** Upper bound for the full load once a partial map is showing. */
+  fullTimeoutMs?: number;
 }) {
   const timeoutMs = input.timeoutMs ?? ATLAS_REFRESH_TIMEOUT_MS;
+  const fullTimeoutMs = input.fullTimeoutMs ?? ATLAS_FULL_LOAD_TIMEOUT_MS;
+  const staged = typeof input.fetcher === "function" ? null : input.fetcher;
+  const fetchFull = typeof input.fetcher === "function" ? input.fetcher : input.fetcher.full;
   const memory = new Map<string, AtlasGraph>();
-  const inflight = new Map<string, Promise<AtlasGraph | null>>();
+  const inflight = new Map<
+    string,
+    { job: Promise<AtlasGraph | null>; partial: AtlasGraph | null; listeners: Set<AtlasPartialListener> }
+  >();
   const storage = input.storage ?? null;
 
   function cached(companyUid: string): AtlasGraph | null {
@@ -145,10 +212,38 @@ export function createAtlasCache(input: {
     return parsed;
   }
 
-  function refresh(companyUid: string): Promise<AtlasGraph | null> {
+  /**
+   * Load the company graph. With a staged fetcher the first page must arrive
+   * within the refresh timeout; it goes to `onPartial` (never to storage) and
+   * the full load then runs under the longer full-load ceiling.
+   */
+  function refresh(companyUid: string, onPartial?: AtlasPartialListener): Promise<AtlasGraph | null> {
     const running = inflight.get(companyUid);
-    if (running) return running;
-    const job = withTimeout(Promise.resolve().then(() => input.fetcher(companyUid)), timeoutMs)
+    if (running) {
+      if (onPartial) {
+        running.listeners.add(onPartial);
+        if (running.partial) onPartial(running.partial);
+      }
+      return running.job;
+    }
+    const entry = {
+      job: null as unknown as Promise<AtlasGraph | null>,
+      partial: null as AtlasGraph | null,
+      listeners: new Set<AtlasPartialListener>(onPartial ? [onPartial] : []),
+    };
+    const load = async (): Promise<unknown> => {
+      if (!staged) return withTimeout(Promise.resolve().then(() => fetchFull(companyUid)), timeoutMs);
+      const firstBody = await withTimeout(Promise.resolve().then(() => staged.first(companyUid)), timeoutMs);
+      if (firstBody == null) {
+        return withTimeout(Promise.resolve().then(() => fetchFull(companyUid)), timeoutMs);
+      }
+      const partial = parseAtlasGraph(firstBody);
+      if (!partial) throw new Error("atlas first page did not parse");
+      entry.partial = partial;
+      for (const listener of entry.listeners) listener(partial);
+      return withTimeout(Promise.resolve().then(() => fetchFull(companyUid)), fullTimeoutMs);
+    };
+    const job = load()
       .then((body) => {
         const graph = parseAtlasGraph(body);
         if (!graph) throw new Error("atlas response did not parse");
@@ -161,7 +256,8 @@ export function createAtlasCache(input: {
         return graph;
       })
       .finally(() => inflight.delete(companyUid));
-    inflight.set(companyUid, job);
+    entry.job = job;
+    inflight.set(companyUid, entry);
     return job;
   }
 
@@ -177,7 +273,7 @@ const shared = new Map<string, AtlasCache>();
  * `fetcher` (with a distinct `key`) to load through something other than the
  * Console endpoint at `key`; the snapshot storage is shared either way.
  */
-export function sharedAtlasCache(key: string, fetcher?: AtlasFetcher): AtlasCache {
+export function sharedAtlasCache(key: string, fetcher?: AtlasFetcher | AtlasStagedFetcher): AtlasCache {
   let cache = shared.get(key);
   if (!cache) {
     let storage: AtlasCacheStorage | null = null;

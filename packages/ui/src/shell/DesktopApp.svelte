@@ -56,7 +56,7 @@
   import PersonalRailHost from "./PersonalRailHost.svelte";
   import OutpostRailHost from "./OutpostRailHost.svelte";
   import AtlasLandingHost from "./AtlasLandingHost.svelte";
-  import type { AtlasVaultSource } from "./atlas-landing.js";
+  import type { AtlasLocalSource, AtlasVaultSource } from "./atlas-landing.js";
   import ActivityRailHost from "./ActivityRailHost.svelte";
   import GoalsRailHost from "./GoalsRailHost.svelte";
   import TeamPage from "../company/TeamPage.svelte";
@@ -1695,6 +1695,25 @@
         if (!res.ok) throw new Error(`vault read http ${res.status}`);
         return await res.text();
       },
+    };
+  });
+
+  /**
+   * Atlas from the company folder synced to this machine (QA-016): the vault
+   * listing above took ~42 s cold for Indigo; the local folder paints the
+   * district roots at once. Null on the web harness.
+   */
+  const atlasLocalSource = $derived.by((): AtlasLocalSource | null => {
+    const local = adapter.files?.atlasLocal;
+    if (adapter.kind === "web" || !local) return null;
+    const unwrap = <T,>(what: string, res: { ok: true; value: T } | { ok: false; code?: string; reason: string }): T => {
+      if (!res.ok) throw new Error(`atlas local ${what} ${res.code ?? res.reason}`);
+      return res.value;
+    };
+    return {
+      firstPage: async (slug) => unwrap("first page", await local.firstPage(slug)),
+      listing: async (slug) => unwrap("listing", await local.listing(slug)),
+      readText: async (slug, key) => unwrap("read", await local.readText(slug, key)),
     };
   });
 
@@ -10024,6 +10043,7 @@
             summaryEnabled={Boolean(adapter.company)}
             companyUid={companyPaneCompany?.uid ?? null}
             atlasSource={atlasVaultSource}
+            atlasLocal={atlasLocalSource}
             actors={atlasActors}
             filterActor={atlasFilterActor}
             onclearfilter={() => (atlasFilterActor = null)}

@@ -13,7 +13,7 @@
   import type { AtlasLiveActor, AtlasWorkingNow } from "./atlas-landing.js";
   import { HQ_CONSOLE_BASE } from "../common/hq-console.js";
   import { useCompanySummary } from "../company/company-summary.svelte.js";
-  import type { AtlasVaultSource } from "./atlas-landing.js";
+  import type { AtlasLocalSource, AtlasVaultSource } from "./atlas-landing.js";
 
   type AtlasModule = Awaited<ReturnType<typeof loadAtlas>>;
   type AtlasCache = ReturnType<AtlasModule["createAtlasCache"]>;
@@ -43,6 +43,12 @@
      * which needs a web session, is used (QA-016).
      */
     atlasSource?: AtlasVaultSource | null;
+    /**
+     * Native hosts: the company folder synced to this machine. Paints the
+     * district roots at once and fills the rest from a revision-cached
+     * listing; `atlasSource` is the fallback when the folder is missing.
+     */
+    atlasLocal?: AtlasLocalSource | null;
   }
 
   let {
@@ -58,6 +64,7 @@
     onopenpage,
     atlasCache = null,
     atlasSource = null,
+    atlasLocal = null,
   }: Props = $props();
 
   // Shared cache with the company sidepane: paints the warm summary first and
@@ -72,6 +79,10 @@
   const cache = $derived.by(() => {
     if (!mod) return null;
     if (atlasCache) return atlasCache;
+    const localSlug = slug?.trim();
+    if (atlasLocal && localSlug) {
+      return mod.sharedAtlasCache(`local:${localSlug}`, mod.localAtlasFetcher(atlasLocal, localSlug, atlasSource));
+    }
     if (atlasSource) return mod.sharedAtlasCache("vault", mod.vaultAtlasFetcher(atlasSource));
     return mod.sharedAtlasCache(HQ_CONSOLE_BASE);
   });

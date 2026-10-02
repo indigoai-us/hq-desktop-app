@@ -1112,6 +1112,15 @@ export interface VaultApi {
   readNote(path: string): AdapterPromise<VaultNotePreview>;
 }
 
+export interface AtlasLocalApi {
+  /** District roots and direct children, `{ revision, complete, objects }`. */
+  firstPage(companySlug: string): AdapterPromise<Json | null>;
+  /** Every object under the districts, cached on disk by folder revision. */
+  listing(companySlug: string): AdapterPromise<Json | null>;
+  /** Text of one object under the districts (project PRDs). */
+  readText(companySlug: string, key: string): AdapterPromise<string | null>;
+}
+
 export interface FilesApi {
   listDir(relPath: string): AdapterPromise<Json[]>;
   /** Files explorer vault index. Desktop only; hosts without it omit it. */
@@ -1122,6 +1131,12 @@ export interface FilesApi {
    * page's `cursor` to continue a listing.
    */
   listVaultPrefix(companyUid: string, prefix: string, cursor?: string): AdapterPromise<Json>;
+  /**
+   * Atlas map listing from the company folder synced to this machine
+   * (QA-016). Desktop only. Each call resolves null when the company folder is
+   * not on this machine; the caller then falls back to `listVaultPrefix`.
+   */
+  atlasLocal?: AtlasLocalApi;
   /** Presigned GET for a vault key (hq-pro POST /v1/files/presign). */
   presignVaultGet(companyUid: string, key: string): AdapterPromise<Json>;
   /**

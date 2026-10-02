@@ -159,3 +159,130 @@ describe("AtlasLandingHost live presence (US-013)", () => {
     expect(target.querySelector("[data-testid='atlas-landing']")?.getAttribute("aria-busy")).toBeNull();
   });
 });
+
+describe("AtlasLandingHost local first page (QA-016 re-test)", () => {
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((r) => (resolve = r));
+    return { promise, resolve };
+  }
+
+  async function waitFor(target: HTMLElement, test: () => boolean): Promise<void> {
+    await loadAtlas();
+    for (let i = 0; i < 100; i += 1) {
+      if (test()) return;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await tick();
+    }
+  }
+
+  const stamp = "2026-10-01T12:00:00.000Z";
+  const firstPage = {
+    revision: "r1",
+    complete: false,
+    objects: [
+      { key: "projects/alpha/", lastModified: stamp, size: 0 },
+      { key: "projects/beta/", lastModified: stamp, size: 0 },
+      { key: "knowledge/guides/", lastModified: stamp, size: 0 },
+      { key: "policies/no-secrets.md", lastModified: stamp, size: 10 },
+    ],
+  };
+  const fullListing = {
+    revision: "r1",
+    complete: true,
+    objects: [
+      { key: "projects/alpha/prd.json", lastModified: stamp, size: 40 },
+      { key: "projects/alpha/notes.md", lastModified: stamp, size: 4 },
+      { key: "projects/beta/prd.json", lastModified: stamp, size: 40 },
+      { key: "knowledge/guides/setup.md", lastModified: stamp, size: 4 },
+      { key: "policies/no-secrets.md", lastModified: stamp, size: 10 },
+      { key: "workers/scout/worker.yaml", lastModified: stamp, size: 10 },
+      { key: "skills/triage/SKILL.md", lastModified: stamp, size: 10 },
+    ],
+  };
+
+  it("paints the partial map from the first page before the full load completes", async () => {
+    localStorage.clear();
+    const listing = deferred<unknown>();
+    const atlasLocal = {
+      firstPage: vi.fn(async () => firstPage),
+      listing: vi.fn(() => listing.promise),
+      readText: vi.fn(async (_slug: string, key: string) =>
+        key === "projects/alpha/prd.json"
+          ? JSON.stringify({ metadata: { repoPath: "repos/private/alpha-app" } })
+          : null,
+      ),
+    };
+    const atlasSource = { listPage: vi.fn(), readText: vi.fn() };
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    mounted.push(
+      mount(AtlasLandingHost, {
+        target,
+        props: {
+          companyLabel: "Indigo",
+          workingNow: [],
+          slug: "indigo-partial-test",
+          companyUid: "co_partial_test",
+          atlasLocal,
+          atlasSource,
+        },
+      }),
+    );
+    const count = () => target.querySelector("[data-testid='atlas-object-count']")?.textContent ?? "";
+    await waitFor(target, () => Boolean(target.querySelector("[data-testid='atlas-map']")));
+
+    // Partial map is on screen while the full listing is still pending.
+    expect(target.querySelector("[data-testid='atlas-skeleton']")).toBeNull();
+    expect(target.querySelector("[data-testid='atlas-error']")).toBeNull();
+    expect(count()).toBe("4 objects");
+    expect(target.querySelector("[data-testid='atlas-loading-more']")).not.toBeNull();
+    expect(target.querySelector("[data-testid='atlas-node-project:projects/alpha/']")).not.toBeNull();
+    expect(atlasLocal.firstPage).toHaveBeenCalledWith("indigo-partial-test");
+    expect(atlasLocal.readText).not.toHaveBeenCalled();
+    expect(atlasSource.listPage).not.toHaveBeenCalled();
+
+    listing.resolve(fullListing);
+    await waitFor(target, () => !target.querySelector("[data-testid='atlas-loading-more']"));
+    expect(target.querySelector("[data-testid='atlas-loading-more']")).toBeNull();
+    // Full map adds workers, skills and the repo the alpha PRD links to.
+    expect(count()).toBe("7 objects");
+    expect(target.querySelector("[data-testid='atlas-node-repo:repos/private/alpha-app/']")).not.toBeNull();
+    expect(atlasLocal.readText).toHaveBeenCalledWith("indigo-partial-test", "projects/alpha/prd.json");
+  });
+
+  it("falls back to the vault listing when the company folder is not on this machine", async () => {
+    localStorage.clear();
+    const atlasLocal = {
+      firstPage: vi.fn(async () => null),
+      listing: vi.fn(async () => null),
+      readText: vi.fn(async () => null),
+    };
+    const atlasSource = {
+      listPage: vi.fn(async (_c: string, prefix: string) => ({
+        objects: prefix === "projects/" ? [{ key: "projects/gamma/prd.json", lastModified: stamp }] : [],
+        cursor: null,
+      })),
+      readText: vi.fn(async () => null),
+    };
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    mounted.push(
+      mount(AtlasLandingHost, {
+        target,
+        props: {
+          companyLabel: "Indigo",
+          workingNow: [],
+          slug: "indigo-fallback-test",
+          companyUid: "co_fallback_test",
+          atlasLocal,
+          atlasSource,
+        },
+      }),
+    );
+    await waitFor(target, () => Boolean(target.querySelector("[data-testid='atlas-node-project:projects/gamma/']")));
+    expect(target.querySelector("[data-testid='atlas-node-project:projects/gamma/']")).not.toBeNull();
+    expect(target.querySelector("[data-testid='atlas-loading-more']")).toBeNull();
+    expect(atlasSource.listPage).toHaveBeenCalled();
+  });
+});

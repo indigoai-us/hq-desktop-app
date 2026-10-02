@@ -17,9 +17,9 @@ import {
   type AtlasNode,
   type AtlasRefEdge,
 } from "./atlas-model.js";
-import type { AtlasVaultSource } from "../shell/atlas-landing.js";
+import type { AtlasLocalSource, AtlasVaultSource } from "../shell/atlas-landing.js";
 
-export type { AtlasVaultSource };
+export type { AtlasLocalSource, AtlasVaultSource };
 
 export type AtlasListedObject = { key: string; lastModified?: string | null; size?: number };
 
@@ -461,11 +461,39 @@ async function loadRegistryRepoSeeds(source: AtlasVaultSource, companyUid: strin
   }
 }
 
+/** A local listing from the native app: `{ revision, complete, objects }`. */
+export type AtlasLocalListing = AtlasListPage & { revision: string; complete: boolean };
+
+/** Parse a local listing; null when the company folder is not on this machine. */
+export function parseLocalListing(raw: unknown): AtlasLocalListing | null {
+  if (raw == null) return null;
+  const page = parseListPage(raw);
+  const row = raw as Record<string, unknown>;
+  return {
+    ...page,
+    revision: typeof row.revision === "string" ? row.revision : "",
+    complete: row.complete === true,
+  };
+}
+
+/** Serve `listPage` from one in-memory listing and `readText` through `readText`. */
+export function listingVaultSource(
+  listing: AtlasListPage,
+  readText: (key: string) => Promise<string | null>,
+): AtlasVaultSource {
+  return {
+    async listPage(_company, prefix) {
+      return { objects: listing.objects.filter((o) => o.key.startsWith(prefix)), cursor: null };
+    },
+    readText: (_company, key) => readText(key),
+  };
+}
+
 /** The company's root Atlas graph, same shape as Console `GET /api/companies/{uid}/atlas`. */
 export async function buildAtlasGraph(
   source: AtlasVaultSource,
   companyUid: string,
-  opts: { prdBudgetMs?: number; now?: () => number } = {},
+  opts: { prdBudgetMs?: number; now?: () => number; links?: boolean } = {},
 ): Promise<AtlasGraph> {
   const batches = await Promise.all(
     ATLAS_DISTRICTS.map(async (d) => {
@@ -475,8 +503,11 @@ export async function buildAtlasGraph(
   );
   const listed = batches.flatMap((b) => b.nodes);
   const projectObjects = batches.find((b) => b.type === "project")?.objects ?? [];
+  // The first page has folder placeholders only; links wait for the full listing.
   const [refs, seeds] = await Promise.all([
-    loadProjectRefs(source, companyUid, projectObjects, opts.prdBudgetMs ?? ATLAS_PRD_BUDGET_MS, opts.now ?? Date.now),
+    opts.links === false
+      ? Promise.resolve([])
+      : loadProjectRefs(source, companyUid, projectObjects, opts.prdBudgetMs ?? ATLAS_PRD_BUDGET_MS, opts.now ?? Date.now),
     loadRegistryRepoSeeds(source, companyUid),
   ]);
   const merged = applyPrdRefs(listed, refs, seeds);

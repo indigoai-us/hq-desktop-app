@@ -26,6 +26,20 @@ export interface AtlasVaultSource {
   readText(companyUid: string, key: string): Promise<string | null>;
 }
 
+/**
+ * The company folder synced to this machine, read by the native app (QA-016).
+ * Each call resolves null when the folder is not on this machine; Atlas then
+ * falls back to the vault listing.
+ */
+export interface AtlasLocalSource {
+  /** District roots and direct children: `{ revision, complete, objects }`. */
+  firstPage(companySlug: string): Promise<unknown>;
+  /** Every object under the districts, same shape, cached by revision. */
+  listing(companySlug: string): Promise<unknown>;
+  /** Text of one object under the districts (project PRDs). */
+  readText(companySlug: string, key: string): Promise<string | null>;
+}
+
 /** Display name for a person or bot uid, from rows the shell already loaded. */
 export type RosterNames = ReadonlyMap<string, string>;
 

@@ -1170,6 +1170,11 @@ export function createSyncPlatformAdapter(
             cursor,
           }),
         ),
+      atlasLocal: {
+        firstPage: (companySlug) => call('atlas_local_first_page', { companySlug }),
+        listing: (companySlug) => call('atlas_local_listing', { companySlug }),
+        readText: (companySlug, key) => call('atlas_local_read_text', { companySlug, key }),
+      },
       presignVaultGet: (companyUid, key) =>
         hqProJson('POST', WEB_PATHS.filesPresign, {
           company: companyUid,

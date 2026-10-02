@@ -553,3 +553,108 @@ mod tests {
         );
     }
 }
+
+/// Atlas map listing from the synced company folder (QA-016). The cloud vault
+/// listing took ~42 s cold for Indigo; these read the local mirror instead.
+async fn atlas_company_dir(company_slug: &str) -> Result<Option<(PathBuf, String, String)>, String> {
+    if !crate::util::feature_gate::desktop_features_enabled().await {
+        return Err("atlas reader requires a signed-in user".to_string());
+    }
+    let (hq, workspaces) = hydrated_project_context().await?;
+    let Some(slug) = authorize_company_slug(&hq, company_slug, &workspaces)? else {
+        return Ok(None);
+    };
+    let stamp = atlas_sync_stamp(&hq);
+    Ok(Some((hq.join("companies").join(&slug), slug, stamp)))
+}
+
+/// Last sync time from the HQ sync journal; empty when unreadable, which only
+/// means the revision falls back to folder mtimes.
+fn atlas_sync_stamp(hq: &Path) -> String {
+    let path = hq.join(".hq-sync-journal.json");
+    let raw = match std::fs::read(&path) {
+        Ok(raw) => raw,
+        Err(err) => {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                eprintln!("[atlas] sync journal unreadable: {err}");
+            }
+            return String::new();
+        }
+    };
+    match serde_json::from_slice::<serde_json::Value>(&raw) {
+        Ok(value) => value
+            .get("lastSyncAt")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        Err(err) => {
+            eprintln!("[atlas] sync journal did not parse: {err}");
+            String::new()
+        }
+    }
+}
+
+/// Districts and their direct children only; `null` when the company folder
+/// has not synced to this machine (the UI then uses the cloud listing).
+#[tauri::command]
+pub async fn atlas_local_first_page(
+    company_slug: String,
+) -> Result<Option<hq_desktop_core::atlas_index::AtlasListing>, String> {
+    let Some((dir, _slug, stamp)) = atlas_company_dir(&company_slug).await? else {
+        return Ok(None);
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        hq_desktop_core::atlas_index::atlas_first_page(&dir, &stamp)
+    })
+    .await
+    .map(Some)
+    .map_err(|error| format!("atlas first page task join: {error}"))
+}
+
+/// Every object under the Atlas districts, cached on disk by folder revision.
+#[tauri::command]
+pub async fn atlas_local_listing(
+    company_slug: String,
+) -> Result<Option<hq_desktop_core::atlas_index::AtlasListing>, String> {
+    let Some((dir, slug, stamp)) = atlas_company_dir(&company_slug).await? else {
+        return Ok(None);
+    };
+    let cache_dir = hq_desktop_core::paths::hq_config_dir()?.join("cache").join("atlas");
+    tauri::async_runtime::spawn_blocking(move || {
+        hq_desktop_core::atlas_index::atlas_full_listing(
+            &dir,
+            &stamp,
+            &cache_dir,
+            &slug,
+            hq_desktop_core::atlas_index::ATLAS_MAX_PER_PREFIX,
+        )
+    })
+    .await
+    .map(Some)
+    .map_err(|error| format!("atlas listing task join: {error}"))
+}
+
+/// Text of one object under the Atlas districts (project PRDs), capped at 2 MB.
+#[tauri::command]
+pub async fn atlas_local_read_text(company_slug: String, key: String) -> Result<Option<String>, String> {
+    const MAX_BYTES: u64 = 2 * 1024 * 1024;
+    let Some((dir, _slug, _stamp)) = atlas_company_dir(&company_slug).await? else {
+        return Ok(None);
+    };
+    let path = hq_desktop_core::atlas_index::atlas_object_path(&dir, &key)?;
+    tauri::async_runtime::spawn_blocking(move || -> Result<Option<String>, String> {
+        let meta = match std::fs::symlink_metadata(&path) {
+            Ok(meta) => meta,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(format!("atlas read {key}: {err}")),
+        };
+        if !meta.is_file() || meta.len() > MAX_BYTES {
+            return Ok(None);
+        }
+        std::fs::read_to_string(&path)
+            .map(Some)
+            .map_err(|err| format!("atlas read {key}: {err}"))
+    })
+    .await
+    .map_err(|error| format!("atlas read task join: {error}"))?
+}
