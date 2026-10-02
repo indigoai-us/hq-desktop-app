@@ -677,6 +677,68 @@ describe('stage timeouts', () => {
     expect(retryStarted).toBe(true);
   });
 
+  it('waits for the enabled deps invocation to settle after cancellation before retrying', async () => {
+    let settleNativeInvocation: (() => void) | undefined;
+    let recovery: ReturnType<typeof setupStageRecoveryAction> | undefined;
+    const nativeInvocation = new Promise<void>((resolve) => {
+      settleNativeInvocation = resolve;
+    });
+    const guarded = withProgressTimeout(
+      nativeInvocation,
+      100,
+      () => new StageTimeoutError('deps', 100),
+      () => () => {},
+      () => Promise.resolve(),
+      undefined,
+      true,
+      10_000,
+    ).catch((error: StageTimeoutError) => {
+      recovery = setupStageRecoveryAction({
+        stageId: 'deps',
+        message: error.message,
+        retryCount: 0,
+        depsTimeoutRetryEnabled: true,
+        depsTimeoutRetrySuppressed: error.retrySuppressed,
+      });
+    });
+
+    await vi.advanceTimersByTimeAsync(100);
+    await Promise.resolve();
+    expect(recovery).toBeUndefined();
+
+    settleNativeInvocation?.();
+    await guarded;
+    expect(recovery?.kind).toBe('retry');
+  });
+
+  it('skips instead of retrying when the enabled deps invocation exceeds the settle bound', async () => {
+    let recovery: ReturnType<typeof setupStageRecoveryAction> | undefined;
+    const nativeInvocation = new Promise<void>(() => {});
+    const guarded = withProgressTimeout(
+      nativeInvocation,
+      100,
+      () => new StageTimeoutError('deps', 100),
+      () => () => {},
+      () => Promise.resolve(),
+      undefined,
+      true,
+      10_000,
+    ).catch((error: StageTimeoutError) => {
+      recovery = setupStageRecoveryAction({
+        stageId: 'deps',
+        message: error.message,
+        retryCount: 0,
+        depsTimeoutRetryEnabled: true,
+        depsTimeoutRetrySuppressed: error.retrySuppressed,
+      });
+    });
+
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await guarded;
+    expect(recovery?.kind).toBe('skip');
+  });
+
   it('fails closed when the setup flag lookup is slow or unavailable', async () => {
     const unavailable = Promise.reject<boolean>(new Error('unreachable'));
     await expect(resolveFlagWithTimeout(unavailable, 2_000)).resolves.toBe(false);

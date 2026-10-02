@@ -104,6 +104,7 @@
     stageTimeoutMs,
     setupFailureTelemetryDetails,
     StageTimeoutError,
+    SETUP_TIMEOUT_NATIVE_SETTLE_TIMEOUT_MS,
     withProgressTimeout,
     STAGE_ORDER,
     withTimeout,
@@ -1718,6 +1719,9 @@
               ? ms * SETUP_STAGE_TIMEOUT_MAX_ELAPSED_MULTIPLIER
               : undefined,
             depsTimeoutRetryEnabled,
+            depsTimeoutRetryEnabled
+              ? SETUP_TIMEOUT_NATIVE_SETTLE_TIMEOUT_MS
+              : 0,
           );
         } else if (id === 'content' && activityTimeoutEnabled) {
           await withProgressTimeout(
@@ -1884,6 +1888,9 @@
         message,
         retryCount: attemptCount - 1,
         depsTimeoutRetryEnabled,
+        depsTimeoutRetrySuppressed:
+          result.err instanceof StageTimeoutError &&
+          result.err.retrySuppressed,
       });
       stages = setStageStatus(
         stages,

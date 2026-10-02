@@ -645,6 +645,7 @@ export const STAGE_SKIP_THRESHOLD_MS: Partial<Record<StageId, number>> = {
 };
 
 export const STAGE_TIMEOUT_GRACE_MS = 300_000;
+export const SETUP_TIMEOUT_NATIVE_SETTLE_TIMEOUT_MS = 10_000;
 export const DEFAULT_STAGE_TIMEOUT_MS =
   DEFAULT_STAGE_SKIP_THRESHOLD_MS + STAGE_TIMEOUT_GRACE_MS;
 
@@ -795,6 +796,7 @@ export interface SetupStageRecoveryInput {
   message: string | null | undefined;
   retryCount: number;
   depsTimeoutRetryEnabled?: boolean;
+  depsTimeoutRetrySuppressed?: boolean;
 }
 
 export function setupStageRecoveryAction(
@@ -807,6 +809,7 @@ export function setupStageRecoveryAction(
     if (
       input.stageId === 'deps' &&
       input.depsTimeoutRetryEnabled === true &&
+      input.depsTimeoutRetrySuppressed !== true &&
       nextRetryCount <= stageAutoRetryLimit('deps')
     ) {
       return {
@@ -836,6 +839,8 @@ export function setupStageRecoveryAction(
 }
 
 export class StageTimeoutError extends Error {
+  retrySuppressed = false;
+
   constructor(public readonly stageId: StageId, public readonly ms: number) {
     super(`This step took too long (over ${Math.round(ms / 1000)}s) and was skipped.`);
     this.name = 'StageTimeoutError';
@@ -882,6 +887,26 @@ export function withTimeout<T>(
  * subscriber is installed before the timer starts and is always removed when
  * the operation settles or times out.
  */
+function settlesWithin(
+  promise: Promise<unknown>,
+  ms: number,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish(false), ms);
+    promise.then(
+      () => finish(true),
+      () => finish(true),
+    );
+  });
+}
+
 export function withProgressTimeout<T>(
   promise: Promise<T>,
   ms: number,
@@ -890,6 +915,7 @@ export function withProgressTimeout<T>(
   onTimeoutCancel?: () => void | Promise<void>,
   maxElapsedMs?: number,
   awaitTimeoutCancel = false,
+  awaitTimeoutOperationMs = 0,
 ): Promise<T> {
   if (!(ms > 0)) return promise;
   return new Promise<T>((resolve, reject) => {
@@ -923,16 +949,23 @@ export function withProgressTimeout<T>(
             reject(timeoutError);
             return;
           }
-          Promise.resolve(cancellation).then(
-            () => {
-              clear();
-              reject(timeoutError);
-            },
-            () => {
-              clear();
-              reject(timeoutError);
-            },
-          );
+          const finishTimeout = async () => {
+            if (awaitTimeoutOperationMs > 0) {
+              const operationSettled = await settlesWithin(
+                promise,
+                awaitTimeoutOperationMs,
+              );
+              if (
+                !operationSettled &&
+                timeoutError instanceof StageTimeoutError
+              ) {
+                timeoutError.retrySuppressed = true;
+              }
+            }
+            clear();
+            reject(timeoutError);
+          };
+          Promise.resolve(cancellation).then(finishTimeout, finishTimeout);
         } else {
           try {
             void onTimeoutCancel?.();
