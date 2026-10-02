@@ -11,6 +11,10 @@ import { ok, type PlatformAdapter } from "@hq/platform";
 import DesktopApp from "./DesktopApp.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
+import { meetingCanvasDoor, meetingsSidepaneDoor } from "./lazy-doors.js";
+import { loadOutpost } from "./outpost-lazy.js";
+import { loadPersonalRail } from "./personal-rail-lazy.js";
+import { loadTelemetry } from "./telemetry-lazy.js";
 import { installMemoryLocalStorage } from "../test-support/memory-local-storage.js";
 
 function webAdapter(): PlatformAdapter {
@@ -210,6 +214,15 @@ describe("DesktopApp app rail (console-rail US-003)", () => {
     click("rail-home");
     await settle();
     expect(chatSlot()?.style.display).toBe("contents");
+    // Let the lazy bodies this walk started finish before teardown.
+    await Promise.all([
+      loadTelemetry(),
+      loadPersonalRail(),
+      loadOutpost(),
+      meetingsSidepaneDoor.load(),
+      meetingCanvasDoor.load(),
+    ]);
+    await settle();
   });
 
   it("maps Cmd+1 to Cmd+9 to rail items in order", async () => {
