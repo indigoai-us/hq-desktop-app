@@ -172,7 +172,7 @@ describe("US-033 PersonalRailPage", () => {
   });
 
   it("updates the detail pane when a connection row is clicked", () => {
-    const target = mountPage("connections");
+    const target = mountPage("connections", { fixtures: true });
     const inspector = target.querySelector("[data-testid='connection-inspector']") as HTMLElement;
     expect(inspector.querySelector("h2")?.textContent).toBe("GitHub");
     (target.querySelector("[data-testid='connection-row-slack']") as HTMLElement).click();
@@ -194,7 +194,7 @@ describe("US-033 PersonalRailPage", () => {
   });
 
   it("wires the row Disconnect button to a confirm that really disconnects", () => {
-    const target = mountPage("connections");
+    const target = mountPage("connections", { fixtures: true });
     (target.querySelector("[data-testid='row-action-github']") as HTMLButtonElement).click();
     flushSync();
     expect(target.querySelector("[data-testid='sheet-confirm-disconnect']")).not.toBeNull();
@@ -205,11 +205,23 @@ describe("US-033 PersonalRailPage", () => {
   });
 
   it("marks the chosen bot policy in the detail pane", () => {
-    const target = mountPage("connections");
+    const target = mountPage("connections", { fixtures: true });
     const policy = target.querySelector("[data-testid='detail-policy']") as HTMLElement;
     const never = [...policy.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Never")!;
     never.click();
     flushSync();
     expect(policy.querySelector("[aria-pressed='true']")?.textContent?.trim()).toBe("Never");
+  });
+
+  it("keeps the app name and its account in separate, spaced spans (QA-035)", () => {
+    const target = mountPage("connections", { fixtures: true });
+    const row = target.querySelector("[data-testid='connection-row-github']") as HTMLElement;
+    const name = row.querySelector(".nm");
+    const meta = row.querySelector(".meta");
+    expect(name?.textContent).toBe("GitHub");
+    expect(meta?.textContent?.length).toBeGreaterThan(0);
+    expect(name?.contains(meta!)).toBe(false);
+    // The cell lays name and account out with a gap, so they never read as one word.
+    expect(name?.parentElement?.classList.contains("cell")).toBe(true);
   });
 });

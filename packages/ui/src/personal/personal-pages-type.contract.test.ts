@@ -83,6 +83,10 @@ describe("personal pages type scale contract", () => {
     expect(styleOf("outpost/OutpostPage.svelte")).toMatch(/\.jrow \{[^}]*height: 31px/);
   });
 
+  it("spaces the connection name from its account (QA-035)", () => {
+    expect(styleOf("personal/PersonalRailPage.svelte")).toMatch(/\.cell \{[^}]*gap: 8px/);
+  });
+
   it("renders telemetry stat numbers in 13px sans, not mono", () => {
     const css = styleOf("telemetry/TelemetryView.svelte");
     expect(css).toMatch(/\.stat \.n \{[^}]*font-size: 13px/);
