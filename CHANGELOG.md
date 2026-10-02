@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Desktop sign-in can open the website first to link the new account to the native app; if that check fails, it opens Cognito directly as before.
+- Library Back now leaves internal Library tab history and returns to the prior app screen.
 
 ## [0.10.373] — 2026-10-01
 
@@ -27,8 +28,6 @@ The release moves it under the version it ships in.
 - Desktop company-creation invites identify the desktop surface in the hq-pro team invite action.
 - Windows setup now detects Claude Code from the current user PATH and
   Anthropic's user-local install directory, including on Retry.
-- Library Back now leaves internal Library tab history and returns to the prior app screen.
-
 - The sidebar orders DMs and channels by the latest message a person typed.
 
 - HQ no longer restarts for an update, or at support's request, while a meeting
