@@ -12,6 +12,8 @@ The release moves it under the version it ships in.
 
 - New cloud bots created from the desktop New bot flow sign in with your model subscription. The API key option is no longer offered there.
 
+- When hq-flags enables `desktop.setup-deps-timeout-retry-v1`, a dependency setup timeout gets one automatic retry before setup is marked passed with that step skipped.
+
 - Desktop no longer shows your personal space in the Companies list, where clicking it looped between Setting up and Tap to retry.
 
 - Windows-visible copy now uses PC controls, the system tray, and file manager labels where older screens assumed a Mac, menu bar, or Finder.
