@@ -11,6 +11,7 @@
   import "../chat/scroll-perf.css";
   import {
     configureProjectsApi,
+    dedupeProjects,
     loadCompanyGoals,
     loadLocalProjects,
     type Objective,
@@ -47,6 +48,7 @@
 
   let objectives = $state<Objective[] | null>(null);
   let projects = $state<Project[]>([]);
+  let projectsLoaded = $state(false);
   let links = $state<KrLink[]>([]);
   let period = $state<GoalPeriod>("2026");
   let refreshing = $state(false);
@@ -55,7 +57,9 @@
   let error = $state<string | null>(null);
 
   const visible = $derived((objectives ?? []).filter((objective) => matchesPeriod(objective.timeframe, period)));
-  const unlinked = $derived(unlinkedProjects(projects.filter((project) => project.company === slug), links));
+  // The picker only offers the active company's projects, one row per PRD.
+  const companyProjects = $derived(dedupeProjects(projects.filter((project) => project.company === slug)));
+  const unlinked = $derived(unlinkedProjects(companyProjects, links));
   const summary = $derived(tallyGlyphs(visible));
 
   function remember(active: string): void {
@@ -89,6 +93,7 @@
       );
       objectives = [...goals.objectives, ...localOnly];
       projects = allProjects;
+      projectsLoaded = true;
       links = cached?.links ?? links;
       remember(active);
     } catch (err) {
@@ -219,25 +224,58 @@
   {/if}
 
   {#if picker && objectives}
-    <LinkPicker
-      {projects}
-      {objectives}
-      onclose={() => (picker = false)}
-      onlink={linkProject}
-    />
+    <svelte:boundary onerror={(err) => console.error("[goals] link picker failed", err)}>
+      <LinkPicker
+        projects={projectsLoaded ? companyProjects : null}
+        {objectives}
+        onclose={() => (picker = false)}
+        onlink={linkProject}
+      />
+      {#snippet failed(_err, reset)}
+        <div class="sheet-failed" role="alert" data-testid="link-picker-failed">
+          The project picker could not open.
+          <button type="button" onclick={reset}>Try again</button>
+          <button type="button" onclick={() => (picker = false)}>Close</button>
+        </div>
+      {/snippet}
+    </svelte:boundary>
   {/if}
   {#if sheet && objectives}
-    <NewGoalSheet
-      {projects}
-      {objectives}
-      onclose={() => (sheet = false)}
-      oncreate={createObjective}
-      onlink={linkProject}
-    />
+    <svelte:boundary onerror={(err) => console.error("[goals] new objective sheet failed", err)}>
+      <NewGoalSheet
+        projects={projectsLoaded ? companyProjects : null}
+        {objectives}
+        onclose={() => (sheet = false)}
+        oncreate={createObjective}
+        onlink={linkProject}
+      />
+      {#snippet failed(_err, reset)}
+        <div class="sheet-failed" role="alert" data-testid="new-goal-sheet-failed">
+          The new objective sheet could not open.
+          <button type="button" onclick={reset}>Try again</button>
+          <button type="button" onclick={() => (sheet = false)}>Close</button>
+        </div>
+      {/snippet}
+    </svelte:boundary>
   {/if}
 </div>
 
 <style>
+  .sheet-failed {
+    position: absolute;
+    right: 16px;
+    top: 52px;
+    z-index: 5;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    padding: 10px 12px;
+    background: var(--v4-popover, var(--v4-ground, #111));
+    border: 1px solid var(--v4-hairline, var(--v4-rowline));
+    border-radius: 8px;
+    color: var(--v4-text-2);
+  }
+  .sheet-failed button { font: inherit; color: var(--v4-text-1); background: transparent; border: 0; cursor: pointer; }
   /* Segmented controls size to their tabs; nothing stretches or centres them. */
   .tabs, .seg { width: max-content; flex: none; justify-content: flex-start; }
   .goals {

@@ -17,7 +17,7 @@
   }
 
   interface Props {
-    projects: Project[];
+    projects: Project[] | null;
     objectives: Objective[];
     onclose: () => void;
     oncreate: (draft: {

@@ -4,12 +4,13 @@
    * Link picker (US-026). Search projects, then attach the chosen project
    * to a key result. Shared by Link project and New objective.
    */
-  import type { Objective } from "../projects/local-projects.js";
+  import { projectIdentity, type Objective } from "../projects/local-projects.js";
   import { projectDisplayName, type Project } from "../projects/projects-model.js";
   import { krKey } from "./goals-model.js";
 
   interface Props {
-    projects: Project[];
+    /** Projects owned by the active company. Null while they are still loading. */
+    projects: Project[] | null;
     objectives: Objective[];
     onclose: () => void;
     onlink: (project: Project, objectiveId: string, krKey: string) => void;
@@ -22,12 +23,13 @@
   let target = $state<string | null>(null);
 
   const visible = $derived(
-    projects.filter((project) => {
+    (projects ?? []).filter((project) => {
       const name = projectDisplayName(project).toLowerCase();
       return !query.trim() || name.includes(query.trim().toLowerCase());
     }),
   );
-  const chosen = $derived(projects.find((project) => project.id === projectId) ?? null);
+  // Project ids are only unique per PRD path, so rows and selection use the full identity.
+  const chosen = $derived((projects ?? []).find((project) => projectIdentity(project) === projectId) ?? null);
 
   function pickTarget(objectiveId: string, key: string): void {
     target = `${objectiveId}:${key}`;
@@ -44,21 +46,25 @@
   <input class="search" placeholder="Search projects…" bind:value={query} />
   <div class="sec">Projects</div>
   <div class="list">
-    {#each visible as project (project.id)}
-      <button
-        type="button"
-        class="row hq-contain-row"
-        aria-pressed={project.id === projectId}
-        onclick={() => (projectId = project.id)}
-      >{projectDisplayName(project)}</button>
+    {#if projects === null}
+      {#each [0, 1, 2] as i (i)}<div class="shimmer" data-testid="link-picker-loading"></div>{/each}
     {:else}
-      <p class="foot">No projects match.</p>
-    {/each}
+      {#each visible as project (projectIdentity(project))}
+        <button
+          type="button"
+          class="row hq-contain-row"
+          aria-pressed={projectIdentity(project) === projectId}
+          onclick={() => (projectId = projectIdentity(project))}
+        >{projectDisplayName(project)}</button>
+      {:else}
+        <p class="foot">{projects.length ? "No projects match." : "No projects in this company yet."}</p>
+      {/each}
+    {/if}
   </div>
   <div class="sec">Key results</div>
   <div class="list">
-    {#each objectives as objective (objective.id || objective.title)}
-      {#each objective.keyResults as kr, index (krKey(kr, index))}
+    {#each objectives as objective, o (`${o}:${objective.id}`)}
+      {#each objective.keyResults as kr, index (index)}
         <button
           type="button"
           class="row"
@@ -123,5 +129,6 @@
   .row b { font-weight: 600; color: var(--v4-text-1); }
   .row[aria-pressed="true"] { background: var(--v4-active-row); color: var(--v4-text-1); }
   .row:hover:not(:disabled) { background: var(--v4-hover); }
+  .shimmer { height: 22px; margin: 4px 8px; border-radius: 6px; background: var(--v4-hover); }
   .foot { font-size: 12px; color: var(--v4-text-3); padding: 4px 8px; }
 </style>

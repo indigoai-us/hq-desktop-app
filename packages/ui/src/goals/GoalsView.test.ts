@@ -85,4 +85,75 @@ describe("GoalsView", () => {
     flushSync();
     expect(host?.querySelector("[data-testid='link-picker']")).toBeTruthy();
   });
+
+  it("QA-041: Link project on a company with zero projects opens an empty picker instead of crashing", async () => {
+    const other = (company: string) => ({
+      id: "shared-id",
+      name: "shared-id",
+      company,
+      description: "",
+      status: "active",
+      prdPath: `companies/${company}/projects/shared-id/prd.json`,
+      storiesTotal: 1,
+      storiesComplete: 0,
+    });
+    const ipc = async (command: string): Promise<unknown> => {
+      if (command === "get_local_company_goals") return { objectives: [], initiatives: [] };
+      // Other companies own projects with the same id; the active company owns none.
+      if (command === "get_local_projects") return [other("amass"), other("indigo")];
+      if (command === "get_company_project_creators") return [];
+      throw new Error(`Unexpected IPC command: ${command}`);
+    };
+    host = document.createElement("div");
+    document.body.append(host);
+    component = mount(GoalsView, {
+      target: host,
+      props: {
+        adapter: { projects: fakeProjectsApi(ipc) } as PlatformAdapter,
+        slug: "getindigo",
+      },
+    });
+    flushSync();
+    await expect.poll(() => host?.querySelector("[data-testid='link-project']")).toBeTruthy();
+    await expect.poll(() => host?.querySelector(".shimmer")).toBeNull();
+
+    (host?.querySelector("[data-testid='link-project']") as HTMLButtonElement).click();
+    flushSync();
+    const picker = host?.querySelector("[data-testid='link-picker']");
+    expect(picker).toBeTruthy();
+    expect(picker?.textContent).toContain("No projects in this company yet.");
+    expect(picker?.textContent).not.toContain("shared-id");
+  });
+
+  it("QA-041: the picker tolerates duplicate project ids within a company", async () => {
+    const dup = (prdPath: string) => ({
+      id: "dup",
+      name: "dup",
+      company: "indigo",
+      description: "",
+      status: "active",
+      prdPath,
+      storiesTotal: 1,
+      storiesComplete: 0,
+    });
+    const ipc = async (command: string): Promise<unknown> => {
+      if (command === "get_local_company_goals") return { objectives: [], initiatives: [] };
+      if (command === "get_local_projects") {
+        return [dup("companies/indigo/projects/a/prd.json"), dup("companies/indigo/projects/b/prd.json")];
+      }
+      if (command === "get_company_project_creators") return [];
+      throw new Error(`Unexpected IPC command: ${command}`);
+    };
+    host = document.createElement("div");
+    document.body.append(host);
+    component = mount(GoalsView, {
+      target: host,
+      props: { adapter: { projects: fakeProjectsApi(ipc) } as PlatformAdapter, slug: "indigo" },
+    });
+    flushSync();
+    await expect.poll(() => host?.querySelector(".shimmer")).toBeNull();
+    (host?.querySelector("[data-testid='link-project']") as HTMLButtonElement).click();
+    flushSync();
+    await expect.poll(() => host?.querySelectorAll("[data-testid='link-picker'] .row").length).toBe(2);
+  });
 });
