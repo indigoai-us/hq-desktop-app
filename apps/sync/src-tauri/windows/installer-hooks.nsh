@@ -1,6 +1,7 @@
 ; HQ installer hooks — Windows (NSIS).
 !include "StrFunc.nsh"
 ${StrStr}
+${StrLen}
 
 !macro HQ_CAPTURE_DOWNLOAD_TOKEN
   ; Capture only this setup executable's own download URL. The marker is
