@@ -114,3 +114,36 @@ export function findStaticHeavyImports(
 
   return findings;
 }
+
+/**
+ * Every file reachable from `entries` through static imports only.
+ * Used to prove a lazy body (reached through a door's `import()`) stays out
+ * of the shell's initial graph.
+ */
+export function staticReachable(
+  files: SourceFile[],
+  entries: string[],
+): Set<string> {
+  const byPath = new Map(files.map((f) => [f.path, f]));
+  const index = new Map<string, string>();
+  for (const file of files) {
+    index.set(file.path.replace(/\.(svelte|ts|js|mjs)$/, ""), file.path);
+  }
+  const seen = new Set<string>();
+  const queue = [...entries];
+  while (queue.length > 0) {
+    const current = queue.pop()!;
+    if (seen.has(current)) continue;
+    seen.add(current);
+    const file = byPath.get(current);
+    if (!file) continue;
+    for (const spec of staticSpecifiers(file.content)) {
+      const resolved = resolveSpecifier(current, spec);
+      if (!resolved) continue;
+      const matchPath =
+        index.get(resolved) ?? index.get(resolved.replace(/\/index$/, ""));
+      if (matchPath && !seen.has(matchPath)) queue.push(matchPath);
+    }
+  }
+  return seen;
+}

@@ -53,6 +53,7 @@ import {
 } from "./perf/style-budget.js";
 import {
   findStaticHeavyImports,
+  staticReachable,
   staticSpecifiers,
 } from "./perf/lazy-import-budget.js";
 import {
@@ -819,6 +820,50 @@ describe("console rail lazy chunks stay off the shell entry", () => {
         .map((f) => `${f.file} statically imports ${f.resolved} (${f.kind})`)
         .join("\n"),
     ).toEqual([]);
+  });
+});
+
+describe("first-frame-of-Home budget: lazy doors stay lazy", () => {
+  // Each body below loads through packages/ui/src/shell/lazy-doors.ts. A
+  // static import from the shell (or anything it statically pulls in) would
+  // put it back in the initial JS graph. See docs/performance-budgets.md.
+  const LAZY_BODIES = [
+    "packages/ui/src/shell/profile-panes/ProfilePaneHost.svelte",
+    "packages/ui/src/shell/profile-panes/BotProfilePane.svelte",
+    "packages/ui/src/shell/profile-panes/BotSessionPane.svelte",
+    "packages/ui/src/shell/profile-panes/EditBotSheet.svelte",
+    "packages/ui/src/shell/profile-panes/UserProfilePane.svelte",
+    "packages/ui/src/inbox/NotificationsPopover.svelte",
+    "packages/ui/src/shell/MoreCompaniesPopover.svelte",
+    "packages/ui/src/chat/NewMessageSheet.svelte",
+    "packages/ui/src/chat/NewChannelSheet.svelte",
+    "packages/ui/src/chat/PeoplePicker.svelte",
+    "packages/ui/src/agents/agent-stepper-model.ts",
+  ];
+
+  it("keeps every lazy body out of the shell's static import graph", () => {
+    const entries = [
+      "packages/ui/src/index.ts",
+      "packages/ui/src/shell/DesktopApp.svelte",
+    ].filter((path) => uiScriptFiles.some((file) => file.path === path));
+    const reachable = staticReachable(uiScriptFiles, entries);
+    expect(reachable.has("packages/ui/src/shell/DesktopApp.svelte")).toBe(true);
+    expect(reachable.has("packages/ui/src/chat/ChatSidebar.svelte")).toBe(true);
+    for (const body of LAZY_BODIES) {
+      expect(uiScriptFiles.some((f) => f.path === body), `${body} exists`).toBe(true);
+    }
+    expect(LAZY_BODIES.filter((body) => reachable.has(body))).toEqual([]);
+  });
+
+  it("detector: a static import of a lazy body is reachable, import() is not", () => {
+    const files = [
+      { path: "a/Shell.svelte", content: 'import X from "./Heavy.svelte";\nconst y = () => import("./Lazy.svelte");' },
+      { path: "a/Heavy.svelte", content: "" },
+      { path: "a/Lazy.svelte", content: "" },
+    ];
+    const reachable = staticReachable(files, ["a/Shell.svelte"]);
+    expect(reachable.has("a/Heavy.svelte")).toBe(true);
+    expect(reachable.has("a/Lazy.svelte")).toBe(false);
   });
 });
 
