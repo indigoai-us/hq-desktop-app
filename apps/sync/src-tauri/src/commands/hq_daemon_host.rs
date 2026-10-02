@@ -565,7 +565,6 @@ pub fn setup_sync_host(app: &AppHandle) {
             crate::commands::hq_pro::feature_flag_enabled(SYNC_ON_LAUNCH_RECONCILE_FLAG),
         );
         match mode {
->>>>>>> d6c34423 (Fix gated sync on launch reconciliation)
             SyncHostMode::Legacy(reason) => {
                 log(
                     LOG_TAG,
