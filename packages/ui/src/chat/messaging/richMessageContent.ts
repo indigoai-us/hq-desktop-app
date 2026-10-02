@@ -204,9 +204,25 @@ export interface SuggestionsBlock {
   items: string[];
 }
 
+/** The coding tools a `continueInTool` block can name. */
+export type ContinueInTool = "claude" | "codex";
+
+/**
+ * The setup bot's offer to continue setup in a coding tool the person already
+ * uses a lot (hq-cli sends it as the bot's first message). Carries only the
+ * tool's id. Like `setupDone` it renders nothing inline: the host draws its
+ * own two-button card under the message (open that tool in the HQ folder, or
+ * keep going here), and every action is the host's, never the bot's.
+ */
+export interface ContinueInToolBlock {
+  kind: "continueInTool";
+  tool: ContinueInTool;
+}
+
 export type RichBlock =
   | SetupDoneBlock
   | SuggestionsBlock
+  | ContinueInToolBlock
   | StatBlock
   | TableBlock
   | ChartBlock
@@ -225,6 +241,7 @@ export interface RichContentModel {
 export const KNOWN_BLOCK_KINDS = new Set<string>([
   "setupDone",
   "suggestions",
+  "continueInTool",
   "stat",
   "table",
   "chart",
@@ -259,6 +276,7 @@ const MAX_SUGGESTION_LEN = 80;
 export const HOST_PLACED_BLOCK_KINDS: ReadonlySet<RichBlock["kind"]> = new Set([
   "setupDone",
   "suggestions",
+  "continueInTool",
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -527,6 +545,9 @@ function parseBlock(raw: unknown): RichBlock | null {
       return raw.slackAgent === true ? { kind: "setupDone", slackAgent: true } : { kind: "setupDone" };
     case "suggestions":
       return parseSuggestionsBlock(raw);
+    case "continueInTool":
+      // A closed list: any other tool id drops the block.
+      return raw.tool === "claude" || raw.tool === "codex" ? { kind: "continueInTool", tool: raw.tool } : null;
     case "stat":
       return parseStatBlock(raw);
     case "table":
@@ -733,6 +754,7 @@ function blockToPlainText(block: RichBlock): string {
   switch (block.kind) {
     case "setupDone":
     case "suggestions":
+    case "continueInTool":
       return "";
     case "markdown":
       return block.text;
@@ -827,4 +849,12 @@ export function suggestionsForMessage(message: { body?: string | null; richConte
     (b): b is SuggestionsBlock => b.kind === "suggestions",
   );
   return block ? [...block.items] : [];
+}
+
+/** The coding tool a message offers to continue setup in, or null. */
+export function continueInToolForMessage(message: { body?: string | null; richContent?: unknown }): ContinueInTool | null {
+  const block = richContentForMessage(message).rich?.blocks.find(
+    (b): b is ContinueInToolBlock => b.kind === "continueInTool",
+  );
+  return block ? block.tool : null;
 }

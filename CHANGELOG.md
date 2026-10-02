@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- When your setup bot sees that you already use Claude Code or Codex a lot on this computer, its first message asks whether you want to continue setup there, and shows two buttons under it: "Continue in Claude Code" (or Codex) opens your HQ folder in that tool with a plain request to set up HQ already typed in, and "Keep going here" carries on with setup in the conversation as before. Needs the hq-cli release that sends the offer.
 - Core update failures now report the available snapshot disk space instead of the required snapshot size.
 
 ## [0.10.381] — 2026-10-02

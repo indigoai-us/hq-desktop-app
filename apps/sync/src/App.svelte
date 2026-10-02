@@ -91,6 +91,7 @@
     POST_READY_ACTION_EVENT,
     registerPostReadyCloseTelemetry,
   } from './lib/post-ready-action-telemetry';
+  import { registerSetupToolOfferTelemetry } from './lib/setup-tool-offer-telemetry';
   import './styles/popover.css';
 
   const traySyncAdapter = createSyncPlatformAdapter({
@@ -141,7 +142,10 @@
   }
   window.addEventListener(POST_READY_ACTION_EVENT, handlePostReadyAction);
   const postReadyCloseListener = registerPostReadyCloseTelemetry(postReadyTelemetry);
+  // The setup bot's "continue setup in your coding tool" card (packages/ui).
+  const stopSetupToolOfferTelemetry = registerSetupToolOfferTelemetry();
   onDestroy(() => {
+    stopSetupToolOfferTelemetry();
     window.removeEventListener(POST_READY_ACTION_EVENT, handlePostReadyAction);
     void postReadyCloseListener.then((unlisten) => unlisten());
   });

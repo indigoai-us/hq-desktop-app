@@ -27,6 +27,7 @@
     CLAUDE_PROVIDER_FLAG,
     HUMAN_ONLY_CONVERSATIONS_FLAG,
     READY_FIRST_ACTION_FLAG,
+    dispatchSetupToolOffer,
     failure,
     hostComputerNoun,
     startJitteredPoll,
@@ -72,7 +73,9 @@
   import SetupConnectStep from "../chat/SetupConnectStep.svelte";
   import SetupFinale from "../chat/SetupFinale.svelte";
   import SetupBotFinale from "../chat/SetupBotFinale.svelte";
+  import SetupToolOffer from "../chat/SetupToolOffer.svelte";
   import {
+    continueInToolForMessage,
     messageHasVisibleContent,
     messageMarksSetupDone,
     messageOffersSlackAgent,
@@ -106,6 +109,11 @@
     setupBotKickoff,
     setupBotNoRuntime,
     setupSuggestionsDue,
+    setupToolOfferDue,
+    SETUP_CONTINUE_IN_TOOL_PROMPT,
+    SETUP_KEEP_GOING_HERE,
+    SETUP_TOOL_OFFER_COPY,
+    type SetupOfferTool,
     SETUP_BOT_ALREADY_ELSEWHERE,
     SETUP_BOT_GENERIC_FAILURE,
     SETUP_BOT_MODE,
@@ -2595,6 +2603,18 @@
     if (setupBotDmDone) void loadLocalBotRuntimeReady();
   });
   /**
+   * The setup bot's first message offered to continue setup in a coding tool
+   * the person already uses a lot (hq-cli sends a `continueInTool` block):
+   * the tool to show the card for, until the person writes again.
+   */
+  const setupToolOffer = $derived.by((): SetupOfferTool | null => {
+    const bot = selectedLocalBot;
+    const row = selectedRow;
+    if (!bot || !row || bot.name.trim().toLowerCase() !== SETUP_BOT_NAME) return null;
+    const timeline = liveTimelineId === row.id ? liveTimeline : (messagesByRow?.(row) ?? []);
+    return setupToolOfferDue(timeline, bot.agentUid, messageHasVisibleContent, continueInToolForMessage);
+  });
+  /**
    * The setup bot's suggested replies for its newest message: recommended
    * answers to what it just asked, or next questions. Setup bot only for now.
    */
@@ -2603,8 +2623,62 @@
     const row = selectedRow;
     if (!bot || !row || bot.name.trim().toLowerCase() !== SETUP_BOT_NAME) return [];
     const timeline = liveTimelineId === row.id ? liveTimeline : (messagesByRow?.(row) ?? []);
+    // The offer card carries its own "Keep going here" button.
+    if (setupToolOffer) return [];
     return setupSuggestionsDue(timeline, bot.agentUid, messageHasVisibleContent, suggestionsForMessage);
   });
+  /** "Shown" is recorded once per bot, however often the card re-renders. */
+  $effect(() => {
+    const tool = setupToolOffer;
+    const bot = selectedLocalBot;
+    if (!tool || !bot) return;
+    const key = `setup-tool-offer-shown:${bot.agentUid}`;
+    if (tenantStorage.getItem(key) === "1") return;
+    tenantStorage.setItem(key, "1");
+    dispatchSetupToolOffer("shown", tool);
+  });
+  let setupToolOfferBusy = $state(false);
+  let setupToolOfferError = $state<string | null>(null);
+  /** "Continue in …": open the HQ folder in that tool with setup ready to go. */
+  async function continueSetupInTool(tool: SetupOfferTool): Promise<void> {
+    if (setupToolOfferBusy) return;
+    setupToolOfferBusy = true;
+    setupToolOfferError = null;
+    let launched = false;
+    try {
+      const res = await adapter.settings.getSetupStatus();
+      const folder = res.ok ? ((res.value as { hqFolderPath?: string } | null)?.hqFolderPath?.trim() ?? "") : "";
+      if (!folder) {
+        setupToolOfferError = SETUP_TOOL_OFFER_COPY.folderNotReady;
+        return;
+      }
+      // The same cascade as the title-bar Launch menu and the finish card,
+      // with a plain-language setup request in place of a command.
+      const actions = createLaunchActions({
+        shell: adapter.shell,
+        hqFolderPath: folder,
+        prompt: SETUP_CONTINUE_IN_TOOL_PROMPT,
+        deepLinkPrompt: SETUP_CONTINUE_IN_TOOL_PROMPT,
+      });
+      const error = tool === "claude" ? await actions.launchClaude() : await actions.launchCodex();
+      launched = !error;
+      if (error) setupToolOfferError = SETUP_TOOL_OFFER_COPY.launchFailed.replaceAll("{name}", SETUP_TOOL_OFFER_COPY[tool].name);
+    } catch (err) {
+      console.warn("[hq-desktop] could not open the coding tool for setup:", err);
+      setupToolOfferError = SETUP_TOOL_OFFER_COPY.launchFailed.replaceAll("{name}", SETUP_TOOL_OFFER_COPY[tool].name);
+    } finally {
+      setupToolOfferBusy = false;
+      dispatchSetupToolOffer("continued", tool, { launched });
+    }
+  }
+  /** "Keep going here": the reply the bot waits for before it starts setup. */
+  function keepSetupHere(tool: SetupOfferTool): void {
+    setupToolOfferError = null;
+    dispatchSetupToolOffer("keptHere", tool);
+    void persistSend(SETUP_KEEP_GOING_HERE, []).catch((err) =>
+      console.warn("[hq-desktop] could not tell the setup bot to keep going here:", err),
+    );
+  }
   /**
    * The finish card, once put away, stays away.
    *
@@ -9670,6 +9744,16 @@
                   <!-- Inside the conversation scroller (typing-indicator
                        position) — a chat-stage sibling would become a second
                        flex-row column floating top-right. -->
+                  {#if setupToolOffer}
+                    {@const offerTool = setupToolOffer}
+                    <SetupToolOffer
+                      tool={offerTool}
+                      busy={setupToolOfferBusy}
+                      launchError={setupToolOfferError}
+                      oncontinue={() => void continueSetupInTool(offerTool)}
+                      onkeep={() => keepSetupHere(offerTool)}
+                    />
+                  {/if}
                   {#if setupFinaleVisible}
                     <SetupBotFinale
                       hasClaude={localCodingToolsInstalled.claude === true}
