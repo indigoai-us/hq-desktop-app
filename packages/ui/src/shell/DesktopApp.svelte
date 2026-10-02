@@ -117,6 +117,13 @@
     type ShortcutBinding,
   } from "../common/keyboard-shortcuts.js";
   import {
+    NEW_CHAT_KEYS,
+    advertisedShortcut,
+    atlasShortcutTarget,
+  } from "./advertised-shortcuts.js";
+  import { pushToast } from "./toast-stack.svelte.js";
+  import { CREATE_MENU_ITEMS, type CreateMenuAction } from "../chat/create-menu.js";
+  import {
     SIDEBAR_OVERLAY_MAX_PX,
     sidebarLayout,
   } from "./sidebar-layout.js";
@@ -9276,6 +9283,46 @@
     withSidebar((actions) => actions.openCreate());
   }
 
+  function createMenuKeys(action: CreateMenuAction): string {
+    return CREATE_MENU_ITEMS.find((item) => item.id === action)!.keys;
+  }
+
+  /** ⌘N: the New message sheet, from any page (QA-077). */
+  function openNewMessage(): void {
+    paletteOpen = false;
+    cheatSheetOpen = false;
+    withSidebar((actions) => actions.openNewMessage());
+  }
+
+  /**
+   * ⌘⇧A: Atlas for the active company; on Home the first rail company; with
+   * no company at all, a one-line toast (QA-077).
+   */
+  function openAtlasShortcut(): void {
+    paletteOpen = false;
+    cheatSheetOpen = false;
+    const target = atlasShortcutTarget(
+      companyPaneOpen ? tenantCompanyId : null,
+      railCompanyRoster.map((company) => company.uid),
+    );
+    if (target.kind === "none") {
+      pushToast({ title: "Open a company first", detail: "", tone: "neutral" });
+      return;
+    }
+    const item = railItemList.find(
+      (entry) => entry.kind === "company" && entry.companyUid === target.companyUid,
+    );
+    if (item) {
+      selectRailItem(item);
+      return;
+    }
+    moreCompaniesOpen = false;
+    accountMenuOpen = false;
+    companyPaneOpen = true;
+    changeTenantCompany(target.companyUid);
+    void navigate(companyRowDestination("atlas", target.companyUid));
+  }
+
   function stepSelectedConversation(delta: 1 | -1): void {
     const next = stepConversation(displayRows, selectedRow?.id, delta);
     if (!next) return;
@@ -9291,8 +9338,8 @@
   const shellShortcuts: ShortcutBinding[] = [
     {
       id: "palette.toggle",
-      keys: "Mod+K",
-      label: "Command palette",
+      keys: advertisedShortcut("palette.toggle").keys,
+      label: advertisedShortcut("palette.toggle").label,
       group: "General",
       run: () => {
         cheatSheetOpen = false;
@@ -9301,10 +9348,17 @@
     },
     {
       id: "view.settings",
-      keys: "Mod+,",
-      label: "Settings",
+      keys: advertisedShortcut("view.settings").keys,
+      label: advertisedShortcut("view.settings").label,
       group: "General",
       run: () => openSettings(),
+    },
+    {
+      id: "view.atlas",
+      keys: advertisedShortcut("view.atlas").keys,
+      label: advertisedShortcut("view.atlas").label,
+      group: "Views",
+      run: () => openAtlasShortcut(),
     },
     {
       id: "help.shortcuts",
@@ -9360,8 +9414,39 @@
       run: () => stepSelectedConversation(-1),
     },
     {
+      id: "create.message",
+      keys: advertisedShortcut("create.message").keys,
+      label: advertisedShortcut("create.message").label,
+      group: "Conversations",
+      run: () => openNewMessage(),
+    },
+    {
+      id: "create.channel",
+      keys: createMenuKeys("channel"),
+      label: "New channel",
+      group: "Conversations",
+      run: () => {
+        paletteOpen = false;
+        cheatSheetOpen = false;
+        withSidebar((actions) => actions.openNewChannel());
+      },
+    },
+    {
+      id: "create.agent",
+      keys: createMenuKeys("agent"),
+      label: "New bot",
+      group: "Conversations",
+      run: () => {
+        paletteOpen = false;
+        cheatSheetOpen = false;
+        withSidebar((actions) => actions.openNewAgent(null));
+      },
+    },
+    {
+      // The search-first create dialog keeps its own chord; ⌘N opens exactly
+      // one thing, the New message sheet.
       id: "chat.new",
-      keys: "Mod+N",
+      keys: NEW_CHAT_KEYS,
       label: "New chat",
       group: "Conversations",
       run: () => openNewChat(),

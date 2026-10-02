@@ -7,6 +7,7 @@
  */
 
 import { approvedStripeUrl, stripeDestination } from "../company/company-settings.js";
+import { advertisedShortcutRows } from "../shell/advertised-shortcuts.js";
 import { SETTINGS_SECTIONS, type SettingsTab } from "../settings/settings-sections.js";
 
 export const metadata = {
@@ -64,14 +65,8 @@ export const FIXTURE_INVOICES: AccountInvoice[] = [
   { id: "IN-2026-0007", date: "Jul 1, 2026", summary: "HQ Workforce · 1 hosted agent · Outpost", amount: "$680.00", status: "Paid" },
 ];
 
-export const DEFAULT_SHORTCUTS: ShortcutBinding[] = [
-  { id: "palette", label: "Command palette", keys: "⌘K" },
-  { id: "home", label: "Home", keys: "⌘1" },
-  { id: "atlas", label: "Open Atlas", keys: "⌘⇧A" },
-  { id: "new-message", label: "New message", keys: "⌘N" },
-  { id: "settings", label: "Settings", keys: "⌘," },
-  { id: "select-all", label: "Select all in the composer", keys: "⌘A" },
-];
+/** Derived from the shell's advertised table so the list cannot drift (QA-077). */
+export const DEFAULT_SHORTCUTS: ShortcutBinding[] = advertisedShortcutRows(true);
 
 export function fixtureAccount(name = "You", email = ""): AccountCache {
   const handle = name.trim().split(/\s+/)[0]?.toLowerCase().replace(/[^a-z0-9]/g, "") || "you";
@@ -96,7 +91,9 @@ export function readAccountCache(): AccountCache | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as AccountCache;
     if (!parsed || typeof parsed.displayName !== "string" || !Array.isArray(parsed.invoices)) return null;
-    return parsed;
+    // Rows come from the advertised table, not the cache: an older cache
+    // could list a chord the shell no longer binds (QA-077).
+    return { ...parsed, shortcuts: DEFAULT_SHORTCUTS.map((row) => ({ ...row })) };
   } catch {
     return null;
   }

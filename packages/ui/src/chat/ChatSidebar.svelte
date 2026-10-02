@@ -217,6 +217,8 @@
 
   export interface ChatSidebarActions {
     openCreate: () => void;
+    /** The New message sheet (⌘N, owned by the shell registry). */
+    openNewMessage: () => void;
     openNewChannel: () => void;
     openSearch: () => void;
     openHistory: () => void;
@@ -1531,7 +1533,14 @@
   $effect(() => {
     const emit = onactions;
     if (!emit) return;
-    emit({ openCreate, openNewChannel, openSearch, openHistory, openNewAgent });
+    emit({
+      openCreate,
+      openNewMessage: () => openCreateAction("message"),
+      openNewChannel,
+      openSearch,
+      openHistory,
+      openNewAgent,
+    });
     return () => emit(null);
   });
   const historyHiddenCount = $derived(
@@ -2594,27 +2603,9 @@
         group: "Sidebar",
         run: () => selectScope("personal"),
       },
-      {
-        id: "create.message",
-        keys: "Mod+N",
-        label: "New message",
-        group: "Create",
-        run: () => openCreateAction("message"),
-      },
-      {
-        id: "create.channel",
-        keys: "Mod+Shift+N",
-        label: "New channel",
-        group: "Create",
-        run: () => openCreateAction("channel"),
-      },
-      {
-        id: "create.agent",
-        keys: "Mod+Alt+N",
-        label: "New bot",
-        group: "Create",
-        run: () => openCreateAction("agent"),
-      },
+      // ⌘N / ⇧⌘N / ⌥⌘N (the Create menu) are shell bindings so they work
+      // from every page; registering them here too would double-bind them
+      // and leave them dead wherever this sidebar is unmounted (QA-077).
     ]);
 
     window.addEventListener(COMPOSER_DRAFT_CHANGED_EVENT, refreshDraftIds);
@@ -3941,41 +3932,46 @@
   {/if}
 
   {#if messageSheetOpen}
-    <LazyDoor
-      door={newMessageSheetDoor}
-      props={{
-        api,
-        rows: [...directoryRows, ...browseRows],
-        contacts: localBotsAsContacts(contacts, localBots, botDisplayNames),
-        companies: scopeCompanies,
-        activeCompanyUid: scope !== "all" && scope !== "personal" ? scope : null,
-        scopeLabel,
-        onclose: () => {
-          messageSheetOpen = false;
-          plusBtnEl?.focus();
-        },
-        onopen: (row: ConversationRow) => {
-          messageSheetOpen = false;
-          plusBtnEl?.focus();
-          void openRow(row);
-        },
-      }}
-    />
+    <!-- Portaled so ⌘N / ⇧⌘N show on pages that hide this sidebar (QA-077). -->
+    <div class="sheet-portal" use:portal>
+      <LazyDoor
+        door={newMessageSheetDoor}
+        props={{
+          api,
+          rows: [...directoryRows, ...browseRows],
+          contacts: localBotsAsContacts(contacts, localBots, botDisplayNames),
+          companies: scopeCompanies,
+          activeCompanyUid: scope !== "all" && scope !== "personal" ? scope : null,
+          scopeLabel,
+          onclose: () => {
+            messageSheetOpen = false;
+            plusBtnEl?.focus();
+          },
+          onopen: (row: ConversationRow) => {
+            messageSheetOpen = false;
+            plusBtnEl?.focus();
+            void openRow(row);
+          },
+        }}
+      />
+    </div>
   {/if}
 
   {#if channelSheetOpen}
-    <LazyDoor
-      door={newChannelSheetDoor}
-      props={{
-        api,
-        rows: [...directoryRows, ...browseRows],
-        contacts: localBotsAsContacts(contacts, localBots, botDisplayNames),
-        companies: createScopeCompanies,
-        activeCompanyUid: scope !== "all" && scope !== "personal" ? scope : null,
-        onclose: closeCreate,
-        aftercreate: onChannelCreated,
-      }}
-    />
+    <div class="sheet-portal" use:portal>
+      <LazyDoor
+        door={newChannelSheetDoor}
+        props={{
+          api,
+          rows: [...directoryRows, ...browseRows],
+          contacts: localBotsAsContacts(contacts, localBots, botDisplayNames),
+          companies: createScopeCompanies,
+          activeCompanyUid: scope !== "all" && scope !== "personal" ? scope : null,
+          onclose: closeCreate,
+          aftercreate: onChannelCreated,
+        }}
+      />
+    </div>
   {/if}
 
   {#if createOpen}
@@ -6137,5 +6133,8 @@
     .chat-sidebar {
       transition: none;
     }
+  }
+  .sheet-portal {
+    display: contents;
   }
 </style>

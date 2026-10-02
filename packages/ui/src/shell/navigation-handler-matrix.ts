@@ -94,6 +94,8 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   applyFetchedTimeline: "none",
   openMemberProfile: "none",
   openNewChat: "none",
+  openNewMessage: "none",
+  openAtlasShortcut: "push",
   closeMemberProfile: "none",
   openAgentProfileFromHeader: "none",
   closeAgentDetail: "none",
@@ -501,6 +503,17 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
     inScope: true,
     notes:
       "⌘1–⌘9 (`view.rail.N` bindings) call selectRailIndex → selectRailItem, which navigates (console-rail US-003).",
+  },
+  {
+    id: "keydown-cmd-shift-a-atlas",
+    file: SHARED_SHELL_FILE,
+    needle: "function openAtlasShortcut(): void {",
+    destinationKind: "extra",
+    history: "push",
+    host: "shared-shell",
+    inScope: true,
+    notes:
+      "⌘⇧A (`view.atlas`) opens Atlas for the active company, else the first rail company, else a toast (QA-077).",
   },
   {
     id: "titlebar-create-extra-page",

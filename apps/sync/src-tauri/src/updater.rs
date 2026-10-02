@@ -2154,7 +2154,7 @@ pub fn setup_app_menu(app: &tauri::App) -> tauri::Result<()> {
     )
     .accelerator("CmdOrCtrl+Shift+[")
     .build(app)?;
-    let new_chat_item = MenuItemBuilder::with_id(MENU_SHORTCUT_NEW_CHAT_ID, "New Chat")
+    let new_chat_item = MenuItemBuilder::with_id(MENU_SHORTCUT_NEW_CHAT_ID, "New Message")
         .accelerator("CmdOrCtrl+N")
         .build(app)?;
     let shortcuts_item =
@@ -2247,7 +2247,8 @@ fn shortcut_id_for_menu_item(menu_id: &str) -> Option<&'static str> {
     match menu_id {
         MENU_SHORTCUT_NEXT_CONVERSATION_ID => Some("conversation.next"),
         MENU_SHORTCUT_PREVIOUS_CONVERSATION_ID => Some("conversation.previous"),
-        MENU_SHORTCUT_NEW_CHAT_ID => Some("chat.new"),
+        // ⌘N opens exactly one thing, the New message sheet (QA-077).
+        MENU_SHORTCUT_NEW_CHAT_ID => Some("create.message"),
         MENU_SHORTCUT_CHEAT_SHEET_ID => Some("help.shortcuts"),
         _ => None,
     }
