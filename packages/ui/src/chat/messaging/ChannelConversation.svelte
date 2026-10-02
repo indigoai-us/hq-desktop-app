@@ -13,6 +13,7 @@
    */
   import { onDestroy, tick, untrack, type Snippet } from "svelte";
   import { observeConversationRead } from "./observe-conversation-read";
+  import { RevealTracker, revealLines, smoothFollow } from "./message-reveal";
   import {
     isScrollNearBottom,
     restoreNavigationScroll,
@@ -727,6 +728,9 @@
 
   function readScrollPosition(): void {
     if (!scroller) return;
+    // A reveal follow owns the scroller until it ends or the reader scrolls
+    // up; mid-glide distances are not the reader's position.
+    if (cancelFollow) return;
     const distance =
       scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
     const pinned = distance <= STICK_THRESHOLD_PX;
@@ -736,6 +740,27 @@
     if (atTop && !wasAtTop) void showEarlier();
     wasAtTop = atTop;
   }
+
+  /**
+   * A bot reply revealing line by line while the reader is pinned: glide to
+   * the bottom over the reveal with one rAF loop instead of snapping. A reader
+   * who scrolls up mid-glide keeps their place.
+   */
+  let cancelFollow: (() => void) | null = null;
+  function followReveal(totalMs: number): void {
+    const el = scroller;
+    if (!el || !stickToBottom || loadingEarlier || restoreScrollPending) return;
+    cancelFollow?.();
+    const cancel = smoothFollow(el, {
+      durationMs: totalMs,
+      ondone: (scrolledAway) => {
+        if (cancelFollow === cancel) cancelFollow = null;
+        if (scrolledAway) readScrollPosition();
+      },
+    });
+    cancelFollow = cancel;
+  }
+  onDestroy(() => cancelFollow?.());
 
   const threadScroll = coalesceScroll(readScrollPosition);
   const onThreadScroll = threadScroll.onScroll;
@@ -772,6 +797,24 @@
   /** The conversation a run of history requests belongs to. */
   const conversationIdentity = $derived(
     conversationKey ?? draftKey ?? channelId ?? null,
+  );
+
+  /**
+   * Bot replies that arrive while this conversation is open reveal word by
+   * word; history and human messages render instantly (see message-reveal.ts).
+   */
+  const revealTracker = new RevealTracker();
+  const revealIds = $derived(
+    new Set(
+      revealTracker.observe(
+        conversationIdentity,
+        rootMessages.map((msg) => ({
+          id: msg.eventId,
+          bot: msg.direction !== "out" && (isAgent(msg) || !isHumanMessage(msg)),
+        })),
+        loading,
+      ),
+    ),
   );
   async function showEarlier(): Promise<void> {
     if (loadingEarlier || (windowed.hidden === 0 && !hasEarlier)) return;
@@ -1536,7 +1579,10 @@
       if (loadingEarlier) return;
       if (restoreScrollPending) return;
       if (stickToBottom) {
-        el.scrollTop = el.scrollHeight;
+        // A revealing bot reply is followed smoothly by followReveal.
+        if (!revealIds.has(timeline.at(-1)?.eventId ?? "")) {
+          el.scrollTop = el.scrollHeight;
+        }
       } else if (grew && historyPopulated) {
         // Only arrivals AFTER the first populated paint are "unseen"; the
         // initial history landing under a top-anchored pane is not news.
@@ -1572,6 +1618,7 @@
       lastHeight = height;
       if (!stickToBottom || loadingEarlier || prependAnchorHeight > 0) return;
       if (restoreScrollPending) return;
+      if (cancelFollow) return;
       el.scrollTop = el.scrollHeight;
     });
     observer.observe(content);
@@ -1931,6 +1978,12 @@
                     <div
                       class="dm-bubble-body selectable-text msg-body"
                       class:msg-body-jumbo={isJumboEmojiBody(rich.text)}
+                      data-reveal={revealIds.has(msg.eventId) ? "true" : undefined}
+                      use:revealLines={{
+                        active: revealIds.has(msg.eventId),
+                        text: rich.text,
+                        onreveal: followReveal,
+                      }}
                       onclick={(e) => {
                         if (onBodyLinkActivate(e)) return;
                         onMentionActivate(e, e.target);
