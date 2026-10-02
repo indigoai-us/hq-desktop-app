@@ -175,8 +175,8 @@
     background: transparent;
     color: var(--v4-text-1);
     font: inherit;
-    font-size: 14px;
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     cursor: pointer;
   }
   .ph-company-btn:hover,
@@ -192,8 +192,8 @@
     border-radius: 6px;
     background: var(--v4-control-faint);
     color: var(--v4-text-2);
-    font-size: 12px;
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
   }
   .ph-avatar.small {
     width: 18px;
@@ -269,6 +269,6 @@
   .ph-empty h2 {
     margin: 0 0 8px;
     color: var(--v4-text-1);
-    font-size: 20px;
+    font-size: 13px;
   }
 </style>

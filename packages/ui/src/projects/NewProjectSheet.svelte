@@ -210,9 +210,9 @@
   }
   .sh {
     height: 52px; flex: none; display: flex; align-items: center; gap: 8px;
-    padding: 0 10px 0 20px; border-bottom: 1px solid var(--v4-hairline); font-size: 15px; font-weight: 600;
+    padding: 0 10px 0 20px; border-bottom: 1px solid var(--v4-hairline); font-size: 13px; font-weight: 500;
   }
-  .sub { font-size: 12px; font-weight: 400; color: var(--v4-text-3); }
+  .sub { font-size: 13px; font-weight: 400; color: var(--v4-text-3); }
   .grow { flex: 1; }
   .icon { border: 0; background: transparent; color: var(--v4-text-3); }
   .sb { overflow: auto; min-height: 0; }
@@ -221,7 +221,7 @@
     padding: 10px 20px; border-bottom: 1px solid var(--v4-rowline);
   }
   .fr:last-child { border-bottom: 0; }
-  .lb { font-size: 12px; color: var(--v4-text-3); padding-top: 6px; line-height: 1.3; }
+  .lb { font-size: 13px; color: var(--v4-text-3); padding-top: 6px; line-height: 1.3; }
   .search {
     display: flex; align-items: center; height: 28px; gap: 4px; padding: 0 8px;
     border: 1px solid var(--v4-control-border); border-radius: 6px;
@@ -229,15 +229,15 @@
   .search input, .repo {
     flex: 1; min-width: 0; border: 0; background: transparent; color: inherit; font: inherit; font-size: 13px;
   }
-  .repo { display: block; width: 100%; margin-top: 4px; font-family: var(--font-mono); font-size: 12px; }
-  .hint { margin: 5px 0 0; font-size: 12px; line-height: 1.4; color: var(--v4-text-3); }
-  .mono { font-family: var(--font-mono); font-size: 12px; }
+  .repo { display: block; width: 100%; margin-top: 4px; font-family: var(--font-mono); font-size: 13px; }
+  .hint { margin: 5px 0 0; font-size: 13px; line-height: 1.4; color: var(--v4-text-3); }
+  .mono { font-family: var(--font-mono); font-size: 13px; }
   .tabs {
     display: flex; gap: 2px; width: max-content; max-width: 100%; flex-wrap: wrap; padding: 2px;
     border-radius: 6px; border: 1px solid var(--v4-control-border); background: var(--v4-control-faint);
   }
   .tab {
-    border: 0; background: transparent; color: var(--v4-text-2); font: inherit; font-size: 12px;
+    border: 0; background: transparent; color: var(--v4-text-2); font: inherit; font-size: 13px;
     padding: 4px 8px; border-radius: 4px;
   }
   .tab[aria-selected="true"] { background: var(--v4-active-row); color: var(--v4-text-1); }
@@ -251,7 +251,7 @@
   .opt[aria-checked="true"] { background: var(--v4-active-row); color: var(--v4-text-1); }
   .opt[aria-checked="true"] i { border: 4px solid var(--v4-text-1); }
   .opt b { font-weight: 500; color: var(--v4-text-1); }
-  .opt .m { margin-top: 2px; font-size: 12px; line-height: 1.4; color: var(--v4-text-3); }
+  .opt .m { margin-top: 2px; font-size: 13px; line-height: 1.4; color: var(--v4-text-3); }
   .sf { flex: none; display: flex; align-items: center; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--v4-hairline); }
   .sf .hint { flex: 1; margin: 0; }
   .btn {

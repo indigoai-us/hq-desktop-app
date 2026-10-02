@@ -241,15 +241,16 @@
   .toggle-segment {
     display: inline-flex;
     align-items: center;
-    height: 22px;
-    padding: 0 10px;
+    height: auto;
+    padding: 4px 8px;
     border: 0;
     border-radius: 4px;
     background: transparent;
     color: var(--v4-text-3);
     font: inherit;
-    font-size: 12px;
-    font-weight: 500;
+    font-size: 13px;
+    font-weight: 400;
+    line-height: 17px;
     cursor: pointer;
     transition:
       background 140ms ease,
@@ -354,7 +355,7 @@
   .column-label {
     color: var(--v4-text-1);
     font-size: 13px;
-    font-weight: 600;
+    font-weight: 500;
   }
 
   .count-badge {
@@ -366,7 +367,7 @@
     border-radius: var(--v4-radius-pill);
     background: var(--v4-control-faint);
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: 13px;
     font-variant-numeric: tabular-nums;
     font-weight: 500;
   }
@@ -428,7 +429,7 @@
 
   .column-empty span {
     color: var(--v4-text-3);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .list-scroll {

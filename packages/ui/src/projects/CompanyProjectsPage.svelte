@@ -910,13 +910,15 @@
         <h2 id="company-projects-title">Projects</h2>
         <span
           class="projects-count"
-          title={`${filteredCompanyProjects.length} of ${companyProjects.length}${companyProjects.length === 1 ? " project" : " projects"}`}
+          data-testid="projects-count"
+          title={`${filteredCompanyProjects.length} of ${companyProjects.length}${companyProjects.length === 1 ? " project" : " projects"} on this computer`}
         >
           {#if filteredCompanyProjects.length === companyProjects.length}
             {companyProjects.length}
           {:else}
             {filteredCompanyProjects.length} of {companyProjects.length}
           {/if}
+          on this computer
           {#if liveCount > 0}
             <span class="projects-live">· {liveCount} live</span>
           {/if}
@@ -1388,8 +1390,8 @@
     margin: 0;
     color: var(--v4-text-1);
     font-size: 20px;
-    font-weight: 600;
-    letter-spacing: -0.01em;
+    font-weight: 500;
+    letter-spacing: 0;
     line-height: 1.2;
   }
 
@@ -1414,7 +1416,7 @@
     max-width: 220px;
     overflow: hidden;
     color: var(--v4-text-3);
-    font-size: 12px;
+    font-size: 13px;
     line-height: 1.25;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1428,7 +1430,7 @@
     background: var(--v4-primary-bg);
     color: var(--v4-primary-fg);
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
     cursor: default;
   }
 
@@ -1470,7 +1472,7 @@
     background: var(--v4-control-faint);
     color: var(--v4-text-1);
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
     line-height: 26px;
   }
 
@@ -1553,15 +1555,16 @@
   .toggle-segment {
     display: inline-flex;
     align-items: center;
-    height: 22px;
-    padding: 0 10px;
+    height: auto;
+    padding: 4px 8px;
     border: 0;
     border-radius: 4px;
     background: transparent;
     color: var(--v4-text-3);
     font: inherit;
-    font-size: 12px;
-    font-weight: 500;
+    font-size: 13px;
+    font-weight: 400;
+    line-height: 17px;
     cursor: pointer;
     transition:
       background 140ms ease,
@@ -1690,7 +1693,7 @@
     min-width: 0;
     color: var(--v4-text-1);
     font-size: 13px;
-    font-weight: 600;
+    font-weight: 500;
     line-height: 1.2;
   }
 
@@ -1724,7 +1727,7 @@
     border-radius: var(--v4-radius-pill);
     background: var(--v4-control-faint);
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 500;
     font-variant-numeric: tabular-nums;
   }
@@ -1760,7 +1763,7 @@
   .column-empty {
     padding: 4px 2px;
     color: var(--v4-text-3);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   /* US-023 empty board: dashed Create project card in Not started. */
@@ -1775,7 +1778,7 @@
     background: transparent;
     color: var(--v4-text-3);
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
     line-height: 1.4;
     text-align: left;
     cursor: pointer;
@@ -1807,7 +1810,7 @@
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
     text-align: left;
     cursor: pointer;
   }
@@ -1860,9 +1863,8 @@
     min-height: 30px;
     border-bottom: 1px solid var(--v4-hairline);
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, 10px);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    font-size: 13px;
+    letter-spacing: 0;
   }
 
   .project-group-label {
@@ -1873,9 +1875,8 @@
     padding: 0 4px;
     border-bottom: 1px solid var(--v4-rowline);
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, 10px);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    font-size: 13px;
+    letter-spacing: 0;
   }
 
   .group-count {
@@ -1893,7 +1894,7 @@
     min-height: 52px;
     border-bottom: 1px solid var(--v4-rowline);
     color: var(--v4-text-2);
-    font-size: var(--type-body, 12px);
+    font-size: 13px;
     cursor: pointer;
   }
 
@@ -1915,8 +1916,8 @@
   .list-name {
     overflow: hidden;
     color: var(--v4-text-1);
-    font-size: var(--type-body, 12px);
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -1926,7 +1927,7 @@
   .list-updated {
     overflow: hidden;
     color: var(--v4-text-3);
-    font-size: var(--type-secondary, 11px);
+    font-size: 13px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -1941,7 +1942,7 @@
     min-width: 0;
     padding: 7px 0;
     color: var(--v4-text-3);
-    font-size: var(--type-secondary, 11px);
+    font-size: 13px;
     white-space: normal;
   }
 
@@ -1956,7 +1957,7 @@
     justify-content: space-between;
     color: var(--v4-text-3);
     font-family: var(--font-mono);
-    font-size: var(--type-metadata, 10px);
+    font-size: 13px;
   }
 
   .mini-progress {
@@ -1974,14 +1975,20 @@
   }
 
   .link-nudge {
-    height: 18px;
-    padding: 0;
+    height: 24px;
+    padding: 0 6px;
     border: none;
+    border-radius: 6px;
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
-    font-size: var(--type-secondary, 11px);
-    cursor: default;
+    font-size: 13px;
+    cursor: pointer;
+  }
+
+  .link-nudge:hover:not(:disabled) {
+    background: var(--v4-active-row);
+    color: var(--v4-text-1);
   }
 
   .link-nudge:disabled {
@@ -1995,7 +2002,7 @@
     border-radius: 0;
     background: transparent;
     color: var(--v4-error);
-    font-size: var(--type-body, 12px);
+    font-size: 13px;
   }
 
   .empty-state {
@@ -2004,19 +2011,19 @@
     border-radius: 0;
     background: transparent;
     color: var(--v4-text-2);
-    font-size: var(--type-body, 12px);
+    font-size: 13px;
   }
 
   .empty-state span {
     display: block;
     color: var(--v4-text-1);
-    font-size: var(--type-section, 14px);
+    font-size: 13px;
   }
 
   .empty-state p {
     margin: 4px 0 0;
     color: var(--v4-text-3);
-    font-size: var(--type-secondary, 11px);
+    font-size: 13px;
   }
 
   .board-loading {

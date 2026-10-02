@@ -20,6 +20,7 @@
     repoLinkFromPrdText,
     resolveUploadName,
     rowMarkForPath,
+    filesErrorReason,
     visibleFileRoots,
     type ConflictPolicy,
     type FileTemplate,
@@ -307,6 +308,7 @@
             selectedPath={selectedPath}
             onselect={selectFile}
             rowNote={mark}
+            errorReason={filesErrorReason}
           />
         {/key}
       {/each}
@@ -447,8 +449,8 @@
   .files-toolbar h2 {
     margin: 0;
     flex: 1;
-    font-size: var(--type-section, 15px);
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     color: var(--v4-text-1);
   }
   .text-btn, .sheet button {
@@ -457,7 +459,7 @@
     color: var(--v4-text-1);
     border-radius: 6px;
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
     padding: 3px 8px;
     cursor: pointer;
   }
@@ -471,7 +473,7 @@
   }
   .root-path {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 13px;
     color: var(--v4-text-2);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -479,15 +481,15 @@
   }
   .root-branch {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 13px;
     color: var(--v4-text-3);
     flex: none;
   }
   .files-preview { min-width: 0; min-height: 0; overflow: auto; }
   .files-empty { padding: 24px 16px; color: var(--v4-text-3); }
-  .files-empty p { margin: 2px 0 0; font-size: 12px; }
+  .files-empty p { margin: 2px 0 0; font-size: 13px; }
   .files-empty-path { font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .files-empty-title { display: block; color: var(--v4-text-1); font-weight: 600; margin-bottom: 4px; }
+  .files-empty-title { display: block; color: var(--v4-text-1); font-weight: 500; margin-bottom: 4px; }
   .scrim {
     position: absolute;
     inset: 0;
@@ -514,10 +516,10 @@
     gap: 8px;
     padding: 12px 16px;
     border-bottom: 1px solid var(--v4-hairline);
-    font-weight: 600;
+    font-weight: 500;
   }
   .sheet-f { border-bottom: 0; border-top: 1px solid var(--v4-hairline); font-weight: 400; }
-  .sheet-f span { flex: 1; color: var(--v4-text-3); font-size: 12px; }
+  .sheet-f span { flex: 1; color: var(--v4-text-3); font-size: 13px; }
   .icon-x { margin-left: auto; }
   .sheet-b { overflow: auto; padding: 8px 16px 12px; display: grid; gap: 10px; }
   .sheet-r { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 12px; align-items: start; }
@@ -531,7 +533,7 @@
     padding: 4px 8px;
   }
   .folder-line, .choices, .picked { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  .folder-line code, .starts { font-family: var(--font-mono); font-size: 12px; }
+  .folder-line code, .starts { font-family: var(--font-mono); font-size: 13px; }
   .choices button.on, .primary { background: var(--v4-primary-bg); color: var(--v4-primary-fg); }
   .starts {
     margin: 0;

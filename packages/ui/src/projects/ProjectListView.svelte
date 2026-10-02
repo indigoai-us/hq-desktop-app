@@ -258,7 +258,7 @@
     background: var(--row-active);
     color: var(--fg);
     font: inherit;
-    font-size: var(--text-base);
+    font-size: 13px;
     transition:
       background 140ms ease,
       border-color 140ms ease;
@@ -292,8 +292,8 @@
     background: transparent;
     color: var(--muted);
     font: inherit;
-    font-size: var(--text-base);
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     cursor: pointer;
     transition:
       color 140ms ease,
@@ -334,8 +334,8 @@
     background: transparent;
     color: var(--muted);
     font: inherit;
-    font-size: var(--text-base);
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     cursor: pointer;
     transition:
       border-color 140ms ease,
@@ -365,7 +365,7 @@
     border-radius: 0;
     background: transparent;
     color: var(--v4-error);
-    font-size: var(--text-base);
+    font-size: 13px;
   }
 
   .list-body {
@@ -404,7 +404,7 @@
   .chevron {
     flex: 0 0 auto;
     color: var(--muted-3);
-    font-size: var(--text-base);
+    font-size: 13px;
     line-height: 1;
     transition: transform 150ms ease;
   }
@@ -415,8 +415,8 @@
 
   .section-label {
     color: var(--muted-2);
-    font-size: var(--text-base);
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     text-transform: capitalize;
   }
 
@@ -425,9 +425,9 @@
     border-radius: 0;
     background: transparent;
     color: var(--muted-3);
-    font-size: var(--text-base);
+    font-size: 13px;
     font-variant-numeric: tabular-nums;
-    font-weight: 600;
+    font-weight: 500;
     line-height: 16px;
   }
 
@@ -452,7 +452,7 @@
     background: transparent;
     color: var(--muted-2);
     font: inherit;
-    font-size: var(--text-base);
+    font-size: 13px;
     text-align: left;
     cursor: pointer;
   }
@@ -501,13 +501,13 @@
   .empty-title {
     margin: 0;
     color: var(--muted-2);
-    font-size: var(--text-base);
+    font-size: 13px;
   }
 
   .empty-detail {
     margin: 0;
     color: var(--muted-3);
-    font-size: var(--text-base);
+    font-size: 13px;
   }
 
   .link-button {
@@ -515,7 +515,7 @@
     background: transparent;
     color: var(--fg);
     font: inherit;
-    font-size: var(--text-base);
+    font-size: 13px;
     text-decoration: underline;
     text-underline-offset: 2px;
     cursor: pointer;

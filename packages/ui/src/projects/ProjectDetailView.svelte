@@ -829,7 +829,7 @@
     </div>
 
     <!-- Compact summary strip — progress + task roll-up counts. -->
-    {#if hasPrd && kpi.total > 0 && tab !== "files"}
+    {#if hasPrd && kpi.total > 0 && (tab === "overview" || tab === "tasks")}
       <div class="kpi-strip" aria-label="Project metrics">
         <div class="kpi-tile kpi-stories">
           <span class="kpi-label">Stories</span>
@@ -930,6 +930,7 @@
                       tabindex={isSelected ? 0 : -1}
                       data-testid="task-rail-row"
                       data-story-id={item.story.id}
+                      title={railMeta(item.story, column)}
                       aria-label={`Story ${item.story.id}: ${item.story.title}`}
                       onclick={() => selectRailStory(item.story)}
                     >
@@ -938,9 +939,6 @@
                       >
                       <span class="task-rail-copy">
                         <span class="task-rail-title">{item.story.title}</span>
-                        <span class="task-rail-meta"
-                          >{railMeta(item.story, column)}</span
-                        >
                         <span
                           class="task-rail-provenance"
                           data-testid="task-rail-provenance"
@@ -1225,14 +1223,14 @@
     gap: 6px;
     margin: 0 0 6px;
     min-width: 0;
-    font-size: 12px;
+    font-size: 13px;
     line-height: 22px;
   }
 
   .crumb-company {
     overflow: hidden;
     color: var(--v4-text-3);
-    font-size: 12px;
+    font-size: 13px;
     text-overflow: ellipsis;
     white-space: nowrap;
     text-transform: capitalize;
@@ -1249,7 +1247,7 @@
     background: transparent;
     color: var(--v4-text-3);
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 500;
     cursor: pointer;
     transition:
@@ -1277,7 +1275,7 @@
     min-width: 0;
     overflow: hidden;
     color: var(--v4-text-3);
-    font-size: 12px;
+    font-size: 13px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -1291,9 +1289,9 @@
     overflow: hidden;
     color: var(--v4-text-1);
     font-family: var(--font-sans);
-    font-size: 22px;
-    font-weight: 600;
-    letter-spacing: -0.01em;
+    font-size: 20px;
+    font-weight: 500;
+    letter-spacing: 0;
     line-height: 1.25;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1338,7 +1336,7 @@
     background: var(--v4-control-faint);
     color: var(--v4-text-2);
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 500;
     white-space: nowrap;
   }
@@ -1359,7 +1357,7 @@
     background: var(--v4-secondary-bg);
     color: var(--v4-secondary-fg, var(--v4-text-1));
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 500;
     white-space: nowrap;
     cursor: pointer;
@@ -1385,7 +1383,7 @@
 
   .action-status {
     color: var(--v4-text-3);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .status-control {
@@ -1430,7 +1428,7 @@
   }
   .status-completed .status-dot,
   .status-dot.status-completed {
-    background: var(--v4-ok);
+    background: var(--v4-text-1);
   }
   .status-archived .status-dot,
   .status-dot.status-archived {
@@ -1449,11 +1447,8 @@
     border: 1px solid var(--v4-hairline);
     border-radius: var(--v4-radius-popover);
     background: var(--v4-popover);
-    backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
-    -webkit-backdrop-filter: var(
-      --v4-glass-filter-popover,
-      var(--v4-glass-filter)
-    );
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
     box-shadow:
       var(--v4-shadow-popover),
       inset 0 1px 0 var(--v4-glass-highlight);
@@ -1470,7 +1465,7 @@
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
     text-align: left;
     cursor: pointer;
   }
@@ -1487,7 +1482,7 @@
   .status-current {
     margin-left: auto;
     color: var(--v4-text-3);
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
   }
 
   .status-badge:disabled {
@@ -1503,7 +1498,7 @@
     border-radius: 0;
     background: transparent;
     color: var(--v4-error);
-    font-size: var(--type-secondary, var(--text-sm));
+    font-size: 13px;
     font-weight: 500;
   }
 
@@ -1516,7 +1511,7 @@
     height: 24px;
     padding: 0 4px;
     color: var(--v4-text-3);
-    font-size: 12px;
+    font-size: 13px;
     white-space: nowrap;
   }
 
@@ -1562,7 +1557,7 @@
 
   .kpi-label {
     color: var(--v4-text-3);
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 500;
     letter-spacing: 0;
   }
@@ -1570,8 +1565,8 @@
   .kpi-value {
     color: var(--v4-text-1);
     font-family: var(--font-sans);
-    font-size: 19px;
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     font-variant-numeric: tabular-nums;
     line-height: 1.25;
   }
@@ -1581,7 +1576,7 @@
   }
 
   .kpi-value.is-done {
-    color: var(--v4-ok);
+    color: var(--v4-text-1);
   }
 
   .kpi-slash {
@@ -1606,7 +1601,7 @@
     width: 100%;
     height: 100%;
     border-radius: inherit;
-    background: var(--v4-ok);
+    background: var(--v4-text-2);
     /* --fill (0..1) + scaleX keeps the transition on the compositor. */
     transform: scaleX(var(--fill, 0));
     transform-origin: left center;
@@ -1638,7 +1633,7 @@
   }
 
   .toolbar-identity.is-compact h1 {
-    font-size: 15px;
+    font-size: 13px;
   }
 
   .tabs {
@@ -1688,7 +1683,7 @@
 
   .tab-count {
     color: var(--v4-text-3);
-    font-size: 12px;
+    font-size: 13px;
     font-variant-numeric: tabular-nums;
   }
 
@@ -1706,15 +1701,16 @@
   .toggle-segment {
     display: inline-flex;
     align-items: center;
-    height: 22px;
-    padding: 0 10px;
+    height: auto;
+    padding: 4px 8px;
     border: 0;
     border-radius: 4px;
     background: transparent;
     color: var(--v4-text-3);
     font: inherit;
-    font-size: 12px;
-    font-weight: 500;
+    font-size: 13px;
+    font-weight: 400;
+    line-height: 17px;
     cursor: pointer;
     transition:
       background 140ms ease,
@@ -1792,29 +1788,27 @@
   }
 
   .task-rail-count {
-    color: var(--v4-text-3);
-    font-size: var(--type-metadata, var(--text-micro));
-    font-weight: 600;
-    text-transform: uppercase;
+    color: var(--v4-text-2);
+    font-size: 13px;
+    font-weight: 400;
   }
 
   .task-rail-close {
     display: inline-flex;
     align-items: center;
-    min-height: 24px;
+    height: 24px;
     padding: 0 8px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-button);
-    background: var(--v4-control-faint);
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
     color: var(--v4-text-2);
     font: inherit;
-    font-size: var(--type-secondary, var(--text-sm));
-    font-weight: 500;
+    font-size: 13px;
+    font-weight: 400;
     cursor: pointer;
   }
 
   .task-rail-close:hover {
-    border-color: var(--v4-control-border);
     background: var(--v4-active-row);
     color: var(--v4-text-1);
   }
@@ -1839,27 +1833,26 @@
     align-items: center;
     justify-content: space-between;
     gap: var(--v4-space-2);
-    padding: 6px 8px 4px;
-    color: var(--v4-text-3);
-    font-size: var(--type-metadata, var(--text-micro));
-    font-weight: 600;
-    text-transform: uppercase;
+    padding: 12px 8px 4px;
+    color: var(--v4-text-2);
+    font-size: 13px;
+    font-weight: 500;
   }
 
   .task-rail-row {
     display: grid;
-    grid-template-columns: 32px minmax(0, 1fr) 12px;
+    grid-template-columns: auto minmax(0, 1fr) 12px;
     align-items: center;
     gap: 8px;
     width: 100%;
-    min-height: 48px;
-    padding: 6px 8px;
+    height: 31px;
+    padding: 7px 8px;
     border: 0;
-    border-radius: 0;
+    border-radius: 8px;
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
     text-align: left;
     cursor: pointer;
     transition: background 140ms ease;
@@ -1870,8 +1863,9 @@
   }
 
   .task-rail-row.is-selected {
-    background: transparent;
-    box-shadow: inset 0 -1px 0 var(--v4-hairline);
+    background: var(--v4-active-row);
+    box-shadow: none;
+    color: var(--v4-text-1);
   }
 
   .task-rail-row:focus-visible {
@@ -1882,42 +1876,43 @@
   .task-rail-id {
     color: var(--v4-text-3);
     font-family: var(--font-mono);
-    font-size: var(--type-metadata, var(--text-micro));
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 400;
+    line-height: 17px;
   }
 
   .task-rail-copy {
-    display: grid;
-    gap: var(--v4-row-stack-gap, 3px);
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
     min-width: 0;
+    overflow: hidden;
   }
 
   .task-rail-title {
+    flex: 0 1 auto;
+    min-width: 0;
     overflow: hidden;
     color: var(--v4-text-1);
-    font-size: var(--type-body, var(--text-base));
-    font-weight: 500;
+    font-size: 13px;
+    font-weight: 400;
+    line-height: 17px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .task-rail-meta {
-    overflow: hidden;
-    color: var(--v4-text-3);
-    font-size: var(--type-metadata, var(--text-micro));
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
 
   .task-rail-provenance {
+    flex: 0 1 auto;
     display: block;
     min-width: 0;
     overflow: hidden;
+    white-space: nowrap;
   }
 
   .task-rail-done {
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, var(--text-micro));
+    font-size: 13px;
     text-align: center;
   }
 
@@ -1928,7 +1923,7 @@
   .task-rail-empty {
     padding: var(--v4-space-4);
     color: var(--v4-text-3);
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
     text-align: center;
   }
 
@@ -1958,7 +1953,7 @@
 
   .muted-note {
     color: var(--v4-text-3);
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
   }
 
   .info-card {
@@ -1972,16 +1967,15 @@
   .info-card h2 {
     margin: 0 0 var(--v4-space-2);
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, var(--text-micro));
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     letter-spacing: 0;
-    text-transform: uppercase;
   }
 
   .info-card p {
     margin: 0;
     color: var(--v4-text-2);
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
     line-height: 1.5;
   }
 
@@ -1995,7 +1989,7 @@
   .info-list div {
     display: flex;
     gap: var(--v4-space-3);
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
   }
 
   .info-list dt {
@@ -2028,7 +2022,7 @@
     border-radius: 0;
     background: transparent;
     color: var(--v4-error);
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
   }
 
   .drill-retry {
@@ -2038,8 +2032,8 @@
     background: transparent;
     color: var(--v4-text-1);
     font: inherit;
-    font-size: var(--type-secondary, var(--text-sm));
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     cursor: pointer;
   }
 
@@ -2066,7 +2060,7 @@
     border-radius: 0;
     background: transparent;
     color: var(--v4-text-3);
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
   }
 
   .drill-empty p {
@@ -2107,8 +2101,8 @@
   .files-tree-header h2 {
     margin: 0;
     color: var(--v4-text-1);
-    font-size: var(--type-section, var(--text-base));
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     line-height: 1.25;
   }
 
@@ -2116,7 +2110,7 @@
     overflow: hidden;
     color: var(--v4-text-3);
     font-family: var(--font-mono);
-    font-size: var(--type-metadata, var(--text-micro));
+    font-size: 13px;
     line-height: 1.3;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -2143,20 +2137,20 @@
     min-height: 160px;
     padding: 14px;
     color: var(--v4-text-3);
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
   }
 
   .files-empty-title {
     color: var(--v4-text-1);
-    font-size: var(--type-section, var(--text-base));
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
   }
 
   .files-empty p {
     max-width: 42ch;
     margin: 0;
     color: var(--v4-text-3);
-    font-size: var(--type-secondary, var(--text-sm));
+    font-size: 13px;
     line-height: 1.4;
   }
 
@@ -2176,8 +2170,8 @@
   .activity-head h2 {
     margin: 0;
     color: var(--v4-text-1);
-    font-size: var(--type-section, var(--text-base));
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
   }
 
   .session-list {
@@ -2215,9 +2209,8 @@
 
   .session-status {
     color: var(--v4-text-2);
-    font-size: var(--type-metadata, var(--text-micro));
-    font-weight: 600;
-    text-transform: uppercase;
+    font-size: 13px;
+    font-weight: 500;
   }
 
   .session-status[data-status="running"],
@@ -2227,14 +2220,14 @@
 
   .session-project {
     color: var(--v4-text-1);
-    font-size: var(--type-body, var(--text-base));
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
   }
 
   .session-meta,
   .session-foot {
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, var(--text-micro));
+    font-size: 13px;
   }
 
   .session-foot {
@@ -2255,7 +2248,7 @@
   /* ---- README markdown typography ---------------------------------------- */
   .markdown-body {
     color: var(--v4-text-1);
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
     line-height: 1.6;
   }
 
@@ -2267,20 +2260,20 @@
   .markdown-body :global(h6) {
     margin: var(--v4-space-5) 0 var(--v4-space-2);
     color: var(--v4-text-1);
-    font-weight: 600;
+    font-weight: 500;
     line-height: 1.3;
   }
 
   .markdown-body :global(h1) {
-    font-size: var(--type-section, var(--text-base));
+    font-size: 13px;
   }
   .markdown-body :global(h2) {
     padding-bottom: var(--v4-space-1);
     border-bottom: 1px solid var(--v4-hairline);
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
   }
   .markdown-body :global(h3) {
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
   }
 
   .markdown-body :global(p) {
@@ -2336,7 +2329,7 @@
     background: var(--v4-control-faint);
     color: var(--v4-text-1);
     font-family: var(--font-mono);
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
   }
 
   .markdown-body :global(pre) {
@@ -2368,7 +2361,7 @@
 
   .markdown-body :global(strong) {
     color: var(--v4-text-1);
-    font-weight: 600;
+    font-weight: 500;
   }
 
   .markdown-body :global(del) {
@@ -2398,7 +2391,7 @@
     border-spacing: 0;
     border-collapse: collapse;
     color: var(--v4-text-2);
-    font-size: var(--type-secondary, var(--text-base));
+    font-size: 13px;
     line-height: 1.45;
   }
 
@@ -2428,7 +2421,7 @@
 
   .markdown-body :global(th) {
     color: var(--v4-text-1);
-    font-weight: 600;
+    font-weight: 500;
   }
 
   .markdown-body :global(.markdown-align-center) {
@@ -2476,17 +2469,16 @@
   .overview-task-rail h2 {
     margin: 0 0 8px;
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, var(--text-micro));
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     letter-spacing: 0;
-    text-transform: uppercase;
   }
 
   .info-card p,
   .goal-line {
     margin: 0;
     color: var(--v4-text-2);
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
     line-height: 1.5;
   }
 
@@ -2503,15 +2495,14 @@
 
   .info-list dt {
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, var(--text-micro));
-    text-transform: uppercase;
+    font-size: 13px;
   }
 
   .info-list dd {
     margin: 3px 0 0;
     overflow: hidden;
     color: var(--v4-text-1);
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -2539,7 +2530,7 @@
   .rail-row span {
     overflow: hidden;
     color: var(--v4-text-2);
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -2548,7 +2539,7 @@
   .rail-row strong {
     color: var(--v4-text-2);
     font-family: var(--font-mono);
-    font-size: var(--type-secondary, var(--text-xs));
+    font-size: 13px;
     font-weight: 500;
   }
 
@@ -2564,7 +2555,7 @@
     display: block;
     height: 100%;
     border-radius: inherit;
-    background: var(--v4-ok);
+    background: var(--v4-text-2);
   }
 
   .rail-row {

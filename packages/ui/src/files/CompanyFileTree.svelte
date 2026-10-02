@@ -52,6 +52,8 @@
     filterQuery?: string;
     /** Last editor / live-edit mark for a row (US-025). */
     rowNote?: (path: string) => { label: string; live: boolean } | null;
+    /** Plain-language reason shown under a failed root read. */
+    errorReason?: (err: unknown) => string;
   }
 
   let {
@@ -61,6 +63,7 @@
     selectedPath = null,
     filterQuery = "",
     rowNote,
+    errorReason,
   }: Props = $props();
 
   // The lazily-built top-level node list (children of `rootPath`).
@@ -104,7 +107,7 @@
       .catch((err) => {
         console.error("list_hq_dir failed:", err);
         if (!cancelled && generation === treeGeneration) {
-          rootError = String(err);
+          rootError = errorReason ? errorReason(err) : String(err);
           roots = [];
         }
       })
@@ -331,6 +334,9 @@
       data-testid="file-tree-error"
     >
       <span>Files unavailable</span>
+      {#if errorReason && rootError}
+        <span class="ft-reason" data-testid="file-tree-error-reason">{rootError}</span>
+      {/if}
       <button
         type="button"
         class="ft-retry"
@@ -645,8 +651,13 @@
   .ft-node-error {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     justify-content: center;
     gap: 8px;
+  }
+
+  .ft-reason {
+    color: var(--v4-text-3);
   }
 
   .ft-node-error {

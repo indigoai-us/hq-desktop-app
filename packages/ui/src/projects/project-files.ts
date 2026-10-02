@@ -174,3 +174,24 @@ export function folderSummary(entries: readonly Pick<DirEntry, "isDir">[]): stri
   if (files > 0) parts.push(`${files} ${files === 1 ? "file" : "files"}`);
   return parts.length > 0 ? parts.join(" · ") : "Empty folder";
 }
+
+/**
+ * Plain-language reason for a failed vault folder read (QA-007). Never echoes
+ * the raw transport text; each reason names what the person can do next.
+ */
+export function filesErrorReason(err: unknown): string {
+  const text = (err instanceof Error ? err.message : String(err ?? "")).toLowerCase();
+  if (/\b401\b|unauthori[sz]ed|expired|sign(ed)? ?in|not logged in|token/.test(text)) {
+    return "Your HQ sign-in expired. Sign in again, then retry.";
+  }
+  if (/\b403\b|forbidden|access denied|permission|not allowed|lacks read/.test(text)) {
+    return "You don't have access to this folder in the vault.";
+  }
+  if (/\b404\b|not found|no such file|enoent|does not exist|missing/.test(text)) {
+    return "This project's folder isn't in the vault yet. Sync, then retry.";
+  }
+  if (/timed? ?out|timeout|network|offline|fetch failed|econn|unreachable|failed to fetch/.test(text)) {
+    return "Couldn't reach the vault. Check your connection, then retry.";
+  }
+  return "The vault didn't return this folder. Retry, or sync and try again.";
+}

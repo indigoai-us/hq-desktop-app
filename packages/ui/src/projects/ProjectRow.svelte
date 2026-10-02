@@ -327,8 +327,8 @@
     padding-right: 22px;
     overflow: hidden;
     color: var(--v4-text-1);
-    font-size: 14px;
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     line-height: 1.35;
     /* Two lines, so projects with similar names can be told apart. */
     display: -webkit-box;
@@ -371,7 +371,7 @@
     border-radius: var(--v4-radius-pill);
     background: var(--v4-control-faint);
     color: var(--v4-text-2);
-    font-size: 11px;
+    font-size: 13px;
     line-height: 1;
   }
 
@@ -439,7 +439,7 @@
   .foot-quiet {
     flex: 0 0 auto;
     color: var(--v4-text-3);
-    font-size: 12px;
+    font-size: 13px;
     font-variant-numeric: tabular-nums;
     line-height: 16px;
   }
@@ -454,7 +454,7 @@
     align-items: center;
     gap: 5px;
     color: var(--v4-text-3);
-    font-size: 12px;
+    font-size: 13px;
     white-space: nowrap;
   }
 
@@ -492,8 +492,8 @@
     box-shadow: inset 0 0 0 1px var(--v4-hairline);
     color: var(--v4-text-2);
     font-size: 9px;
-    font-weight: 600;
-    letter-spacing: 0.02em;
+    font-weight: 500;
+    letter-spacing: 0;
     line-height: 1;
   }
 
@@ -503,7 +503,7 @@
     gap: 6px;
     min-width: 0;
     color: var(--v4-text-3);
-    font-size: 12px;
+    font-size: 13px;
     line-height: 16px;
   }
 
@@ -518,7 +518,7 @@
     border-radius: 999px;
     background: color-mix(in srgb, var(--v4-ok) 12%, transparent);
     color: var(--v4-text-1);
-    font-size: 11px;
+    font-size: 13px;
   }
 
   .faces-caption {
