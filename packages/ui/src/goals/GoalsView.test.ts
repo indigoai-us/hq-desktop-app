@@ -222,4 +222,90 @@ describe("GoalsView", () => {
     expect(objective?.querySelector(".km .chip")?.textContent).toBe("hq-desktop-app");
     expect(host?.textContent).not.toContain("Unlinked projects");
   });
+
+  describe("QA-078: Link project on an existing objective", () => {
+    const project = {
+      id: "band-website",
+      name: "Band Website",
+      company: "indigo",
+      description: "",
+      status: "active",
+      prdPath: "companies/indigo/projects/band-website/prd.json",
+      storiesTotal: 1,
+      storiesComplete: 1,
+    };
+    const mountWith = (keyResults: unknown[], projectsResult: () => Promise<unknown>) => {
+      const ipc = async (command: string): Promise<unknown> => {
+        if (command === "get_local_company_goals") {
+          return {
+            objectives: [
+              { id: "launch", title: "Band Launch", description: "", status: "", timeframe: "2026", keyResults, initiativeIds: [] },
+            ],
+            initiatives: [],
+          };
+        }
+        if (command === "get_local_projects") return projectsResult();
+        if (command === "get_company_project_creators") return [];
+        throw new Error(`Unexpected IPC command: ${command}`);
+      };
+      host = document.createElement("div");
+      document.body.append(host);
+      component = mount(GoalsView, {
+        target: host,
+        props: { adapter: { projects: fakeProjectsApi(ipc) } as PlatformAdapter, slug: "indigo" },
+      });
+      flushSync();
+    };
+    const openPicker = async () => {
+      await expect.poll(() => host?.textContent).toContain("Band Launch");
+      (host?.querySelector("[data-testid='link-project']") as HTMLButtonElement).click();
+      flushSync();
+    };
+
+    it("with no key results, explains the next step and opens the key-result form", async () => {
+      mountWith([], async () => [project]);
+      await openPicker();
+      const picker = () => host?.querySelector("[data-testid='link-picker']");
+      await expect.poll(() => picker()?.textContent).toContain("band-website");
+      const needs = picker()?.querySelector("[data-testid='link-picker-needs-kr']");
+      expect(needs?.textContent).toContain("Add a key result to this objective first");
+      (needs?.querySelector("button") as HTMLButtonElement).click();
+      flushSync();
+      const form = host?.querySelector("[data-testid='add-kr-form']") as HTMLFormElement;
+      expect(form).toBeTruthy();
+      const input = form.querySelector("input") as HTMLInputElement;
+      input.value = "Sell 100 tickets";
+      input.dispatchEvent(new Event("input"));
+      flushSync();
+      form.requestSubmit();
+      flushSync();
+      expect(host?.querySelector("[data-testid='add-kr-form']")).toBeNull();
+      const rows = [...(picker()?.querySelectorAll(".row") ?? [])].map((row) => row.textContent);
+      expect(rows.some((text) => text?.includes("Sell 100 tickets"))).toBe(true);
+    });
+
+    it("with one key result and one project, shows both rows", async () => {
+      mountWith([{ id: "kr1", title: "Sell 100 tickets", current: 0, target: 100 }], async () => [project]);
+      await openPicker();
+      const picker = () => host?.querySelector("[data-testid='link-picker']");
+      await expect.poll(() => picker()?.querySelectorAll(".row").length).toBe(2);
+      expect(picker()?.textContent).toContain("band-website");
+      expect(picker()?.textContent).toContain("Sell 100 tickets");
+      expect(picker()?.querySelector("[data-testid='link-picker-needs-kr']")).toBeNull();
+    });
+
+    it("shows an error with Try again when projects cannot be read", async () => {
+      let fail = true;
+      mountWith([{ id: "kr1", title: "Sell 100 tickets" }], async () => {
+        if (fail) throw new Error("boom");
+        return [project];
+      });
+      await openPicker();
+      const picker = () => host?.querySelector("[data-testid='link-picker']");
+      await expect.poll(() => picker()?.querySelector("[data-testid='link-picker-error']")?.textContent).toContain("Projects could not be loaded.");
+      fail = false;
+      (picker()?.querySelector("[data-testid='link-picker-error'] button") as HTMLButtonElement).click();
+      await expect.poll(() => picker()?.textContent).toContain("band-website");
+    });
+  });
 });

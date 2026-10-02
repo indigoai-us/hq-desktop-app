@@ -16,9 +16,27 @@
     onlink: (project: Project, objectiveId: string, krKey: string) => void;
     /** Shown when there is no key result to link to. */
     emptyText?: string;
+    /** Set when the projects could not be read and nothing is cached. */
+    projectsError?: string | null;
+    onretry?: () => void;
+    /** Opens the key-result form for an objective that has no key results yet. */
+    onaddkr?: (objectiveId: string) => void;
   }
 
-  let { projects, objectives, onclose, onlink, emptyText = "Add an objective before linking." }: Props = $props();
+  let {
+    projects,
+    objectives,
+    onclose,
+    onlink,
+    emptyText = "Add an objective before linking.",
+    projectsError = null,
+    onretry,
+    onaddkr,
+  }: Props = $props();
+
+  const hasKrs = $derived(objectives.some((objective) => objective.keyResults.length > 0));
+  // An existing objective with no key results gets a way to add one instead of an empty list (QA-078).
+  const needsKr = $derived(!hasKrs && objectives.length > 0 && onaddkr ? objectives[0] : null);
 
   let query = $state("");
   let projectId = $state<string | null>(null);
@@ -48,8 +66,14 @@
   <input class="search" placeholder="Search projects…" bind:value={query} />
   <div class="sec">Projects</div>
   <div class="list">
-    {#if projects === null}
-      {#each [0, 1, 2] as i (i)}<div class="shimmer" data-testid="link-picker-loading"></div>{/each}
+    {#if projects === null && projectsError}
+      <div class="foot" role="alert" data-testid="link-picker-error">
+        {projectsError}
+        {#if onretry}<button type="button" class="act" onclick={onretry}>Try again</button>{/if}
+      </div>
+    {:else if projects === null}
+      <p class="foot" data-testid="link-picker-loading">Loading projects…</p>
+      {#each [0, 1] as i (i)}<div class="shimmer"></div>{/each}
     {:else}
       {#each visible as project (projectIdentity(project))}
         <button
@@ -65,6 +89,14 @@
   </div>
   <div class="sec">Key results</div>
   <div class="list">
+    {#if needsKr}
+      <div class="foot" data-testid="link-picker-needs-kr">
+        Add a key result to this objective first.
+        <button type="button" class="act" onclick={() => onaddkr?.(needsKr.id)}>Add key result</button>
+      </div>
+    {:else if !hasKrs}
+      <p class="foot">{emptyText}</p>
+    {:else}
     {#each objectives as objective, o (`${o}:${objective.id}`)}
       {#each objective.keyResults as kr, index (index)}
         <button
@@ -78,9 +110,8 @@
           <span>{kr.title || "Key result"}</span>
         </button>
       {/each}
-    {:else}
-      <p class="foot">{emptyText}</p>
     {/each}
+    {/if}
   </div>
 </div>
 
@@ -132,5 +163,6 @@
   .row[aria-pressed="true"] { background: var(--v4-active-row); color: var(--v4-text-1); }
   .row:hover:not(:disabled) { background: var(--v4-hover); }
   .shimmer { height: 22px; margin: 4px 8px; border-radius: 6px; background: var(--v4-hover); }
+  .act { font: inherit; color: var(--v4-text-1); background: transparent; border: 0; padding: 0 0 0 6px; cursor: pointer; text-decoration: underline; }
   .foot { font-size: 12px; color: var(--v4-text-3); padding: 4px 8px; }
 </style>

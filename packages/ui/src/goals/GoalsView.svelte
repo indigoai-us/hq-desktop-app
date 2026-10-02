@@ -49,6 +49,11 @@
   let objectives = $state<Objective[] | null>(null);
   let projects = $state<Project[]>([]);
   let projectsLoaded = $state(false);
+  let projectsError = $state<string | null>(null);
+  /** Objective whose Add key result form is open (QA-078). */
+  let krFormFor = $state<string | null>(null);
+  let krTitle = $state("");
+  let krTarget = $state("");
   let links = $state<KrLink[]>([]);
   let period = $state<GoalPeriod>("2026");
   let refreshing = $state(false);
@@ -77,23 +82,67 @@
     links = cached.links;
   }
 
+  const PROJECTS_CACHE_PREFIX = "hq.goals.projects.";
+
+  function paintProjectsCache(active: string): void {
+    projectsError = null;
+    try {
+      const raw = storage?.getItem(PROJECTS_CACHE_PREFIX + active);
+      const cached: unknown = raw ? JSON.parse(raw) : null;
+      if (Array.isArray(cached)) {
+        projects = cached as Project[];
+        projectsLoaded = true;
+        return;
+      }
+    } catch (err) {
+      console.warn("[goals] projects cache unreadable", err);
+    }
+    projects = [];
+    projectsLoaded = false;
+  }
+
+  /** Same source as the Projects page: paint the cache, then refresh from get_local_projects. */
+  async function refreshProjects(active: string): Promise<void> {
+    projectsError = null;
+    try {
+      configureProjectsApi(adapter.projects);
+      const allProjects = await loadLocalProjects();
+      if (slug !== active) return;
+      projects = allProjects;
+      projectsLoaded = true;
+      try {
+        storage?.setItem(
+          PROJECTS_CACHE_PREFIX + active,
+          JSON.stringify(allProjects.filter((project) => project.company === active)),
+        );
+      } catch (err) {
+        console.warn("[goals] projects cache not saved", err);
+      }
+    } catch (err) {
+      if (slug !== active) return;
+      console.error("[goals] projects could not be read", err);
+      // A cached list stays on screen; only an empty picker shows the error.
+      if (!projectsLoaded) projectsError = "Projects could not be loaded.";
+    }
+  }
+
   async function refresh(active: string): Promise<void> {
     refreshing = true;
     error = null;
     try {
       configureProjectsApi(adapter.projects);
-      const [goals, allProjects] = await Promise.all([
-        loadCompanyGoals(active),
-        loadLocalProjects().catch(() => [] as Project[]),
-      ]);
+      const goals = await loadCompanyGoals(active);
       if (slug !== active) return;
       const cached = readGoalsCache(storage, active);
       const localOnly = (cached?.objectives ?? []).filter(
         (objective) => objective.id.startsWith("local-") && !goals.objectives.some((row) => row.id === objective.id),
       );
-      objectives = [...goals.objectives, ...localOnly];
-      projects = allProjects;
-      projectsLoaded = true;
+      // Key results added in this app stay on their board objective after a refresh.
+      const merged = goals.objectives.map((objective) => {
+        const local = cached?.objectives.find((row) => row.id === objective.id)?.keyResults.filter((kr) => kr.id?.startsWith("local-kr-")) ?? [];
+        return local.length ? { ...objective, keyResults: [...objective.keyResults, ...local] } : objective;
+      });
+      objectives = [...merged, ...localOnly];
       links = cached?.links ?? links;
       remember(active);
     } catch (err) {
@@ -108,7 +157,11 @@
   $effect(() => {
     const active = slug;
     paintCache(active);
-    if (active) void refresh(active);
+    paintProjectsCache(active);
+    if (active) {
+      void refresh(active);
+      void refreshProjects(active);
+    }
   });
 
   onMount(() => {
@@ -122,6 +175,33 @@
     ];
     remember(slug);
     picker = false;
+  }
+
+  function openKrForm(objectiveId: string): void {
+    picker = false;
+    krTitle = "";
+    krTarget = "";
+    krFormFor = objectiveId;
+  }
+
+  function addKeyResult(): void {
+    const objectiveId = krFormFor;
+    if (!objectiveId || !krTitle.trim() || !objectives) return;
+    objectives = objectives.map((objective) =>
+      objective.id === objectiveId
+        ? {
+            ...objective,
+            keyResults: [
+              ...objective.keyResults,
+              { id: `local-kr-${Date.now()}`, title: krTitle.trim(), current: 0, target: krTarget.trim() || null },
+            ],
+          }
+        : objective,
+    );
+    remember(slug);
+    krFormFor = null;
+    // Back to the picker so the new key result can be linked straight away.
+    picker = true;
   }
 
   function createObjective(draft: {
@@ -237,6 +317,9 @@
       <LinkPicker
         projects={projectsLoaded ? companyProjects : null}
         {objectives}
+        {projectsError}
+        onretry={() => void refreshProjects(slug)}
+        onaddkr={openKrForm}
         onclose={() => (picker = false)}
         onlink={linkProject}
       />
@@ -248,6 +331,19 @@
         </div>
       {/snippet}
     </svelte:boundary>
+  {/if}
+  {#if krFormFor}
+    <form
+      class="sheet-failed krform"
+      data-testid="add-kr-form"
+      aria-label="Add key result"
+      onsubmit={(event) => { event.preventDefault(); addKeyResult(); }}
+    >
+      <input placeholder="Key result" aria-label="Key result" bind:value={krTitle} />
+      <input placeholder="Target" aria-label="Target" bind:value={krTarget} />
+      <button type="submit" disabled={!krTitle.trim()}>Add</button>
+      <button type="button" onclick={() => (krFormFor = null)}>Cancel</button>
+    </form>
   {/if}
   {#if sheet && objectives}
     <svelte:boundary onerror={(err) => console.error("[goals] new objective sheet failed", err)}>
@@ -282,6 +378,7 @@
     border-radius: 8px;
     color: var(--v4-text-2);
   }
+  .krform input { font: inherit; color: var(--v4-text-1); background: transparent; border: 1px solid var(--v4-rowline); border-radius: 6px; height: 26px; padding: 0 8px; }
   .sheet-failed button { font: inherit; color: var(--v4-text-1); background: transparent; border: 0; cursor: pointer; }
   /* Segmented controls size to their tabs; nothing stretches or centres them. */
   .tabs, .seg { width: max-content; flex: none; justify-content: flex-start; }
