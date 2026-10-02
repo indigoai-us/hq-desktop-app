@@ -401,7 +401,7 @@ describe("DesktopApp New bot: the Cloud option", () => {
       );
       clickAnywhere('[data-testid="chat-new-message"]');
       await settle(10);
-      clickAnywhere('[data-testid="chat-create-new-bot"]');
+      clickAnywhere('[data-testid="chat-create-menu-agent"]');
       await settle(10);
       clickAnywhere('[data-testid="create-bot-next"]');
       await settle(10);
@@ -532,7 +532,7 @@ describe("DesktopApp New bot: the Cloud option", () => {
       );
       clickAnywhere('[data-testid="chat-new-message"]');
       await settle(10);
-      clickAnywhere('[data-testid="chat-create-new-bot"]');
+      clickAnywhere('[data-testid="chat-create-menu-agent"]');
       await settle(10);
       clickAnywhere('[data-testid="create-bot-next"]');
       await settle(10);
@@ -598,7 +598,7 @@ describe("DesktopApp New bot: the Cloud option", () => {
     );
     clickAnywhere('[data-testid="chat-new-message"]');
     await settle(10);
-    clickAnywhere('[data-testid="chat-create-new-bot"]');
+    clickAnywhere('[data-testid="chat-create-menu-agent"]');
     await settle(10);
     clickAnywhere('[data-testid="create-bot-next"]');
     await settle(10);

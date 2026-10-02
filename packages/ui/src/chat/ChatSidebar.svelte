@@ -188,6 +188,10 @@
     type SwitcherRow,
   } from "./sidebar-modal-fixtures";
   import CreateModal from "./CreateModal.svelte";
+  import NewMessageSheet from "./NewMessageSheet.svelte";
+  import NewChannelSheet from "./NewChannelSheet.svelte";
+  import { CREATE_MENU_ITEMS, type CreateMenuAction } from "./create-menu.js";
+  import { formatShortcut } from "../common/keyboard-shortcuts";
   import type { CompanyCreateSeam } from "./create-company/create-company-flow.js";
   import { registerShortcuts } from "../common/keyboard-shortcuts";
   import { titleWhenTruncated } from "../common/truncation-title";
@@ -214,6 +218,7 @@
 
   export interface ChatSidebarActions {
     openCreate: () => void;
+    openNewChannel: () => void;
     openSearch: () => void;
     openHistory: () => void;
   }
@@ -750,11 +755,10 @@
    * new-channel modals.
    */
   let createOpen = $state(false);
-  const createButtonLabel = $derived(
-    oncreatebot || oncreatecompany || oncreateagent
-      ? "New message, channel, company, or bot"
-      : "New message or channel",
-  );
+  let createMenuOpen = $state(false);
+  let messageSheetOpen = $state(false);
+  let channelSheetOpen = $state(false);
+  const createButtonLabel = "New message, channel, or agent";
   let plusBtnEl = $state<HTMLButtonElement | null>(null);
   /** "Search or jump to…" channel switcher overlay (?view=v2). */
   let searchOpen = $state(false);
@@ -1520,7 +1524,7 @@
   $effect(() => {
     const emit = onactions;
     if (!emit) return;
-    emit({ openCreate, openSearch, openHistory });
+    emit({ openCreate, openNewChannel, openSearch, openHistory });
     return () => emit(null);
   });
   const historyHiddenCount = $derived(
@@ -1634,6 +1638,9 @@
     scopeMenuOpen = false;
     footerMenuOpen = false;
     createOpen = false;
+    createMenuOpen = false;
+    messageSheetOpen = false;
+    channelSheetOpen = false;
     searchOpen = false;
   }
 
@@ -1653,17 +1660,37 @@
     closeAllOverlays();
     createOpen = true;
   }
-  /** The "+" button: a plain channel; the host resets the kind on its own opens. */
+  /** The "+" button opens the create menu. New company is not on this menu. */
+  function openNewChannel(): void {
+    closeAllOverlays();
+    channelSheetOpen = true;
+  }
+
   function openCreateFromButton(): void {
+    const next = !createMenuOpen;
+    closeAllOverlays();
+    createMenuOpen = next;
+  }
+
+  function openCreateAction(action: CreateMenuAction): void {
+    createMenuOpen = false;
+    if (action === "message") {
+      messageSheetOpen = true;
+      return;
+    }
+    if (action === "channel") {
+      channelSheetOpen = true;
+      return;
+    }
     createKind = "channel";
-    createStep = "find";
+    createStep = "bot";
     openCreate();
   }
 
   /** What the create modal makes inside a company when opened by the host. */
   let createKind = $state<"channel" | "project">("channel");
-  /** Which step the create modal opens on — "company" for New company. */
-  let createStep = $state<"find" | "company">("find");
+  /** Which step the create modal opens on — "company" for New company, "bot" for New agent. */
+  let createStep = $state<"find" | "company" | "bot">("find");
 
   /** Host entry point (#welcome's "Start a project channel"): open the create modal. */
   export function openCreateChannel(options: { kind?: "channel" | "project" } = {}): void {
@@ -1828,6 +1855,13 @@
       // Any outside mousedown dismisses the cursor context menu. Clicks inside
       // it call stopPropagation, so they never reach this handler.
       if (contextMenu) contextMenu = null;
+      if (createMenuOpen) {
+        const menu = document.querySelector('[data-testid="chat-create-menu"]');
+        const inside =
+          (plusBtnEl?.contains(event.target) ?? false) ||
+          (menu?.contains(event.target) ?? false);
+        if (!inside) createMenuOpen = false;
+      }
       if (scopeMenuOpen) {
         const menu = document.querySelector('[data-testid="chat-scope-menu"]');
         const inside =
@@ -1869,10 +1903,15 @@
       }
       // No `createOpen` branch on purpose — CreateModal owns its own Escape
       // (and backdrop) dismissal; two handlers would double-fire.
-      if (scopeMenuOpen || filterOpen || footerMenuOpen) {
-        scopeMenuOpen = false;
-        filterOpen = false;
-        footerMenuOpen = false;
+      if (createMenuOpen || messageSheetOpen || channelSheetOpen || scopeMenuOpen || filterOpen || footerMenuOpen) {
+        createMenuOpen = false;
+        if (!messageSheetOpen && !channelSheetOpen) {
+          scopeMenuOpen = false;
+          filterOpen = false;
+          footerMenuOpen = false;
+        }
+        messageSheetOpen = false;
+        channelSheetOpen = false;
         event.preventDefault();
       }
     }
@@ -2535,6 +2574,27 @@
         group: "Sidebar",
         run: () => selectScope("personal"),
       },
+      {
+        id: "create.message",
+        keys: "Mod+N",
+        label: "New message",
+        group: "Create",
+        run: () => openCreateAction("message"),
+      },
+      {
+        id: "create.channel",
+        keys: "Mod+Shift+N",
+        label: "New channel",
+        group: "Create",
+        run: () => openCreateAction("channel"),
+      },
+      {
+        id: "create.agent",
+        keys: "Mod+Alt+N",
+        label: "New agent",
+        group: "Create",
+        run: () => openCreateAction("agent"),
+      },
     ]);
 
     window.addEventListener(COMPOSER_DRAFT_CHANGED_EVENT, refreshDraftIds);
@@ -2856,8 +2916,9 @@
         data-testid="chat-new-message"
         aria-label={createButtonLabel}
         title={createButtonLabel}
-        aria-haspopup="dialog"
-        aria-expanded={createOpen}
+        aria-haspopup="menu"
+        aria-expanded={createMenuOpen}
+        aria-controls="chat-create-menu"
         onclick={openCreateFromButton}
       >
         <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -2869,6 +2930,31 @@
           />
         </svg>
       </button>
+      {#if createMenuOpen}
+        <div
+          class="chat-popover chat-create-menu"
+          id="chat-create-menu"
+          role="menu"
+          aria-label="Create"
+          data-testid="chat-create-menu"
+          use:menuPortal={{ anchor: plusBtnEl, placement: "bottom-end" }}
+        >
+          <div class="chat-create-sec">Create</div>
+          {#each CREATE_MENU_ITEMS as item (item.id)}
+            <button
+              type="button"
+              class="chat-popover-row"
+              role="menuitem"
+              data-testid={"chat-create-menu-" + item.id}
+              onclick={() => openCreateAction(item.id)}
+            >
+              <span class="t">{item.label}</span>
+              <span class="chat-scope-shortcut">{formatShortcut(item.keys)}</span>
+            </button>
+          {/each}
+          <p class="chat-create-foot">Scope follows the selected row · {scopeLabel}</p>
+        </div>
+      {/if}
       <button
         type="button"
         class="chat-icon-btn"
@@ -3248,8 +3334,17 @@
         data-testid="chat-companies-section"
       >
         {#if companySectionRows.length === 0}
+          <button
+            type="button"
+            class="chat-row"
+            data-testid="create-or-join-company"
+            onclick={() => void oncreatecompany?.()}
+          >
+            <span class="chat-glyph" aria-hidden="true">+</span>
+            <span class="chat-row-title">Create or join a company</span>
+          </button>
           <p class="chat-companies-empty" data-testid="chat-companies-empty">
-            No companies yet.
+            Conversations appear here once you belong to a company.
           </p>
         {:else}
           {#each companySectionRows as company (company.companyUid)}
@@ -3823,6 +3918,38 @@
         </div>
       </div>
     </div>
+  {/if}
+
+  {#if messageSheetOpen}
+    <NewMessageSheet
+      {api}
+      rows={[...directoryRows, ...browseRows]}
+      contacts={localBotsAsContacts(contacts, localBots, botDisplayNames)}
+      companies={scopeCompanies}
+      activeCompanyUid={scope !== "all" && scope !== "personal" ? scope : null}
+      {scopeLabel}
+      onclose={() => {
+        messageSheetOpen = false;
+        plusBtnEl?.focus();
+      }}
+      onopen={(row) => {
+        messageSheetOpen = false;
+        plusBtnEl?.focus();
+        void openRow(row);
+      }}
+    />
+  {/if}
+
+  {#if channelSheetOpen}
+    <NewChannelSheet
+      {api}
+      rows={[...directoryRows, ...browseRows]}
+      contacts={localBotsAsContacts(contacts, localBots, botDisplayNames)}
+      companies={createScopeCompanies}
+      activeCompanyUid={scope !== "all" && scope !== "personal" ? scope : null}
+      onclose={closeCreate}
+      aftercreate={onChannelCreated}
+    />
   {/if}
 
   {#if createOpen}

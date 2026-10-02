@@ -91,9 +91,7 @@ function press(node: EventTarget, key: string) {
 }
 
 function openModal(): void {
-  host
-    .querySelector<HTMLButtonElement>('[data-testid="chat-new-message"]')
-    ?.click();
+  (component as unknown as { openCreateChannel: () => void }).openCreateChannel();
 }
 
 function queryInput(): HTMLInputElement {
@@ -134,20 +132,17 @@ describe("ChatSidebar create flow", () => {
       '[data-testid="chat-new-message"]',
     );
     expect(plus).toBeTruthy();
-    expect(plus?.getAttribute("aria-haspopup")).toBe("dialog");
+    expect(plus?.getAttribute("aria-haspopup")).toBe("menu");
     plus?.click();
     await tick();
 
-    expect(
-      document.querySelector('[data-testid="chat-create-modal"]'),
-    ).toBeTruthy();
-    // The old dropdown is gone for good (it also rendered clipped).
-    expect(
-      document.querySelector('[data-testid="chat-plus-new-message"]'),
-    ).toBeNull();
-    expect(
-      document.querySelector('[data-testid="chat-plus-new-channel"]'),
-    ).toBeNull();
+    const menu = document.querySelector('[data-testid="chat-create-menu"]');
+    expect(menu?.textContent).toContain("New message");
+    expect(menu?.textContent).toContain("New channel");
+    expect(menu?.textContent).toContain("New agent");
+    expect(menu?.textContent).not.toContain("New company");
+    expect(document.querySelector('[data-testid="chat-create-modal"]')).toBeNull();
+    expect(document.querySelector('[data-testid="chat-plus-new-message"]')).toBeNull();
   });
 
   it("picking a channel opens that conversation", async () => {

@@ -170,7 +170,7 @@ async function createBot(): Promise<void> {
   for (let i = 0; i < 40 && !host.querySelector('[data-testid="chat-new-message"]'); i += 1) await settle();
   host.querySelector<HTMLButtonElement>('[data-testid="chat-new-message"]')!.click();
   await settle();
-  click('[data-testid="chat-create-new-bot"]');
+  click('[data-testid="chat-create-menu-agent"]');
   await settle();
   click('[data-testid="create-bot-next"]');
   await settle();

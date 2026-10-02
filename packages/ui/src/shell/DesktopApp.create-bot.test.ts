@@ -131,8 +131,8 @@ async function openBotFlow(): Promise<void> {
   await vi.waitFor(() => expect(host.querySelector('[data-testid="chat-new-message"]')).toBeTruthy());
   await settle();
   host.querySelector<HTMLButtonElement>('[data-testid="chat-new-message"]')!.click();
-  await vi.waitFor(() => expect(q('[data-testid="chat-create-new-bot"]')).toBeTruthy());
-  click('[data-testid="chat-create-new-bot"]');
+  await vi.waitFor(() => expect(q('[data-testid="chat-create-menu-agent"]')).toBeTruthy());
+  click('[data-testid="chat-create-menu-agent"]');
   await settle();
   expect(q('[data-testid="create-bot-kind-step"]')).toBeTruthy();
 }

@@ -206,7 +206,7 @@
      * Which step to open on. "company" is the New company entry: the modal
      * opens straight on its second step, with no name typed yet.
      */
-    initialStep?: "find" | "company";
+    initialStep?: "find" | "company" | "bot";
   }
 
   let {
@@ -608,6 +608,7 @@
     if (initialStepApplied) return;
     initialStepApplied = true;
     if (initialStep === "company" && companyCreate) void enterCompanyStep("");
+    else if (initialStep === "bot") newBot();
   });
   let query = $state("");
   let queryDebounced = $state("");

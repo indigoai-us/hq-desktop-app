@@ -120,7 +120,7 @@ function mountSidebar(props: Record<string, unknown>): void {
 }
 
 async function openModal(): Promise<void> {
-  host.querySelector<HTMLButtonElement>('[data-testid="chat-new-message"]')!.click();
+  (component as unknown as { openCreateChannel: () => void }).openCreateChannel();
   await settle();
 }
 
@@ -428,7 +428,7 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     await settle();
     await openModal();
     const plus = q<HTMLButtonElement>('[data-testid="chat-new-message"]');
-    expect(plus?.getAttribute("aria-label")).toBe("New message, channel, company, or bot");
+    expect(plus?.getAttribute("aria-label")).toBe("New message, channel, or agent");
     const row = q<HTMLButtonElement>('[data-testid="chat-create-new-bot"]');
     expect(row).toBeTruthy();
     expect(row?.textContent).toContain("Runs on this computer");

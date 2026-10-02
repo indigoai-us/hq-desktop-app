@@ -151,11 +151,7 @@ async function settleQuery(): Promise<void> {
  * modal has no separate "New channel" entry: the name IS the way in.
  */
 async function openNewChannelModal(name = "HQ Desktop Bugs"): Promise<void> {
-  (
-    host.querySelector(
-      '[data-testid="chat-new-message"]',
-    ) as HTMLButtonElement | null
-  )?.click();
+  (component as unknown as { openCreateChannel: () => void }).openCreateChannel();
   await tick();
   const query = document.querySelector(
     '[data-testid="chat-create-query"]',
