@@ -20,7 +20,7 @@ describe("New objective sheet (QA-030)", () => {
     const onclose = vi.fn();
     component = mount(NewGoalSheet, {
       target: document.body,
-      props: { projects: [], objectives: [], onclose, oncreate: vi.fn(), onlink: vi.fn() },
+      props: { projects: [], onclose, oncreate: vi.fn() },
     });
     flushSync();
     const sheet = document.querySelector('[role="dialog"][aria-label="New objective"]');

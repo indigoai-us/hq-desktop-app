@@ -156,4 +156,70 @@ describe("GoalsView", () => {
     flushSync();
     await expect.poll(() => host?.querySelectorAll("[data-testid='link-picker'] .row").length).toBe(2);
   });
+
+  it("QA-071: a draft objective with one key result and one linked project saves with the link", async () => {
+    const ipc = async (command: string): Promise<unknown> => {
+      if (command === "get_local_company_goals") return { objectives: [], initiatives: [] };
+      if (command === "get_local_projects") {
+        return [
+          {
+            id: "hq-desktop-app",
+            name: "hq-desktop-app",
+            company: "indigo",
+            description: "",
+            status: "active",
+            prdPath: "companies/indigo/projects/hq-desktop-app/prd.json",
+            storiesTotal: 9,
+            storiesComplete: 1,
+          },
+        ];
+      }
+      if (command === "get_company_project_creators") return [];
+      throw new Error(`Unexpected IPC command: ${command}`);
+    };
+    host = document.createElement("div");
+    document.body.append(host);
+    component = mount(GoalsView, {
+      target: host,
+      props: { adapter: { projects: fakeProjectsApi(ipc) } as PlatformAdapter, slug: "indigo" },
+    });
+    flushSync();
+    await expect.poll(() => host?.querySelector(".shimmer")).toBeNull();
+    await expect.poll(() => host?.textContent).toContain("Unlinked projects · 1");
+
+    (host?.querySelector("[data-testid='new-objective']") as HTMLButtonElement).click();
+    flushSync();
+    const sheet = host!.querySelector("[role='dialog'][aria-label='New objective']") as HTMLElement;
+    const type = (el: HTMLInputElement | HTMLTextAreaElement, value: string) => {
+      el.value = value;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      flushSync();
+    };
+    type(sheet.querySelector("textarea")!, "Grow the desktop app");
+    type(sheet.querySelector("input[placeholder='Key result']")!, "Ship the rail");
+    (sheet.querySelector("[data-testid='new-goal-link']") as HTMLButtonElement).click();
+    flushSync();
+
+    const picker = host!.querySelector("[data-testid='link-picker']") as HTMLElement;
+    expect(picker.textContent).not.toContain("Add an objective before linking");
+    const rows = [...picker.querySelectorAll<HTMLButtonElement>(".row")];
+    rows.find((row) => row.textContent?.includes("hq-desktop-app"))!.click();
+    flushSync();
+    const krRow = rows.find((row) => row.textContent?.includes("Ship the rail")) ??
+      [...picker.querySelectorAll<HTMLButtonElement>(".row")].find((row) => row.textContent?.includes("Ship the rail"))!;
+    expect(krRow.disabled).toBe(false);
+    krRow.click();
+    flushSync();
+    expect(host?.querySelector("[data-testid='link-picker']")).toBeNull();
+    expect(sheet.querySelector("[data-testid='new-goal-linked']")?.textContent).toContain("hq-desktop-app");
+
+    [...sheet.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "Create objective")!.click();
+    flushSync();
+
+    expect(host?.querySelector("[data-testid='new-goal-sheet']")).toBeNull();
+    const objective = [...host!.querySelectorAll("article.obj")].find((el) => el.textContent?.includes("Grow the desktop app"));
+    expect(objective?.textContent).toContain("Ship the rail");
+    expect(objective?.querySelector(".km .chip")?.textContent).toBe("hq-desktop-app");
+    expect(host?.textContent).not.toContain("Unlinked projects");
+  });
 });

@@ -14,9 +14,11 @@
     objectives: Objective[];
     onclose: () => void;
     onlink: (project: Project, objectiveId: string, krKey: string) => void;
+    /** Shown when there is no key result to link to. */
+    emptyText?: string;
   }
 
-  let { projects, objectives, onclose, onlink }: Props = $props();
+  let { projects, objectives, onclose, onlink, emptyText = "Add an objective before linking." }: Props = $props();
 
   let query = $state("");
   let projectId = $state<string | null>(null);
@@ -77,7 +79,7 @@
         </button>
       {/each}
     {:else}
-      <p class="foot">Add an objective before linking.</p>
+      <p class="foot">{emptyText}</p>
     {/each}
   </div>
 </div>

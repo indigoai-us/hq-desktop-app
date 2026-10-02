@@ -2,10 +2,11 @@
   import { dismissable } from "../common/dismissable.js";
   /**
    * New objective sheet (US-026). Period choices match the storyboard.
-   * Linking a project opens LinkPicker.
+   * Linking a project opens LinkPicker against the draft's own key results;
+   * picked links are saved with the objective in one create (QA-071).
    */
   import type { Objective } from "../projects/local-projects.js";
-  import type { Project } from "../projects/projects-model.js";
+  import { projectDisplayName, type Project } from "../projects/projects-model.js";
   import { NEW_GOAL_PERIODS } from "./goals-model.js";
   import LinkPicker from "./LinkPicker.svelte";
 
@@ -16,26 +17,69 @@
     unit: string;
   }
 
+  /** A project linked to a draft key result, by its index in the saved key results. */
+  interface DraftLink {
+    krIndex: number;
+    projectId: string;
+    projectName: string;
+  }
+
   interface Props {
     projects: Project[] | null;
-    objectives: Objective[];
     onclose: () => void;
     oncreate: (draft: {
       title: string;
       period: string;
       owner: string;
       keyResults: DraftKr[];
+      links: DraftLink[];
     }) => void;
-    onlink: (project: Project, objectiveId: string, krKey: string) => void;
   }
 
-  let { projects, objectives, onclose, oncreate, onlink }: Props = $props();
+  let { projects, onclose, oncreate }: Props = $props();
 
   let title = $state("");
   let period = $state<(typeof NEW_GOAL_PERIODS)[number]>("H2 2026");
   let owner = $state("");
   let keyResults = $state<DraftKr[]>([{ title: "", current: "0", target: "", unit: "" }]);
   let linking = $state(false);
+  // Links point at positions in keyResults; they are remapped to saved positions on create.
+  let links = $state<{ kr: number; projectId: string; projectName: string }[]>([]);
+
+  const DRAFT_ID = "draft";
+  // The picker sees the draft as one objective whose key results carry their form position as id.
+  const draftObjectives = $derived<Objective[]>(
+    keyResults.some((kr) => kr.title.trim())
+      ? [
+          {
+            id: DRAFT_ID,
+            title: title.trim() || "New objective",
+            description: "",
+            status: "",
+            timeframe: period,
+            owner: owner.trim() || null,
+            keyResults: keyResults
+              .map((kr, index) => ({ ...kr, id: `draft-kr-${index}` }))
+              .filter((kr) => kr.title.trim()),
+            initiativeIds: [],
+          },
+        ]
+      : [],
+  );
+  const visibleLinks = $derived(links.filter((link) => keyResults[link.kr]?.title.trim()));
+
+  function addLink(project: Project, key: string): void {
+    const kr = Number(key.replace("draft-kr-", ""));
+    if (!Number.isInteger(kr) || !keyResults[kr]) return;
+    links = [
+      ...links.filter((link) => !(link.kr === kr && link.projectId === project.id)),
+      { kr, projectId: project.id, projectName: projectDisplayName(project) },
+    ];
+  }
+
+  function removeLink(target: { kr: number; projectId: string }): void {
+    links = links.filter((link) => !(link.kr === target.kr && link.projectId === target.projectId));
+  }
 
   function addKr(): void {
     keyResults = [...keyResults, { title: "", current: "0", target: "", unit: "" }];
@@ -44,11 +88,17 @@
   function create(): void {
     const trimmed = title.trim();
     if (!trimmed) return;
+    const kept = keyResults.map((kr, index) => ({ kr, index })).filter(({ kr }) => kr.title.trim());
+    const savedIndex = new Map(kept.map(({ index }, saved) => [index, saved]));
     oncreate({
       title: trimmed,
       period,
       owner: owner.trim(),
-      keyResults: keyResults.filter((kr) => kr.title.trim()),
+      keyResults: kept.map(({ kr }) => kr),
+      links: links.flatMap((link) => {
+        const krIndex = savedIndex.get(link.kr);
+        return krIndex === undefined ? [] : [{ krIndex, projectId: link.projectId, projectName: link.projectName }];
+      }),
     });
   }
 </script>
@@ -88,7 +138,15 @@
       </div>
     </div>
     <div class="fr"><span class="lb">Linked projects</span>
-      <button type="button" class="btn" data-testid="new-goal-link" onclick={() => (linking = true)}>+ Link</button>
+      <div>
+        {#each visibleLinks as link (`${link.kr}:${link.projectId}`)}
+          <div class="lk" data-testid="new-goal-linked">
+            <span>{link.projectName} → {keyResults[link.kr].title}</span>
+            <button type="button" class="x" aria-label="Remove link" onclick={() => removeLink(link)}>✕</button>
+          </div>
+        {/each}
+        <button type="button" class="btn" data-testid="new-goal-link" onclick={() => (linking = true)}>+ Link</button>
+      </div>
     </div>
   </div>
   <div class="sf">
@@ -99,10 +157,11 @@
   {#if linking}
     <LinkPicker
       {projects}
-      {objectives}
+      objectives={draftObjectives}
+      emptyText="Name a key result above, then link a project to it."
       onclose={() => (linking = false)}
-      onlink={(project, objectiveId, key) => {
-        onlink(project, objectiveId, key);
+      onlink={(project, _objectiveId, key) => {
+        addLink(project, key);
         linking = false;
       }}
     />
@@ -160,4 +219,6 @@
   .btn { border: 1px solid var(--v4-rowline); }
   .btn.primary { background: var(--v4-active-row); color: var(--v4-text-1); }
   .x { border: 0; }
+  .lk { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--v4-text-2); padding: 2px 0 6px; }
+  .lk span { flex: 1; }
 </style>

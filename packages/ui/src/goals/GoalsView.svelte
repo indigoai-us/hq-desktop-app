@@ -129,6 +129,7 @@
     period: string;
     owner: string;
     keyResults: { title: string; current: string; target: string; unit: string }[];
+    links: { krIndex: number; projectId: string; projectName: string }[];
   }): void {
     const created: Objective = {
       id: `local-${Date.now()}`,
@@ -146,7 +147,15 @@
       })),
       initiativeIds: [],
     };
+    // Links are saved with the objective in the same update, keyed to the created key results.
+    const createdLinks: KrLink[] = draft.links.flatMap((link) => {
+      const kr = created.keyResults[link.krIndex];
+      return kr
+        ? [{ objectiveId: created.id, krKey: krKey(kr, link.krIndex), projectId: link.projectId, projectName: link.projectName }]
+        : [];
+    });
     objectives = [...(objectives ?? []), created];
+    links = [...links, ...createdLinks];
     remember(slug);
     sheet = false;
   }
@@ -244,10 +253,8 @@
     <svelte:boundary onerror={(err) => console.error("[goals] new objective sheet failed", err)}>
       <NewGoalSheet
         projects={projectsLoaded ? companyProjects : null}
-        {objectives}
         onclose={() => (sheet = false)}
         oncreate={createObjective}
-        onlink={linkProject}
       />
       {#snippet failed(_err, reset)}
         <div class="sheet-failed" role="alert" data-testid="new-goal-sheet-failed">
