@@ -614,7 +614,7 @@ describe('master automatic-updates switch', () => {
     expect(appCli).toContain('read_hq_cli_package_holders(prefix).await');
     expect(appCli).toContain('windows_busy_install_target_retry_rung(retry_number)');
     expect(appCli).toContain(
-      'windows_busy_install_target_retry_delay_for_recovery(retry_number, extended)',
+      'windows_busy_install_target_retry_delay(retry_number)',
     );
     expect(appCli).toContain('tokio::time::sleep(delay).await');
     expect(appCli).toContain('WindowsBusyRetryOutcome::DeferredUserCli');

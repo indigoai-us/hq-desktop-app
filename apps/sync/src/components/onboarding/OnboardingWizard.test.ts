@@ -21,8 +21,6 @@ const app = vi.hoisted(() => ({
 }));
 const onboardingFlags = vi.hoisted(() => ({
   firstFolderSyncEnabled: false,
-  inviteTeammateEnabled: false,
-  setupStageTimeoutFixEnabled: false,
   hasFeature: vi.fn(),
   startSync: vi.fn(),
 }));
@@ -42,10 +40,7 @@ vi.mock('@tauri-apps/api/app', () => ({ getVersion: app.getVersion }));
 vi.mock('@tauri-apps/plugin-shell', () => ({ open: tauri.open }));
 vi.mock('@tauri-apps/plugin-http', () => ({ fetch: httpFetch }));
 vi.mock('@hq/platform', () => ({
-  SETUP_DIRECTORY_PARENT_FALLBACK_FLAG: 'desktop.setup-directory-parent-fallback',
-  SETUP_STAGE_TIMEOUT_FIX_FLAG: 'desktop.setup-stage-timeout-fix-v1',
   FIRST_FOLDER_SYNC_STEP_FLAG: 'desktop.first-folder-sync-step-v1',
-  INVITE_TEAMMATE_STEP_FLAG: 'desktop.invite-teammate-step-v1',
   retryThrottled: async <T>(
     attempt: (attemptIndex: number) => Promise<T>,
     classify: (result: T) => { status: number | null },
@@ -61,41 +56,10 @@ vi.mock('@hq/platform', () => ({
   createSyncPlatformAdapter: vi.fn(() => ({
     identity: {
       hasFeature: (flag: string) => {
-        if (
-          flag === 'desktop.first-folder-sync-step-v1' ||
-          flag === 'desktop.invite-teammate-step-v1' ||
-          flag === 'desktop.setup-stage-timeout-fix-v1'
-        ) {
+        if (flag === 'desktop.first-folder-sync-step-v1') {
           return onboardingFlags.hasFeature(flag);
         }
-        if (flag !== 'desktop.setup-directory-parent-fallback') {
-          return Promise.resolve({ ok: true, value: false });
-        }
-        return (async () => {
-          try {
-            const raw = await tauri.invoke('hq_pro_fetch', {
-              url: '/v1/flags/resolve',
-              method: 'GET',
-              body: null,
-            });
-            const response =
-              raw && typeof raw === 'object'
-                ? (raw as { body?: unknown })
-                : {};
-            const body =
-              typeof response.body === 'string' ? JSON.parse(response.body) : null;
-            return {
-              ok: true,
-              value: body?.flags?.[flag] === true,
-            };
-          } catch {
-            return {
-              ok: false,
-              reason: 'test flag transport unavailable',
-              code: 'test-transport-failed',
-            };
-          }
-        })();
+        return Promise.resolve({ ok: true, value: false });
       },
     },
     sync: {
@@ -462,17 +426,11 @@ beforeEach(() => {
     text: async () => '',
   });
   onboardingFlags.firstFolderSyncEnabled = false;
-  onboardingFlags.inviteTeammateEnabled = false;
-  onboardingFlags.setupStageTimeoutFixEnabled = false;
   onboardingFlags.hasFeature.mockReset().mockImplementation(async (flag: string) => ({
     ok: true,
     value:
-      (flag === 'desktop.first-folder-sync-step-v1' &&
-        onboardingFlags.firstFolderSyncEnabled) ||
-      (flag === 'desktop.invite-teammate-step-v1' &&
-        onboardingFlags.inviteTeammateEnabled) ||
-      (flag === 'desktop.setup-stage-timeout-fix-v1' &&
-        onboardingFlags.setupStageTimeoutFixEnabled),
+      flag === 'desktop.first-folder-sync-step-v1' &&
+      onboardingFlags.firstFolderSyncEnabled,
   }));
   onboardingFlags.startSync.mockReset().mockResolvedValue({
     ok: true,
@@ -519,14 +477,6 @@ describe('onboarding directory selection', () => {
           return args?.path === defaultPath
             ? { exists: true, isHq: false, nonEmpty: true }
             : { exists: false, isHq: false, nonEmpty: false };
-        case 'hq_pro_fetch':
-          return {
-            status: 200,
-            body: JSON.stringify({
-              version: 1,
-              flags: { 'desktop.setup-directory-parent-fallback': true },
-            }),
-          };
         default:
           return undefined;
       }
@@ -575,14 +525,6 @@ describe('onboarding directory selection', () => {
           return args?.path === selectedPath
             ? { exists: true, isHq: false, nonEmpty: true }
             : { exists: false, isHq: false, nonEmpty: false };
-        case 'hq_pro_fetch':
-          return {
-            status: 200,
-            body: JSON.stringify({
-              version: 1,
-              flags: { 'desktop.setup-directory-parent-fallback': true },
-            }),
-          };
         default:
           return undefined;
       }
@@ -700,14 +642,6 @@ describe('onboarding directory selection', () => {
           return false;
         case 'detect_hq':
           return { exists: true, isHq: false, nonEmpty: true };
-        case 'hq_pro_fetch':
-          return {
-            status: 200,
-            body: JSON.stringify({
-              version: 1,
-              flags: { 'desktop.setup-directory-parent-fallback': true },
-            }),
-          };
         default:
           return undefined;
       }
@@ -765,7 +699,7 @@ describe('onboarding directory selection', () => {
     host
       .querySelector<HTMLButtonElement>('[data-testid="onboarding-directory"] .choose')
       ?.click();
-    await flushUntil(() => host.textContent?.includes('The folder could not be checked') === true);
+    await flushUntil(() => host.textContent?.includes('HQ could not check this folder') === true);
 
     expect(host.textContent).toContain('Choose another location');
     expect(host.textContent).not.toContain(transportError);
@@ -2125,6 +2059,10 @@ describe('setup restart', () => {
       switch (command) {
         case 'resolve_hq_path':
           return '/Users/test/hq';
+        case 'detect_hq':
+          return { exists: false, isHq: false, nonEmpty: false };
+        case 'check_writable':
+          return true;
         case 'detect_ai_tools':
           return NO_AI_TOOLS;
         case 'fetch_and_extract_template':
@@ -2156,6 +2094,10 @@ describe('setup restart', () => {
       switch (command) {
         case 'resolve_hq_path':
           return '/Users/test/hq';
+        case 'detect_hq':
+          return { exists: false, isHq: false, nonEmpty: false };
+        case 'check_writable':
+          return true;
         case 'detect_ai_tools':
           return NO_AI_TOOLS;
         case 'fetch_and_extract_template':
@@ -2187,6 +2129,10 @@ describe('setup restart', () => {
       switch (command) {
         case 'resolve_hq_path':
           return '/Users/test/hq';
+        case 'detect_hq':
+          return { exists: false, isHq: false, nonEmpty: false };
+        case 'check_writable':
+          return true;
         case 'detect_ai_tools':
           return NO_AI_TOOLS;
         case 'fetch_and_extract_template':
@@ -2449,7 +2395,6 @@ describe('invite teammate onboarding step', () => {
   };
 
   async function reachInviteScenario(options: {
-    flagEnabled?: boolean;
     firstFolderEnabled?: boolean;
     companyMembers?: Array<Record<string, unknown>>;
     fetchResponses?: Record<
@@ -2460,7 +2405,6 @@ describe('invite teammate onboarding step', () => {
     inviteResponses?: Array<{ status: number; body: unknown }>;
   } = {}): Promise<void> {
     onboardingFlags.firstFolderSyncEnabled = options.firstFolderEnabled ?? false;
-    onboardingFlags.inviteTeammateEnabled = options.flagEnabled ?? true;
     let inviteResponseIndex = 0;
     const fetchResponseIndexes: Record<string, number> = {};
     mountWizard(vi.fn(), SETUP_STEP_INDEX);
@@ -2547,25 +2491,6 @@ describe('invite teammate onboarding step', () => {
     button.click();
   }
 
-  it('fails closed with the flag off and reads no roster', async () => {
-    await reachInviteScenario({ flagEnabled: false });
-
-    expect(onboardingFlags.hasFeature).toHaveBeenCalledWith(
-      'desktop.invite-teammate-step-v1',
-    );
-    expect(host.querySelector('[data-testid="onboarding-invite-teammate"]')).toBeNull();
-    const membershipReads = tauri.invoke.mock.calls
-      .filter(
-        ([command, args]) =>
-          command === 'hq_pro_fetch' &&
-          (args as { url?: string })?.url?.startsWith('/membership/'),
-      )
-      .map(([, args]) => (args as { url?: string }).url);
-    // The only read is the company step's own membership check; the invite
-    // step adds nothing while its flag is off.
-    expect(membershipReads).toEqual(['/membership/me']);
-  });
-
   it('does not show the step when the company has multiple active members', async () => {
     await reachInviteScenario({
       companyMembers: [
@@ -2582,6 +2507,15 @@ describe('invite teammate onboarding step', () => {
           (args as { url?: string })?.url === '/membership/company/cmp_demo',
       ),
     ).toBe(true);
+  });
+
+  it('shows the invite step for a one-member company without a feature flag', async () => {
+    await reachInviteScenario();
+
+    expect(host.querySelector('[data-testid="onboarding-invite-teammate"]')).not.toBeNull();
+    expect(onboardingFlags.hasFeature).toHaveBeenCalledExactlyOnceWith(
+      'desktop.first-folder-sync-step-v1',
+    );
   });
 
   it('ignores non-active roster rows when checking the single active member', async () => {
@@ -2974,8 +2908,7 @@ describe('setup progress direction', () => {
     expect(failure.properties.errorKind).toBe('setup_stage_timeout');
   });
 
-  it('renews the deps inactivity timeout for installer output when the hq flag is on', async () => {
-    onboardingFlags.setupStageTimeoutFixEnabled = true;
+  it('renews the deps inactivity timeout for installer output', async () => {
     let resolveInstall: (() => void) | undefined;
     tauri.invoke.mockImplementation(async (command: string) => {
       switch (command) {
@@ -3033,8 +2966,7 @@ describe('setup progress direction', () => {
     );
   });
 
-  it('renews the deps inactivity timeout for matching preflight installer output when the hq flag is on', async () => {
-    onboardingFlags.setupStageTimeoutFixEnabled = true;
+  it('renews the deps inactivity timeout for matching preflight installer output', async () => {
     let resolveInstall: (() => void) | undefined;
     tauri.invoke.mockImplementation(async (command: string) => {
       switch (command) {
@@ -3087,8 +3019,7 @@ describe('setup progress direction', () => {
     );
   });
 
-  it('renews the content inactivity timeout for download progress when the hq flag is on', async () => {
-    onboardingFlags.setupStageTimeoutFixEnabled = true;
+  it('renews the content inactivity timeout for download progress', async () => {
     let resolveContent: (() => void) | undefined;
     tauri.invoke.mockImplementation(async (command: string) => {
       switch (command) {
@@ -3146,8 +3077,7 @@ describe('setup progress direction', () => {
     );
   });
 
-  it('renews the indexing inactivity timeout for reindex output when the hq flag is on', async () => {
-    onboardingFlags.setupStageTimeoutFixEnabled = true;
+  it('renews the indexing inactivity timeout for reindex output', async () => {
     let resolveReindex: (() => void) | undefined;
     tauri.invoke.mockImplementation(async (command: string) => {
       switch (command) {
@@ -3214,42 +3144,7 @@ describe('setup progress direction', () => {
     );
   });
 
-  it('keeps the existing deps timeout when the new hq flag is off', async () => {
-    onboardingFlags.setupStageTimeoutFixEnabled = false;
-    tauri.invoke.mockImplementation(async (command: string) => {
-      switch (command) {
-        case 'resolve_hq_path':
-          return '/Users/test/hq';
-        case 'detect_ai_tools':
-          return NO_AI_TOOLS;
-        case 'install_deps':
-          return new Promise<void>(() => {});
-        default:
-          return undefined;
-      }
-    });
-
-    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
-    await flushUntil(() =>
-      tauri.invoke.mock.calls.some(([command]) => command === 'install_deps') &&
-      eventHarness.handlers.has('install:progress'),
-    );
-    emitTauriEvent('install:progress', { handle: 'setup-installer-handle' });
-    await vi.advanceTimersByTimeAsync(stageTimeoutMs('deps'));
-
-    const failure = tauri.invoke.mock.calls.find(
-      ([command, args]) =>
-        command === 'emit_desktop_operational_telemetry' &&
-        (args as { properties?: { action?: string; failureStage?: string } }).properties
-          ?.action === 'failed' &&
-        (args as { properties?: { failureStage?: string } }).properties?.failureStage ===
-          'deps',
-    )?.[1] as { properties: Record<string, unknown> } | undefined;
-    expect(failure?.properties.errorKind).toBe('setup_stage_timeout');
-  });
-
-  it('continues timing out at the hard elapsed ceiling despite ongoing progress when the hq flag is on', async () => {
-    onboardingFlags.setupStageTimeoutFixEnabled = true;
+  it('continues timing out at the hard elapsed ceiling despite ongoing progress', async () => {
     tauri.invoke.mockImplementation(async (command: string) => {
       switch (command) {
         case 'resolve_hq_path':
@@ -3305,107 +3200,6 @@ describe('setup progress direction', () => {
     // usage-data line; first run has no separate consent screen).
     await skipToReady();
     expectReadyWithConsent();
-  });
-
-  it('keeps the content wall-clock timeout when the new hq flag is off', async () => {
-    onboardingFlags.setupStageTimeoutFixEnabled = false;
-    tauri.invoke.mockImplementation(async (command: string) => {
-      switch (command) {
-        case 'resolve_hq_path':
-          return '/Users/test/hq';
-        case 'detect_ai_tools':
-          return NO_AI_TOOLS;
-        case 'fetch_and_extract_template':
-          return new Promise<void>(() => {});
-        default:
-          return undefined;
-      }
-    });
-
-    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
-    await flushUntil(() =>
-      tauri.invoke.mock.calls.some(([command]) => command === 'fetch_and_extract_template') &&
-      eventHarness.handlers.has('content:progress'),
-    );
-    const contentArgs = tauri.invoke.mock.calls.find(
-      ([command]) => command === 'fetch_and_extract_template',
-    )?.[1] as { handle: string };
-
-    await vi.advanceTimersByTimeAsync(stageTimeoutMs('content') - 1);
-    emitTauriEvent('content:progress', {
-      handle: contentArgs.handle,
-      phase: 'download',
-      receivedBytes: 1,
-    });
-    await vi.advanceTimersByTimeAsync(1);
-    await flushUntil(() =>
-      tauri.invoke.mock.calls.some(
-        ([command, args]) =>
-          command === 'emit_desktop_operational_telemetry' &&
-          (args as { properties?: { action?: string; failureStage?: string; errorKind?: string } })
-            .properties?.action === 'failed' &&
-          (args as { properties?: { failureStage?: string } }).properties?.failureStage ===
-            'content' &&
-          (args as { properties?: { errorKind?: string } }).properties?.errorKind ===
-            'setup_stage_timeout',
-      ),
-    );
-  });
-
-  it('keeps indexing wall-clock timeout and omits activityTimeoutEnabled when the new hq flag is off', async () => {
-    onboardingFlags.setupStageTimeoutFixEnabled = false;
-    tauri.invoke.mockImplementation(async (command: string) => {
-      switch (command) {
-        case 'resolve_hq_path':
-          return '/Users/test/hq';
-        case 'detect_ai_tools':
-          return NO_AI_TOOLS;
-        case 'read_install_manifest':
-          return {
-            installPath: '/Users/test/hq',
-            startedAt: '2026-07-28T12:00:00.000Z',
-            completedAt: null,
-            steps: {
-              content: { status: 'ok' },
-              deps: { status: 'ok' },
-              'initial-sync': { status: 'ok' },
-              'git-init': { status: 'ok' },
-              personalize: { status: 'ok' },
-              indexing: { status: 'pending' },
-            },
-          };
-        case 'register_search_index':
-          return new Promise<void>(() => {});
-        default:
-          return undefined;
-      }
-    });
-
-    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
-    await flushUntil(() =>
-      tauri.invoke.mock.calls.some(([command]) => command === 'register_search_index') &&
-      eventHarness.handlers.has('setup:reindex-progress'),
-    );
-    const indexingArgs = tauri.invoke.mock.calls.find(
-      ([command]) => command === 'register_search_index',
-    )?.[1] as { failureScope: { setupRunId: string } };
-    expect(indexingArgs).not.toHaveProperty('activityTimeoutEnabled');
-
-    await vi.advanceTimersByTimeAsync(stageTimeoutMs('indexing') - 1);
-    emitTauriEvent('setup:reindex-progress', indexingArgs.failureScope.setupRunId);
-    await vi.advanceTimersByTimeAsync(1);
-    await flushUntil(() =>
-      tauri.invoke.mock.calls.some(
-        ([command, args]) =>
-          command === 'emit_desktop_operational_telemetry' &&
-          (args as { properties?: { action?: string; failureStage?: string; errorKind?: string } })
-            .properties?.action === 'failed' &&
-          (args as { properties?: { failureStage?: string } }).properties?.failureStage ===
-            'indexing' &&
-          (args as { properties?: { errorKind?: string } }).properties?.errorKind ===
-            'setup_stage_timeout',
-      ),
-    );
   });
 
   function sampleProgress(): ProgressSample {
@@ -3542,7 +3336,6 @@ describe('company onboarding step', () => {
     checkout?: { status: number; body: unknown };
   } = {}): Promise<void> {
     onboardingFlags.firstFolderSyncEnabled = false;
-    onboardingFlags.inviteTeammateEnabled = false;
     mountWizard(vi.fn(), SETUP_STEP_INDEX);
     tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
       switch (command) {

@@ -157,10 +157,7 @@
     createSyncPlatformAdapter,
     dispatchPostReadyAction,
     FIRST_FOLDER_SYNC_STEP_FLAG,
-    INVITE_TEAMMATE_STEP_FLAG,
     retryThrottled,
-    SETUP_DIRECTORY_PARENT_FALLBACK_FLAG,
-    SETUP_STAGE_TIMEOUT_FIX_FLAG,
   } from '@hq/platform';
   import { markPostReadyActionReady } from '../../lib/post-ready-action-telemetry';
 
@@ -1015,47 +1012,6 @@
     directoryNotice = { tone, text };
   }
 
-  async function directoryParentFallbackEnabled(): Promise<boolean> {
-    try {
-      const result = await onboardingFeatureFlags.identity.hasFeature(
-        SETUP_DIRECTORY_PARENT_FALLBACK_FLAG,
-      );
-      if (result.ok) return result.value === true;
-      console.warn(
-        'onboarding: directory parent fallback flag unavailable; leaving it off',
-        result.reason,
-        result.code,
-      );
-      return false;
-    } catch (err) {
-      console.warn('onboarding: directory parent fallback flag failed; leaving it off', err);
-      return false;
-    }
-  }
-
-  async function resolveSetupStageTimeoutFixFlag(): Promise<boolean> {
-    try {
-      const result = await onboardingFeatureFlags.identity.hasFeature(
-        SETUP_STAGE_TIMEOUT_FIX_FLAG,
-      );
-      if (!result.ok) {
-        console.warn(
-          'onboarding: setup stage timeout flag unavailable; leaving it off',
-          result.reason,
-          result.code,
-        );
-        return false;
-      }
-      return result.value === true;
-    } catch (error) {
-      console.warn(
-        'onboarding: setup stage timeout flag failed; leaving it off',
-        error,
-      );
-      return false;
-    }
-  }
-
   function resolveFirstFolderSyncStepFlag(): Promise<boolean> {
     if (!firstFolderSyncFlagResolution) {
       firstFolderSyncFlagResolution = (async () => {
@@ -1156,12 +1112,6 @@
     personUid: string;
   } | null> {
     try {
-      // Gate before the membership reads so the default-off path stays dormant.
-      const flag = await onboardingFeatureFlags.identity.hasFeature(
-        INVITE_TEAMMATE_STEP_FLAG,
-      );
-      if (!flag.ok || flag.value !== true) return null;
-
       const membershipPayload = await readMembershipMe();
       const rawMemberships = membershipPayload.memberships;
       if (!Array.isArray(rawMemberships) || !rawMemberships.every(isRecord)) {
@@ -1296,74 +1246,50 @@
       ]);
 
       if (detection.exists && !detectLooksLikeHq(detection) && detectNonEmpty(detection)) {
-        if (await directoryParentFallbackEnabled()) {
-          const installPath = appendChildFolderPath(picked, 'hq');
-          const [childDetection, childWritable] = await Promise.all([
-            invokeCommand<DetectHqResult>('detect_hq', { path: installPath }),
-            invokeCommand<boolean>('check_writable', { path: installPath }),
-          ]);
-          if (!childWritable) {
-            rejectPath(
-              'HQ cannot write to a new folder here. Choose another location, or allow HQ access to this folder in your system privacy settings, then try again.',
-              'warning',
-            );
-            recordStep(DIRECTORY_STEP_INDEX, 'failed', {
-              outcome: 'not_writable',
-              errorKind: 'directory_not_writable',
-            });
-            return;
-          }
-          if (
-            childDetection.exists &&
-            !detectLooksLikeHq(childDetection) &&
-            detectNonEmpty(childDetection)
-          ) {
-            rejectPath(
-              'The hq subfolder already contains files. Choose another location or rename that subfolder before trying again.',
-              'warning',
-            );
-            recordStep(DIRECTORY_STEP_INDEX, 'failed', {
-              outcome: 'invalid_directory',
-              errorKind: 'directory_child_nonempty_non_hq',
-            });
-            return;
-          }
-          acceptPath(installPath, true);
-          directoryNotice = {
-            tone: 'warning',
-            text: 'This location already has files. HQ will use the new hq folder inside it.',
-          };
-          return;
-        }
-
-        if (!writable) {
-          rejectPath(`${friendlyPath(picked, homeDir)} is not writable. Choose another folder.`);
+        const installPath = appendChildFolderPath(picked, 'hq');
+        const [childDetection, childWritable] = await Promise.all([
+          invokeCommand<DetectHqResult>('detect_hq', { path: installPath }),
+          invokeCommand<boolean>('check_writable', { path: installPath }),
+        ]);
+        if (!childWritable) {
+          rejectPath(
+            'HQ cannot write to a new folder here. Choose another location, or allow HQ access to this folder in your system privacy settings, then try again.',
+            'warning',
+          );
           recordStep(DIRECTORY_STEP_INDEX, 'failed', {
             outcome: 'not_writable',
             errorKind: 'directory_not_writable',
           });
           return;
         }
-        rejectPath(
-          `${friendlyPath(picked, homeDir)} already has files and does not look like an HQ folder.`,
-          'warning',
-        );
-        recordStep(DIRECTORY_STEP_INDEX, 'failed', {
-          outcome: 'invalid_directory',
-          errorKind: 'directory_nonempty_non_hq',
-        });
+        if (
+          childDetection.exists &&
+          !detectLooksLikeHq(childDetection) &&
+          detectNonEmpty(childDetection)
+        ) {
+          rejectPath(
+            'The hq subfolder already contains files. Choose another location or rename that subfolder before trying again.',
+            'warning',
+          );
+          recordStep(DIRECTORY_STEP_INDEX, 'failed', {
+            outcome: 'invalid_directory',
+            errorKind: 'directory_child_nonempty_non_hq',
+          });
+          return;
+        }
+        acceptPath(installPath, true);
+        directoryNotice = {
+          tone: 'warning',
+          text: 'This location already has files. HQ will use the new hq folder inside it.',
+        };
         return;
       }
 
       if (!writable) {
-        if (await directoryParentFallbackEnabled()) {
-          rejectPath(
-            'HQ cannot write to this folder. Choose another location, or allow HQ access to it in your system privacy settings, then try again.',
-            'warning',
-          );
-        } else {
-          rejectPath(`${friendlyPath(picked, homeDir)} is not writable. Choose another folder.`);
-        }
+        rejectPath(
+          'HQ cannot write to this folder. Choose another location, or allow HQ access to it in your system privacy settings, then try again.',
+          'warning',
+        );
         recordStep(DIRECTORY_STEP_INDEX, 'failed', {
           outcome: 'not_writable',
           errorKind: 'directory_not_writable',
@@ -1374,17 +1300,10 @@
       acceptPath(picked, true);
     } catch (err) {
       console.warn('onboarding: selected directory could not be checked', err);
-      if (await directoryParentFallbackEnabled()) {
-        rejectPath(
-          'HQ could not check this folder. Choose another location or check its access settings, then try again.',
-          'warning',
-        );
-      } else {
-        rejectPath(
-          'The folder could not be checked. Choose another location or check its access settings, then try again.',
-          'warning',
-        );
-      }
+      rejectPath(
+        'HQ could not check this folder. Choose another location or check its access settings, then try again.',
+        'warning',
+      );
       recordStep(DIRECTORY_STEP_INDEX, 'failed', {
         outcome: 'directory_check_failed',
         errorKind: 'directory_check_failed',
@@ -1406,12 +1325,7 @@
     directoryNotice = null;
     try {
       // The default path is prepared natively before auth exists. Validate it
-      // here, after sign-in, through hq-flags before allowing setup to use it.
-      if (!(await directoryParentFallbackEnabled())) {
-        advanceTo(SETUP_STEP_INDEX, 'completed');
-        return;
-      }
-
+      // here, after sign-in, before allowing setup to use it.
       const [detection, writable] = await Promise.all([
         invokeCommand<DetectHqResult>('detect_hq', { path: selectedPath }),
         invokeCommand<boolean>('check_writable', { path: selectedPath }),
@@ -1732,9 +1646,7 @@
 
     const ms = stageTimeoutMs(id);
     const activityTimeoutEnabled =
-      id === 'deps' || id === 'content' || id === 'indexing'
-        ? await resolveSetupStageTimeoutFixFlag()
-        : false;
+      id === 'deps' || id === 'content' || id === 'indexing';
     if (!isCurrentRun(runId)) return;
     for (const invocation of invocations) {
       let args = invocation.args;
@@ -2102,8 +2014,8 @@
         setupRunId: currentSetupRunId,
         outcome: result.failedStages.length === 0 ? 'all_stages_completed' : 'completed_with_failures',
       });
-      // Both follow-on steps are optional and manager-gated. The invite path
-      // checks its flag before reading memberships, and every lookup fails closed.
+      // Both follow-on steps are optional. The invite path appears only for a
+      // company with one active member; every membership lookup fails closed.
       const [firstFolderEnabled, inviteContext, firstRunCompanyPath] = await Promise.all([
         resolveFirstFolderSyncStepFlag(),
         resolveInviteTeammateContext(),
