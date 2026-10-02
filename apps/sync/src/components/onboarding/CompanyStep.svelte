@@ -206,7 +206,10 @@
       inviteFailureCount: failedEmails.length,
       inviteQueuedCount: queuedSaved ? queued.length : 0,
     });
+    // The company exists but its cloud vault may not be set up yet; the
+    // desktop window's sync banner retries provisioning on Try again.
     const notes: string[] = [];
+    if (result.company.cloudError) notes.push(result.company.cloudError);
     if (queuedSaved) {
       notes.push(
         `Your company is still being set up. HQ will send the invites to ${queued.map((invite) => invite.email).join(', ')} as soon as it is ready.`,

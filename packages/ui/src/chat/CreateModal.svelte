@@ -36,6 +36,7 @@
     CompanyDraftForm,
     CompanyInvite,
     InviteFailure,
+    CreateCompanyPhase,
   } from "./create-company/create-company-flow.js";
   import { slugFieldOf } from "./create-company/create-company-flow.js";
   import {
@@ -315,6 +316,13 @@
   let companyError = $state<string | null>(null);
   /** Invites the server refused after the company was made. */
   let companyInviteFailures = $state<InviteFailure[]>([]);
+  /** Which step of creating the company is running, for the button label. */
+  let companyPhase = $state<CreateCompanyPhase>("creating");
+  /**
+   * A company that was created but whose cloud vault is not set up yet. While
+   * set, the primary button retries provisioning instead of creating again.
+   */
+  let companyUnprovisionedUid = $state<string | null>(null);
   /** The name typed in the palette, kept so Back can restore the query. */
   let companyName = $state("");
 
@@ -395,6 +403,7 @@
     companyInvites = [];
     companyInviteInput = "";
     companyInviteFailures = [];
+    companyUnprovisionedUid = null;
     companyRole = "member";
     stopCompanySlugWatch();
     step = "company";
@@ -463,6 +472,7 @@
     // A typed-but-not-added address is what the person meant to invite.
     if (companyInviteInput.trim()) addCompanyInvite();
     companyCreating = true;
+    companyPhase = "creating";
     companyError = null;
     companyInviteFailures = [];
     try {
@@ -470,9 +480,23 @@
       for (const field of companyForm.fields) {
         values[field.id] = (companyValues[field.id] ?? "").trim();
       }
-      const result = await companyCreate.submit(companyForm, values, companyInvites);
+      const result = await companyCreate.submit(
+        companyForm,
+        values,
+        companyInvites,
+        (phase) => (companyPhase = phase),
+      );
       if (!result.ok) {
         companyError = result.reason;
+        return;
+      }
+      if (result.company.cloudError) {
+        // The company exists but cannot sync yet. Stay open: the button now
+        // retries provisioning, never a second create.
+        companyUnprovisionedUid = result.company.companyUid;
+        companyError = result.company.cloudError;
+        companyInviteFailures = result.company.inviteFailures;
+        companyInvites = [];
         return;
       }
       if (result.company.inviteFailures.length > 0) {
@@ -481,6 +505,28 @@
         return;
       }
       onclose();
+    } catch (err) {
+      companyError = err instanceof Error ? err.message : String(err);
+    } finally {
+      companyCreating = false;
+    }
+  }
+
+  /** Retry cloud provisioning for the company this modal just created. */
+  async function retryCompanyProvision(): Promise<void> {
+    const uid = companyUnprovisionedUid;
+    if (!companyCreate?.provision || !uid || companyCreating) return;
+    companyCreating = true;
+    companyPhase = "provisioning";
+    companyError = null;
+    try {
+      const result = await companyCreate.provision(uid);
+      if (!result.ok) {
+        companyError = result.reason;
+        return;
+      }
+      companyUnprovisionedUid = null;
+      if (companyInviteFailures.length === 0) onclose();
     } catch (err) {
       companyError = err instanceof Error ? err.message : String(err);
     } finally {
@@ -2504,7 +2550,20 @@
         {/if}
       </div>
       <div class="create-footer" data-testid="chat-create-company-foot">
-        {#if companyInviteFailures.length > 0}
+        {#if companyUnprovisionedUid}
+          <!-- The company is made but its cloud vault is not. Retry only the
+               provisioning; creating again would make a second company. -->
+          <button
+            type="button"
+            class="create-submit"
+            data-testid="chat-create-company-provision-retry"
+            disabled={companyCreating || !companyCreate?.provision}
+            aria-busy={companyCreating}
+            onclick={() => void retryCompanyProvision()}
+          >
+            {companyCreating ? "Setting up cloud storage…" : "Try again"}
+          </button>
+        {:else if companyInviteFailures.length > 0}
           <!-- The company is made; only the invites failed. The one thing left
                to do here is leave. -->
           <button type="button" class="create-submit" onclick={() => onclose()}>
@@ -2518,7 +2577,13 @@
             disabled={companySubmitDisabled}
             onclick={submitCompany}
           >
-            {companyCreating ? "Creating…" : "Create company"}
+            {companyCreating
+              ? companyPhase === "provisioning"
+                ? "Setting up cloud storage…"
+                : companyPhase === "inviting"
+                  ? "Sending invites…"
+                  : "Creating…"
+              : "Create company"}
           </button>
         {:else if !companyOpening}
           <!-- The form never opened. Nothing to submit; the only move is to go
