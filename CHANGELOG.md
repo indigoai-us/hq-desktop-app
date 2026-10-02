@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- New cloud bots created from the desktop New bot flow sign in with your model subscription. The API key option is no longer offered there.
+
 - Desktop no longer shows your personal space in the Companies list, where clicking it looped between Setting up and Tap to retry.
 
 - Fixes a race in the agent sign-in test when reading the child process ID.
