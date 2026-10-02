@@ -191,6 +191,8 @@
   } from "../chat/tabs/tab-model.js";
   import type { OfficeCallsHost } from "../meet/office-host.js";
   import NotificationsView from "../inbox/NotificationsView.svelte";
+  import NotificationsPopover from "../inbox/NotificationsPopover.svelte";
+  import ToastStack from "./ToastStack.svelte";
   import SharedFilesOverlay from "../inbox/SharedFilesOverlay.svelte";
   import VaultExplorer from "../files/explorer/VaultExplorer.svelte";
   import PageHeader from "./PageHeader.svelte";
@@ -8377,9 +8379,10 @@
     if (item) selectRailItem(item);
   }
 
+  let notificationsPopoverOpen = $state(false);
+
   function toggleNotifications(): void {
-    if (view === "notifications") void navigate({ kind: "messages" });
-    else void navigate({ kind: "notifications" });
+    notificationsPopoverOpen = !notificationsPopoverOpen;
   }
 
   function openSettings(section: EmbeddedSettingsSection | null = null): void {
@@ -8988,6 +8991,18 @@
     launchMenuForcedOpen={tourLaunchOpen}
   />
 
+  {#if notificationsPopoverOpen}
+    <NotificationsPopover
+      api={notificationsApi}
+      onclose={() => (notificationsPopoverOpen = false)}
+      onopen={openNotification}
+      onopensettings={() => {
+        notificationsPopoverOpen = false;
+        openSettings("notifications");
+      }}
+    />
+  {/if}
+
   <!-- Console rail (US-003): 48 px titlebar over a 56 px rail, the 260 px
        sidepane, and flexible content. Banners and every destination render
        in the column to the right of the rail. -->
@@ -9306,6 +9321,7 @@
       {/if}
 
       <main class="desktop-main" aria-label="Channel">
+        <ToastStack />
         <div
           class="notifications-layer"
           class:is-active={view === "notifications"}
@@ -10562,6 +10578,7 @@
   }
 
   .desktop-main {
+    position: relative;
     display: flex;
     flex: 1 1 auto;
     flex-direction: column;

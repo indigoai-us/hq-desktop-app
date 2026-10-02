@@ -1,0 +1,334 @@
+<script lang="ts">
+  /**
+   * Titlebar notifications popover (console-rail US-011).
+   * Paints from the cached inbox. Tabs and grant buttons do not fetch.
+   */
+  import type { NotificationsApi } from "../chat/chat-api.js";
+  import type { NotificationItem } from "./notifications-model.js";
+  import {
+    hideNotification,
+    notificationsCacheSnapshot,
+    restoreNotification,
+  } from "./notifications-cache.svelte.js";
+  import { pushToast } from "../shell/toast-stack.svelte.js";
+  import {
+    actionKindForGrant,
+    grantLevelFor,
+    isAccessRequest,
+    itemsForTab,
+    metadata,
+    type NotificationPanelTab,
+  } from "./notifications-panel.js";
+  import "../chat/chat-tokens.css";
+
+  interface Props {
+    api: NotificationsApi;
+    onclose?: () => void;
+    onopen?: (item: NotificationItem) => void;
+    onopensettings?: () => void;
+  }
+
+  let { api, onclose, onopen, onopensettings }: Props = $props();
+
+  let tab = $state<NotificationPanelTab>("all");
+  let root = $state<HTMLElement | null>(null);
+
+  const snap = $derived(notificationsCacheSnapshot());
+  const rows = $derived(itemsForTab(snap.items, tab));
+  const requestCount = $derived(snap.items.filter(isAccessRequest).length);
+
+  function onWindowPointer(event: PointerEvent): void {
+    const target = event.target;
+    if (!(target instanceof Node) || !root) return;
+    if (root.contains(target)) return;
+    if (target instanceof Element && target.closest("[data-testid='titlebar-notifications']")) {
+      return;
+    }
+    onclose?.();
+  }
+
+  $effect(() => {
+    window.addEventListener("pointerdown", onWindowPointer, true);
+    return () => window.removeEventListener("pointerdown", onWindowPointer, true);
+  });
+
+  async function decide(item: NotificationItem, decision: "approve" | "deny"): Promise<void> {
+    const level = grantLevelFor(item);
+    hideNotification(item.id);
+    if (decision === "approve") {
+      pushToast({
+        title: "Access granted",
+        detail: `${item.actorName} · ${level}`,
+        tone: "ok",
+      });
+    }
+    try {
+      await api.runNotificationAction({
+        id: item.id,
+        actionKind: decision === "approve" ? actionKindForGrant(level) : "deny",
+        actionRef: item.actionRef,
+      });
+    } catch (err) {
+      console.error("notifications-popover: grant action failed", err);
+      restoreNotification(item.id);
+      pushToast({
+        title: decision === "approve" ? "Couldn't grant access" : "Couldn't deny request",
+        detail: "Try again.",
+        tone: "err",
+      });
+    }
+  }
+</script>
+
+<div
+  class="npop"
+  bind:this={root}
+  role="dialog"
+  aria-label="Notifications"
+  data-testid="notifications-popover"
+  data-scroll-budget={metadata.performanceBudget.scrollDroppedFramesPct}
+>
+  <div class="nhead">
+    <b>Notifications</b>
+    <div class="tabs" role="tablist">
+      <button type="button" class="tab" role="tab" aria-selected={tab === "all"} onclick={() => (tab = "all")}>All</button>
+      <button type="button" class="tab" role="tab" aria-selected={tab === "mentions"} onclick={() => (tab = "mentions")}>Mentions</button>
+      <button type="button" class="tab" role="tab" aria-selected={tab === "requests"} data-testid="notifications-tab-requests" onclick={() => (tab = "requests")}>
+        Requests{#if requestCount > 0}<span class="count">{requestCount}</span>{/if}
+      </button>
+    </div>
+  </div>
+
+  <div class="list">
+    {#if !snap.ready}
+      <div class="skel" data-testid="notifications-skeleton" aria-hidden="true">
+        <span></span><span></span><span></span>
+      </div>
+    {:else if rows.length === 0}
+      <div class="empty" data-testid="notifications-empty">
+        <div class="tt">{tab === "requests" ? "No open requests" : "You're caught up"}</div>
+        <div class="mm">
+          {tab === "requests"
+            ? "Access requests show up here with Approve and Deny."
+            : "Mentions, bot completions, and access requests land here. Nothing is waiting on you."}
+        </div>
+      </div>
+    {:else}
+      {#each rows as item (item.id)}
+        <div class="ni" class:unread={item.status === "unread"} data-testid="notification-row">
+          <span class="mini">{item.actorInitials}</span>
+          <div>
+            <span class="verb">{item.verbText}</span>
+            {#if item.contextLine}<span class="m">{item.contextLine}</span>{/if}
+            {#if isAccessRequest(item)}
+              <div class="act">
+                <button
+                  type="button"
+                  class="btn"
+                  data-testid="notification-approve"
+                  onclick={() => void decide(item, "approve")}
+                >Approve</button>
+                <button
+                  type="button"
+                  class="btn"
+                  data-testid="notification-deny"
+                  onclick={() => void decide(item, "deny")}
+                >Deny</button>
+              </div>
+            {:else}
+              <div class="act">
+                <button type="button" class="btn" onclick={() => onopen?.(item)}>Open</button>
+              </div>
+            {/if}
+          </div>
+        </div>
+      {/each}
+    {/if}
+  </div>
+
+  <div class="nfoot">
+    <span class="grow"></span>
+    {#if onopensettings}
+      <button type="button" class="link" onclick={() => onopensettings?.()}>Notification settings</button>
+    {/if}
+  </div>
+</div>
+
+<style>
+  .npop {
+    position: fixed;
+    top: 46px;
+    right: 120px;
+    z-index: 40;
+    width: 380px;
+    max-height: 640px;
+    display: flex;
+    flex-direction: column;
+    padding: 8px 8px 6px;
+    background: var(--v4-popover);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-popover);
+    box-shadow: var(--v4-shadow-popover);
+    color: var(--v4-text-1);
+    font-family: var(--font-ui);
+  }
+
+  .nhead {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px 8px;
+  }
+
+  .nhead b {
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .tabs {
+    margin-left: auto;
+    display: flex;
+    gap: 2px;
+  }
+
+  .tab {
+    border: 0;
+    background: transparent;
+    color: var(--v4-text-3);
+    font: 12px/1 var(--font-ui);
+    padding: 4px 8px;
+    border-radius: 8px;
+    cursor: default;
+  }
+
+  .tab[aria-selected="true"] {
+    background: var(--v4-active-row);
+    color: var(--v4-text-1);
+  }
+
+  .count {
+    margin-left: 4px;
+  }
+
+  .list {
+    overflow: auto;
+    min-height: 0;
+    overscroll-behavior: contain;
+  }
+
+  .ni {
+    display: grid;
+    grid-template-columns: 22px minmax(0, 1fr);
+    gap: 8px;
+    padding: 7px 8px;
+    border-radius: 8px;
+    font-size: 13px;
+    color: var(--v4-text-2);
+    line-height: 1.35;
+    align-items: start;
+  }
+
+  .ni:hover {
+    background: var(--v4-hover, var(--v4-active-row));
+  }
+
+  .ni.unread {
+    color: var(--v4-text-1);
+  }
+
+  .mini {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    font-size: 9px;
+    background: var(--v4-control-faint);
+    color: var(--v4-text-2);
+  }
+
+  .verb {
+    font-weight: 600;
+  }
+
+  .m {
+    display: block;
+    margin-top: 2px;
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--v4-text-3);
+  }
+
+  .act {
+    display: flex;
+    gap: 4px;
+    margin-top: 6px;
+  }
+
+  .btn,
+  .link {
+    border: 1px solid var(--v4-control-border);
+    background: var(--v4-control-faint);
+    color: var(--v4-text-1);
+    border-radius: 6px;
+    padding: 2px 8px;
+    font: 11px/1.4 var(--font-ui);
+    cursor: default;
+  }
+
+  .link {
+    border: 0;
+    background: transparent;
+    color: var(--v4-text-3);
+    padding: 0;
+  }
+
+  .nfoot {
+    display: flex;
+    gap: 8px;
+    padding: 8px 8px 4px;
+    border-top: 1px solid var(--v4-rowline, var(--v4-hairline));
+    margin-top: 4px;
+    font-size: 12px;
+  }
+
+  .grow {
+    flex: 1;
+  }
+
+  .empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    padding: 34px 24px 30px;
+    gap: 6px;
+  }
+
+  .tt {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--v4-text-1);
+  }
+
+  .mm {
+    font-size: 12px;
+    color: var(--v4-text-3);
+    line-height: 1.5;
+    max-width: 270px;
+  }
+
+  .skel {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 8px;
+  }
+
+  .skel span {
+    display: block;
+    height: 36px;
+    border-radius: 8px;
+    background: var(--v4-control-faint);
+  }
+</style>
