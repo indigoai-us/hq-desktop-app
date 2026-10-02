@@ -382,12 +382,11 @@
     type Component,
   } from "svelte";
   import {
-    applyColorTheme,
     applyUiSize,
     applyWindowOpacity,
     hasAppearanceHost,
-    readStoredTheme,
   } from "../settings/shell-settings-model.js";
+  import { restoreStoredColorTheme } from "../settings/settings-theme-seam.js";
   import { readSettingsPrefs, writeSettingsPrefs } from "../settings/settings-prefs.js";
   import {
     EMPTY_LIVE_SYNC,
@@ -9141,7 +9140,7 @@
     sweepStaleAttachmentTrays("mount");
     const onPointerDown = () => sweepStaleAttachmentTrays("pointerdown");
     window.addEventListener("pointerdown", onPointerDown, true);
-    applyColorTheme(readStoredTheme());
+    restoreStoredColorTheme();
     // Re-apply on boot, not just on toggle: the attribute lives on <html> and
     // does not survive a reload, so without this the glass returns on every
     // restart and the setting looks like it silently forgot itself.
