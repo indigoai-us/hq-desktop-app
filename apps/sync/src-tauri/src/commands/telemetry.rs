@@ -1312,6 +1312,9 @@ pub async fn emit_desktop_operational_telemetry(
     session_id: Option<String>,
     occurred_at: Option<String>,
 ) -> Result<(), String> {
+    // Mirror the funnel stage to the CDP before any auth work: a queue push
+    // only, and independent of whether hq-pro accepts the row.
+    crate::commands::cdp_mirror::note_operational_event(&event_name, properties.as_ref());
     let access_token = crate::commands::cognito::get_valid_access_token().await?;
     let api_url = resolve_vault_api_url()?;
     let vault = VaultClient::new(&api_url, &access_token);

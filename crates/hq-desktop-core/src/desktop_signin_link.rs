@@ -35,8 +35,11 @@ where
 
 /// Choose the URL to open and retain the nonce only when the start route was
 /// successfully built. Every config failure returns the original URL verbatim.
+/// `install_id` rides along so the browser request, which carries the
+/// website's `hq_install_aid` cookie, can link this install to the visitor.
 pub async fn select_browser_url<F, Fut, E>(
     authorize_url: &str,
+    install_id: Option<&str>,
     fetch: F,
 ) -> (String, Option<String>)
 where
@@ -45,7 +48,7 @@ where
 {
     if should_bounce(fetch).await {
         let link = new_link_nonce();
-        if let Some(url) = signin_start_url(authorize_url, &link) {
+        if let Some(url) = signin_start_url(authorize_url, &link, install_id) {
             return (url, Some(link));
         }
     }
@@ -61,12 +64,38 @@ pub fn new_link_nonce() -> String {
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
-pub fn signin_start_url(authorize_url: &str, link: &str) -> Option<String> {
+pub fn signin_start_url(
+    authorize_url: &str,
+    link: &str,
+    install_id: Option<&str>,
+) -> Option<String> {
     let mut url = Url::parse(SIGNIN_START_URL).ok()?;
-    url.query_pairs_mut()
-        .append_pair("link", link)
-        .append_pair("authorize", authorize_url);
+    {
+        let mut pairs = url.query_pairs_mut();
+        pairs.append_pair("link", link);
+        if let Some(install) = install_id.map(str::trim).filter(|id| !id.is_empty()) {
+            pairs.append_pair("install", install);
+        }
+        pairs.append_pair("authorize", authorize_url);
+    }
     Some(url.into())
+}
+
+/// The website visitor id from `POST /api/desktop/signin-link`. A claimed link
+/// answers `200 {"anonId": "..."}`; 204 (nothing to claim), any other status,
+/// or a malformed body yields `None`.
+pub fn parse_link_anon_id(status: u16, body: &str) -> Option<String> {
+    if status != 200 {
+        return None;
+    }
+    let value = serde_json::from_str::<serde_json::Value>(body).ok()?;
+    value
+        .as_object()?
+        .get("anonId")?
+        .as_str()
+        .map(str::trim)
+        .filter(|id| !id.is_empty() && id.len() <= 128)
+        .map(str::to_owned)
 }
 
 /// Run a credential-bearing POST detached from sign-in. Its result is never
@@ -105,7 +134,7 @@ mod tests {
     #[tokio::test]
     async fn config_timeout_keeps_the_existing_authorize_url_path() {
         let authorize = "https://cognito.example/authorize?client_id=abc";
-        let (result, nonce) = select_browser_url(authorize, || async {
+        let (result, nonce) = select_browser_url(authorize, None, || async {
             tokio::time::sleep(CONFIG_TIMEOUT + Duration::from_millis(50)).await;
             Ok::<_, ()>((200, r#"{"bounce":true}"#.into()))
         })
@@ -117,7 +146,7 @@ mod tests {
     #[tokio::test]
     async fn config_false_or_error_keeps_the_existing_authorize_url() {
         let authorize = "https://cognito.example/authorize?client_id=abc";
-        let (url, nonce) = select_browser_url(authorize, || async {
+        let (url, nonce) = select_browser_url(authorize, None, || async {
             Ok::<_, ()>((200, r#"{"bounce":false}"#.into()))
         })
         .await;
@@ -125,7 +154,7 @@ mod tests {
         assert_eq!(nonce, None);
 
         let (url, nonce) =
-            select_browser_url(authorize, || async { Err::<(u16, String), _>(()) }).await;
+            select_browser_url(authorize, None, || async { Err::<(u16, String), _>(()) }).await;
         assert_eq!(url, authorize);
         assert_eq!(nonce, None);
     }
@@ -133,7 +162,8 @@ mod tests {
     #[test]
     fn start_url_encodes_authorize_url_and_contains_no_token() {
         let authorize = "https://cognito.example/authorize?client_id=abc&redirect_uri=http%3A%2F%2Flocalhost%2Fcallback";
-        let url = Url::parse(&signin_start_url(authorize, "nonce-value").unwrap()).unwrap();
+        let url = Url::parse(&signin_start_url(authorize, "nonce-value", None).unwrap()).unwrap();
+        assert!(url.query_pairs().all(|(k, _)| k != "install"));
         assert_eq!(
             url.query_pairs().find(|(k, _)| k == "link").unwrap().1,
             "nonce-value"
@@ -144,6 +174,39 @@ mod tests {
         );
         assert!(!url.as_str().contains("access_token"));
         assert!(!url.as_str().contains("id_token"));
+    }
+
+    #[tokio::test]
+    async fn bounced_start_url_carries_the_install_id() {
+        let authorize = "https://cognito.example/authorize?client_id=abc";
+        let install = "1b4e28ba-2fa1-4d01-8a1c-9c1c0d2b3e4f";
+        let (url, nonce) = select_browser_url(authorize, Some(install), || async {
+            Ok::<_, ()>((200, r#"{"bounce":true}"#.into()))
+        })
+        .await;
+        let url = Url::parse(&url).unwrap();
+        let pairs: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
+        assert_eq!(pairs.get("install").map(String::as_str), Some(install));
+        assert_eq!(pairs.get("link"), nonce.as_ref());
+        assert_eq!(pairs.get("authorize").map(String::as_str), Some(authorize));
+        let blank = signin_start_url(authorize, "n", Some("  ")).unwrap();
+        assert!(!blank.contains("install="));
+    }
+
+    #[test]
+    fn link_completion_returns_anon_id_only_on_200_with_an_id() {
+        assert_eq!(
+            parse_link_anon_id(200, r#"{"anonId":" vyg-1 "}"#).as_deref(),
+            Some("vyg-1")
+        );
+        assert_eq!(parse_link_anon_id(204, ""), None);
+        assert_eq!(parse_link_anon_id(500, r#"{"anonId":"vyg-1"}"#), None);
+        assert_eq!(parse_link_anon_id(200, r#"{"anonId":""}"#), None);
+        assert_eq!(parse_link_anon_id(200, r#"{"anonId":7}"#), None);
+        assert_eq!(parse_link_anon_id(200, "not json"), None);
+        assert_eq!(parse_link_anon_id(200, "[]"), None);
+        let long = format!(r#"{{"anonId":"{}"}}"#, "a".repeat(129));
+        assert_eq!(parse_link_anon_id(200, &long), None);
     }
 
     #[test]
