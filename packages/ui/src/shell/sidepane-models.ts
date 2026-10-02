@@ -2,7 +2,7 @@
  * Sidepane content models (console-rail US-006).
  *
  * One Sidepane host renders every rail destination's left pane. The host owns
- * the shared grammar (header slot, scrolling body, pinned footer, 30 px rows,
+ * the shared grammar (header slot, scrolling body, pinned footer, 31 px rows,
  * 10 px mono section labels, background-highlight selection); this module owns
  * the three content models it swaps between and the per-destination scroll
  * memory that survives the swap.
@@ -15,8 +15,8 @@
  * Pure data and arithmetic only, so it stays out of the boot path's cost.
  */
 
-/** Row height in px. Matches design.md "Rows are 30 px". */
-export const SIDEPANE_ROW_HEIGHT = 30;
+/** Row height in px. Matches the Messages sidebar row (7 + 17 + 7). */
+export const SIDEPANE_ROW_HEIGHT = 31;
 
 /** Section label height in px (10 px mono label with 12 / 4 px padding). */
 export const SIDEPANE_SECTION_HEIGHT = 30;

@@ -278,12 +278,13 @@
     grid-template-columns: 176px minmax(0, 1fr);
     height: 100%;
     min-height: 0;
-    color: var(--v4-text-1);
-    background: var(--v4-ground);
+    color: var(--t1);
+    font-size: 13px;
+    background: transparent;
   }
   .subnav, .page { min-height: 0; overflow: auto; }
   .subnav {
-    border-right: 1px solid var(--v4-rowline);
+    border-right: 1px solid var(--line);
     padding: 12px 8px;
     display: flex;
     flex-direction: column;
@@ -292,34 +293,37 @@
   .page { padding: 20px 20px 48px; }
   .row, .tab, .btn {
     font: inherit;
-    color: var(--v4-text-2);
+    font-size: 13px;
+    color: var(--t2);
     background: transparent;
     border: 0;
     border-radius: 6px;
     text-align: left;
   }
   .row {
-    min-height: 28px;
-    padding: 5px 10px;
+    height: 31px;
+    box-sizing: border-box;
+    padding: 7px 10px;
+    line-height: 17px;
+    border-radius: 8px;
+    cursor: pointer;
     display: flex;
     align-items: center;
     gap: 8px;
   }
-  .row:hover { background: var(--v4-hover); }
-  .row[aria-current="true"] { background: var(--v4-active-row); color: var(--v4-text-1); }
+  .row:hover { background: var(--hover); }
+  .row[aria-current="true"] { background: var(--sel); color: var(--t1); }
   .sec {
     padding: 12px 10px 4px;
-    font-family: var(--font-mono);
-    font-size: 11px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--v4-text-3);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--t2);
   }
-  .count { margin-left: auto; color: var(--v4-text-3); font-size: var(--type-metadata); }
+  .count { margin-left: auto; color: var(--t3); font-size: 13px; font-variant-numeric: tabular-nums; }
   .page-head { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; }
-  .page-head h2, .h-sm { margin: 0; font-size: var(--type-section); font-weight: 600; }
-  .h-sm { font-size: var(--type-body); }
-  .sub, .note { margin: 0; color: var(--v4-text-3); font-size: var(--type-metadata); }
+  .page-head h2 { margin: 0; font-size: var(--type-title, 20px); font-weight: var(--type-title-weight, 500); line-height: var(--type-title-line, 1.25); }
+  .h-sm { margin: 0; font-size: 13px; font-weight: 500; }
+  .sub, .note { margin: 0; color: var(--t3); font-size: 13px; }
   .note { margin-top: 12px; max-width: 640px; line-height: 1.45; }
   .grow { flex: 1; }
   .fr {
@@ -328,48 +332,59 @@
     gap: 12px;
     align-items: start;
     padding: 12px 0;
-    border-bottom: 1px solid var(--v4-rowline);
+    border-bottom: 1px solid var(--line);
   }
-  .lb { font-size: var(--type-secondary); padding-top: 5px; }
-  .lb small { display: block; color: var(--v4-text-3); font-size: var(--type-metadata); font-weight: 400; }
+  .lb { font-size: 13px; padding-top: 5px; }
+  .lb small { display: block; color: var(--t3); font-size: 13px; font-weight: 400; }
   .in {
     min-height: 28px;
     max-width: 420px;
     border-radius: var(--v4-radius-field);
-    background: var(--v4-control-faint);
-    border: 1px solid var(--v4-control-border);
-    color: var(--v4-text-1);
-    padding: 4px 10px;
+    background: var(--btn-bg);
+    border: 1px solid var(--line2);
+    color: var(--t1);
+    padding: 4px 8px;
     font: inherit;
+    font-size: 13px;
   }
   .ta { min-height: 60px; }
-  .mono { font-family: var(--font-mono); font-size: var(--type-metadata); }
+  .mono { font-family: var(--font-mono); font-size: 13px; }
   .btn {
-    border: 1px solid var(--v4-control-border);
-    padding: 4px 10px;
+    height: 26px;
+    box-sizing: border-box;
+    border: 1px solid var(--line2);
+    background: var(--btn-bg);
+    color: var(--t1);
+    padding: 0 10px;
     cursor: pointer;
   }
-  .btn.primary { background: var(--v4-text-1); color: var(--v4-primary-fg); }
-  .seg { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--v4-control-border); border-radius: var(--v4-radius-field); background: var(--v4-control-faint); }
-  .tab { padding: 4px 10px; cursor: pointer; }
-  .tab[aria-selected="true"] { background: var(--v4-active-row); color: var(--v4-text-1); border-radius: 4px; }
+  .btn:hover { background: var(--hover); }
+  .btn.primary { background: var(--t1); color: var(--badge-fg); border-color: transparent; }
+  .seg { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--panel-border); border-radius: 6px; background: var(--hover); }
+  .tab { padding: 4px 8px; cursor: pointer; }
+  .tab[aria-selected="true"] { background: var(--sel); color: var(--t1); border-radius: 4px; }
   .sw { cursor: pointer; }
-  .sw.on { color: var(--v4-text-1); }
+  .sw.on { color: var(--t1); }
   .split { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 16px; }
   .line, .gt {
     display: grid;
     grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) 80px 120px;
     gap: 8px;
     align-items: center;
-    padding: 8px;
-    border-bottom: 1px solid var(--v4-rowline);
-    font-size: var(--type-secondary);
-    color: var(--v4-text-2);
+    min-height: 31px;
+    box-sizing: border-box;
+    padding: 7px 8px;
+    line-height: 17px;
+    border-bottom: 1px solid var(--line);
+    font-size: 13px;
+    color: var(--t2);
   }
-  .gt.hd { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--v4-text-3); }
-  .nm { color: var(--v4-text-1); }
-  .soon, .live { color: var(--v4-ok); }
-  .plan { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; max-width: 520px; padding: 14px; border: 1px solid var(--v4-hairline); border-radius: var(--v4-radius-card); }
-  .plan span { display: block; color: var(--v4-text-3); font-size: var(--type-metadata); }
-  .up { display: flex; align-items: center; gap: 12px; margin-top: 18px; max-width: 720px; padding: 12px 14px; border: 1px solid var(--v4-hairline); border-radius: var(--v4-radius-card); }
+  .gt.hd { color: var(--t3); }
+  .nm { color: var(--t1); }
+  .soon { color: var(--t3); }
+  .live { color: var(--t2); }
+  .live::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: var(--ok); vertical-align: 1px; }
+  .plan { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; max-width: 520px; padding: 14px 16px; border-radius: 10px; background: var(--raised); }
+  .plan span { display: block; color: var(--t3); font-size: 13px; }
+  .up { display: flex; align-items: center; gap: 12px; margin-top: 18px; max-width: 720px; padding: 14px 16px; border-radius: 10px; background: var(--raised); }
 </style>

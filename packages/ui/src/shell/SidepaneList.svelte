@@ -1,9 +1,9 @@
 <!--
   Sidepane row list (console-rail US-006).
 
-  Shared row grammar for the Company and Atlas content models: 30 px rows,
-  14 px text, 8 px radius, background-highlight selection, 10 px mono section
-  labels. Lists longer than SIDEPANE_VIRTUALIZE_THRESHOLD items render only
+  Shared row grammar for the Company and Atlas content models, copied from
+  the Messages sidebar: 31 px rows, 13 px text, 8 px radius, background-highlight
+  selection, and the Messages section label. Lists longer than SIDEPANE_VIRTUALIZE_THRESHOLD items render only
   the rows near the viewport of the enclosing Sidepane body.
 -->
 <script lang="ts">
@@ -147,13 +147,14 @@
     width: 100%;
     height: var(--sidepane-row-h);
     box-sizing: border-box;
-    padding: 6px 8px;
+    padding: 7px 8px;
     border: 0;
     border-radius: 8px;
     background: transparent;
     color: var(--t1);
     font: inherit;
-    font-size: 14px;
+    font-size: 13px;
+    line-height: 17px;
     text-align: left;
     cursor: pointer;
   }
@@ -207,7 +208,7 @@
     background: var(--line2);
     color: var(--t1);
     font-size: 9px;
-    font-weight: 600;
+    font-weight: 500;
   }
 
   .mark.square {
@@ -227,8 +228,8 @@
 
   .count {
     flex: 0 0 auto;
-    color: var(--t2);
-    font-family: var(--font-mono);
-    font-size: 11px;
+    color: var(--t3);
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
   }
 </style>
