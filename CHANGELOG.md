@@ -8,6 +8,10 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Desktop no longer shows your personal space in the Companies list, where clicking it looped between Setting up and Tap to retry.
+
+- Fixes a race in the agent sign-in test when reading the child process ID.
+
 - Internal: startup diagnostics now label observed CLI resolver candidates, managed package state, and bundled CLI source.
 
 - Desktop usage uploads are limited to four requests and 4 MB per sync; remaining records resume on later syncs.
