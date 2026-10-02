@@ -155,12 +155,14 @@
   } from '../../lib/first-run-company';
   import {
     createSyncPlatformAdapter,
+    dispatchPostReadyAction,
     FIRST_FOLDER_SYNC_STEP_FLAG,
     INVITE_TEAMMATE_STEP_FLAG,
     retryThrottled,
     SETUP_DIRECTORY_PARENT_FALLBACK_FLAG,
     SETUP_STAGE_TIMEOUT_FIX_FLAG,
   } from '@hq/platform';
+  import { markPostReadyActionReady } from '../../lib/post-ready-action-telemetry';
 
   interface Props {
     initialStep: number;
@@ -336,6 +338,8 @@
   let consentFailure = $state<ConsentFailure | null>(null);
   let loadingProvider = $state<SignInProvider | null>(null);
   let signInError = $state('');
+  let microsoftEmail = $state('');
+  let microsoftEmailPrompt = $state(false);
   let currentSignInCall = 0;
   let mounted = true;
 
@@ -866,6 +870,12 @@
   }
 
   async function handleSignIn(provider: SignInProvider, stateRecoveryAttempt = false) {
+    if (provider === 'Microsoft' && microsoftEmail.trim() === '') {
+      microsoftEmailPrompt = true;
+      signInError = '';
+      return;
+    }
+
     const call = ++currentSignInCall;
     loadingProvider = provider;
     signInError = '';
@@ -876,7 +886,10 @@
       const { authorizeUrl, state } = await invokeCommand<{
         authorizeUrl: string;
         state: string;
-      }>('start_oauth_login', { provider });
+      }>('start_oauth_login', {
+        provider,
+        ...(provider === 'Microsoft' ? { email: microsoftEmail.trim() } : {}),
+      });
       if (!isCurrentSignInCall(call)) return;
 
       if (typeof openExternal !== 'function') {
@@ -2440,6 +2453,7 @@
         launched = true;
       } else if (tools.claude_cli && installPath) {
         await invoke('launch_claude_code', { path: installPath });
+        dispatchPostReadyAction('open_cli');
         launched = true;
       } else {
         launchEscape = escapeForLaunch('claude', 'Claude Code was not detected');
@@ -2472,6 +2486,7 @@
           path: installPath,
           prompt: '/setup',
         });
+        dispatchPostReadyAction('open_cli');
         launched = true;
       } else if (tools.codex_desktop) {
         await invoke('launch_codex_desktop');
@@ -2504,6 +2519,7 @@
           path: installPath,
           tool: 'grok',
         });
+        dispatchPostReadyAction('open_cli');
         launched = true;
       } else {
         launchEscape = escapeForLaunch('grok', 'Grok CLI was not detected');
@@ -2906,7 +2922,10 @@
   // The ready screen carries the usage-data checkbox: once it has been on
   // show, finishing records the answer.
   $effect(() => {
-    if (scene === 'ready' && consentOnReady) readyConsentShown = true;
+    if (scene === 'ready' && consentOnReady) {
+      readyConsentShown = true;
+      markPostReadyActionReady();
+    }
   });
 
   // Content that changes height re-lays the screen out, so the button under it
@@ -3079,6 +3098,34 @@
                   onclick={() => handleSignIn('Microsoft')}
                 >{@render MicrosoftMark()}Continue with Microsoft</button>
               </div>
+              {#if microsoftEmailPrompt}
+                <form
+                  class="microsoft-email"
+                  data-testid="microsoft-email-form"
+                  onsubmit={(event) => {
+                    event.preventDefault();
+                    void handleSignIn('Microsoft');
+                  }}
+                >
+                  <label for="onboarding-microsoft-email">Enter the Microsoft email you use with HQ</label>
+                  <input
+                    id="onboarding-microsoft-email"
+                    data-testid="microsoft-email"
+                    type="email"
+                    autocomplete="username"
+                    autocapitalize="none"
+                    spellcheck="false"
+                    bind:value={microsoftEmail}
+                    disabled={loadingProvider !== null}
+                  />
+                  <button
+                    class="btn btn-secondary"
+                    type="submit"
+                    data-testid="microsoft-email-continue"
+                    disabled={loadingProvider !== null || microsoftEmail.trim() === ''}
+                  >Continue</button>
+                </form>
+              {/if}
             {/if}
           </div>
           {#if signInError}
