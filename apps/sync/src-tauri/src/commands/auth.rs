@@ -58,7 +58,7 @@ fn auth_session_envelope_cell() -> &'static Mutex<Option<AuthSessionEnvelope>> {
 }
 
 fn auth_session_diagnostic_cell(
-) -> &'static Mutex<Option<(AuthSessionStatus, Option<CognitoRefreshFailureClass>)>> {
+) -> &'static Mutex<Option<(AuthSessionStatus, Option<CognitoRefreshFailureClass>, &'static str)>> {
     AUTH_SESSION_DIAGNOSTIC.get_or_init(|| Mutex::new(None))
 }
 
@@ -76,25 +76,28 @@ fn auth_session_status_tag(status: &AuthSessionStatus) -> &'static str {
 fn set_auth_session_diagnostic(
     status: AuthSessionStatus,
     refresh_failure_class: Option<CognitoRefreshFailureClass>,
+    rejection_class: &'static str,
 ) {
     let mut guard = auth_session_diagnostic_cell()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    *guard = Some((status, refresh_failure_class));
+    *guard = Some((status, refresh_failure_class, rejection_class));
 }
 
 /// Bounded startup diagnostic labels; this snapshot contains no account
 /// identity, token material, email, or free-form error detail.
-pub(crate) fn startup_auth_diagnostic_tags() -> (&'static str, &'static str) {
+pub(crate) fn startup_auth_diagnostic_tags() -> (&'static str, &'static str, &'static str) {
     let guard = auth_session_diagnostic_cell()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     match guard.as_ref() {
-        Some((status, Some(failure_class))) => {
-            (auth_session_status_tag(status), failure_class.as_tag())
-        }
-        Some((status, None)) => (auth_session_status_tag(status), "none"),
-        None => ("unknown", "none"),
+        Some((status, Some(failure_class), rejection_class)) => (
+            auth_session_status_tag(status), failure_class.as_tag(), *rejection_class,
+        ),
+        Some((status, None, rejection_class)) => (
+            auth_session_status_tag(status), "none", *rejection_class,
+        ),
+        None => ("unknown", "none", "none"),
     }
 }
 
@@ -435,7 +438,7 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
     let before = first_token_read.ok().flatten();
     let outcome =
         crate::commands::dm_notify::resolve_notification_credentials_classified(app).await;
-    let (state, status, account_id, reason, refresh_failure_class) = match outcome {
+    let (state, status, account_id, reason, refresh_failure_class, rejection_class) = match outcome {
         // Refuse to adopt a machine identity as the signed-in person. The
         // credential file is shared with the `hq` CLI and with fleet-agent
         // machine credentials, so usable tokens are not evidence of a human
@@ -467,6 +470,7 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
                         }
                     }),
                     None,
+                    "none",
                 ),
                 None => {
                     set_sentry_user_from_tokens(&tokens);
@@ -477,6 +481,7 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
                         Some(notification_identity_from_tokens(&tokens)),
                         None,
                         None,
+                        "none",
                     )
                 }
             }
@@ -499,6 +504,7 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
                 None,
                 Some(reason),
                 error.refresh_failure_class,
+                error.rejection_class,
             )
         }
         Err(error) => {
@@ -524,6 +530,7 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
                     preserved_account,
                     Some("Your saved HQ Work credentials are no longer valid."),
                     refresh_failure_class,
+                    error.rejection_class,
                 )
             } else {
                 (
@@ -532,6 +539,7 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
                     preserved_account,
                     Some("HQ Work could not refresh credentials while offline or unavailable."),
                     refresh_failure_class,
+                    error.rejection_class,
                 )
             }
         }
@@ -550,7 +558,7 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
             reason: reason.map(str::to_string),
         },
     );
-    set_auth_session_diagnostic(envelope.status.clone(), refresh_failure_class);
+    set_auth_session_diagnostic(envelope.status.clone(), refresh_failure_class, rejection_class);
     (state, envelope)
 }
 

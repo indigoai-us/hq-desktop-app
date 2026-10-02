@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Add bounded marker and refresh rejection attribution to unexpected startup diagnostics.
 - Startup diagnostics now distinguish a rejected saved session from an empty credential store.
 - Core update failures now report the available snapshot disk space instead of the required snapshot size.
 

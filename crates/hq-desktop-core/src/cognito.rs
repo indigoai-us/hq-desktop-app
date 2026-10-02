@@ -66,6 +66,8 @@ pub struct CognitoRefreshError {
     pub requires_reauth: bool,
     pub status_code: Option<u16>,
     pub failure_class: CognitoRefreshFailureClass,
+    /// Closed-set attribution only; never contains response text.
+    pub rejection_class: &'static str,
 }
 
 /// Stable, low-cardinality classification for refresh diagnostics.
@@ -99,6 +101,8 @@ pub struct CognitoTokenResolutionError {
     pub message: String,
     pub refresh_failure_class: Option<CognitoRefreshFailureClass>,
     pub requires_reauth: bool,
+    /// Closed-set attribution only; never contains response text.
+    pub rejection_class: &'static str,
 }
 
 impl CognitoTokenResolutionError {
@@ -107,6 +111,7 @@ impl CognitoTokenResolutionError {
             message,
             refresh_failure_class: None,
             requires_reauth: false,
+            rejection_class: "none",
         }
     }
 
@@ -114,11 +119,13 @@ impl CognitoTokenResolutionError {
         message: String,
         failure_class: CognitoRefreshFailureClass,
         requires_reauth: bool,
+        rejection_class: &'static str,
     ) -> Self {
         Self {
             message,
             refresh_failure_class: Some(failure_class),
             requires_reauth,
+            rejection_class,
         }
     }
 }
@@ -172,6 +179,32 @@ fn classify_refresh_failure(status: u16, body: &str) -> (bool, bool) {
         refresh_status_is_retryable(status),
         refresh_status_requires_reauth(status),
     )
+}
+
+/// Map refresh response metadata to the closed attribution vocabulary used by
+/// startup telemetry. The response body itself never leaves this classifier.
+pub fn refresh_rejection_class_tag(
+    failure_class: Option<CognitoRefreshFailureClass>,
+    status_code: Option<u16>,
+    error_code: Option<&str>,
+    requires_reauth: bool,
+) -> &'static str {
+    match error_code {
+        Some("invalid_grant") => return "invalid_grant",
+        Some("NotAuthorizedException") => return "not_authorized",
+        _ => {}
+    }
+    if requires_reauth && status_code.is_some_and(|status| (400..500).contains(&status)) {
+        return "other_4xx";
+    }
+    match failure_class {
+        Some(CognitoRefreshFailureClass::Network | CognitoRefreshFailureClass::Timeout) => {
+            "network"
+        }
+        None => "none",
+        Some(CognitoRefreshFailureClass::Unknown) => "unknown",
+        Some(_) => "unknown",
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -450,6 +483,7 @@ fn read_tokens_marked_invalidated_from_path(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StartupTokenStoreDiagnostics {
     pub invalidation_marker_present: bool,
+    pub marker_kind: &'static str,
     pub first_read_result: &'static str,
     pub recheck_read_result: &'static str,
 }
@@ -468,20 +502,45 @@ fn startup_token_store_diagnostics_at(path: &Path) -> StartupTokenStoreDiagnosti
     startup_token_store_diagnostics_after_first_at(path, first_read_result)
 }
 
+fn marker_kind_from_contents(contents: Option<&[u8]>) -> &'static str {
+    match contents {
+        None => "none",
+        Some([]) => "cli",
+        Some(b"refresh-rejected") => "desktop",
+        Some(_) => "unknown",
+    }
+}
+
+/// Classify the existing token-generation marker by its exact, bounded
+/// contents. No marker bytes are returned or logged.
+pub fn invalidation_marker_kind_tag(contents: Option<&[u8]>) -> &'static str {
+    marker_kind_from_contents(contents)
+}
+
 fn startup_token_store_diagnostics_after_first_at(
     path: &Path,
     first_read_result: &'static str,
 ) -> StartupTokenStoreDiagnostics {
     let raw_tokens = read_tokens_from_path_raw(path);
-    let invalidation_marker_present = raw_tokens
+    let marker_kind = raw_tokens
         .as_ref()
         .ok()
         .and_then(Option::as_ref)
         .filter(|tokens| !tokens.access_token.is_empty())
-        .is_some_and(|tokens| token_is_invalidated_at(path, &tokens.access_token));
+        .map(|tokens| {
+            let marker = invalidation_path_for_token(path, &tokens.access_token);
+            match std::fs::read(marker) {
+                Ok(contents) => marker_kind_from_contents(Some(&contents)),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => "none",
+                Err(_) => "unknown",
+            }
+        })
+        .unwrap_or("none");
+    let invalidation_marker_present = marker_kind != "none";
     let recheck_read_result = token_read_result_label(read_tokens_from_path(path));
     StartupTokenStoreDiagnostics {
         invalidation_marker_present,
+        marker_kind,
         first_read_result,
         recheck_read_result,
     }
@@ -494,6 +553,7 @@ pub fn startup_token_store_diagnostics() -> StartupTokenStoreDiagnostics {
         Ok(path) => startup_token_store_diagnostics_at(&path),
         Err(_) => StartupTokenStoreDiagnostics {
             invalidation_marker_present: false,
+            marker_kind: "none",
             first_read_result: "err_io",
             recheck_read_result: "err_io",
         },
@@ -509,6 +569,7 @@ pub fn startup_token_store_diagnostics_after_first(
         Ok(path) => startup_token_store_diagnostics_after_first_at(&path, first_read_result),
         Err(_) => StartupTokenStoreDiagnostics {
             invalidation_marker_present: false,
+            marker_kind: "none",
             first_read_result,
             recheck_read_result: "err_io",
         },
@@ -1009,6 +1070,7 @@ async fn resolve_tokens_classified(
                 REAUTH_MESSAGE.to_string(),
                 CognitoRefreshFailureClass::Http4xx,
                 true,
+                "unknown",
             ));
         }
         if !force_refresh && !matching_invalidation && !is_expired(&tokens) {
@@ -1028,6 +1090,7 @@ async fn resolve_tokens_classified(
                                 message,
                                 failure_class,
                                 requires_reauth,
+                                err.rejection_class,
                             )
                         })?;
                         let path =
@@ -1038,6 +1101,7 @@ async fn resolve_tokens_classified(
                                     message,
                                     failure_class,
                                     requires_reauth,
+                                    err.rejection_class,
                                 )
                             },
                         )?;
@@ -1047,6 +1111,7 @@ async fn resolve_tokens_classified(
                             message,
                             failure_class,
                             requires_reauth,
+                            err.rejection_class,
                         )
                     })? {
                         Some(current) if current != tokens => {
@@ -1060,6 +1125,7 @@ async fn resolve_tokens_classified(
                                 REAUTH_MESSAGE.to_string(),
                                 failure_class,
                                 requires_reauth,
+                                err.rejection_class,
                             ))
                         }
                     }
@@ -1376,6 +1442,7 @@ async fn refresh_access_token_classified_at(
                     } else {
                         CognitoRefreshFailureClass::Network
                     },
+                    rejection_class: "network",
                 };
                 if attempt + 1 < REFRESH_ATTEMPTS {
                     wait_before_refresh_retry(attempt).await;
@@ -1397,6 +1464,12 @@ async fn refresh_access_token_classified_at(
                 requires_reauth,
                 status_code: Some(status),
                 failure_class: refresh_failure_class_from_status(status),
+                rejection_class: refresh_rejection_class_tag(
+                    Some(refresh_failure_class_from_status(status)),
+                    Some(status),
+                    cognito_error_code(&body_text).as_deref(),
+                    requires_reauth,
+                ),
             };
             if retryable && attempt + 1 < REFRESH_ATTEMPTS {
                 wait_before_refresh_retry(attempt).await;
@@ -1418,6 +1491,7 @@ async fn refresh_access_token_classified_at(
                     } else {
                         CognitoRefreshFailureClass::ResponseDecode
                     },
+                    rejection_class: if timed_out { "network" } else { "unknown" },
                 };
                 if timed_out && attempt + 1 < REFRESH_ATTEMPTS {
                     wait_before_refresh_retry(attempt).await;
@@ -1445,6 +1519,7 @@ async fn refresh_access_token_classified_at(
         requires_reauth: false,
         status_code: None,
         failure_class: CognitoRefreshFailureClass::Unknown,
+        rejection_class: "unknown",
     })
 }
 
@@ -1457,6 +1532,55 @@ pub async fn refresh_access_token(refresh_token: &str) -> Result<CognitoTokens, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refresh_rejection_class_is_closed_and_uses_only_safe_response_metadata() {
+        let cases = [
+            (
+                Some(CognitoRefreshFailureClass::Http4xx),
+                Some(400),
+                Some("invalid_grant"),
+                true,
+                "invalid_grant",
+            ),
+            (
+                Some(CognitoRefreshFailureClass::Http4xx),
+                Some(400),
+                Some("NotAuthorizedException"),
+                true,
+                "not_authorized",
+            ),
+            (
+                Some(CognitoRefreshFailureClass::Http4xx),
+                Some(403),
+                Some("UnlistedException"),
+                true,
+                "other_4xx",
+            ),
+            (
+                Some(CognitoRefreshFailureClass::Network),
+                None,
+                None,
+                false,
+                "network",
+            ),
+            (None, None, None, false, "none"),
+            (
+                Some(CognitoRefreshFailureClass::Http5xx),
+                Some(503),
+                Some("private response text"),
+                false,
+                "unknown",
+            ),
+        ];
+        for (failure, status, code, requires_reauth, expected) in cases {
+            assert_eq!(
+                refresh_rejection_class_tag(failure, status, code, requires_reauth),
+                expected,
+                "response details must collapse to the closed attribution vocabulary"
+            );
+        }
+    }
 
     #[test]
     fn temporary_refresh_failure_is_not_a_signed_out_startup_verdict() {
