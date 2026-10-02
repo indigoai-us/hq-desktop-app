@@ -197,8 +197,11 @@
             noun={["deployment", "deployments"]}
             emptyCopy="No deployments yet."
             onclear={() => {
-              query = "";
-              filter = "all";
+              // QA-091: "Clear search" clears only the query and keeps the
+              // scope; "Clear filters" (no query) resets the filter.
+              if (query.trim()) query = "";
+              else filter = "all";
+              limit = PAGE;
             }}
             testid="personal-deploy-empty"
           />
