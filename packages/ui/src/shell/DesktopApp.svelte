@@ -388,6 +388,7 @@
     HQ_CONSOLE_BASE,
     agentSlackSettingsUrl,
     companyIntegrationsUrl,
+    consoleCompanySlug,
   } from "../common/hq-console.js";
   import LinkContextMenu from "../common/LinkContextMenu.svelte";
   import {
@@ -4904,6 +4905,16 @@
     if (onopenurl) onopenurl(url);
     else window.open(url, "_blank", "noopener,noreferrer");
   }
+  /**
+   * The slug of a company the app knows, for a link to its pages on the web.
+   * Null when the app does not know the company: such a link then goes to the
+   * web's front page, never to a page named by the company's uid.
+   */
+  function companySlugForUid(companyUid: string | null | undefined): string | null {
+    const uid = (companyUid ?? "").trim();
+    if (!uid) return null;
+    return consoleCompanySlug((companies ?? []).find((c) => (c.cloudUid ?? "").trim() === uid)?.slug);
+  }
   /** Connect (or Open again): open the right console page and start waiting. */
   function connectFromCard(agentUid: string, target: ConnectTarget): void {
     const facts = botConnectionFacts[agentUid] ?? null;
@@ -4931,7 +4942,7 @@
     } else {
       const tools = facts?.connections != null ? toolFacts(facts.connections, record) : null;
       const waiting = connectionCardView("tools", { botName: "", record, tools, now }).state === "connecting";
-      openConnectionUrl(companyIntegrationsUrl(companyUid));
+      openConnectionUrl(companyIntegrationsUrl(companySlugForUid(companyUid)));
       // What is connected now is the baseline: anything after it is new.
       setBotConnectionRecord(
         agentUid,

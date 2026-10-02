@@ -47,11 +47,36 @@ export function companyInviteUrl(slug: string): string {
 
 /**
  * A company's HQ Integrations page in the console, where apps are connected
- * (route `companies/[slug]/integrations`). The console also resolves a company
- * uid in the slug position, so either works here.
+ * (route `companies/[slug]/integrations`). Without a slug it is the console's
+ * front page: never a link built from the company's uid.
  */
-export function companyIntegrationsUrl(slugOrUid: string): string {
-  return `${companyConsoleUrl(slugOrUid)}/integrations`;
+export function companyIntegrationsUrl(slug: string | null | undefined): string {
+  const known = consoleCompanySlug(slug);
+  return known ? `${companyConsoleUrl(known)}/integrations` : HQ_CONSOLE_BASE;
+}
+
+/**
+ * The slug to put in a company link, or null when there is none to use.
+ *
+ * A company uid (`cmp_...`) is not a slug. With a uid in the slug position
+ * the console does not open the page that was asked for (it sent a person to
+ * the company's front page instead), so a uid is refused here and the caller
+ * falls back to {@link HQ_CONSOLE_BASE}.
+ */
+export function consoleCompanySlug(slug: string | null | undefined): string | null {
+  const value = (slug ?? "").trim();
+  if (!value || /^cmp_/i.test(value)) return null;
+  return value;
+}
+
+/**
+ * A company's bots page in the console (route `companies/[slug]/agents`),
+ * where a bot is connected to Slack on the web. Without a slug it is the
+ * console's front page: never a link built from the company's uid.
+ */
+export function companyAgentsUrl(slug: string | null | undefined): string {
+  const known = consoleCompanySlug(slug);
+  return known ? `${companyConsoleUrl(known)}/agents` : HQ_CONSOLE_BASE;
 }
 
 /**

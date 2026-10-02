@@ -2,7 +2,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { mount, tick, unmount } from "svelte";
-import { ok, type PlatformAdapter } from "@hq/platform";
+import { ok, type PlatformAdapter, type Workspace } from "@hq/platform";
 
 import DesktopApp from "./DesktopApp.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
@@ -22,7 +22,23 @@ const NOVA = "agt_nova";
 const COMPANY = "cmp_acme";
 const NEW_BOTS_KEY = "hq.chat.newCloudBots.v1";
 
-const fence = (blocks: unknown[]): string => `\n\`\`\`hq-block\n${JSON.stringify({ v: 1, blocks })}\n\`\`\``;
+/** The bot's company as the app knows it. A link to the web is built from its slug. */
+const ACME = {
+  slug: "acme",
+  displayName: "Acme",
+  kind: "company",
+  state: "synced",
+  cloudUid: COMPANY,
+  bucketName: null,
+  hasLocalFolder: true,
+  localPath: null,
+  membershipStatus: "active",
+  role: "owner",
+  lastSyncedAt: null,
+  brokenReason: null,
+} as unknown as Workspace;
+
+const fence =(blocks: unknown[]): string => `\n\`\`\`hq-block\n${JSON.stringify({ v: 1, blocks })}\n\`\`\``;
 
 type Row = Record<string, unknown>;
 
@@ -62,6 +78,8 @@ interface World {
   slackCapability: string | null;
   connections: Row[];
   listFails: boolean;
+  /** The companies the app knows. */
+  companies: Workspace[];
   getStatus: ReturnType<typeof vi.fn>;
   listConnections: ReturnType<typeof vi.fn>;
   grantConnectionAccess: ReturnType<typeof vi.fn>;
@@ -76,6 +94,7 @@ function world(over: Partial<World> = {}): World {
     slackCapability: null,
     connections: [],
     listFails: false,
+    companies: [ACME],
     getStatus: vi.fn(async () =>
       ok({
         setupState: { phase: "ready" },
@@ -164,6 +183,7 @@ async function mountRow(w: World, row: ConversationRow, waitForText: string): Pr
       notificationsApi: createEmptyNotificationsApi(),
       self: { uid: "prs_me", displayName: "Corey Epstein", email: "me@example.com" },
       initialRow: row,
+      companies: w.companies,
       onopenurl: w.openUrl,
       wakes: createChatWakeBus(),
       coreFixtures: false,
@@ -238,12 +258,24 @@ describe("DesktopApp connection cards in a cloud bot's direct message", () => {
     primary("tools")!.click();
     await settle();
     expect(w.openUrl).toHaveBeenCalledTimes(1);
-    expect(w.openUrl).toHaveBeenCalledWith("https://hq.computer/companies/cmp_acme/integrations");
+    // By the company's slug, never its uid.
+    expect(w.openUrl).toHaveBeenCalledWith("https://hq.computer/companies/acme/integrations");
     expect(card("tools").dataset.state).toBe("connecting");
     expect(card("tools").textContent).toContain("Finish in your browser. This card updates when a tool is connected.");
     expect(primary("tools")!.textContent?.trim()).toBe("Open again");
     // The other card is untouched.
     expect(card("slack").dataset.state).toBe("offered");
+  });
+
+  it("opens the web's front page, never a page named by the uid, for a company the app does not know", async () => {
+    const w = world({ companies: [] });
+    await mountNewBotDm(w);
+    primary("tools")!.click();
+    await settle();
+    expect(w.openUrl).toHaveBeenCalledTimes(1);
+    expect(w.openUrl).toHaveBeenCalledWith("https://hq.computer");
+    expect(w.openUrl.mock.calls.flat().join(" ")).not.toContain("cmp_");
+    expect(card("tools").dataset.state).toBe("connecting");
   });
 
   it("offers a newly connected app to the bot, one press shares it and tells the bot once", async () => {
@@ -453,7 +485,7 @@ describe("DesktopApp connection cards in a cloud bot's direct message", () => {
     // The card stays usable.
     primary("tools")!.click();
     await settle();
-    expect(w.openUrl).toHaveBeenCalledWith("https://hq.computer/companies/cmp_acme/integrations");
+    expect(w.openUrl).toHaveBeenCalledWith("https://hq.computer/companies/acme/integrations");
     expect(card("tools").dataset.state).toBe("connecting");
   });
 

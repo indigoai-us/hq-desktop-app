@@ -2,7 +2,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { mount, tick, unmount } from "svelte";
-import { ok, type LocalBotRow, type PlatformAdapter } from "@hq/platform";
+import { ok, type LocalBotRow, type PlatformAdapter, type Workspace } from "@hq/platform";
 
 import DesktopApp from "./DesktopApp.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
@@ -21,7 +21,22 @@ import type { ConversationRow } from "../chat/sidebar-model.js";
 
 const NOVA = "agt_nova";
 const COMPANY = "cmp_acme";
-const INTEGRATIONS_URL = `https://hq.computer/companies/${COMPANY}/integrations`;
+/** The bot's company as the app knows it. A link to the web is built from its slug, never its uid. */
+const ACME = {
+  slug: "acme",
+  displayName: "Acme",
+  kind: "company",
+  state: "synced",
+  cloudUid: COMPANY,
+  bucketName: null,
+  hasLocalFolder: true,
+  localPath: null,
+  membershipStatus: "active",
+  role: "owner",
+  lastSyncedAt: null,
+  brokenReason: null,
+} as unknown as Workspace;
+const INTEGRATIONS_URL = `https://hq.computer/companies/${ACME.slug}/integrations`;
 const NEW_BOTS_KEY = "hq.chat.newCloudBots.v1";
 
 const fence = (blocks: unknown[]): string => `\n\`\`\`hq-block\n${JSON.stringify({ v: 1, blocks })}\n\`\`\``;
@@ -183,6 +198,7 @@ async function mountRow(w: World, row: ConversationRow, waitForText: string): Pr
       notificationsApi: createEmptyNotificationsApi(),
       self: { uid: "prs_me", displayName: "Corey Epstein", email: "me@example.com" },
       initialRow: row,
+      companies: [ACME],
       onopenurl: w.openUrl,
       wakes: createChatWakeBus(),
       coreFixtures: false,
