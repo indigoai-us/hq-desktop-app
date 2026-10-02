@@ -64,8 +64,8 @@
     background-size: 200% 100%;
     animation: telem-skel 1.1s linear infinite;
   }
-  .bar { height: 28px; margin-bottom: 8px; }
-  .title { height: 28px; width: 180px; }
+  .bar { height: 31px; margin-bottom: 2px; border-radius: 8px; }
+  .title { height: 25px; width: 180px; }
   .stats { height: 72px; margin-top: 16px; }
   @keyframes telem-skel { from { background-position: 100% 0; } to { background-position: -100% 0; } }
 </style>

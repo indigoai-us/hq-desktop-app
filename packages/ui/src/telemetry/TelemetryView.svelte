@@ -154,7 +154,6 @@
 
 <div class="telemetry" data-testid="telemetry-view" data-refreshing={refreshing ? "true" : "false"}>
   <aside class="pane" aria-label="My Telemetry">
-    <div class="pane-head">My Telemetry</div>
     <div class="pane-list">
       {#each pages as item (item.id)}
         <button
@@ -190,7 +189,7 @@
         >
           {#if item.mark}<span class="mini">{item.mark}</span>{/if}
           <span>{item.label}</span>
-          {#if item.id === "all" && activeScope === "all"}<span class="chip">on</span>
+          {#if item.id === "all" && activeScope === "all"}<span class="meta">On</span>
           {:else if item.count}<span class="meta">{item.count}</span>{/if}
         </button>
       {/each}
@@ -210,7 +209,7 @@
         {#if page === "outcomes" && snapshot} · what {snapshot.sessions} sessions produced{/if}
       </span>
       <span class="grow"></span>
-      <span class="chip">Only you can see this</span>
+      <span class="sub">Only you can see this</span>
       <button class="btn" onclick={exportCsv}>Export CSV</button>
     </div>
 
@@ -271,12 +270,12 @@
             <div class="scroll">
               {#each snapshot.sessionsRows as row (row.id)}
                 <button class="srow hq-contain-row" aria-current={selected?.id === row.id ? "true" : undefined} onclick={() => selectSession(row)}>
-                  <span class="mono">{row.when}</span>
+                  <span>{row.when}</span>
                   <span class="co"><span class="mini">{row.mark}</span>{row.company}</span>
                   <span class="pr">{row.project}{#if row.detail}<span>{row.detail}</span>{/if}</span>
                   <span class="n">{row.length}</span>
                   <span class="n">{row.tokensLabel}</span>
-                  <span class="oc {row.outcomeKind}">{row.outcome}</span>
+                  <span class="oc {row.outcomeKind}"><span class="dot" class:live={row.outcomeKind === "live"} class:err={row.outcomeKind === "error"}></span>{row.outcome}</span>
                 </button>
               {/each}
             </div>
@@ -294,13 +293,12 @@
               </div>
             {/each}
             <div class="sech gap">Bots acting on your behalf <span class="grow"></span>
-              <span class="chip live">{snapshot.bots.filter((b) => b.live).length} live</span>
+              <span class="status"><span class="dot live"></span>{snapshot.bots.filter((b) => b.live).length} live</span>
             </div>
             {#each snapshot.bots as bot (bot.name)}
               <div class="bot">
-                <span class="mini sq">⌁</span>
-                <div><b>{bot.name}</b><span class="m">{bot.meta}</span></div>
-                <span class="r" class:live={bot.live}>{bot.status}</span>
+                <span class="nm">{bot.name}<span class="m">{bot.meta}</span></span>
+                <span class="status"><span class="dot" class:live={bot.live}></span>{bot.status}</span>
               </div>
             {/each}
           </div>
@@ -316,7 +314,7 @@
               {/each}
             </div>
             <span class="grow"></span>
-            {#if snapshot.outcomeCounts.live > 0}<span class="chip live">{snapshot.outcomeCounts.live} in progress</span>{/if}
+            {#if snapshot.outcomeCounts.live > 0}<span class="status"><span class="dot live"></span>{snapshot.outcomeCounts.live} in progress</span>{/if}
           </div>
           <div class="srow hd wide" data-testid="telemetry-sessions-head"><span>When</span><span>Company</span><span>Project</span><span>Host</span><span class="n">Length</span><span class="n">Tokens</span><span>Outcome</span></div>
           <div class="scroll">
@@ -324,13 +322,13 @@
               <div class="day">{group.day}</div>
               {#each group.rows as row (row.id)}
                 <button class="srow wide hq-contain-row" aria-current={selected?.id === row.id ? "true" : undefined} onclick={() => (selectedId = row.id)}>
-                  <span class="mono">{row.when}</span>
+                  <span>{row.when}</span>
                   <span class="co"><span class="mini">{row.mark}</span>{row.company}</span>
                   <span class="pr">{row.project}{#if row.detail}<span>{row.detail}</span>{/if}</span>
                   <span class="host">{row.host}</span>
                   <span class="n">{row.length}</span>
                   <span class="n">{row.tokensLabel}</span>
-                  <span class="oc {row.outcomeKind}">{row.outcome}</span>
+                  <span class="oc {row.outcomeKind}"><span class="dot" class:live={row.outcomeKind === "live"} class:err={row.outcomeKind === "error"}></span>{row.outcome}</span>
                 </button>
               {/each}
             {/each}
@@ -342,7 +340,7 @@
         {#if selected}
           <aside class="detail" aria-label="Session">
             <div class="dh">
-              <div class="tt">{selected.project} {#if selected.outcomeKind === "live"}<span class="chip live">live</span>{/if}</div>
+              <div class="tt">{selected.project} {#if selected.outcomeKind === "live"}<span class="status"><span class="dot live"></span>Live</span>{/if}</div>
               <div class="mm">{selected.detail || selected.outcome} · {selected.length}</div>
             </div>
             <div class="acts">
@@ -354,7 +352,7 @@
               <div class="transcript" data-testid="telemetry-transcript">
                 <p>In-app transcript for {selected.id}. Company admins do not see this.</p>
                 {#each selected.timeline as line (line.at + line.text)}
-                  <p><span class="mono">{line.at}</span> {line.text}</p>
+                  <p><span class="m0">{line.at}</span> {line.text}</p>
                 {/each}
               </div>
             {/if}
@@ -375,10 +373,10 @@
             </div>
             <div class="lg"><span>Opus {selected.modelSplit.opus}%</span><span>Sonnet {selected.modelSplit.sonnet}%</span><span>Haiku {selected.modelSplit.haiku}%</span></div>
             <div class="sech">Skills used</div>
-            <div class="chips">{#each selected.skills as skill (skill)}<span class="chip">{skill}</span>{/each}</div>
+            <div class="chips">{#each selected.skills as skill (skill)}<span class="tag">{skill}</span>{/each}</div>
             <div class="sech">Timeline</div>
             {#each selected.timeline as line (line.at + line.text)}
-              <div class="tl" class:live={line.live}><span class="mono">{line.at}</span><span>{line.text}</span></div>
+              <div class="tl" class:live={line.live}><span class="m0">{line.at}</span><span>{line.text}</span></div>
             {/each}
             <p class="foot">Transcripts stay on this device and in your personal vault. Company admins see totals only.</p>
           </aside>
@@ -503,10 +501,10 @@
           <div class="scroll">
             {#each outcomeRows as row (row.id)}
               <button class="srow out hq-contain-row" onclick={() => onopen?.(row, row.openLabel)}>
-                <span class="mono">{row.when}</span>
+                <span>{row.when}</span>
                 <span class="co"><span class="mini">{row.mark}</span>{row.company}</span>
                 <span class="pr">{row.project}{#if row.detail}<span>{row.detail}</span>{/if}</span>
-                <span class="oc {row.outcomeKind}">{row.outcome}</span>
+                <span class="oc {row.outcomeKind}"><span class="dot" class:live={row.outcomeKind === "live"} class:err={row.outcomeKind === "error"}></span>{row.outcome}</span>
                 <span class="host">{row.detail || row.branch}</span>
                 <span class="n">{row.openLabel}</span>
               </button>
@@ -520,120 +518,118 @@
 </div>
 
 <style>
+  /* Console-rail chrome measured from Messages (docs/design-standard-console-rail.md):
+     one 20px/500 title, 13px Geist everywhere else, numbers in tabular sans,
+     mono only for session ids and branches, 31px rows, status as dot plus text. */
   .telemetry {
     display: flex;
     height: 100%;
     min-height: 0;
-    color: var(--v4-text-1);
-    font-family: var(--font-sans, Geist, sans-serif);
+    color: var(--t1, var(--v4-text-1));
+    font: 400 13px/1.45 var(--font-ui, "Geist", -apple-system, sans-serif);
     background: var(--v4-ground, transparent);
   }
-  .pane { width: 260px; flex: none; display: flex; flex-direction: column; border-right: 1px solid var(--v4-rowline); }
-  .pane-head { padding: 14px 12px 8px; font-weight: 600; }
-  .pane-list { overflow: auto; padding: 0 8px 12px; }
-  .row, .tab, .btn, .lnk { font: inherit; color: inherit; background: transparent; border: 0; }
+  .pane { width: 260px; flex: none; display: flex; flex-direction: column; border-right: 1px solid var(--line, var(--v4-rowline)); }
+  .pane-list { overflow: auto; padding: 12px 14px; }
+  .row, .tab, .btn, .lnk, .card { font: inherit; font-size: 13px; color: inherit; background: transparent; border: 0; cursor: pointer; }
   .row {
-    display: flex; align-items: center; gap: 8px; width: 100%;
-    text-align: left; padding: 6px 8px; border-radius: 6px; color: var(--v4-text-2);
+    display: flex; align-items: center; gap: 8px; width: 100%; height: 31px; box-sizing: border-box;
+    text-align: left; padding: 7px 8px; border-radius: 8px; color: var(--t2, var(--v4-text-2));
   }
-  .row[aria-current="true"] { background: var(--v4-active-row); color: var(--v4-text-1); }
-  .row:hover { background: var(--v4-hover); }
-  .meta, .sub, .l, .m, .foot, .pk, .spark-lb, .k { color: var(--v4-text-3); }
-  .meta { margin-left: auto; font-size: var(--type-metadata); }
-  .sec { margin: 12px 8px 4px; font-family: var(--font-mono, ui-monospace, monospace); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--v4-text-3); }
-  .tabs { display: flex; gap: 0; }
-  .tab { padding: 3px 8px; color: var(--v4-text-2); font-size: var(--type-metadata); }
-  .tab[aria-selected="true"] { background: var(--v4-active-row); color: var(--v4-text-1); border-radius: 6px; }
+  .row[aria-current="true"], .srow[aria-current="true"], .card[aria-pressed="true"] { background: var(--sel, var(--v4-active-row)); color: var(--t1, var(--v4-text-1)); box-shadow: none; }
+  .row:hover, .srow:hover, .lnk:hover, .tab:hover { background: var(--hover, var(--v4-hover)); }
+  .meta, .sub, .l, .m, .m0, .foot, .pk, .spark-lb, .k { color: var(--t3, var(--v4-text-3)); }
+  .meta { margin-left: auto; font-variant-numeric: tabular-nums; }
+  .sec { padding: 12px 8px 4px; font-weight: 500; color: var(--t2, var(--v4-text-2)); }
+  .tabs { display: inline-flex; gap: 2px; padding: 2px; width: max-content; border: 1px solid var(--panel-border, var(--v4-control-border)); border-radius: 6px; background: var(--hover, var(--v4-hover)); }
+  .pane .tabs { margin: 0 8px; }
+  .tab { padding: 4px 8px; border-radius: 4px; color: var(--t2, var(--v4-text-2)); }
+  .tab[aria-selected="true"] { background: var(--sel, var(--v4-active-row)); color: var(--t1, var(--v4-text-1)); }
   .mini {
-    width: 16px; height: 16px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
-    font-size: 8px; background: var(--v4-control-faint); color: var(--v4-text-2); flex: none;
+    width: 16px; height: 16px; border-radius: 4px; display: inline-flex; align-items: center; justify-content: center;
+    font-size: 10px; background: var(--btn-bg, var(--v4-control-faint)); color: var(--t2, var(--v4-text-2)); flex: none;
   }
-  .mini.sq { border-radius: 4px; }
-  .chip { font-size: var(--type-metadata); color: var(--v4-text-2); border: 1px solid var(--v4-rowline); border-radius: 980px; padding: 1px 8px; }
-  .chip.live, .oc.live, .r.live, .tl.live { color: var(--v4-ok); }
+  .status, .oc { display: inline-flex; align-items: center; gap: 6px; color: var(--t2, var(--v4-text-2)); white-space: nowrap; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--t3, var(--v4-text-3)); flex: none; display: inline-block; }
+  .dot.live { background: var(--ok, var(--v4-ok)); }
+  .dot.err { background: var(--red, var(--v4-error)); }
+  .tag { color: var(--t2, var(--v4-text-2)); background: var(--btn-bg, var(--v4-control-faint)); border-radius: 980px; padding: 3px 7px; }
   .content { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-  .toolbar { display: flex; align-items: center; gap: 8px; padding: 12px 16px; }
-  .toolbar h1 { font-size: var(--type-section); font-weight: 600; margin: 0; }
-  .sub { font-size: var(--type-metadata); }
+  .toolbar { display: flex; align-items: center; gap: 8px; height: 52px; flex: none; box-sizing: border-box; padding: 0 20px; border-bottom: 1px solid var(--line, var(--v4-rowline)); }
+  .toolbar h1 { font-size: var(--type-title, 20px); font-weight: var(--type-title-weight, 500); line-height: var(--type-title-line, 1.25); margin: 0 4px 0 0; white-space: nowrap; }
+  .sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
   .grow { flex: 1; }
-  .btn { border: 1px solid var(--v4-rowline); border-radius: 6px; padding: 4px 10px; color: var(--v4-text-1); }
-  .btn.primary { background: var(--v4-active-row); }
-  .canvas { padding: 0 16px 16px; overflow: auto; display: flex; flex-direction: column; gap: 20px; }
-  .statline { display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-end; }
-  .stat .n { font-size: var(--type-detail); font-weight: 600; letter-spacing: -0.01em; }
-  .stat .n small { font-size: var(--type-metadata); font-weight: 400; color: var(--v4-text-3); margin-left: 4px; }
-  .stat .l { font-size: var(--type-metadata); }
-  .sech {
-    display: flex; align-items: center; gap: 8px; margin: 0 0 8px;
-    font-family: var(--font-mono, ui-monospace, monospace); font-size: 10px; letter-spacing: 0.08em;
-    text-transform: uppercase; color: var(--v4-text-3);
-  }
+  .btn { height: 28px; box-sizing: border-box; border: 1px solid var(--line2, var(--v4-control-border)); border-radius: 6px; padding: 0 10px; background: var(--btn-bg, var(--v4-control-faint)); color: var(--t1, var(--v4-text-1)); white-space: nowrap; flex: none; }
+  .btn.primary { background: var(--v4-primary-bg); color: var(--v4-primary-fg); border-color: transparent; }
+  .canvas { padding: 16px 20px 20px; overflow: auto; display: flex; flex-direction: column; gap: 24px; }
+  .statline { display: flex; gap: 8px 28px; flex-wrap: wrap; align-items: baseline; }
+  .stat { display: flex; flex-direction: column; gap: 2px; }
+  .stat .n { font-size: 13px; font-weight: 500; text-align: left; color: var(--t1, var(--v4-text-1)); }
+  .stat .n small { font-size: 13px; font-weight: 400; color: var(--t3, var(--v4-text-3)); margin-left: 4px; }
+  .sech { display: flex; align-items: center; gap: 8px; min-height: 28px; margin: 0 0 4px; font-weight: 500; color: var(--t2, var(--v4-text-2)); }
   .sech.gap { margin-top: 20px; }
-  .lnk { font-family: var(--font-sans, Geist, sans-serif); letter-spacing: 0; text-transform: none; font-size: var(--type-metadata); color: var(--v4-text-2); }
-  .lg { display: flex; gap: 10px; font-family: var(--font-sans, Geist, sans-serif); letter-spacing: 0; text-transform: none; font-size: var(--type-metadata); color: var(--v4-text-2); }
-  .lg i, .nm i, .chart i, .split i, .mix i, .bar i {
-    background: var(--v4-text-1);
-  }
-  .lg i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+  .lnk { height: 26px; padding: 0 8px; border-radius: 6px; font-weight: 400; color: var(--t2, var(--v4-text-2)); }
+  .lg { display: flex; align-items: center; gap: 10px; font-weight: 400; color: var(--t2, var(--v4-text-2)); }
+  .lg i, .nm i, .chart i, .split i, .mix i, .bar i { background: var(--t1, var(--v4-text-1)); }
+  .lg i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; margin-right: -4px; }
   .o, .lg .o, .nm .opus { opacity: 0.9; }
   .s, .lg .s, .nm .sonnet { opacity: 0.45; }
   .h, .lg .h, .nm .haiku { opacity: 0.18; }
-  .chart {
-    position: relative; height: 96px; display: flex; align-items: flex-end; gap: 3px;
-    border-bottom: 1px solid var(--v4-rowline); color: var(--v4-text-1);
-  }
+  .chart { position: relative; height: 96px; display: flex; align-items: flex-end; gap: 3px; border-bottom: 1px solid var(--line, var(--v4-rowline)); }
   .chart .d { flex: 1; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; min-width: 0; }
   .chart .d i { display: block; width: 100%; }
-  .pk { position: absolute; right: 0; top: 0; font-family: var(--font-mono, ui-monospace, monospace); font-size: 10px; }
-  .spark-lb { display: flex; justify-content: space-between; font-family: var(--font-mono, ui-monospace, monospace); font-size: 10px; margin-top: 4px; }
-  .two { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 24px; }
+  .pk { position: absolute; right: 0; top: 0; }
+  .spark-lb { display: flex; justify-content: space-between; margin-top: 4px; }
+  .two { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 28px; }
   .srow, .trow {
-    display: grid; gap: 10px; align-items: center; width: 100%;
-    padding: 7px 8px; border: 0; border-bottom: 1px solid var(--v4-rowline);
-    background: transparent; color: var(--v4-text-2); font: inherit; text-align: left;
-    font-size: var(--type-secondary);
+    display: grid; gap: 10px; align-items: center; width: 100%; height: 31px; box-sizing: border-box;
+    padding: 0 8px; border: 0; border-radius: 8px;
+    background: transparent; color: var(--t2, var(--v4-text-2)); font: inherit; font-size: 13px; text-align: left;
   }
-  .srow { grid-template-columns: 76px 112px minmax(0, 1fr) 54px 64px 110px; }
-  .srow.wide { grid-template-columns: 76px 112px minmax(0, 1fr) 120px 54px 64px 110px; }
-  .srow.out { grid-template-columns: 76px 112px minmax(0, 1fr) 110px minmax(0, 1.4fr) 80px; }
+  .srow { grid-template-columns: 76px 120px minmax(0, 1fr) 56px 64px 120px; cursor: pointer; }
+  .srow.wide { grid-template-columns: 76px 120px minmax(0, 1fr) 120px 56px 64px 120px; }
+  .srow.out { grid-template-columns: 76px 120px minmax(0, 1fr) 120px minmax(0, 1.4fr) 80px; }
   .trow { grid-template-columns: minmax(0, 1.4fr) 64px minmax(60px, 1fr) 40px 72px; }
   .srow > *, .trow > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .srow[aria-current="true"] { background: var(--v4-active-row); color: var(--v4-text-1); }
-  .srow:hover { background: var(--v4-hover); }
-  .hd { font-family: var(--font-mono, ui-monospace, monospace); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--v4-text-3); }
+  .hd { color: var(--t3, var(--v4-text-3)); cursor: default; }
   .hd:hover { background: transparent; }
-  .mono { font-family: var(--font-mono, ui-monospace, monospace); font-size: 11px; color: var(--v4-text-3); }
-  .n { font-family: var(--font-mono, ui-monospace, monospace); font-size: 11px; text-align: right; color: var(--v4-text-1); }
-  .pr span, .m { color: var(--v4-text-3); font-size: var(--type-metadata); margin-left: 6px; }
-  .oc.err, .card .err, .mix .err { color: var(--v4-error); }
-  .mix .err { background: var(--v4-error); opacity: 1; }
+  .mono { font-family: var(--font-mono, "Geist Mono", ui-monospace, monospace); }
+  .n { font-variant-numeric: tabular-nums; text-align: right; color: var(--t1, var(--v4-text-1)); }
+  .pr span, .m { color: var(--t3, var(--v4-text-3)); margin-left: 6px; }
+  .card .err { color: var(--red, var(--v4-error)); }
+  .mix .err { background: var(--red, var(--v4-error)); opacity: 1; }
   .oc.dim, .mix .dim { opacity: 0.45; }
-  .sk, .bot { display: grid; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--v4-rowline); }
+  .sk, .bot { display: grid; align-items: center; gap: 10px; height: 31px; padding: 0 8px; }
   .sk { grid-template-columns: minmax(0, 1fr) 44px 90px; }
-  .bot { grid-template-columns: auto minmax(0, 1fr) 72px; font-size: var(--type-metadata); color: var(--v4-text-2); }
-  .bot b { font-weight: 500; color: var(--v4-text-1); font-size: var(--type-secondary); }
-  .bot .m { display: block; margin: 2px 0 0; }
-  .bar { height: 3px; background: var(--v4-control-faint); border-radius: 2px; overflow: hidden; }
+  .bot { grid-template-columns: minmax(0, 1fr) auto; color: var(--t2, var(--v4-text-2)); }
+  .sk > *, .bot > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar { height: 3px; background: var(--btn-bg, var(--v4-control-faint)); border-radius: 2px; overflow: hidden; }
   .bar i { display: block; height: 100%; opacity: 0.45; }
-  .foot { font-size: var(--type-metadata); margin: 8px 0 0; }
+  .foot { margin: 8px 0 0; padding: 0 8px; }
+  .content > .foot { padding: 0 20px; }
   .scroll { max-height: 420px; overflow: auto; }
-  .sessions { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; }
-  .detail { border-left: 1px solid var(--v4-rowline); padding-left: 12px; }
-  .dh .tt { font-weight: 600; }
-  .acts { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
-  .kv { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 4px 8px; font-size: var(--type-metadata); margin: 8px 0; }
-  .split, .mix { display: flex; height: 8px; border-radius: 2px; overflow: hidden; background: var(--v4-control-faint); }
+  .sessions { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 0; padding-right: 0; padding-top: 8px; }
+  .detail { border-left: 1px solid var(--line, var(--v4-rowline)); padding: 0 20px 24px; margin-top: -8px; }
+  .dh { padding: 12px 0; margin-bottom: 12px; border-bottom: 1px solid var(--line, var(--v4-rowline)); }
+  .dh .tt { display: flex; align-items: center; gap: 8px; font-weight: 500; color: var(--t1, var(--v4-text-1)); }
+  .dh .mm { color: var(--t3, var(--v4-text-3)); }
+  .acts { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 16px; }
+  .kv { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 6px 10px; margin: 0 0 16px; }
+  .kv .v { display: flex; align-items: center; gap: 6px; min-width: 0; overflow-wrap: anywhere; }
+  .split, .mix { display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: var(--btn-bg, var(--v4-control-faint)); margin: 4px 0; }
   .split i, .mix i { display: block; height: 100%; }
-  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
-  .tl { display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 8px; font-size: var(--type-metadata); padding: 3px 0; }
-  .transcript { font-size: var(--type-metadata); background: var(--v4-active-row); border-radius: 6px; padding: 8px; margin-bottom: 8px; }
-  .day { font-family: var(--font-mono, ui-monospace, monospace); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--v4-text-3); padding: 8px; }
+  .detail .lg { margin-bottom: 16px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
+  .tl { display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 8px; min-height: 28px; align-items: center; }
+  .tl.live { color: var(--ok, var(--v4-ok)); }
+  .transcript { background: var(--raised, var(--v4-control-faint)); border-radius: 6px; padding: 8px 10px; margin-bottom: 16px; }
+  .transcript p { margin: 4px 0; }
+  .day { padding: 12px 8px 4px; font-weight: 500; color: var(--t2, var(--v4-text-2)); }
   .cards { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
-  .card { text-align: left; background: transparent; border: 1px solid var(--v4-rowline); border-radius: 8px; padding: 10px; color: inherit; font: inherit; }
-  .card[aria-pressed="true"] { background: var(--v4-active-row); }
-  .card .n { font-size: var(--type-detail); font-weight: 600; text-align: left; }
+  .card { text-align: left; border-radius: 8px; padding: 10px 12px; background: var(--raised, transparent); display: flex; flex-direction: column; gap: 2px; }
+  .card .n { font-weight: 500; text-align: left; }
   .shimmer {
-    background: linear-gradient(90deg, var(--v4-control-faint), var(--v4-hover), var(--v4-control-faint));
+    background: linear-gradient(90deg, var(--btn-bg, var(--v4-control-faint)), var(--hover, var(--v4-hover)), var(--btn-bg, var(--v4-control-faint)));
     background-size: 200% 100%;
     animation: telem-shimmer 1.1s linear infinite;
     border-radius: 4px;
@@ -642,12 +638,12 @@
   }
   @keyframes telem-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
   .co { display: flex; align-items: center; gap: 6px; }
-  .nm { display: flex; align-items: center; gap: 6px; }
+  .nm { display: flex; align-items: center; gap: 6px; color: var(--t1, var(--v4-text-1)); }
   .nm i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
-  .host { color: var(--v4-text-2); }
+  .host { color: var(--t2, var(--v4-text-2)); }
   @media (max-width: 900px) {
     .telemetry { flex-direction: column; }
-    .pane { width: auto; border-right: 0; border-bottom: 1px solid var(--v4-rowline); }
+    .pane { width: auto; border-right: 0; border-bottom: 1px solid var(--line, var(--v4-rowline)); }
     .two, .sessions, .cards { grid-template-columns: 1fr; }
   }
 </style>
