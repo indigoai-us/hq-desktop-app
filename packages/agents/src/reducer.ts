@@ -1,7 +1,7 @@
 /**
  * Turns a cloud bot's setup status into what a setup card shows.
  *
- * Input: `setupState` + `nextActions` + `chatReady` from
+ * Input: `setupState` (with its `chatReady`) + `nextActions` from
  * GET /v1/agents/{uid}/status (or the `{agent, setupState}` a create returns).
  * Output: four plain-language stages, the actions to render, and whether the
  * chat can be used yet.
@@ -297,7 +297,12 @@ export function reduceSetup(
   const primaryAction = actions.find((a) => a.required && a.kind !== "sync_in_progress") ?? null;
 
   const ready = phase === "ready";
-  const chatReady = typeof full.chatReady === "boolean" ? full.chatReady : ready;
+  const chatReady =
+    phase === "deprovisioning" || phase === "deprovisioned"
+      ? false
+      : typeof setupState?.chatReady === "boolean"
+        ? setupState.chatReady
+        : ready;
 
   const failedStep = steps.find((s) => s.status === "failed");
   const failure =

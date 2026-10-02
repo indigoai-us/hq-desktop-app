@@ -34,13 +34,21 @@ function allDone(): Partial<Record<(typeof ORDER)[number], AgentSetupStepStatus>
 function status(
   phase: AgentSetupPhase,
   stepList: AgentSetupStep[],
-  extra: Partial<AgentStatusResponse> = {},
+  extra: Partial<AgentStatusResponse> & { chatReady?: boolean } = {},
 ): AgentStatusResponse {
+  const { chatReady, ...rest } = extra;
   return {
     agent: { uid: "agt_1", name: "Ada", slug: "ada", companyUid: "cmp_1" },
-    setupState: { version: 3, phase, idempotencyKey: "k", steps: stepList, updatedAt: "2026-10-02T00:00:00Z" },
+    setupState: {
+      version: 3,
+      phase,
+      idempotencyKey: "k",
+      steps: stepList,
+      updatedAt: "2026-10-02T00:00:00Z",
+      ...(chatReady === undefined ? {} : { chatReady, stepOrder: "chat-first" }),
+    },
     pairing: null,
-    ...extra,
+    ...rest,
   };
 }
 
@@ -128,14 +136,27 @@ describe("reduceSetup phases", () => {
     expect(view.groups.every((g) => g.status === "done")).toBe(true);
   });
 
-  it("chatReady from the server wins before ready", () => {
+  it("chatReady can be true while setup is still failed (audit after chat)", () => {
+    const view = reduceSetup(status("failed", steps({ "codex-auth": "done", audit: "failed" }), { chatReady: true, nextActions: [RETRY] }));
+    expect(view.chatReady).toBe(true);
+    expect(view.stage).toBe("failed");
+  });
+
+  it("a top-level chatReady is ignored: it lives in setupState", () => {
+    const s = status("provisioning", steps({}), { nextActions: [] });
+    expect(reduceSetup({ ...s, chatReady: true } as AgentStatusResponse).chatReady).toBe(false);
+  });
+
+  it("chatReady from setupState wins before ready", () => {
     const view = reduceSetup(status("provisioning", steps({ "codex-auth": "done", "runtime-install": "done" }), { chatReady: true, nextActions: [] }));
     expect(view.chatReady).toBe(true);
     expect(view.ready).toBe(false);
   });
 
-  it.each(["deprovisioning", "deprovisioned"] as const)("%s reads as removed", (phase) => {
-    expect(reduceSetup(status(phase, steps({}))).stage).toBe("removed");
+  it.each(["deprovisioning", "deprovisioned"] as const)("%s reads as removed and not chat-ready", (phase) => {
+    const view = reduceSetup(status(phase, steps({}), { chatReady: true }));
+    expect(view.stage).toBe("removed");
+    expect(view.chatReady).toBe(false);
   });
 
   it("uses the display name, then the name, then a neutral noun", () => {

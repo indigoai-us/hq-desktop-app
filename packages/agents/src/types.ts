@@ -64,6 +64,14 @@ export interface AgentSetupState {
   idempotencyKey: string;
   steps: AgentSetupStep[];
   updatedAt: string;
+  /**
+   * Runtime install and brain sign-in are done; the bot can reply, possibly
+   * before the audit (so `phase` may still be provisioning, waiting or
+   * failed). Only sent for chat-first bots; false while deprovisioning.
+   */
+  chatReady?: boolean;
+  /** `"chat-first"` on bots created through the desktop New bot flow with the flag on. */
+  stepOrder?: string;
 }
 
 /** The public agent projection (`toAgentView`). Only the fields the app reads are typed. */
@@ -191,6 +199,4 @@ export interface AgentStatusResponse extends AgentCreateResponse {
   signInResult?: AgentSignInResult;
   /** Server-owned next steps (US-001). Absent on servers that predate it. */
   nextActions?: unknown[];
-  /** Runtime and brain sign-in are done; the bot can reply (US-014). */
-  chatReady?: boolean;
 }
