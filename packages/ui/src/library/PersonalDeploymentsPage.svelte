@@ -298,18 +298,27 @@
   .warn { padding: 0 16px 8px; }
   .empty { padding: 12px 8px; }
   .deploys { display: grid; grid-template-columns: minmax(0, 1fr) 320px; min-height: 0; flex: 1; }
-  .table { overflow: auto; padding: 0 8px 16px; }
+  /* QA-055: the table scrolls sideways once the columns reach their minimums,
+     so no column is ever clipped. Rows are at least the pane width and grow
+     to the sum of the column minimums; the name column shrinks first. */
+  .table { overflow-x: auto; overflow-y: auto; min-width: 0; padding: 0 8px 16px; }
   .drow, .hd {
     display: grid;
-    grid-template-columns: minmax(140px, 1fr) 96px 96px 104px 72px 72px;
+    grid-template-columns: minmax(140px, 1fr) 96px 96px 104px 80px minmax(88px, max-content);
     gap: 8px;
+    min-width: 100%;
+    width: max-content;
+    box-sizing: border-box;
   }
   /* Narrow windows drop the lesser columns first; the app name never collapses. */
   @media (max-width: 1180px) {
-    .drow, .hd { grid-template-columns: minmax(140px, 1fr) 96px 96px; }
+    .drow, .hd { grid-template-columns: minmax(140px, 1fr) 96px minmax(96px, max-content); }
     .drow > :nth-child(n + 4), .hd > :nth-child(n + 4) { display: none; }
   }
-  .drow { contain: content; content-visibility: auto; contain-intrinsic-size: auto 48px; }
+  /* Layout/style containment only: paint containment would clip cells that
+     extend past the row box. */
+  .drow { contain: layout style; content-visibility: auto; contain-intrinsic-size: auto 48px; }
+  .hd > :nth-child(n + 5), .drow > :nth-child(n + 5) { text-align: right; white-space: nowrap; }
   .hd { padding: 4px 8px; color: var(--t3); font-size: 13px; }
   .nm { display: flex; flex-direction: column; min-width: 0; }
   .nm .t { color: var(--t1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
