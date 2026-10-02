@@ -9038,7 +9038,8 @@
    * where it asks for the rest.
    */
   function addAgentFromTeam(): void {
-    withSidebar((actions) => actions.openNewAgent());
+    const companyUid = companyPaneCompany?.uid ?? null;
+    withSidebar((actions) => actions.openNewAgent(companyUid));
   }
 
   function openNewChat(): void {

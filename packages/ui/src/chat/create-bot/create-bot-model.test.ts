@@ -454,3 +454,45 @@ describe("toCreateInput", () => {
     expect(thinksWithLine(draft({ home: "cloud", companyUid: "cmp_acme" }), c)).toBe("hosted by Acme");
   });
 });
+
+describe("template labels from raw worker.yaml values (QA-042)", () => {
+  const raw = [
+    { id: "cfo-{product}", name: "CFO Worker - {Product}", path: "companies/globex/workers/cfo", company: "[object Object]", skillCount: 0, source: "company" as const },
+    { id: "{product}-analytics", name: "{Product} Analytics", path: "companies/acme/workers/analytics", company: "{product}", source: "company" as const },
+  ];
+
+  it("takes the company from the worker folder when the declared one is unusable", () => {
+    const groups = groupTemplates(raw);
+    expect(groups.map((g) => g.label)).toEqual(["Acme", "Globex"]);
+    const shown = groups.flatMap((g) => [g.label, ...g.templates.flatMap((t) => [t.name, t.summary, t.company ?? ""])]);
+    expect(shown.join(" ")).not.toMatch(/object Object|\{product\}|\{Product\}/);
+  });
+
+  it("fills {Product} placeholders in names with the company name", () => {
+    expect(templateCard(raw[0]!).name).toBe("CFO Worker - Globex");
+    expect(templateCard(raw[1]!).name).toBe("Acme Analytics");
+    expect(templateCard(raw[0]!).company).toBe("globex");
+  });
+});
+
+describe("initialDraft company (QA-043)", () => {
+  const ctx = {
+    canLocal: true,
+    canCloud: true,
+    existingNames: [],
+    runtimeReady: null,
+    companies: [
+      { companyUid: "cmp_first", label: "First" },
+      { companyUid: "cmp_origin", label: "Origin" },
+    ],
+  };
+
+  it("starts on the company the flow was opened from", () => {
+    expect(initialDraft(ctx, "cmp_origin").companyUid).toBe("cmp_origin");
+  });
+
+  it("falls back to the first company when the origin is unknown", () => {
+    expect(initialDraft(ctx).companyUid).toBe("cmp_first");
+    expect(initialDraft(ctx, "cmp_gone").companyUid).toBe("cmp_first");
+  });
+});

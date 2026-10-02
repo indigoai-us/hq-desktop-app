@@ -142,14 +142,21 @@ export const BOT_NAME_SUGGESTIONS: readonly string[] = [
   "orbit",
 ];
 
-export function initialDraft(ctx: Pick<CreateBotContext, "canLocal" | "canCloud" | "existingNames" | "companies" | "runtimeReady">): CreateBotDraft {
+export function initialDraft(
+  ctx: Pick<CreateBotContext, "canLocal" | "canCloud" | "existingNames" | "companies" | "runtimeReady">,
+  preferredCompanyUid: string | null = null,
+): CreateBotDraft {
+  // Opened from a company's page: start on that company, not the first one.
+  const preferred = preferredCompanyUid
+    ? ctx.companies.find((c) => c.companyUid === preferredCompanyUid)
+    : undefined;
   return {
     kind: "blank",
     home: ctx.canLocal ? "local" : "cloud",
     runtime: ctx.canLocal ? firstReadyRuntime(ctx.runtimeReady) : "codex",
     size: "",
     authMode: "subscription",
-    companyUid: ctx.companies[0]?.companyUid,
+    companyUid: preferred?.companyUid ?? ctx.companies[0]?.companyUid,
     scope: "personal",
     companySlugs: [],
     name: suggestBotName(ctx.existingNames),
@@ -319,14 +326,47 @@ export function firstSentence(text: string | null | undefined): string {
   return (m?.[1] ?? t).slice(0, 160);
 }
 
+/** `{product}`-style scaffold placeholders a worker.yaml never filled in. */
+const PLACEHOLDER = /\{[A-Za-z_][\w-]*\}/g;
+
+function cleanText(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+/**
+ * The company slug a template belongs to. `hq bot workers` passes through
+ * whatever worker.yaml says, which can be a stringified object
+ * ("[object Object]") or an unfilled "{product}"; the worker's folder
+ * (`companies/<slug>/workers/...`) is the reliable answer then.
+ */
+export function templateCompany(option: LocalBotWorkerOption): string | null {
+  const declared = cleanText(option.company);
+  if (declared && !declared.includes("[object") && !declared.includes("{")) return declared;
+  const fromPath = /^companies\/([^/]+)\//.exec(cleanText(option.path))?.[1] ?? null;
+  return fromPath && !fromPath.includes("{") ? fromPath : null;
+}
+
+/** Fill `{product}` placeholders with the company name, or drop them. */
+function fillPlaceholders(text: string, company: string | null): string {
+  if (!text.includes("{")) return text;
+  const label = company ? companyLabelFor(company) : "";
+  return text
+    .replace(PLACEHOLDER, label)
+    .replace(/\s*-\s*$/, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
 export function templateSummary(option: LocalBotWorkerOption): string {
-  return (option.summary ?? "").trim() || firstSentence(option.description);
+  const text = cleanText(option.summary) || firstSentence(cleanText(option.description));
+  return fillPlaceholders(text, templateCompany(option));
 }
 
 export function templateName(option: LocalBotWorkerOption): string {
-  const explicit = (option.name ?? "").trim();
+  const explicit = fillPlaceholders(cleanText(option.name), templateCompany(option));
   if (explicit) return explicit;
   return option.id
+    .replace(PLACEHOLDER, "")
     .split(/[-_]/)
     .filter(Boolean)
     .map((w) => w[0]!.toUpperCase() + w.slice(1))
@@ -334,7 +374,7 @@ export function templateName(option: LocalBotWorkerOption): string {
 }
 
 export function templateCard(option: LocalBotWorkerOption): TemplateCard {
-  const company = (option.company ?? "").trim() || null;
+  const company = templateCompany(option);
   return {
     id: option.id,
     name: templateName(option),

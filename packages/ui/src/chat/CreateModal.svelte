@@ -201,6 +201,8 @@
      * opens straight on its second step, with no name typed yet.
      */
     initialStep?: "find" | "company" | "bot";
+    /** Company the New bot flow was opened from; its Cloud step starts there. */
+    botCompanyUid?: string | null;
   }
 
   let {
@@ -238,6 +240,7 @@
     loadAvatarPacks = null,
     initialKind = "channel",
     initialStep = "find",
+    botCompanyUid = null,
   }: Props = $props();
 
   /** Company channel vs project channel; only meaningful inside a company. */
@@ -2548,6 +2551,7 @@
         existingNames={existingBotNames}
         {botCompanies}
         agentTargets={canCreateCloudBot ? agentTargets : []}
+        initialCompanyUid={botCompanyUid}
         onCloudCreate={canCreateCloudBot ? newAgentFor : null}
         {loadClaudeProviderFlag}
         {loadCloudProvisionOptions}

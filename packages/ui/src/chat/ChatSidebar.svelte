@@ -220,8 +220,11 @@
     openNewChannel: () => void;
     openSearch: () => void;
     openHistory: () => void;
-    /** Open the create modal on the New bot flow (Team, Bots, Settings, Atlas). */
-    openNewAgent: () => void;
+    /**
+     * Open the create modal on the New bot flow (Team, Bots, Settings, Atlas).
+     * `companyUid` is the company the user came from; the Cloud step starts on it.
+     */
+    openNewAgent: (companyUid?: string | null) => void;
   }
 
   interface Props {
@@ -1660,8 +1663,11 @@
     filterOpen = next;
   }
 
+  /** The company a host entry (Team page Add agent) opened New bot from. */
+  let createBotCompanyUid = $state<string | null>(null);
   function openCreate(): void {
     closeAllOverlays();
+    createBotCompanyUid = null;
     createOpen = true;
   }
   /** The "+" button opens the create menu. New company is not on this menu. */
@@ -1770,10 +1776,11 @@
   }
 
   /** Host entry point (Team page Add agent): open on the New agent step. */
-  function openNewAgent(): void {
+  function openNewAgent(companyUid: string | null = null): void {
     createKind = "channel";
     createStep = "bot";
     openCreate();
+    createBotCompanyUid = companyUid;
   }
 
   /** Failure reason from a switcher-triggered New company, shown inline. */
@@ -3974,6 +3981,7 @@
   {#if createOpen}
     <CreateModal
       {api}
+      botCompanyUid={createBotCompanyUid}
       rows={[...directoryRows, ...browseRows]}
       contacts={localBotsAsContacts(contacts, localBots, botDisplayNames)}
       {scopeCompanies}
