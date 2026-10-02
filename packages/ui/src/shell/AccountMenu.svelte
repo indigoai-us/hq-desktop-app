@@ -152,7 +152,7 @@
     display: grid;
     place-items: center;
     flex: 0 0 auto;
-    font: 600 11px/1 var(--font-ui);
+    font: 500 11px/1 var(--font-ui);
     background: var(--v4-control-bg);
     color: var(--v4-text-1);
   }
@@ -177,11 +177,11 @@
 
   .name {
     font-size: 13px;
-    font-weight: 600;
+    font-weight: 500;
   }
 
   .meta {
-    font-size: 12px;
+    font-size: 13px;
     color: var(--v4-text-3);
     white-space: nowrap;
     overflow: hidden;
@@ -196,10 +196,8 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    padding: 3px 7px;
-    border-radius: 999px;
-    background: var(--v4-control-bg);
-    font: 500 11px/1.2 var(--font-ui);
+    padding: 0;
+    font: 400 13px/1.2 var(--font-ui);
     color: var(--v4-text-2);
     white-space: nowrap;
     overflow: hidden;
@@ -241,7 +239,7 @@
     border-radius: 8px;
     background: transparent;
     color: var(--v4-text-1);
-    font: 400 14px/1.2 var(--font-ui);
+    font: 400 13px/1.2 var(--font-ui);
     text-align: left;
     cursor: default;
   }

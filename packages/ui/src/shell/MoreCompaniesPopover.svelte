@@ -230,16 +230,14 @@
 
   .sec {
     padding: 8px 8px 4px;
-    font: 500 10px/1.2 var(--font-mono, ui-monospace, monospace);
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    color: var(--v4-text-3);
+    font: 500 13px/1.2 var(--font-ui);
+    color: var(--v4-text-2);
   }
 
   .hint {
     margin: 0;
     padding: 4px 8px 8px;
-    font: 12px/1.4 var(--font-ui);
+    font: 13px/1.4 var(--font-ui);
     color: var(--v4-text-3);
   }
 
@@ -292,15 +290,15 @@
     place-items: center;
     background: var(--v4-control-bg);
     color: var(--v4-text-1);
-    font: 600 8px/1 var(--font-ui);
+    font: 500 10px/1 var(--font-ui);
   }
 
   .live {
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    color: var(--v4-ok);
-    font: 11px/1 var(--font-mono, ui-monospace, monospace);
+    color: var(--v4-text-2);
+    font: 13px/1 var(--font-ui);
   }
 
   .live i {
@@ -318,7 +316,7 @@
     border-radius: 6px;
     background: transparent;
     color: var(--v4-text-3);
-    font: 11px/1 var(--font-ui);
+    font: 13px/1 var(--font-ui);
     opacity: 0;
     cursor: default;
   }

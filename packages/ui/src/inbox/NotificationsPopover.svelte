@@ -281,7 +281,7 @@
 
   .nhead b {
     font-size: 13px;
-    font-weight: 600;
+    font-weight: 500;
   }
 
   .tabs {
@@ -294,7 +294,7 @@
     border: 0;
     background: transparent;
     color: var(--v4-text-3);
-    font: 12px/1 var(--font-ui);
+    font: 13px/1 var(--font-ui);
     padding: 4px 8px;
     border-radius: 8px;
     cursor: default;
@@ -347,13 +347,13 @@
   }
 
   .verb {
-    font-weight: 600;
+    font-weight: 500;
   }
 
   .m {
     display: block;
     margin-top: 2px;
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 400;
     color: var(--v4-text-3);
   }
@@ -371,7 +371,7 @@
     color: var(--v4-text-1);
     border-radius: 6px;
     padding: 2px 8px;
-    font: 11px/1.4 var(--font-ui);
+    font: 13px/1.4 var(--font-ui);
     cursor: default;
   }
 
@@ -386,7 +386,7 @@
   .upgrade {
     display: inline-block;
     margin-top: 4px;
-    font-size: 11px;
+    font-size: 13px;
     text-decoration: underline;
   }
 
@@ -396,7 +396,7 @@
     padding: 8px 8px 4px;
     border-top: 1px solid var(--v4-rowline, var(--v4-hairline));
     margin-top: 4px;
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .grow {
@@ -413,13 +413,13 @@
   }
 
   .tt {
-    font-size: 14px;
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     color: var(--v4-text-1);
   }
 
   .mm {
-    font-size: 12px;
+    font-size: 13px;
     color: var(--v4-text-3);
     line-height: 1.5;
     max-width: 270px;

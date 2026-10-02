@@ -531,17 +531,10 @@
     border: 1px solid var(--v4-hairline, var(--pop-border));
     border-radius: var(--v4-radius-popover);
     /* Solid popover material (D-03): popover-strong is the near-opaque token
-       tier, routed through the shared glass filter (DESKTOP-012) so text never
-       bleeds through while the chrome stays on the one vibrancy stack. */
+       tier so text never bleeds through. No backdrop-filter: it paints a
+       square blur behind the rounded card in WKWebView. */
     background: var(--v4-popover-strong, var(--pop-bg));
-    backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
-    -webkit-backdrop-filter: var(
-      --v4-glass-filter-popover,
-      var(--v4-glass-filter)
-    );
-    box-shadow:
-      var(--v4-shadow-popover, var(--pop-shadow)),
-      inset 0 1px 0 var(--v4-glass-highlight);
+    box-shadow: var(--v4-shadow-popover, var(--pop-shadow));
     color: var(--v4-text-1, var(--pop-text));
     transform-origin: top center;
   }
@@ -693,7 +686,7 @@
     background: transparent;
     color: inherit;
     font: inherit;
-    font-weight: 700;
+    font-weight: 500;
     cursor: pointer;
   }
 
@@ -709,19 +702,18 @@
   }
 
   .command-section-title {
-    padding: 5px 8px 4px;
-    color: var(--pop-muted);
-    font-size: var(--text-micro);
-    font-weight: 600;
-    line-height: 14px;
-    text-transform: uppercase;
+    padding: 8px 8px 4px;
+    color: var(--v4-text-2, var(--pop-muted));
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 17px;
   }
 
   .command-list button,
   .command-empty {
     width: 100%;
-    min-height: 46px;
-    border-radius: 0;
+    min-height: 32px;
+    border-radius: 8px;
   }
 
   .command-list button {
@@ -729,7 +721,7 @@
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    padding: 7px 8px;
+    padding: 6px 8px;
     border: 0;
     background: transparent;
     color: var(--pop-muted);
@@ -756,14 +748,13 @@
     background: var(--pop-hover);
     color: var(--pop-text);
     outline: none;
-    box-shadow: inset 0 -1px 0 var(--pop-border);
   }
 
   .command-copy {
     display: flex;
-    flex-direction: column;
+    align-items: baseline;
     min-width: 0;
-    gap: 2px;
+    gap: 8px;
   }
 
   .command-copy strong,
@@ -775,8 +766,9 @@
 
   .command-copy strong {
     color: currentColor;
+    flex: 0 1 auto;
     font-size: var(--text-base);
-    font-weight: 600;
+    font-weight: 400;
   }
 
   .command-copy span {

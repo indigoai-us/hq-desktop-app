@@ -968,7 +968,7 @@
 
   .core-status-last,
   .core-status-caption {
-    font-size: 11px;
+    font-size: 13px;
     line-height: 1.35;
     color: var(--t2);
   }
@@ -1013,13 +1013,13 @@
   }
 
   .core-notice-title {
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 500;
     color: var(--t1);
   }
 
   .core-notice-body {
-    font-size: 11px;
+    font-size: 13px;
     line-height: 1.35;
     color: var(--t2);
   }
@@ -1071,7 +1071,7 @@
   }
 
   .core-paused-body {
-    font-size: 11px;
+    font-size: 13px;
     color: var(--t2);
     line-height: 1.35;
   }
@@ -1085,9 +1085,9 @@
     flex: 0 0 auto;
     padding: 0;
     border: none;
-    color: var(--ice-ink);
+    color: var(--t2);
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: 12px;
     font-weight: 400;
     letter-spacing: 0;
     line-height: 1.2;
@@ -1120,7 +1120,7 @@
     background: transparent;
     padding: 0;
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 500;
     color: var(--v4-text-2, var(--t2));
     text-decoration: underline;
@@ -1159,7 +1159,7 @@
 
   .core-conflict-name {
     overflow: hidden;
-    font-size: 11px;
+    font-size: 13px;
     line-height: 1.35;
     color: var(--warn-ink);
     text-overflow: ellipsis;
@@ -1170,7 +1170,7 @@
     overflow: hidden;
     color: var(--t3);
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: 12px;
     line-height: 1.35;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1178,7 +1178,7 @@
 
   .core-conflict-error {
     color: var(--warn-ink);
-    font-size: 10px;
+    font-size: 13px;
   }
 
   .core-conflict-actions {
@@ -1221,7 +1221,7 @@
     min-width: 0;
     overflow: hidden;
     color: var(--t1);
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 400;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1238,7 +1238,7 @@
     margin: -4px 0 4px;
     padding: 0 2px;
     color: var(--t2);
-    font-size: 11px;
+    font-size: 13px;
     line-height: 1.35;
   }
 
@@ -1253,7 +1253,7 @@
     background: transparent;
     color: var(--t2);
     font: inherit;
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 500;
     white-space: nowrap;
     cursor: pointer;
@@ -1279,7 +1279,7 @@
 
   .core-row-chevron {
     color: var(--t3);
-    font-size: 14px;
+    font-size: 13px;
     line-height: 1;
     transition: transform 120ms ease;
   }
@@ -1288,20 +1288,23 @@
     transform: rotate(90deg);
   }
 
+  /* Model labels are caps ("NO DRIFT"); the chrome shows sentence case. */
   .core-pill {
-    display: inline-flex;
-    align-items: center;
-    min-height: 18px;
+    display: inline-block;
+    line-height: 18px;
     padding: 0;
     border: 0;
     background: transparent;
-    color: var(--ok-ink);
-    font-family: var(--font-mono);
-    font-size: 10px;
+    color: var(--t2);
+    font-size: 13px;
     font-weight: 400;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
+    text-transform: lowercase;
     white-space: nowrap;
+  }
+
+  .core-pill::first-letter,
+  .core-packs-meta::first-letter {
+    text-transform: uppercase;
   }
 
   button.core-pill {
@@ -1318,7 +1321,7 @@
   }
 
   .core-pill.ok {
-    color: var(--ok-ink);
+    color: var(--t2);
   }
 
   button.core-pill:hover:not(:disabled) {
@@ -1337,7 +1340,7 @@
     background: var(--btn-bg);
     color: var(--t1);
     font: inherit;
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 500;
     cursor: pointer;
   }
@@ -1352,8 +1355,8 @@
 
   .core-btn.primary {
     border: none;
-    background: var(--ice-ink);
-    color: var(--badge-fg);
+    background: var(--t1);
+    color: var(--panel-bg, var(--v4-popover));
   }
 
   .core-btn.primary:hover:not(:disabled) {
@@ -1422,7 +1425,7 @@
   }
 
   .core-packs-label {
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 400;
     color: var(--t1);
   }
@@ -1432,10 +1435,9 @@
     min-width: 0;
     margin-left: auto;
     color: var(--t3);
-    font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: 13px;
     text-align: right;
-    text-transform: uppercase;
+    text-transform: lowercase;
   }
 
   .core-pack-list {
@@ -1457,7 +1459,7 @@
     padding: 4px 8px 4px 24px;
     border-radius: 6px;
     color: var(--t1);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .core-pack-row:hover {
@@ -1476,7 +1478,7 @@
     margin-left: auto;
     color: var(--t3);
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: 12px;
     font-variant-numeric: tabular-nums;
   }
 
@@ -1488,6 +1490,6 @@
   .core-load-error {
     margin: 0;
     color: var(--warn-ink);
-    font-size: 11px;
+    font-size: 13px;
   }
 </style>

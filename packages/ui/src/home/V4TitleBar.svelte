@@ -196,7 +196,12 @@
     launchMenuForcedOpen = false,
   }: Props = $props();
 
-  const dayDateLabel = $derived(titlebarDayDate());
+  // Sentence case in the chrome ("Friday · Oct 2"); the model keeps caps.
+  const dayDateLabel = $derived(
+    titlebarDayDate()
+      .toLowerCase()
+      .replace(/(^|· )([a-z])/g, (_m, lead: string, ch: string) => lead + ch.toUpperCase()),
+  );
 
   /**
    * Same gate as the popover's slot: entitlement must be explicitly true AND
@@ -1036,19 +1041,16 @@
     flex: 0 0 auto;
     color: var(--t1);
     font-size: 13px;
-    font-weight: 600;
+    font-weight: 500;
     line-height: 1;
   }
 
   .v4-day-date {
     flex: 0 0 auto;
     color: var(--t3);
-    font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: 13px;
     font-weight: 400;
-    letter-spacing: 0.08em;
     line-height: 1;
-    text-transform: uppercase;
     white-space: nowrap;
   }
 
@@ -1098,18 +1100,21 @@
   .v4-launch-sec {
     display: flex;
     padding: 4px 8px 6px;
-    font-family: var(--font-mono, ui-monospace, monospace);
-    font-size: 10px;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--v4-text-3, var(--t3));
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--v4-text-2, var(--t2));
   }
 
   .v4-launch-sec-path {
     margin-left: auto;
-    letter-spacing: 0;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 12px;
     font-weight: 400;
-    text-transform: none;
+    color: var(--v4-text-3, var(--t3));
   }
 
   /* Viewport clamp: right-align to the button when bottom-start overflows. */
@@ -1130,7 +1135,7 @@
     background: transparent;
     color: var(--v4-text-1, var(--t1));
     font: inherit;
-    font-size: 14px;
+    font-size: 13px;
     text-align: left;
     cursor: pointer;
   }
@@ -1145,9 +1150,8 @@
     background: var(--v4-control-bg, var(--btn-bg));
     display: grid;
     place-items: center;
-    font-family: var(--font-mono, ui-monospace, monospace);
-    font-size: 10px;
-    font-weight: 600;
+    font-size: 11px;
+    font-weight: 500;
     flex: none;
     margin-top: 1px;
   }
@@ -1158,7 +1162,7 @@
 
   .v4-launch-copy small {
     display: block;
-    font-size: 12px;
+    font-size: 13px;
     color: var(--v4-text-3, var(--t3));
     margin-top: 2px;
   }
@@ -1166,7 +1170,7 @@
   .v4-launch-dim {
     color: var(--v4-text-3, var(--t3));
     font-weight: 400;
-    font-size: 12px;
+    font-size: 13px;
     margin-left: 6px;
   }
 
@@ -1179,7 +1183,7 @@
     border-radius: 6px;
     padding: 2px 8px;
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
     cursor: pointer;
   }
 
@@ -1187,7 +1191,7 @@
     margin: 6px 0 0;
     padding: 8px 8px 2px;
     border-top: 1px solid var(--v4-rowline, var(--line2));
-    font-size: 12px;
+    font-size: 13px;
     color: var(--v4-text-3, var(--t3));
     display: flex;
     gap: 8px;
@@ -1196,7 +1200,7 @@
 
   .v4-launch-foot code {
     font-family: var(--font-mono, ui-monospace, monospace);
-    font-size: 11px;
+    font-size: 12px;
     color: var(--v4-text-2, var(--t2));
   }
 
@@ -1207,7 +1211,7 @@
     background: transparent;
     padding: 0;
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
     color: var(--v4-text-2, var(--t2));
     text-decoration: underline;
     text-underline-offset: 3px;
@@ -1236,7 +1240,7 @@
 
   .v4-launch-item-error {
     color: var(--warn);
-    font-size: 11px;
+    font-size: 13px;
     line-height: 1.35;
     white-space: normal;
   }
@@ -1253,8 +1257,8 @@
     background: var(--btn-bg);
     color: var(--t2);
     font: inherit;
-    font-size: 12px;
-    font-weight: 500;
+    font-size: 13px;
+    font-weight: 400;
     white-space: nowrap;
     cursor: pointer;
   }
@@ -1385,7 +1389,7 @@
     background: transparent;
     color: var(--t2);
     font: inherit;
-    font-size: 11px;
+    font-size: 13px;
     line-height: 1;
     white-space: nowrap;
     cursor: pointer;
