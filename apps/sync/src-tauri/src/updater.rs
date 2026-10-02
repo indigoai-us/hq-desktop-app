@@ -1446,12 +1446,17 @@ async fn commit_staged_install_from_waiter(
     commit_staged_install_with_decision(app, staged, trigger, decision, remaining).await
 }
 
-async fn daemon_pause_drain_install<P, PFut, CyclePause, Guard, Paused, D, DFut, I, IFut, R, RFut>(
+#[derive(Clone, Copy)]
+struct DaemonPauseDrainPlan {
     daemon_mode: bool,
+    drain_after_pause: bool,
+}
+
+async fn daemon_pause_drain_install<P, PFut, CyclePause, Guard, Paused, D, DFut, I, IFut, R, RFut>(
+    plan: DaemonPauseDrainPlan,
     pause_daemon: P,
     pause_new_cycles: CyclePause,
     on_paused: Paused,
-    drain_after_pause: bool,
     drain: D,
     install: I,
     resume_daemon: R,
@@ -1470,12 +1475,12 @@ where
 {
     let _local_pause = pause_new_cycles();
     on_paused();
-    let daemon_paused = if daemon_mode {
+    let daemon_paused = if plan.daemon_mode {
         pause_daemon().await
     } else {
         false
     };
-    if drain_after_pause {
+    if plan.drain_after_pause {
         drain().await;
     }
     let result = install().await;
@@ -1632,11 +1637,13 @@ async fn commit_staged_install_with_decision(
         && crate::commands::hq_daemon_host::current_phase()
             == crate::commands::hq_daemon_host::HostPhase::Daemon;
     let result = daemon_pause_drain_install(
-        daemon_mode,
+        DaemonPauseDrainPlan {
+            daemon_mode,
+            drain_after_pause,
+        },
         || pause_daemon_sync_for_update(app),
         crate::commands::process::pause_new_sync_cycles,
         || log_deferral_decision(trigger, decision, &version, remaining),
-        drain_after_pause,
         || async { drain_in_flight_transfers(IN_FLIGHT_DRAIN_TIMEOUT).await },
         || install_staged_update(app, &staged, post_cap),
         || resume_daemon_sync_after_update(app),
@@ -2978,7 +2985,9 @@ mod tests {
         assert!(automatic_install_should_retry(
             UPDATE_DEFERRED_DURING_PROTECTED_ACTIVITY
         ));
-        assert!(!automatic_install_should_retry("signature verification failed"));
+        assert!(!automatic_install_should_retry(
+            "signature verification failed"
+        ));
     }
 
     #[test]
@@ -3242,14 +3251,16 @@ mod tests {
         let drain_events = std::sync::Arc::clone(&events);
         let install_events = std::sync::Arc::clone(&events);
         let result = daemon_pause_drain_install(
-            true,
+            DaemonPauseDrainPlan {
+                daemon_mode: true,
+                drain_after_pause: true,
+            },
             move || async move {
                 pause_events.lock().unwrap().push("pause");
                 false
             },
             || (),
             || {},
-            true,
             move || async move { drain_events.lock().unwrap().push("drain") },
             move || async move {
                 install_events.lock().unwrap().push("install");
@@ -3270,14 +3281,16 @@ mod tests {
         let install_events = std::sync::Arc::clone(&events);
         let resume_events = std::sync::Arc::clone(&events);
         let result = daemon_pause_drain_install(
-            true,
+            DaemonPauseDrainPlan {
+                daemon_mode: true,
+                drain_after_pause: true,
+            },
             move || async move {
                 pause_events.lock().unwrap().push("pause");
                 true
             },
             || (),
             || {},
-            true,
             move || async move { drain_events.lock().unwrap().push("drain") },
             move || async move {
                 install_events.lock().unwrap().push("install");
@@ -3301,14 +3314,16 @@ mod tests {
         let install_events = std::sync::Arc::clone(&events);
         let resume_events = std::sync::Arc::clone(&events);
         let result = daemon_pause_drain_install(
-            true,
+            DaemonPauseDrainPlan {
+                daemon_mode: true,
+                drain_after_pause: true,
+            },
             move || async move {
                 pause_events.lock().unwrap().push("pause");
                 true
             },
             || (),
             || {},
-            true,
             move || async move { drain_events.lock().unwrap().push("drain") },
             move || async move {
                 install_events.lock().unwrap().push("install");
