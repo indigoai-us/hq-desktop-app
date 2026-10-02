@@ -688,6 +688,6 @@ describe("connectionCardView: tools", () => {
       connectionCardView("tools", input({ record: markDeclined(null, "tools", NOW) })),
     ];
     const copy = JSON.stringify(views);
-    expect(copy).not.toMatch(/—|OAuth|ACL|grant/i);
+    expect(copy).not.toMatch(/\u2014|OAuth|ACL|grant/i);
   });
 });
