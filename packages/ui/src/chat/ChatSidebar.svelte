@@ -125,7 +125,9 @@
     distinctDmPeople,
     duplicateHumanDmTitles,
     formatSearchHitTime,
+    companyScopedChannels,
     groupByDay,
+    omitCompanyScopedChannels,
     groupByType,
     historySearchScopeLabel,
     initialsFor,
@@ -269,6 +271,11 @@
     oncompanyscopechange?: (companyUid: string | null) => void;
     /** Host-owned sign-out (desktop emitted `tray:sign-out`). */
     onsignout?: () => Promise<void> | void;
+    /**
+     * Home model in the console rail hides this card. Account actions live
+     * on the rail avatar (US-010). Phone layout keeps the card.
+     */
+    hideAccountFooter?: boolean;
     /**
      * Lifecycle entry points. The host runs the card action and navigates to
      * the posted card; the sidebar only offers the rows ("+" modal and the
@@ -441,6 +448,7 @@
     onselect,
     oncompanyscopechange,
     onsignout,
+    hideAccountFooter = false,
     oncreatecompany = null,
     companyCreate = null,
     oncreateagent = null,
@@ -1253,10 +1261,16 @@
   );
 
   const companyScoped = $derived(scope !== "all" && scope !== "personal");
+  // Home keeps DMs, bots, and project channels. Company channels render
+  // under Activity only while that company is the pane (US-008).
+  const activityChannelRows = $derived(
+    companyScoped ? companyScopedChannels(filteredRows, scope) : [],
+  );
+  const inboxRows = $derived(omitCompanyScopedChannels(filteredRows));
   const railRows = $derived(
     sortMode === "type" || companyScoped
-      ? filteredRows
-      : takeRailConversations(filteredRows, {
+      ? inboxRows
+      : takeRailConversations(inboxRows, {
           selectedId: activeId,
           recentPersonUids: recentDms,
         }),
@@ -1322,7 +1336,7 @@
     // settled (or timed out) with nothing else, open #setup so the pane is
     // never an infinite skeleton.
     const live = pickAutoOpenConversation(
-      filteredRows.filter((row) => !isSetupChannel(row.channelId)),
+      inboxRows.filter((row) => !isSetupChannel(row.channelId)),
       selectedId,
       humanOnly,
     );
@@ -1334,7 +1348,7 @@
     if (!bootAttempted || loading) return;
     if (hasRosterCompany && !hasNonSetupRows && !companyRowsGraceElapsed) return;
     const fallback = pickSettledBootConversation(
-      filteredRows,
+      companyScoped ? filteredRows : inboxRows,
       selectedId,
       humanOnly,
     );
@@ -1352,7 +1366,10 @@
       : groupByDay(railRows, Date.now(), { humanOnly }),
   );
   /** Rows in painted order — the selection model's range/keyboard order. */
-  const renderedRows = $derived(flattenGrouped(grouped, lastWeekExpanded));
+  const renderedRows = $derived([
+    ...activityChannelRows,
+    ...flattenGrouped(grouped, lastWeekExpanded),
+  ]);
   const orderedRowIds = $derived(renderedRows.map((row) => row.id));
   $effect(() => {
     const emit = ondisplayrows;
@@ -3290,6 +3307,22 @@
       </div>
     {/if}
 
+    {#if activityChannelRows.length > 0}
+      <div class="chat-section-label" id="chat-activity-label">
+        <span>ACTIVITY</span>
+      </div>
+      <div
+        class="chat-list"
+        role="list"
+        aria-labelledby="chat-activity-label"
+        data-testid="company-activity-channels"
+      >
+        {#each activityChannelRows as row (row.id)}
+          {@render conversationRow(row)}
+        {/each}
+      </div>
+    {/if}
+
     {#if grouped.pinned.length > 0}
       <div class="chat-section-label" id="chat-pinned-label">
         <span class="chat-pin-ic" aria-hidden="true">
@@ -3398,6 +3431,7 @@
 
   {@render bottomContent?.()}
 
+  {#if !hideAccountFooter}
   <div class="chat-footer" bind:this={footerEl}>
     <button
       type="button"
@@ -3451,6 +3485,7 @@
       </div>
     {/if}
   </div>
+  {/if}
 
   {#if contextMenu}
     <!-- svelte-ignore a11y_no_static_element_interactions -->

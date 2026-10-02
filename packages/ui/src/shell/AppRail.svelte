@@ -114,6 +114,9 @@
               {initials(item.label)}
             {/if}
           </span>
+          {#if item.unreadCount > 0}
+            <span class="badge" data-testid="rail-company-badge" aria-hidden="true"></span>
+          {/if}
           {#if item.liveCount > 0}
             <span class="live" data-testid="rail-live-dot" aria-hidden="true"></span>
           {/if}

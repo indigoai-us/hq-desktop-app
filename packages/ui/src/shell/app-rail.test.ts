@@ -65,6 +65,14 @@ describe("app rail model (console-rail US-003)", () => {
     expect(railPlaceholderForPage("sessions")).toBeNull();
   });
 
+  it("rolls company-channel unread onto the company tile", () => {
+    const [tile] = railItems([{ uid: "co_a", label: "Indigo", unreadCount: 4 }], "You").filter(
+      (item) => item.kind === "company",
+    );
+    expect(tile && tile.kind === "company" && tile.unreadCount).toBe(4);
+    expect(railTooltip(tile!)).toBe("Indigo · 4 unread");
+  });
+
   it("puts the unread count in the Home tooltip", () => {
     const home = railItems([], "You")[0]!;
     expect(railTooltip(home, { unread: 3 })).toBe("Home · 3 unread");

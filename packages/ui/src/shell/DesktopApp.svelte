@@ -563,6 +563,7 @@
     type PutChatAttachment,
   } from "../chat/messaging/upload-chat-attachments.js";
   import {
+    companyChannelUnread,
     findCompanyHomeRow,
     isStrictlyRicherConversationRow,
     stepConversation,
@@ -8315,6 +8316,7 @@
       .map((company) => ({
         ...company,
         liveCount: companyLiveCount(snap, company.uid),
+        unreadCount: companyChannelUnread(railRows, company.uid),
       }));
     return railItems(pinned, resolvedAccountLabel ?? "You");
   });

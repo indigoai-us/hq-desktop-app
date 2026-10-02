@@ -1678,6 +1678,51 @@ function rowMustStayOnRail(
   return false;
 }
 
+/**
+ * A team channel owned by a company (`channelScope === "company"`).
+ * Home's inbox omits these; they live in that company's pane under Activity.
+ * Project channels and DMs are not company-scoped.
+ */
+export function isCompanyScopedChannel(row: ConversationRow): boolean {
+  return row.kind === "channel" && (row.channelScope ?? "").trim() === "company";
+}
+
+/** Home inbox rows: everything except company-scoped channels. */
+export function omitCompanyScopedChannels(
+  rows: readonly ConversationRow[],
+): ConversationRow[] {
+  return rows.filter((row) => !isCompanyScopedChannel(row));
+}
+
+/** Company-scoped channels for one company, newest activity first. */
+export function companyScopedChannels(
+  rows: readonly ConversationRow[],
+  companyUid: string,
+): ConversationRow[] {
+  const uid = companyUid.trim();
+  if (!uid) return [];
+  return sortConversations(
+    rows.filter(
+      (row) => isCompanyScopedChannel(row) && (row.companyUid ?? "").trim() === uid,
+    ),
+    "recent",
+  );
+}
+
+/** Unread on a company's channels, for the rail tile badge. */
+export function companyChannelUnread(
+  rows: readonly ConversationRow[],
+  companyUid: string,
+): number {
+  let total = 0;
+  for (const row of rows) {
+    if (!isCompanyScopedChannel(row)) continue;
+    if ((row.companyUid ?? "").trim() !== companyUid.trim()) continue;
+    total += row.unreadCount ?? (row.unreadDot ? 1 : 0);
+  }
+  return total;
+}
+
 export function isProjectConversationRow(row: ConversationRow): boolean {
   if (row.kind !== "channel") return false;
   if (row.channelScope != null) {

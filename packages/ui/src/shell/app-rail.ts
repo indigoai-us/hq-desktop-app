@@ -93,6 +93,8 @@ export interface RailCompany {
   iconUrl?: string | null;
   /** Online people or bots already in the presence snapshot. */
   liveCount?: number;
+  /** Unread company-channel messages, rolled up onto the tile. */
+  unreadCount?: number;
 }
 
 export type RailItem =
@@ -105,6 +107,7 @@ export type RailItem =
       companyUid: string;
       iconUrl: string | null;
       liveCount: number;
+      unreadCount: number;
     }
   | { kind: "more-companies"; id: "more-companies"; label: "More companies" }
   | { kind: "library"; id: "library"; label: "Library" }
@@ -140,6 +143,7 @@ export function railItems(
       companyUid: c.uid,
       iconUrl: c.iconUrl?.trim() || null,
       liveCount: Math.max(0, c.liveCount ?? 0),
+      unreadCount: Math.max(0, c.unreadCount ?? 0),
     }));
   return [
     { kind: "home", id: "home", label: "Home" },
@@ -189,9 +193,10 @@ export function railTooltip(item: RailItem, counts: { unread?: number } = {}): s
     return unread > 0 ? `Home · ${unread} unread` : "Home · Messages & Inbox";
   }
   if (item.kind === "company") {
-    return item.liveCount > 0
-      ? `${item.label} · ${item.liveCount} live`
-      : item.label;
+    const unread = item.unreadCount > 0 ? `${item.unreadCount} unread` : null;
+    const live = item.liveCount > 0 ? `${item.liveCount} live` : null;
+    const extra = [unread, live].filter(Boolean).join(" · ");
+    return extra ? `${item.label} · ${extra}` : item.label;
   }
   if (item.kind === "library") return "Library · your files & vault";
   if (item.kind === "you") return `${item.label} · Profile`;
