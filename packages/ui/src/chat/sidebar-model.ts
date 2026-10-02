@@ -722,6 +722,8 @@ export interface NormalizeOptions {
    * simply carry whatever `channel.isCompanyHome` the server sent (or none).
    */
   homeChannelIdByUid?: ReadonlyMap<string, string> | Record<string, string>;
+  /** Company uid → display name for company-home channel rows. */
+  companyDisplayNamesByUid?: ReadonlyMap<string, string> | Record<string, string>;
   /** Local DM activity dots (personUid set). Absent-safe. */
   dmDots?: ReadonlySet<string> | readonly string[];
   /** Recently opened pair threads — stay conversations after mark-read. */
@@ -787,15 +789,24 @@ export function normalizeChannel(
     : undefined;
   const isCompanyHome =
     channel.scope === "company" ? isCompanyHomeChannel(channel, homeChannelId) : false;
+  const companyDisplayName = channel.companyUid
+    ? options.companyDisplayNamesByUid instanceof Map
+      ? options.companyDisplayNamesByUid.get(channel.companyUid)
+      : (options.companyDisplayNamesByUid as Record<string, string> | undefined)?.[
+          channel.companyUid
+        ]
+    : undefined;
 
   return {
     id,
     kind: isGroup ? "group" : "channel",
     ...(isGroup ? {} : { channelScope: channel.scope }),
     ...(isGroup ? {} : { isCompanyHome }),
-    title: channelDisplayName(channel, {
-      projectTitles: options.projectTitles,
-    }),
+    title:
+      (isCompanyHome ? companyDisplayName?.trim() : "") ||
+      channelDisplayName(channel, {
+        projectTitles: options.projectTitles,
+      }),
     companyUid:
       isGroup || channel.scope === "personal"
         ? null

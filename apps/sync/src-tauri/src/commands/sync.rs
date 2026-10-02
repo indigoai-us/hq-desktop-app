@@ -1498,7 +1498,7 @@ fn handle_sync_line<R: tauri::Runtime>(
     // by using the inner value rather than crashing the sync thread.
     {
         let mut t = totals.lock().unwrap_or_else(|e| e.into_inner());
-        t.accumulate(&event);
+        accumulate_runner_event_for_health(&mut t, &event, line);
     }
 
     // Unit struct variants (SetupNeeded) serialize to `()` when emitted via
@@ -1550,10 +1550,14 @@ fn handle_sync_line<R: tauri::Runtime>(
         // file-transfer totals, Recent Changes, and frontend progress.
         SyncEvent::MaintenanceProgress(_) => Ok(()),
         SyncEvent::Error(payload) => {
-            // `classify_error_event` is the test-covered classification boundary;
-            // the dispatch logic here (Some → COMPLETE, None → ERROR) is intentionally
-            // kept to these two lines so it is visually auditable without a harness.
-            if let Some(complete_event) = classify_error_event(payload) {
+            if runner_error_is_diagnostic(line) {
+                // The diagnostic stays in the local app log for doctor/support,
+                // but it must not put the user-facing sync status into error.
+                Ok(())
+            } else if let Some(complete_event) = classify_error_event(payload) {
+                // `classify_error_event` is the test-covered classification boundary;
+                // the dispatch logic here (Some → COMPLETE, None → ERROR) is intentionally
+                // kept to these two lines so it is visually auditable without a harness.
                 #[cfg(debug_assertions)]
                 eprintln!(
                     "[sync] company '{}' not yet on S3 — treating as empty sync: {}",
@@ -1740,11 +1744,34 @@ fn update_runner_stderr_totals(
     let mut totals = totals.lock().unwrap_or_else(|e| e.into_inner());
     if reauth.is_some() {
         totals.record_auth_error();
-    } else if let Some(payload) = runner_error.as_ref() {
-        totals.record_error(payload);
+    } else if !runner_error_is_diagnostic(line) {
+        if let Some(payload) = runner_error.as_ref() {
+            totals.record_error(payload);
+        }
     }
     totals.record_stderr_line(line);
     reauth
+}
+
+/// Runner diagnostic errors remain in the protocol stream for doctor and
+/// support tooling, but they do not describe a failed sync operation.
+fn runner_error_is_diagnostic(line: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(line.trim())
+        .ok()
+        .and_then(|value| value.get("diagnostic").and_then(serde_json::Value::as_bool))
+        == Some(true)
+}
+
+pub(crate) fn accumulate_runner_event_for_health(
+    totals: &mut RunTotals,
+    event: &SyncEvent,
+    line: &str,
+) {
+    if runner_error_is_diagnostic(line) {
+        log("sync-diagnostic", line);
+    } else {
+        totals.accumulate(event);
+    }
 }
 
 /// Forward runner stderr protocol records that affect sync state.
@@ -3333,6 +3360,22 @@ pub fn cancel_sync() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diagnostic_error_lines_remain_parseable_without_affecting_health_totals() {
+        let line = r#"{"type":"error","diagnostic":true,"component":"runner","event":"retry","path":"(runner)","message":"retrying transient request"}"#;
+        let event = crate::events::parse_sync_line(line).expect("doctor can parse diagnostics");
+        let mut stdout_totals = RunTotals::default();
+        accumulate_runner_event_for_health(&mut stdout_totals, &event, line);
+        assert!(!stdout_totals.saw_error);
+        assert!(!stdout_totals.saw_alertable_error);
+
+        let stderr_totals = Mutex::new(RunTotals::default());
+        assert!(update_runner_stderr_totals(&stderr_totals, line).is_none());
+        let stderr_totals = stderr_totals.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(!stderr_totals.saw_error);
+        assert!(!stderr_totals.saw_alertable_error);
+    }
     use crate::commands::cognito::CognitoTokens;
     #[cfg(not(windows))]
     use crate::util::test_support::write_usable_managed_git;
@@ -4457,12 +4500,9 @@ mod tests {
         assert_eq!(code, Some(75));
         assert_eq!(signal, None);
         assert!(!success);
-        assert!(totals.saw_error);
-        assert!(totals.saw_alertable_error);
-        assert_eq!(
-            totals.runner_error_rollup.tag_value().as_deref(),
-            Some("OTHER:3")
-        );
+        assert!(!totals.saw_error);
+        assert!(!totals.saw_alertable_error);
+        assert_eq!(totals.runner_error_rollup.tag_value(), None);
 
         let disposition = classify_runner_exit_disposition(
             code,

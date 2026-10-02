@@ -994,6 +994,15 @@
     }
     return map;
   });
+  const companyDisplayNamesByUid = $derived.by(() => {
+    const map = new Map<string, string>();
+    for (const company of companies ?? []) {
+      const uid = (company.cloudUid ?? "").trim();
+      const displayName = (company.displayName ?? "").trim();
+      if (uid && displayName) map.set(uid, displayName);
+    }
+    return map;
+  });
 
   const allRows = $derived(
     normalizeConversations(channelsWithSetup, contactsWithUnreads, {
@@ -1003,6 +1012,7 @@
       engagedAgentUids: engagedAgents,
       ownAgentUids,
       homeChannelIdByUid,
+      companyDisplayNamesByUid,
     }),
   );
 
@@ -1097,11 +1107,11 @@
     } else {
       // Not in the loaded rows yet: the stub row would otherwise paint the
       // raw `chn_…` id as the title/composer placeholder until the full
-      // directory catches up. Seed it with the company's slug — the same
-      // label the row itself will carry once loaded — so the header never
+      // directory catches up. Seed it with the company's display label,
+      // matching the home-channel row once loaded, so the header never
       // shows a raw id.
       requestChannelOpen(homeChannelId, {
-        title: company?.slug || company?.label || null,
+        title: company?.label || company?.slug || null,
         companyUid: company?.companyUid ?? null,
       });
     }

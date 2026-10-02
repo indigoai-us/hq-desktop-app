@@ -3,6 +3,7 @@ import type { FlagClient, FlagSnapshot } from "@indigoai-us/hq-flags-client";
 import { failure, ok } from "./adapter.js";
 import {
   CLAUDE_PROVIDER_FLAG,
+  DESKTOP_LIMIT_STATUS_PUSH_FLAG,
   FLAG_REFRESH_INTERVAL_MS,
   INVITE_TEAMMATE_STEP_FLAG,
   LOGIN_RECEIPT_DURABILITY_FLAG,
@@ -64,6 +65,13 @@ describe("registry key mapping", () => {
     );
     expect(registryKeyFor(PERSONAL_WORKSPACE_BOARD_FLAG)).toBe(
       PERSONAL_WORKSPACE_BOARD_FLAG,
+    );
+  });
+
+  it("registers desktop limit status push as a default-off hq-flags key", () => {
+    expect(DESKTOP_LIMIT_STATUS_PUSH_FLAG).toBe("desktop.limit-status-push");
+    expect(registryKeyFor(DESKTOP_LIMIT_STATUS_PUSH_FLAG)).toBe(
+      DESKTOP_LIMIT_STATUS_PUSH_FLAG,
     );
   });
 
