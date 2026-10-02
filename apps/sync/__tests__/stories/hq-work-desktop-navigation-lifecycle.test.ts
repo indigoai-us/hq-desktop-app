@@ -6,7 +6,7 @@
  * reach the rendered @hq/ui surface rather than merely call a route helper.
  */
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 const nativeListeners = vi.hoisted(
   () => new Map<string, (event: { payload: unknown }) => void>(),
@@ -139,6 +139,7 @@ vi.mock('@tauri-apps/plugin-shell', () => ({ open: openExternal }));
 
 import { flushSync, mount, unmount } from 'svelte';
 import HqWorkWorkShell from '../../src/desktop-alt/HqWorkWorkShell.svelte';
+import { loadShellSettings } from '../../../../packages/ui/src/shell/settings-lazy';
 import type { SyncInvokeFn } from '@hq/platform';
 
 const WHOAMI = {
@@ -401,6 +402,15 @@ afterEach(async () => {
   nativeListeners.clear();
   openExternal.mockClear();
   tauriCommands.length = 0;
+});
+
+
+// Settings is a lazy chunk (packages/ui/src/shell/settings-lazy.ts, 7e9692ab).
+// Its first dynamic import needs a real module transform, which microtask
+// flushes cannot wait out. Load the memoized chunk once up front so the
+// `{#await loadShellSettings()}` branch resolves deterministically.
+beforeAll(async () => {
+  await loadShellSettings();
 });
 
 describe('embedded Work navigation and lifecycle', () => {
@@ -1146,10 +1156,12 @@ describe('embedded Work navigation and lifecycle', () => {
       host.querySelector('[data-testid="notifications-view"]')?.parentElement?.classList.contains('is-active'),
     ).toBe(true);
 
-    // The "+" opens the unified create modal directly. Create a channel whose
-    // first message is answered late by the host.
-    (host.querySelector('[data-testid="chat-new-message"]') as HTMLButtonElement).click();
+    // The native "New chat" accelerator (shortcut:invoke chat.new) opens the
+    // unified create modal; the sidebar "+" is a create menu since c7de0843.
+    // Create a channel whose first message is answered late by the host.
+    nativeWake('shortcut:invoke', { id: 'chat.new' });
     await flush();
+    expect(document.querySelector('[data-testid="chat-create-query"]')).toBeTruthy();
     setInput('chat-create-query', '#release');
     await new Promise((resolve) => setTimeout(resolve, 150));
     await flush();
