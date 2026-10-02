@@ -8,10 +8,29 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.373] — 2026-10-01
+
+- Setting up a coding tool after onboarding is smoother. You can choose
+  Claude Code or Codex, and one button ("Install Claude" or "Install Codex")
+  installs it and opens its sign-in page, with no second Sign in click.
+  HQ notices by itself when a coding tool is already signed in, or when you
+  finish signing in in your browser, and shows one Continue button instead of
+  "Sign in above, then Retry". It no longer says "Sign-in did not complete"
+  while your browser sign-in is still open, and if a sign-in does fail you
+  can try again, switch tools, or reopen the sign-in page.
+
+- Core Drift ignores setup PATH changes and generated wrapper markers while retaining raw-hash fallback when settings JSON cannot be parsed.
+- Core Drift ignores the desktop-generated `env.PATH` in `.claude/settings.json` and the company skill-wrapper marker, while continuing to report other settings edits.
+
+- Desktop company-creation invites identify the desktop surface in the hq-pro team invite action.
+- Windows setup now detects Claude Code from the current user PATH and
+  Anthropic's user-local install directory, including on Retry.
 - The sidebar orders DMs and channels by the latest message a person typed.
 
 - HQ no longer restarts for an update, or at support's request, while a meeting
   is being recorded; it waits until the recording finishes.
+
+- On macOS 26.2 and later, the installer window shows its background artwork again instead of a plain white window behind the HQ and Applications icons.
 
 - Internal: removed two unused packages/ui helpers and made three module-only helpers private (TD-60, #1198). No user-visible change.
 

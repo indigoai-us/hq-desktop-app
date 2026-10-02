@@ -862,7 +862,14 @@
      */
     setupInstallGuide?: {
       oninstall(tool: "claude" | "codex"): Promise<{ ok: boolean; reason?: string }>;
-      onsignin(tool: "claude" | "codex"): Promise<{ ok: boolean; reason?: string }>;
+      onsignin(
+        tool: "claude" | "codex",
+        options?: { signal?: AbortSignal },
+      ): Promise<{ ok: boolean; reason?: string }>;
+      /** Is this tool already signed in? Lets the guide skip to Continue. */
+      onstatus?(tool: "claude" | "codex"): Promise<boolean>;
+      /** Stop a pending sign-in so the guide can open a fresh one. */
+      oncancelsignin?(tool: "claude" | "codex"): Promise<void>;
       onrefresh(): Promise<void>;
       downloadUrlFor(tool: "claude" | "codex"): string;
       onopen(url: string): Promise<{ ok: boolean; reason?: string }> | void;
