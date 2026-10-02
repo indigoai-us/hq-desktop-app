@@ -281,6 +281,7 @@
     destinationLabel,
     extraParamCompanyKey,
     historyNeighbor,
+    priorNonLibraryIndex,
     type NavigationDestination,
     type NavigationEntry,
     type NavigationScrollState,
@@ -1605,6 +1606,7 @@
   } | null>(null);
   let navigationCanGoBack = $state(false);
   let navigationCanGoForward = $state(false);
+  let libraryBackTargetIndex = $state<number | null>(null);
   let navigationBackLabel = $state("");
   let navigationForwardLabel = $state("");
   let pendingRestoreScroll = $state<NavigationScrollState | null>(null);
@@ -6623,6 +6625,7 @@
     const snap = navigationHistory.snapshot();
     navigationCanGoBack = navigationHistory.canGoBack();
     navigationCanGoForward = navigationHistory.canGoForward();
+    libraryBackTargetIndex = priorNonLibraryIndex(snap);
     const back = historyNeighbor(snap, "back");
     const forward = historyNeighbor(snap, "forward");
     navigationBackLabel = back ? destinationLabel(back.destination) : "";
@@ -6862,6 +6865,14 @@
     return navigate({ kind: "messages" });
   }
 
+  function leaveLibrary(): void {
+    if (libraryBackTargetIndex != null) {
+      void navigation.backTo(libraryBackTargetIndex);
+      return;
+    }
+    void navigate({ kind: "messages" });
+  }
+
   $effect(() => {
     navigation.noteAccount((self?.uid ?? tenantAccountId ?? "").trim());
   });
@@ -6876,6 +6887,7 @@
       if (slug) allowed.add(slug);
     }
     navigation.filterAccessible(allowed);
+    syncNavigationChrome();
     const current = navigationHistory.current();
     const shownExtra =
       extraPageId != null
@@ -10199,9 +10211,7 @@
       tab={libraryTab}
       itemId={libraryItemId}
       {packagesEvents}
-      onback={() => {
-        void leaveCurrentDestination();
-      }}
+      onback={leaveLibrary}
       onnavigatetab={(next) => void navigate({ kind: "library", tab: next })}
       onnavigateitem={(id) =>
         void navigate({ kind: "library", tab: libraryTab, itemId: id })}

@@ -525,6 +525,7 @@ fn a_settings_path_shadow_repaired_in_run_emits_no_envelope_and_no_marker() {
         repair: SettingsPathRepair::NotAttempted,
         file: hq_desktop_core::paths::SettingsPathFile::Local,
         managed_bin: ManagedBinInSettingsPath::Absent,
+        ..SettingsPathTelemetry::default()
     });
     let (base_events, base_records, base_captures, _) = composed_non_convergent_events(&base, true);
     assert_eq!(
@@ -553,6 +554,7 @@ fn a_settings_path_shadow_repaired_in_run_emits_no_envelope_and_no_marker() {
         repair: SettingsPathRepair::Rewritten,
         file: hq_desktop_core::paths::SettingsPathFile::Local,
         managed_bin: ManagedBinInSettingsPath::Present,
+        ..SettingsPathTelemetry::default()
     });
     let records = Cell::new(0usize);
     let captures = Cell::new(0usize);
@@ -623,6 +625,7 @@ fn an_unrepairable_settings_path_shadow_emits_one_self_diagnosing_envelope_per_e
         repair: SettingsPathRepair::RefusedNotStale,
         file: hq_desktop_core::paths::SettingsPathFile::Local,
         managed_bin: ManagedBinInSettingsPath::Absent,
+        ..SettingsPathTelemetry::default()
     };
 
     // First occurrence (not yet blocked): captured, with the durable marker.
