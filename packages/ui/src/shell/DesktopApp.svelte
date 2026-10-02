@@ -135,9 +135,12 @@
     type CardActionIdempotencyStore,
   } from "../chat/card-action.js";
   import {
+    agentCatchingUpLine,
+    agentChatReadiness,
     agentComposerPlaceholder,
     isAgentConversationRow,
     provisioningFromMessages,
+    type AgentChatReadiness,
   } from "../chat/agent-channel.js";
   import {
     CONVERSATION_BOOT_GRACE_MS,
@@ -3696,6 +3699,54 @@
   );
   /** Once setup is done the composer rests; the finale carries every next step. */
   const composerDisabled = $derived(setupAgentDone);
+  const agentChannelUid = $derived(
+    selectedRow?.members?.find((m) => m.personUid.startsWith("agt_"))
+      ?.personUid ??
+      provisioning.agentUid ??
+      null,
+  );
+  /**
+   * Chat readiness per cloud bot, read from the bot's own setup status. The
+   * status card in the channel only turns "done" once the bot has handled a
+   * message there, so a composer locked on the card alone could never be
+   * unlocked by the person the bot is waiting for.
+   */
+  let agentChatByUid = $state<Record<string, AgentChatReadiness>>({});
+  const agentChatState = $derived(agentChannelUid ? (agentChatByUid[agentChannelUid] ?? null) : null);
+  const agentSetupPending = $derived(
+    isAgentChannel && provisioning.state === "pending" && agentChatState?.chatReady !== true,
+  );
+  const AGENT_CHAT_READY_POLL_MS = 5_000;
+  const AGENT_CATCHING_UP_POLL_MS = 30_000;
+  $effect(() => {
+    const uid = agentChannelUid;
+    const pending = provisioning.state === "pending";
+    if (!isAgentChannel || !uid || !uid.startsWith("agt_")) return;
+    const known = untrack(() => agentChatByUid[uid]);
+    if (!pending && !known?.catchingUp) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const check = async (): Promise<void> => {
+      let next: AgentChatReadiness | null = null;
+      try {
+        const result = await adapter.agents.getStatus(uid);
+        if (stopped) return;
+        if (result.ok) {
+          next = agentChatReadiness(result.value);
+          agentChatByUid = { ...untrack(() => agentChatByUid), [uid]: next };
+        }
+      } catch {
+        // Keep the last known state and ask again.
+      }
+      if (stopped || (next?.chatReady && !next.catchingUp)) return;
+      timer = setTimeout(() => void check(), next?.chatReady ? AGENT_CATCHING_UP_POLL_MS : AGENT_CHAT_READY_POLL_MS);
+    };
+    void check();
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    };
+  });
   const SETUP_DONE_PLACEHOLDER = "Setup is complete — pick a next step above.";
   const composerPlaceholder = $derived(
     setupAgentDone
@@ -3704,38 +3755,37 @@
       ? setupAgent.state?.question?.kind === "choice"
         ? "Type your answer…"
         : "Reply to Setup bot…"
-      : isAgentChannel && provisioning.state === "pending"
+      : agentSetupPending
         ? agentComposerPlaceholder(provisioning.agentName || headerTitle)
         : composerPlaceholderFor(selectedRow, headerTitle),
   );
-  const composerLocked = $derived(
-    composerDisabled || (isAgentChannel && provisioning.state === "pending"),
-  );
-  const agentChannelUid = $derived(
-    selectedRow?.members?.find((m) => m.personUid.startsWith("agt_"))
-      ?.personUid ??
-      provisioning.agentUid ??
-      null,
-  );
+  const composerLocked = $derived(composerDisabled || agentSetupPending);
   const agentChannelFirstOpenAt = new Map<string, number>();
-  let agentChannelFallbackVisible = $state(false);
+  let agentChannelFallbackTimedOut = $state(false);
   const agentHasPosted = $derived(
     Boolean(agentChannelUid && liveTimeline.some((message) => message.fromPersonUid === agentChannelUid)),
+  );
+  // A bot that can chat but has said nothing yet gets the cue at once; the
+  // person should not wait 30 seconds to learn they can type.
+  const agentChannelFallbackVisible = $derived(
+    !agentSetupPending &&
+      !agentHasPosted &&
+      (agentChannelFallbackTimedOut || (provisioning.state === "pending" && agentChatState?.chatReady === true)),
   );
 
   $effect(() => {
     const channelId = selectedRow?.channelId ?? null;
     const agentUid = agentChannelUid;
     if (!isAgentChannel || !channelId || !agentUid || agentHasPosted) {
-      agentChannelFallbackVisible = false;
+      agentChannelFallbackTimedOut = false;
       return;
     }
     const openedAt = agentChannelFirstOpenAt.get(channelId) ?? Date.now();
     agentChannelFirstOpenAt.set(channelId, openedAt);
-    agentChannelFallbackVisible = false;
+    agentChannelFallbackTimedOut = false;
     const timer = setTimeout(() => {
       if (selectedRow?.channelId === channelId && !agentHasPosted) {
-        agentChannelFallbackVisible = true;
+        agentChannelFallbackTimedOut = true;
       }
     }, Math.max(0, 30_000 - (Date.now() - openedAt)));
     return () => clearTimeout(timer);
@@ -9465,7 +9515,12 @@
                        flex-row column floating top-right. -->
                   {#if agentChannelFallbackVisible}
                     <div class="agent-channel-fallback" data-testid="agent-channel-live-fallback" role="status">
-                      {headerTitle} is live and can be messaged.
+                      {headerTitle} is live. Say hello.
+                    </div>
+                  {/if}
+                  {#if isAgentChannel && agentChatState?.catchingUp}
+                    <div class="agent-channel-fallback" data-testid="agent-channel-catching-up" role="status">
+                      {agentCatchingUpLine(provisioning.agentName !== "Agent" ? provisioning.agentName : headerTitle)}
                     </div>
                   {/if}
                   {#if setupFinaleVisible}

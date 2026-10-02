@@ -84,6 +84,54 @@ export function provisioningFromMessages(
   };
 }
 
+/**
+ * Setup steps a cloud bot must finish before it can hold a conversation: it is
+ * signed in to its brain and its computer has checked in. The company file
+ * download and the final checks continue in the background after that, the
+ * same point at which the web console tells the person they can leave.
+ */
+const CHAT_READY_STEPS = ["codex-auth", "sync"] as const;
+
+export interface AgentChatReadiness {
+  /** The bot can receive a message and answer it. */
+  chatReady: boolean;
+  /** Chat works, but the company files are still downloading. */
+  catchingUp: boolean;
+  failed: boolean;
+}
+
+function lowerText(value: unknown): string {
+  return typeof value === "string" ? value.trim().toLowerCase() : "";
+}
+
+/** Read chat readiness from an agent status payload. Never throws. */
+export function agentChatReadiness(payload: unknown): AgentChatReadiness {
+  const root = isRecord(payload) ? payload : null;
+  const agent = isRecord(root?.agent) ? root.agent : root;
+  const setup = isRecord(root?.setupState)
+    ? root.setupState
+    : isRecord(agent?.setupState)
+      ? agent.setupState
+      : null;
+  const phase = lowerText(setup?.phase) || lowerText(agent?.setupPhase) || lowerText(agent?.status);
+  const failed = /failed|error|blocked|cancelled/.test(phase);
+  const fullyReady = !failed && /ready|active|complete|online/.test(phase);
+  const steps = Array.isArray(setup?.steps) ? setup.steps.filter(isRecord) : null;
+  const stepsReady =
+    steps !== null &&
+    CHAT_READY_STEPS.every((name) =>
+      steps.some((step) => lowerText(step.name) === name && lowerText(step.status) === "done"),
+    );
+  const chatReady = !failed && (fullyReady || stepsReady);
+  const runtime = isRecord(agent?.runtime) ? agent.runtime : null;
+  const filesDone = runtime ? typeof runtime.syncOkAt === "string" && runtime.syncOkAt.length > 0 : fullyReady;
+  return { chatReady, catchingUp: chatReady && !filesDone, failed };
+}
+
+export function agentCatchingUpLine(agentName: string): string {
+  return `${agentName} is still downloading your company's files. You can chat now, and it will know more as it catches up.`;
+}
+
 export function agentComposerPlaceholder(agentName: string): string {
   return `${agentName} is still setting up`;
 }

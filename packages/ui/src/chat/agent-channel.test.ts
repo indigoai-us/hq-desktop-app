@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  agentChatReadiness,
   agentComposerPlaceholder,
   isAgentConversationRow,
   provisioningFromMessages,
@@ -92,5 +93,64 @@ describe("provisioningFromMessages", () => {
     const view = provisioningFromMessages(messages);
     expect(view.state).toBe("done");
     expect(view.checkedInAt).toBe("2026-09-03T10:01:00.000Z");
+  });
+});
+
+describe("agentChatReadiness", () => {
+  // Shape recorded from production on 2026-10-02 for a bot whose company file
+  // download ran for 21 minutes after the sign-in.
+  const steps = (audit: string, runtimeInstall = "pending") => [
+    { name: "identity", status: "done" },
+    { name: "membership", status: "done" },
+    { name: "vault", status: "done" },
+    { name: "runtime", status: "done" },
+    { name: "codex-auth", status: "done" },
+    { name: "sync", status: "done", backgroundFirstSync: true },
+    { name: "channels", status: "done" },
+    { name: "audit", status: audit },
+    { name: "runtime-install", status: runtimeInstall },
+  ];
+
+  it("lets the person chat while the file download and final checks are still running", () => {
+    // Regression (owner, 2026-10-02): the flow waited 25 minutes for phase
+    // "ready" although the server finishes the file sync in the background.
+    expect(
+      agentChatReadiness({
+        agent: { runtime: { firstSyncStartedAt: "2026-10-02T06:07:47.798Z" } },
+        setupState: { phase: "waiting", steps: steps("waiting") },
+      }),
+    ).toEqual({ chatReady: true, catchingUp: true, failed: false });
+  });
+
+  it("is not chat-ready before the sign-in or before the computer checks in", () => {
+    const signInWaiting = steps("pending").map((step) =>
+      ["codex-auth", "sync", "channels"].includes(step.name) ? { ...step, status: step.name === "codex-auth" ? "waiting" : "pending" } : step,
+    );
+    expect(agentChatReadiness({ setupState: { phase: "waiting", steps: signInWaiting } }).chatReady).toBe(false);
+    const syncWaiting = steps("pending").map((step) => (step.name === "sync" ? { ...step, status: "waiting" } : step));
+    expect(agentChatReadiness({ setupState: { phase: "waiting", steps: syncWaiting } }).chatReady).toBe(false);
+  });
+
+  it("stops saying the bot is catching up once the files are in", () => {
+    expect(
+      agentChatReadiness({
+        agent: { runtime: { syncOkAt: "2026-10-02T06:28:52.808Z" } },
+        setupState: { phase: "ready", steps: steps("done", "done") },
+      }),
+    ).toEqual({ chatReady: true, catchingUp: false, failed: false });
+  });
+
+  it("never treats a failed setup as chat-ready", () => {
+    expect(agentChatReadiness({ setupState: { phase: "failed", steps: steps("failed") } })).toEqual({
+      chatReady: false,
+      catchingUp: false,
+      failed: true,
+    });
+  });
+
+  it("falls back to the phase when the payload has no step list", () => {
+    expect(agentChatReadiness({ setupState: { phase: "creating" } }).chatReady).toBe(false);
+    expect(agentChatReadiness({ setupState: { phase: "ready" } })).toEqual({ chatReady: true, catchingUp: false, failed: false });
+    expect(agentChatReadiness(null).chatReady).toBe(false);
   });
 });

@@ -55,16 +55,37 @@ describe("waking model", () => {
     const signedIn = applyWakingStatus(stillAsked, { setupState: signInStep("done"), pairing: null }, STARTED + 760_000);
     expect(signedIn.approval).toBeNull();
     expect(signedIn.signedInAt).toBe(STARTED + 760_000);
-    expect(wakingStatusLine(signedIn, STARTED + 760_000)).toBe("You're signed in. Finishing up. About 2 minutes left.");
-    expect(wakingStatusLine(signedIn, STARTED + 830_000)).toBe("You're signed in. Finishing up. About a minute left.");
+    expect(wakingStatusLine(signedIn, STARTED + 760_000)).toBe("You're signed in. Finishing up. About a minute left.");
+    expect(wakingStatusLine(signedIn, STARTED + 830_000)).toMatch(/^You're signed in\. Finishing up\. This is taking longer than usual\./);
     expect(wakingStatusLine(signedIn, STARTED + 760_000)).not.toMatch(/taking longer/i);
     expect(signedIn.progress).toBeGreaterThan(stillAsked.progress);
     expect(signedIn.progress).toBeLessThan(100);
   });
 
+  it("hands off to chat once the bot is signed in and its computer has checked in", () => {
+    // Regression (owner, 2026-10-02): "The goal of this is speed to live."
+    // The final check waits on the company file download, which the server
+    // runs in the background; the waking screen must not wait for it.
+    const live = applyWakingStatus(session(), {
+      setupState: {
+        phase: "waiting",
+        steps: [
+          { name: "codex-auth", status: "done" },
+          { name: "sync", status: "done" },
+          { name: "channels", status: "done" },
+          { name: "audit", status: "waiting" },
+          { name: "runtime-install", status: "pending" },
+        ],
+      },
+    }, STARTED + 300_000);
+    expect(live.phase).toBe("ready");
+    expect(live.progress).toBe(100);
+    expect(wakingStatusLine(live, STARTED + 300_000)).toBe("Nova is live. Opening chat…");
+  });
+
   it("does not claim a sign-in the person never did", () => {
     const signedIn = applyWakingStatus(session(), { setupState: signInStep("done") }, STARTED + 140_000);
-    expect(wakingStatusLine(signedIn, STARTED + 140_000)).toBe("Finishing up. About 2 minutes left.");
+    expect(wakingStatusLine(signedIn, STARTED + 140_000)).toBe("Finishing up. About a minute left.");
   });
 
   it("lets fixtures set their own estimate", () => {

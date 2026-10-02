@@ -8,6 +8,7 @@
  */
 
 import { brainApprovalFromStatus, type BrainApproval, type BrainProvider } from "./bot-brain-approval.js";
+import { agentChatReadiness } from "../agent-channel.js";
 
 /**
  * US-001 recorded median create-to-audit time, measured 2026-10-01. Kept as a
@@ -23,8 +24,12 @@ export const US001_MEDIAN_WAKING_ESTIMATE_MS = 1_244_000;
  * flow: the computer finished starting 134 seconds after the create request.
  */
 export const WAKING_ESTIMATE_MS = 180_000;
-/** Default estimate for the second stretch: from the sign-in to a live bot. */
-export const WAKING_FINISH_ESTIMATE_MS = 120_000;
+/**
+ * Default estimate for the second stretch: from the sign-in to a bot that can
+ * chat. Measured 2026-10-02: the computer checked in 54 seconds after the
+ * sign-in when only the server's once-a-minute pass was moving setup along.
+ */
+export const WAKING_FINISH_ESTIMATE_MS = 60_000;
 export const WAKING_POLL_MS = 3_000;
 /**
  * Setup only moves forward when something asks the server to re-check the
@@ -101,14 +106,16 @@ function text(value: unknown): string {
   return typeof value === "string" ? value.trim().toLowerCase() : "";
 }
 
+/**
+ * "ready" here means the bot can chat, not that every setup step is finished.
+ * The company file download can run for many minutes after the sign-in; the
+ * server does that in the background and the person should be talking to the
+ * bot meanwhile.
+ */
 function phaseFromStatus(payload: unknown): WakingPhase {
-  const root = record(payload);
-  const agent = record(root?.agent) ?? root;
-  const setup = record(root?.setupState) ?? record(agent?.setupState);
-  const phase = text(setup?.phase) || text(agent?.setupPhase) || text(agent?.status);
-  if (/failed|error|blocked|cancelled/.test(phase)) return "failed";
-  if (/ready|active|complete|online/.test(phase)) return "ready";
-  return "waking";
+  const readiness = agentChatReadiness(payload);
+  if (readiness.failed) return "failed";
+  return readiness.chatReady ? "ready" : "waking";
 }
 
 export function wakingProgress(
