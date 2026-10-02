@@ -244,15 +244,27 @@ export interface ConversationMessageWire {
   isMeshEvent?: boolean | null;
 }
 
+/**
+ * Fields a history route adds when it served `view: "human"`. A server that
+ * predates the parameter returns neither, and the page is then an ordinary
+ * unfiltered one.
+ */
+export interface HumanViewPageFields {
+  /** Echoed by a server that filtered and paged the response itself. */
+  view?: "human";
+  /** The server's read budget ran out; `nextCursor` is set, keep paging. */
+  viewScanTruncated?: boolean;
+}
+
 /** Channel detail + newest-first message page (desktop `fetch_channel`). */
-export interface ChannelDetailResponse {
+export interface ChannelDetailResponse extends HumanViewPageFields {
   channel?: Channel;
   messages: ConversationMessageWire[];
   nextCursor?: string | null;
 }
 
 /** Newest-first DM thread page (desktop `fetch_dm_thread`). */
-export interface DmThreadResponse {
+export interface DmThreadResponse extends HumanViewPageFields {
   messages: ConversationMessageWire[];
   nextCursor?: string | null;
 }
@@ -331,6 +343,8 @@ export interface ConversationApi {
     cursor?: string | null;
     /** Exclusive ISO8601 lower bound — only messages after this instant. */
     since?: string | null;
+    /** Ask the server for the human view. See `HumanViewPageFields`. */
+    view?: "human";
   }): Promise<ChannelDetailResponse>;
   /** the desktop `send_channel_message` command. */
   sendChannelMessage(args: {
@@ -356,6 +370,10 @@ export interface ConversationApi {
   fetchDmThread(args: {
     withPersonUid: string;
     limit?: number;
+    /** `nextCursor` of the previous page. */
+    cursor?: string | null;
+    /** Ask the server for the human view. See `HumanViewPageFields`. */
+    view?: "human";
   }): Promise<DmThreadResponse>;
   /** the desktop `send_dm` command. */
   sendDm(args: {
@@ -494,6 +512,13 @@ export interface ChatWakeEvents {
     /** `unread` is an authoritative rollup, not a one-message delta. */
     absoluteUnread?: boolean;
   };
+  /**
+   * The person sent a message to this channel from the composer. Unlike a
+   * `channel:new-message` wake, this is known to be a message a person typed,
+   * so a rail that orders by the last human message reads the directory
+   * again at once.
+   */
+  "channel:own-send": { channelId: string };
   /** A channel row changed shape. */
   "channel:updated": Channel;
   /**

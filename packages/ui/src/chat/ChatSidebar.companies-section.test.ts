@@ -86,6 +86,17 @@ const PROVISIONING: Workspace = {
   homeChannelId: null,
 };
 
+/** A personal workspace may have a cloud UID, but it is not a company. */
+const PERSONAL_WITH_CLOUD_UID: Workspace = {
+  ...INDIGO,
+  slug: "personal",
+  displayName: "My Personal Space",
+  kind: "personal",
+  state: "personal",
+  cloudUid: "prs_personal_test",
+  homeChannelId: null,
+};
+
 const homeChannelRow: ChannelDirectoryRow = {
   channelId: "chn_home_indigo",
   type: "chat",
@@ -203,8 +214,69 @@ describe("ChatSidebar Companies section — click opens the home channel", () =>
     // "open a channel by id" event fires with the roster's homeChannelId,
     // the same path deep links and notifications use.
     expect(openSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ channelId: "chn_home_stalled" }),
+      expect.objectContaining({
+        channelId: "chn_home_stalled",
+        title: "Stalled Co",
+      }),
     );
+  });
+
+  it("shows a company's display name instead of its home-channel slug in TODAY", async () => {
+    const xyCompany: Workspace = {
+      ...INDIGO,
+      slug: "xy",
+      displayName: "Two Word Company",
+      cloudUid: "cmp_xy",
+      homeChannelId: "chn_home_xy",
+    };
+    const xyHome: ChannelDirectoryRow = {
+      ...homeChannelRow,
+      channelId: "chn_home_xy",
+      companyUid: "cmp_xy",
+      name: "xy",
+    };
+    component = mount(ChatSidebar, {
+      target: host,
+      props: {
+        api: stubApi(),
+        seedDirectory: [xyHome],
+        companies: [xyCompany],
+        scopeUid: "all",
+      },
+    });
+
+    const rowTitle = () =>
+      host.querySelector(
+        '[data-conversation-id="ch:chn_home_xy"] .chat-row-title',
+      );
+    await vi.waitFor(() => expect(rowTitle()).toBeTruthy());
+    expect(rowTitle()?.textContent?.trim()).toBe("Two Word Company");
+    expect(rowTitle()?.textContent?.trim()).not.toBe("xy");
+  });
+
+  it("does not render or ensure a personal workspace that has a cloud UID but no home channel", async () => {
+    const ensureCompanyHomeChannel = vi.fn(async () => ({ homeChannelId: "chn_should_not_exist" }));
+    component = mount(ChatSidebar, {
+      target: host,
+      props: {
+        api: stubApi({ ensureCompanyHomeChannel }),
+        seedDirectory: [homeChannelRow],
+        companies: [INDIGO, PERSONAL_WITH_CLOUD_UID],
+        scopeUid: "all",
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(host.querySelector('[data-testid="chat-companies-row-cmp_indigo"]')).toBeTruthy();
+    });
+
+    // The personal workspace is not a company-section row, so it cannot reach
+    // the company-only ensure endpoint through this section.
+    const personalRow = host.querySelector<HTMLButtonElement>(
+      '[data-testid="chat-companies-row-disabled-prs_personal_test"], [data-testid="chat-companies-row-prs_personal_test"]',
+    );
+    expect(personalRow).toBeNull();
+    expect(ensureCompanyHomeChannel).not.toHaveBeenCalled();
   });
 
   it("ensureCompanyHomeChannel and logToFile are required: a no-homeChannelId row still attempts ensure on click, never silently disables", async () => {

@@ -21,8 +21,6 @@ const app = vi.hoisted(() => ({
 }));
 const onboardingFlags = vi.hoisted(() => ({
   firstFolderSyncEnabled: false,
-  inviteTeammateEnabled: false,
-  setupStageTimeoutFixEnabled: false,
   hasFeature: vi.fn(),
   startSync: vi.fn(),
 }));
@@ -42,10 +40,7 @@ vi.mock('@tauri-apps/api/app', () => ({ getVersion: app.getVersion }));
 vi.mock('@tauri-apps/plugin-shell', () => ({ open: tauri.open }));
 vi.mock('@tauri-apps/plugin-http', () => ({ fetch: httpFetch }));
 vi.mock('@hq/platform', () => ({
-  SETUP_DIRECTORY_PARENT_FALLBACK_FLAG: 'desktop.setup-directory-parent-fallback',
-  SETUP_STAGE_TIMEOUT_FIX_FLAG: 'desktop.setup-stage-timeout-fix-v1',
   FIRST_FOLDER_SYNC_STEP_FLAG: 'desktop.first-folder-sync-step-v1',
-  INVITE_TEAMMATE_STEP_FLAG: 'desktop.invite-teammate-step-v1',
   retryThrottled: async <T>(
     attempt: (attemptIndex: number) => Promise<T>,
     classify: (result: T) => { status: number | null },
@@ -61,41 +56,10 @@ vi.mock('@hq/platform', () => ({
   createSyncPlatformAdapter: vi.fn(() => ({
     identity: {
       hasFeature: (flag: string) => {
-        if (
-          flag === 'desktop.first-folder-sync-step-v1' ||
-          flag === 'desktop.invite-teammate-step-v1' ||
-          flag === 'desktop.setup-stage-timeout-fix-v1'
-        ) {
+        if (flag === 'desktop.first-folder-sync-step-v1') {
           return onboardingFlags.hasFeature(flag);
         }
-        if (flag !== 'desktop.setup-directory-parent-fallback') {
-          return Promise.resolve({ ok: true, value: false });
-        }
-        return (async () => {
-          try {
-            const raw = await tauri.invoke('hq_pro_fetch', {
-              url: '/v1/flags/resolve',
-              method: 'GET',
-              body: null,
-            });
-            const response =
-              raw && typeof raw === 'object'
-                ? (raw as { body?: unknown })
-                : {};
-            const body =
-              typeof response.body === 'string' ? JSON.parse(response.body) : null;
-            return {
-              ok: true,
-              value: body?.flags?.[flag] === true,
-            };
-          } catch {
-            return {
-              ok: false,
-              reason: 'test flag transport unavailable',
-              code: 'test-transport-failed',
-            };
-          }
-        })();
+        return Promise.resolve({ ok: true, value: false });
       },
     },
     sync: {
@@ -462,17 +426,11 @@ beforeEach(() => {
     text: async () => '',
   });
   onboardingFlags.firstFolderSyncEnabled = false;
-  onboardingFlags.inviteTeammateEnabled = false;
-  onboardingFlags.setupStageTimeoutFixEnabled = false;
   onboardingFlags.hasFeature.mockReset().mockImplementation(async (flag: string) => ({
     ok: true,
     value:
-      (flag === 'desktop.first-folder-sync-step-v1' &&
-        onboardingFlags.firstFolderSyncEnabled) ||
-      (flag === 'desktop.invite-teammate-step-v1' &&
-        onboardingFlags.inviteTeammateEnabled) ||
-      (flag === 'desktop.setup-stage-timeout-fix-v1' &&
-        onboardingFlags.setupStageTimeoutFixEnabled),
+      flag === 'desktop.first-folder-sync-step-v1' &&
+      onboardingFlags.firstFolderSyncEnabled,
   }));
   onboardingFlags.startSync.mockReset().mockResolvedValue({
     ok: true,
@@ -519,14 +477,6 @@ describe('onboarding directory selection', () => {
           return args?.path === defaultPath
             ? { exists: true, isHq: false, nonEmpty: true }
             : { exists: false, isHq: false, nonEmpty: false };
-        case 'hq_pro_fetch':
-          return {
-            status: 200,
-            body: JSON.stringify({
-              version: 1,
-              flags: { 'desktop.setup-directory-parent-fallback': true },
-            }),
-          };
         default:
           return undefined;
       }
@@ -575,14 +525,6 @@ describe('onboarding directory selection', () => {
           return args?.path === selectedPath
             ? { exists: true, isHq: false, nonEmpty: true }
             : { exists: false, isHq: false, nonEmpty: false };
-        case 'hq_pro_fetch':
-          return {
-            status: 200,
-            body: JSON.stringify({
-              version: 1,
-              flags: { 'desktop.setup-directory-parent-fallback': true },
-            }),
-          };
         default:
           return undefined;
       }
@@ -700,14 +642,6 @@ describe('onboarding directory selection', () => {
           return false;
         case 'detect_hq':
           return { exists: true, isHq: false, nonEmpty: true };
-        case 'hq_pro_fetch':
-          return {
-            status: 200,
-            body: JSON.stringify({
-              version: 1,
-              flags: { 'desktop.setup-directory-parent-fallback': true },
-            }),
-          };
         default:
           return undefined;
       }
@@ -765,7 +699,7 @@ describe('onboarding directory selection', () => {
     host
       .querySelector<HTMLButtonElement>('[data-testid="onboarding-directory"] .choose')
       ?.click();
-    await flushUntil(() => host.textContent?.includes('The folder could not be checked') === true);
+    await flushUntil(() => host.textContent?.includes('HQ could not check this folder') === true);
 
     expect(host.textContent).toContain('Choose another location');
     expect(host.textContent).not.toContain(transportError);
@@ -962,7 +896,22 @@ describe('first-run sign-in screen', () => {
     providerButtons()[1]?.click();
     flushSync();
 
-    expect(tauri.invoke).toHaveBeenCalledWith('start_oauth_login', { provider: 'Microsoft' });
+    expect(tauri.invoke).not.toHaveBeenCalledWith(
+      'start_oauth_login',
+      expect.objectContaining({ provider: 'Microsoft' }),
+    );
+    const email = host.querySelector<HTMLInputElement>('[data-testid="microsoft-email"]');
+    expect(email).not.toBeNull();
+    email!.value = 'scottallen@dim6fitness.com';
+    email!.dispatchEvent(new Event('input', { bubbles: true }));
+    await flush();
+    host.querySelector<HTMLButtonElement>('[data-testid="microsoft-email-continue"]')?.click();
+    flushSync();
+
+    expect(tauri.invoke).toHaveBeenCalledWith('start_oauth_login', {
+      provider: 'Microsoft',
+      email: 'scottallen@dim6fitness.com',
+    });
     expect(tauri.invoke).not.toHaveBeenCalledWith('start_oauth_login', { provider: 'Google' });
   });
 
@@ -2110,6 +2059,10 @@ describe('setup restart', () => {
       switch (command) {
         case 'resolve_hq_path':
           return '/Users/test/hq';
+        case 'detect_hq':
+          return { exists: false, isHq: false, nonEmpty: false };
+        case 'check_writable':
+          return true;
         case 'detect_ai_tools':
           return NO_AI_TOOLS;
         case 'fetch_and_extract_template':
@@ -2141,6 +2094,10 @@ describe('setup restart', () => {
       switch (command) {
         case 'resolve_hq_path':
           return '/Users/test/hq';
+        case 'detect_hq':
+          return { exists: false, isHq: false, nonEmpty: false };
+        case 'check_writable':
+          return true;
         case 'detect_ai_tools':
           return NO_AI_TOOLS;
         case 'fetch_and_extract_template':
@@ -2172,6 +2129,10 @@ describe('setup restart', () => {
       switch (command) {
         case 'resolve_hq_path':
           return '/Users/test/hq';
+        case 'detect_hq':
+          return { exists: false, isHq: false, nonEmpty: false };
+        case 'check_writable':
+          return true;
         case 'detect_ai_tools':
           return NO_AI_TOOLS;
         case 'fetch_and_extract_template':
@@ -2434,7 +2395,6 @@ describe('invite teammate onboarding step', () => {
   };
 
   async function reachInviteScenario(options: {
-    flagEnabled?: boolean;
     firstFolderEnabled?: boolean;
     companyMembers?: Array<Record<string, unknown>>;
     fetchResponses?: Record<
@@ -2445,7 +2405,6 @@ describe('invite teammate onboarding step', () => {
     inviteResponses?: Array<{ status: number; body: unknown }>;
   } = {}): Promise<void> {
     onboardingFlags.firstFolderSyncEnabled = options.firstFolderEnabled ?? false;
-    onboardingFlags.inviteTeammateEnabled = options.flagEnabled ?? true;
     let inviteResponseIndex = 0;
     const fetchResponseIndexes: Record<string, number> = {};
     mountWizard(vi.fn(), SETUP_STEP_INDEX);
@@ -2532,22 +2491,6 @@ describe('invite teammate onboarding step', () => {
     button.click();
   }
 
-  it('fails closed with the flag off and does not read memberships', async () => {
-    await reachInviteScenario({ flagEnabled: false });
-
-    expect(onboardingFlags.hasFeature).toHaveBeenCalledWith(
-      'desktop.invite-teammate-step-v1',
-    );
-    expect(host.querySelector('[data-testid="onboarding-invite-teammate"]')).toBeNull();
-    expect(
-      tauri.invoke.mock.calls.filter(
-        ([command, args]) =>
-          command === 'hq_pro_fetch' &&
-          (args as { url?: string })?.url?.startsWith('/membership/'),
-      ),
-    ).toEqual([]);
-  });
-
   it('does not show the step when the company has multiple active members', async () => {
     await reachInviteScenario({
       companyMembers: [
@@ -2564,6 +2507,15 @@ describe('invite teammate onboarding step', () => {
           (args as { url?: string })?.url === '/membership/company/cmp_demo',
       ),
     ).toBe(true);
+  });
+
+  it('shows the invite step for a one-member company without a feature flag', async () => {
+    await reachInviteScenario();
+
+    expect(host.querySelector('[data-testid="onboarding-invite-teammate"]')).not.toBeNull();
+    expect(onboardingFlags.hasFeature).toHaveBeenCalledExactlyOnceWith(
+      'desktop.first-folder-sync-step-v1',
+    );
   });
 
   it('ignores non-active roster rows when checking the single active member', async () => {
@@ -2956,8 +2908,7 @@ describe('setup progress direction', () => {
     expect(failure.properties.errorKind).toBe('setup_stage_timeout');
   });
 
-  it('renews the deps inactivity timeout for installer output when the hq flag is on', async () => {
-    onboardingFlags.setupStageTimeoutFixEnabled = true;
+  it('renews the deps inactivity timeout for installer output', async () => {
     let resolveInstall: (() => void) | undefined;
     tauri.invoke.mockImplementation(async (command: string) => {
       switch (command) {
@@ -3015,8 +2966,7 @@ describe('setup progress direction', () => {
     );
   });
 
-  it('renews the deps inactivity timeout for matching preflight installer output when the hq flag is on', async () => {
-    onboardingFlags.setupStageTimeoutFixEnabled = true;
+  it('renews the deps inactivity timeout for matching preflight installer output', async () => {
     let resolveInstall: (() => void) | undefined;
     tauri.invoke.mockImplementation(async (command: string) => {
       switch (command) {
@@ -3069,8 +3019,7 @@ describe('setup progress direction', () => {
     );
   });
 
-  it('renews the content inactivity timeout for download progress when the hq flag is on', async () => {
-    onboardingFlags.setupStageTimeoutFixEnabled = true;
+  it('renews the content inactivity timeout for download progress', async () => {
     let resolveContent: (() => void) | undefined;
     tauri.invoke.mockImplementation(async (command: string) => {
       switch (command) {
@@ -3128,8 +3077,7 @@ describe('setup progress direction', () => {
     );
   });
 
-  it('renews the indexing inactivity timeout for reindex output when the hq flag is on', async () => {
-    onboardingFlags.setupStageTimeoutFixEnabled = true;
+  it('renews the indexing inactivity timeout for reindex output', async () => {
     let resolveReindex: (() => void) | undefined;
     tauri.invoke.mockImplementation(async (command: string) => {
       switch (command) {
@@ -3196,42 +3144,7 @@ describe('setup progress direction', () => {
     );
   });
 
-  it('keeps the existing deps timeout when the new hq flag is off', async () => {
-    onboardingFlags.setupStageTimeoutFixEnabled = false;
-    tauri.invoke.mockImplementation(async (command: string) => {
-      switch (command) {
-        case 'resolve_hq_path':
-          return '/Users/test/hq';
-        case 'detect_ai_tools':
-          return NO_AI_TOOLS;
-        case 'install_deps':
-          return new Promise<void>(() => {});
-        default:
-          return undefined;
-      }
-    });
-
-    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
-    await flushUntil(() =>
-      tauri.invoke.mock.calls.some(([command]) => command === 'install_deps') &&
-      eventHarness.handlers.has('install:progress'),
-    );
-    emitTauriEvent('install:progress', { handle: 'setup-installer-handle' });
-    await vi.advanceTimersByTimeAsync(stageTimeoutMs('deps'));
-
-    const failure = tauri.invoke.mock.calls.find(
-      ([command, args]) =>
-        command === 'emit_desktop_operational_telemetry' &&
-        (args as { properties?: { action?: string; failureStage?: string } }).properties
-          ?.action === 'failed' &&
-        (args as { properties?: { failureStage?: string } }).properties?.failureStage ===
-          'deps',
-    )?.[1] as { properties: Record<string, unknown> } | undefined;
-    expect(failure?.properties.errorKind).toBe('setup_stage_timeout');
-  });
-
-  it('continues timing out at the hard elapsed ceiling despite ongoing progress when the hq flag is on', async () => {
-    onboardingFlags.setupStageTimeoutFixEnabled = true;
+  it('continues timing out at the hard elapsed ceiling despite ongoing progress', async () => {
     tauri.invoke.mockImplementation(async (command: string) => {
       switch (command) {
         case 'resolve_hq_path':
@@ -3287,107 +3200,6 @@ describe('setup progress direction', () => {
     // usage-data line; first run has no separate consent screen).
     await skipToReady();
     expectReadyWithConsent();
-  });
-
-  it('keeps the content wall-clock timeout when the new hq flag is off', async () => {
-    onboardingFlags.setupStageTimeoutFixEnabled = false;
-    tauri.invoke.mockImplementation(async (command: string) => {
-      switch (command) {
-        case 'resolve_hq_path':
-          return '/Users/test/hq';
-        case 'detect_ai_tools':
-          return NO_AI_TOOLS;
-        case 'fetch_and_extract_template':
-          return new Promise<void>(() => {});
-        default:
-          return undefined;
-      }
-    });
-
-    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
-    await flushUntil(() =>
-      tauri.invoke.mock.calls.some(([command]) => command === 'fetch_and_extract_template') &&
-      eventHarness.handlers.has('content:progress'),
-    );
-    const contentArgs = tauri.invoke.mock.calls.find(
-      ([command]) => command === 'fetch_and_extract_template',
-    )?.[1] as { handle: string };
-
-    await vi.advanceTimersByTimeAsync(stageTimeoutMs('content') - 1);
-    emitTauriEvent('content:progress', {
-      handle: contentArgs.handle,
-      phase: 'download',
-      receivedBytes: 1,
-    });
-    await vi.advanceTimersByTimeAsync(1);
-    await flushUntil(() =>
-      tauri.invoke.mock.calls.some(
-        ([command, args]) =>
-          command === 'emit_desktop_operational_telemetry' &&
-          (args as { properties?: { action?: string; failureStage?: string; errorKind?: string } })
-            .properties?.action === 'failed' &&
-          (args as { properties?: { failureStage?: string } }).properties?.failureStage ===
-            'content' &&
-          (args as { properties?: { errorKind?: string } }).properties?.errorKind ===
-            'setup_stage_timeout',
-      ),
-    );
-  });
-
-  it('keeps indexing wall-clock timeout and omits activityTimeoutEnabled when the new hq flag is off', async () => {
-    onboardingFlags.setupStageTimeoutFixEnabled = false;
-    tauri.invoke.mockImplementation(async (command: string) => {
-      switch (command) {
-        case 'resolve_hq_path':
-          return '/Users/test/hq';
-        case 'detect_ai_tools':
-          return NO_AI_TOOLS;
-        case 'read_install_manifest':
-          return {
-            installPath: '/Users/test/hq',
-            startedAt: '2026-07-28T12:00:00.000Z',
-            completedAt: null,
-            steps: {
-              content: { status: 'ok' },
-              deps: { status: 'ok' },
-              'initial-sync': { status: 'ok' },
-              'git-init': { status: 'ok' },
-              personalize: { status: 'ok' },
-              indexing: { status: 'pending' },
-            },
-          };
-        case 'register_search_index':
-          return new Promise<void>(() => {});
-        default:
-          return undefined;
-      }
-    });
-
-    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
-    await flushUntil(() =>
-      tauri.invoke.mock.calls.some(([command]) => command === 'register_search_index') &&
-      eventHarness.handlers.has('setup:reindex-progress'),
-    );
-    const indexingArgs = tauri.invoke.mock.calls.find(
-      ([command]) => command === 'register_search_index',
-    )?.[1] as { failureScope: { setupRunId: string } };
-    expect(indexingArgs).not.toHaveProperty('activityTimeoutEnabled');
-
-    await vi.advanceTimersByTimeAsync(stageTimeoutMs('indexing') - 1);
-    emitTauriEvent('setup:reindex-progress', indexingArgs.failureScope.setupRunId);
-    await vi.advanceTimersByTimeAsync(1);
-    await flushUntil(() =>
-      tauri.invoke.mock.calls.some(
-        ([command, args]) =>
-          command === 'emit_desktop_operational_telemetry' &&
-          (args as { properties?: { action?: string; failureStage?: string; errorKind?: string } })
-            .properties?.action === 'failed' &&
-          (args as { properties?: { failureStage?: string } }).properties?.failureStage ===
-            'indexing' &&
-          (args as { properties?: { errorKind?: string } }).properties?.errorKind ===
-            'setup_stage_timeout',
-      ),
-    );
   });
 
   function sampleProgress(): ProgressSample {
@@ -3497,5 +3309,275 @@ describe('setup progress direction', () => {
     expect(afterRetry?.subStatus).not.toContain('Retrying');
     expect(afterRetry?.subStatus).not.toBe('');
     expect(afterRetry?.elapsedSeconds ?? 0).toBeGreaterThanOrEqual(25);
+  });
+});
+
+describe('company onboarding step', () => {
+  const createCompanyCard = {
+    v: 1,
+    type: 'lifecycle_card',
+    kind: 'create_company',
+    cardId: 'card_create_company',
+    state: 'open',
+    title: 'Name your company',
+    summary: null,
+    fields: [
+      { id: 'name', label: 'Company name', control: 'text', required: true, value: '' },
+      { id: 'slug', label: 'Company handle', control: 'text', required: true, value: '' },
+      { id: 'website', label: 'Website', control: 'text', required: false, value: '' },
+    ],
+    actions: [{ id: 'submit', label: 'Create company', style: 'primary' }],
+    viewer: { canAct: true },
+  };
+
+  async function reachCompanyScenario(options: {
+    memberships?: Array<Record<string, unknown>>;
+    pendingInvites?: Array<{ slug: string; displayName: string }>;
+    checkout?: { status: number; body: unknown };
+  } = {}): Promise<void> {
+    onboardingFlags.firstFolderSyncEnabled = false;
+    mountWizard(vi.fn(), SETUP_STEP_INDEX);
+    tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        case 'list_syncable_workspaces':
+          return {
+            workspaces: (options.pendingInvites ?? []).map((invite) => ({
+              ...invite,
+              kind: 'company',
+              state: 'cloud-only',
+              membershipStatus: 'pending',
+              cloudUid: `cmp_${invite.slug}`,
+            })),
+          };
+        case 'claim_pending_company_invite':
+          return { ok: true, claimedSlugs: [args?.companySlug], message: 'Joined' };
+        case 'run_card_action':
+          if (args?.cardId === 'companies_summary') {
+            throw new Error('[not_found] Request failed (status 404)');
+          }
+          return { state: 'done', companyUid: 'cmp_new', companyChannelId: 'ch_new' };
+        case 'fetch_channel':
+          return {
+            channelId: 'setup',
+            messages: [
+              {
+                eventId: 'evt_card',
+                createdAt: new Date().toISOString(),
+                messageKind: 'system',
+                systemEvent: createCompanyCard,
+              },
+            ],
+          };
+        case 'check_company_slug':
+          return { valid: true, available: true, normalized: args?.slug, suggestion: null, reasons: [] };
+        case 'run_company_tab_action':
+          return { state: 'done' };
+        case 'hq_pro_fetch': {
+          if (args?.url === '/membership/me') {
+            return { status: 200, body: JSON.stringify({ memberships: options.memberships ?? [] }) };
+          }
+          if (args?.url === '/v1/billing/checkout/team') {
+            const answer = options.checkout ?? {
+              status: 200,
+              body: { url: 'https://checkout.stripe.com/c/pay/cs_test' },
+            };
+            return { status: answer.status, body: JSON.stringify(answer.body) };
+          }
+          return { status: 200, body: '{}' };
+        }
+        default:
+          return undefined;
+      }
+    });
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'record_install_complete'),
+    );
+    await skipToReady();
+  }
+
+  function companyRows(): Array<Record<string, unknown>> {
+    return tauri.invoke.mock.calls.flatMap(([command, rawArgs]) => {
+      const args = rawArgs as { eventName?: string; properties?: Record<string, unknown> };
+      return command === 'emit_desktop_operational_telemetry' &&
+        args.eventName === 'desktop_onboarding_step' &&
+        args.properties?.step === 'company'
+        ? [args.properties]
+        : [];
+    });
+  }
+
+  function typeInto(testId: string, value: string): void {
+    const input = host.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[data-testid="${testId}"]`);
+    if (!input) throw new Error(`Expected ${testId} to render.`);
+    input.value = value;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  function click(testId: string): void {
+    const button = host.querySelector<HTMLButtonElement | HTMLInputElement>(`[data-testid="${testId}"]`);
+    if (!button) throw new Error(`Expected ${testId} to render.`);
+    if (button.disabled) throw new Error(`${testId} is disabled.`);
+    button.click();
+  }
+
+  async function settle(): Promise<void> {
+    await vi.advanceTimersByTimeAsync(400);
+    await flush();
+  }
+
+  it('skips the step for a person who already belongs to a company', async () => {
+    await reachCompanyScenario({
+      memberships: [{ companyUid: 'cmp_demo', personUid: 'prs_owner', status: 'active' }],
+    });
+    expect(host.querySelector('[data-testid="onboarding-company"]')).toBeNull();
+    expect(tauri.invoke.mock.calls.some(([command]) => command === 'run_card_action')).toBe(false);
+  });
+
+  it('names a company, invites a teammate, and starts on Starter', async () => {
+    await reachCompanyScenario();
+    await flushUntil(() =>
+      Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')),
+    );
+
+    typeInto('onboarding-company-field-name', 'Acme Studio');
+    typeInto('onboarding-company-invites', 'pat@acme.com');
+    await settle();
+    expect(
+      host.querySelector<HTMLInputElement>('[data-testid="onboarding-company-field-slug"]')?.value,
+    ).toBe('acme-studio');
+    expect(tauri.invoke).toHaveBeenCalledWith('check_company_slug', { slug: 'acme-studio' });
+
+    click('onboarding-company-create');
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-plan-starter"]')));
+
+    const submit = tauri.invoke.mock.calls.find(
+      ([command, args]) =>
+        command === 'run_card_action' && (args as { cardId?: string }).cardId === 'card_create_company',
+    );
+    expect((submit?.[1] as { values: Record<string, string> }).values).toEqual({
+      name: 'Acme Studio',
+      slug: 'acme-studio',
+      website: '',
+    });
+    expect(tauri.invoke).toHaveBeenCalledWith(
+      'run_company_tab_action',
+      expect.objectContaining({
+        companyUid: 'cmp_new',
+        tab: 'team',
+        cardId: 'team:invite',
+        values: { email: 'pat@acme.com', role: 'member', inviteSurface: 'desktop' },
+      }),
+    );
+
+    click('onboarding-plan-continue');
+    await settle();
+    expect(host.querySelector('[data-testid="onboarding-company"]')).toBeNull();
+    expect(
+      tauri.invoke.mock.calls.some(
+        ([command, args]) =>
+          command === 'hq_pro_fetch' && (args as { url?: string }).url === '/v1/billing/checkout/team',
+      ),
+    ).toBe(false);
+    const rows = companyRows();
+    expect(rows.find((row) => row.outcome === 'company_created')?.companyUid).toBe('cmp_new');
+    expect(rows.some((row) => row.outcome === 'plan_starter')).toBe(true);
+    expect(rows.some((row) => row.action === 'completed' && row.outcome === 'created_starter')).toBe(true);
+    for (const row of rows) {
+      expect(JSON.stringify(row)).not.toContain('pat@acme.com');
+      expect(JSON.stringify(row)).not.toContain('Acme Studio');
+    }
+  });
+
+  it('opens Workforce checkout in the browser and finishes on the checkout return', async () => {
+    await reachCompanyScenario();
+    await flushUntil(() =>
+      Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')),
+    );
+    typeInto('onboarding-company-field-name', 'Acme');
+    await settle();
+    click('onboarding-company-create');
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-plan-workforce"]')));
+
+    click('onboarding-plan-workforce');
+    await flush();
+    click('onboarding-plan-continue');
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-checkout-done"]')));
+
+    expect(tauri.invoke).toHaveBeenCalledWith('hq_pro_fetch', {
+      url: '/v1/billing/checkout/team',
+      method: 'POST',
+      body: JSON.stringify({
+        companyUid: 'cmp_new',
+        successUrl: 'hq-desktop://setup?checkout=done&company=cmp_new',
+        cancelUrl: 'hq-desktop://setup',
+      }),
+    });
+    expect(tauri.open).toHaveBeenCalledWith('https://checkout.stripe.com/c/pay/cs_test');
+
+    // A return for some other company is not this checkout.
+    emitTauriEvent('messages:open-setup', { companyUid: 'cmp_other', checkout: 'done' });
+    await flush();
+    expect(host.querySelector('[data-testid="onboarding-checkout-done"]')).not.toBeNull();
+
+    emitTauriEvent('messages:open-setup', { companyUid: 'cmp_new', checkout: 'done' });
+    await settle();
+    expect(host.querySelector('[data-testid="onboarding-company"]')).toBeNull();
+    const rows = companyRows();
+    expect(rows.some((row) => row.outcome === 'checkout_opened' && row.companyUid === 'cmp_new')).toBe(true);
+    expect(rows.some((row) => row.outcome === 'checkout_returned' && row.companyUid === 'cmp_new')).toBe(true);
+    expect(rows.some((row) => row.action === 'completed' && row.outcome === 'workforce_paid')).toBe(true);
+  });
+
+  it('keeps the person on the plan screen with a plain reason when checkout is paused', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await reachCompanyScenario({
+      checkout: { status: 503, body: { code: 'team_signup_disabled' } },
+    });
+    await flushUntil(() =>
+      Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')),
+    );
+    typeInto('onboarding-company-field-name', 'Acme');
+    await settle();
+    click('onboarding-company-create');
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-plan-workforce"]')));
+    click('onboarding-plan-workforce');
+    await flush();
+    click('onboarding-plan-continue');
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-error"]')));
+
+    expect(host.querySelector('[data-testid="onboarding-company-error"]')?.textContent).toContain(
+      'Workforce sign-up is paused',
+    );
+    expect(tauri.open).not.toHaveBeenCalled();
+    expect(companyRows().some((row) => row.action === 'failed' && row.outcome === 'checkout_failed')).toBe(true);
+    warn.mockRestore();
+  });
+
+  it('lets an invited person join instead of creating a company', async () => {
+    await reachCompanyScenario({ pendingInvites: [{ slug: 'acme', displayName: 'Acme' }] });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-join"]')));
+    expect(host.querySelector('[data-testid="onboarding-company-join"]')?.textContent).toContain('Join Acme');
+
+    click('onboarding-company-join');
+    await settle();
+    expect(tauri.invoke).toHaveBeenCalledWith('claim_pending_company_invite', { companySlug: 'acme' });
+    expect(host.querySelector('[data-testid="onboarding-company"]')).toBeNull();
+    expect(tauri.invoke.mock.calls.some(([command]) => command === 'run_card_action')).toBe(false);
+    expect(companyRows().some((row) => row.action === 'completed' && row.outcome === 'joined')).toBe(true);
+  });
+
+  it('can be skipped', async () => {
+    await reachCompanyScenario();
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-skip"]')));
+    click('onboarding-company-skip');
+    await settle();
+    expect(host.querySelector('[data-testid="onboarding-company"]')).toBeNull();
+    expect(companyRows().some((row) => row.action === 'skipped')).toBe(true);
   });
 });

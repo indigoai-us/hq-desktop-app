@@ -93,4 +93,39 @@ describe('SignInPrompt browser continuation', () => {
 
     resolveConfig({ protocolVersion: 1, minimumDesktopVersion: '0.10.229', variant: 'control', rolloutPercent: 100 });
   });
+
+  it('asks for email before Microsoft OAuth so work accounts are not sent to MicrosoftPersonal', async () => {
+    tauri.invoke.mockImplementation((command: string) => {
+      switch (command) {
+        case 'desktop_continuation_context':
+          return Promise.resolve(null);
+        case 'start_oauth_login':
+          return new Promise(() => {});
+        default:
+          return Promise.resolve(undefined);
+      }
+    });
+    component = mount(SignInPrompt, { target: host });
+    await flush();
+
+    providerButtons()[1]?.click();
+    flushSync();
+
+    expect(tauri.invoke).not.toHaveBeenCalledWith(
+      'start_oauth_login',
+      expect.objectContaining({ provider: 'Microsoft' }),
+    );
+    const email = host.querySelector<HTMLInputElement>('[data-testid="microsoft-email"]');
+    expect(email).not.toBeNull();
+    email!.value = 'scottallen@dim6fitness.com';
+    email!.dispatchEvent(new Event('input', { bubbles: true }));
+    await flush();
+    host.querySelector<HTMLButtonElement>('[data-testid="microsoft-email-continue"]')?.click();
+    flushSync();
+
+    expect(tauri.invoke).toHaveBeenCalledWith('start_oauth_login', {
+      provider: 'Microsoft',
+      email: 'scottallen@dim6fitness.com',
+    });
+  });
 });

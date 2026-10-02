@@ -17,6 +17,9 @@ use sha2::{Digest, Sha256};
 use hq_desktop_core::agent_usage_scan::{
     enumerate_rollout_files, resolve_claude_projects_dirs, RolloutFile,
 };
+use hq_desktop_core::usage_upload_plan::{
+    AddUsageEvent, UsageUploadBatch, UsageUploadPlanner, UsageUploadSource,
+};
 
 use crate::commands::sync::resolve_vault_api_url;
 use crate::commands::vault_client::{
@@ -852,6 +855,12 @@ const ALLOWED_DESKTOP_PROPERTY_KEYS: &[&str] = &[
     "errorOperation",
     "errorIoKind",
     "errorCode",
+    "deferralCount",
+    "firstDeferralAgeSeconds",
+    "lockTimeoutSeconds",
+    "holdReason",
+    "requiredGitVersion",
+    "detectedGitVersion",
 ];
 
 const SYMLINK_ERROR_OPERATION_VALUES: &[&str] = &[
@@ -1074,6 +1083,38 @@ fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
     Value::Object(out)
 }
 
+fn sanitize_post_ready_action_properties(properties: Option<Value>) -> Value {
+    let Some(Value::Object(input)) = properties else {
+        return Value::Object(Map::new());
+    };
+    let mut out = Map::new();
+    for (key, prefix) in [
+        ("personUid", "prs_"),
+        ("companyUid", "cmp_"),
+        ("idempotencyKey", "post-ready."),
+    ] {
+        let Some(value) = input.get(key).and_then(Value::as_str) else {
+            continue;
+        };
+        if value.starts_with(prefix) && is_safe_label_value(value) {
+            out.insert(key.to_string(), Value::String(value.to_string()));
+        }
+    }
+    if let Some(action) = input
+        .get("action")
+        .and_then(Value::as_str)
+        .filter(|action| {
+            matches!(
+                *action,
+                "open_folder" | "start_sync" | "open_cli" | "invite" | "close_window"
+            )
+        })
+    {
+        out.insert("action".to_string(), Value::String(action.to_string()));
+    }
+    Value::Object(out)
+}
+
 fn build_desktop_telemetry_event(
     event_name: String,
     properties: Option<Value>,
@@ -1091,7 +1132,35 @@ fn build_desktop_telemetry_event(
                     && input.get("component").and_then(Value::as_str) == Some("content")
             })
             .unwrap_or(false);
-    let mut properties = sanitize_desktop_properties(properties);
+    let is_post_ready_action = event_name == "desktop_post_ready_action";
+    let mut properties = if is_post_ready_action {
+        sanitize_post_ready_action_properties(properties)
+    } else {
+        sanitize_desktop_properties(properties)
+    };
+    let company_uid = if is_post_ready_action {
+        properties
+            .get("companyUid")
+            .and_then(Value::as_str)
+            .filter(|value| value.starts_with("cmp_") && value.len() <= 128)
+            .map(str::to_string)
+    } else {
+        None
+    };
+    let idempotency_key = if is_post_ready_action {
+        properties
+            .get("idempotencyKey")
+            .and_then(Value::as_str)
+            .filter(|value| is_safe_label_value(value))
+            .map(str::to_string)
+    } else {
+        None
+    };
+    if is_post_ready_action {
+        if let Some(properties) = properties.as_object_mut() {
+            properties.remove("idempotencyKey");
+        }
+    }
     if !is_content_setup_failure {
         if let Some(properties) = properties.as_object_mut() {
             properties.remove("errorOperation");
@@ -1111,10 +1180,16 @@ fn build_desktop_telemetry_event(
     }
     if matches!(
         event_name.as_str(),
-        "desktop_onboarding_step" | "desktop_setup_completed"
+        "desktop_onboarding_step" | "desktop_setup_completed" | "desktop_post_ready_action"
     ) {
         properties["appVersion"] = Value::String(crate::app_version::current().to_string());
     }
+    if is_post_ready_action {
+        properties["os"] = Value::String(std::env::consts::OS.to_string());
+    }
+    let install_attempt_id = (event_name == "desktop_setup_completed")
+        .then(crate::commands::first_run::install_attempt_id)
+        .flatten();
     RawTelemetryEvent {
         event_name,
         app: "hq-desktop-app".to_string(),
@@ -1131,8 +1206,10 @@ fn build_desktop_telemetry_event(
             }),
         consent_basis: consent_basis.to_string(),
         schema_version: 1,
-        idempotency_key: None,
+        idempotency_key,
         session_id: session_id.filter(|value| is_safe_label_value(value)),
+        company_uid,
+        install_attempt_id,
         properties,
     }
 }
@@ -1215,7 +1292,9 @@ async fn emit_desktop_operational_telemetry_with_vault(
 const OPERATIONAL_DESKTOP_EVENT_NAMES: &[&str] = &[
     "desktop_app_daily_active",
     "desktop_onboarding_step",
+    "desktop_post_ready_action",
     "desktop_setup_completed",
+    "desktop_auto_update_post_cap_outcome",
     "oauth_signin_succeeded",
     "telemetry_preference_changed",
 ];
@@ -1244,6 +1323,21 @@ pub async fn emit_desktop_operational_telemetry(
         occurred_at,
     )
     .await
+}
+
+/// Queue consent-free updater outcome telemetry without delaying installation.
+pub fn emit_desktop_operational_telemetry_best_effort(event_name: &'static str, properties: Value) {
+    tauri::async_runtime::spawn(async move {
+        if emit_desktop_operational_telemetry(event_name.to_string(), Some(properties), None, None)
+            .await
+            .is_err()
+        {
+            crate::util::logfile::log(
+                "telemetry",
+                &format!("best-effort operational event failed: {event_name}"),
+            );
+        }
+    });
 }
 
 /// Queue a consent-gated desktop event without delaying the updater path.
@@ -1281,6 +1375,8 @@ fn build_daily_active_event(utc_day: chrono::NaiveDate) -> RawTelemetryEvent {
         schema_version: 1,
         idempotency_key: Some(format!("hq-desktop-app:daily-active:{day}")),
         session_id: None,
+        company_uid: None,
+        install_attempt_id: None,
         properties: json!({
             "platform": crate::commands::version_gate::platform_tag(),
             "appVersion": crate::app_version::current(),
@@ -1883,27 +1979,6 @@ impl CodexRolloutScanner {
     }
 }
 
-/// Per-line tracking used to commit acknowledged or zero-event scan progress.
-struct RowSource {
-    file_path: String,
-    end_offset: u64,
-    mtime: u64,
-    context: Option<CodexUsageContext>,
-}
-
-fn record_source(sources: &mut Vec<RowSource>, source: RowSource) {
-    if let Some(existing) = sources
-        .iter_mut()
-        .find(|existing| existing.file_path == source.file_path)
-    {
-        if source.end_offset > existing.end_offset {
-            *existing = source;
-        }
-    } else {
-        sources.push(source);
-    }
-}
-
 #[derive(Debug, Deserialize)]
 struct UsageAck {
     ok: bool,
@@ -1988,6 +2063,7 @@ enum FlushOutcome {
     Accepted,
     Unaccepted { reason: &'static str },
     ConsentRevoked,
+    BudgetReached,
 }
 
 impl FlushOutcome {
@@ -2109,10 +2185,18 @@ async fn send_telemetry_if_opted_in_at<R: tauri::Runtime>(
     // Resolved once per collection run — a login-shell probe, not worth
     // repeating per batch. None (CLI absent/unresolvable) omits the field.
     let cli_version = crate::commands::hq_cli_update::get_hq_cli_version().await;
-
-    let mut batch_events: Vec<Value> = Vec::new();
-    let mut batch_sources: Vec<RowSource> = Vec::new();
+    let empty_batch_bytes = serde_json::to_vec(&json!({
+        "machineId": machine_id,
+        "installerVersion": installer_version,
+        "events": []
+    }))
+    .expect("empty usage batch serializes")
+    .len();
+    let batch_overhead_bytes = empty_batch_bytes.saturating_sub(2); // remove `[]`
+    let mut upload_plan =
+        UsageUploadPlanner::for_desktop_usage(batch_overhead_bytes, MAX_BATCH_BYTES);
     let mut upload_failed = false;
+    let mut sync_budget_reached = false;
 
     'claude_files: for file_path in &file_paths {
         let path_str = normalize_cursor_file_key(file_path);
@@ -2195,56 +2279,67 @@ async fn send_telemetry_if_opted_in_at<R: tauri::Runtime>(
             };
 
             if !single_event_fits(&machine_id, &installer_version, &sanitized) {
-                record_source(
-                    &mut batch_sources,
-                    RowSource {
-                        file_path: path_str.clone(),
-                        end_offset: line_end_offsets[i],
-                        mtime: current_mtime,
-                        context: None,
-                    },
-                );
+                upload_plan.record_source(UsageUploadSource {
+                    file_path: path_str.clone(),
+                    end_offset: line_end_offsets[i],
+                    mtime: current_mtime,
+                    context: None,
+                });
                 continue;
             }
 
-            // Check if adding this row would exceed 1 MB
-            if !batch_events.is_empty() {
-                let candidate =
-                    build_wire_payload(&machine_id, &installer_version, &batch_events, &sanitized);
-                if candidate.len() > MAX_BATCH_BYTES {
-                    // Flush current batch
-                    if !flush_batch(
-                        &vault,
-                        &api_url,
-                        jwt,
-                        &machine_id,
-                        &installer_version,
-                        cli_version.as_deref(),
-                        &mut cursor,
-                        unix_now_secs(),
-                        &mut batch_events,
-                        &mut batch_sources,
-                        &mut newly_committed,
-                    )
-                    .await
-                    .is_accepted()
-                    {
+            let source = UsageUploadSource {
+                file_path: path_str.clone(),
+                end_offset: line_end_offsets[i],
+                mtime: current_mtime,
+                context: None,
+            };
+            loop {
+                match upload_plan.add_event(sanitized.clone(), source.clone()) {
+                    Ok(AddUsageEvent::Added) => break,
+                    Ok(AddUsageEvent::TooLarge) => {
+                        eprintln!("[telemetry] usage row exceeds batch cap; leaving source offset uncommitted");
+                        upload_failed = true;
+                        break 'claude_files;
+                    }
+                    Ok(AddUsageEvent::FlushCurrentBatch) => {
+                        let batch = upload_plan.take_batch().expect("planner requested a flush");
+                        match flush_batch(
+                            &vault,
+                            &api_url,
+                            jwt,
+                            &machine_id,
+                            &installer_version,
+                            cli_version.as_deref(),
+                            &mut cursor,
+                            unix_now_secs(),
+                            &mut upload_plan,
+                            batch,
+                            &mut newly_committed,
+                        )
+                        .await
+                        {
+                            FlushOutcome::Accepted if upload_plan.budget_exhausted() => {
+                                sync_budget_reached = true;
+                                break 'claude_files;
+                            }
+                            FlushOutcome::Accepted => continue,
+                            FlushOutcome::BudgetReached => {
+                                sync_budget_reached = true;
+                                break 'claude_files;
+                            }
+                            FlushOutcome::Unaccepted { .. } | FlushOutcome::ConsentRevoked => {
+                                upload_failed = true;
+                                break 'claude_files;
+                            }
+                        }
+                    }
+                    Err(_) => {
                         upload_failed = true;
                         break 'claude_files;
                     }
                 }
             }
-
-            batch_events.push(sanitized);
-            record_source(
-                &mut batch_sources,
-                RowSource {
-                    file_path: path_str.clone(),
-                    end_offset: line_end_offsets[i],
-                    mtime: current_mtime,
-                    context: None,
-                },
-            );
         }
     }
 
@@ -2254,7 +2349,7 @@ async fn send_telemetry_if_opted_in_at<R: tauri::Runtime>(
     let mut codex_batches_sent = 0usize;
     let mut codex_bytes_scanned = 0u64;
     let mut codex_next_rollout = cursor.codex_next_rollout.clone();
-    if !upload_failed {
+    if !upload_failed && !sync_budget_reached {
         let rollouts = codex_rollouts_freshest_first(&home.join(".codex"));
         let mut pending_rollouts: Vec<_> = rollouts
             .into_iter()
@@ -2298,7 +2393,7 @@ async fn send_telemetry_if_opted_in_at<R: tauri::Runtime>(
             let mut rollout_bytes_scanned = 0u64;
             let mut rollout_batches_sent = 0usize;
             let rollout_batch_allowance = rollout_batch_allowance(rollout_index, pending_count);
-            loop {
+            'rollout_records: loop {
                 let global_remaining =
                     MAX_CODEX_SCAN_BYTES_PER_SYNC.saturating_sub(codex_bytes_scanned);
                 if global_remaining == 0 {
@@ -2324,64 +2419,92 @@ async fn send_telemetry_if_opted_in_at<R: tauri::Runtime>(
                 rollout_bytes_scanned = rollout_bytes_scanned.saturating_add(scanned);
                 previous_offset = end_offset;
 
+                let source = UsageUploadSource {
+                    file_path: path_str.clone(),
+                    end_offset,
+                    mtime: system_time_secs(rollout.mtime),
+                    context: Some(
+                        serde_json::to_value(&context).expect("Codex context serializes"),
+                    ),
+                };
                 if let Some(sanitized) = sanitized {
-                    if !batch_events.is_empty() {
-                        let candidate_payload = build_wire_payload(
-                            &machine_id,
-                            &installer_version,
-                            &batch_events,
-                            &sanitized,
-                        );
-                        if candidate_payload.len() > MAX_BATCH_BYTES {
-                            let batch_contains_codex =
-                                batch_sources.iter().any(|source| source.context.is_some());
-                            if !flush_batch(
-                                &vault,
-                                &api_url,
-                                jwt,
-                                &machine_id,
-                                &installer_version,
-                                cli_version.as_deref(),
-                                &mut cursor,
-                                unix_now_secs(),
-                                &mut batch_events,
-                                &mut batch_sources,
-                                &mut newly_committed,
-                            )
-                            .await
-                            .is_accepted()
-                            {
+                    loop {
+                        match upload_plan.add_event(sanitized.clone(), source.clone()) {
+                            Ok(AddUsageEvent::Added) => break,
+                            Ok(AddUsageEvent::TooLarge) => {
+                                eprintln!("[telemetry] usage row exceeds batch cap; leaving source offset uncommitted");
                                 upload_failed = true;
                                 break 'codex_files;
                             }
-                            if batch_contains_codex {
-                                codex_batches_sent += 1;
-                                rollout_batches_sent += 1;
-                                if codex_batches_sent >= MAX_CODEX_BATCHES_PER_SYNC {
-                                    hit_sync_limit = true;
-                                    codex_next_rollout = pending_paths
-                                        .get((rollout_index + 1) % pending_count)
-                                        .cloned();
-                                    break 'codex_files;
+                            Ok(AddUsageEvent::FlushCurrentBatch) => {
+                                let batch =
+                                    upload_plan.take_batch().expect("planner requested a flush");
+                                let batch_contains_codex = batch.contains_codex();
+                                match flush_batch(
+                                    &vault,
+                                    &api_url,
+                                    jwt,
+                                    &machine_id,
+                                    &installer_version,
+                                    cli_version.as_deref(),
+                                    &mut cursor,
+                                    unix_now_secs(),
+                                    &mut upload_plan,
+                                    batch,
+                                    &mut newly_committed,
+                                )
+                                .await
+                                {
+                                    FlushOutcome::Accepted => {
+                                        if batch_contains_codex {
+                                            codex_batches_sent += 1;
+                                            rollout_batches_sent += 1;
+                                            if codex_batches_sent >= MAX_CODEX_BATCHES_PER_SYNC {
+                                                hit_sync_limit = true;
+                                                codex_next_rollout = pending_paths
+                                                    .get((rollout_index + 1) % pending_count)
+                                                    .cloned();
+                                                break 'codex_files;
+                                            }
+                                            if rollout_batches_sent >= rollout_batch_allowance {
+                                                hit_sync_limit = true;
+                                                codex_next_rollout = pending_paths
+                                                    .get((rollout_index + 1) % pending_count)
+                                                    .cloned();
+                                                break 'rollout_records;
+                                            }
+                                        }
+                                        if upload_plan.budget_exhausted() {
+                                            hit_sync_limit = true;
+                                            codex_next_rollout =
+                                                pending_paths.get(rollout_index).cloned();
+                                            sync_budget_reached = true;
+                                            break 'codex_files;
+                                        }
+                                        continue;
+                                    }
+                                    FlushOutcome::BudgetReached => {
+                                        hit_sync_limit = true;
+                                        codex_next_rollout =
+                                            pending_paths.get(rollout_index).cloned();
+                                        sync_budget_reached = true;
+                                        break 'codex_files;
+                                    }
+                                    FlushOutcome::Unaccepted { .. }
+                                    | FlushOutcome::ConsentRevoked => {
+                                        upload_failed = true;
+                                        break 'codex_files;
+                                    }
                                 }
-                                if rollout_batches_sent >= rollout_batch_allowance {
-                                    break;
-                                }
+                            }
+                            Err(_) => {
+                                upload_failed = true;
+                                break 'codex_files;
                             }
                         }
                     }
-                    batch_events.push(sanitized);
                 }
-
-                record_source(
-                    &mut batch_sources,
-                    RowSource {
-                        file_path: path_str.clone(),
-                        end_offset,
-                        mtime: system_time_secs(rollout.mtime),
-                        context: Some(context),
-                    },
-                );
+                upload_plan.record_source(source);
 
                 if codex_bytes_scanned >= MAX_CODEX_SCAN_BYTES_PER_SYNC {
                     hit_sync_limit = true;
@@ -2395,15 +2518,15 @@ async fn send_telemetry_if_opted_in_at<R: tauri::Runtime>(
                 }
             }
         }
-        if !hit_sync_limit && !upload_failed {
+        if !hit_sync_limit && !upload_failed && !sync_budget_reached {
             codex_next_rollout = None;
         }
     }
 
     // POST pending emitted rows before committing their scanned-line progress.
     // A zero-event scan slice can advance locally without making a request.
-    if !upload_failed {
-        if !batch_events.is_empty() {
+    if !upload_failed && !sync_budget_reached {
+        if let Some(batch) = upload_plan.take_batch() {
             let _ = flush_batch(
                 &vault,
                 &api_url,
@@ -2413,13 +2536,13 @@ async fn send_telemetry_if_opted_in_at<R: tauri::Runtime>(
                 cli_version.as_deref(),
                 &mut cursor,
                 unix_now_secs(),
-                &mut batch_events,
-                &mut batch_sources,
+                &mut upload_plan,
+                batch,
                 &mut newly_committed,
             )
             .await;
-        } else if !batch_sources.is_empty() {
-            commit_acknowledged_sources(&batch_sources, &mut newly_committed);
+        } else if let Some(sources) = upload_plan.take_zero_event_sources() {
+            commit_acknowledged_sources(&sources, &mut newly_committed);
         }
     }
 
@@ -2448,7 +2571,7 @@ async fn send_telemetry_if_opted_in_at<R: tauri::Runtime>(
     Ok(())
 }
 
-/// Build the full wire payload JSON for size-checking.
+/// Build the existing batch-size estimate used by the collector.
 fn build_wire_payload(
     machine_id: &str,
     installer_version: &str,
@@ -2457,7 +2580,7 @@ fn build_wire_payload(
 ) -> Vec<u8> {
     let mut events = existing.to_vec();
     events.push(candidate.clone());
-    let payload = serde_json::json!({
+    let payload = json!({
         "machineId": machine_id,
         "installerVersion": installer_version,
         "events": events,
@@ -2470,7 +2593,7 @@ fn single_event_fits(machine_id: &str, installer_version: &str, event: &Value) -
 }
 
 fn commit_acknowledged_sources(
-    sources: &[RowSource],
+    sources: &[UsageUploadSource],
     newly_committed: &mut HashMap<String, CursorEntry>,
 ) {
     let mut max_per_file: HashMap<String, CursorEntry> = HashMap::new();
@@ -2478,7 +2601,10 @@ fn commit_acknowledged_sources(
         let entry = CursorEntry {
             offset: src.end_offset,
             mtime: src.mtime,
-            context: src.context.clone(),
+            context: src.context.as_ref().map(|context| {
+                serde_json::from_value(context.clone())
+                    .expect("Codex context from the rollout scanner must round-trip")
+            }),
         };
         max_per_file
             .entry(src.file_path.clone())
@@ -2501,31 +2627,42 @@ async fn flush_batch(
     cli_version: Option<&str>,
     cursor: &mut TelemetryCursor,
     cycle_started_at_unix_secs: u64,
-    batch_events: &mut Vec<Value>,
-    batch_sources: &mut Vec<RowSource>,
+    planner: &mut UsageUploadPlanner,
+    plan_batch: UsageUploadBatch,
     newly_committed: &mut HashMap<String, CursorEntry>,
 ) -> FlushOutcome {
     // Consent is checked at the request boundary, including the first and only
     // batch in a cycle. A withdrawal while files are being scanned must prevent
     // the pending payload from ever leaving the machine.
     if !resolve_telemetry_enabled(vault).await {
-        batch_events.clear();
-        batch_sources.clear();
         return FlushOutcome::ConsentRevoked;
     }
-    let event_count = batch_events.len();
-    let batch = UsageBatch {
+    let wire_batch = UsageBatch {
         machine_id: machine_id.to_string(),
         installer_version: installer_version.to_string(),
         cli_version: cli_version.map(str::to_string),
-        events: std::mem::take(batch_events),
+        events: plan_batch.events.clone(),
     };
-    let sources = std::mem::take(batch_sources);
+    let event_count = wire_batch.events.len();
+    let body = match serde_json::to_vec(&wire_batch) {
+        Ok(body) => body,
+        Err(_) => {
+            eprintln!("[telemetry] usage flush not accepted: serialization_failed");
+            record_unaccepted_flush(cursor, unix_now_secs().max(cycle_started_at_unix_secs));
+            return FlushOutcome::Unaccepted {
+                reason: "serialization_failed",
+            };
+        }
+    };
+    if !planner.reserve_request(body.len()) {
+        return FlushOutcome::BudgetReached;
+    }
 
     let response = match build_client()
         .post(format!("{}/v1/usage", api_url.trim_end_matches('/')))
         .bearer_auth(jwt)
-        .json(&batch)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(body)
         .send()
         .await
     {
@@ -2567,6 +2704,7 @@ async fn flush_batch(
 
     let skipped_count = ack.skipped.len();
     if usage_ack_is_complete(&ack, event_count) {
+        let sources = UsageUploadPlanner::committable_sources(&plan_batch, true);
         commit_acknowledged_sources(&sources, newly_committed);
         reset_unaccepted_flushes(cursor);
         if skipped_count > 0 {
@@ -2614,6 +2752,40 @@ mod codex_telemetry_tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
+    fn post_ready_action_event_keeps_only_join_fields_and_server_environment() {
+        let event = build_desktop_telemetry_event(
+            "desktop_post_ready_action".to_string(),
+            Some(json!({
+                "action": "open_folder",
+                "personUid": "prs_person-1",
+                "companyUid": "cmp_company-1",
+                "idempotencyKey": "post-ready.session-1.open_folder",
+                "folderName": "Private Project",
+                "path": "/Users/ada/Private Project",
+            })),
+            Some("session-1".to_string()),
+            None,
+            "no-consent",
+        );
+
+        assert_eq!(event.company_uid.as_deref(), Some("cmp_company-1"));
+        assert_eq!(
+            event.idempotency_key.as_deref(),
+            Some("post-ready.session-1.open_folder")
+        );
+        assert_eq!(event.properties["action"], "open_folder");
+        assert_eq!(event.properties["personUid"], "prs_person-1");
+        assert_eq!(event.properties["companyUid"], "cmp_company-1");
+        assert_eq!(
+            event.properties["appVersion"],
+            crate::app_version::current()
+        );
+        assert_eq!(event.properties["os"], std::env::consts::OS);
+        assert!(event.properties.get("folderName").is_none());
+        assert!(event.properties.get("path").is_none());
+    }
+
+    #[test]
     fn core_update_lifecycle_properties_survive_sanitization_without_paths_or_errors() {
         let sanitized = sanitize_desktop_properties(Some(json!({
             "source": "automatic",
@@ -2631,6 +2803,12 @@ mod codex_telemetry_tests {
             "skipReason": "automatic_updates_disabled",
             "platform": "macos-aarch64",
             "errorCategory": "dns",
+            "deferralCount": 10,
+            "firstDeferralAgeSeconds": 21600,
+            "lockTimeoutSeconds": 900,
+            "holdReason": "timeout",
+            "requiredGitVersion": "2.19.0",
+            "detectedGitVersion": "2.15.0",
             "npxResolved": false,
             "npxResolution": "not_resolved",
             "logPath": "/Users/alice/private/core-update.log",
@@ -2652,6 +2830,12 @@ mod codex_telemetry_tests {
         assert_eq!(sanitized["skipReason"], "automatic_updates_disabled");
         assert_eq!(sanitized["platform"], "macos-aarch64");
         assert_eq!(sanitized["errorCategory"], "dns");
+        assert_eq!(sanitized["deferralCount"], 10);
+        assert_eq!(sanitized["firstDeferralAgeSeconds"], 21600);
+        assert_eq!(sanitized["lockTimeoutSeconds"], 900);
+        assert_eq!(sanitized["holdReason"], "timeout");
+        assert_eq!(sanitized["requiredGitVersion"], "2.19.0");
+        assert_eq!(sanitized["detectedGitVersion"], "2.15.0");
         assert_eq!(sanitized["npxResolved"], false);
         assert_eq!(sanitized["npxResolution"], "not_resolved");
         assert!(sanitized.get("logPath").is_none());
@@ -2832,6 +3016,12 @@ mod codex_telemetry_tests {
                 "errorOperation",
                 "errorIoKind",
                 "errorCode",
+                "deferralCount",
+                "firstDeferralAgeSeconds",
+                "lockTimeoutSeconds",
+                "holdReason",
+                "requiredGitVersion",
+                "detectedGitVersion",
             ]
         );
         for key in ALLOWED_DESKTOP_PROPERTY_KEYS {
@@ -2880,6 +3070,13 @@ mod codex_telemetry_tests {
 
     #[test]
     fn onboarding_events_attach_the_trusted_build_version_after_property_redaction() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
+        let home = setup_home();
+        write_menubar(home.path(), "{}");
+        let _home = scoped_home(home.path());
+        let install_attempt_id = crate::commands::first_run::install_attempt_id()
+            .expect("the persisted install attempt id is available");
+
         let event = build_desktop_telemetry_event(
             "desktop_onboarding_step".to_string(),
             Some(json!({
@@ -2907,6 +3104,10 @@ mod codex_telemetry_tests {
         assert_eq!(
             completed.properties["appVersion"],
             crate::app_version::current()
+        );
+        assert_eq!(
+            serde_json::to_value(&completed).unwrap()["installAttemptId"],
+            install_attempt_id
         );
     }
 
@@ -2998,6 +3199,41 @@ mod codex_telemetry_tests {
         ResponseTemplate::new(200).set_body_json(json!({
             "ok": true, "written": event_count, "deduped": 0, "skipped": []
         }))
+    }
+
+    fn test_upload_batch(
+        machine_id: &str,
+        installer_version: &str,
+        cli_version: Option<&str>,
+        events: Vec<Value>,
+        sources: Vec<UsageUploadSource>,
+    ) -> (UsageUploadPlanner, UsageUploadBatch) {
+        assert_eq!(events.len(), sources.len());
+        let empty = UsageBatch {
+            machine_id: machine_id.to_string(),
+            installer_version: installer_version.to_string(),
+            cli_version: cli_version.map(str::to_string),
+            events: Vec::new(),
+        };
+        let overhead = serde_json::to_vec(&empty).unwrap().len() - 2;
+        let mut planner = UsageUploadPlanner::new(overhead, MAX_BATCH_BYTES, None);
+        for (event, source) in events.into_iter().zip(sources) {
+            assert_eq!(
+                planner.add_event(event, source).unwrap(),
+                AddUsageEvent::Added
+            );
+        }
+        let batch = planner.take_batch().unwrap();
+        (planner, batch)
+    }
+
+    fn test_source(path: &str, offset: u64) -> UsageUploadSource {
+        UsageUploadSource {
+            file_path: path.to_string(),
+            end_offset: offset,
+            mtime: 1,
+            context: Some(serde_json::to_value(CodexUsageContext::default()).unwrap()),
+        }
     }
 
     /// Create a temp HOME with ~/.hq/ and ~/.claude/projects/ structure.
@@ -3379,6 +3615,25 @@ mod codex_telemetry_tests {
                 .any(|request| request.url.path() == "/v1/usage/opt-in"),
             "operational telemetry must not wait for or read the skill consent"
         );
+    }
+
+    #[test]
+    fn post_cap_update_outcomes_are_operational_and_keep_closed_reason() {
+        let event = build_desktop_telemetry_event(
+            "desktop_auto_update_post_cap_outcome".to_string(),
+            Some(json!({
+                "outcome": "still-held-by",
+                "holdReason": "CoreUpdateInProgress",
+                "email": "private@example.com",
+            })),
+            None,
+            None,
+            "no-consent",
+        );
+        assert!(is_operational_desktop_event_name(&event.event_name));
+        assert_eq!(event.properties["outcome"], "still-held-by");
+        assert_eq!(event.properties["holdReason"], "CoreUpdateInProgress");
+        assert!(event.properties.get("email").is_none());
     }
 
     #[tokio::test]
@@ -5362,15 +5617,15 @@ mod codex_telemetry_tests {
             })))
             .mount(&partial_server)
             .await;
-        let source = || RowSource {
-            file_path: "rollout".to_string(),
-            end_offset: 99,
-            mtime: 1,
-            context: Some(CodexUsageContext::default()),
-        };
+        let source = || test_source("rollout", 99);
         let event = || json!({"uuid": "stable-event", "inputTokens": 1});
-        let mut events = vec![event()];
-        let mut sources = vec![source()];
+        let (mut planner, batch) = test_upload_batch(
+            "machine",
+            "version",
+            Some("9.9.9"),
+            vec![event()],
+            vec![source()],
+        );
         let mut committed = HashMap::new();
         let mut cursor = TelemetryCursor::default();
 
@@ -5384,8 +5639,8 @@ mod codex_telemetry_tests {
                 Some("9.9.9"),
                 &mut cursor,
                 1_000,
-                &mut events,
-                &mut sources,
+                &mut planner,
+                batch,
                 &mut committed,
             )
             .await,
@@ -5408,8 +5663,13 @@ mod codex_telemetry_tests {
             .respond_with(complete_ack)
             .mount(&full_server)
             .await;
-        let mut retry_events = vec![event()];
-        let mut retry_sources = vec![source()];
+        let (mut retry_planner, retry_batch) = test_upload_batch(
+            "machine",
+            "version",
+            Some("9.9.9"),
+            vec![event()],
+            vec![source()],
+        );
         assert!(flush_batch(
             &full_vault,
             &full_server.uri(),
@@ -5419,8 +5679,8 @@ mod codex_telemetry_tests {
             Some("9.9.9"),
             &mut cursor,
             1_001,
-            &mut retry_events,
-            &mut retry_sources,
+            &mut retry_planner,
+            retry_batch,
             &mut committed,
         )
         .await
@@ -5622,13 +5882,13 @@ mod codex_telemetry_tests {
             .await;
 
         let vault = VaultClient::new(server.uri(), "token");
-        let mut events = vec![json!({"uuid": "event", "inputTokens": 1})];
-        let mut sources = vec![RowSource {
-            file_path: "rollout".to_string(),
-            end_offset: 99,
-            mtime: 1,
-            context: Some(CodexUsageContext::default()),
-        }];
+        let (mut planner, batch) = test_upload_batch(
+            "machine",
+            "version",
+            None,
+            vec![json!({"uuid": "event", "inputTokens": 1})],
+            vec![test_source("rollout", 99)],
+        );
         let mut cursor = TelemetryCursor {
             consecutive_unaccepted_flushes: 2,
             ..TelemetryCursor::default()
@@ -5645,8 +5905,8 @@ mod codex_telemetry_tests {
                 None,
                 &mut cursor,
                 1,
-                &mut events,
-                &mut sources,
+                &mut planner,
+                batch,
                 &mut committed,
             )
             .await,
@@ -5684,13 +5944,13 @@ mod codex_telemetry_tests {
             .await;
 
         let vault = VaultClient::new(server.uri(), "token");
-        let mut events = vec![json!({"uuid": "event", "inputTokens": 1})];
-        let mut sources = vec![RowSource {
-            file_path: "rollout".to_string(),
-            end_offset: 99,
-            mtime: 1,
-            context: Some(CodexUsageContext::default()),
-        }];
+        let (mut planner, batch) = test_upload_batch(
+            "machine",
+            "version",
+            None,
+            vec![json!({"uuid": "event", "inputTokens": 1})],
+            vec![test_source("rollout", 99)],
+        );
         let mut cursor = TelemetryCursor::default();
         let mut committed = HashMap::new();
 
@@ -5704,8 +5964,8 @@ mod codex_telemetry_tests {
                 None,
                 &mut cursor,
                 1_000,
-                &mut events,
-                &mut sources,
+                &mut planner,
+                batch,
                 &mut committed,
             )
             .await,
@@ -5719,17 +5979,12 @@ mod codex_telemetry_tests {
 
     #[test]
     fn source_checkpoints_coalesce_per_file() {
-        let source = |path: &str, offset: u64| RowSource {
-            file_path: path.to_string(),
-            end_offset: offset,
-            mtime: 1,
-            context: Some(CodexUsageContext::default()),
-        };
-        let mut sources = Vec::new();
+        let mut planner = UsageUploadPlanner::new(0, MAX_BATCH_BYTES, None);
         for offset in 1..=10_000 {
-            record_source(&mut sources, source("rollout-a", offset));
+            planner.record_source(test_source("rollout-a", offset));
         }
-        record_source(&mut sources, source("rollout-b", 7));
+        planner.record_source(test_source("rollout-b", 7));
+        let sources = planner.take_zero_event_sources().unwrap();
 
         assert_eq!(sources.len(), 2);
         assert_eq!(

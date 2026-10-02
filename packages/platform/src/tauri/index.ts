@@ -307,12 +307,15 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         companyUid: opts?.companyUid,
         limit: opts?.limit,
       }),
-    fetchChannel: ({ channelId, limit, cursor, since }) =>
+    fetchChannel: ({ channelId, limit, cursor, since, view }) =>
+      // The native command forwards `view` and returns the server's echo.
+      // The key is only sent when set.
       this.call("fetch_channel", {
         channelId,
         limit,
         cursor: cursor ?? null,
         since: since ?? null,
+        ...(view ? { view } : {}),
       }),
     listChannelMembers: (channelId) =>
       this.call("list_channel_members", { channelId }),
@@ -346,11 +349,13 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         values: args.values,
         idempotencyKey: args.idempotencyKey ?? null,
       }),
-    fetchDmThread: ({ withPersonUid, limit, since }) =>
+    fetchDmThread: ({ withPersonUid, limit, since, cursor, view }) =>
       this.call("fetch_dm_thread", {
         withPersonUid,
         limit,
         since: since ?? null,
+        ...(cursor ? { cursor } : {}),
+        ...(view ? { view } : {}),
       }),
     sendDm: (toPersonUid, body, extras) =>
       this.call("send_dm", {
@@ -584,6 +589,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     startDaemon: () => this.call("start_daemon"),
     stopDaemon: () => this.call("stop_daemon"),
     daemonStatus: () => this.call("daemon_status"),
+    daemonSyncStatus: () => this.call("daemon_sync_status"),
     startSync: (slug) => this.call("start_sync", { slug }),
     cancelSync: () => this.call("cancel_sync"),
     getSyncStatus: () => this.call("get_sync_status"),

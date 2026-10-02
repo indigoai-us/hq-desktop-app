@@ -78,8 +78,16 @@ const ACME = {
   membershipStatus: 'active',
 };
 
-function mockInvoke(rosterResponses: Array<() => unknown>, limitPromptFlag = false) {
+function mockInvoke(
+  rosterResponses: Array<() => unknown>,
+  options: {
+    limitPromptFlag?: boolean;
+    limitStatusPushFlag?: boolean;
+    usageBody?: unknown;
+  } = {},
+) {
   const calls: string[] = [];
+  const hqProUrls: string[] = [];
   const telemetryEvents: Record<string, unknown>[] = [];
   const invokeFn: SyncInvokeFn = async (cmd, args) => {
     calls.push(cmd);
@@ -102,14 +110,21 @@ function mockInvoke(rosterResponses: Array<() => unknown>, limitPromptFlag = fal
       }
       case 'hq_pro_fetch': {
         const request = args ?? {};
+        if (typeof request.url === 'string') hqProUrls.push(request.url);
         if (request.url === '/v1/flags/resolve') {
           return {
             status: 200,
             body: JSON.stringify({
               version: 1,
-              flags: { 'billing.limit-at-action-prompt': limitPromptFlag },
+              flags: {
+                'billing.limit-at-action-prompt': options.limitPromptFlag ?? false,
+                'desktop.limit-status-push': options.limitStatusPushFlag ?? false,
+              },
             }),
           };
+        }
+        if (typeof request.url === 'string' && request.url.startsWith('/v1/billing/usage-limits?')) {
+          return { status: 200, body: JSON.stringify(options.usageBody ?? {}) };
         }
         if (request.url === '/v1/telemetry/events') {
           const body = JSON.parse(String(request.body ?? '{}')) as {
@@ -124,7 +139,7 @@ function mockInvoke(rosterResponses: Array<() => unknown>, limitPromptFlag = fal
         return null;
     }
   };
-  return { invokeFn, calls, telemetryEvents };
+  return { invokeFn, calls, hqProUrls, telemetryEvents };
 }
 
 function emit(event: string, payload: unknown): void {
@@ -179,10 +194,9 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
   it('tracks each visible prompt once and records engagement only for Upgrade clicks', async () => {
     host = document.createElement('div');
     document.body.appendChild(host);
-    const { invokeFn, telemetryEvents } = mockInvoke(
-      [() => ({ workspaces: [ACME] })],
-      true,
-    );
+    const { invokeFn, telemetryEvents } = mockInvoke([() => ({ workspaces: [ACME] })], {
+      limitPromptFlag: true,
+    });
     component = mount(HqWorkWorkShell, { target: host, props: { invokeFn } });
     await flush();
 
@@ -233,6 +247,151 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
       .toHaveLength(1);
   });
 
+  it('does not push a company plan-limit notice when desktop.limit-status-push is off', async () => {
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    const { invokeFn, hqProUrls } = mockInvoke([() => ({ workspaces: [ACME] })], {
+      usageBody: {
+        plan: 'free',
+        agents: { used: 11, limit: 10, over: true, pctUsed: 110 },
+      },
+    });
+    component = mount(HqWorkWorkShell, { target: host, props: { invokeFn } });
+    await flush();
+
+    expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeNull();
+    expect(hqProUrls).not.toContain('/v1/billing/usage-limits?companyUid=cmp_acme');
+  });
+
+  it('pushes free warning status on refresh and keeps a dismissed notice hidden', async () => {
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    const { invokeFn, hqProUrls } = mockInvoke([() => ({ workspaces: [ACME] })], {
+      limitStatusPushFlag: true,
+      usageBody: {
+        plan: 'free',
+        cohort: 'enforceable',
+        planLimitsExempt: false,
+        agents: { used: 8, limit: 10, over: false, pctUsed: 80 },
+        upgradeUrl: 'https://hq.computer/companies/acme/billing?upgrade=team',
+      },
+    });
+    component = mount(HqWorkWorkShell, { target: host, props: { invokeFn } });
+    await flush();
+
+    expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeTruthy();
+    expect(hqProUrls.filter((url) => url.startsWith('/v1/billing/usage-limits?'))).toHaveLength(1);
+
+    host.querySelector<HTMLButtonElement>('.plan-limit-dismiss')?.click();
+    await flush();
+    emit('sync:all-complete', {});
+    await flush();
+
+    expect(hqProUrls.filter((url) => url.startsWith('/v1/billing/usage-limits?'))).toHaveLength(2);
+    expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeNull();
+  });
+
+  it.each([
+    {
+      name: 'free enforceable over-limit resource',
+      usageBody: {
+        plan: 'free',
+        cohort: 'enforceable',
+        planLimitsExempt: false,
+        agents: { used: 11, limit: 10, over: true, pctUsed: 110 },
+      },
+      expectedNotice: true,
+    },
+    {
+      name: 'free enforceable resource at 80 percent',
+      usageBody: {
+        plan: 'free',
+        cohort: 'enforceable',
+        planLimitsExempt: false,
+        agents: { used: 8, limit: 10, over: false, pctUsed: 80 },
+      },
+      expectedNotice: true,
+    },
+    {
+      name: 'grandfathered cohort',
+      usageBody: {
+        plan: 'free',
+        cohort: 'grandfathered',
+        planLimitsExempt: false,
+        agents: { used: 11, limit: 10, over: true, pctUsed: 110 },
+      },
+      expectedNotice: false,
+    },
+    {
+      name: 'plan-limit exempt company',
+      usageBody: {
+        plan: 'free',
+        cohort: 'enforceable',
+        planLimitsExempt: true,
+        agents: { used: 11, limit: 10, over: true, pctUsed: 110 },
+      },
+      expectedNotice: false,
+    },
+    {
+      name: 'non-free plan',
+      usageBody: {
+        plan: 'team',
+        cohort: 'enforceable',
+        planLimitsExempt: false,
+        agents: { used: 11, limit: 10, over: true, pctUsed: 110 },
+      },
+      expectedNotice: false,
+    },
+  ])('uses the serialized usage response for $name', async ({ usageBody, expectedNotice }) => {
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    expect(JSON.parse(JSON.stringify(usageBody))).not.toHaveProperty('payingBypass');
+    const { invokeFn } = mockInvoke([() => ({ workspaces: [ACME] })], {
+      limitStatusPushFlag: true,
+      usageBody,
+    });
+    component = mount(HqWorkWorkShell, { target: host, props: { invokeFn } });
+    await flush();
+
+    expect(Boolean(host.querySelector('[data-testid=\"sync-plan-limit-notice\"]'))).toBe(expectedNotice);
+  });
+
+  it('does not push a notice for a free company below the warning threshold', async () => {
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    const { invokeFn } = mockInvoke([() => ({ workspaces: [ACME] })], {
+      limitStatusPushFlag: true,
+      usageBody: {
+        plan: 'free',
+        cohort: 'enforceable',
+        planLimitsExempt: false,
+        agents: { used: 4, limit: 10, over: false, pctUsed: 40 },
+      },
+    });
+    component = mount(HqWorkWorkShell, { target: host, props: { invokeFn } });
+    await flush();
+
+    expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeNull();
+  });
+
+  it('does not push a notice for a free company exempt from plan-limit enforcement', async () => {
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    const { invokeFn } = mockInvoke([() => ({ workspaces: [ACME] })], {
+      limitStatusPushFlag: true,
+      usageBody: {
+        plan: 'free',
+        cohort: 'enforceable',
+        planLimitsExempt: true,
+        agents: { used: 11, limit: 10, over: false, pctUsed: 110 },
+      },
+    });
+    component = mount(HqWorkWorkShell, { target: host, props: { invokeFn } });
+    await flush();
+
+    expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeNull();
+  });
+
   it('waits for both a resolved roster identity and a visible desktop window', async () => {
     host = document.createElement('div');
     document.body.appendChild(host);
@@ -241,7 +400,9 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
     const roster = new Promise<unknown>((resolve) => {
       resolveRoster = resolve;
     });
-    const { invokeFn, telemetryEvents } = mockInvoke([() => roster], true);
+    const { invokeFn, telemetryEvents } = mockInvoke([() => roster], {
+      limitPromptFlag: true,
+    });
     component = mount(HqWorkWorkShell, { target: host, props: { invokeFn } });
     await flush();
 

@@ -31,6 +31,8 @@ import type { WizardStepId } from './onboarding-wizard';
 const SCHEMA_VERSION = 3;
 const STORAGE_KEY = `hq-sync:onboarding-step-telemetry:v${SCHEMA_VERSION}`;
 const LEGACY_STORAGE_KEY = 'hq-sync:onboarding-step-telemetry:v2';
+const INSTALL_ATTEMPT_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export type OnboardingAction =
   | 'entered'
@@ -70,7 +72,7 @@ export interface OnboardingStepProperties {
   errorIoKind?: SymlinkErrorIoKind;
   errorCode?: number;
   setupRunId?: string;
-  /** Company scope for the gated invite step; never attach invitee data here. */
+  /** Company scope for the invite and company steps; never attach invitee data here. */
   companyUid?: string;
   inviteErrorKind?: 'request_failed' | 'email_delivery_failed';
 }
@@ -126,6 +128,8 @@ export interface OnboardingStepTelemetry {
    * `install-person-index` / `installer_<step>` journey milestones.
    */
   setPersonUid(personUid: string): void;
+  /** Use the native install id as the session join key on subsequent events. */
+  setInstallAttemptId(installAttemptId: string): void;
 }
 
 /**
@@ -223,6 +227,11 @@ export function createOnboardingStepTelemetry(
       if (!isInstallerPersonUid(trimmed)) return;
       personUid = trimmed;
     },
+    setInstallAttemptId(installAttemptId: string) {
+      if (!INSTALL_ATTEMPT_ID_RE.test(installAttemptId)) return;
+      state = { ...state, sessionId: installAttemptId };
+      persist();
+    },
     recordFirstLaunch() {
       if (state.firstLaunchRecorded) return false;
       state.firstLaunchRecorded = true;
@@ -267,7 +276,7 @@ export function desktopPropertiesForOnboardingStep(
     properties.setupRunId = event.properties.setupRunId;
   }
   if (
-    event.properties.step === 'invite-teammate' &&
+    (event.properties.step === 'invite-teammate' || event.properties.step === 'company') &&
     typeof event.properties.companyUid === 'string' &&
     event.properties.companyUid.startsWith('cmp_')
   ) {

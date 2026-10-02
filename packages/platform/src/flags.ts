@@ -73,18 +73,16 @@ import {
 } from "@indigoai-us/hq-flags-client";
 import { ok, type AdapterPromise, type AdapterResult } from "./adapter.js";
 
-export const SETUP_DIRECTORY_PARENT_FALLBACK_FLAG =
-  "desktop.setup-directory-parent-fallback";
 export const FIRST_FOLDER_SYNC_STEP_FLAG =
   "desktop.first-folder-sync-step-v1";
-export const INVITE_TEAMMATE_STEP_FLAG =
-  "desktop.invite-teammate-step-v1";
-export const SETUP_STAGE_TIMEOUT_FIX_FLAG =
-  "desktop.setup-stage-timeout-fix-v1";
 export const PERSONAL_WORKSPACE_BOARD_FLAG =
   "desktop.personal-workspace-board-v1";
 export const LOGIN_RECEIPT_DURABILITY_FLAG =
   "desktop.login-receipt-durable-before-return-v1";
+export const POST_READY_ACTION_TELEMETRY_FLAG =
+  "desktop.post-ready-action-telemetry-v1";
+export const READY_FIRST_ACTION_FLAG = "desktop.ready-first-action-v1";
+export const DESKTOP_LIMIT_STATUS_PUSH_FLAG = "desktop.limit-status-push";
 export const HUMAN_ONLY_CONVERSATIONS_FLAG =
   "desktop.human-only-conversations";
 /**
@@ -99,12 +97,12 @@ export const HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT = true;
 export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
   meetings: "desktop.meetings",
   "agents.claude-provider": "agents.claude-provider",
-  [SETUP_DIRECTORY_PARENT_FALLBACK_FLAG]: SETUP_DIRECTORY_PARENT_FALLBACK_FLAG,
   [FIRST_FOLDER_SYNC_STEP_FLAG]: FIRST_FOLDER_SYNC_STEP_FLAG,
-  [INVITE_TEAMMATE_STEP_FLAG]: INVITE_TEAMMATE_STEP_FLAG,
-  [SETUP_STAGE_TIMEOUT_FIX_FLAG]: SETUP_STAGE_TIMEOUT_FIX_FLAG,
   [PERSONAL_WORKSPACE_BOARD_FLAG]: PERSONAL_WORKSPACE_BOARD_FLAG,
   [LOGIN_RECEIPT_DURABILITY_FLAG]: LOGIN_RECEIPT_DURABILITY_FLAG,
+  [POST_READY_ACTION_TELEMETRY_FLAG]: POST_READY_ACTION_TELEMETRY_FLAG,
+  [READY_FIRST_ACTION_FLAG]: READY_FIRST_ACTION_FLAG,
+  [DESKTOP_LIMIT_STATUS_PUSH_FLAG]: DESKTOP_LIMIT_STATUS_PUSH_FLAG,
   [HUMAN_ONLY_CONVERSATIONS_FLAG]: HUMAN_ONLY_CONVERSATIONS_FLAG,
   "desktop.mirror-quarantine-move-not-deletion":
     "desktop.mirror-quarantine-move-not-deletion",

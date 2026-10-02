@@ -6747,14 +6747,7 @@ async fn install_hq_cli_windows(app: AppHandle) -> Result<String, String> {
     // budget (HQ-DESKTOP-6J) instead of failing the deps stage, off the async
     // worker via spawn_blocking; the guard is held through the streamed install.
     let cancellation = InstallCancellationRegistration::new(&app);
-    let recovery_enabled = crate::commands::hq_pro::feature_flag_enabled(
-        crate::commands::hq_cli_update::WINDOWS_HQ_CLI_CONTENTION_RECOVERY_FLAG,
-    )
-    .await;
-    let lock_wait_budget =
-        hq_desktop_core::cli_update_lock::cli_install_lock_wait_budget_for_recovery(
-            recovery_enabled,
-        );
+    let lock_wait_budget = hq_desktop_core::cli_update_lock::CLI_INSTALL_LOCK_WAIT_BUDGET;
     let lock_wait_handle = cancellation.handle.clone();
     let result = async {
         let _install_lock = acquire_cli_install_lock_for_setup_with_budget(
@@ -6762,15 +6755,13 @@ async fn install_hq_cli_windows(app: AppHandle) -> Result<String, String> {
             &cancellation,
             lock_wait_budget,
             move |app, line| {
-                if recovery_enabled {
-                    // Control signal for the named question: is this setup install handle still waiting on the shared CLI lock?
-                    // The frontend uses it only to keep the deps timeout alive; it is not funnel telemetry.
-                    let _ = app.emit_to(
-                        "main",
-                        "setup:cli-install-lock-wait",
-                        lock_wait_handle.clone(),
-                    );
-                }
+                // The frontend uses this signal only to keep the setup deps
+                // timeout alive for this install handle; it is not telemetry.
+                let _ = app.emit_to(
+                    "main",
+                    "setup:cli-install-lock-wait",
+                    lock_wait_handle.clone(),
+                );
                 emit_progress(app, line);
             },
         )

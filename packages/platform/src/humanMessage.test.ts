@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   filterHumanMessages,
+  compareHumanRecency,
   humanRecencyKey,
+  humanRecencyState,
+  isUndatedNoHumanRow,
   isHumanMessage,
   orderChannelsForViewer,
 } from "./humanMessage.js";
@@ -81,8 +84,39 @@ describe("isHumanMessage inferFromUid option", () => {
   });
 });
 
+describe("humanRecencyState", () => {
+  it("known: the server sent lastHumanMessageAt", () => {
+    expect(
+      humanRecencyState({ lastHumanMessageAt: "2026-09-29T09:00:00Z" }),
+    ).toBe("known");
+  });
+
+  it("none: the server sent hasHumanMessage false", () => {
+    expect(humanRecencyState({ hasHumanMessage: false })).toBe("none");
+  });
+
+  it("unknown: neither field, an explicit null, or a stray true", () => {
+    expect(humanRecencyState({ lastActivityAt: "2026-09-29T10:00:00Z" })).toBe(
+      "unknown",
+    );
+    expect(
+      humanRecencyState({ lastHumanMessageAt: null, hasHumanMessage: null }),
+    ).toBe("unknown");
+    expect(humanRecencyState({ hasHumanMessage: true })).toBe("unknown");
+  });
+
+  it("a human time wins when a row carries both fields", () => {
+    expect(
+      humanRecencyState({
+        lastHumanMessageAt: "2026-09-29T09:00:00Z",
+        hasHumanMessage: false,
+      }),
+    ).toBe("known");
+  });
+});
+
 describe("humanRecencyKey", () => {
-  it("prefers lastHumanMessageAt in humanOnly mode", () => {
+  it("known: uses lastHumanMessageAt in humanOnly mode", () => {
     const key = humanRecencyKey(
       {
         lastActivityAt: "2026-09-29T10:00:00Z",
@@ -93,25 +127,171 @@ describe("humanRecencyKey", () => {
     expect(key).toBe(Date.parse("2026-09-29T09:00:00Z"));
   });
 
-  it("does NOT fall back to lastActivityAt in humanOnly mode (mesh-busy channel stays put)", () => {
-    // A mesh-busy channel with no known typed message must not piggy-back on
-    // lastActivityAt — that would put it back on top the moment mesh fires.
+  it("unknown: falls back to lastActivityAt in humanOnly mode", () => {
+    // Neither field arrived: an older server, a 1:1 DM, or a channel the
+    // server has not examined. Absent is not "none", so the row keeps its
+    // activity order instead of sinking to the bottom.
     const key = humanRecencyKey(
       { lastActivityAt: "2026-09-29T10:00:00Z" },
       true,
     );
-    expect(key).toBe(0);
+    expect(key).toBe(Date.parse("2026-09-29T10:00:00Z"));
   });
 
-  it("uses lastActivityAt when the flag is off", () => {
+  it("unknown: falls back to lastMessageAt when lastActivityAt is absent", () => {
+    const key = humanRecencyKey({ lastMessageAt: "2026-09-29T07:00:00Z" }, true);
+    expect(key).toBe(Date.parse("2026-09-29T07:00:00Z"));
+  });
+
+  it("none: the key is the creation time, never bot or session activity", () => {
     const key = humanRecencyKey(
       {
         lastActivityAt: "2026-09-29T10:00:00Z",
-        lastHumanMessageAt: "2026-09-29T09:00:00Z",
+        lastMessageAt: "2026-09-29T10:00:00Z",
+        hasHumanMessage: false,
+        createdAt: "2026-09-02T08:00:00Z",
       },
-      false,
+      true,
     );
-    expect(key).toBe(Date.parse("2026-09-29T10:00:00Z"));
+    expect(key).toBe(Date.parse("2026-09-02T08:00:00Z"));
+  });
+
+  it("none without a creation time: the key is the activity time, like an unknown row", () => {
+    const row = {
+      lastActivityAt: "2026-09-29T10:00:00Z",
+      lastMessageAt: "2026-09-29T10:00:00Z",
+      hasHumanMessage: false,
+    };
+    const at = Date.parse("2026-09-29T10:00:00Z");
+    expect(humanRecencyKey(row, true)).toBe(at);
+    expect(humanRecencyKey({ lastActivityAt: row.lastActivityAt }, true)).toBe(at);
+    // lastMessageAt stands in when lastActivityAt is absent, as for unknown.
+    expect(
+      humanRecencyKey(
+        { lastMessageAt: "2026-09-29T10:00:00Z", hasHumanMessage: false },
+        true,
+      ),
+    ).toBe(at);
+    // It has a place on the timeline, so it is not in the bottom tier.
+    expect(isUndatedNoHumanRow(row, true)).toBe(false);
+    // A creation time, when present, still wins over activity.
+    expect(
+      humanRecencyKey({ ...row, createdAt: "2026-09-02T08:00:00Z" }, true),
+    ).toBe(Date.parse("2026-09-02T08:00:00Z"));
+  });
+
+  it("none with neither a creation time nor an activity time: key 0, the bottom tier", () => {
+    const row = { hasHumanMessage: false, lastActivityAt: null };
+    expect(humanRecencyKey(row, true)).toBe(0);
+    expect(isUndatedNoHumanRow(row, true)).toBe(true);
+    expect(isUndatedNoHumanRow({ hasHumanMessage: false }, true)).toBe(true);
+    expect(isUndatedNoHumanRow(row, false)).toBe(false);
+    expect(
+      isUndatedNoHumanRow({ ...row, createdAt: "2026-09-02T08:00:00Z" }, true),
+    ).toBe(false);
+    expect(
+      isUndatedNoHumanRow({ ...row, lastMessageAt: "2026-09-02T08:00:00Z" }, true),
+    ).toBe(false);
+    // An unknown row with no times is not in the tier: it is not known-none.
+    expect(isUndatedNoHumanRow({ lastActivityAt: null }, true)).toBe(false);
+  });
+
+  it("uses lastActivityAt when the flag is off, in every state", () => {
+    const at = Date.parse("2026-09-29T10:00:00Z");
+    expect(
+      humanRecencyKey(
+        {
+          lastActivityAt: "2026-09-29T10:00:00Z",
+          lastHumanMessageAt: "2026-09-29T09:00:00Z",
+        },
+        false,
+      ),
+    ).toBe(at);
+    expect(
+      humanRecencyKey(
+        { lastActivityAt: "2026-09-29T10:00:00Z", hasHumanMessage: false },
+        false,
+      ),
+    ).toBe(at);
+    expect(
+      humanRecencyKey({ lastActivityAt: "2026-09-29T10:00:00Z" }, false),
+    ).toBe(at);
+  });
+});
+
+describe("compareHumanRecency", () => {
+  const known = { lastHumanMessageAt: "2026-09-20T09:00:00Z" };
+  const unknown = { lastActivityAt: "2026-09-10T09:00:00Z" };
+  // Bot activity on the 30th; created on the 15th.
+  const none = {
+    lastActivityAt: "2026-09-30T09:00:00Z",
+    hasHumanMessage: false,
+    createdAt: "2026-09-15T00:00:00Z",
+  };
+
+  it("humanOnly: a known-none row sits at its creation time on the same timeline", () => {
+    // Created on the 15th: below a message typed on the 20th, above activity
+    // on the 10th. Its own bot activity on the 30th moves nothing.
+    expect(compareHumanRecency(none, known, true)).toBeGreaterThan(0);
+    expect(compareHumanRecency(known, none, true)).toBeLessThan(0);
+    expect(compareHumanRecency(none, unknown, true)).toBeLessThan(0);
+  });
+
+  it("humanOnly: a known-none row created after another row's last human message sorts above it", () => {
+    const createdToday = { hasHumanMessage: false, createdAt: "2026-09-30T08:00:00Z" };
+    expect(compareHumanRecency(createdToday, known, true)).toBeLessThan(0);
+  });
+
+  it("humanOnly: known-none rows order by creation time, newest first", () => {
+    const older = { hasHumanMessage: false, createdAt: "2026-08-01T00:00:00Z" };
+    const newer = { hasHumanMessage: false, createdAt: "2026-09-01T00:00:00Z" };
+    expect(compareHumanRecency(newer, older, true)).toBeLessThan(0);
+  });
+
+  it("humanOnly: a known-none row without a creation time is placed by its activity, like an unknown row", () => {
+    // Activity on the 30th: above a message typed on the 20th and above
+    // unknown activity on the 10th.
+    const undated = { hasHumanMessage: false, lastActivityAt: "2026-09-30T09:00:00Z" };
+    expect(compareHumanRecency(undated, known, true)).toBeLessThan(0);
+    expect(compareHumanRecency(undated, unknown, true)).toBeLessThan(0);
+    // Same activity as an unknown row: a tie, so the caller's tie-break
+    // (unread, then title) treats the two alike.
+    expect(
+      compareHumanRecency(undated, { lastActivityAt: "2026-09-30T09:00:00Z" }, true),
+    ).toBe(0);
+    // Older activity sorts below newer, whichever state the other row is in.
+    const undatedOld = { hasHumanMessage: false, lastActivityAt: "2026-09-05T09:00:00Z" };
+    expect(compareHumanRecency(undatedOld, unknown, true)).toBeGreaterThan(0);
+    expect(compareHumanRecency(undatedOld, undated, true)).toBeGreaterThan(0);
+  });
+
+  it("humanOnly: a known-none row with a creation time still ignores its bot activity", () => {
+    // `none` was created on the 15th and has bot activity on the 30th. A
+    // known-none row without a creation time, active on the 20th, sorts
+    // above it: the first is placed by creation, the second by activity.
+    const undated = { hasHumanMessage: false, lastActivityAt: "2026-09-20T09:00:00Z" };
+    expect(compareHumanRecency(undated, none, true)).toBeLessThan(0);
+  });
+
+  it("humanOnly: a known-none row with neither time is the bottom tier", () => {
+    const timeless = { hasHumanMessage: false, lastActivityAt: null };
+    const ancient = { hasHumanMessage: false, createdAt: "2020-01-01T00:00:00Z" };
+    const neverActive = { lastActivityAt: null };
+    expect(compareHumanRecency(timeless, ancient, true)).toBeGreaterThan(0);
+    expect(compareHumanRecency(timeless, known, true)).toBeGreaterThan(0);
+    expect(compareHumanRecency(timeless, unknown, true)).toBeGreaterThan(0);
+    // Below even an unknown row with no activity at all.
+    expect(compareHumanRecency(timeless, neverActive, true)).toBeGreaterThan(0);
+    expect(compareHumanRecency(neverActive, timeless, true)).toBeLessThan(0);
+    // Two such rows tie: the caller's tie-break (title) orders them.
+    expect(compareHumanRecency(timeless, { hasHumanMessage: false }, true)).toBe(0);
+  });
+
+  it("flag off: hasHumanMessage and createdAt are ignored", () => {
+    expect(compareHumanRecency(none, known, false)).toBeLessThan(0);
+    expect(
+      compareHumanRecency({ hasHumanMessage: false }, { lastActivityAt: null }, false),
+    ).toBe(0);
   });
 });
 
@@ -152,35 +332,77 @@ describe("orderChannelsForViewer", () => {
     ]);
   });
 
-  it("no human messages: rows tie at 0 in humanOnly mode, keep stable input order", () => {
-    const noHuman = [
-      { id: "later-bot", lastActivityAt: "2026-09-29T11:00:00Z" },
-      { id: "earlier-bot", lastActivityAt: "2026-09-29T09:00:00Z" },
+  it("unknown rows: humanOnly orders them by lastActivityAt (older server)", () => {
+    // An older server sends neither field for any row. The order must match
+    // the flag-off order instead of collapsing to input or title order.
+    const noFields = [
+      { id: "earlier", lastActivityAt: "2026-09-29T09:00:00Z" },
+      { id: "later", lastActivityAt: "2026-09-29T11:00:00Z" },
     ];
-    // Neither row carries lastHumanMessageAt, so both key to 0. Sort is stable
-    // → input order is preserved.
-    expect(orderChannelsForViewer(noHuman, true).map((r) => r.id)).toEqual([
-      "later-bot",
-      "earlier-bot",
+    expect(orderChannelsForViewer(noFields, true).map((r) => r.id)).toEqual([
+      "later",
+      "earlier",
     ]);
   });
 
-  it("humanOnly: a mesh-busy channel stays below one with a newer typed message", () => {
-    const rows = [
+  it("humanOnly: a bot-only channel sits at its creation time, below a channel typed in since", () => {
+    const meshRows = [
+      {
+        id: "mesh-busy-today",
+        lastActivityAt: "2026-09-30T15:00:00Z", // constantly bumped by mesh
+        hasHumanMessage: false,
+        createdAt: "2026-06-01T00:00:00Z",
+      },
       {
         id: "typed-yesterday",
         lastActivityAt: "2026-09-28T09:00:00Z",
         lastHumanMessageAt: "2026-09-28T09:00:00Z",
       },
+    ];
+    expect(orderChannelsForViewer(meshRows, true).map((r) => r.id)).toEqual([
+      "typed-yesterday",
+      "mesh-busy-today",
+    ]);
+  });
+
+  it("humanOnly: a channel created today with no message yet sits above older human rows", () => {
+    const rows = [
       {
-        id: "mesh-busy-today",
-        lastActivityAt: "2026-09-30T15:00:00Z", // constantly bumped by mesh
-        // no lastHumanMessageAt — server never found a typed one under the cap
+        id: "typed-yesterday",
+        lastActivityAt: "2026-09-29T09:00:00Z",
+        lastHumanMessageAt: "2026-09-29T09:00:00Z",
+      },
+      {
+        id: "created-today",
+        lastActivityAt: null,
+        hasHumanMessage: false,
+        createdAt: "2026-09-30T10:00:00Z",
       },
     ];
     expect(orderChannelsForViewer(rows, true).map((r) => r.id)).toEqual([
+      "created-today",
       "typed-yesterday",
-      "mesh-busy-today",
+    ]);
+  });
+
+  it("humanOnly: the three states together", () => {
+    const mixed = [
+      { id: "none-old", hasHumanMessage: false, createdAt: "2026-07-01T00:00:00Z", lastActivityAt: "2026-09-30T23:00:00Z" },
+      { id: "unknown-dm", lastActivityAt: "2026-09-29T12:00:00Z" },
+      { id: "none-undated", hasHumanMessage: false, lastActivityAt: "2026-09-30T22:00:00Z" },
+      { id: "known-new", lastHumanMessageAt: "2026-09-30T08:00:00Z", lastActivityAt: "2026-09-30T08:00:00Z" },
+      { id: "none-new", hasHumanMessage: false, createdAt: "2026-09-15T00:00:00Z" },
+      { id: "none-timeless", hasHumanMessage: false, lastActivityAt: null },
+      { id: "known-old", lastHumanMessageAt: "2026-09-01T08:00:00Z", lastActivityAt: "2026-09-30T21:00:00Z" },
+    ];
+    expect(orderChannelsForViewer(mixed, true).map((r) => r.id)).toEqual([
+      "none-undated", // known none, no creation time: activity 30 September
+      "known-new", // typed 30 September, earlier that day
+      "unknown-dm", // no fields: activity 29 September
+      "none-new", // known none: created 15 September
+      "known-old", // typed 1 September; its later bot activity is ignored
+      "none-old", // known none: created 1 July; its bot activity is ignored
+      "none-timeless", // known none, no creation or activity time: bottom tier
     ]);
   });
 });
