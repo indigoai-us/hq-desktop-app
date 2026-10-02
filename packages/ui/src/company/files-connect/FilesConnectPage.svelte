@@ -29,10 +29,13 @@
     companyDeploymentRows,
     deployPrompt,
     deploymentRowsFromSource,
+    emptyCompanyCache,
+    fileSharePrompt,
+    isEmail,
+    memberOptions,
     filterIntegrations,
     filterSecrets,
     filterVault,
-    fixtureCache,
     readFilesConnectCache,
     redeployAllowed,
     redeployPrompt,
@@ -50,6 +53,7 @@
     type DeploymentRowModel,
     type FilesConnectCache,
     type FilesConnectPageId,
+    type MemberOption,
     type SecretRow,
   } from "./files-connect-model.js";
 
@@ -82,7 +86,7 @@
     return Array.isArray(list) ? deploymentRowsFromSource(list, s) : null;
   }
 
-  let data = $state<FilesConnectCache>(fixtureCache());
+  let data = $state<FilesConnectCache>(emptyCompanyCache());
   // Real lists only. null = not loaded yet (skeleton), never sample rows.
   let secrets = $state<SecretRow[] | null>(null);
   let deployments = $state<DeploymentRowModel[] | null>(null);
@@ -106,12 +110,15 @@
 
   $effect(() => {
     const s = slug;
-    data = readFilesConnectCache(s) ?? fixtureCache();
+    // Never another tenant's rows: no cache means an empty company (QA-028).
+    data = readFilesConnectCache(s) ?? emptyCompanyCache();
     // A company switch drops every open sheet and selection (QA-023).
     sheet = null;
     selectedSecret = null;
     selectedDeploy = null;
     grantLevel = "read";
+    members = null;
+    membersFor = "";
     secrets = cachedSecrets(s);
     deployments = cachedDeployments(s);
     let live = true;
@@ -245,7 +252,7 @@
   const deployPage = $derived(pageRows(deployments ?? [], deployPages));
   const vaultCurrent = $derived(data.nodes.find((node) => node.id === selectedVault) ?? data.nodes[0]);
   const integrationCurrent = $derived(
-    data.integrations.find((row) => row.id === selectedIntegration) ?? data.integrations[0],
+    integrationRows.find((row) => row.id === selectedIntegration) ?? integrationRows[0],
   );
   const secretCurrent = $derived(
     (secrets ?? []).find((row) => row.id === selectedSecret) ?? (secrets ?? [])[0],
@@ -254,6 +261,31 @@
     (deployments ?? []).find((row) => row.id === selectedDeploy) ?? (deployments ?? [])[0],
   );
   const shareView = $derived(secretCurrent ? shareSheet(secretCurrent) : null);
+
+  // ---- grant access (QA-025) ------------------------------------------------
+  let members = $state<MemberOption[] | null>(null);
+  let membersFor = "";
+  let grantRecipient = $state("");
+  const grantPath = $derived(vaultFolder ? `${vaultRoot}/${vaultFolder}` : vaultRoot);
+
+  function openGrant(): void {
+    grantRecipient = "";
+    sheet = "grant";
+    const s = slug;
+    const list = adapter?.company?.listMembers;
+    if (!list || membersFor === s) return;
+    membersFor = s;
+    members = null;
+    void list(s)
+      .then((res) => {
+        if (slug !== s) return;
+        members = res.ok && Array.isArray(res.value) ? memberOptions(res.value) : [];
+      })
+      .catch((err) => {
+        console.error("member list failed:", err);
+        if (slug === s) members = [];
+      });
+  }
 
   /** Share always opens fresh for the current company and page (QA-023). */
   function openShare(kind: "share" | "share-secret"): void {
@@ -516,6 +548,7 @@
             <pre class="preview">{vaultCurrent?.preview}</pre>
           {/if}
           <div class="grants">
+            {#if data.grants.length === 0}<p class="meta">Grant access to share this folder with a teammate.</p>{/if}
             {#each data.grants as grant (grant.id)}
               <div class="grant">
                 <span class="nm">{grant.name}</span>
@@ -529,7 +562,7 @@
                 <button class="fc-seg-tab" type="button" role="tab" aria-selected={grantLevel === level} onclick={() => (grantLevel = level)}>{level === "read" ? "Read" : "Write"}</button>
               {/each}
             </div>
-            <button class="btn" type="button" data-testid="grant-access" onclick={() => (sheet = "grant")}>Grant access</button>
+            <button class="btn" type="button" data-testid="grant-access" onclick={openGrant}>Grant access</button>
           </div>
         </div>
       </aside>
@@ -557,6 +590,9 @@
             {@render statusDot(row.status)}
           </button>
         {/each}
+        {#if integrationRows.length === 0}
+          <p class="empty-line" data-testid="integrations-empty">{integrationTab === "connected" ? "No connected apps yet" : integrationTab === "mcp" ? "No agent tools connected yet" : "No matching apps"}</p>
+        {/if}
         {#if integrationPage.remaining > 0}
           <ShowMoreRow shown={integrationPage.rows.length} total={integrationPage.total} next={integrationPage.next} noun="integrations" testid="integrations-show-more" onmore={() => (integrationPages += 1)} />
         {/if}
@@ -703,7 +739,13 @@
         </div>
         {#if sheet === "share-secret"}<p class="hint" data-testid="share-no-value">No secret value is included.</p>{/if}
       {:else if sheet === "grant"}
-        <div class="fr"><span class="lb">Folder</span><span class="mono">{vaultFolder ? `${vaultRoot}/${vaultFolder}` : vaultRoot}</span></div>
+        <div class="fr"><span class="lb">Folder</span><span class="mono">{grantPath}</span></div>
+        <label class="fr"><span class="lb">Person</span>
+          <input class="field" type="email" list="fc-grant-members" data-testid="grant-recipient" placeholder={members === null && adapter?.company ? "Loading people…" : "name@company.com"} autocomplete="off" bind:value={grantRecipient} />
+        </label>
+        <datalist id="fc-grant-members">
+          {#each members ?? [] as m (m.email)}<option value={m.email}>{m.label}</option>{/each}
+        </datalist>
         <div class="fr">
           <span class="lb">Access</span>
           <div class="fc-seg" role="tablist">
@@ -712,7 +754,7 @@
             {/each}
           </div>
         </div>
-        <p class="hint">Opens the share flow, which asks who to grant.</p>
+        <p class="hint">Runs hq files share for this folder and reads the access back.</p>
       {:else if sheet === "connect"}
         <div class="fr"><span class="lb">App</span><span>{query || "Slack"}</span></div>
         <p class="hint">Sign-in finishes in your browser.</p>
@@ -785,7 +827,7 @@
         <button class="btn primary" type="button" data-testid="share-save" disabled={busy} onclick={() => void handOff(sheet === "share-secret" ? secretSharePrompt(slug, shareView?.name ?? "", grantLevel) : shareAccessPrompt(slug, vaultFile ?? vaultRoot, grantLevel), "share")}>Share</button>
       {:else if sheet === "grant"}
         <button class="btn" type="button" onclick={closeSheet}>Cancel</button>
-        <button class="btn primary" type="button" data-testid="grant-save" disabled={busy} onclick={() => void handOff(shareAccessPrompt(slug, vaultFolder ? `${vaultRoot}/${vaultFolder}` : vaultRoot, grantLevel), "share")}>Grant</button>
+        <button class="btn primary" type="button" data-testid="grant-save" disabled={busy || !isEmail(grantRecipient)} onclick={() => void handOff(fileSharePrompt(slug, grantPath, grantRecipient, grantLevel), "grant")}>Grant</button>
       {:else if sheet === "connect"}
         <button class="btn" type="button" onclick={closeSheet}>Cancel</button>
         <button class="btn primary" type="button" data-testid="connect-open" onclick={() => openConnect(query || "Slack")}>Open in browser</button>
@@ -874,7 +916,13 @@
   .vault-split.has-tree { grid-template-columns: minmax(240px, 300px) minmax(0, 1fr) 280px; }
   .vault-tree { min-height: 0; overflow: auto; padding: 8px 8px 16px; border-right: 1px solid var(--line, var(--v4-rowline)); }
   .vault-root { padding: 4px 8px 6px; color: var(--t3, var(--v4-text-3)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .vault-preview { min-width: 0; min-height: 0; overflow: auto; }
+  .vault-preview { min-width: 280px; min-height: 0; overflow: auto; }
+  /* Narrow window: the tree shrinks and Access moves under the preview
+     instead of squeezing the preview to nothing (QA-026). */
+  @media (max-width: 1180px) {
+    .vault-split.has-tree { grid-template-columns: minmax(160px, 240px) minmax(280px, 1fr); grid-template-rows: minmax(0, 1fr) auto; overflow: auto; }
+    .vault-split.has-tree .pane { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--line, var(--v4-rowline)); max-height: 40vh; }
+  }
   .empty { padding: 48px 16px; color: var(--t3, var(--v4-text-3)); text-align: center; display: flex; flex-direction: column; align-items: center; gap: 4px; }
   .empty p { margin: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .empty .btn { margin-top: 8px; }

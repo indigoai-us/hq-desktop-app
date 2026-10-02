@@ -391,3 +391,80 @@ export function secretSharePrompt(slug: string, name: string, level: AccessLevel
     `Give ${level} access to the secret ${name}. Ask me who to share with. Never print the value.`,
   ].join("\n");
 }
+
+/**
+ * First frame for a company with no cache. Holds no company data at all:
+ * sample rows named one tenant's workspaces and people and leaked into every
+ * other company (QA-028). Lists fill only from that company's real sources.
+ */
+export function emptyCompanyCache(): FilesConnectCache {
+  return {
+    files: 0,
+    nodes: [],
+    grants: [],
+    integrations: availableIntegrations(),
+    secrets: [],
+    deployments: [],
+  };
+}
+
+/** The connectable app catalog. Company-neutral: no workspace, owner or scope. */
+export function availableIntegrations(): IntegrationRow[] {
+  return [
+    ["slack", "Slack", "SL"],
+    ["linear", "Linear", "LN"],
+    ["gmail", "Gmail", "GM"],
+    ["notion", "Notion", "NT"],
+    ["github", "GitHub", "GH"],
+  ].map(([id, name, mark]) => ({
+    id: id!,
+    name: name!,
+    mark: mark!,
+    detail: "Connect with your browser",
+    status: "available" as const,
+    owner: "",
+    audience: "",
+    synced: "",
+    kind: "available" as const,
+  }));
+}
+
+export interface MemberOption {
+  email: string;
+  label: string;
+}
+
+/** Recipients for a vault grant, from the company member list. */
+export function memberOptions(list: readonly unknown[]): MemberOption[] {
+  const seen = new Set<string>();
+  const out: MemberOption[] = [];
+  for (const raw of list) {
+    const rec = (raw ?? {}) as Record<string, unknown>;
+    const email = typeof rec.email === "string" ? rec.email.trim() : "";
+    if (!email || seen.has(email.toLowerCase())) continue;
+    seen.add(email.toLowerCase());
+    const name = typeof rec.displayName === "string" && rec.displayName.trim() ? rec.displayName.trim() : "";
+    out.push({ email, label: name ? `${name} · ${email}` : email });
+  }
+  return out.sort((a, b) => a.label.localeCompare(b.label));
+}
+
+export function isEmail(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+}
+
+/**
+ * Grant hand-off. Vault ACL prefixes are bucket-relative (the bucket is
+ * already this company's), so the prefix drops `companies/<slug>/`.
+ */
+export function fileSharePrompt(slug: string, vaultPath: string, email: string, level: AccessLevel): string {
+  const root = `companies/${slug}`;
+  const rel = vaultPath === root ? "" : vaultPath.startsWith(`${root}/`) ? vaultPath.slice(root.length + 1) : vaultPath;
+  const prefix = rel ? `${rel.replace(/\/+$/, "")}/` : "";
+  return [
+    `/hq-files share`,
+    "",
+    `Run: hq files share "${prefix}" --company ${slug} --with ${email.trim()} --permission ${level}`,
+    "Then read the ACL back and confirm the grant.",
+  ].join("\n");
+}

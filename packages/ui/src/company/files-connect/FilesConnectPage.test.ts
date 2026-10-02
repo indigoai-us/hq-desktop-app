@@ -273,6 +273,62 @@ describe("US-029 FilesConnectPage", () => {
     expect(sheet?.querySelector("[aria-selected='true']")?.textContent).toBe("Read");
   });
 
+  it("never shows one company's integrations, people or vault rows under another (QA-028)", async () => {
+    const seen: Record<string, string> = {};
+    for (const slug of ["indigo", "amass"]) {
+      const target = document.createElement("div");
+      document.body.appendChild(target);
+      const c = mount(FilesConnectPage, {
+        target,
+        props: { page: "integrations", slug, files: null, shell: null, settings: null },
+      });
+      flushSync();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      seen[slug] = target.textContent ?? "";
+      expect(target.querySelectorAll("button.row")).toHaveLength(0);
+      expect(target.querySelector("[data-testid='integrations-empty']")?.textContent).toBe("No connected apps yet");
+      await unmount(c);
+      target.remove();
+    }
+    for (const text of Object.values(seen)) {
+      expect(text).not.toMatch(/indigo\.slack\.com|Yousuf|Eric B\.|Corey/);
+    }
+    expect(seen.amass).not.toContain("indigo");
+  });
+
+  it("grants vault access to a chosen person through hq files share (QA-025)", async () => {
+    const files = { listDir: vi.fn(async () => ok([])), getFileContent: vi.fn(async () => ok("")) };
+    const adapter = {
+      files,
+      appShell: { setActiveCompany: vi.fn(async () => ok(undefined)) },
+      company: {
+        listMembers: vi.fn(async () => ok([{ email: "ada@example.com", displayName: "Ada" }])),
+      },
+      isAvailable: () => false,
+    };
+    const target = mountPage("vault", files, { adapter });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+    expect(target.textContent).not.toContain("Eric B.");
+    (target.querySelector("[data-testid='grant-access']") as HTMLButtonElement).click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+    expect(adapter.company.listMembers).toHaveBeenCalledWith("indigo");
+    expect(document.querySelector("#fc-grant-members option")?.getAttribute("value")).toBe("ada@example.com");
+    const save = document.querySelector("[data-testid='grant-save']") as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    const input = document.querySelector("[data-testid='grant-recipient']") as HTMLInputElement;
+    input.value = "ada@example.com";
+    input.dispatchEvent(new Event("input"));
+    flushSync();
+    expect(save.disabled).toBe(false);
+    save.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const prompt = String((openAgentWorkflow.mock.calls[0] as unknown as unknown[] | undefined)?.[1] ?? "");
+    expect(prompt).toContain('hq files share "" --company indigo --with ada@example.com --permission read');
+  });
+
   it("opens the upload sheet from Vault Upload", async () => {
     const files = { listDir: vi.fn(async () => ok([])), getFileContent: vi.fn(async () => ok("")) };
     const target = mountPage("vault", files);
