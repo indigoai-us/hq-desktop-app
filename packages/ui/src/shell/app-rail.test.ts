@@ -112,5 +112,7 @@ describe("app rail model (console-rail US-003)", () => {
     ).toBe("outpost");
     expect(activeRailItemId({ ...base, view: "library" })).toBe("library");
     expect(activeRailItemId({ ...base, view: "projects" })).toBeNull();
+    expect(activeRailItemId({ ...base, view: "extra", extraPageId: "account-profile" })).toBe("you");
+    expect(activeRailItemId({ ...base, view: "extra", extraPageId: "account-billing" })).toBe("you");
   });
 });

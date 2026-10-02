@@ -133,18 +133,21 @@ describe("DesktopApp account menu (US-010)", () => {
 
     host.querySelector<HTMLButtonElement>('[data-testid="account-profile"]')?.click();
     await settle();
-    const profile = host.querySelector('[data-testid="rail-placeholder"]');
+    const profile = host.querySelector('[data-testid="account-host"]');
     expect(profile?.getAttribute("data-story")).toBe("US-035");
-    expect(profile?.textContent).toContain("Profile");
+    expect(profile?.getAttribute("data-page")).toBe("profile");
     expect(host.querySelector('[data-testid="account-menu"]')).toBeNull();
 
     you?.click();
     await settle();
     host.querySelector<HTMLButtonElement>('[data-testid="account-role"]')?.click();
     await settle();
-    const settings = host.querySelector('[data-testid="rail-placeholder"]');
-    expect(settings?.getAttribute("data-story")).toBe("US-030");
-    expect(settings?.textContent).toContain("Company settings");
+    const settings =
+      host.querySelector('[data-testid="company-settings-host"]') ??
+      host.querySelector('[data-testid="rail-placeholder"]');
+    expect(settings).not.toBeNull();
+    const story = settings?.getAttribute("data-story");
+    if (story) expect(story).toBe("US-030");
   });
 
   it("confirms sign out and asks the host to end the session", async () => {

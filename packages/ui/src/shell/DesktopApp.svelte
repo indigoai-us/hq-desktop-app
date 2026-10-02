@@ -58,6 +58,7 @@
   import TeamPage from "../company/TeamPage.svelte";
   import BotsPage from "../company/BotsPage.svelte";
   import CompanySettingsHost from "./CompanySettingsHost.svelte";
+  import AccountHost from "./AccountHost.svelte";
   import {
     atlasLiveActors,
     atlasRoster,
@@ -9700,6 +9701,36 @@
               </div>
             {/snippet}
           </LazyDoor>
+        {:else if view === "extra" && accountPlaceholderForPage(extraPageId)}
+          <AccountHost
+            page={accountPlaceholderForPage(extraPageId)!.id}
+            name={resolvedAccountLabel ?? "You"}
+            email={self?.email ?? ""}
+            initials={resolvedAccountInitials ?? ""}
+            live={youPresence.live}
+            roles={accountRoles}
+            openExternal={onopenurl}
+            onsignout={() => {
+              void onsignout?.();
+            }}
+            oncompany={(uid) => {
+              companyPaneOpen = true;
+              changeTenantCompany(uid);
+              void navigate(companyRowDestination("company-settings", uid));
+            }}
+            onsettingssection={(section) => {
+              if (
+                section === "sync" ||
+                section === "notifications" ||
+                section === "updates" ||
+                section === "general" ||
+                section === "appearance" ||
+                section === "meetings"
+              ) {
+                openSettings(section);
+              }
+            }}
+          />
         {:else if railPlaceholder?.id === "telemetry"}
           <TelemetryRailHost />
         {:else if railPlaceholder?.id === "secrets" || railPlaceholder?.id === "connections"}

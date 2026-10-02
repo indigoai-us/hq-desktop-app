@@ -230,6 +230,7 @@ export function activeRailItemId(state: RailSelectionState): RailItemId | null {
     case "settings":
       return state.settingsSection === "profile" ? "you" : null;
     case "extra": {
+      if (state.extraPageId?.startsWith("account-")) return "you";
       const placeholder = railPlaceholderForPage(state.extraPageId);
       if (placeholder) return placeholder.id;
       // US-007: company sidepane pages keep their company tile selected.
