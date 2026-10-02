@@ -31,6 +31,8 @@ import type { WizardStepId } from './onboarding-wizard';
 const SCHEMA_VERSION = 3;
 const STORAGE_KEY = `hq-sync:onboarding-step-telemetry:v${SCHEMA_VERSION}`;
 const LEGACY_STORAGE_KEY = 'hq-sync:onboarding-step-telemetry:v2';
+const INSTALL_ATTEMPT_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export type OnboardingAction =
   | 'entered'
@@ -126,6 +128,8 @@ export interface OnboardingStepTelemetry {
    * `install-person-index` / `installer_<step>` journey milestones.
    */
   setPersonUid(personUid: string): void;
+  /** Use the native install id as the session join key on subsequent events. */
+  setInstallAttemptId(installAttemptId: string): void;
 }
 
 /**
@@ -222,6 +226,11 @@ export function createOnboardingStepTelemetry(
       const trimmed = nextPersonUid.trim();
       if (!isInstallerPersonUid(trimmed)) return;
       personUid = trimmed;
+    },
+    setInstallAttemptId(installAttemptId: string) {
+      if (!INSTALL_ATTEMPT_ID_RE.test(installAttemptId)) return;
+      state = { ...state, sessionId: installAttemptId };
+      persist();
     },
     recordFirstLaunch() {
       if (state.firstLaunchRecorded) return false;
