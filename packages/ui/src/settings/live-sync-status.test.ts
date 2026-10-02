@@ -114,6 +114,30 @@ describe("readLiveSyncStatus daemon projection", () => {
     });
   });
 
+  it("keeps the newest successful sync timestamp across the journal and daemon status", async () => {
+    const adapter = {
+      isAvailable: () => true,
+      sync: {
+        getSyncStatus: async () => ok({ lastSyncAt: "2026-10-01T12:30:00Z", source: "journal" }),
+        daemonSyncStatus: async () => ok({
+          running: true,
+          paused: false,
+          syncOwner: "daemon",
+          owner: "hq-daemon",
+          lastHeartbeat: null,
+          lastPassResult: { status: "ok", completedAt: "2026-10-01T12:00:00Z", errors: 0 },
+          unitStatus: "running",
+          reason: null,
+          logPath: "/tmp/hq-sync.log",
+        }),
+      },
+    } as unknown as PlatformAdapter;
+
+    await expect(readLiveSyncStatus(adapter)).resolves.toMatchObject({
+      lastSyncAt: "2026-10-01T12:30:00Z",
+    });
+  });
+
   it("does not show a paused or lease-waiting daemon reason as a sync error", async () => {
     const adapter = {
       isAvailable: () => true,
@@ -175,6 +199,7 @@ describe("readLiveSyncStatus daemon projection", () => {
 
     await expect(readLiveSyncStatus(adapter)).resolves.toMatchObject({
       daemonErrors: ["HQ CLI is unavailable. Install or update it, then retry."],
+      daemonLogPath: "~/.hq/daemon/logs/sync.log",
     });
   });
 });

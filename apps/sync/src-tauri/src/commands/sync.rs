@@ -2441,6 +2441,7 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
     let host_phase = crate::commands::hq_daemon_host::current_phase();
     if let Some(result) = crate::commands::hq_daemon_host::daemon_sync_now_for_phase(
         host_phase,
+        company_slug.as_deref(),
         crate::commands::hq_daemon_host::request_daemon_sync_now,
     ) {
         return result;

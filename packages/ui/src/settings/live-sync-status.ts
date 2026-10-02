@@ -37,6 +37,17 @@ export interface LiveSyncStatus {
   daemonLogPath: string | null;
 }
 
+const DEFAULT_DAEMON_LOG_PATH = "~/.hq/daemon/logs/sync.log";
+
+function newestSyncTimestamp(journal: string | null, daemon: string | null): string | null {
+  if (!journal) return daemon;
+  if (!daemon) return journal;
+  const journalMs = Date.parse(journal);
+  const daemonMs = Date.parse(daemon);
+  if (!Number.isFinite(journalMs) || !Number.isFinite(daemonMs)) return daemon;
+  return journalMs > daemonMs ? journal : daemon;
+}
+
 export const EMPTY_LIVE_SYNC: LiveSyncStatus = {
   lastSyncAt: null,
   pendingFiles: 0,
@@ -159,6 +170,7 @@ export async function readLiveSyncStatus(
       daemonErrors: [
         daemonResult.message ?? "HQ daemon status could not be read. Tap to retry.",
       ],
+      daemonLogPath: live.daemonLogPath ?? DEFAULT_DAEMON_LOG_PATH,
     };
   }
   if (!daemonResult.value) return live;
@@ -173,7 +185,7 @@ export async function readLiveSyncStatus(
   return {
     ...live,
     daemonRunning: daemon.running,
-    lastSyncAt: daemon.lastPassResult?.completedAt ?? live.lastSyncAt,
+    lastSyncAt: newestSyncTimestamp(live.lastSyncAt, daemon.lastPassResult?.completedAt ?? null),
     source: "hq-daemon",
     daemonOwner: daemon.owner ?? daemon.syncOwner,
     daemonHealth: daemon.paused ? "paused" : daemon.unitStatus,

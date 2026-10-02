@@ -108,12 +108,21 @@ pub fn daemon_sync_now_args() -> Vec<&'static str> {
 
 pub(crate) fn daemon_sync_now_for_phase<F>(
     phase: HostPhase,
+    company_slug: Option<&str>,
     request: F,
 ) -> Option<Result<String, String>>
 where
     F: FnOnce() -> Result<(), String>,
 {
-    (phase == HostPhase::Daemon).then(|| request().map(|_| "hq-daemon-sync".to_string()))
+    if phase != HostPhase::Daemon {
+        return None;
+    }
+    if company_slug.is_some() {
+        return Some(Err(
+            "Company-specific Sync Now is unavailable while HQ daemon owns sync.".to_string(),
+        ));
+    }
+    Some(request().map(|_| "hq-daemon-sync".to_string()))
 }
 
 pub fn daemon_sync_pause_args(pause: bool) -> Vec<&'static str> {
@@ -156,6 +165,36 @@ fn daemon_sync_command_error(detail: &str) -> &'static str {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DaemonEnvChangeAction {
+    None,
+    PersistInstantSync(bool),
+    RestartHostedDaemon,
+}
+
+fn daemon_env_change_action(
+    phase: HostPhase,
+    hosted_child: bool,
+    previous: &HashMap<String, String>,
+    next: &HashMap<String, String>,
+) -> DaemonEnvChangeAction {
+    if phase != HostPhase::Daemon || previous == next {
+        return DaemonEnvChangeAction::None;
+    }
+    if previous.get("HQ_DAEMON_INSTANT_SYNC") != next.get("HQ_DAEMON_INSTANT_SYNC") {
+        return match next.get("HQ_DAEMON_INSTANT_SYNC").map(String::as_str) {
+            Some("0") => DaemonEnvChangeAction::PersistInstantSync(false),
+            Some(_) => DaemonEnvChangeAction::PersistInstantSync(true),
+            None => DaemonEnvChangeAction::None,
+        };
+    }
+    if hosted_child {
+        DaemonEnvChangeAction::RestartHostedDaemon
+    } else {
+        DaemonEnvChangeAction::None
+    }
+}
+
 fn add_daemon_instant_sync_env(
     env: &mut HashMap<String, String>,
     cli_supports_setting: bool,
@@ -180,6 +219,29 @@ fn daemon_sync_action_error(output: &str) -> Option<&'static str> {
     .then_some("HQ daemon is not running. Start it, then retry.")
 }
 
+pub(crate) fn request_daemon_instant_sync_enabled(enabled: bool) -> Result<(), String> {
+    let state = if enabled { "on" } else { "off" };
+    let output =
+        run_daemon_sync_command(&["daemon", "sync", "instant-sync", "set", state, "--json"])?;
+    let value: serde_json::Value = serde_json::from_str(&output).map_err(|error| {
+        log(
+            LOG_TAG,
+            &format!("could not parse Instant Sync response: {error}"),
+        );
+        "HQ daemon returned an unreadable Instant Sync response. Tap to retry.".to_string()
+    })?;
+    if value.get("persisted").and_then(|field| field.as_bool()) == Some(true)
+        && value
+            .get("instantSyncEnabled")
+            .and_then(|field| field.as_bool())
+            == Some(enabled)
+    {
+        Ok(())
+    } else {
+        Err("HQ daemon did not save the Instant Sync setting. Tap to retry.".to_string())
+    }
+}
+
 /// Run one daemon control and keep transport details in the local log.
 pub fn run_daemon_sync_command(args: &[&str]) -> Result<String, String> {
     #[cfg(test)]
@@ -188,6 +250,12 @@ pub fn run_daemon_sync_command(args: &[&str]) -> Result<String, String> {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .push(args.iter().map(|value| (*value).to_string()).collect());
+        if args.iter().any(|value| *value == "instant-sync") {
+            let enabled = args.iter().any(|value| *value == "on");
+            return Ok(format!(
+                r#"{{"instantSyncEnabled":{enabled},"persisted":true,"daemonRestartRequested":true}}"#
+            ));
+        }
         if args.iter().any(|value| *value == "mode") {
             return Ok(
                 r#"{"membershipId":"person#company","mode":"shared","isDefault":false}"#
@@ -567,27 +635,46 @@ pub fn hosted_daemon_status() -> DaemonStatus {
     daemon_status_from_state(state.as_ref(), alive)
 }
 
-fn daemon_env_change_requires_restart(
-    phase: HostPhase,
-    current: &HashMap<String, String>,
-    next: &HashMap<String, String>,
-) -> bool {
-    phase == HostPhase::Daemon && current != next
-}
-
-/// Relaunch the daemon when settings that reach it as env change.
+/// Apply setting changes to a daemon whether this app spawned it or found it running.
 fn watch_env_changes() {
+    // Push the current preference once at startup too. A daemon already holding
+    // the lock did not inherit this app's environment.
+    let mut observed = HashMap::new();
     loop {
         std::thread::sleep(ENV_CHECK_INTERVAL);
         if app_exit_requested() {
             return;
         }
-        let current = CHILD_ENV.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        let Some(current) = current else { continue };
-        if daemon_env_change_requires_restart(current_phase(), &current, &daemon_env()) {
-            log(LOG_TAG, "sync settings changed; restarting hq daemon");
-            RESTART_REQUESTED.store(true, Ordering::Release);
-            terminate_child();
+        let next = daemon_env();
+        let has_hosted_child = CHILD_ENV
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some();
+        match daemon_env_change_action(current_phase(), has_hosted_child, &observed, &next) {
+            DaemonEnvChangeAction::None => observed = next,
+            DaemonEnvChangeAction::PersistInstantSync(enabled) => {
+                let restarting_hosted_child = has_hosted_child;
+                if restarting_hosted_child {
+                    RESTART_REQUESTED.store(true, Ordering::Release);
+                }
+                if let Err(error) = request_daemon_instant_sync_enabled(enabled) {
+                    if restarting_hosted_child {
+                        RESTART_REQUESTED.store(false, Ordering::Release);
+                    }
+                    log(
+                        LOG_TAG,
+                        &format!("could not apply Instant Sync setting: {error}"),
+                    );
+                    continue;
+                }
+                observed = next;
+            }
+            DaemonEnvChangeAction::RestartHostedDaemon => {
+                log(LOG_TAG, "sync settings changed; restarting hq daemon");
+                RESTART_REQUESTED.store(true, Ordering::Release);
+                terminate_child();
+                observed = next;
+            }
         }
     }
 }
@@ -897,25 +984,54 @@ mod tests {
     }
 
     #[test]
-    fn daemon_settings_change_restarts_only_the_hosted_daemon() {
+    fn instant_sync_changes_are_applied_when_the_existing_daemon_is_not_hosted_here() {
         let previous = HashMap::from([("HQ_DAEMON_INSTANT_SYNC".to_string(), "1".to_string())]);
         let changed = HashMap::from([("HQ_DAEMON_INSTANT_SYNC".to_string(), "0".to_string())]);
 
-        assert!(daemon_env_change_requires_restart(
-            HostPhase::Daemon,
-            &previous,
-            &changed
-        ));
-        assert!(!daemon_env_change_requires_restart(
-            HostPhase::Daemon,
-            &previous,
-            &previous
-        ));
-        assert!(!daemon_env_change_requires_restart(
-            HostPhase::Legacy,
-            &previous,
-            &changed
-        ));
+        assert_eq!(
+            daemon_env_change_action(HostPhase::Daemon, false, &previous, &changed),
+            DaemonEnvChangeAction::PersistInstantSync(false)
+        );
+        assert_eq!(
+            daemon_env_change_action(HostPhase::Daemon, false, &HashMap::new(), &changed,),
+            DaemonEnvChangeAction::PersistInstantSync(false)
+        );
+    }
+
+    #[test]
+    fn daemon_settings_change_restarts_only_the_hosted_daemon() {
+        let previous = HashMap::from([("HQ_DAEMON_AUTOSTART".to_string(), "1".to_string())]);
+        let changed = HashMap::from([("HQ_DAEMON_AUTOSTART".to_string(), "0".to_string())]);
+
+        assert_eq!(
+            daemon_env_change_action(HostPhase::Daemon, true, &previous, &changed),
+            DaemonEnvChangeAction::RestartHostedDaemon
+        );
+        assert_eq!(
+            daemon_env_change_action(HostPhase::Daemon, true, &previous, &previous),
+            DaemonEnvChangeAction::None
+        );
+        assert_eq!(
+            daemon_env_change_action(HostPhase::Legacy, true, &previous, &changed),
+            DaemonEnvChangeAction::None
+        );
+    }
+
+    #[test]
+    fn daemon_sync_now_rejects_company_scope_instead_of_syncing_every_company() {
+        let mut request_called = false;
+        let result = daemon_sync_now_for_phase(HostPhase::Daemon, Some("acme"), || {
+            request_called = true;
+            request_daemon_sync_now()
+        });
+
+        assert_eq!(
+            result,
+            Some(Err(
+                "Company-specific Sync Now is unavailable while HQ daemon owns sync.".to_string()
+            ))
+        );
+        assert!(!request_called);
     }
 
     #[test]
@@ -932,13 +1048,23 @@ mod tests {
         let handle = app.handle().clone();
         let mut sync_now_called = false;
         assert_eq!(
-            daemon_sync_now_for_phase(HostPhase::Daemon, || {
+            daemon_sync_now_for_phase(HostPhase::Daemon, None, || {
                 sync_now_called = true;
                 request_daemon_sync_now()
             }),
             Some(Ok("hq-daemon-sync".to_string()))
         );
         assert!(sync_now_called);
+        assert_eq!(
+            daemon_env_change_action(
+                HostPhase::Daemon,
+                false,
+                &HashMap::from([("HQ_DAEMON_INSTANT_SYNC".to_string(), "1".to_string())]),
+                &HashMap::from([("HQ_DAEMON_INSTANT_SYNC".to_string(), "0".to_string())]),
+            ),
+            DaemonEnvChangeAction::PersistInstantSync(false)
+        );
+        request_daemon_instant_sync_enabled(false).unwrap();
         assert!(!crate::commands::sync::cancel_sync());
         assert!(crate::commands::daemon::start_daemon(handle.clone()).is_ok());
         assert!(crate::commands::daemon::start_daemon_for_app_launch(handle.clone()).is_ok());
@@ -968,6 +1094,9 @@ mod tests {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .clone();
+        assert!(calls
+            .iter()
+            .any(|args| args == &["daemon", "sync", "instant-sync", "set", "off", "--json"]));
         assert!(calls
             .iter()
             .any(|args| args == &["daemon", "sync", "now", "--json"]));

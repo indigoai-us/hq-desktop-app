@@ -7,7 +7,7 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
-- Daemon sync controls now explain paused, disabled, and stopped states directly. Resuming also re-enables sync for machines migrated from the older daemon setting, and Instant Sync settings require a compatible HQ CLI.
+- Daemon sync controls explain paused, disabled, and stopped states. Resume also re-enables sync for machines migrated from the older daemon setting. Instant Sync changes reach an existing daemon, and require HQ CLI 5.311.0 or later. Company-specific Sync Now no longer starts a sync across every company when the daemon owns sync.
 
 ## [0.10.373] — 2026-10-01
 
