@@ -1643,6 +1643,7 @@
     id: StageId,
     runId: number,
     failureScope: OnboardingFailureScope,
+    depsTimeoutRetryEnabled: boolean,
   ): Promise<void> {
     const invocations = stageCommandInvocations(id, { installPath: effectiveInstallPath });
     if (invocations.length === 0) return;
@@ -1841,7 +1842,12 @@
     stages = setStageStatus(stages, id, 'running');
     await journalStageStart(id);
 
-    const result = await invokeStageCommand(id, runId, failureScope).then(
+    const result = await invokeStageCommand(
+      id,
+      runId,
+      failureScope,
+      depsTimeoutRetryEnabled,
+    ).then(
       () => ({ kind: 'done' as const }),
       (err) => ({ kind: 'failed' as const, err }),
     );
