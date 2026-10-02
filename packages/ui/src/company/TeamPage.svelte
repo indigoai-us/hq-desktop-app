@@ -31,6 +31,8 @@
     type PendingInvite,
     type TeamFilter,
   } from "./team-bots-pages.js";
+  import { readSettingsCache } from "./company-settings.js";
+  import { presenceStatus } from "../chat/presence-store.svelte.js";
   import "../home/tokens.css";
   import "../chat/chat-tokens.css";
 
@@ -67,6 +69,8 @@
   let inviteOpen = $state(false);
   let draft = $state<InviteDraft>(emptyInviteDraft());
   let revokeId = $state<string | null>(null);
+  let menuFor = $state<string | null>(null);
+  let removeId = $state<string | null>(null);
   let groupQuery = $state("");
 
   const fields = $derived(inviteRoleFields(draft.role));
@@ -74,6 +78,17 @@
   const bots = $derived(view.agents);
   const showHumans = $derived(filter === "all" || filter === "humans");
   const showBots = $derived(filter === "all" || filter === "bots");
+  const seatLine = $derived.by(() => {
+    const settings = readSettingsCache(slug);
+    const used = humans.length + bots.length;
+    if (settings && settings.seatsLimit > 0) return `${settings.seatsUsed} of ${settings.seatsLimit} seats`;
+    return `${used} seats`;
+  });
+  const liveMembers = $derived(
+    companyUid
+      ? [...humans, ...bots].filter((member) => presenceStatus(companyUid, member.id) === "online").length
+      : 0,
+  );
 
   $effect(() => {
     const key = slug;
@@ -161,6 +176,43 @@
     return member.role?.trim() || (member.kind === "agent" ? "Member" : "Member");
   }
 
+  function initials(name: string): string {
+    const parts = name.trim().split(/\s+/).filter(Boolean);
+    if (parts.length >= 2) return (parts[0]![0]! + parts[1]![0]!).toUpperCase();
+    return name.trim().slice(0, 2).toUpperCase() || "?";
+  }
+
+  function live(member: TeamMember): boolean {
+    return Boolean(companyUid) && presenceStatus(companyUid!, member.id) === "online";
+  }
+
+  function setRole(member: TeamMember, role: string): void {
+    const apply = (row: TeamMember) => (row.id === member.id ? { ...row, role } : row);
+    view = {
+      ...view,
+      humans: view.humans.map(apply),
+      agents: view.agents.map(apply),
+      members: view.members.map(apply),
+    };
+    menuFor = null;
+    remember();
+  }
+
+  function confirmRemove(): void {
+    if (!removeId) return;
+    const id = removeId;
+    const drop = (row: TeamMember) => row.id !== id;
+    view = {
+      ...view,
+      humans: view.humans.filter(drop),
+      agents: view.agents.filter(drop),
+      members: view.members.filter(drop),
+    };
+    removeId = null;
+    menuFor = null;
+    remember();
+  }
+
   function working(member: TeamMember): string {
     if (member.activeProjects.length > 0) return member.activeProjects.join(" · ");
     if (member.topSkills.length > 0) return member.topSkills.map((s) => s.skill).join(" · ");
@@ -205,6 +257,10 @@
       {/each}
     </div>
     <span class="grow"></span>
+    <span class="chip" class:live={liveMembers > 0} data-testid="team-live-chip">
+      <i class="ldot"></i>{liveMembers} live
+    </span>
+    <span class="chip" data-testid="team-seat-chip">{seatLine}</span>
     <button type="button" class="btn" data-testid="invite-teammate" onclick={() => (inviteOpen = true)}>
       Invite teammate
     </button>
@@ -228,20 +284,27 @@
         <div class="sech">Humans · {humans.length}</div>
         <table class="tbl">
           <thead>
-            <tr><th>Member</th><th>Role</th><th>Working on</th></tr>
+            <tr><th>Member</th><th>Role</th><th>Working on</th><th class="r">Joined</th><th class="act"></th></tr>
           </thead>
           <tbody>
             {#each humans as member (member.id)}
               <tr>
                 <td>
-                  <span class="nm">{member.displayName}</span>
-                  {#if member.email}<span class="em">{member.email}</span>{/if}
+                  <span class="who">
+                    <span class="mini">{initials(member.displayName)}<span class="ld" class:pulse={live(member)}></span></span>
+                    <span>
+                      <span class="nm">{member.displayName}</span>
+                      {#if member.email}<span class="em">{member.email}</span>{/if}
+                    </span>
+                  </span>
                 </td>
                 <td>{roleLine(member)}</td>
                 <td class="wk">{working(member)}</td>
+                <td class="r">{member.joined ?? "—"}</td>
+                <td class="act">{@render rowMenu(member, false)}</td>
               </tr>
             {:else}
-              <tr><td colspan="3" class="em">No people yet.</td></tr>
+              <tr><td colspan="5" class="em">No people yet.</td></tr>
             {/each}
           </tbody>
         </table>
@@ -250,17 +313,24 @@
         <div class="sech">Bots · {bots.length}</div>
         <table class="tbl">
           <thead>
-            <tr><th>Agent</th><th>Role</th><th>Working on</th></tr>
+            <tr><th>Agent</th><th>Role</th><th>Working on</th><th class="r">Enrolled</th><th class="act"></th></tr>
           </thead>
           <tbody>
             {#each bots as member (member.id)}
               <tr>
-                <td><span class="nm">{member.displayName}</span></td>
+                <td>
+                  <span class="who">
+                    <span class="mini sq">⌁<span class="ld" class:pulse={live(member)}></span></span>
+                    <span class="nm">{member.displayName}</span>
+                  </span>
+                </td>
                 <td>{roleLine(member)}</td>
                 <td class="wk">{working(member)}</td>
+                <td class="r">{member.joined ?? "—"}</td>
+                <td class="act">{@render rowMenu(member, true)}</td>
               </tr>
             {:else}
-              <tr><td colspan="3" class="em">No bots yet.</td></tr>
+              <tr><td colspan="5" class="em">No bots yet.</td></tr>
             {/each}
           </tbody>
         </table>
@@ -341,6 +411,29 @@
   {/if}
 </section>
 
+{#snippet rowMenu(member: TeamMember, bot: boolean)}
+  <div class="menu-wrap">
+    <button
+      type="button"
+      class="icon"
+      aria-label={`Actions for ${member.displayName}`}
+      aria-expanded={menuFor === member.id}
+      data-testid={`team-menu-${member.id}`}
+      onclick={() => (menuFor = menuFor === member.id ? null : member.id)}
+    >…</button>
+    {#if menuFor === member.id}
+      <div class="menu" role="menu" data-testid="team-row-menu">
+        <span class="menu-note">Change role</span>
+        {#each ["Owner", "Admin", "Member"] as role (role)}
+          <button type="button" role="menuitemradio" aria-checked={roleLine(member) === role} onclick={() => setRole(member, role)}>{role}</button>
+        {/each}
+        <button type="button" role="menuitem" data-testid={`team-remove-${member.id}`} onclick={() => (removeId = member.id)}>Remove</button>
+        {#if bot}<span class="menu-note">Reports to its owner</span>{/if}
+      </div>
+    {/if}
+  </div>
+{/snippet}
+
 <ConfirmDialog
   open={revokeId != null}
   title="Revoke invite?"
@@ -349,6 +442,16 @@
   danger
   oncancel={() => (revokeId = null)}
   onconfirm={confirmRevoke}
+/>
+
+<ConfirmDialog
+  open={removeId != null}
+  title="Remove member?"
+  message="This removes them from the team list on this Mac. Their account is unchanged."
+  confirmLabel="Remove"
+  danger
+  oncancel={() => (removeId = null)}
+  onconfirm={confirmRemove}
 />
 
 <style>
@@ -412,6 +515,70 @@
     border-bottom: 1px solid var(--v4-rowline);
   }
   .tbl td { padding: 8px 12px 8px 0; border-bottom: 1px solid var(--v4-rowline); color: var(--v4-text-2); vertical-align: middle; }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 22px;
+    padding: 0 8px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: 999px;
+    color: var(--v4-text-2);
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  .ldot, .ld {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--v4-text-3);
+  }
+  .chip.live .ldot, .ld.pulse { background: var(--ok); }
+  .who { display: flex; align-items: center; gap: 10px; }
+  .mini {
+    position: relative;
+    display: inline-grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--v4-control-faint);
+    color: var(--v4-text-1);
+    font-size: 10px;
+    font-weight: 600;
+    flex: 0 0 28px;
+  }
+  .mini.sq { border-radius: 6px; }
+  .mini .ld { position: absolute; right: -1px; bottom: -1px; box-shadow: 0 0 0 1.5px var(--v4-ground, #111); }
+  .r { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .act { width: 36px; text-align: right; position: relative; }
+  .menu-wrap { position: relative; display: inline-flex; }
+  .menu {
+    position: absolute;
+    right: 0;
+    top: 22px;
+    z-index: 5;
+    min-width: 140px;
+    padding: 4px;
+    background: var(--v4-popover);
+    border: 1px solid var(--v4-hairline);
+    border-radius: 8px;
+    box-shadow: var(--v4-shadow-popover);
+  }
+  .menu button {
+    display: block;
+    width: 100%;
+    text-align: left;
+    border: 0;
+    background: transparent;
+    color: var(--v4-text-1);
+    padding: 6px 8px;
+    border-radius: 6px;
+    font: inherit;
+    font-size: 12px;
+  }
+  .menu button:hover { background: var(--v4-active-row); }
+  .menu-note { display: block; padding: 4px 8px; color: var(--v4-text-3); font-size: 11px; }
   .nm { color: var(--v4-text-1); display: block; }
   .em, .note, .wk { color: var(--v4-text-3); font-size: 12px; }
   .inv { list-style: none; margin: 0; padding: 0; }

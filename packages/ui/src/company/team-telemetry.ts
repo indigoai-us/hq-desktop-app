@@ -21,6 +21,8 @@ export interface TeamMember {
   kind: TeamMemberKind;
   /** Company membership role when the payload provides it — never invented. */
   role?: string;
+  /** Month-year label from an explicit joined/enrolled timestamp. Never inferred. */
+  joined?: string;
   topSkills: TeamSkillUsage[];
   /** Active project names when known (from outcomes / local board join). */
   activeProjects: string[];
@@ -91,6 +93,19 @@ export function displayNameFromMember(
   const sourceUid = (raw.personUid ?? "").trim();
   if (sourceUid) return sourceUid;
   return "Identity unavailable";
+}
+
+/** Display label only when the payload carries a real join or enroll timestamp. */
+export function joinedLabel(row: Record<string, unknown>): string | undefined {
+  const raw = row.joinedAt ?? row.enrolledAt ?? row.memberSince ?? row.joined;
+  if (typeof raw !== "string" || !raw.trim()) return undefined;
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return undefined;
+  return date.toLocaleDateString("en-US", {
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC",
+  });
 }
 
 function trimmedString(value: unknown): string | undefined {
@@ -251,6 +266,7 @@ function mergeDuplicateMember(
         : existing.displayName,
     email: existing.email ?? incoming.email,
     role: existing.role ?? incoming.role,
+    joined: existing.joined ?? incoming.joined,
     topSkills: Array.from(skillCounts, ([skill, count]) => ({ skill, count }))
       .sort((a, b) => b.count - a.count || a.skill.localeCompare(b.skill))
       .slice(0, 5),
@@ -323,6 +339,7 @@ export function normalizeCompanyTeamTelemetry(
           ? resolvedLabel.email
           : "";
     const email = emailRaw.trim() || undefined;
+    const joined = joinedLabel(r);
     const totals =
       r.totals && typeof r.totals === "object"
         ? (r.totals as Record<string, unknown>)
@@ -340,6 +357,7 @@ export function normalizeCompanyTeamTelemetry(
         resolvedLabel,
       ),
       email,
+      joined,
       kind,
       role,
       topSkills: skillListFromValue(r.skills ?? totals?.skills),

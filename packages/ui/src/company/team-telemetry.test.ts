@@ -60,6 +60,21 @@ describe("normalizeCompanyTeamTelemetry presence honesty", () => {
     expect(member?.displayName.toLowerCase()).not.toBe("online");
     expect(member?.events).toBe(42);
     expect(member?.sessions).toBe(3);
+    expect(member?.joined).toBeUndefined();
+  });
+
+  it("formats an explicit joined timestamp and ignores activity time", () => {
+    const view = normalizeCompanyTeamTelemetry({
+      members: [
+        {
+          personUid: "prs_ada",
+          displayName: "Ada",
+          joinedAt: "2025-01-15T00:00:00.000Z",
+          lastActivityAt: "2026-09-04T12:00:00.000Z",
+        },
+      ],
+    });
+    expect(view.members[0]?.joined).toBe("Jan 2025");
   });
 });
 
