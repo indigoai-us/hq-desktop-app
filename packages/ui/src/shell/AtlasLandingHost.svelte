@@ -32,6 +32,8 @@
     /** Sidepane people filter (actor uid) and its clear action. */
     filterActor?: string | null;
     onclearfilter?: () => void;
+    /** Empty company prompts (US-014): open a company page by sidepane row id. */
+    onopenpage?: (rowId: string) => void;
     /** Injected graph cache (tests); defaults to the shared Console cache. */
     atlasCache?: AtlasCache | null;
   }
@@ -46,6 +48,7 @@
     actors = [],
     filterActor = null,
     onclearfilter,
+    onopenpage,
     atlasCache = null,
   }: Props = $props();
 
@@ -88,6 +91,7 @@
       {actors}
       {filterActor}
       {onclearfilter}
+      {onopenpage}
       onopenperson={(uid) => onopenperson?.(uid)}
       onmessage={(who) => {
         if (who.actorUid) onopenperson?.(who.actorUid);

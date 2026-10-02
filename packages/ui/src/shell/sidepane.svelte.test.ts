@@ -75,6 +75,22 @@ describe("sidepane models (console-rail US-006)", () => {
     expect(idle?.rows).toEqual([{ id: "person:b1", label: "Scout", mark: "square", live: false }]);
   });
 
+  it("adds an Invite a teammate row while the company has one human or fewer (US-014)", () => {
+    const empty = atlasSidepaneModel({ uid: "co_n", label: "Northwind" }, []);
+    const invite = empty.sections.find((s) => s.id === "invite");
+    expect(invite?.label).toBeUndefined();
+    expect(invite?.rows).toEqual([{ id: "invite-teammate", label: "Invite a teammate" }]);
+    const solo = atlasSidepaneModel({ uid: "co_n", label: "Northwind" }, [
+      { uid: "u1", name: "Me", kind: "human", live: false },
+    ]);
+    expect(solo.sections.some((s) => s.id === "invite")).toBe(true);
+    const team = atlasSidepaneModel({ uid: "co_a", label: "Indigo" }, [
+      { uid: "u1", name: "Stefan", kind: "human", live: true },
+      { uid: "u2", name: "Yousuf", kind: "human", live: false },
+    ]);
+    expect(team.sections.some((s) => s.id === "invite")).toBe(false);
+  });
+
   it("does not share section rows between model instances", () => {
     const a = companySidepaneModel({ uid: "a", label: "A" });
     a.sections[0].rows[0].count = 9;

@@ -9,3 +9,4 @@ export * from "./atlas-model.js";
 export * from "./atlas-cache.js";
 export * from "./atlas-layout.js";
 export * from "./atlas-presence.js";
+export * from "./atlas-timeline.js";

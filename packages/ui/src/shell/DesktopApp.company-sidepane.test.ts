@@ -134,6 +134,8 @@ describe("DesktopApp company sidepane (console-rail US-007)", () => {
       "atlas", "projects", "activity", "goals", "team", "bots",
       "knowledge", "policies", "skills", "workers",
       "vault", "integrations", "secrets", "deployments",
+      // US-014: the tile lands on Atlas and this company has no teammates yet.
+      "invite-teammate",
     ]);
     expect(
       host.querySelector('[data-testid="sidepane-footer"] [data-testid="company-sidepane-settings"]'),

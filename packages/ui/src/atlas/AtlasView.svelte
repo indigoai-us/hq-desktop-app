@@ -7,6 +7,12 @@
   import { onMount, untrack } from "svelte";
   import AtlasMap from "./AtlasMap.svelte";
   import AtlasInspector from "./AtlasInspector.svelte";
+  import AtlasScrubber from "./AtlasScrubber.svelte";
+  import {
+    atlasDailyCounts,
+    atlasTimeOpacity,
+    type AtlasTimeMode,
+  } from "./atlas-timeline.js";
   import type { AtlasCache } from "./atlas-cache.js";
   import {
     atlasActorNodeIds,
@@ -21,6 +27,7 @@
     layoutAtlas,
     type AtlasView as AtlasViewBox,
   } from "./atlas-layout.js";
+  import { ATLAS_RING_ORDER, districtLabel } from "./atlas-model.js";
   import type {
     AtlasDetail,
     AtlasGraph,
@@ -45,6 +52,8 @@
     onopenfiles?: (node: AtlasNode) => void;
     onopenboard?: (node: AtlasNode) => void;
     onmessage?: (who: AtlasPresence) => void;
+    /** Empty company prompts (US-014): company page row id (projects, team, integrations). */
+    onopenpage?: (rowId: string) => void;
   }
 
   let {
@@ -61,6 +70,7 @@
     onopenfiles,
     onopenboard,
     onmessage,
+    onopenpage,
   }: Props = $props();
 
   let graph = $state<AtlasGraph | null>(untrack(() => cache.cached(companyUid)));
@@ -92,6 +102,18 @@
   const filterName = $derived(
     filterActor ? (presence.find((p) => p.actorUid === filterActor)?.name ?? null) : null,
   );
+  // Time scrubber (US-014). Null index is the live edge: the map is untouched.
+  let timeMode = $state<AtlasTimeMode>("touched");
+  let scrubIndex = $state<number | null>(null);
+  const dailyCounts = $derived(atlasDailyCounts(graph?.nodes ?? [], timeMode, nowMs));
+  const timeOpacity = $derived(atlasTimeOpacity(graph?.nodes ?? [], timeMode, scrubIndex, nowMs));
+  const empty = $derived(graph !== null && graph.nodes.length === 0);
+  const emptyLabels = ATLAS_RING_ORDER.map((type, i) => {
+    const a = -Math.PI / 2 + (i / ATLAS_RING_ORDER.length) * Math.PI * 2;
+    return { type, label: districtLabel(type), x: 450 + Math.cos(a) * 290, y: 320 + Math.sin(a) * 250 };
+  });
+  const companyTitle = $derived(companyName ?? graph?.company ?? "This company");
+
   const projectsInProgress = $derived(
     (graph?.nodes ?? []).filter(
       (n) => n.type === "project" && n.stories && n.stories.done < n.stories.total,
@@ -114,6 +136,7 @@
     untrack(() => {
       graph = cache.cached(uid);
       selected = null;
+      scrubIndex = null;
       refreshError = false;
       cache
         .refresh(uid)
@@ -204,11 +227,45 @@
       </span>
     {/if}
     <div class="grow"></div>
-    <button type="button" class="btn" data-testid="atlas-frame-all" onclick={frame}>Frame all</button>
+    <button
+      type="button"
+      class="btn"
+      data-testid="atlas-frame-all"
+      disabled={!graph || empty}
+      onclick={frame}
+    >Frame all</button>
   </div>
   <div class="atlas">
+    <div class="map-col">
     <div class="map-cell" bind:this={mapHost}>
-      {#if graph}
+      {#if empty}
+        <div class="empty" data-testid="atlas-empty">
+          <svg viewBox="0 0 900 640" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+            <circle class="ring" data-testid="atlas-empty-ring" cx="450" cy="320" r="250" />
+            {#each emptyLabels as region (region.type)}
+              <text class="region" data-testid="atlas-empty-kind" x={region.x} y={region.y} text-anchor="middle">{region.label}</text>
+            {/each}
+          </svg>
+          <div class="empty-center">
+            <div class="empty-ctr"><b>{companyTitle} is empty</b>The map fills in as the vault does. Start with one of these.</div>
+            <div class="empty-prompts">
+              <button type="button" class="empty-p" data-testid="atlas-empty-project" onclick={() => onopenpage?.("projects")}>
+                <span class="pk">Projects</span><span class="pt">Add a project</span>
+                <span class="ps">A folder with a PRD. Shows at the top of the ring and on the board.</span>
+              </button>
+              <button type="button" class="empty-p" data-testid="atlas-empty-invite" onclick={() => onopenpage?.("team")}>
+                <span class="pk">People</span><span class="pt">Invite</span>
+                <span class="ps">Teammates appear in the roster on the left and on the map when they work.</span>
+              </button>
+              <button type="button" class="empty-p" data-testid="atlas-empty-connect" onclick={() => onopenpage?.("integrations")}>
+                <span class="pk">Integrations</span><span class="pt">Connect app</span>
+                <span class="ps">Slack, GitHub, Google. Connected apps feed knowledge and signals into the vault.</span>
+              </button>
+            </div>
+          </div>
+          <div class="legend"><span><i class="idot"></i>nothing live yet</span></div>
+        </div>
+      {:else if graph}
         <AtlasMap
           placed={layout.placed}
           regions={layout.regions}
@@ -218,6 +275,7 @@
           {presence}
           {filterIds}
           {filterActor}
+          {timeOpacity}
           {nowMs}
           {view}
           onselect={(id) => (selected = id)}
@@ -230,6 +288,16 @@
           {/each}
         </div>
       {/if}
+    </div>
+    <AtlasScrubber
+      counts={dailyCounts}
+      mode={timeMode}
+      index={scrubIndex}
+      {nowMs}
+      disabled={!graph || empty}
+      onmode={(m) => (timeMode = m)}
+      onindex={(i) => (scrubIndex = i)}
+    />
     </div>
     <AtlasInspector
       node={selectedNode}
@@ -311,16 +379,131 @@
     font-size: var(--type-metadata);
     cursor: pointer;
   }
+  .btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
   .atlas {
     display: grid;
     grid-template-columns: 1fr 340px;
     flex: 1;
     min-height: 0;
   }
+  .map-col {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+  }
   .map-cell {
+    flex: 1;
     position: relative;
     min-width: 0;
     min-height: 0;
+  }
+  .empty {
+    position: absolute;
+    inset: 0;
+  }
+  .empty svg {
+    width: 100%;
+    height: 100%;
+  }
+  .ring {
+    fill: none;
+    stroke: var(--v4-rowline);
+    stroke-width: 1;
+    stroke-dasharray: 3 6;
+  }
+  .region {
+    font-family: var(--font-mono, "Geist Mono", monospace);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    fill: var(--v4-text-3);
+  }
+  .empty-center {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, calc(-50% - 36px));
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+    width: min(620px, calc(100% - 48px));
+  }
+  .empty-ctr {
+    text-align: center;
+    font-size: var(--type-metadata);
+    color: var(--v4-text-3);
+    background: var(--v4-ground);
+    padding: 0 10px;
+  }
+  .empty-ctr b {
+    display: block;
+    font-size: var(--type-section);
+    font-weight: 600;
+    color: var(--v4-text-1);
+    margin-bottom: 2px;
+  }
+  .empty-prompts {
+    display: flex;
+    gap: 12px;
+    width: 100%;
+  }
+  .empty-p {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+    text-align: left;
+    padding: 14px;
+    border: 1px dashed var(--v4-control-border);
+    border-radius: var(--v4-radius-card);
+    background: var(--v4-ground);
+    color: var(--v4-text-1);
+    font: inherit;
+    cursor: pointer;
+  }
+  .empty-p:hover {
+    background: var(--v4-active-row);
+    border-color: var(--v4-text-3);
+  }
+  .pk {
+    font-family: var(--font-mono, "Geist Mono", monospace);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--v4-text-3);
+  }
+  .pt {
+    font-size: var(--type-secondary);
+    font-weight: 500;
+  }
+  .ps {
+    font-size: var(--type-metadata);
+    color: var(--v4-text-3);
+    line-height: 1.4;
+  }
+  .legend {
+    position: absolute;
+    left: 14px;
+    bottom: 10px;
+    font-size: 11px;
+    color: var(--v4-text-3);
+  }
+  .legend span {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .idot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--v4-idle);
   }
   .skeleton {
     position: absolute;

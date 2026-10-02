@@ -162,6 +162,9 @@ export interface SidepaneRosterEntry {
   live: boolean;
 }
 
+/** Roster row for a company with no teammates yet; opens the Team page. */
+export const INVITE_TEAMMATE_ROW: SidepaneRow = { id: "invite-teammate", label: "Invite a teammate" };
+
 /**
  * Atlas keeps the company sections with Atlas selected, then the company's
  * Live now and Idle rosters. Live count derives from the roster, so the chip
@@ -182,6 +185,10 @@ export function atlasSidepaneModel(
   const sections = cloneSections();
   if (live.length) sections.push({ id: "live-now", label: "Live now", rows: live });
   if (idle.length) sections.push({ id: "idle", label: "Idle", rows: idle });
+  // US-014: a company with no teammates yet gets an invite row in the roster.
+  if (roster.filter((p) => p.kind === "human").length <= 1) {
+    sections.push({ id: "invite", rows: [{ ...INVITE_TEAMMATE_ROW }] });
+  }
   return {
     kind: "atlas",
     key: `atlas:${company.uid}`,

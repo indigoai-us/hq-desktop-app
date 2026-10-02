@@ -11,6 +11,7 @@
   import SidepaneList from "./SidepaneList.svelte";
   import {
     COMPANY_SETTINGS_ROW,
+    INVITE_TEAMMATE_ROW,
     atlasSidepaneModel,
     type SidepaneRosterEntry,
     type SidepaneScrollMemory,
@@ -71,7 +72,7 @@
     if (!atlasActive || rosterLoading) return base;
     // Same pane key either way, so landing on Atlas keeps scroll memory.
     const rosterSections = atlasSidepaneModel(company, roster).sections.filter(
-      (s) => s.id === "live-now" || s.id === "idle",
+      (s) => s.id === "live-now" || s.id === "idle" || s.id === "invite",
     );
     const filtered = rosterSelected ? `person:${rosterSelected}` : null;
     const hasRow = filtered && rosterSections.some((s) => s.rows.some((r) => r.id === filtered));
@@ -117,7 +118,7 @@
   <SidepaneList
     sections={model.sections}
     selectedId={model.selectedId}
-    onselect={(row) => onselect?.(row.id)}
+    onselect={(row) => onselect?.(row.id === INVITE_TEAMMATE_ROW.id ? "team" : row.id)}
   />
   {#if atlasActive && rosterLoading}
     <div class="roster-skeleton" data-testid="company-sidepane-roster-skeleton" aria-hidden="true">

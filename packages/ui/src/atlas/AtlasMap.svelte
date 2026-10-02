@@ -30,6 +30,8 @@
     filterIds?: Set<string> | null;
     /** Actor the people filter is on; their chips stay bright. */
     filterActor?: string | null;
+    /** Time scrubber (US-014): per-object opacity at the scrubbed day; null at now. */
+    timeOpacity?: Map<string, number> | null;
     nowMs: number;
     view: AtlasView;
     onselect: (id: string | null) => void;
@@ -45,6 +47,7 @@
     presence = [],
     filterIds = null,
     filterActor = null,
+    timeOpacity = null,
     nowMs,
     view,
     onselect,
@@ -147,6 +150,7 @@
           class="node"
           class:dim={dimmed(node.id)}
           class:selected={node.id === selected}
+          style:--t={timeOpacity?.get(node.id) ?? null}
           data-testid={`atlas-node-${node.id}`}
           data-kind={node.type}
           role="button"
@@ -250,9 +254,12 @@
     stroke: var(--v4-text-3);
     stroke-width: 1;
   }
+  /* --t is the scrubber's per-object opacity; playback animates opacity only. */
   .node {
     cursor: pointer;
     outline: none;
+    opacity: var(--t, 1);
+    transition: opacity 160ms ease;
   }
   .dot {
     fill: var(--v4-text-3);
@@ -263,7 +270,7 @@
     fill: var(--v4-text-1);
   }
   .node.dim {
-    opacity: 0.35;
+    opacity: calc(var(--t, 1) * 0.35);
   }
   .sel-bg {
     fill: var(--v4-active-row);

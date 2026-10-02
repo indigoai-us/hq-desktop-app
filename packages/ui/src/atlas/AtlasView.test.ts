@@ -130,6 +130,70 @@ describe("AtlasView", () => {
   });
 });
 
+describe("AtlasView time scrubber and empty company (US-014)", () => {
+  it("renders play, histogram with playhead, Born/Touched toggle, and date readout", async () => {
+    mountView();
+    await settle();
+    const scrub = host.querySelector(sel("atlas-scrubber"))!;
+    expect(scrub).not.toBeNull();
+    expect(scrub.querySelector(sel("atlas-scrub-play"))).not.toBeNull();
+    expect(scrub.querySelectorAll(`${sel("atlas-scrub-hist")} i`).length).toBe(30);
+    expect(scrub.querySelector(sel("atlas-scrub-playhead"))).not.toBeNull();
+    expect(scrub.querySelector(sel("atlas-scrub-date"))?.textContent).toBe("Now");
+    expect(scrub.querySelector(sel("atlas-scrub-touched"))?.getAttribute("aria-pressed")).toBe("true");
+    flushSync(() => {
+      (scrub.querySelector(sel("atlas-scrub-born")) as HTMLButtonElement).click();
+    });
+    expect(scrub.querySelector(sel("atlas-scrub-born"))?.getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("scrubbing back fades nodes by opacity only and End returns to now", async () => {
+    mountView();
+    await settle();
+    const hist = host.querySelector(sel("atlas-scrub-hist")) as HTMLElement;
+    const node = () => host.querySelector(sel(`atlas-node-${RAIL}`)) as SVGGElement;
+    expect(node().style.getPropertyValue("--t")).toBe("");
+    flushSync(() => {
+      hist.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+    });
+    expect(host.querySelector(sel("atlas-scrub-date"))?.textContent).toBe("Sep 29");
+    const policy = host.querySelector(sel("atlas-node-policy:policies/tenancy.md")) as SVGGElement;
+    expect(policy.style.getPropertyValue("--t")).toBe("0.25");
+    expect(policy.getAttribute("transform")).toBeNull();
+    flushSync(() => {
+      hist.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
+    });
+    expect(host.querySelector(sel("atlas-scrub-date"))?.textContent).toBe("Now");
+    expect(policy.style.getPropertyValue("--t")).toBe("");
+  });
+
+  it("an empty company shows the dashed ring, six kinds, 0 objects, and Frame all disabled", async () => {
+    const opened: string[] = [];
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(AtlasView, {
+      target: host,
+      props: {
+        companyUid: "cmp_northwind",
+        companyName: "Northwind",
+        cache: createAtlasCache({ fetcher: async () => ({ company: "Northwind", nodes: [] }) }),
+        nowMs: NOW,
+        onopenpage: (id: string) => opened.push(id),
+      },
+    });
+    await settle();
+    expect(host.querySelector(sel("atlas-empty-ring"))).not.toBeNull();
+    const kinds = [...host.querySelectorAll(sel("atlas-empty-kind"))].map((n) => n.textContent);
+    expect(kinds).toEqual(["Projects", "Repos", "Workers", "Skills", "Policies", "Knowledge"]);
+    expect(host.querySelector(sel("atlas-object-count"))?.textContent).toBe("0 objects");
+    expect((host.querySelector(sel("atlas-frame-all")) as HTMLButtonElement).disabled).toBe(true);
+    expect((host.querySelector(sel("atlas-scrub-play")) as HTMLButtonElement).disabled).toBe(true);
+    expect(host.textContent).toContain("Northwind is empty");
+    (host.querySelector(sel("atlas-empty-invite")) as HTMLButtonElement).click();
+    expect(opened).toEqual(["team"]);
+  });
+});
+
 describe("Atlas chunk boundary", () => {
   it("nothing outside atlas/ imports the atlas module statically", () => {
     const src = join(dirname(fileURLToPath(import.meta.url)), "..");

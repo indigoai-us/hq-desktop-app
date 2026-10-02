@@ -43,7 +43,12 @@
   import AtlasLandingHost from "./AtlasLandingHost.svelte";
   import TeamPage from "../company/TeamPage.svelte";
   import BotsPage from "../company/BotsPage.svelte";
-  import { atlasRoster, atlasWorkingNow, rosterNamesFromRows } from "./atlas-landing.js";
+  import {
+    atlasLiveActors,
+    atlasRoster,
+    atlasWorkingNow,
+    rosterNamesFromRows,
+  } from "./atlas-landing.js";
   import AccountMenu from "./AccountMenu.svelte";
   import {
     accountPageId,
@@ -375,7 +380,7 @@
     type ChannelStatusModel,
     type StatusPersonRow,
   } from "../chat/channel-status-model.js";
-  import { liveInputsForCompanyProject } from "../chat/live-read-store.svelte.js";
+  import { liveInputsForCompanyProject, liveReadFor } from "../chat/live-read-store.svelte.js";
   import { applyChannelRoster, parseChannelMembers } from "./mesh-overlay.js";
   import {
     loadLiveChannelTabs,
@@ -8415,8 +8420,38 @@
       : [],
   );
 
+  // US-013: live actors for the Atlas map from the presence + live-read
+  // mirrors the shell already subscribes to. No poller, no fetch.
+  const atlasActors = $derived(
+    companyPaneCompany
+      ? atlasLiveActors(
+          liveReadFor(companyPaneCompany.uid),
+          presenceSnapshot(),
+          companyPaneCompany.uid,
+          atlasRosterNames,
+          self?.uid ?? null,
+        )
+      : [],
+  );
+  // People filter from the Atlas sidepane roster; cleared on company change.
+  let atlasFilterActor = $state<string | null>(null);
+  let atlasFilterCompany: string | null = null;
+  $effect.pre(() => {
+    const uid = companyPaneCompany?.uid ?? null;
+    if (uid !== atlasFilterCompany) {
+      atlasFilterCompany = uid;
+      atlasFilterActor = null;
+    }
+  });
+
   function selectCompanyPaneRow(rowId: string): void {
     if (!tenantCompanyId) return;
+    if (rowId.startsWith("person:")) {
+      const uid = rowId.slice("person:".length);
+      atlasFilterActor = atlasFilterActor === uid ? null : uid;
+      return;
+    }
+    atlasFilterActor = null;
     void navigate(companyRowDestination(rowId, tenantCompanyId));
   }
 
@@ -9393,6 +9428,7 @@
             memory={sidepaneScrollMemory}
             companyApi={adapter.company ?? null}
             roster={atlasCompanyRoster}
+            rosterSelected={atlasFilterActor}
             rosterLoading={!directorySettled}
           />
         {:else if view === "meetings"}
@@ -9545,6 +9581,11 @@
             workingNow={atlasWorkingNow(atlasCompanyRoster)}
             slug={companyPaneCompany.slug}
             summaryEnabled={Boolean(adapter.company)}
+            companyUid={companyPaneCompany.uid}
+            actors={atlasActors}
+            filterActor={atlasFilterActor}
+            onclearfilter={() => (atlasFilterActor = null)}
+            onopenpage={selectCompanyPaneRow}
             onopenperson={(personUid) => {
               void navigate({ kind: "dm", personUid });
             }}
