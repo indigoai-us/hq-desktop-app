@@ -4500,12 +4500,9 @@ mod tests {
         assert_eq!(code, Some(75));
         assert_eq!(signal, None);
         assert!(!success);
-        assert!(totals.saw_error);
-        assert!(totals.saw_alertable_error);
-        assert_eq!(
-            totals.runner_error_rollup.tag_value().as_deref(),
-            Some("OTHER:3")
-        );
+        assert!(!totals.saw_error);
+        assert!(!totals.saw_alertable_error);
+        assert_eq!(totals.runner_error_rollup.tag_value(), None);
 
         let disposition = classify_runner_exit_disposition(
             code,
