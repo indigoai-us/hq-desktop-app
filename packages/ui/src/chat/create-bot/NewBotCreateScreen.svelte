@@ -95,11 +95,14 @@
 </section>
 {:else}
 <div class="new-bot-create" data-testid="new-bot-create-screen" role="group" onkeydown={onKeydown}>
-  <header class="new-bot-create-head">
+  <!-- The head of the card, not window chrome: it sits in the centered card,
+       well clear of the title bar, so it is a plain div and its step control
+       does not go through the shared page header. -->
+  <div class="new-bot-create-head">
     <div class="new-bot-progress" aria-label={`Step ${step} of ${finalStep}`}>{#each Array(finalStep) as _, index}<span class:active={index + 1 === step}></span>{/each}</div>
     {#if step > 1}<button type="button" class="new-bot-back" onclick={() => go((step - 1) as 1 | 2)}>Back</button>{/if}
     {#if step === 1}<p class="new-bot-takeover-kicker">A new teammate</p><h1 id="new-bot-takeover-title">Enter a <em>name.</em></h1>{:else if step === 2}<p class="new-bot-takeover-kicker">Choose a brain</p><h1 id="new-bot-takeover-title">Pick the <em>brain.</em></h1>{:else}<p class="new-bot-takeover-kicker">Your workspace</p><h1 id="new-bot-takeover-title">Choose a <em>company.</em></h1>{/if}
-  </header>
+  </div>
 
   <div class="new-bot-create-scroll" data-testid="new-bot-create-scroll">
     {#if step === 1}
