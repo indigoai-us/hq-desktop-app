@@ -253,6 +253,11 @@
   } from "../settings/update-store.svelte";
   import type { AdapterResult } from "../settings/update-orchestration";
   import ChannelStatusPopover from "../chat/ChannelStatusPopover.svelte";
+  import {
+    liveMemberCount,
+    memberCountLabel,
+    pinnedNoteText,
+  } from "../chat/channel-header.js";
   import ChannelMuteControl from "../chat/ChannelMuteControl.svelte";
   import {
     changeNotifyLevel,
@@ -5374,6 +5379,18 @@
    * (not joined, browse-only, or a DM/group with no roster concept) skips
    * it entirely.
    */
+  /** US-015 header extras (home-channel): cached data only, no fetch. */
+  const headerMemberLabel = $derived(
+    selectedRow?.kind === "channel" ? memberCountLabel(memberPillCount) : null,
+  );
+  const headerPinnedNote = $derived(
+    selectedRow?.kind === "channel"
+      ? pinnedNoteText(channelStatus?.project.description ?? null)
+      : null,
+  );
+  const headerLiveCount = $derived(
+    selectedRow?.kind === "channel" ? liveMemberCount(channelStatus) : 0,
+  );
   const showMemberPill = $derived(
     Boolean(selectedRow) &&
       (memberPillCount > 0 ||
@@ -9633,6 +9650,21 @@
                     <span class="channel-sub" data-testid="channel-sub"
                       >{channelSubtitle}</span
                     >
+                    {#if headerMemberLabel}
+                      <span class="channel-sub" data-testid="channel-member-count"
+                        >· {headerMemberLabel}</span
+                      >
+                    {/if}
+                    {#if headerPinnedNote}
+                      <span
+                        class="channel-pin"
+                        data-testid="channel-pinned-note"
+                        title={headerPinnedNote}
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4h6l-1 6 3 3H7l3-3z" /><path d="M12 13v7" /></svg>
+                        <span class="channel-pin-text">{headerPinnedNote}</span>
+                      </span>
+                    {/if}
                     {#if isProjectChannel}
                       <button
                         type="button"
@@ -9810,6 +9842,12 @@
                 />
               {/if}
 
+              {#if headerLiveCount > 0}
+                <span class="channel-live-chip" data-testid="channel-live-chip"
+                  ><i class="channel-live-dot" aria-hidden="true"></i
+                  >{headerLiveCount} live</span
+                >
+              {/if}
               {#if showMemberPill}
                 <!-- svelte-ignore a11y_no_static_element_interactions -->
                 <div
@@ -9905,6 +9943,21 @@
                     />
                   {/if}
                 </div>
+              {/if}
+              {#if selectedRow?.kind === "channel"}
+                <button
+                  type="button"
+                  class="channel-details-btn"
+                  data-testid="channel-details"
+                  aria-label="Channel details"
+                  title="Channel details"
+                  onclick={() => {
+                    if (isProjectChannel) projectAboutOpen = !projectAboutOpen;
+                    else membersOpen = !membersOpen;
+                  }}
+                >
+                  <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true"><circle cx="3.5" cy="8" r="1.2" /><circle cx="8" cy="8" r="1.2" /><circle cx="12.5" cy="8" r="1.2" /></svg>
+                </button>
               {/if}
             </div>
           </header>
@@ -10323,6 +10376,7 @@
                   {onopenurl}
                   channelId={selectedRow.channelId}
                   oncardaction={handleCardAction}
+                  {hqFolderPath}
                   ontogglereaction={persistReaction}
                   selfDisplayName={self?.displayName ?? null}
                   selfPersonUid={self?.uid ?? null}
@@ -10450,7 +10504,7 @@
                   class="reply-column"
                   class:overlay={narrowViewport}
                   class:resizable-thread={!narrowViewport}
-                  style:--thread-width={threadWidth === null ? "50%" : `${threadWidth}px`}
+                  style:--thread-width={threadWidth === null ? "360px" : `${threadWidth}px`}
                   data-testid="reply-column"
                   data-reply-layout={narrowViewport ? "overlay" : "column"}
                 >
@@ -10481,6 +10535,7 @@
                     channelId={selectedRow.channelId}
                     withPersonUid={selectedRow.personUid}
                     withPersonName={selectedRow.title}
+                    channelName={selectedRow.kind === "channel" ? selectedRow.title : null}
                     {seedRoot}
                     {wakes}
                     reactions={rowReactions}
@@ -10976,6 +11031,68 @@
   .channel-header[data-reply-open="true"],
   .chat-stage[data-reply-open="true"] {
     --conv-inset: 24px;
+  }
+
+  .channel-pin {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+    max-width: 420px;
+    margin-left: 10px;
+    padding: 2px 8px;
+    border-radius: var(--v4-radius-pill);
+    background: var(--v4-control-faint);
+    color: var(--v4-text-3, var(--t3));
+    font-size: 12px;
+  }
+
+  .channel-pin svg {
+    flex: none;
+  }
+
+  .channel-pin-text {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .channel-live-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 8px;
+    border-radius: var(--v4-radius-pill);
+    background: var(--v4-control-faint);
+    color: var(--v4-text-2, var(--t2));
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  .channel-live-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--v4-ok);
+  }
+
+  .channel-details-btn {
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--t2);
+    cursor: pointer;
+  }
+
+  .channel-details-btn:hover,
+  .channel-details-btn:focus-visible {
+    background: var(--v4-active-row);
+    outline: none;
   }
 
   .channel-header {

@@ -26,6 +26,8 @@
   import SystemEventLine from "./SystemEventLine.svelte";
   import RunCompleteCard from "./RunCompleteCard.svelte";
   import LifecycleCard from "./LifecycleCard.svelte";
+  import ShareRequestCard from "./ShareRequestCard.svelte";
+  import { parseShareRequestEvent } from "./share-request-card";
   import ReactionBar from "./ReactionBar.svelte";
   import EmojiPicker from "./EmojiPicker.svelte";
   import MentionPicker from "./MentionPicker.svelte";
@@ -137,6 +139,8 @@
     channelId?: string | null;
     /** Bubbled lifecycle-card action (host posts). */
     oncardaction?: (event: LifecycleCardActionEvent) => void;
+    /** HQ folder for share-card "Open in Claude Code" deep links. */
+    hqFolderPath?: string | null;
     /** Bubbled reaction toggle (host reconciles). */
     ontogglereaction?: (messageId: string, emoji: string) => void;
     /** Bubbled send (host persists). Optional — the composer works standalone. */
@@ -315,6 +319,7 @@
     channelId = null,
     landAt = "bottom",
     oncardaction,
+    hqFolderPath = null,
     ontogglereaction,
     onsend,
     previewCache,
@@ -1228,6 +1233,7 @@
     msg: ConversationMessageWire;
     systemModel: ReturnType<typeof systemModelForMessage>;
     workActivity: ReturnType<typeof parseWorkSessionEvent>;
+    shareCard: ReturnType<typeof parseShareRequestEvent>;
     groupStart: boolean;
     startsNewDay: boolean;
     timeLabel: string;
@@ -1242,7 +1248,8 @@
       const day = dayKey(msg.createdAt);
       const startsNewDay = prev === undefined || day !== prevDay;
       const systemModel = systemModelForMessage(msg);
-      const special = systemModel !== null;
+      const shareCard = systemModel ? null : parseShareRequestEvent(msg.systemEvent);
+      const special = systemModel !== null || shareCard !== null;
       const workActivity = parseWorkSessionEvent(msg.body ?? "");
       // desktop.human-only-conversations: a message whose body parses as a
       // work-mesh activity event is a mesh row and MUST NOT render, even if
@@ -1252,6 +1259,7 @@
         msg,
         systemModel,
         workActivity,
+        shareCard,
         groupStart:
           prev === undefined ||
           !messagesShareGroup(prev, msg, prevSpecial, special),
@@ -1716,7 +1724,36 @@
               <span>{row.dateLabel}</span>
             </div>
           {/if}
-          {#if systemModel?.kind === "work_session_card"}
+          {#if row.shareCard}
+            <div
+              class="dm-msg dm-msg-in dm-msg-group-start"
+              data-testid="share-request-row"
+              data-event-id={msg.eventId}
+            >
+              <span class="dm-msg-avatar">
+                <IdentityMark
+                  kind="person"
+                  label={messageAuthor(msg)}
+                  avatarUrl={authorAvatarUrl(msg.fromPersonUid, avatarByUid)}
+                  agentUid={msg.fromPersonUid}
+                  size="regular"
+                />
+              </span>
+              <div class="dm-msg-column">
+                <div class="dm-msg-meta">
+                  <span class="dm-msg-author">{messageAuthor(msg)}</span>
+                  <span class="dm-msg-header-time">{row.timeLabel}</span>
+                </div>
+                <ShareRequestCard
+                  model={row.shareCard}
+                  channelId={channelId ?? ""}
+                  {hqFolderPath}
+                  {onopenurl}
+                  {oncardaction}
+                />
+              </div>
+            </div>
+          {:else if systemModel?.kind === "work_session_card"}
             <WorkMeshActivityRow
               card={systemModel}
               actorLabel={resolveWorkActor(
