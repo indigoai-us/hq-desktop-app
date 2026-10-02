@@ -18,13 +18,26 @@
  * intentional.
  */
 :root {
-  /* Readable desktop ramp with visible hierarchy. Metadata stays compact but
-     never drops below 13px; page/detail headings have real display scale. */
-  --type-metadata: 13px;
-  --type-secondary: 14px;
-  --type-body: 15px;
-  --type-section: 17px;
-  --type-detail: 24px;
+  /* Console-rail canvas type scale (docs/design-standard-console-rail.md §2).
+     The canvas uses two sizes: 20px/500 for the one page or task title and
+     13px/1.45 for everything else. Weight is capped at 500. */
+  --type-title: 20px;
+  --type-title-weight: 500;
+  --type-title-line: 1.25;
+  --type-ui: 13px;
+  --type-ui-line: 1.45;
+  --type-ui-weight: 400;
+  --type-ui-strong: 500;
+
+  /* Retired inflated ramp (was 13/14/15/17/24). Kept as aliases so existing
+     subpages collapse onto the 13px body and 20px title instead of breaking.
+     Messages keeps its own sizes through the .chat-sidebar override in
+     chat/chat-tokens.css. New code uses --type-title / --type-ui. */
+  --type-metadata: var(--type-ui);
+  --type-secondary: var(--type-ui);
+  --type-body: var(--type-ui);
+  --type-section: var(--type-ui);
+  --type-detail: var(--type-title);
 
   /* Primary row title + secondary metadata stack */
   --v4-row-stack-gap: 3px;

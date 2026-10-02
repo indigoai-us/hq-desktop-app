@@ -42,6 +42,19 @@
   font: 400 13px/1.45 var(--font-ui);
 }
 
+/* Messages keeps the sizes it shipped with (search input, snippets and text
+   buttons read 14px) while subpages use the retired-ramp aliases in
+   home/tokens.css. Shipped Messages wins over the standard on conflicts. */
+.chat-sidebar {
+  --type-secondary: 14px;
+}
+
+/* Native controls do not inherit font by default and render at the browser's
+   13.333px system face. Make every control inherit the shell font. */
+:where(.chat-shell) :where(button, input, select, textarea) {
+  font: inherit;
+}
+
 :root .chat-shell,
 :root[data-force-theme="light"] .chat-shell {
   --side-bg: rgba(255, 255, 255, 0.3);
