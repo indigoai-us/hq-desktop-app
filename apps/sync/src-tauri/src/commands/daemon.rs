@@ -9739,7 +9739,10 @@ mod tests {
 
         assert_eq!(report_tag_of(&tags, "node_error_code"), "ERR_MODULE_NOT_FOUND");
         assert_eq!(report_tag_of(&tags, "node_error_name"), "Error");
-        assert_eq!(report_tag_of(&tags, "node_top_frame"), "private-file.js:23:17");
+        // A frame outside our packages and node: internals reports only
+        // "external", so a user's file name never leaves the machine.
+        assert_eq!(report_tag_of(&tags, "node_top_frame"), "external");
+        assert!(!rendered_contains_private_file(&tags));
         assert_eq!(report_tag_of(&tags, "exit_producer"), "runner");
         let rendered = tags
             .iter()
@@ -9750,6 +9753,11 @@ mod tests {
         assert!(!report_tag_of(&tags, "node_top_frame").contains('/'));
         assert!(!report_tag_of(&tags, "node_top_frame").contains('\\'));
         assert!(!rendered.contains("/Users/alice"));
+    }
+
+    fn rendered_contains_private_file(tags: &[(String, String)]) -> bool {
+        tags.iter()
+            .any(|(_, value)| value.contains("private-file") || value.contains("privateFunction"))
     }
 
     #[test]
