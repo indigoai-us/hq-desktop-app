@@ -936,6 +936,13 @@ export function createSyncPlatformAdapter(
       listMemberships: () => call('meetings_list_memberships'),
       listUpcoming: () => call('meetings_list_upcoming'),
       listScheduledBots: () => call('meetings_list_scheduled_bots'),
+      fetchLiveTranscript: (req) =>
+        call('meetings_fetch_live_transcript', {
+          recallBotId: req.recallBotId,
+          companyId: req.companyId,
+          sinceRevision: req.sinceRevision ?? null,
+          etag: req.etag ?? null,
+        }),
       inviteBot: (payload) => {
         const rec = asRecord(payload) ?? {};
         return call('meetings_invite_bot', {

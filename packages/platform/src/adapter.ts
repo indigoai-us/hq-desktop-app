@@ -898,7 +898,54 @@ export interface MeetingsApi {
    * permission and starts the detector as soon as everything is granted.
    */
   openPermissionsSetup(): AdapterPromise<void>;
+  /**
+   * One live-transcript poll (`GET /v1/meetings/{recallBotId}?view=live`).
+   * Optional: only hosts with the native fetch implement it; callers show
+   * an honest "no live view" state when it is absent.
+   */
+  fetchLiveTranscript?(
+    req: LiveTranscriptRequest,
+  ): AdapterPromise<LiveTranscriptResult>;
 }
+
+export interface LiveTranscriptRequest {
+  recallBotId: string;
+  companyId: string;
+  sinceRevision?: number | null;
+  etag?: string | null;
+}
+
+export interface LiveTranscriptSegmentWire {
+  segmentId: string;
+  participantId?: string | null;
+  speaker?: string | null;
+  startSeconds: number;
+  endSeconds?: number | null;
+  text: string;
+}
+
+export interface LiveTranscriptPartialWire {
+  participantId?: string | null;
+  speaker?: string | null;
+  startSeconds: number;
+  text: string;
+}
+
+/** Tagged result of one poll, as produced by the native fetch. */
+export type LiveTranscriptResult =
+  | {
+      kind: "ok";
+      revision: number;
+      etag?: string | null;
+      updatedAt?: string | null;
+      provisional?: boolean;
+      truncated?: boolean;
+      segments: LiveTranscriptSegmentWire[];
+      partial?: LiveTranscriptPartialWire | null;
+    }
+  | { kind: "not-modified" }
+  | { kind: "disabled" }
+  | { kind: "not-found" };
 
 export interface MarketplaceApi {
   listListings(opts?: Json): AdapterPromise<Json>;
