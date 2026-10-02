@@ -8,9 +8,11 @@
 
   interface Props {
     page: "secrets" | "connections";
+    companies?: { uid: string; label: string }[];
+    onopenintegrations?: (uid: string) => void;
   }
 
-  let { page }: Props = $props();
+  let { page, companies = [], onopenintegrations }: Props = $props();
 
   let Body = $state<typeof import("../personal/PersonalRailPage.svelte").default | null>(null);
 
@@ -23,7 +25,7 @@
 
 <div class="host" data-testid="personal-rail-host" data-page={page}>
   {#if Body}
-    <Body {page} />
+    <Body {page} {companies} {onopenintegrations} />
   {:else}
     <div class="skeleton" data-testid="personal-rail-skeleton" aria-busy="true">
       <aside>

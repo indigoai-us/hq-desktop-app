@@ -27,6 +27,7 @@
     execSnippet,
     filterConnections,
     filterPersonalSecrets,
+    emptyPersonalRail,
     fixturePersonalRail,
     personalSecretsErrorReason,
     personalSecretsFromSource,
@@ -40,9 +41,12 @@
     page: "secrets" | "connections";
     /** Perf harness and design scenes only. The running app never sets this. */
     fixtures?: boolean;
+    /** Companies the owner belongs to, for the per-company Integrations links. */
+    companies?: { uid: string; label: string }[];
+    onopenintegrations?: (uid: string) => void;
   }
 
-  let { page, fixtures = false }: Props = $props();
+  let { page, fixtures = false, companies = [], onopenintegrations }: Props = $props();
 
   // Fixture mode is fixed for the life of the page.
   const useFixtures = untrack(() => fixtures);
@@ -50,7 +54,7 @@
   let data = $state<PersonalRailCache>(
     useFixtures
       ? fixturePersonalRail()
-      : cachedAtOpen ?? { secrets: [], connections: fixturePersonalRail().connections },
+      : cachedAtOpen ?? emptyPersonalRail(),
   );
   // "loading" paints the skeleton; it only shows when nothing is cached yet.
   let secretsState = $state<"loading" | "ready" | "error">(
@@ -171,6 +175,11 @@
       <button class="nav" type="button" aria-current="true" data-testid="scope-personal">Personal <span>{data.secrets.length}</span></button>
       <p class="sec">Needs attention</p>
       <button class="nav" type="button" aria-current={secretTab === "stale"} onclick={() => (secretTab = "stale")}>Not rotated in 90 d</button>
+    {:else if !useFixtures}
+      <p class="sec">Managed per company</p>
+      {#each companies as company (company.uid)}
+        <button class="nav" type="button" onclick={() => onopenintegrations?.(company.uid)}>{company.label}</button>
+      {/each}
     {:else}
       <button class="nav" type="button" aria-current={connectionTab === "connected"} onclick={() => (connectionTab = "connected")}>Connected <span>{connectedCount}</span></button>
       <button class="nav" type="button" aria-current={connectionTab === "available"} onclick={() => (connectionTab = "available")}>Available</button>
@@ -253,6 +262,22 @@
             <p class="meta">Who can read · {secretCurrent.readers}</p>
           {/if}
         </aside>
+      </div>
+    {:else if !useFixtures}
+      <header class="toolbar">
+        <h1>Connections</h1>
+      </header>
+      <div class="state" data-testid="connections-per-company">
+        <p>Connections are managed per company. HQ does not have personal connections yet, so each company keeps its own apps on its Integrations page.</p>
+        {#if companies.length === 0}
+          <p>Join or create a company to connect apps.</p>
+        {:else}
+          {#each companies as company (company.uid)}
+            <button class="btn" type="button" data-testid={`connections-company-${company.uid}`} onclick={() => onopenintegrations?.(company.uid)}>
+              {company.label} Integrations
+            </button>
+          {/each}
+        {/if}
       </div>
     {:else}
       <header class="toolbar">
@@ -428,6 +453,7 @@
   .tiny { pointer-events: none; }
   .state { padding: 16px 8px; color: var(--v4-text-2); font-size: var(--type-metadata, 13px); }
   .state p { margin: 0 0 8px; }
+  .state .btn { margin: 0 8px 8px 0; }
   .tiny-btn { height: 22px; padding: 0 8px; margin-left: 6px; }
   .skel { height: 36px; margin: 8px; border-radius: 6px; background: linear-gradient(90deg, var(--v4-control-faint), var(--v4-hover), var(--v4-control-faint)); background-size: 200% 100%; animation: personal-row-skel 1.1s linear infinite; }
   @keyframes personal-row-skel { from { background-position: 100% 0; } to { background-position: -100% 0; } }

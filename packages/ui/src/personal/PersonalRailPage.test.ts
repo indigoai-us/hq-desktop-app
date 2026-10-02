@@ -29,10 +29,10 @@ describe("US-033 PersonalRailPage", () => {
     flushSync();
   }
 
-  function mountPage(page: "secrets" | "connections") {
+  function mountPage(page: "secrets" | "connections", extra: Record<string, unknown> = {}) {
     const target = document.createElement("div");
     document.body.appendChild(target);
-    component = mount(PersonalRailPage, { target, props: { page } });
+    component = mount(PersonalRailPage, { target, props: { page, ...extra } });
     flushSync();
     return target;
   }
@@ -113,8 +113,27 @@ describe("US-033 PersonalRailPage", () => {
     expect(target.querySelector("[data-testid='personal-secrets-list']")?.textContent).toContain("HQ_TOKEN");
   });
 
-  it("shows Allowed, Ask first, and Never on the Agents and MCP tab", () => {
-    const target = mountPage("connections");
+  it("says connections are managed per company and links into each company's Integrations", () => {
+    const opened: string[] = [];
+    const target = mountPage("connections", {
+      companies: [
+        { uid: "cmp_a", label: "Acme" },
+        { uid: "cmp_b", label: "Beta" },
+      ],
+      onopenintegrations: (uid: string) => opened.push(uid),
+    });
+    const state = target.querySelector("[data-testid='connections-per-company']");
+    expect(state?.textContent).toContain("managed per company");
+    // No invented GitHub, Google, or Slack rows in the running app.
+    expect(target.textContent).not.toContain("GitHub");
+    expect(target.textContent).not.toContain("Slack");
+    expect(target.querySelector("[data-testid='connections-list']")).toBeNull();
+    (target.querySelector("[data-testid='connections-company-cmp_b']") as HTMLButtonElement).click();
+    expect(opened).toEqual(["cmp_b"]);
+  });
+
+  it("shows Allowed, Ask first, and Never on the Agents and MCP tab in the design fixture", () => {
+    const target = mountPage("connections", { fixtures: true });
     const tab = target.querySelector("[data-testid='agents-mcp']") as HTMLButtonElement;
     tab.click();
     flushSync();
@@ -129,7 +148,9 @@ describe("US-033 PersonalRailPage", () => {
   });
 
   it("closes Add connection and New secret on Escape (QA-003, QA-015)", async () => {
-    const target = mountPage("connections");
+    // Add connection lives in the connections design fixture; the running app
+    // shows the per-company state instead.
+    const target = mountPage("connections", { fixtures: true });
     (target.querySelector("[data-testid='add-connection']") as HTMLButtonElement).click();
     flushSync();
     expect(target.querySelector("[data-testid='sheet-connect']")).not.toBeNull();

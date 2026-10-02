@@ -8691,6 +8691,13 @@
     moreCompaniesOpen = false;
   }
 
+  /** Personal Connections link into a company's own Integrations page. */
+  function openCompanyIntegrations(uid: string): void {
+    companyPaneOpen = true;
+    changeTenantCompany(uid);
+    void navigate(companyRowDestination("integrations", uid));
+  }
+
   function setPinnedCompanies(ids: string[]): void {
     pinnedCompanyIds = ids;
     writeSettingsPrefs({ pinnedCompanyIds: ids });
@@ -10038,7 +10045,11 @@
         {:else if railPlaceholder?.id === "telemetry"}
           <TelemetryRailHost />
         {:else if railPlaceholder?.id === "secrets" || railPlaceholder?.id === "connections"}
-          <PersonalRailHost page={railPlaceholder.id} />
+          <PersonalRailHost
+            page={railPlaceholder.id}
+            companies={railCompanyRoster.map((company) => ({ uid: company.uid, label: company.label }))}
+            onopenintegrations={openCompanyIntegrations}
+          />
         {:else if railPlaceholder?.id === "outpost"}
           <OutpostRailHost />
         {:else if railPlaceholder}
