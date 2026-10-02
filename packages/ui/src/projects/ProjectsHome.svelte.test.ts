@@ -108,6 +108,17 @@ describe("ProjectsHome", () => {
     expect(shown(el)).toBe("acme");
   });
 
+  it("hides its own switcher when the shell pins the company", async () => {
+    const el = await render({ slug: "zeta", preferredSlug: "zeta" });
+    expect(shown(el)).toBe("zeta");
+    expect(el.querySelector('[data-testid="projects-company-switcher"]')).toBeNull();
+  });
+
+  it("keeps the switcher when the caller asks for it", async () => {
+    const el = await render({ slug: "zeta", preferredSlug: "zeta", pinned: false });
+    expect(el.querySelector('[data-testid="projects-company-switcher"]')).not.toBeNull();
+  });
+
   it("says so when no company has synced to this Mac", async () => {
     const el = await render({ companies: [COMPANIES[2]] });
     expect(el.querySelector('[data-testid="projects-home-empty"]')).not.toBeNull();

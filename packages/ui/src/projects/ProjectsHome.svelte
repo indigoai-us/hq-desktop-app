@@ -21,9 +21,17 @@
     /** Company the rest of the app is scoped to, used when `slug` is unset. */
     preferredSlug?: string | null;
     onslugchange?: (slug: string) => void;
+    /**
+     * The shell already picked the company (the rail tile and the company
+     * sidepane header name it), so the page shows no switcher of its own.
+     * Defaults to true when the caller pins `slug` to the shell's company.
+     */
+    pinned?: boolean;
   }
 
-  let { adapter, companies, slug = null, preferredSlug = null, onslugchange }: Props = $props();
+  let { adapter, companies, slug = null, preferredSlug = null, onslugchange, pinned }: Props = $props();
+
+  const showSwitcher = $derived(!(pinned ?? (slug != null && slug === preferredSlug)));
 
   let hostNoun = $state(hostComputerNoun());
   onMount(() => subscribeHostComputerNoun((next) => (hostNoun = next)));
@@ -88,6 +96,7 @@
     </div>
   {:else}
     <div class="ph-body">
+      {#if showSwitcher}
       <div class="ph-bar">
         <div class="ph-company">
           <button
@@ -123,6 +132,7 @@
           {/if}
         </div>
       </div>
+      {/if}
       {#key current.slug}
         <CompanyProjectsPage {adapter} slug={current.slug} companyUid={current.cloudUid ?? null} />
       {/key}

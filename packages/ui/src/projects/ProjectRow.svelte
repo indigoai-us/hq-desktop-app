@@ -425,10 +425,13 @@
     transform-origin: left center;
     transition: transform 300ms ease;
   }
+  /* Green is reserved for live work; a finished bar reads in full text. */
   .progress-fill[data-status="live"],
-  .progress-fill.live-run-fill,
-  .progress-fill[data-status="complete"] {
+  .progress-fill.live-run-fill {
     background: var(--v4-ok);
+  }
+  .progress-fill[data-status="complete"]:not(.live-run-fill) {
+    background: var(--v4-text-1);
   }
 
   .progress-count,
@@ -465,7 +468,7 @@
     background: var(--v4-text-2);
   }
   .status-dot[data-status="complete"] {
-    background: var(--v4-ok);
+    background: var(--v4-text-1);
   }
   .status-dot.is-live {
     background: var(--v4-ok);

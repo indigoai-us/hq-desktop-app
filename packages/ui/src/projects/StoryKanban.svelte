@@ -344,7 +344,7 @@
   }
 
   .status-dot[data-column="complete"] {
-    background: color-mix(in srgb, var(--v4-ok) 70%, var(--v4-text-3));
+    background: var(--v4-text-1);
   }
 
   .live-dot {

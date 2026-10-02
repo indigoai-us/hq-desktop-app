@@ -444,6 +444,8 @@
     groupProjectsByPortfolioColumn(filteredCompanyProjects, sessions),
   );
 
+  /** The task view pane sits beside the board view only. */
+  const paneOpen = $derived(peek !== null && viewMode === "board");
   const liveCount = $derived(portfolioGroups.active.length);
 
   $effect(() => {
@@ -899,6 +901,10 @@
       {sessions}
     />
   {:else}
+    <!-- US-024: the task view pane spans the full content height beside the
+         header, toolbar and board, not just the board below the filters. -->
+    <div class="projects-split" class:has-pane={paneOpen}>
+    <div class="projects-main">
     <header class="projects-header">
       <div class="projects-heading">
         <h2 id="company-projects-title">Projects</h2>
@@ -1106,7 +1112,7 @@
           </p>
         </div>
       {:else if viewMode === "board"}
-        <div class="board-split" class:has-pane={peek !== null}>
+        <div class="board-split">
         <div
           class="kanban-board"
           data-testid="portfolio-kanban"
@@ -1194,23 +1200,6 @@
             </section>
           {/each}
         </div>
-          {#if peek}
-            <div class="tpane-slot">
-              <TaskViewDoor
-                project={peek}
-                stories={peekStories}
-                loading={peekLoading}
-                error={peekError}
-                branch={peekBranch}
-                {sessions}
-                liveRun={projectLiveRunView(peek, sessions, now)}
-                lead={leadLabel(peek)}
-                onclose={closePeek}
-                onopenproject={openPeekProject}
-                onmarkdone={markPeekDone}
-              />
-            </div>
-          {/if}
         </div>
       {:else}
         <div
@@ -1323,6 +1312,25 @@
           {/each}
         </div>
       {/if}
+    </div>
+    </div>
+    {#if peek && paneOpen}
+      <div class="tpane-slot">
+        <TaskViewDoor
+          project={peek}
+          stories={peekStories}
+          loading={peekLoading}
+          error={peekError}
+          branch={peekBranch}
+          {sessions}
+          liveRun={projectLiveRunView(peek, sessions, now)}
+          lead={leadLabel(peek)}
+          onclose={closePeek}
+          onopenproject={openPeekProject}
+          onmarkdone={markPeekDone}
+        />
+      </div>
+    {/if}
     </div>
   {/if}
   {#if newProjectOpen}
@@ -1610,15 +1618,32 @@
     min-width: 0;
   }
 
-  .board-split.has-pane {
+  .projects-split {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0 12px;
+    align-items: start;
+    min-width: 0;
+  }
+
+  .projects-split.has-pane {
     grid-template-columns: minmax(0, 1fr) 360px;
   }
 
+  .projects-main {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-width: 0;
+  }
+
+  /* Full content height from the toolbar down; sticks while the board
+     scrolls under it. */
   .tpane-slot {
     position: sticky;
     top: 0;
     display: flex;
-    height: calc(100vh - 140px);
+    height: calc(100vh - 72px);
     min-height: 320px;
   }
 
@@ -1687,7 +1712,7 @@
   }
 
   .column-dot[data-column="complete"] {
-    background: color-mix(in srgb, var(--v4-ok) 70%, var(--v4-text-3));
+    background: var(--v4-text-1);
   }
 
   .kanban-column-count {
