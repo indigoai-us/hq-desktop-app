@@ -8,6 +8,13 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Automatic updates now install after the idle cap even when sync stays busy. HQ pauses new sync cycles and waits up to a minute for active transfers before installing. A meeting recording, transcript processing, or another core update can still delay installation.
+
+- When an HQ CLI update fails partway through installing, the desktop app now
+  puts the previous HQ CLI back instead of leaving a broken or missing `hq`
+  command. Before this, a failed update could leave sync unable to run until
+  the CLI was reinstalled by hand.
+
 - Desktop setup completion telemetry now carries the persisted install attempt ID so it can join to first launch.
 - Auto-sync watcher reports now identify launcher and runner exits and owner-lease
   outcomes. When a Node report is available, they add a safe error identifier and
@@ -108,11 +115,6 @@ The release moves it under the version it ships in.
 - Internal: removed two unused packages/ui helpers and made three module-only helpers private (TD-60, #1198). No user-visible change.
 
 - Internal: unused exports in the shared UI package are now module-private. No behaviour change.
-- When an HQ CLI update fails partway through installing, the desktop app now
-  puts the previous HQ CLI back instead of leaving a broken or missing `hq`
-  command. Before this, a failed update could leave sync unable to run until
-  the CLI was reinstalled by hand.
-
 - Internal: unused exports in the work shell and installer are now module-private. No behaviour change.
 
 - With the Personal workspace board rollout enabled, HQ Desktop shows the
