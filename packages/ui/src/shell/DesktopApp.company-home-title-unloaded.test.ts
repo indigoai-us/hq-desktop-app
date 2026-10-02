@@ -177,8 +177,42 @@ describe("DesktopApp home-channel title, opened by id before rows load", () => {
     await settle(12);
 
     await vi.waitFor(() => {
-      expect(titleEl()?.textContent).toBe("Liverecover Home");
+      // A company-home header represents the company. The channel's metadata
+      // may call it "Liverecover Home", but the current cloud company name is
+      // the user-facing label this issue requires.
+      expect(titleEl()?.textContent).toBe("Two Word Company");
     });
     expect(titleEl()?.textContent).not.toContain("chn_");
   }, 15_000);
+
+  it("keeps the slug as the provisional title when only the slug is known", async () => {
+    const slugOnlyCompany = { ...LIVERECOVER, displayName: LIVERECOVER.slug };
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(DesktopApp, {
+      target: host,
+      props: {
+        adapter: adapter(),
+        sidebarApi: createFixtureChatSidebarApi(),
+        notificationsApi: createEmptyNotificationsApi(),
+        self: { uid: "prs_test", displayName: "Stefan Johnson", email: "stefan@example.com" },
+        coreFixtures: false,
+        initialRow: SETUP_ROW,
+        companies: [slugOnlyCompany],
+      },
+    });
+    await settle();
+
+    requestChannelOpen(LIVERECOVER.homeChannelId!, {
+      title: LIVERECOVER.slug,
+      companyUid: LIVERECOVER.cloudUid,
+    });
+    await settle(12);
+
+    await vi.waitFor(() => {
+      const titleEl = host.querySelector('[data-testid="channel-name"]');
+      expect(titleEl?.textContent).toBe(LIVERECOVER.slug);
+      expect(titleEl?.textContent).not.toContain("chn_");
+    });
+  });
 });
