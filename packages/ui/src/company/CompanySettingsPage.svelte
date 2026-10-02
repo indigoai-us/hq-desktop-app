@@ -1,0 +1,375 @@
+<script lang="ts">
+  /**
+   * Company settings (console-rail US-030).
+   * General, Brand, Groups, Grants, HQ Workforce, and Billing.
+   * Cached snapshot paints on the first frame. Upgrade opens Stripe checkout.
+   * Manage payment opens the Stripe portal. Delete group asks first.
+   */
+  import ConfirmDialog from "../common/ConfirmDialog.svelte";
+  import {
+    GRANT_FILTERS,
+    SETTINGS_TABS,
+    deleteGroup,
+    emptySnapshot,
+    expiringGrantCount,
+    filterGrants,
+    grantFilterLabel,
+    grantLevelLabel,
+    metadata,
+    readSettingsCache,
+    stripeDestination,
+    writeSettingsCache,
+    type GrantFilter,
+    type SettingsSnapshot,
+    type SettingsTab,
+  } from "./company-settings.js";
+  import "../home/tokens.css";
+  import "../chat/chat-tokens.css";
+
+  interface Props {
+    slug: string;
+    companyLabel: string;
+    openExternal?: (url: string) => void;
+  }
+
+  let { slug, companyLabel, openExternal }: Props = $props();
+
+  let tab = $state<SettingsTab>("general");
+  let grantFilter = $state<GrantFilter>("all");
+  let selectedGroup = $state<string | null>(null);
+  let deleteId = $state<string | null>(null);
+  let snap = $state<SettingsSnapshot>(emptySnapshot("", ""));
+
+  $effect(() => {
+    const key = slug;
+    const label = companyLabel;
+    const hit = readSettingsCache(key);
+    snap = hit ?? emptySnapshot(label, key);
+  });
+
+  $effect(() => {
+    if (!selectedGroup && snap.groups[0]) selectedGroup = snap.groups[0].id;
+  });
+
+  const visibleGrants = $derived(filterGrants(snap.grants, grantFilter));
+  const group = $derived(snap.groups.find((g) => g.id === selectedGroup) ?? snap.groups[0] ?? null);
+
+  function remember(): void {
+    writeSettingsCache(slug, snap);
+  }
+
+  function saveGeneral(): void {
+    remember();
+  }
+
+  function openStripe(action: "upgrade" | "portal"): void {
+    const url = stripeDestination(action);
+    openExternal?.(url);
+  }
+
+  function confirmDelete(): void {
+    if (!deleteId) return;
+    snap = { ...snap, groups: deleteGroup(snap.groups, deleteId, true) };
+    if (selectedGroup === deleteId) selectedGroup = snap.groups[0]?.id ?? null;
+    deleteId = null;
+    remember();
+  }
+
+  const tabLabel: Record<SettingsTab, string> = {
+    general: "General",
+    brand: "Brand",
+    groups: "Groups",
+    grants: "Grants",
+    workforce: "HQ Workforce",
+    billing: "Billing",
+  };
+</script>
+
+<section
+  class="settings"
+  data-testid="company-settings"
+  data-scene="settings"
+  data-tab={tab}
+  data-scroll-budget={metadata.performanceBudget.scrollDroppedFramesPct}
+>
+  <nav class="subnav" aria-label="Settings sections">
+    {#each SETTINGS_TABS as id (id)}
+      {#if id === "workforce"}
+        <div class="sec">Plan</div>
+      {/if}
+      <button
+        type="button"
+        class="row"
+        aria-current={tab === id ? "true" : undefined}
+        data-testid={`settings-tab-${id}`}
+        onclick={() => (tab = id)}
+      >
+        <span class="t">{tabLabel[id]}</span>
+        {#if id === "groups" && snap.groups.length}
+          <span class="count">{snap.groups.length}</span>
+        {/if}
+        {#if id === "grants" && expiringGrantCount(snap.grants)}
+          <span class="count">{expiringGrantCount(snap.grants)}</span>
+        {/if}
+      </button>
+    {/each}
+  </nav>
+
+  <div class="page">
+    {#if tab === "general"}
+      <div class="page-head">
+        <div>
+          <h2>General</h2>
+          <p class="sub">Name, slug, defaults for new members, ownership</p>
+        </div>
+        <span class="grow"></span>
+        <button type="button" class="btn primary" data-testid="settings-save" onclick={saveGeneral}>Save changes</button>
+      </div>
+      <label class="fr"><span class="lb">Company name</span><input class="in" bind:value={snap.general.name} /></label>
+      <label class="fr"><span class="lb">Slug</span><input class="in mono" bind:value={snap.general.slug} /></label>
+      <label class="fr"><span class="lb">Website</span><input class="in" bind:value={snap.general.website} placeholder="https://" /></label>
+      <label class="fr">
+        <span class="lb">Default vault access<small>What a new Member can reach before any group</small></span>
+        <textarea class="in mono ta" bind:value={snap.general.defaultAccess}></textarea>
+      </label>
+      <div class="fr">
+        <span class="lb">Default company<small>for members</small></span>
+        <button type="button" class="sw" class:on={snap.general.openOnSignIn} aria-pressed={snap.general.openOnSignIn} onclick={() => (snap.general.openOnSignIn = !snap.general.openOnSignIn)}>
+          Open {snap.general.name || "this company"} on sign-in for members
+        </button>
+      </div>
+      <label class="fr"><span class="lb">Meeting bot<small>display name</small></span><input class="in" bind:value={snap.general.meetingBotName} /></label>
+      <p class="note">Only the company owner can change these settings. Archive and ownership transfer stay on the web console.</p>
+    {:else if tab === "brand"}
+      <div class="page-head">
+        <div>
+          <h2>Brand</h2>
+          <p class="sub">Logo, monochrome mark, accent, and voice</p>
+        </div>
+        <span class="grow"></span>
+        <div class="seg" role="tablist">
+          <button type="button" class="tab" role="tab" aria-selected={snap.brand.appearance === "light"} onclick={() => (snap.brand.appearance = "light")}>Light</button>
+          <button type="button" class="tab" role="tab" aria-selected={snap.brand.appearance === "dark"} onclick={() => (snap.brand.appearance = "dark")}>Dark</button>
+        </div>
+        <button type="button" class="btn primary" onclick={remember}>Save changes</button>
+      </div>
+      <label class="fr"><span class="lb">Logo<small>file name</small></span><input class="in" bind:value={snap.brand.logoName} placeholder="wordmark.svg" /></label>
+      <p class="note">The rail mark stays a circle in currentColor. Accent tints only this company's chrome through the existing brand layer. Live stays green.</p>
+      <label class="fr"><span class="lb">Accent</span><input class="in mono" bind:value={snap.brand.accent} placeholder="#4F46E5" /></label>
+      <label class="fr"><span class="lb">Voice notes</span><textarea class="in ta" bind:value={snap.brand.voice}></textarea></label>
+      <label class="fr"><span class="lb">Bot branding</span><input class="in" bind:value={snap.brand.botIntro} /></label>
+    {:else if tab === "groups"}
+      <div class="page-head">
+        <div>
+          <h2>Groups</h2>
+          <p class="sub">{snap.groups.length} groups · share file and secret access with people and agents</p>
+        </div>
+      </div>
+      {#if snap.groups.length === 0}
+        <p class="note" data-testid="groups-empty">No groups yet. Groups from the company vault appear here after the next sync.</p>
+      {:else}
+        <div class="split">
+          <div class="list">
+            {#each snap.groups as g (g.id)}
+              <button type="button" class="row" aria-current={group?.id === g.id ? "true" : undefined} onclick={() => (selectedGroup = g.id)}>
+                <span class="t">{g.name}</span><span class="count">{g.members.length}</span>
+              </button>
+            {/each}
+          </div>
+          {#if group}
+            <div>
+              <div class="page-head">
+                <div>
+                  <h2 class="h-sm">{group.name}</h2>
+                  <p class="sub">{group.description}</p>
+                </div>
+                <span class="grow"></span>
+                <button type="button" class="btn" data-testid="delete-group" onclick={() => (deleteId = group.id)}>Delete group</button>
+              </div>
+              {#each group.members as m (m.id)}
+                <div class="line"><span class="nm">{m.name}</span><span class="c">{m.role}</span><span class="c">{m.added}</span></div>
+              {/each}
+              {#each group.paths as p (p.path)}
+                <div class="line"><span class="mono">{p.path}</span><span class="c">{grantLevelLabel(p.level)}</span></div>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      {/if}
+    {:else if tab === "grants"}
+      <div class="page-head">
+        <div>
+          <h2>Grants</h2>
+          <p class="sub">{snap.grants.length} active path grants · {expiringGrantCount(snap.grants)} expire within 7 days</p>
+        </div>
+      </div>
+      <div class="seg" role="tablist" data-testid="grant-filters">
+        {#each GRANT_FILTERS as id (id)}
+          <button type="button" class="tab" role="tab" aria-selected={grantFilter === id} data-testid={`grant-filter-${id}`} onclick={() => (grantFilter = id)}>
+            {grantFilterLabel(id)}
+          </button>
+        {/each}
+      </div>
+      <div class="gt hd"><span>Principal</span><span>Path</span><span>Level</span><span>Expiry</span></div>
+      {#each visibleGrants as g (g.id)}
+        <div class="gt" data-testid="grant-row">
+          <span class="nm">{g.principal}</span>
+          <span class="mono">{g.path}</span>
+          <span>{grantLevelLabel(g.level)}</span>
+          <span class:soon={g.expiring}>{g.expiry}</span>
+        </div>
+      {:else}
+        <p class="note">No grants in this filter. Levels are read or write.</p>
+      {/each}
+    {:else if tab === "workforce"}
+      <div class="page-head">
+        <div>
+          <h2>HQ Workforce</h2>
+          <p class="sub">Team plan · billed to {snap.general.name || companyLabel}</p>
+        </div>
+      </div>
+      <div class="plan">
+        <div><b>{snap.seatsUsed}</b> of {snap.seatsLimit}<span>Seats used</span></div>
+        <div><b>{snap.agents.length}</b> of {snap.agentsLimit}<span>Hosted agents</span></div>
+      </div>
+      {#each snap.agents as a (a.id)}
+        <div class="line">
+          <span class="nm">{a.name}</span>
+          <span class="mono">{a.box}</span>
+          <span class:live={a.healthy}>{a.health}</span>
+          <span class="c">{a.task}</span>
+        </div>
+      {:else}
+        <p class="note">Hosted agents show here after the roster refresh. Local bots on an Outpost do not count.</p>
+      {/each}
+      <div class="up">
+        <div>
+          <b>Need more seats or agents?</b>
+          Upgrade continues to Stripe checkout in your browser. The desktop collects no card data.
+        </div>
+        <button type="button" class="btn primary" data-testid="workforce-upgrade" onclick={() => openStripe("upgrade")}>Upgrade</button>
+      </div>
+    {:else}
+      <div class="page-head">
+        <div>
+          <h2>Billing</h2>
+          <p class="sub">Payment method and invoices live in Stripe</p>
+        </div>
+      </div>
+      <p class="note">Manage payment opens the Stripe customer portal in the system browser.</p>
+      <button type="button" class="btn" data-testid="manage-payment" onclick={() => openStripe("portal")}>Manage payment</button>
+    {/if}
+  </div>
+</section>
+
+<ConfirmDialog
+  open={deleteId !== null}
+  title={group && deleteId === group.id ? `Delete the ${group.name} group?` : "Delete this group?"}
+  message="Grants and workers that reference this group lose it. People keep every direct grant on their own name."
+  confirmLabel="Delete"
+  danger
+  onconfirm={confirmDelete}
+  oncancel={() => (deleteId = null)}
+/>
+
+<style>
+  .settings {
+    display: grid;
+    grid-template-columns: 176px minmax(0, 1fr);
+    height: 100%;
+    min-height: 0;
+    color: var(--v4-text-1);
+    background: var(--v4-ground);
+  }
+  .subnav, .page { min-height: 0; overflow: auto; }
+  .subnav {
+    border-right: 1px solid var(--v4-rowline);
+    padding: 12px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .page { padding: 20px 20px 48px; }
+  .row, .tab, .btn {
+    font: inherit;
+    color: var(--v4-text-2);
+    background: transparent;
+    border: 0;
+    border-radius: 6px;
+    text-align: left;
+  }
+  .row {
+    min-height: 28px;
+    padding: 5px 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .row:hover { background: var(--v4-hover); }
+  .row[aria-current="true"] { background: var(--v4-active-row); color: var(--v4-text-1); }
+  .sec {
+    padding: 12px 10px 4px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--v4-text-3);
+  }
+  .count { margin-left: auto; color: var(--v4-text-3); font-size: var(--type-metadata); }
+  .page-head { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; }
+  .page-head h2, .h-sm { margin: 0; font-size: var(--type-section); font-weight: 600; }
+  .h-sm { font-size: var(--type-body); }
+  .sub, .note { margin: 0; color: var(--v4-text-3); font-size: var(--type-metadata); }
+  .note { margin-top: 12px; max-width: 640px; line-height: 1.45; }
+  .grow { flex: 1; }
+  .fr {
+    display: grid;
+    grid-template-columns: 180px minmax(0, 1fr);
+    gap: 12px;
+    align-items: start;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--v4-rowline);
+  }
+  .lb { font-size: var(--type-secondary); padding-top: 5px; }
+  .lb small { display: block; color: var(--v4-text-3); font-size: var(--type-metadata); font-weight: 400; }
+  .in {
+    min-height: 28px;
+    max-width: 420px;
+    border-radius: var(--v4-radius-field);
+    background: var(--v4-control-faint);
+    border: 1px solid var(--v4-control-border);
+    color: var(--v4-text-1);
+    padding: 4px 10px;
+    font: inherit;
+  }
+  .ta { min-height: 60px; }
+  .mono { font-family: var(--font-mono); font-size: var(--type-metadata); }
+  .btn {
+    border: 1px solid var(--v4-control-border);
+    padding: 4px 10px;
+    cursor: pointer;
+  }
+  .btn.primary { background: var(--v4-text-1); color: var(--v4-primary-fg); }
+  .seg { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--v4-control-border); border-radius: var(--v4-radius-field); background: var(--v4-control-faint); }
+  .tab { padding: 4px 10px; cursor: pointer; }
+  .tab[aria-selected="true"] { background: var(--v4-active-row); color: var(--v4-text-1); border-radius: 4px; }
+  .sw { cursor: pointer; }
+  .sw.on { color: var(--v4-text-1); }
+  .split { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 16px; }
+  .line, .gt {
+    display: grid;
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) 80px 120px;
+    gap: 8px;
+    align-items: center;
+    padding: 8px;
+    border-bottom: 1px solid var(--v4-rowline);
+    font-size: var(--type-secondary);
+    color: var(--v4-text-2);
+  }
+  .gt.hd { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--v4-text-3); }
+  .nm { color: var(--v4-text-1); }
+  .soon, .live { color: var(--v4-ok); }
+  .plan { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; max-width: 520px; padding: 14px; border: 1px solid var(--v4-hairline); border-radius: var(--v4-radius-card); }
+  .plan span { display: block; color: var(--v4-text-3); font-size: var(--type-metadata); }
+  .up { display: flex; align-items: center; gap: 12px; margin-top: 18px; max-width: 720px; padding: 12px 14px; border: 1px solid var(--v4-hairline); border-radius: var(--v4-radius-card); }
+</style>

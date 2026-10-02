@@ -52,6 +52,7 @@
   import GoalsRailHost from "./GoalsRailHost.svelte";
   import TeamPage from "../company/TeamPage.svelte";
   import BotsPage from "../company/BotsPage.svelte";
+  import CompanySettingsHost from "./CompanySettingsHost.svelte";
   import {
     atlasLiveActors,
     atlasRoster,
@@ -9613,6 +9614,12 @@
             company={adapter.company ?? null}
             messaging={adapter.messaging ?? null}
             senderName={resolvedAccountLabel ?? "you"}
+          />
+        {:else if railPlaceholder?.id === "company-settings" && companyPaneCompany}
+          <CompanySettingsHost
+            slug={companyPaneCompany.slug ?? ""}
+            companyLabel={companyPaneCompany.label}
+            openExternal={onopenurl}
           />
         {:else if railPlaceholder?.id === "bots" && companyPaneCompany}
           <BotsPage
