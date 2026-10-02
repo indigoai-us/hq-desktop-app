@@ -5,13 +5,18 @@
    */
   import { onMount } from "svelte";
 
+  import type { CompanyApi, MessagingApi } from "@hq/platform";
+
   interface Props {
     slug: string;
     companyLabel: string;
     openExternal?: (url: string) => void;
+    companyUid?: string | null;
+    company?: CompanyApi | null;
+    messaging?: MessagingApi | null;
   }
 
-  let { slug, companyLabel, openExternal }: Props = $props();
+  let { slug, companyLabel, openExternal, companyUid = null, company = null, messaging = null }: Props = $props();
 
   let View = $state<typeof import("../company/CompanySettingsPage.svelte").default | null>(null);
 
@@ -24,7 +29,7 @@
 
 <div class="host" data-testid="company-settings-host">
   {#if View}
-    <View {slug} {companyLabel} {openExternal} />
+    <View {slug} {companyLabel} {openExternal} {companyUid} {company} {messaging} />
   {:else}
     <div class="skeleton" data-testid="company-settings-skeleton" aria-busy="true">
       <div class="title"></div>

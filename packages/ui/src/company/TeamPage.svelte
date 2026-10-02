@@ -13,11 +13,7 @@
   import ShowMoreRow from "../shell/ShowMoreRow.svelte";
   import { profilePaneDoor } from "../shell/lazy-doors.js";
   import { pageRows } from "../shell/list-paging.js";
-  import {
-    normalizeCompanyTeamTelemetry,
-    type TeamMember,
-    type TeamTelemetryView,
-  } from "./team-telemetry.js";
+  import type { TeamMember, TeamTelemetryView } from "./team-telemetry.js";
   import {
     INVITE_ROLES,
     TEAM_FILTERS,
@@ -26,12 +22,12 @@
     inviteRoleFields,
     inviteRoleLabel,
     inviteSummary,
-    mergeRosterIntoTeamView,
     metadata,
-    pendingInvitesFromTelemetry,
+    readCompanyTeam,
     readTeamCache,
     resendInvite,
     revokeInvite,
+    seatCounts,
     writeTeamCache,
     type InviteDraft,
     type PendingInvite,
@@ -112,10 +108,10 @@
     openId ? ([...humans, ...bots].find((member) => member.id === openId) ?? null) : null,
   );
   const seatLine = $derived.by(() => {
-    const settings = readSettingsCache(slug);
-    const used = humans.length + bots.length;
-    if (settings && settings.seatsLimit > 0) return `${settings.seatsUsed} of ${settings.seatsLimit} seats`;
-    return `${used} seats`;
+    const { seats } = seatCounts(view);
+    const limit = readSettingsCache(slug)?.seatsLimit ?? null;
+    const noun = seats === 1 ? "seat" : "seats";
+    return limit && limit > 0 ? `${seats} of ${limit} ${noun}` : `${seats} ${noun}`;
   });
   const liveMembers = $derived(
     companyUid
@@ -142,48 +138,16 @@
     let cancelled = false;
     void (async () => {
       try {
-        // The company roster: contacts scoped to the company uid (the one
-        // roster source that is keyed correctly on every adapter), else the
-        // members route by slug.
-        const rosterRead = async (): Promise<unknown[]> => {
-          if (messaging && companyUid) {
-            const res = await messaging.listContacts({ companyUid });
-            if (res.ok && Array.isArray(res.value)) return res.value;
-            if (!res.ok) console.warn("[team] company contacts read failed", res.message ?? res.reason);
-          }
-          const res = await company.listMembers(key).catch((err: unknown) => {
-            console.warn("[team] members read failed", err);
-            return null;
-          });
-          return res && res.ok && Array.isArray(res.value) ? res.value : [];
-        };
-        const [rawRes, roster] = await Promise.all([company.getTeamTelemetry(key), rosterRead()]);
+        const read = await readCompanyTeam({ slug: key, companyUid, company, messaging });
         if (cancelled) return;
-        const labels: Record<string, { email?: string | null; displayName?: string | null }> = {};
-        for (const row of roster) {
-          if (!row || typeof row !== "object") continue;
-          const rec = row as Record<string, unknown>;
-          const id = typeof rec.personUid === "string" ? rec.personUid : "";
-          if (!id) continue;
-          labels[id] = {
-            email: typeof rec.email === "string" ? rec.email : null,
-            displayName: typeof rec.displayName === "string" ? rec.displayName : null,
-          };
-        }
-        if (!rawRes.ok && roster.length === 0) {
-          console.warn("[team] telemetry read failed", rawRes.message ?? rawRes.reason);
-          view = { ...emptyView, error: "Could not read the team. Try again in a moment." };
+        if (read.error) {
+          view = { ...emptyView, error: read.error };
           phase = "ready";
           return;
         }
-        if (!rawRes.ok) console.warn("[team] telemetry read failed; showing the roster", rawRes.message ?? rawRes.reason);
-        const fromTelemetry = rawRes.ok
-          ? normalizeCompanyTeamTelemetry(rawRes.value, { memberLabelsById: labels })
-          : emptyView;
-        const next = mergeRosterIntoTeamView(fromTelemetry, roster);
-        const fromWire = rawRes.ok ? pendingInvitesFromTelemetry(rawRes.value) : [];
+        const next = read.view;
         view = next;
-        if (fromWire.length > 0) invites = fromWire;
+        if (read.invites.length > 0) invites = read.invites;
         phase = "ready";
         writeTeamCache(key, { view: next, invites });
       } catch (err) {

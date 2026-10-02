@@ -117,7 +117,7 @@ describe("TeamPage roster (QA-022)", () => {
       el.textContent?.trim(),
     );
     expect(labels.slice(0, 2)).toEqual(["Humans · 1", "Bots · 1"]);
-    expect(target.querySelector("[data-testid='team-seat-chip']")?.textContent?.trim()).toBe("2 seats");
+    expect(target.querySelector("[data-testid='team-seat-chip']")?.textContent?.trim()).toBe("1 seat");
   });
 
   it("still shows the roster when the telemetry read fails, without raw error text", async () => {

@@ -8,7 +8,13 @@
  * pending invite only after confirmation. Pause on Bots is the same gate.
  */
 
-import { memberKindFromUid, type TeamMember, type TeamTelemetryView } from "./team-telemetry.js";
+import type { CompanyApi, MessagingApi } from "@hq/platform";
+import {
+  memberKindFromUid,
+  normalizeCompanyTeamTelemetry,
+  type TeamMember,
+  type TeamTelemetryView,
+} from "./team-telemetry.js";
 
 export const metadata = {
   performanceBudget: {
@@ -248,5 +254,74 @@ export function mergeRosterIntoTeamView(view: TeamTelemetryView, roster: readonl
     humans: members.filter((member) => member.kind !== "agent"),
     agents: members.filter((member) => member.kind === "agent"),
     empty: members.length === 0,
+  };
+}
+
+/**
+ * Seat counts from a Team view. A seat is a human member; hosted agents and
+ * bots are counted separately. Team and the HQ Workforce card both read this
+ * so the two never disagree (QA-046).
+ */
+export function seatCounts(view: Pick<TeamTelemetryView, "humans" | "agents">): { seats: number; agents: number } {
+  return { seats: view.humans.length, agents: view.agents.length };
+}
+
+export interface CompanyTeamRead {
+  view: TeamTelemetryView;
+  /** Pending invites from the telemetry payload; empty when it had none. */
+  invites: PendingInvite[];
+  /** Plain-language failure. Set only when neither telemetry nor roster came back. */
+  error: string | null;
+}
+
+/**
+ * Read the company's Team: activity telemetry plus the member roster
+ * (contacts scoped to the company uid, else the members route by slug).
+ * Team and Company settings share this read and the Team cache.
+ */
+export async function readCompanyTeam(opts: {
+  slug: string;
+  companyUid?: string | null;
+  company: Pick<CompanyApi, "getTeamTelemetry" | "listMembers">;
+  messaging?: Pick<MessagingApi, "listContacts"> | null;
+}): Promise<CompanyTeamRead> {
+  const { slug, companyUid, company, messaging } = opts;
+  const empty: TeamTelemetryView = { members: [], humans: [], agents: [], error: null, empty: true };
+  const rosterRead = async (): Promise<unknown[]> => {
+    if (messaging && companyUid) {
+      const res = await messaging.listContacts({ companyUid });
+      if (res.ok && Array.isArray(res.value)) return res.value;
+      if (!res.ok) console.warn("[team] company contacts read failed", res.message ?? res.reason);
+    }
+    const res = await company.listMembers(slug).catch((err: unknown) => {
+      console.warn("[team] members read failed", err);
+      return null;
+    });
+    return res && res.ok && Array.isArray(res.value) ? res.value : [];
+  };
+  const [rawRes, roster] = await Promise.all([company.getTeamTelemetry(slug), rosterRead()]);
+  const labels: Record<string, { email?: string | null; displayName?: string | null }> = {};
+  for (const row of roster) {
+    if (!row || typeof row !== "object") continue;
+    const rec = row as Record<string, unknown>;
+    const id = typeof rec.personUid === "string" ? rec.personUid : "";
+    if (!id) continue;
+    labels[id] = {
+      email: typeof rec.email === "string" ? rec.email : null,
+      displayName: typeof rec.displayName === "string" ? rec.displayName : null,
+    };
+  }
+  if (!rawRes.ok && roster.length === 0) {
+    console.warn("[team] telemetry read failed", rawRes.message ?? rawRes.reason);
+    return { view: empty, invites: [], error: "Could not read the team. Try again in a moment." };
+  }
+  if (!rawRes.ok) console.warn("[team] telemetry read failed; showing the roster", rawRes.message ?? rawRes.reason);
+  const fromTelemetry = rawRes.ok
+    ? normalizeCompanyTeamTelemetry(rawRes.value, { memberLabelsById: labels })
+    : empty;
+  return {
+    view: mergeRosterIntoTeamView(fromTelemetry, roster),
+    invites: rawRes.ok ? pendingInvitesFromTelemetry(rawRes.value) : [],
+    error: null,
   };
 }

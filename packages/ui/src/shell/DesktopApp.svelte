@@ -9950,6 +9950,9 @@
             slug={companyPaneCompany.slug ?? ""}
             companyLabel={companyPaneCompany.label}
             openExternal={onopenurl}
+            companyUid={companyPaneCompany.uid}
+            company={adapter.company ?? null}
+            messaging={adapter.messaging ?? null}
           />
         {:else if railPlaceholder?.id === "bots" && companyPaneCompany}
           <BotsPage

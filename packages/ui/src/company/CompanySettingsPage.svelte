@@ -23,6 +23,9 @@
     type SettingsSnapshot,
     type SettingsTab,
   } from "./company-settings.js";
+  import type { CompanyApi, MessagingApi } from "@hq/platform";
+  import { readCompanyTeam, readTeamCache, seatCounts, writeTeamCache } from "./team-bots-pages.js";
+  import type { TeamMember } from "./team-telemetry.js";
   import "../home/tokens.css";
   import "../chat/chat-tokens.css";
 
@@ -30,9 +33,13 @@
     slug: string;
     companyLabel: string;
     openExternal?: (url: string) => void;
+    /** Team roster source, shared with the Team page (QA-046). */
+    companyUid?: string | null;
+    company?: CompanyApi | null;
+    messaging?: MessagingApi | null;
   }
 
-  let { slug, companyLabel, openExternal }: Props = $props();
+  let { slug, companyLabel, openExternal, companyUid = null, company = null, messaging = null }: Props = $props();
 
   let tab = $state<SettingsTab>("general");
   let grantFilter = $state<GrantFilter>("all");
@@ -46,6 +53,52 @@
     const hit = readSettingsCache(key);
     snap = hit ?? emptySnapshot(label, key);
   });
+
+  // HQ Workforce seats come from the same roster as Team. The Team cache
+  // paints first; the roster re-reads every time the Workforce tab opens.
+  let rosterHumans = $state<number | null>(null);
+  let rosterAgents = $state<TeamMember[]>([]);
+  let rosterError = $state<string | null>(null);
+
+  function applyTeam(key: string): void {
+    const hit = readTeamCache(key);
+    if (!hit) return;
+    rosterHumans = seatCounts(hit.view).seats;
+    rosterAgents = hit.view.agents;
+  }
+
+  $effect(() => {
+    if (tab !== "workforce") return;
+    const key = slug;
+    rosterHumans = null;
+    rosterAgents = [];
+    rosterError = null;
+    applyTeam(key);
+    if (!company || !key) return;
+    const api = company;
+    let cancelled = false;
+    void readCompanyTeam({ slug: key, companyUid, company: api, messaging })
+      .then((read) => {
+        if (cancelled) return;
+        if (read.error) {
+          if (rosterHumans === null) rosterError = "Could not read the team. Seat count unavailable.";
+          return;
+        }
+        const prior = readTeamCache(key);
+        writeTeamCache(key, { view: read.view, invites: read.invites.length ? read.invites : (prior?.invites ?? []) });
+        applyTeam(key);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        console.warn("[settings] workforce roster read failed", err);
+        if (rosterHumans === null) rosterError = "Could not read the team. Seat count unavailable.";
+      });
+    return () => {
+      cancelled = true;
+    };
+  });
+
+  const hostedAgentCount = $derived(snap.agents.length || rosterAgents.length);
 
   $effect(() => {
     if (!selectedGroup && snap.groups[0]) selectedGroup = snap.groups[0].id;
@@ -229,9 +282,19 @@
         </div>
       </div>
       <div class="plan">
-        <div><b>{snap.seatsUsed}</b> of {snap.seatsLimit}<span>Seats used</span></div>
-        <div><b>{snap.agents.length}</b> of {snap.agentsLimit}<span>Hosted agents</span></div>
+        <div data-testid="workforce-seats">
+          <b>{rosterHumans ?? "–"}</b>{#if snap.seatsLimit !== null} of {snap.seatsLimit}{/if}<span>Seats used · humans on Team</span>
+        </div>
+        <div data-testid="workforce-agents">
+          <b>{hostedAgentCount}</b>{#if snap.agentsLimit !== null} of {snap.agentsLimit}{/if}<span>Hosted agents · counted separately</span>
+        </div>
       </div>
+      {#if rosterError}
+        <p class="note" data-testid="workforce-error">{rosterError}</p>
+      {/if}
+      {#if snap.seatsLimit === null}
+        <p class="note" data-testid="workforce-limit-unavailable">Plan limits are not available yet. Counts come from the Team roster.</p>
+      {/if}
       {#each snap.agents as a (a.id)}
         <div class="line">
           <span class="nm">{a.name}</span>
@@ -240,7 +303,13 @@
           <span class="c">{a.task}</span>
         </div>
       {:else}
-        <p class="note">Hosted agents show here after the roster refresh. Local bots on an Outpost do not count.</p>
+        {#each rosterAgents as a (a.id)}
+          <div class="line">
+            <span class="nm">{a.displayName}</span>
+          </div>
+        {:else}
+          <p class="note">Hosted agents show here after the roster refresh. Local bots on an Outpost do not count.</p>
+        {/each}
       {/each}
       <div class="up">
         <div>

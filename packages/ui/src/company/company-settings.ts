@@ -138,9 +138,9 @@ export interface SettingsSnapshot {
   groups: CompanyGroup[];
   grants: PathGrant[];
   agents: HostedAgent[];
-  seatsUsed: number;
-  seatsLimit: number;
-  agentsLimit: number;
+  /** Plan limits. Null until the plan is read; the card says so instead of guessing. */
+  seatsLimit: number | null;
+  agentsLimit: number | null;
 }
 
 const cache = new Map<string, SettingsSnapshot>();
@@ -173,9 +173,8 @@ export function emptySnapshot(name: string, slug: string): SettingsSnapshot {
     groups: [],
     grants: [],
     agents: [],
-    seatsUsed: 0,
-    seatsLimit: 10,
-    agentsLimit: 5,
+    seatsLimit: null,
+    agentsLimit: null,
   };
 }
 
