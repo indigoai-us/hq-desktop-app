@@ -32,6 +32,7 @@ import { TAURI_CAPABILITIES, type Capability } from '../capabilities.js';
 import { WEB_PATHS } from '../web/index.js';
 import {
   CLAUDE_PROVIDER_FLAG,
+  DESKTOP_LIMIT_STATUS_PUSH_FLAG,
   FIRST_FOLDER_SYNC_STEP_FLAG,
   HUMAN_ONLY_CONVERSATIONS_FLAG,
   HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT,
@@ -190,6 +191,10 @@ export function createSyncPlatformAdapter(
     if (flag === POST_READY_ACTION_TELEMETRY_FLAG) {
       // The measurement event is opt-in and stays off until the hq-flags
       // registry contains an explicit enabled value.
+      return Promise.resolve(ok(false));
+    }
+    if (flag === DESKTOP_LIMIT_STATUS_PUSH_FLAG) {
+      // Missing rows and registry outages preserve event-only behavior.
       return Promise.resolve(ok(false));
     }
     if (flag === SETUP_DIRECTORY_PARENT_FALLBACK_FLAG) {
