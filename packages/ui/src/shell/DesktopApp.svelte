@@ -129,6 +129,7 @@
   import {
     openCreateCompanyDraft,
     submitCreateCompany,
+    provisionCompanyCloud,
     type CompanyCreateSeam,
   } from "../chat/create-company/create-company-flow.js";
   import {
@@ -599,6 +600,7 @@
   } from "./palette-rows.js";
   import {
     joinableMemberships,
+    needsCloudProvisioning,
     type Workspace,
     type WorkspacesResult,
   } from "../chat/workspaces.js";
@@ -1282,6 +1284,20 @@
     membershipSyncError = null;
     membershipSyncTarget = target.slug;
     try {
+      // A company you own with no vault bucket was created without its cloud
+      // provisioning, and its sync can only fail with "not provisioned".
+      // Provision first (idempotent, owner-only), so Try again repairs it.
+      if (needsCloudProvisioning(target) && conversationApi.activateCompanyCloud) {
+        const provisioned = await provisionCompanyCloud(
+          conversationApi,
+          target.cloudUid!,
+        );
+        if (!provisioned.ok) {
+          membershipSyncError = provisioned.reason;
+          membershipSyncPending = false;
+          return;
+        }
+      }
       // Scoped to the company the banner names — an unscoped call is
       // SyncRunScope::All, which syncs every workspace on the machine and is
       // not what "pull it onto this machine" promises. Matches CompanyPage.
@@ -5459,6 +5475,10 @@
       ? async (slug: string) =>
           unwrapAdapter(await adapter.messaging.checkCompanySlug!(slug))
       : undefined,
+    activateCompanyCloud: adapter.messaging.activateCompanyCloud
+      ? async (companyUid: string) =>
+          unwrapAdapter(await adapter.messaging.activateCompanyCloud!(companyUid))
+      : undefined,
     getCompanyTab: adapter.messaging.getCompanyTab
       ? async (companyUid, tabId) =>
           unwrapAdapter(await adapter.messaging.getCompanyTab!(companyUid, tabId))
@@ -5829,12 +5849,13 @@
           checkSlug: conversationApi.checkCompanySlug
             ? (slug: string) => conversationApi.checkCompanySlug!(slug)
             : null,
-          submit: async (form, values, invites) => {
+          submit: async (form, values, invites, onPhase) => {
             const result = await submitCreateCompany(
               conversationApi,
               form,
               values,
               invites,
+              { onPhase },
             );
             if (result.ok) {
               createCompanyRequested = true;
@@ -5851,6 +5872,8 @@
             }
             return result;
           },
+          provision: (companyUid: string) =>
+            provisionCompanyCloud(conversationApi, companyUid),
         }
       : null,
   );

@@ -11,14 +11,21 @@
  *   `openCreateCompanyDraft` — run `companies_summary/create_company`, read
  *   the fresh card back, return its fields.
  *   `submitCreateCompany` — run that card's primary action with the values the
- *   person typed, then send one `team:invite` per address.
+ *   person typed, provision the new company's cloud vault, then send one
+ *   `team:invite` per address.
+ *
+ * The card makes the company entity and its owner membership, but not its
+ * cloud vault: the bucket is made by `POST /v1/companies/{uid}/activate-cloud`,
+ * the same provisioning the console runs. Without it the first sync fails
+ * with "Entity ... not provisioned". So the flow runs it before reporting the
+ * company ready, and `provisionCompanyCloud` is the retry.
  *
  * Invites wait for the new company's cloud provisioning. An invite sent to a
  * company whose vault isn't provisioned yet lands on a company nobody can sync,
  * so when the host can read provisioning status the flow polls it for a
  * bounded time and hands back any invites it could not send yet as
  * `queuedInvites`. The host queues those and sends them once it sees the
- * company ready (`sendCompanyInvites`). Company creation itself does not wait.
+ * company ready (`sendCompanyInvites`).
  */
 
 import type { CardActionResult, ConversationApi } from "../chat-api.js";
@@ -47,7 +54,12 @@ export type CreateCompanyApi = Pick<
   ConversationApi,
   "runCardAction" | "fetchChannel"
 > &
-  Partial<Pick<ConversationApi, "runCompanyTabAction" | "checkCompanySlug">> & {
+  Partial<
+    Pick<
+      ConversationApi,
+      "runCompanyTabAction" | "checkCompanySlug" | "activateCompanyCloud"
+    >
+  > & {
     /**
      * Whether the company's cloud vault is provisioned. A host without it
      * sends invites right after creation, as before.
@@ -94,7 +106,18 @@ export interface CreatedCompany {
    * The caller must queue these and send them once the company is ready.
    */
   queuedInvites: CompanyInvite[];
+  /**
+   * Why the cloud vault could not be set up, or null when it was. The company
+   * exists either way; a non-null value means it cannot sync until
+   * `provisionCompanyCloud` succeeds.
+   */
+  cloudError: string | null;
 }
+
+/** What the create flow is doing right now, for the button label. */
+export type CreateCompanyPhase = "creating" | "provisioning" | "inviting";
+
+export type ProvisionCompanyResult = { ok: true } | { ok: false; reason: string };
 
 export type CreateCompanyResult =
   | { ok: true; company: CreatedCompany }
@@ -109,6 +132,12 @@ export interface CreateCompanyOptions {
   provisionPollAttempts?: number;
   /** Wait between provisioning status reads. Default 1500ms. */
   provisionPollMs?: number;
+  /** Called as the flow moves from creating to provisioning to inviting. */
+  onPhase?: (phase: CreateCompanyPhase) => void;
+  /** Attempts at cloud provisioning before giving up. Default 3. */
+  provisionAttempts?: number;
+  /** Wait between provisioning attempts. Default 1500ms. */
+  provisionRetryMs?: number;
 }
 
 const PROVISION_POLL_ATTEMPTS = 20;
@@ -120,6 +149,13 @@ export const CREATE_COMPANY_NO_CARD_REASON =
 /** Shown when the card carries no button this flow can press. */
 export const CREATE_COMPANY_NO_ACTION_REASON =
   "Creating a company needs a step this app can't fill in yet. Try again after updating HQ.";
+/** Shown when the company exists but its cloud vault could not be set up. */
+export const CREATE_COMPANY_CLOUD_FAILED_REASON =
+  "Your company was created, but its cloud storage isn't set up yet. Try again to finish.";
+/** Shown when this build's host cannot provision a company vault. */
+export const CREATE_COMPANY_CLOUD_UNAVAILABLE_REASON =
+  "Your company was created, but this version of HQ can't set up its cloud storage. Update HQ, then try again.";
+
 /** Shown when the server answered the submit without saying what it made. */
 export const CREATE_COMPANY_NO_RESULT_REASON =
   "The company was submitted but the server didn't say it was created. Check #setup.";
@@ -329,22 +365,68 @@ export async function submitCreateCompany(
           reason: "The server didn't name the new company, so the invite wasn't sent.",
         })),
         queuedInvites: [],
+        cloudError: null,
       },
     };
   }
+
+  options.onPhase?.("provisioning");
+  const provisioned = await provisionCompanyCloud(api, companyUid, options);
+  const cloudError = provisioned.ok ? null : provisioned.reason;
 
   if (wanted.length > 0 && typeof api.readCompanyProvisioned === "function") {
     const ready = await waitForCompanyProvisioned(api, companyUid, options);
     if (!ready) {
       return {
         ok: true,
-        company: { companyUid, companyChannelId, inviteFailures: [], queuedInvites: [...wanted] },
+        company: {
+          companyUid,
+          companyChannelId,
+          inviteFailures: [],
+          queuedInvites: [...wanted],
+          cloudError,
+        },
       };
     }
   }
 
+  if (wanted.length > 0) options.onPhase?.("inviting");
   const inviteFailures = await sendCompanyInvites(api, companyUid, wanted);
-  return { ok: true, company: { companyUid, companyChannelId, inviteFailures, queuedInvites: [] } };
+  return {
+    ok: true,
+    company: { companyUid, companyChannelId, inviteFailures, queuedInvites: [], cloudError },
+  };
+}
+
+/**
+ * Provision the company's cloud vault (bucket, KMS, owner grants). The server
+ * route is owner-only and idempotent (an already-provisioned company answers
+ * `alreadyActivated`), so this is safe to run again as the retry. Transient
+ * failures are retried a few times; a refusal (403/404) is not.
+ */
+export async function provisionCompanyCloud(
+  api: Pick<CreateCompanyApi, "activateCompanyCloud">,
+  companyUid: string,
+  options: Pick<CreateCompanyOptions, "provisionAttempts" | "provisionRetryMs" | "sleep"> = {},
+): Promise<ProvisionCompanyResult> {
+  const activate = api.activateCompanyCloud;
+  if (typeof activate !== "function") {
+    return { ok: false, reason: CREATE_COMPANY_CLOUD_UNAVAILABLE_REASON };
+  }
+  const attempts = Math.max(1, options.provisionAttempts ?? 3);
+  const ms = options.provisionRetryMs ?? 1500;
+  const sleep = options.sleep ?? ((wait: number) => new Promise<void>((r) => setTimeout(r, wait)));
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (attempt > 0) await sleep(ms);
+    try {
+      await activate.call(api, companyUid);
+      return { ok: true };
+    } catch (err) {
+      console.error("company cloud provisioning failed:", err);
+      if (isPermission(err) || isNotFound(err)) break;
+    }
+  }
+  return { ok: false, reason: CREATE_COMPANY_CLOUD_FAILED_REASON };
 }
 
 /**
@@ -425,7 +507,10 @@ export interface CompanyCreateSeam {
     form: CompanyDraftForm,
     values: Record<string, string>,
     invites: readonly CompanyInvite[],
+    onPhase?: (phase: CreateCompanyPhase) => void,
   ) => Promise<CreateCompanyResult>;
+  /** Retry cloud provisioning for a company that was created without it. */
+  provision?: (companyUid: string) => Promise<ProvisionCompanyResult>;
   /** Absent on a host whose server has no availability route. */
   checkSlug?: CheckCompanySlug | null;
 }
