@@ -18,6 +18,9 @@
     onselect: (item: RailItem) => void;
     /** Drag reorder of pinned company tiles. Ids stay out of the DOM. */
     onreorderpins?: (fromUid: string, toUid: string) => void;
+    /** More companies opens a popover instead of a page. */
+    onmore?: () => void;
+    moreExpanded?: boolean;
   }
 
   let {
@@ -27,6 +30,8 @@
     youInitials = "",
     onselect,
     onreorderpins,
+    onmore,
+    moreExpanded = false,
   }: Props = $props();
 
   let dragUid = $state("");
@@ -81,13 +86,20 @@
         aria-label={item.label}
         aria-describedby={describedBy || undefined}
         aria-current={activeId === item.id ? "page" : undefined}
+        aria-expanded={item.kind === "more-companies" ? moreExpanded : undefined}
         aria-keyshortcuts={shortcutHint(item)?.replace("⌘", "Meta+") ?? undefined}
         draggable={item.kind === "company" ? "true" : "false"}
         ondragstart={(event) => onDragStart(item, event)}
         ondragover={(event) => onDragOver(item, event)}
         ondrop={(event) => onDrop(item, event)}
         ondragend={() => (dragUid = "")}
-        onclick={() => onselect(item)}
+        onclick={() => {
+          if (item.kind === "more-companies" && onmore) {
+            onmore();
+            return;
+          }
+          onselect(item);
+        }}
       >
         {#if item.kind === "home"}
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11.5 12 4l9 7.5" /><path d="M5 10v10h5v-6h4v6h5V10" /></svg>

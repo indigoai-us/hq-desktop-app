@@ -37,6 +37,8 @@
   import ChannelSkeleton from "./ChannelSkeleton.svelte";
   import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
   import AppRail from "./AppRail.svelte";
+  import MoreCompaniesPopover from "./MoreCompaniesPopover.svelte";
+  import type { MoreCompany } from "./more-companies.js";
   import TelemetryRailHost from "./TelemetryRailHost.svelte";
   import Sidepane from "./Sidepane.svelte";
   import { SidepaneScrollMemory, sidepaneModelKey } from "./sidepane-models.js";
@@ -3457,6 +3459,9 @@
       detail: item.detail,
       keywords: item.keywords,
       lastActivityAt: item.lastActivityAt,
+      section: item.section,
+      companyUid: item.companyUid,
+      personal: item.personal,
       // Company channels carry their company's mark so a palette full of
       // `#`-prefixed labels is scannable by company at a glance.
       iconUrl: item.iconUrl,
@@ -8249,6 +8254,9 @@
   let pinnedCompanyIds = $state<string[] | null>(
     readSettingsPrefs().pinnedCompanyIds,
   );
+  let companyRecentIds = $state<string[]>(readSettingsPrefs().companyRecentIds);
+  let moreCompaniesOpen = $state(false);
+  let moreCompaniesAnchor = $state({ top: 72, left: 64 });
 
   const railCompanyRoster = $derived(
     (effectiveCompanies ?? [])
@@ -8256,16 +8264,28 @@
       .map((c) => ({
         uid: c.cloudUid!.trim(),
         label: c.displayName || c.slug,
+        slug: c.slug,
         iconUrl: companyIcons.get(c.cloudUid!.trim()) ?? c.iconUrl ?? null,
       })),
   );
+
+  const moreCompanyList = $derived.by((): MoreCompany[] => {
+    const snap = presenceSnapshot();
+    return railCompanyRoster.map((company) => ({
+      uid: company.uid,
+      name: company.label,
+      slug: company.slug,
+      iconUrl: company.iconUrl,
+      liveCount: companyLiveCount(snap, company.uid),
+    }));
+  });
 
   $effect(() => {
     if (pinnedCompanyIds != null) return;
     if (railCompanyRoster.length === 0) return;
     const seeded = seedPinnedCompanyIds(railCompanyRoster, {
       defaultCompanyId: tenantCompanyId,
-      recentIds: readSettingsPrefs().companyRecentIds,
+      recentIds: companyRecentIds,
     });
     pinnedCompanyIds = seeded;
     writeSettingsPrefs({ pinnedCompanyIds: seeded });
@@ -8294,11 +8314,53 @@
     view === "extra" ? railPlaceholderForPage(extraPageId) : null,
   );
 
+  function placeMoreCompanies(): void {
+    const button = document.querySelector("[data-testid='rail-more-companies']");
+    if (button instanceof HTMLElement) {
+      const rect = button.getBoundingClientRect();
+      moreCompaniesAnchor = { top: rect.top, left: rect.right + 8 };
+    }
+  }
+
+  function toggleMoreCompanies(): void {
+    if (moreCompaniesOpen) {
+      moreCompaniesOpen = false;
+      return;
+    }
+    placeMoreCompanies();
+    moreCompaniesOpen = true;
+  }
+
+  /** Open a company from the popover. Unpinned companies stay unpinned. */
+  function openCompanyFromMore(company: MoreCompany): void {
+    const nextRecent = rememberCompanyId(companyRecentIds, company.uid);
+    companyRecentIds = nextRecent;
+    writeSettingsPrefs({ companyRecentIds: nextRecent });
+    changeTenantCompany(company.uid);
+    void navigate({ kind: "messages" });
+    moreCompaniesOpen = false;
+  }
+
+  function setPinnedCompanies(ids: string[]): void {
+    pinnedCompanyIds = ids;
+    writeSettingsPrefs({ pinnedCompanyIds: ids });
+  }
+
   /** Rail clicks and ⌘1–⌘9 both land here, so history sees one push each. */
   function selectRailItem(item: RailItem): void {
     meetingFocusRequest = null;
+    if (item.kind === "more-companies") {
+      toggleMoreCompanies();
+      return;
+    }
+    moreCompaniesOpen = false;
     if (item.kind === "home") changeTenantCompany(null);
-    else if (item.kind === "company") changeTenantCompany(item.companyUid);
+    else if (item.kind === "company") {
+      const nextRecent = rememberCompanyId(companyRecentIds, item.companyUid);
+      companyRecentIds = nextRecent;
+      writeSettingsPrefs({ companyRecentIds: nextRecent });
+      changeTenantCompany(item.companyUid);
+    }
     void navigate(railDestination(item, { localFiles: !isWeb }));
   }
 
@@ -8938,7 +9000,25 @@
       youInitials={resolvedAccountInitials ?? ""}
       onselect={selectRailItem}
       onreorderpins={reorderPinnedCompanies}
+      onmore={toggleMoreCompanies}
+      moreExpanded={moreCompaniesOpen}
     />
+    {#if moreCompaniesOpen}
+      <MoreCompaniesPopover
+        companies={moreCompanyList}
+        pinnedIds={pinnedCompanyIds ?? []}
+        recentIds={companyRecentIds}
+        anchorTop={moreCompaniesAnchor.top}
+        anchorLeft={moreCompaniesAnchor.left}
+        onclose={() => (moreCompaniesOpen = false)}
+        onopen={openCompanyFromMore}
+        onpins={setPinnedCompanies}
+        onnewcompany={() => {
+          moreCompaniesOpen = false;
+          if (canRunEntryPoints) void createCompanyEntry();
+        }}
+      />
+    {/if}
   {/if}
   <div class="shell-column">
 
@@ -10326,6 +10406,9 @@
   {#if paletteOpen}
     <CommandPalette
       commands={paletteCommands}
+      companyUid={tenantCompanyId}
+      companyName={paletteCompanies.find((c) => c.companyUid === tenantCompanyId)
+        ?.label ?? "Company"}
       onclose={() => (paletteOpen = false)}
     />
   {/if}
