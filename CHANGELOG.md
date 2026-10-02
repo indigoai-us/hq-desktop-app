@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Behind `agents.desktop-agent-creation` (Indigo only): New bot → Cloud creates the bot directly, without Slack, and opens its DM. Cloud stays visible when it can't be used and says why (admin role, plan, or no company), and Settings › Bots can create cloud bots too.
+
 - New cloud bots created from the desktop New bot flow sign in with your model subscription. The API key option is no longer offered there.
 
 - Desktop no longer shows your personal space in the Companies list, where clicking it looped between Setting up and Tap to retry.

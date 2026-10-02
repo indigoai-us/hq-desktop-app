@@ -9,6 +9,8 @@
   import { onMount } from "svelte";
   import type { PlatformAdapter } from "@hq/platform";
   import type { Workspace } from "../chat/workspaces.js";
+  import type { DirectCloudCreate } from "../chat/create-bot/cloud-create.js";
+  import type { CloudBotDraft, EntryPointResult } from "../chat/lifecycle-entry-points.js";
   import EmptyState from "../common/EmptyState.svelte";
   import { HQ_CONSOLE_BASE } from "../common/hq-console.js";
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
@@ -93,6 +95,10 @@
     refreshAppVersion?: () => Promise<string>;
     /** Live interface version when a UI hot update is serving. */
     uiVersion?: string | null;
+    /** `agents.desktop-agent-creation`: lets Settings › Bots create cloud bots. */
+    directCloud?: DirectCloudCreate | null;
+    /** The host's direct cloud create; it opens the new bot's DM. */
+    oncreatecloudbot?: ((companyUid: string, draft: CloudBotDraft) => Promise<EntryPointResult>) | null;
   }
 
   let {
@@ -112,6 +118,8 @@
     updateWakeSeq = 0,
     refreshAppVersion,
     uiVersion = null,
+    directCloud = null,
+    oncreatecloudbot = null,
   }: Props = $props();
 
   let externalError = $state<string | null>(null);
@@ -679,7 +687,7 @@
       {:else if active === "agents"}
         <AgentsSettingsPane {adapter} />
       {:else if active === "bots"}
-        <BotsSettingsPane {adapter} {companies} />
+        <BotsSettingsPane {adapter} {companies} {directCloud} {oncreatecloudbot} />
       {:else}
         <PrototypeSettingsPanes
           section={active as

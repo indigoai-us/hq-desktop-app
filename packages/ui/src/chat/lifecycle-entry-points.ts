@@ -20,6 +20,7 @@
  * different bot.
  */
 
+import type { AgentCreateQuote, CreateErrorFix } from "@hq/agents";
 import type { CardActionResult, ConversationApi } from "./chat-api.js";
 import { cardActionFailureMessage } from "./card-action.js";
 import {
@@ -60,6 +61,12 @@ export type EntryPointResult =
       reason: string;
       /** True when the server refused (permission / plan), not a transport error. */
       blocked: boolean;
+      /**
+       * The one action that fixes a refusal (checkout, fresh quote, another
+       * handle). Only the direct create (`agents.desktop-agent-creation`)
+       * sets it; the card driver never does.
+       */
+      fix?: CreateErrorFix | null;
     };
 
 export type EntryPointApi = Pick<ConversationApi, "runCardAction">;
@@ -202,6 +209,13 @@ export interface CloudBotDraft {
   title?: string;
   runtime?: BotRuntime;
   size?: "basic" | "power" | "dev";
+  /**
+   * Direct create only (`agents.desktop-agent-creation` on): one key per New
+   * bot session, and the size and price the person saw. The card driver
+   * ignores both.
+   */
+  idempotencyKey?: string;
+  quote?: AgentCreateQuote;
 }
 
 /** Console page where a newly-created Claude subscription can be authorized. */
