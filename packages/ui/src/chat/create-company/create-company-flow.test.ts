@@ -338,6 +338,7 @@ describe("submitCreateCompany waits for provisioning before inviting", () => {
         companyChannelId: "chn_acme",
         inviteFailures: [],
         queuedInvites: INVITES,
+        cloudError: null,
       },
     });
   });
@@ -493,5 +494,44 @@ describe("cloud provisioning after create", () => {
     expect(await provisionCompanyCloud({ activateCompanyCloud }, "cmp_acme")).toEqual({
       ok: true,
     });
+  });
+});
+
+describe("regression: HQ-PRO-160 company created without a cloud vault", () => {
+  it("calls activate-cloud exactly once, after the create action succeeds", async () => {
+    const runCardAction = vi.fn(async () => ({
+      cardId: "card_create_company_2",
+      actionId: "submit",
+      state: "done",
+      companyUid: "cmp_acme",
+      companyChannelId: "chn_acme",
+    }));
+    const activateCompanyCloud = vi.fn(async () => ({ alreadyActivated: false }));
+    const result = await submitCreateCompany(
+      api({ runCardAction, activateCompanyCloud }),
+      FORM,
+      { name: "Acme" },
+    );
+    expect(result.ok).toBe(true);
+    expect(runCardAction).toHaveBeenCalledTimes(1);
+    expect(activateCompanyCloud).toHaveBeenCalledTimes(1);
+    expect(activateCompanyCloud).toHaveBeenCalledWith("cmp_acme");
+    expect(activateCompanyCloud.mock.invocationCallOrder[0]).toBeGreaterThan(
+      runCardAction.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("does not provision when the create action is refused", async () => {
+    const activateCompanyCloud = vi.fn(async () => ({ alreadyActivated: false }));
+    const result = await submitCreateCompany(
+      api({
+        runCardAction: vi.fn(async () => ({ state: "blocked", reason: "That handle is taken." })),
+        activateCompanyCloud,
+      }),
+      FORM,
+      { name: "Acme" },
+    );
+    expect(result.ok).toBe(false);
+    expect(activateCompanyCloud).not.toHaveBeenCalled();
   });
 });

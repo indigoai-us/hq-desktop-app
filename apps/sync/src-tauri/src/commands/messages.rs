@@ -1179,7 +1179,7 @@ pub async fn check_company_slug(slug: String) -> Result<serde_json::Value, Strin
     get_json(&url, &token, "MESSAGES_COMPANY_SLUG_AVAILABLE").await
 }
 
-/// POST `/v1/companies/{uid}/activate-cloud` — provision the company's cloud
+/// POST `/v1/companies/{uid}/activate-cloud`: provision the company's cloud
 /// vault (bucket, KMS, owner grants) and stamp `cloudActivatedAt`.
 ///
 /// Owner-only and idempotent on the server: an already-activated company
