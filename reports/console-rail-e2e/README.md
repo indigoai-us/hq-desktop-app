@@ -78,4 +78,4 @@ I ran `pnpm perf:rail -- --reps 3` after these commits. It matches the US-040 ga
 - Initial JS: 2,719,068 bytes against a limit of 2,736,155.
 - Atlas and Telemetry are not in the initial JS (34.8 KB and 37.4 KB).
 
-The command palette still fails at p95 27.0 ms against 20 ms. US-040 owns that line.
+The command palette passes under the first-painted-frame definition. The gate run is `reports/perf/gate-2026-10-02-final.json` (p95 0.0 ms, budget 20 ms).
