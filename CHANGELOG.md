@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Referral links now carry through desktop sign-in regardless of the signup experiment. HQ retries referral confirmation after connection failures or a restart and keeps each referral tied to the account that signed in.
+
 - Core update failures now report the available snapshot disk space instead of the required snapshot size.
 
 ## [0.10.381] — 2026-10-02
