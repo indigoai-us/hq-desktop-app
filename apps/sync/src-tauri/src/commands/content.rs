@@ -1113,6 +1113,25 @@ fn create_symlink_with_failure(
     link_path: &Path,
     _cancel: Option<&AtomicBool>,
 ) -> Result<(), ContentOperationFailure> {
+    create_symlink_with_failure_mode(target, link_path, _cancel, true)
+}
+
+#[cfg(unix)]
+fn create_symlink_if_absent(
+    target: &Path,
+    link_path: &Path,
+    cancel: Option<&AtomicBool>,
+) -> Result<(), ContentOperationFailure> {
+    create_symlink_with_failure_mode(target, link_path, cancel, false)
+}
+
+#[cfg(unix)]
+fn create_symlink_with_failure_mode(
+    target: &Path,
+    link_path: &Path,
+    _cancel: Option<&AtomicBool>,
+    replace_existing: bool,
+) -> Result<(), ContentOperationFailure> {
     if let Some(parent) = link_path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| {
             ContentOperationFailure::from_io(
@@ -1125,6 +1144,18 @@ fn create_symlink_with_failure(
         })?;
     }
     if std::fs::symlink_metadata(link_path).is_ok() {
+        if !replace_existing {
+            return Err(ContentOperationFailure::from_io(
+                "refusing to replace existing template entry",
+                std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "template destination already exists",
+                ),
+                false,
+                ContentErrorKind::SymlinkCreationFailed,
+                "create_symlink",
+            ));
+        }
         std::fs::remove_file(link_path).map_err(|error| {
             ContentOperationFailure::from_io(
                 "failed to replace existing symlink entry",
@@ -1290,7 +1321,10 @@ fn copy_file_with_cancellation(
         ));
     }
     let mut source = fs::File::open(source)?;
-    let mut destination = fs::File::create(destination)?;
+    let mut destination = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)?;
     copy_stream_with_cancellation(&mut source, &mut destination, || {
         is_content_cancelled(cancel)
     })
@@ -1376,7 +1410,26 @@ fn create_symlink_with_failure(
     link_path: &Path,
     cancel: Option<&AtomicBool>,
 ) -> Result<(), ContentOperationFailure> {
-    create_windows_symlink_with_failure(target, link_path, cancel)
+    create_symlink_with_failure_mode(target, link_path, cancel, true)
+}
+
+#[cfg(windows)]
+fn create_symlink_if_absent(
+    target: &Path,
+    link_path: &Path,
+    cancel: Option<&AtomicBool>,
+) -> Result<(), ContentOperationFailure> {
+    create_symlink_with_failure_mode(target, link_path, cancel, false)
+}
+
+#[cfg(windows)]
+fn create_symlink_with_failure_mode(
+    target: &Path,
+    link_path: &Path,
+    cancel: Option<&AtomicBool>,
+    replace_existing: bool,
+) -> Result<(), ContentOperationFailure> {
+    create_windows_symlink_with_failure(target, link_path, cancel, replace_existing)
 }
 
 #[cfg(windows)]
@@ -1384,6 +1437,7 @@ fn create_windows_symlink_with_failure(
     target: &Path,
     link_path: &Path,
     cancel: Option<&AtomicBool>,
+    replace_existing: bool,
 ) -> Result<(), ContentOperationFailure> {
     if let Some(parent) = link_path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| {
@@ -1411,6 +1465,18 @@ fn create_windows_symlink_with_failure(
     };
 
     if let Ok(md) = std::fs::symlink_metadata(link_path) {
+        if !replace_existing {
+            return Err(ContentOperationFailure::from_io(
+                "refusing to replace existing template entry",
+                std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "template destination already exists",
+                ),
+                true,
+                ContentErrorKind::SymlinkCreationFailed,
+                "create_symlink",
+            ));
+        }
         remove_existing_windows_entry(link_path, &md).map_err(|error| {
             ContentOperationFailure::from_io(
                 "failed to replace existing symlink entry",
@@ -1570,6 +1636,7 @@ fn extract_tarball_with_progress(
     let total_bytes = archive_extract_total_bytes(compressed, failure_scope)?;
     let total_bytes = (total_bytes > 0).then_some(total_bytes);
     let mut extracted_bytes = 0_u64;
+    let mut skipped_existing_files = 0_usize;
     let mut progress_throttle = ProgressThrottle::new();
 
     if let Some(progress) = progress {
@@ -1691,18 +1758,28 @@ fn extract_tarball_with_progress(
                     );
                     continue;
                 }
-                create_symlink_with_failure(
-                    Path::new(&link_target),
-                    &dest,
-                    cancel,
-                )
-                .map_err(|failure| {
-                    if failure.kind == ContentErrorKind::Cancelled {
-                        return content_cancelled_error(failure_scope);
+                match std::fs::symlink_metadata(&dest) {
+                    Ok(_) => {
+                        skipped_existing_files += 1;
+                        continue;
                     }
-                    record_content_operation_failure(failure_scope, &failure);
-                    failure.message
-                })?;
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        record_content_io_failure(failure_scope, &error);
+                        return Err(format!(
+                            "failed to inspect template symlink destination {dest:?}: {error}"
+                        ));
+                    }
+                }
+                create_symlink_if_absent(Path::new(&link_target), &dest, cancel).map_err(
+                    |failure| {
+                        if failure.kind == ContentErrorKind::Cancelled {
+                            return content_cancelled_error(failure_scope);
+                        }
+                        record_content_operation_failure(failure_scope, &failure);
+                        failure.message
+                    },
+                )?;
                 symlink_relatives.push(normalized);
             }
             EntryType::Regular | EntryType::Continuous => {
@@ -1713,10 +1790,40 @@ fn extract_tarball_with_progress(
                     })?;
                 }
                 let mode = entry.header().mode().unwrap_or(0o644);
-                let mut file = std::fs::File::create(&dest).map_err(|e| {
-                    record_content_io_failure(failure_scope, &e);
-                    format!("failed to write {dest:?}: {e}")
-                })?;
+                let mut file = match std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&dest)
+                {
+                    Ok(file) => file,
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                        match std::fs::symlink_metadata(&dest) {
+                            Ok(metadata)
+                                if metadata.file_type().is_file()
+                                    || metadata.file_type().is_symlink() =>
+                            {
+                                skipped_existing_files += 1;
+                                continue;
+                            }
+                            Ok(_) => {
+                                record_content_io_failure(failure_scope, &error);
+                                return Err(format!(
+                                    "refusing to replace non-file template destination {dest:?}: {error}"
+                                ));
+                            }
+                            Err(metadata_error) => {
+                                record_content_io_failure(failure_scope, &metadata_error);
+                                return Err(format!(
+                                    "failed to inspect existing template destination {dest:?}: {metadata_error}"
+                                ));
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        record_content_io_failure(failure_scope, &error);
+                        return Err(format!("failed to write {dest:?}: {error}"));
+                    }
+                };
                 let mut buf = [0_u8; EXTRACT_READ_CHUNK_BYTES];
                 loop {
                     if is_content_cancelled(cancel) {
@@ -1764,6 +1871,11 @@ fn extract_tarball_with_progress(
             }
         }
     }
+
+    log(
+        "content",
+        &format!("template extraction skipped {skipped_existing_files} existing files"),
+    );
 
     if let Some(progress) = progress {
         progress.emit(
@@ -2207,15 +2319,26 @@ mod tests {
     fn extract_keeps_existing_file_bytes() {
         let dir = tempdir().unwrap();
         let existing = dir.path().join("core.yaml");
+        let existing_link_path = dir.path().join("AGENTS.md");
         let user_bytes = b"name: personal HQ settings\n";
+        let user_link_path_bytes = b"person's existing regular file\n";
         std::fs::write(&existing, user_bytes).unwrap();
+        std::fs::write(&existing_link_path, user_link_path_bytes).unwrap();
 
         let content = b"name: template defaults\n".to_vec();
-        let archive = build_test_tarball(&[(
-            "indigoai-us-hq-core-deadbeef/core.yaml",
-            file_header(content.len() as u64, 0o644),
-            Some(content),
-        )]);
+        let link_name = Path::new(".claude/CLAUDE.md");
+        let archive = build_test_tarball(&[
+            (
+                "indigoai-us-hq-core-deadbeef/core.yaml",
+                file_header(content.len() as u64, 0o644),
+                Some(content),
+            ),
+            (
+                "indigoai-us-hq-core-deadbeef/AGENTS.md",
+                symlink_header(link_name.to_str().unwrap()),
+                None,
+            ),
+        ]);
 
         extract_tarball(&archive, dir.path()).expect("extraction should succeed");
 
@@ -2223,6 +2346,11 @@ mod tests {
             std::fs::read(existing).unwrap(),
             user_bytes,
             "installing the HQ template must preserve an existing user file"
+        );
+        assert_eq!(
+            std::fs::read(existing_link_path).unwrap(),
+            user_link_path_bytes,
+            "installing a template symlink must preserve a file at that path"
         );
     }
 

@@ -386,22 +386,32 @@ fn probe_hq_root_for_startup_with(
 
 /// The pure classifier.
 pub fn classify_lifecycle(inputs: LifecycleInputs) -> LifecycleVerdict {
+    let has_app_local_setup_marker =
+        inputs.install_completed || inputs.first_run_completed || inputs.had_machine_id;
+
     // An install is recognized from what is actually on disk: a valid HQ root
     // plus evidence the machine has been set up before — an explicit
-    // completion marker, a prior machineId, a valid config.json, OR usable
-    // Cognito auth tokens.
+    // completion marker, a prior machineId, a valid config.json, or usable
+    // Cognito auth tokens. On a readable fresh app install, the reusable HQ
+    // root and auth/config alone do not prove that this app installation
+    // completed setup.
     //
     // `config.json` is deliberately NOT required. The onboarding flow does not
     // reliably write `~/.hq/config.json` (the personal-vault first-push
     // short-circuits when the vault already exists), so gating on it sent a
     // fully set-up user back through the entire onboarding wizard on the next
-    // launch/restart. The rule is now "valid HQ folder + (prior setup OR auth
-    // on disk) => installed, show the menu bar".
-    let has_prior_setup = inputs.install_completed
-        || inputs.first_run_completed
-        || inputs.had_machine_id
-        || inputs.config_valid;
-    let is_installed = inputs.hq_root_valid && (has_prior_setup || inputs.has_auth);
+    // launch/restart. The ordinary rule is "valid HQ folder + (prior setup OR
+    // auth on disk) => installed, show the menu bar"; the narrow readable,
+    // unmarked reinstall case below overrides it while consent is unanswered.
+    let has_prior_setup = has_app_local_setup_marker || inputs.config_valid;
+    let reinstall_still_owes_full_setup = inputs.hq_root_valid
+        && !has_app_local_setup_marker
+        && !inputs.consent_answered
+        && !inputs.evidence_unreadable
+        && (inputs.has_auth || inputs.config_valid);
+    let is_installed = inputs.hq_root_valid
+        && (has_prior_setup || inputs.has_auth)
+        && !reinstall_still_owes_full_setup;
     let needs_install_backfill = is_installed && !inputs.install_completed;
 
     // Installed and consent answered: setup is done whatever the markers say.
