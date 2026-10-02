@@ -7,11 +7,15 @@
  */
 
 import { EMPTY_MEETINGS_FILTER, type MeetingsFilter } from "./meetings-rail-model";
+import type { MeetingEvent } from "./meetings-model";
 
 let selectedId = $state<string | null>(null);
 let filter = $state<MeetingsFilter>(EMPTY_MEETINGS_FILTER);
 /** True while the classic agenda (notetaker, calendars) replaces the canvas. */
 let agenda = $state(false);
+/** New meeting sheet. Local until a calendar write API exists. */
+let sheetOpen = $state(false);
+let localMeetings = $state<MeetingEvent[]>([]);
 
 export const meetingsRailState = {
   get selectedId() {
@@ -23,9 +27,24 @@ export const meetingsRailState = {
   get agenda() {
     return agenda;
   },
+  get sheetOpen() {
+    return sheetOpen;
+  },
+  get localMeetings() {
+    return localMeetings;
+  },
   select(id: string | null): void {
     selectedId = id;
     agenda = false;
+  },
+  openSheet(on = true): void {
+    sheetOpen = on;
+  },
+  addLocalMeeting(event: MeetingEvent): void {
+    localMeetings = [event, ...localMeetings.filter((row) => row.id !== event.id)];
+    selectedId = event.id;
+    agenda = false;
+    sheetOpen = false;
   },
   setFilter(next: MeetingsFilter): void {
     filter = next;
@@ -37,5 +56,7 @@ export const meetingsRailState = {
     selectedId = null;
     filter = EMPTY_MEETINGS_FILTER;
     agenda = false;
+    sheetOpen = false;
+    localMeetings = [];
   },
 };

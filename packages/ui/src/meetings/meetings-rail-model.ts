@@ -209,13 +209,12 @@ export function meetingsRailSections(input: MeetingsRailInput): MeetingsRailSect
   return sections;
 }
 
-/** Default selection: the first live meeting, else the next one today, else the first row. */
+/**
+ * Default selection is the live meeting only. With nothing live the canvas
+ * stays on the empty state (US-022) until a row is clicked.
+ */
 export function defaultMeetingId(sections: readonly MeetingsRailSection[]): string | null {
-  for (const id of ["live", "today", "tomorrow", "past"] as const) {
-    const row = sections.find((s) => s.id === id)?.rows[0];
-    if (row) return row.id;
-  }
-  return null;
+  return sections.find((s) => s.id === "live")?.rows[0]?.id ?? null;
 }
 
 /** Companies offered in the filter popover, with meeting counts. */

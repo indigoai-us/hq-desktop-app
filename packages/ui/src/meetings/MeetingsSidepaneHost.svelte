@@ -18,9 +18,10 @@
   let { memory, onnewmeeting }: Props = $props();
 
   // Recomputed when the snapshot changes; the minute clock lives in the store refresh.
+  const events = $derived([...meetingsRailState.localMeetings, ...meetingsStore.events]);
   const sections = $derived(
     meetingsRailSections({
-      events: meetingsStore.events,
+      events,
       botsByEventId: meetingsStore.botsByEventId,
       scheduledBots: meetingsStore.scheduledBots,
       companyNamesByUid: meetingsStore.companyNamesByUid,
@@ -34,7 +35,7 @@
 
 <MeetingsSidepane
   {sections}
-  events={meetingsStore.events}
+  events={events}
   companyNamesByUid={meetingsStore.companyNamesByUid}
   {selectedId}
   filter={meetingsRailState.filter}
@@ -42,6 +43,6 @@
   {memory}
   onselect={(id) => meetingsRailState.select(id)}
   onfilter={(next) => meetingsRailState.setFilter(next)}
-  onnewmeeting={() => (onnewmeeting ? onnewmeeting() : meetingsRailState.showAgenda())}
+  onnewmeeting={() => (onnewmeeting ? onnewmeeting() : meetingsRailState.openSheet(true))}
   onearlier={() => meetingsRailState.showAgenda()}
 />

@@ -12,6 +12,8 @@
   import { meetingsRailState } from "./meetings-rail-state.svelte";
   import { defaultMeetingId, meetingsRailSections } from "./meetings-rail-model";
   import { botForEvent } from "./meetings-model";
+  import { meetingPhase } from "./meeting-states-model";
+  import MeetingsStatesDoor from "./MeetingsStatesDoor.svelte";
   import { pushToast } from "../shell/toast-stack.svelte.js";
 
   interface Props {
@@ -31,9 +33,10 @@
     meetingsRailState.select(focusMeetingId);
   });
 
+  const events = $derived([...meetingsRailState.localMeetings, ...meetingsStore.events]);
   const sections = $derived(
     meetingsRailSections({
-      events: meetingsStore.events,
+      events,
       botsByEventId: meetingsStore.botsByEventId,
       scheduledBots: meetingsStore.scheduledBots,
       companyNamesByUid: meetingsStore.companyNamesByUid,
@@ -44,11 +47,12 @@
   const event = $derived(
     meetingsRailState.agenda || !selectedId
       ? null
-      : (meetingsStore.events.find((e) => e.id === selectedId) ?? null),
+      : (events.find((e) => e.id === selectedId) ?? null),
   );
   const bot = $derived(
     event ? botForEvent(event, meetingsStore.botsByEventId, meetingsStore.scheduledBots) : undefined,
   );
+  const phase = $derived(event ? meetingPhase(event, new Date(), bot) : null);
   const companyName = $derived(
     event?.sourceCompanyUid ? (meetingsStore.companyNamesByUid.get(event.sourceCompanyUid) ?? null) : null,
   );
@@ -64,7 +68,7 @@
   }
 </script>
 
-{#if event}
+{#if event && phase === "live"}
   <MeetingCanvas
     {event}
     {bot}
@@ -74,6 +78,32 @@
     onmore={() => meetingsRailState.showAgenda()}
   />
 {/if}
-<div class="agenda-slot" style:display={event ? "none" : "contents"} data-testid="meetings-agenda-slot">
+{#if meetingsRailState.sheetOpen && (meetingsRailState.agenda || phase === "live")}
+  <MeetingsStatesDoor
+    sheetOnly
+    mode="empty"
+    sheetOpen
+    {openExternal}
+    oncopy={(text: string) => void copy(text)}
+    oncloseSheet={() => meetingsRailState.openSheet(false)}
+    oncreate={(created: import("./meetings-model").MeetingEvent) => meetingsRailState.addLocalMeeting(created)}
+  />
+{:else if !meetingsRailState.agenda && phase !== "live"}
+  <MeetingsStatesDoor
+    mode={phase === "past" ? "recap" : phase === "upcoming" ? "upcoming" : "empty"}
+    {event}
+    {bot}
+    {companyName}
+    {sections}
+    sheetOpen={meetingsRailState.sheetOpen}
+    {openExternal}
+    oncopy={(text: string) => void copy(text)}
+    onselect={(id: string) => meetingsRailState.select(id)}
+    onopenSheet={() => meetingsRailState.openSheet(true)}
+    oncloseSheet={() => meetingsRailState.openSheet(false)}
+    oncreate={(created: import("./meetings-model").MeetingEvent) => meetingsRailState.addLocalMeeting(created)}
+  />
+{/if}
+<div class="agenda-slot" style:display={meetingsRailState.agenda ? "contents" : "none"} data-testid="meetings-agenda-slot">
   {@render agenda()}
 </div>
