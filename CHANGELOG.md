@@ -10,6 +10,9 @@ The release moves it under the version it ships in.
 
 - Desktop now uses the current cloud company name for workspace rows and
   home-channel labels before falling back to cached names or slugs.
+
+## [0.10.374] — 2026-10-02
+
 - On a fresh install, HQ now shows its logo and "Starting HQ..." right away instead of a blank, frozen window while it starts up.
 - Sign-in and workspace-selection receipts reach HQ again. Since late September the app could not read the `email_verified` claim on Cognito access tokens (it arrives as text, not true/false), so every receipt was held on disk instead of sent. Receipts already held on your machine are sent on the next signed-in start.
 - A first-ever sign-in's receipt is no longer discarded when HQ has not created the person record yet. The app keeps it and resends it once the record exists (HQ stops accepting it after 30 days).
