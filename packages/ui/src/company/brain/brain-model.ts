@@ -232,7 +232,7 @@ export function workerRowFromLibrary(worker: LibraryWorker): WorkerRow {
 }
 
 export type SkillFilter = "all" | "mine" | "shared" | "needs-access";
-export type WorkerFilter = "active" | "parked" | "mine" | "scheduled";
+export type WorkerFilter = "all" | "active" | "parked" | "mine" | "scheduled";
 export type WorkerScopeFilter = "all" | "company" | "personal";
 export type PolicyFilter = "all" | "hard" | "soft";
 
@@ -264,6 +264,38 @@ export function filterWorkers(
     if (!q) return true;
     return `${row.name} ${row.description} ${row.id}`.toLowerCase().includes(q);
   });
+}
+
+/**
+ * Which policy-folder entries are real policies. Skips `_`-prefixed entries
+ * (`_digest.md`, `_archive/`), HQ Sync conflict artifacts
+ * (`name.conflict-<ts>-<hash>.md`) and Finder duplicate copies (`name 2.md`).
+ */
+export function isPolicyFileName(name: string, _isDir = false): boolean {
+  if (!name || name.startsWith("_") || name.startsWith(".")) return false;
+  if (/\.conflict-[^/]*\.md$/i.test(name)) return false;
+  if (/ \d+\.(md|ya?ml)$/i.test(name)) return false;
+  return true;
+}
+
+/** Map with at most `limit` promises in flight; keeps input order. */
+export async function mapLimit<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const width = Math.max(1, Math.min(limit, items.length));
+  await Promise.all(
+    Array.from({ length: width }, async () => {
+      while (next < items.length) {
+        const i = next++;
+        out[i] = await fn(items[i] as T);
+      }
+    }),
+  );
+  return out;
 }
 
 export function filterPolicies(rows: readonly PolicyDoc[], filter: PolicyFilter, query: string): PolicyDoc[] {

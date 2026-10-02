@@ -5,7 +5,7 @@
    * First frame is the cache or a shimmer. Refresh runs after paint.
    * Heavy enough to stay behind a lazy door.
    */
-  import type { FilesApi, LibraryApi, SettingsApi, ShellApi } from "@hq/platform";
+  import type { AppShellApi, FilesApi, LibraryApi, SettingsApi, ShellApi } from "@hq/platform";
   import { openAgentWorkflow } from "../agent-workflow.js";
   import { loadLibraryCompany } from "../../library/library.js";
   import type { DirEntry } from "../../files/file-tree.js";
@@ -23,6 +23,8 @@
     knowledgeFromFile,
     policyCreatePrompt,
     policyFromFile,
+    isPolicyFileName,
+    mapLimit,
     readBrainCache,
     skillCreatePrompt,
     skillRowFromLibrary,
@@ -59,6 +61,12 @@
     library: LibraryApi | null;
     shell: ShellApi | null;
     settings: SettingsApi | null;
+    /**
+     * Binds the native read scope to this company before any file read. The
+     * desktop file commands refuse company paths until the session's active
+     * company is that slug (QA-009); without it every listing came back empty.
+     */
+    appShell?: Pick<AppShellApi, "setActiveCompany"> | null;
     onopenpage?: (rowId: string) => void;
   }
 
@@ -69,6 +77,7 @@
     library,
     shell,
     settings,
+    appShell = null,
     onopenpage,
   }: Props = $props();
 
@@ -82,7 +91,7 @@
   let skillTab = $state<"library" | "usage">("library");
   let usageRange = $state<"7d" | "30d" | "90d">("30d");
   let workerScope = $state<WorkerScopeFilter>("all");
-  let workerFilter = $state<WorkerFilter>("active");
+  let workerFilter = $state<WorkerFilter>("all");
   // Every list shows all rows, in pages of 50 with a Show more row.
   let pages = $state(1);
   let scrollTop = $state(0);
@@ -168,8 +177,19 @@
   async function refresh(key: string): Promise<void> {
     const next = readBrainCache(key) ?? emptyBrainCache();
     if (files && key) {
-      next.knowledge = await readKnowledge(files, `companies/${key}/knowledge`);
-      next.policies = await readPolicies(files, `companies/${key}/policies`);
+      if (appShell) {
+        const bound = await appShell.setActiveCompany(key);
+        if (!bound.ok) console.warn("[brain] could not bind company scope", bound.message);
+      }
+      const [knowledge, policies] = await Promise.all([
+        readKnowledge(files, `companies/${key}/knowledge`),
+        readPolicies(files, `companies/${key}/policies`),
+      ]);
+      if ((knowledge === null || policies === null) && slug === key) {
+        status = "Some company files could not be read. Try again in a moment.";
+      }
+      next.knowledge = knowledge ?? next.knowledge;
+      next.policies = policies ?? next.policies;
     }
     if (library && key) {
       const result = await loadLibraryCompany(library, key);
@@ -182,36 +202,45 @@
     if (slug === key) cache = next;
   }
 
-  async function readKnowledge(api: FilesApi, root: string): Promise<KnowledgeFile[]> {
-    const paths = await collectFiles(api, root, 0);
-    const out: KnowledgeFile[] = [];
-    for (const path of paths) {
+  const READ_CONCURRENCY = 16;
+
+  /** Null when the folder listing itself failed (kept apart from "empty"). */
+  async function readKnowledge(api: FilesApi, root: string): Promise<KnowledgeFile[] | null> {
+    const paths = await collectFiles(api, root, 0, () => true);
+    if (paths === null) return null;
+    return mapLimit(paths, READ_CONCURRENCY, async (path) => {
       const res = await api.getFileContent(path);
-      const text = res.ok ? res.value : "";
-      out.push(knowledgeFromFile(path, text));
-    }
-    return out;
+      return knowledgeFromFile(path, res.ok ? res.value : "");
+    });
   }
 
-  async function readPolicies(api: FilesApi, root: string): Promise<PolicyDoc[]> {
-    const paths = await collectFiles(api, root, 0);
-    const out: PolicyDoc[] = [];
-    for (const path of paths) {
+  async function readPolicies(api: FilesApi, root: string): Promise<PolicyDoc[] | null> {
+    const paths = await collectFiles(api, root, 0, isPolicyFileName);
+    if (paths === null) return null;
+    return mapLimit(paths, READ_CONCURRENCY, async (path) => {
       const res = await api.getFileContent(path);
-      out.push(policyFromFile(path, res.ok ? res.value : ""));
-    }
-    return out;
+      return policyFromFile(path, res.ok ? res.value : "");
+    });
   }
 
-  async function collectFiles(api: FilesApi, root: string, depth: number): Promise<string[]> {
+  async function collectFiles(
+    api: FilesApi,
+    root: string,
+    depth: number,
+    keep: (name: string, isDir: boolean) => boolean,
+  ): Promise<string[] | null> {
     if (depth > 4) return [];
     const res = await api.listDir(root);
-    if (!res.ok || !Array.isArray(res.value)) return [];
+    if (!res.ok || !Array.isArray(res.value)) {
+      if (!res.ok) console.warn("[brain] listing failed", root, res.message);
+      return depth === 0 ? null : [];
+    }
     const entries = res.value as unknown as DirEntry[];
     const filesOut: string[] = [];
     for (const entry of entries) {
-      if (!entry || typeof entry.path !== "string") continue;
-      if (entry.isDir) filesOut.push(...(await collectFiles(api, entry.path, depth + 1)));
+      if (!entry || typeof entry.path !== "string" || typeof entry.name !== "string") continue;
+      if (!keep(entry.name, entry.isDir)) continue;
+      if (entry.isDir) filesOut.push(...((await collectFiles(api, entry.path, depth + 1, keep)) ?? []));
       else if (entry.name.endsWith(".md") || entry.name.endsWith(".yaml") || entry.name.endsWith(".yml")) {
         filesOut.push(entry.path);
       }
@@ -312,7 +341,7 @@
         <button type="button" role="tab" class="tab" aria-selected={skillTab === "usage"} onclick={() => (skillTab = "usage")}>Usage</button>
       </div>
     {:else if page === "workers"}
-      <span class="chip">{cache.workers.length} workers</span>
+      <span class="chip" data-testid="brain-worker-count">{workerRows.length} workers</span>
       <div class="tabs" role="tablist">
         {#each [["all", "All"], ["company", "Company"], ["personal", "Personal overlay"]] as [id, label] (id)}
           <button type="button" role="tab" class="tab" aria-selected={workerScope === id} onclick={() => (workerScope = id as WorkerScopeFilter)}>{label}</button>
@@ -401,7 +430,7 @@
               </button>
             {:else if page === "workers"}
               {@const worker = row as unknown as WorkerRow}
-              <button type="button" class="item" class:muted={worker.parked} aria-current={selectedWorker?.path === worker.path} onclick={() => (selected = worker.path)}>
+              <button type="button" class="item" class:muted={worker.parked} aria-current={selectedWorker?.path === worker.path} onclick={() => (selected = worker.path)} data-testid="worker-row">
                 <span class="name">{worker.name}</span>
                 <span class="meta">{worker.description}</span>
                 <span class="meta" class:live={worker.live}>{worker.live ? "Live" : worker.lastRun || worker.scope}</span>

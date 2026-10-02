@@ -9937,6 +9937,7 @@
               library: adapter.library ?? null,
               shell: adapter.shell ?? null,
               settings: adapter.settings ?? null,
+              appShell: adapter.appShell ?? null,
               onopenpage: selectCompanyPaneRow,
             }}
           >
