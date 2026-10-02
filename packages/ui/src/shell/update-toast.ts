@@ -1,0 +1,104 @@
+/**
+ * Plain copy for the app-update toast (OWNER-003 / OWNER-004).
+ *
+ * Every updater state and hold reason maps to a sentence. Raw state keys
+ * (e.g. a camelCase hold code or an error `reason`) are never shown: an
+ * unknown key falls back to generic copy.
+ */
+
+export type UpdateToastPhase =
+  | "checking"
+  | "downloading"
+  | "ready"
+  | "held"
+  | "installing"
+  | "deferred"
+  | "failed";
+
+export interface UpdateToastInput {
+  version: string;
+  reasons: string[];
+  installing: boolean;
+  installError: string | null;
+  downloadPercent?: number | null;
+  phase?: "checking" | "downloading";
+}
+
+export interface UpdateToastCopy {
+  phase: UpdateToastPhase;
+  title: string;
+  detail: string;
+  error: string | null;
+  installLabel: string;
+  installDisabled: boolean;
+  installTitle: string | null;
+}
+
+const HOLD_TEXT: Record<string, string> = {
+  meetingrecording: "Waiting for your recording to finish",
+  transcriptfinishing: "Waiting for a transcript to finish",
+  uploadinflight: "Waiting for an upload to finish",
+  coreupdateinprogress: "Waiting for the HQ folder update to finish",
+};
+
+const RECORDING_DEFER = "HQ will restart to update after your recording finishes";
+
+/** True for text that looks like an internal key rather than a sentence. */
+export function looksLikeStateKey(text: string): boolean {
+  const value = text.trim();
+  if (!value || /\s/.test(value)) return false;
+  return /[a-z][A-Z]/.test(value) || /[_:]/.test(value);
+}
+
+export function holdReasonText(reasons: string[]): string | null {
+  if (reasons.length === 0) return null;
+  for (const reason of reasons) {
+    const text = HOLD_TEXT[reason.replace(/[_\s-]/g, "").toLowerCase()];
+    if (text) return text;
+  }
+  return "Waiting for HQ to finish a task";
+}
+
+function plainError(raw: string | null): string | null {
+  if (!raw) return null;
+  const text = raw.trim();
+  if (!text) return null;
+  const mapped = HOLD_TEXT[text.replace(/[_\s-]/g, "").toLowerCase()];
+  if (mapped) return mapped;
+  return looksLikeStateKey(text) ? "Could not restart to update." : text;
+}
+
+export function updateToastCopy(input: UpdateToastInput): UpdateToastCopy {
+  const version = input.version.trim();
+  const ready = version ? `HQ ${version} is ready to install` : "An update is ready to install";
+  if (input.installError?.includes(RECORDING_DEFER)) {
+    return {
+      phase: "deferred",
+      title: "Update scheduled",
+      detail: "HQ will restart after your recording finishes",
+      error: null,
+      installLabel: "Will restart after recording",
+      installDisabled: true,
+      installTitle: null,
+    };
+  }
+  if (input.installing) {
+    return { phase: "installing", title: "Updating HQ", detail: "Restarting to install the update", error: null, installLabel: "Restarting…", installDisabled: true, installTitle: null };
+  }
+  if (input.phase === "checking") {
+    return { phase: "checking", title: "Checking for updates", detail: "Looking for a new version of HQ", error: null, installLabel: "Restart to update", installDisabled: true, installTitle: null };
+  }
+  if (input.phase === "downloading") {
+    const pct = input.downloadPercent;
+    return { phase: "downloading", title: "Downloading update", detail: pct == null ? "Downloading the new version" : `Downloading the new version (${Math.round(pct)}%)`, error: null, installLabel: "Restart to update", installDisabled: true, installTitle: null };
+  }
+  const error = plainError(input.installError);
+  if (error) {
+    return { phase: "failed", title: "Update failed", detail: ready, error, installLabel: "Try again", installDisabled: false, installTitle: null };
+  }
+  const hold = holdReasonText(input.reasons);
+  if (hold) {
+    return { phase: "held", title: "Update available", detail: hold, error: null, installLabel: "Restart to update", installDisabled: true, installTitle: hold };
+  }
+  return { phase: "ready", title: "Update available", detail: ready, error: null, installLabel: "Restart to update", installDisabled: false, installTitle: null };
+}

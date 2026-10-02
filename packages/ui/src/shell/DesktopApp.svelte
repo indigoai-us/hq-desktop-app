@@ -121,7 +121,8 @@
     advertisedShortcut,
     atlasShortcutTarget,
   } from "./advertised-shortcuts.js";
-  import { pushToast } from "./toast-stack.svelte.js";
+  import { dismissToastByKey, pushToast } from "./toast-stack.svelte.js";
+  import { updateToastCopy } from "./update-toast.js";
   import { CREATE_MENU_ITEMS, type CreateMenuAction } from "../chat/create-menu.js";
   import {
     SIDEBAR_OVERLAY_MAX_PX,
@@ -271,7 +272,6 @@
   import MembershipSyncBanner from "./MembershipSyncBanner.svelte";
   import SessionExpiredBanner from "./SessionExpiredBanner.svelte";
   import NotificationActionRecovery from "./NotificationActionRecovery.svelte";
-  import UpdateAvailableCard from "./UpdateAvailableCard.svelte";
   import {
     cacheLogoAssets,
     readBrandCache,
@@ -1229,7 +1229,9 @@
   // ── Update gate card ────────────────────────────────────────────────────────
 
   const UPDATE_GATE_EVENT = "update-gate://deferred";
-  const DISMISSED_KEY = "hq.update.dismissedVersion";
+  // OWNER-003: "Later" snoozes the update toast for this app session only.
+  const SNOOZED_KEY = "hq.update.snoozedVersion";
+  const UPDATE_TOAST_KEY = "app-update";
 
   let updatePendingVersion = $state<string | null>(null);
   let updateHoldReasons = $state<string[]>([]);
@@ -1237,7 +1239,7 @@
   let updateInstallError = $state<string | null>(null);
 
   function dismissedVersion(): string | null {
-    try { return localStorage.getItem(DISMISSED_KEY); } catch { return null; }
+    try { return sessionStorage.getItem(SNOOZED_KEY); } catch { return null; }
   }
 
   function isDismissed(v: string): boolean {
@@ -1324,11 +1326,52 @@
 
   function handleUpdateDismiss(): void {
     if (!updatePendingVersion) return;
-    try { localStorage.setItem(DISMISSED_KEY, updatePendingVersion); } catch {}
+    try { sessionStorage.setItem(SNOOZED_KEY, updatePendingVersion); } catch (err) {
+      console.error("update toast: could not record the session snooze:", err);
+    }
     updatePendingVersion = null;
     updateHoldReasons = [];
     updateInstallError = null;
   }
+
+  // OWNER-003: the update notice is a sticky toast on the shared layer.
+  $effect(() => {
+    const version = updatePendingVersion;
+    if (!version) {
+      untrack(() => dismissToastByKey(UPDATE_TOAST_KEY));
+      return;
+    }
+    const copy = updateToastCopy({
+      version,
+      reasons: updateHoldReasons,
+      installing: updateInstalling,
+      installError: updateInstallError,
+    });
+    untrack(() => pushToast({
+      key: UPDATE_TOAST_KEY,
+      kind: "sticky",
+      tone: "neutral",
+      testId: "update-available-card",
+      title: copy.title,
+      detail: copy.detail,
+      error: copy.error,
+      dismissLabel: "Dismiss update notice",
+      onDismiss: handleUpdateDismiss,
+      actions: [
+        {
+          label: copy.installLabel,
+          primary: true,
+          disabled: copy.installDisabled,
+          keepOpen: true,
+          testId: "update-install",
+          title: copy.installTitle ?? undefined,
+          onAction: () => void handleUpdateInstall(),
+        },
+        { label: "Later", testId: "update-later", keepOpen: true, onAction: handleUpdateDismiss },
+      ],
+    }));
+  });
+  $effect(() => () => dismissToastByKey(UPDATE_TOAST_KEY));
 
   /**
    * White-label brand for the title bar (PL-04). Resolved from the same
@@ -9755,6 +9798,8 @@
     if (e.key === "Enter" || e.key === " ") onShellLinkEvent(e);
   }}
 >
+  <!-- OWNER-003: the one shared toast layer, above sheets and popovers. -->
+  <ToastStack />
   <V4TitleBar
     {adapter}
     {version}
@@ -10210,18 +10255,6 @@
           {showBotMessages}
           onshowbotmessageschange={handleShowBotMessagesChange}
         >
-          {#snippet bottomContent()}
-            {#if updatePendingVersion}
-              <UpdateAvailableCard
-                version={updatePendingVersion}
-                reasons={updateHoldReasons}
-                installing={updateInstalling}
-                installError={updateInstallError}
-                oninstall={() => void handleUpdateInstall()}
-                ondismiss={handleUpdateDismiss}
-              />
-            {/if}
-          {/snippet}
         </ChatSidebar>
         {/key}
         </Sidepane>
@@ -10230,7 +10263,6 @@
       {/if}
 
       <main class="desktop-main" aria-label="Channel">
-        <ToastStack />
         <div
           class="notifications-layer"
           class:is-active={view === "notifications"}

@@ -37,6 +37,9 @@
     toSelfIdentity,
     workspacesFromMembershipRows,
     common,
+    dismissToastByKey,
+    pushToast,
+    ToastStack,
     type ConversationRow,
     type EmbeddedNavigationTarget,
     type SelfIdentity,
@@ -49,7 +52,6 @@
   import type { DmRequestContact } from '../lib/dmRequests';
   import { dismissBootLoader } from './boot-loader';
   import SignInPrompt from '../components/SignInPrompt.svelte';
-  import PlanUpgradeAction from '../components/PlanUpgradeAction.svelte';
   import { openApprovedExternalUrl, openBrowserUrl } from './external-open';
   import {
     applyDesktopAltRoute,
@@ -1113,48 +1115,82 @@
     });
   }
 
-  function trackPlanLimitNoticeExposure(
-    node: HTMLElement,
-    initialNotice: PlanLimitNotice,
-  ) {
-    let notice = initialNotice;
-    let attempted = false;
-    const emitWhenVisible = () => {
-      if (document.visibilityState === 'visible') emitExposure();
-    };
-    const emitExposure = () => {
-      void tick().then(() => {
-        if (
-          attempted ||
-          !node.isConnected ||
-          document.visibilityState !== 'visible' ||
-          !notice.companyUid ||
-          !capabilities?.fetch
-        ) return;
-        attempted = true;
-        void emitPlanLimitPromptTelemetry({
-          fetch: capabilities.fetch,
-          eventName: 'plan_limit_prompt_exposed',
-          companyUid: notice.companyUid,
-          exposureId: notice.exposureId,
-        });
-      });
-    };
-    emitExposure();
-    document.addEventListener('visibilitychange', emitWhenVisible);
-    window.addEventListener('focus', emitWhenVisible);
-    return {
-      update(nextNotice: PlanLimitNotice) {
-        notice = nextNotice;
-        emitExposure();
-      },
-      destroy() {
-        document.removeEventListener('visibilitychange', emitWhenVisible);
-        window.removeEventListener('focus', emitWhenVisible);
-      },
-    };
+  // Exposure telemetry: once per notice exposure, only while the window is
+  // visible and the company uid is known.
+  const exposedPlanLimitIds = new Set<string>();
+  function emitPlanLimitExposure(notice: PlanLimitNotice): void {
+    if (
+      exposedPlanLimitIds.has(notice.exposureId) ||
+      document.visibilityState !== 'visible' ||
+      !notice.companyUid ||
+      !capabilities?.fetch
+    ) return;
+    exposedPlanLimitIds.add(notice.exposureId);
+    void emitPlanLimitPromptTelemetry({
+      fetch: capabilities.fetch,
+      eventName: 'plan_limit_prompt_exposed',
+      companyUid: notice.companyUid,
+      exposureId: notice.exposureId,
+    });
   }
+  let windowVisibleSeq = $state(0);
+  onMount(() => {
+    const bump = () => {
+      if (document.visibilityState === 'visible') windowVisibleSeq += 1;
+    };
+    document.addEventListener('visibilitychange', bump);
+    window.addEventListener('focus', bump);
+    return () => {
+      document.removeEventListener('visibilitychange', bump);
+      window.removeEventListener('focus', bump);
+    };
+  });
 
+  // OWNER-003: the open company's "New files are paused" notice is one
+  // sticky toast on the shared layer, keyed per company so it never stacks.
+  const PLAN_LIMIT_TOAST_PREFIX = 'plan-limit:';
+  let shownPlanLimitToastKey: string | null = null;
+  $effect(() => {
+    const notice = visiblePlanLimitNotice;
+    const openError = planLimitOpenError;
+    void windowVisibleSeq;
+    untrack(() => {
+      const key = notice ? PLAN_LIMIT_TOAST_PREFIX + planLimitKey(notice) : null;
+      if (shownPlanLimitToastKey && shownPlanLimitToastKey !== key) {
+        dismissToastByKey(shownPlanLimitToastKey);
+      }
+      shownPlanLimitToastKey = key;
+      if (!notice || !key) return;
+      const upgradeUrl = notice.upgradeUrl;
+      pushToast({
+        key,
+        kind: 'sticky',
+        tone: 'neutral',
+        testId: 'sync-plan-limit-notice',
+        title: `New files are paused for ${notice.company}.`,
+        detail: 'This company reached its plan limit.',
+        error: openError,
+        dismissLabel: `Dismiss upgrade notice for ${notice.company}`,
+        onDismiss: () => dismissPlanLimitNotice(notice),
+        actions: upgradeUrl
+          ? [
+              {
+                label: 'Upgrade',
+                ariaLabel: 'Upgrade plan',
+                testId: 'sync-plan-limit-upgrade',
+                primary: true,
+                keepOpen: true,
+                onAction: () => void openPlanLimitUpgrade(upgradeUrl),
+              },
+            ]
+          : [],
+      });
+      void tick().then(() => emitPlanLimitExposure(notice));
+    });
+  });
+  onDestroy(() => {
+    if (shownPlanLimitToastKey) dismissToastByKey(shownPlanLimitToastKey);
+  });
 
   function withDesktopLimitEntrySurface(value: string): string {
     const url = new URL(value);
@@ -1199,6 +1235,8 @@
 </script>
 
 <div class="hq-work-embedded" data-testid="hq-work-embedded-shell">
+  <!-- OWNER-003: the app's one toast layer (update, files paused, copied). -->
+  <ToastStack />
   {#if lifecycle === 'loading'}
     <section class="lifecycle-state" data-testid="hq-work-loading" role="status">
       <div class="hq-work-boot" data-testid="hq-work-boot" aria-busy="true" aria-live="polite">
@@ -1261,35 +1299,6 @@
       </div>
     {/if}
     <div class="work-shell-frame">
-    {#if visiblePlanLimitNotice}
-      {@const notice = visiblePlanLimitNotice}
-      {#key planLimitKey(notice)}
-        <div class="plan-limit-notices" data-testid="sync-plan-limit-notice" role="status">
-          <div class="plan-limit-notice" use:trackPlanLimitNoticeExposure={notice}>
-            <span class="plan-limit-dot" aria-hidden="true"></span>
-            <span class="plan-limit-text">New files are paused for {notice.company}.</span>
-            {#if notice.upgradeUrl}
-              <PlanUpgradeAction
-                upgradeUrl={notice.upgradeUrl}
-                onUpgrade={openPlanLimitUpgrade}
-                testId="sync-plan-limit-upgrade"
-              />
-            {/if}
-            <button
-              type="button"
-              class="plan-limit-dismiss"
-              aria-label={`Dismiss upgrade notice for ${notice.company}`}
-              onclick={() => dismissPlanLimitNotice(notice)}
-            >
-              Dismiss
-            </button>
-          </div>
-          {#if planLimitOpenError}
-            <p class="plan-limit-open-error" role="alert">{planLimitOpenError}</p>
-          {/if}
-        </div>
-      {/key}
-    {/if}
     {#key authGeneration}
       <WorkShell
         data={{ user: capabilities.hostIdentity }}
@@ -1450,56 +1459,6 @@
     line-height: 1.4;
     color: var(--v4-text-2, #b0b0b0);
     background: var(--v4-surface-solid, #282828);
-  }
-
-  /* QA-075: one contained notice in the company pane, on the dark surface. */
-  .plan-limit-notices {
-    position: absolute;
-    right: 16px;
-    bottom: 16px;
-    z-index: 20;
-    max-width: min(480px, calc(100% - 32px));
-    display: grid;
-    gap: 4px;
-    padding: 8px 12px;
-    border: 1px solid var(--v4-divider, rgba(255, 255, 255, 0.08));
-    border-radius: 8px;
-    background: var(--v4-surface-solid, #282828);
-    color: var(--v4-text-1, #e6e6e6);
-    font-size: 13px;
-    line-height: 18px;
-  }
-
-  .plan-limit-notice {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .plan-limit-dot {
-    flex: 0 0 auto;
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--v4-warn, #d97706);
-  }
-
-  .plan-limit-text {
-    min-width: 0;
-  }
-
-  .plan-limit-dismiss {
-    border: 0;
-    padding: 4px 6px;
-    background: transparent;
-    color: var(--v4-text-2, #b0b0b0);
-    font: inherit;
-    cursor: pointer;
-  }
-
-  .plan-limit-open-error {
-    margin: 0;
-    color: var(--v4-warn, #b45309);
   }
 
   .work-shell-frame {

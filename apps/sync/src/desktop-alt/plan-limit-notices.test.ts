@@ -129,8 +129,8 @@ async function mountShell(
 }
 
 function notices(): string[] {
-  return [...host.querySelectorAll('.plan-limit-notice')].map(
-    (el) => el.querySelector('.plan-limit-text')?.textContent ?? '',
+  return [...document.querySelectorAll('[data-testid="sync-plan-limit-notice"]')].map(
+    (el) => el.querySelector('.ts-title')?.textContent ?? '',
   );
 }
 
@@ -143,7 +143,7 @@ describe('HqWorkWorkShell plan-limit upload pause (US-019)', () => {
     });
 
     expect(notices()).toEqual(['New files are paused for Acme.']);
-    const upgrade = host.querySelector<HTMLButtonElement>(
+    const upgrade = document.querySelector<HTMLButtonElement>(
       '[data-testid="sync-plan-limit-upgrade"]',
     );
     upgrade?.click();
@@ -164,15 +164,15 @@ describe('HqWorkWorkShell plan-limit upload pause (US-019)', () => {
     });
     await flush();
     expect(notices()).toEqual(['New files are paused for Acme.']);
-    expect(host.querySelectorAll('[data-testid="sync-plan-limit-upgrade"]')).toHaveLength(1);
+    expect(document.querySelectorAll('[data-testid="sync-plan-limit-upgrade"]')).toHaveLength(1);
 
     await openPane({ uid: null, slug: 'beta' });
     expect(notices()).toEqual(['New files are paused for Beta.']);
-    expect(host.querySelector('[data-testid="sync-plan-limit-upgrade"]')).toBeNull();
+    expect(document.querySelector('[data-testid="sync-plan-limit-upgrade"]')).toBeNull();
 
     emit('sync:uploads-paused', { companies: [], summary: null });
     await flush();
-    expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeNull();
+    expect(document.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeNull();
   });
 
   it('shows a runner notice on a host hq-pro never returns without an upgrade action', async () => {
@@ -183,12 +183,12 @@ describe('HqWorkWorkShell plan-limit upload pause (US-019)', () => {
     });
     await flush();
     expect(notices()).toEqual(['New files are paused for Acme.']);
-    expect(host.querySelector('[data-testid="sync-plan-limit-upgrade"]')).toBeNull();
+    expect(document.querySelector('[data-testid="sync-plan-limit-upgrade"]')).toBeNull();
   });
 
   it('keeps a dismissal per company for the session', async () => {
     await mountShell({ uploadsPaused: [{ company: 'Acme', upgradeUrl: UPGRADE_URL }] });
-    host
+    document
       .querySelector<HTMLButtonElement>('button[aria-label="Dismiss upgrade notice for Acme"]')
       ?.click();
     await flush();
@@ -224,8 +224,8 @@ describe('HqWorkWorkShell plan-limit notice placement (QA-075)', () => {
   it('shows a limited company notice only inside that company pane', async () => {
     await mountShell({ uploadsPaused: many }, { uid: null, slug: 'gamma' });
     expect(notices()).toEqual(['New files are paused for Gamma.']);
-    const frame = host.querySelector('.work-shell-frame');
-    expect(frame?.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeTruthy();
+    const layer = document.querySelector('[data-testid="toast-stack"]');
+    expect(layer?.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeTruthy();
 
     await openPane({ uid: null, slug: 'unlimited-co' });
     expect(notices()).toEqual([]);
@@ -233,12 +233,12 @@ describe('HqWorkWorkShell plan-limit notice placement (QA-075)', () => {
 
   it('shows no plan-limit notice on personal pages', async () => {
     await mountShell({ uploadsPaused: many }, null);
-    expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeNull();
+    expect(document.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeNull();
 
     await openPane({ uid: null, slug: 'acme' });
     expect(notices()).toHaveLength(1);
     await openPane(null);
-    expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeNull();
+    expect(document.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeNull();
   });
 
   it('never stacks notices when several companies are limited', async () => {
@@ -247,17 +247,22 @@ describe('HqWorkWorkShell plan-limit notice placement (QA-075)', () => {
     await flush();
     for (const slug of ['acme', 'beta', 'delta', 'epsilon']) {
       await openPane({ uid: null, slug });
-      expect(host.querySelectorAll('.plan-limit-notice')).toHaveLength(1);
-      expect(host.querySelectorAll('[data-testid="sync-plan-limit-notice"]')).toHaveLength(1);
+      expect(document.querySelectorAll('[data-testid="sync-plan-limit-notice"]')).toHaveLength(1);
+      expect(document.querySelectorAll('[data-testid="sync-plan-limit-notice"]')).toHaveLength(1);
     }
   });
 
   // OWNER-002: the old build stacked every paused company's notice above the
   // shell frame, on the see-through host, so they showed over other apps.
-  it('renders no notice outside the shell frame', async () => {
+  // OWNER-003: the notice moved from the pane onto the shared toast layer.
+  it('renders the notice as one toast on the shared layer', async () => {
     await mountShell({ uploadsPaused: many }, { uid: null, slug: 'delta' });
-    const all = [...host.querySelectorAll('[data-testid="sync-plan-limit-notice"]')];
+    const all = [...document.querySelectorAll('[data-testid="sync-plan-limit-notice"]')];
     expect(all).toHaveLength(1);
-    for (const el of all) expect(el.closest('.work-shell-frame')).toBeTruthy();
+    for (const el of all) {
+      expect(el.closest('[data-testid="toast-stack"]')).toBeTruthy();
+      expect(el.closest('.work-shell-frame')).toBeNull();
+      expect(el.getAttribute('data-kind')).toBe('sticky');
+    }
   });
 });

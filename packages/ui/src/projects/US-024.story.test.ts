@@ -171,14 +171,15 @@ describe("US-024 task view pane", () => {
 describe("US-024 undo toast", () => {
   it("runs the undo action and dismisses the toast", () => {
     const undo = vi.fn();
-    const host = render(ToastStack, {});
+    render(ToastStack, {});
     pushToast({ title: "Marked done", detail: "US-014", tone: "ok", actionLabel: "Undo", onAction: undo });
     flushSync();
-    const action = host.querySelector<HTMLElement>('[data-testid="toast-action"]')!;
+    // OWNER-003: the shared toast layer portals to <body>.
+    const action = document.querySelector<HTMLElement>('[data-testid="toast-action"]')!;
     expect(action.textContent).toBe("Undo");
     action.click();
     flushSync();
     expect(undo).toHaveBeenCalledTimes(1);
-    expect(host.querySelector('[data-testid="toast"]')).toBeNull();
+    expect(document.querySelector('[data-testid="toast"]')).toBeNull();
   });
 });

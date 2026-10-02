@@ -49,9 +49,10 @@ describe('sync plan-limit event contract', () => {
     expect(workShellSource).toContain(
       'return approvedPlanUpgradeUrl(withDesktopLimitEntrySurface(approved));',
     );
-    expect(workShellSource).toContain('New files are paused for {notice.company}.');
-    expect(workShellSource).toContain('testId="sync-plan-limit-upgrade"');
-    expect(workShellSource).toContain('onUpgrade={openPlanLimitUpgrade}');
+    // OWNER-003: the notice is a sticky toast on the shared layer.
+    expect(workShellSource).toContain('New files are paused for ${notice.company}.');
+    expect(workShellSource).toContain("testId: 'sync-plan-limit-upgrade'");
+    expect(workShellSource).toContain('onAction: () => void openPlanLimitUpgrade(upgradeUrl)');
   });
 
   it('replaces the Meetings plan toast with the shared upgrade action', () => {

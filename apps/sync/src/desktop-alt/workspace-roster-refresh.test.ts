@@ -187,7 +187,7 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
     emit('sync:plan-limit', { company: 'Acme', upgradeUrl });
     await flush();
 
-    const notice = host.querySelector('[data-testid="sync-plan-limit-notice"]');
+    const notice = document.querySelector('[data-testid="sync-plan-limit-notice"]');
     expect(notice?.textContent).toContain('New files are paused for Acme.');
     const upgrade = notice?.querySelector<HTMLButtonElement>(
       '[data-testid="sync-plan-limit-upgrade"]',
@@ -214,7 +214,7 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
     const limitEvent = { company: 'Acme', upgradeUrl };
     emit('sync:plan-limit', limitEvent);
     await flush();
-    expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeTruthy();
+    expect(document.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeTruthy();
     expect(telemetryEvents.map((event) => event.eventName)).toEqual([
       'plan_limit_prompt_exposed',
     ]);
@@ -225,7 +225,7 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
       'plan_limit_prompt_exposed',
     ]);
 
-    const upgrade = host.querySelector<HTMLButtonElement>(
+    const upgrade = document.querySelector<HTMLButtonElement>(
       '[data-testid="sync-plan-limit-upgrade"]',
     );
     upgrade?.click();
@@ -244,14 +244,14 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
       'https://hq.computer' + '/companies/' + 'acme' + '/billing?upgrade=team&entrySurface=desktop_limit',
     );
 
-    host.querySelector<HTMLButtonElement>('.plan-limit-dismiss')?.click();
+    document.querySelector<HTMLButtonElement>('[data-testid="sync-plan-limit-notice"] [data-testid="toast-dismiss"]')?.click();
     await flush();
     emit('sync:plan-limit', limitEvent);
     await flush();
     const exposures = telemetryEvents.filter(
       (event) => event.eventName === 'plan_limit_prompt_exposed',
     );
-    expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeNull();
+    expect(document.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeNull();
     expect(exposures).toHaveLength(1);
     expect(telemetryEvents.filter((event) => event.eventName === 'plan_limit_prompt_engaged'))
       .toHaveLength(1);
@@ -269,7 +269,7 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
     component = mount(HqWorkWorkShell, { target: host, props: { invokeFn } });
     await flush();
 
-    expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeNull();
+    expect(document.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeNull();
     expect(hqProUrls).not.toContain('/v1/billing/usage-limits?companyUid=cmp_acme');
   });
 
@@ -289,16 +289,16 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
     component = mount(HqWorkWorkShell, { target: host, props: { invokeFn } });
     await flush();
 
-    expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeTruthy();
+    expect(document.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeTruthy();
     expect(hqProUrls.filter((url) => url.startsWith('/v1/billing/usage-limits?'))).toHaveLength(1);
 
-    host.querySelector<HTMLButtonElement>('.plan-limit-dismiss')?.click();
+    document.querySelector<HTMLButtonElement>('[data-testid="sync-plan-limit-notice"] [data-testid="toast-dismiss"]')?.click();
     await flush();
     emit('sync:all-complete', {});
     await flush();
 
     expect(hqProUrls.filter((url) => url.startsWith('/v1/billing/usage-limits?'))).toHaveLength(2);
-    expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeNull();
+    expect(document.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeNull();
   });
 
   it.each([
@@ -363,7 +363,7 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
     component = mount(HqWorkWorkShell, { target: host, props: { invokeFn } });
     await flush();
 
-    expect(Boolean(host.querySelector('[data-testid=\"sync-plan-limit-notice\"]'))).toBe(expectedNotice);
+    expect(Boolean(document.querySelector('[data-testid=\"sync-plan-limit-notice\"]'))).toBe(expectedNotice);
   });
 
   it('does not push a notice for a free company below the warning threshold', async () => {
@@ -381,7 +381,7 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
     component = mount(HqWorkWorkShell, { target: host, props: { invokeFn } });
     await flush();
 
-    expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeNull();
+    expect(document.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeNull();
   });
 
   it('does not push a notice for a free company exempt from plan-limit enforcement', async () => {
@@ -399,7 +399,7 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
     component = mount(HqWorkWorkShell, { target: host, props: { invokeFn } });
     await flush();
 
-    expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeNull();
+    expect(document.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeNull();
   });
 
   it('waits for both a resolved roster identity and a visible desktop window', async () => {
@@ -422,7 +422,7 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
     };
     emit('sync:plan-limit', limitEvent);
     await flush();
-    expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeTruthy();
+    expect(document.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeTruthy();
     expect(telemetryEvents).toEqual([]);
 
     resolveRoster({ workspaces: [ACME] });
@@ -450,7 +450,7 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
       upgradeUrl: 'https://hq.computer/companies/acme/billing?upgrade=team',
     });
     await flush();
-    expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeTruthy();
+    expect(document.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeTruthy();
 
     emit('auth:session-changed', {
       accountId: 'acct_grace',
@@ -460,7 +460,7 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
     });
     await flush();
 
-    expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeNull();
+    expect(document.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeNull();
   });
 
   it('recovers when the native roster succeeds after the UI deadline', async () => {
@@ -478,13 +478,13 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
       await flush();
       await vi.advanceTimersByTimeAsync(15_001);
       await flush();
-      const notice = host.querySelector('[data-testid="hq-work-workspace-error"]');
+      const notice = document.querySelector('[data-testid="hq-work-workspace-error"]');
       expect(notice?.textContent).toContain('Workspaces couldn’t refresh.');
       expect(notice?.textContent).not.toContain('timed out');
       expect(notice?.getAttribute('role')).toBe('status');
       resolveRoster({ workspaces: [ACME] });
       await flush();
-      expect(host.querySelector('[data-testid="hq-work-workspace-error"]')).toBeNull();
+      expect(document.querySelector('[data-testid="hq-work-workspace-error"]')).toBeNull();
     } finally {
       if (component) await unmount(component);
       component = null;
@@ -510,14 +510,14 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
       await flush();
       await vi.advanceTimersByTimeAsync(15_001);
       await flush();
-      const retry = host.querySelector<HTMLButtonElement>('[data-testid="hq-work-workspace-error"] button');
+      const retry = document.querySelector<HTMLButtonElement>('[data-testid="hq-work-workspace-error"] button');
       expect(retry).toBeTruthy();
       retry!.click();
       await flush();
       expect(rosterCalls(calls)).toBe(2);
       resolveOld({ workspaces: [ACME] });
       await flush();
-      expect(host.querySelector('[data-testid="hq-work-workspace-error"]')).toBeTruthy();
+      expect(document.querySelector('[data-testid="hq-work-workspace-error"]')).toBeTruthy();
     } finally {
       if (component) await unmount(component);
       component = null;
@@ -540,14 +540,14 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
     });
     await flush();
     await vi.waitFor(() => {
-      expect(host.querySelector('[data-testid="hq-work-workspace-error"]')).toBeTruthy();
+      expect(document.querySelector('[data-testid="hq-work-workspace-error"]')).toBeTruthy();
     });
     await vi.waitFor(() => {
       expect(rosterCalls(calls)).toBe(2);
     });
     await vi.waitFor(() => {
       flushSync();
-      expect(host.querySelector('[data-testid="hq-work-workspace-error"]')).toBeNull();
+      expect(document.querySelector('[data-testid="hq-work-workspace-error"]')).toBeNull();
     });
   });
 
@@ -589,7 +589,7 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
     await vi.waitFor(() => {
       expect(rosterCalls(calls)).toBe(3);
     });
-    expect(host.querySelector('[data-testid="hq-work-workspace-error"]')).toBeNull();
+    expect(document.querySelector('[data-testid="hq-work-workspace-error"]')).toBeNull();
   });
 
   it('treats a cloud-unreachable roster envelope as a failed fetch and retries it', async () => {
@@ -608,17 +608,17 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
     });
     await flush();
     await vi.waitFor(() => {
-      expect(host.querySelector('[data-testid="hq-work-workspace-error"]')?.textContent).toContain(
+      expect(document.querySelector('[data-testid="hq-work-workspace-error"]')?.textContent).toContain(
         'Workspaces couldn’t refresh.',
       );
-      expect(host.querySelector('[data-testid="hq-work-workspace-error"]')?.textContent).not.toContain('vault unreachable');
+      expect(document.querySelector('[data-testid="hq-work-workspace-error"]')?.textContent).not.toContain('vault unreachable');
     });
     await vi.waitFor(() => {
       expect(rosterCalls(calls)).toBe(2);
     });
     await vi.waitFor(() => {
       flushSync();
-      expect(host.querySelector('[data-testid="hq-work-workspace-error"]')).toBeNull();
+      expect(document.querySelector('[data-testid="hq-work-workspace-error"]')).toBeNull();
     });
   });
 

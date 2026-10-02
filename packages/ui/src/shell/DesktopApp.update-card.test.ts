@@ -1,11 +1,11 @@
 // @vitest-environment happy-dom
 
 /**
- * Sidebar update-available card. Proves the UpdateAvailableCard is correctly
- * wired into DesktopApp: it appears on the deferred event and on mount when
+ * Update-available toast (OWNER-003: moved from the sidebar card onto the
+ * shared toast layer). Proves the sticky update toast is wired into DesktopApp: it appears on the deferred event and on mount when
  * the gate query returns a pending version, stays idempotent for repeated
- * events with the same version, respects holds, and persists the user's
- * "Later" choice per-version.
+ * events with the same version, respects holds, and snoozes the
+ * version for the session when the person picks "Later".
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
@@ -86,6 +86,7 @@ function buildAdapter(initialGatePayload = gatePayload(null)): PlatformAdapter {
 
 function resetSharedState(): void {
   window.localStorage?.clear?.();
+  window.sessionStorage?.clear?.();
   takePendingConversation();
   takePendingChannelOpen();
 }
@@ -133,14 +134,14 @@ describe("DesktopApp update-available card", () => {
     const events = createSyncEventHost();
     await mountApp(events.host);
     expect(
-      host.querySelector('[data-testid="update-available-card"]'),
+      document.querySelector('[data-testid="update-available-card"]'),
     ).toBeNull();
 
     events.emit("update-gate://deferred", gatePayload(VERSION_A));
     await settle();
 
     expect(
-      host.querySelector('[data-testid="update-available-card"]'),
+      document.querySelector('[data-testid="update-available-card"]'),
     ).not.toBeNull();
   });
 
@@ -151,7 +152,7 @@ describe("DesktopApp update-available card", () => {
 
     expect(queryUpdateGate).toHaveBeenCalled();
     expect(
-      host.querySelector('[data-testid="update-available-card"]'),
+      document.querySelector('[data-testid="update-available-card"]'),
     ).not.toBeNull();
   });
 
@@ -161,7 +162,7 @@ describe("DesktopApp update-available card", () => {
     events.emit("update-gate://deferred", gatePayload(VERSION_A, []));
     await settle();
 
-    const secondary = host.querySelector('[data-testid="update-secondary"]');
+    const secondary = document.querySelector('[data-testid="update-available-card"] [data-testid="toast-detail"]');
     expect(secondary?.textContent?.trim()).toContain(VERSION_A);
     expect(secondary?.textContent).toContain("ready to install");
   });
@@ -175,7 +176,7 @@ describe("DesktopApp update-available card", () => {
     );
     await settle();
 
-    const secondary = host.querySelector('[data-testid="update-secondary"]');
+    const secondary = document.querySelector('[data-testid="update-available-card"] [data-testid="toast-detail"]');
     expect(secondary?.textContent?.trim()).toBe(
       "Waiting for your recording to finish",
     );
@@ -190,7 +191,7 @@ describe("DesktopApp update-available card", () => {
     );
     await settle();
 
-    const button = host.querySelector<HTMLButtonElement>(
+    const button = document.querySelector<HTMLButtonElement>(
       '[data-testid="update-install"]',
     );
     expect(button?.disabled).toBe(true);
@@ -207,7 +208,7 @@ describe("DesktopApp update-available card", () => {
     );
     await settle();
     expect(
-      host.querySelector<HTMLButtonElement>('[data-testid="update-install"]')!
+      document.querySelector<HTMLButtonElement>('[data-testid="update-install"]')!
         .disabled,
       "button disabled while hold is active",
     ).toBe(true);
@@ -215,7 +216,7 @@ describe("DesktopApp update-available card", () => {
     events.emit("update-gate://deferred", gatePayload(VERSION_A, []));
     await settle();
     expect(
-      host.querySelector<HTMLButtonElement>('[data-testid="update-install"]')!
+      document.querySelector<HTMLButtonElement>('[data-testid="update-install"]')!
         .disabled,
       "button enabled after hold clears",
     ).toBe(false);
@@ -227,7 +228,7 @@ describe("DesktopApp update-available card", () => {
     events.emit("update-gate://deferred", gatePayload(VERSION_A));
     await settle();
 
-    host
+    document
       .querySelector<HTMLButtonElement>('[data-testid="update-install"]')!
       .click();
     await settle();
@@ -244,12 +245,12 @@ describe("DesktopApp update-available card", () => {
     installPendingUpdate.mockResolvedValueOnce(
       failure("hold-active", "A recording is in progress"),
     );
-    host
+    document
       .querySelector<HTMLButtonElement>('[data-testid="update-install"]')!
       .click();
     await settle();
 
-    const errorEl = host.querySelector('[data-testid="update-error"]');
+    const errorEl = document.querySelector('[data-testid="update-available-card"] [data-testid="toast-error"]');
     expect(errorEl).not.toBeNull();
     expect(errorEl?.textContent).toContain("A recording is in progress");
   });
@@ -263,13 +264,13 @@ describe("DesktopApp update-available card", () => {
     installPendingUpdate.mockResolvedValueOnce(
       failure("hold-active", "HQ will restart to update after your recording finishes"),
     );
-    host
+    document
       .querySelector<HTMLButtonElement>('[data-testid="update-install"]')!
       .click();
     await settle();
 
-    expect(host.textContent).toContain("HQ will restart after your recording finishes");
-    const button = host.querySelector<HTMLButtonElement>('[data-testid="update-install"]');
+    expect(document.body.textContent).toContain("HQ will restart after your recording finishes");
+    const button = document.querySelector<HTMLButtonElement>('[data-testid="update-install"]');
     expect(button?.textContent).toContain("Will restart after recording");
     expect(button?.disabled).toBe(true);
   });
@@ -281,13 +282,13 @@ describe("DesktopApp update-available card", () => {
     await settle();
 
     installPendingUpdate.mockResolvedValueOnce(failure("hold-active", "Hold active"));
-    host
+    document
       .querySelector<HTMLButtonElement>('[data-testid="update-install"]')!
       .click();
     await settle();
 
     expect(
-      host.querySelector<HTMLButtonElement>('[data-testid="update-install"]')!
+      document.querySelector<HTMLButtonElement>('[data-testid="update-install"]')!
         .disabled,
     ).toBe(false);
   });
@@ -299,16 +300,16 @@ describe("DesktopApp update-available card", () => {
     await settle();
 
     expect(
-      host.querySelector('[data-testid="update-available-card"]'),
+      document.querySelector('[data-testid="update-available-card"]'),
     ).not.toBeNull();
 
-    host
+    document
       .querySelector<HTMLButtonElement>('[data-testid="update-later"]')!
       .click();
     await settle();
 
     expect(
-      host.querySelector('[data-testid="update-available-card"]'),
+      document.querySelector('[data-testid="update-available-card"]'),
     ).toBeNull();
   });
 
@@ -318,7 +319,7 @@ describe("DesktopApp update-available card", () => {
     events.emit("update-gate://deferred", gatePayload(VERSION_A));
     await settle();
 
-    host
+    document
       .querySelector<HTMLButtonElement>('[data-testid="update-later"]')!
       .click();
     await settle();
@@ -327,7 +328,7 @@ describe("DesktopApp update-available card", () => {
     await settle();
 
     expect(
-      host.querySelector('[data-testid="update-available-card"]'),
+      document.querySelector('[data-testid="update-available-card"]'),
       "same version must not re-show after Later",
     ).toBeNull();
   });
@@ -338,7 +339,7 @@ describe("DesktopApp update-available card", () => {
     events.emit("update-gate://deferred", gatePayload(VERSION_A));
     await settle();
 
-    host
+    document
       .querySelector<HTMLButtonElement>('[data-testid="update-later"]')!
       .click();
     await settle();
@@ -347,11 +348,11 @@ describe("DesktopApp update-available card", () => {
     await settle();
 
     expect(
-      host.querySelector('[data-testid="update-available-card"]'),
+      document.querySelector('[data-testid="update-available-card"]'),
       "newer version shows again",
     ).not.toBeNull();
     expect(
-      host.querySelector('[data-testid="update-secondary"]')?.textContent,
+      document.querySelector('[data-testid="update-available-card"] [data-testid="toast-detail"]')?.textContent,
     ).toContain(VERSION_B);
   });
 
@@ -366,7 +367,7 @@ describe("DesktopApp update-available card", () => {
     events.emit("update-gate://deferred", gatePayload(VERSION_A));
     await settle();
 
-    const cards = host.querySelectorAll(
+    const cards = document.querySelectorAll(
       '[data-testid="update-available-card"]',
     );
     expect(cards).toHaveLength(1);
@@ -379,7 +380,7 @@ describe("DesktopApp update-available card", () => {
     await settle();
 
     expect(
-      host.querySelector('[data-testid="update-available-card"]'),
+      document.querySelector('[data-testid="update-available-card"]'),
     ).toBeNull();
   });
 
@@ -398,8 +399,8 @@ describe("DesktopApp update-available card", () => {
       events.emit("update-gate://deferred", gatePayload(VERSION_A, [reason]));
       await settle();
       expect(
-        host
-          .querySelector('[data-testid="update-secondary"]')
+        document
+          .querySelector('[data-testid="update-available-card"] [data-testid="toast-detail"]')
           ?.textContent?.trim(),
         `reason ${reason}`,
       ).toBe(expected);

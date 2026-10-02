@@ -171,6 +171,16 @@ export { default as LinkContextMenu } from "./common/LinkContextMenu.svelte";
 export * from "./common/external-links.js";
 
 export { default as DesktopApp } from "./shell/DesktopApp.svelte";
+export { default as ToastStack } from "./shell/ToastStack.svelte";
+export {
+  dismissToast,
+  dismissToastByKey,
+  pushToast,
+  toastItems,
+  type ToastAction,
+  type ToastInput,
+  type ToastItem,
+} from "./shell/toast-stack.svelte.js";
 export * from "./shell/embedded-navigation.js";
 export * from "./shell/notification-recovery.js";
 export { default as NotificationActionRecovery } from "./shell/NotificationActionRecovery.svelte";

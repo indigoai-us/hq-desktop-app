@@ -422,7 +422,7 @@
     rowExtras?: RowExtrasResolver | null;
     /** US-006: when true, contacts whose last message is agent-only show their preview. */
     showBotMessages?: boolean;
-    /** Optional content rendered above the account footer (e.g. UpdateAvailableCard). */
+    /** Optional content rendered above the account footer. */
     bottomContent?: Snippet;
     /** Fires when the user clicks the bot-message toggle in the sidebar header. */
     onshowbotmessageschange?: (value: boolean) => void;
