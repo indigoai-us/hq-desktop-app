@@ -14,6 +14,8 @@
   import { HQ_CONSOLE_BASE } from "../common/hq-console.js";
   import { useCompanySummary } from "../company/company-summary.svelte.js";
   import type { AtlasLocalSource, AtlasVaultSource } from "./atlas-landing.js";
+  import { loadLocalProjects, ProjectsUnavailableError } from "../projects/local-projects.js";
+  import { boardProjectsInProgress } from "../projects/projects-model.js";
 
   type AtlasModule = Awaited<ReturnType<typeof loadAtlas>>;
   type AtlasCache = ReturnType<AtlasModule["createAtlasCache"]>;
@@ -73,7 +75,26 @@
     slug: () => slug?.trim() || null,
     enabled: () => summaryEnabled,
   });
-  const projectsInProgress = $derived(summary.summary.board);
+  // In progress comes from the same projects and board status helper as the
+  // Projects page (QA-065); the cached summary only fills in until it loads.
+  let boardInProgress = $state<number | null>(null);
+  let boardRequest = 0;
+  $effect(() => {
+    const boardSlug = slug?.trim() || null;
+    const request = ++boardRequest;
+    boardInProgress = null;
+    if (!boardSlug) return;
+    loadLocalProjects()
+      .then((projects) => {
+        if (request === boardRequest) boardInProgress = boardProjectsInProgress(projects, boardSlug);
+      })
+      .catch((err) => {
+        if (!(err instanceof ProjectsUnavailableError)) {
+          console.warn(`Atlas projects in progress for ${boardSlug} failed:`, err);
+        }
+      });
+  });
+  const projectsInProgress = $derived(boardInProgress ?? summary.summary.board);
 
   let mod = $state<AtlasModule | null>(null);
   const cache = $derived.by(() => {
@@ -126,6 +147,7 @@
       {filterActor}
       {onclearfilter}
       {onopenpage}
+      projectsInProgress={boardInProgress}
       onopenperson={(uid) => onopenperson?.(uid)}
       onmessage={(who) => {
         if (who.actorUid) onopenperson?.(who.actorUid);

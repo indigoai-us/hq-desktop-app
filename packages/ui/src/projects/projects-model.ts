@@ -1431,3 +1431,18 @@ export function secondaryPlanStatusLabel(
   if (raw === headerEditableStatus(project)) return null;
   return `Plan: ${EDITABLE_PROJECT_STATUS_LABEL[raw]}`;
 }
+
+/**
+ * How many of a company's projects the Projects board files under In progress
+ * or Active (QA-065). Uses {@link portfolioColumn} without a live signal, so a
+ * project counts here exactly when the board shows it as started but not
+ * complete. The Atlas company summary reads this instead of its own graph.
+ */
+export function boardProjectsInProgress(
+  projects: readonly Pick<Project, "company" | "status" | "storiesComplete" | "storiesTotal">[],
+  companySlug: string,
+): number {
+  return projects.filter(
+    (p) => p.company === companySlug && portfolioColumn(p, false) === "in-progress",
+  ).length;
+}

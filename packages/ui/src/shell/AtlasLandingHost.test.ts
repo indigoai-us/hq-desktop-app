@@ -7,6 +7,8 @@ import AtlasLandingHost from "./AtlasLandingHost.svelte";
 import { loadAtlas } from "./atlas-lazy.js";
 import { createAtlasCache } from "../atlas/atlas-cache.js";
 import { smokeAtlasGraph } from "../atlas/atlas-model.js";
+import { configureProjectsApi } from "../projects/local-projects.js";
+import { fakeProjectsApi } from "../projects/testing.js";
 
 const mounted: Array<ReturnType<typeof mount>> = [];
 afterEach(() => {
@@ -284,5 +286,70 @@ describe("AtlasLandingHost local first page (QA-016 re-test)", () => {
     expect(target.querySelector("[data-testid='atlas-node-project:projects/gamma/']")).not.toBeNull();
     expect(target.querySelector("[data-testid='atlas-loading-more']")).toBeNull();
     expect(atlasSource.listPage).toHaveBeenCalled();
+  });
+});
+
+describe("AtlasLandingHost projects in progress (QA-065)", () => {
+  // boring-ecom's board: three started projects, one done, one not started,
+  // plus another company's started project that must not count.
+  const boardProjects = [
+    { id: "subscription-growth-calculator", title: "Calculator", company: "boring-ecom", status: "planned", storyCount: 11, storiesComplete: 5 },
+    { id: "skio-retention-automation", title: "Skio", company: "boring-ecom", status: "", storyCount: 15, storiesComplete: 3 },
+    { id: "strawberry-weekly-retention-report", title: "Report", company: "boring-ecom", status: "in_progress", storyCount: 7, storiesComplete: 6 },
+    { id: "shipped", title: "Shipped", company: "boring-ecom", status: "active", storyCount: 4, storiesComplete: 4 },
+    { id: "idea", title: "Idea", company: "boring-ecom", status: "planned", storyCount: 3, storiesComplete: 0 },
+    { id: "other", title: "Other", company: "amass", status: "in_progress", storyCount: 5, storiesComplete: 2 },
+  ];
+
+  afterEach(() => configureProjectsApi(null));
+
+  function rollupText(target: HTMLElement): string {
+    return target.querySelector("[data-testid='atlas-inspector-rollup']")?.textContent ?? "";
+  }
+
+  async function waitForText(target: HTMLElement, text: string): Promise<void> {
+    await loadAtlas();
+    for (let i = 0; i < 50; i += 1) {
+      if (rollupText(target).includes(text)) return;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await tick();
+    }
+  }
+
+  it("counts the same in-progress projects as the Projects board on the rendered map", async () => {
+    configureProjectsApi(fakeProjectsApi(async () => boardProjects));
+    // The map graph carries no story rollups, as the local folder map does.
+    const graph = smokeAtlasGraph();
+    graph.nodes = graph.nodes.map(({ stories: _stories, ...n }) => n);
+    const storage = new Map([["hq.atlas.v1:co_boring", JSON.stringify(graph)]]);
+    const atlasCache = createAtlasCache({
+      fetcher: vi.fn(async () => graph),
+      storage: { getItem: (k) => storage.get(k) ?? null, setItem: (k, v) => void storage.set(k, v) },
+    });
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    mounted.push(
+      mount(AtlasLandingHost, {
+        target,
+        props: { companyLabel: "Boring", workingNow: [], slug: "boring-ecom", companyUid: "co_boring", atlasCache },
+      }),
+    );
+    await waitForText(target, "3 projects in progress");
+    expect(target.querySelector("[data-testid='atlas-map']")).not.toBeNull();
+    expect(rollupText(target)).toContain("3 projects in progress");
+  });
+
+  it("uses the board count on the landing summary before the map is linked", async () => {
+    configureProjectsApi(fakeProjectsApi(async () => boardProjects));
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    mounted.push(
+      mount(AtlasLandingHost, {
+        target,
+        props: { companyLabel: "Boring", workingNow: [], slug: "boring-ecom" },
+      }),
+    );
+    await waitForText(target, "3 projects in progress");
+    expect(rollupText(target)).toContain("3 projects in progress");
   });
 });

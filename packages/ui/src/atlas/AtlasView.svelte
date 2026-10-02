@@ -54,6 +54,11 @@
     onmessage?: (who: AtlasPresence) => void;
     /** Empty company prompts (US-014): company page row id (projects, team, integrations). */
     onopenpage?: (rowId: string) => void;
+    /**
+     * In-progress count from the Projects board (QA-065). When set it wins
+     * over the graph's story rollup, which the local map does not fill.
+     */
+    projectsInProgress?: number | null;
   }
 
   let {
@@ -71,6 +76,7 @@
     onopenboard,
     onmessage,
     onopenpage,
+    projectsInProgress: boardInProgress = null,
   }: Props = $props();
 
   let graph = $state<AtlasGraph | null>(untrack(() => cache.cached(companyUid)));
@@ -117,7 +123,7 @@
   const companyTitle = $derived(companyName ?? graph?.company ?? "This company");
 
   const projectsInProgress = $derived(
-    (graph?.nodes ?? []).filter(
+    boardInProgress ?? (graph?.nodes ?? []).filter(
       (n) => n.type === "project" && n.stories && n.stories.done < n.stories.total,
     ).length,
   );
