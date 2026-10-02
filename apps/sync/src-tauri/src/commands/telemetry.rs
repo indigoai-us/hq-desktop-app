@@ -1291,6 +1291,7 @@ const OPERATIONAL_DESKTOP_EVENT_NAMES: &[&str] = &[
     "desktop_onboarding_step",
     "desktop_post_ready_action",
     "desktop_setup_completed",
+    "desktop_auto_update_post_cap_outcome",
     "oauth_signin_succeeded",
     "telemetry_preference_changed",
 ];
@@ -1319,6 +1320,21 @@ pub async fn emit_desktop_operational_telemetry(
         occurred_at,
     )
     .await
+}
+
+/// Queue consent-free updater outcome telemetry without delaying installation.
+pub fn emit_desktop_operational_telemetry_best_effort(event_name: &'static str, properties: Value) {
+    tauri::async_runtime::spawn(async move {
+        if emit_desktop_operational_telemetry(event_name.to_string(), Some(properties), None, None)
+            .await
+            .is_err()
+        {
+            crate::util::logfile::log(
+                "telemetry",
+                &format!("best-effort operational event failed: {event_name}"),
+            );
+        }
+    });
 }
 
 /// Queue a consent-gated desktop event without delaying the updater path.
@@ -3519,6 +3535,25 @@ mod codex_telemetry_tests {
                 .any(|request| request.url.path() == "/v1/usage/opt-in"),
             "operational telemetry must not wait for or read the skill consent"
         );
+    }
+
+    #[test]
+    fn post_cap_update_outcomes_are_operational_and_keep_closed_reason() {
+        let event = build_desktop_telemetry_event(
+            "desktop_auto_update_post_cap_outcome".to_string(),
+            Some(json!({
+                "outcome": "still-held-by",
+                "holdReason": "CoreUpdateInProgress",
+                "email": "private@example.com",
+            })),
+            None,
+            None,
+            "no-consent",
+        );
+        assert!(is_operational_desktop_event_name(&event.event_name));
+        assert_eq!(event.properties["outcome"], "still-held-by");
+        assert_eq!(event.properties["holdReason"], "CoreUpdateInProgress");
+        assert!(event.properties.get("email").is_none());
     }
 
     #[tokio::test]
