@@ -60,6 +60,7 @@
   import { presenceStatus } from "../chat/presence-store.svelte.js";
   import { authorAvatarUrl } from "../chat/messaging/agent-avatars.js";
   import AgentThinkingRow from "../chat/messaging/AgentThinkingRow.svelte";
+  import BotSyncWidget from "../chat/BotSyncWidget.svelte";
   import AgentTaskStrip from "../chat/tasks/AgentTaskStrip.svelte";
   import type { AgentTask } from "../chat/tasks/agent-tasks";
   import {
@@ -160,6 +161,12 @@
     submitLifecycleCardAction,
     type CardActionIdempotencyStore,
   } from "../chat/card-action.js";
+  import {
+    BOT_SYNC_POLL_MS,
+    advanceBotSync,
+    observeBotSync,
+    type BotSyncFacts,
+  } from "../chat/bot-sync-model.js";
   import {
     agentCatchingUpLine,
     agentHelloArrived,
@@ -3787,8 +3794,8 @@
   /**
    * Cloud bots made in the new bot flow on this device whose company files
    * may still be downloading. Their conversation is a direct message; the
-   * line under it says the bot can chat while it catches up. A bot leaves
-   * the list once its files are there.
+   * sync widget at the bottom of it says the bot can chat while the files
+   * arrive. A bot leaves the list once its files are there.
    */
   const NEW_CLOUD_BOTS_STORAGE_KEY = "hq.chat.newCloudBots.v1";
   function loadNewCloudBots(): string[] {
@@ -3814,32 +3821,71 @@
       : null,
   );
   const dmNewCloudBotUid = $derived(dmAgentUid && newCloudBotUids.includes(dmAgentUid) ? dmAgentUid : null);
-  const dmCloudBotCatchingUp = $derived(
-    Boolean(dmNewCloudBotUid && agentChatByUid[dmNewCloudBotUid]?.catchingUp),
-  );
+
+  // ── Sync widget in a cloud bot's direct message ─────────────────────────
+  //
+  // A slim bar at the bottom of the conversation while the bot's copy of the
+  // company's files is being brought up to date. It is drawn from plain facts
+  // per bot (bot-sync-model.ts). Today the facts come from the bot's status:
+  // the first download after the bot was made, and any later full download
+  // the server reports. Anything else that knows about a sync can set them
+  // with `setBotSyncFacts`.
+
+  /** What is known about each cloud bot's file sync. No entry: no widget. */
+  let botSyncByUid = $state.raw<Record<string, BotSyncFacts>>({});
+  function setBotSyncFacts(agentUid: string, facts: BotSyncFacts | null): void {
+    const current = botSyncByUid[agentUid] ?? null;
+    if (current === facts) return;
+    if (facts) {
+      botSyncByUid = { ...botSyncByUid, [agentUid]: facts };
+      return;
+    }
+    const { [agentUid]: _gone, ...rest } = botSyncByUid;
+    botSyncByUid = rest;
+  }
+  /** The cloud bot on the other side of the open direct message, if any. */
+  const dmCloudBotUid = $derived(dmAgentUid && !selectedLocalBot ? dmAgentUid : null);
+  const dmCloudBotSync = $derived(dmCloudBotUid ? (botSyncByUid[dmCloudBotUid] ?? null) : null);
+  // Ask the bot's status while its direct message is open, and stop when it
+  // is closed: every few seconds until a new bot can chat, then on a slow
+  // timer. Only owners and admins may read the status. For anyone else the
+  // read fails, which means no widget and never an error in the chat.
   $effect(() => {
-    const uid = dmNewCloudBotUid;
+    const uid = dmCloudBotUid;
     if (!uid) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const check = async (): Promise<void> => {
+      const madeHere = untrack(() => newCloudBotUids).includes(uid);
       let next: AgentChatReadiness | null = null;
+      let readable = false;
       try {
         const result = await adapter.agents.getStatus(uid);
         if (stopped) return;
         if (result.ok) {
-          next = agentChatReadiness(result.value);
-          agentChatByUid = { ...untrack(() => agentChatByUid), [uid]: next };
-          if ((next.chatReady && !next.catchingUp) || next.failed) {
-            setNewCloudBots(untrack(() => newCloudBotUids).filter((id) => id !== uid));
-            return;
+          readable = true;
+          const now = Date.now();
+          const before = untrack(() => botSyncByUid[uid]) ?? null;
+          setBotSyncFacts(uid, advanceBotSync(before, observeBotSync(result.value, now, { expectFirstSync: madeHere }), now));
+          if (madeHere) {
+            next = agentChatReadiness(result.value);
+            agentChatByUid = { ...untrack(() => agentChatByUid), [uid]: next };
+            if ((next.chatReady && !next.catchingUp) || next.failed) {
+              setNewCloudBots(untrack(() => newCloudBotUids).filter((id) => id !== uid));
+            }
           }
         }
       } catch {
         // Keep the last known state and ask again.
       }
       if (stopped) return;
-      timer = setTimeout(() => void check(), next?.chatReady ? AGENT_CATCHING_UP_POLL_MS : AGENT_CHAT_READY_POLL_MS);
+      // Nothing known and nothing readable: this person may not read the
+      // bot's status. Do not keep asking.
+      if (!readable && !madeHere && !untrack(() => botSyncByUid[uid])) return;
+      timer = setTimeout(
+        () => void check(),
+        madeHere && next?.chatReady !== true ? AGENT_CHAT_READY_POLL_MS : BOT_SYNC_POLL_MS,
+      );
     };
     void check();
     return () => {
@@ -3867,6 +3913,7 @@
       const { [uid]: _state, ...rest } = agentChatByUid;
       agentChatByUid = rest;
     }
+    setBotSyncFacts(uid, null);
     forgetBotConnections(uid);
   }
   /**
@@ -4453,9 +4500,6 @@
   // `connect` block. All of it applies only to a one-to-one conversation
   // with a cloud bot: never a local bot, a person or a channel. What a card
   // says is decided in connection-card-model.ts; this is the wiring.
-
-  /** The cloud bot on the other side of the open direct message, if any. */
-  const dmCloudBotUid = $derived(dmAgentUid && !selectedLocalBot ? dmAgentUid : null);
 
   function connectionStorage(): Storage | null {
     try {
@@ -10144,11 +10188,6 @@
                       {agentCatchingUpLine(provisioning.agentName !== "Agent" ? provisioning.agentName : headerTitle)}
                     </div>
                   {/if}
-                  {#if dmCloudBotCatchingUp}
-                    <div class="agent-channel-fallback" data-testid="agent-dm-catching-up" role="status">
-                      {agentCatchingUpLine(headerTitle)}
-                    </div>
-                  {/if}
                   {#if setupFinaleVisible}
                     <SetupBotFinale
                       hasClaude={localCodingToolsInstalled.claude === true}
@@ -10315,6 +10354,11 @@
                     </div>
                   {/if}
                   {#if botNoticeBelow}{@render localBotNotice()}{/if}
+                  <!-- Last in the conversation, just above the suggested
+                       replies and the message box: the bot's file sync. -->
+                  {#if dmCloudBotUid}
+                    <BotSyncWidget facts={dmCloudBotSync} botName={headerTitle} />
+                  {/if}
                 {/snippet}
                 {#snippet setupHeader()}
                   <SetupChannelIntro
