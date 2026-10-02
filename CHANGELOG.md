@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Core update failures now report the available snapshot disk space instead of the required snapshot size.
 - If the desktop cannot read the HQ daemon flag at startup, it now uses the last successfully read value, retries with bounded backoff, and rechecks after sign-in so the sync host can switch without a relaunch.
 
 ## [0.10.381] — 2026-10-02
