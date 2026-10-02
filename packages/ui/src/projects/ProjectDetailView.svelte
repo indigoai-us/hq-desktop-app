@@ -50,11 +50,9 @@
     type TaskColumn,
   } from "./projects-model.js";
   import { relativeActivity } from "../common/relative-activity.js";
-  import type { DirEntry } from "../files/file-tree.js";
   import StoryKanban from "./StoryKanban.svelte";
   import ProvenanceLine from "../common/ProvenanceLine.svelte";
-  import CompanyFileTree from "../files/CompanyFileTree.svelte";
-  import FilePreviewPane from "../files/FilePreviewPane.svelte";
+  import ProjectFilesHost from "./ProjectFilesHost.svelte";
   import StoryPanel from "../home/StoryPanel.svelte";
   import "../home/tokens.css";
   import Caret from "../common/Caret.svelte";
@@ -78,6 +76,11 @@
     onselectStory: (story: Story) => void;
     /** Company objectives used for the goal chip + KR card. */
     objectives?: Objective[];
+    /**
+     * Files tab: false hides the linked repo tree (guest with vault access
+     * and no repo access). Default keeps the repo when the PRD links one.
+     */
+    repoAccess?: boolean;
     /**
      * Notify the caller a status persisted (US-010) so it can refresh its list.
      * Optional — the detail view persists + paints optimistically on its own.
@@ -120,6 +123,7 @@
     onStoryPassesChange,
     provenanceUnavailable = false,
     sessions: sessionInput = [],
+    repoAccess = true,
   }: Props = $props();
 
   function configureProjectsApiIfNeeded(): void {
@@ -350,8 +354,7 @@
       !storyRetrying,
   );
 
-  // ---- Files tab (project-scoped tree via existing list_hq_dir) ------------
-  let selectedFilePath = $state<string | null>(null);
+  // ---- Files tab (lazy body; vault root from the PRD path) ----------------
   let hqFolderPath = $state("");
   const projectFilesRoot = $derived(
     projectFilesRootFromPrdPath(project.prdPath),
@@ -359,7 +362,6 @@
 
   $effect(() => {
     void projectIdentity(project);
-    selectedFilePath = null;
   });
 
   $effect(() => {
@@ -382,29 +384,6 @@
       cancelled = true;
     };
   });
-
-  function inProjectFilesScope(path: string): boolean {
-    const root = projectFilesRoot;
-    if (!root) return false;
-    return path === root || path.startsWith(`${root}/`);
-  }
-
-  function loadProjectChildren(relPath: string): Promise<DirEntry[]> {
-    if (!inProjectFilesScope(relPath) && relPath !== projectFilesRoot) {
-      return Promise.reject(
-        new Error(`path outside project scope: ${relPath}`),
-      );
-    }
-    return adapter.files.listDir(relPath).then((result) => {
-      if (result.ok) return result.value as unknown as DirEntry[];
-      throw new Error(result.message ?? "Could not list files");
-    });
-  }
-
-  function handleFileSelect(path: string): void {
-    if (!inProjectFilesScope(path)) return;
-    selectedFilePath = path;
-  }
 
   // ---- Open project in Claude Code ----------------------------------------
   let claudeBusy = $state(false);
@@ -1140,50 +1119,14 @@
             {/if}
           </div>
         {:else if tab === "files"}
-          <div class="files-tab" data-testid="detail-files">
-            {#if !projectFilesRoot}
-              <div class="drill-empty">
-                <p>
-                  Project path unavailable — open the PRD from Tasks or
-                  Overview.
-                </p>
-              </div>
-            {:else}
-              <div class="files-layout">
-                <aside class="files-tree" aria-label="Project files">
-                  <header class="files-tree-header">
-                    <h2>Project files</h2>
-                    <span title={projectFilesRoot}>
-                      {projectFilesRoot.split("/").pop() ??
-                        projectDisplayName(project)}
-                    </span>
-                  </header>
-                  <div class="files-tree-scroll">
-                    {#key projectFilesRoot}
-                      <CompanyFileTree
-                        rootPath={projectFilesRoot}
-                        loadChildren={loadProjectChildren}
-                        selectedPath={selectedFilePath}
-                        onselect={handleFileSelect}
-                      />
-                    {/key}
-                  </div>
-                </aside>
-                <section class="files-preview" aria-label="File preview">
-                  {#if selectedFilePath}
-                    <FilePreviewPane {adapter} path={selectedFilePath} />
-                  {:else}
-                    <div class="files-empty" data-testid="project-files-empty">
-                      <span class="files-empty-title">Preview</span>
-                      <p>
-                        Select a project file to read it without leaving the
-                        workspace.
-                      </p>
-                    </div>
-                  {/if}
-                </section>
-              </div>
-            {/if}
+          <div class="files-tab">
+            <ProjectFilesHost
+              {adapter}
+              vaultRoot={projectFilesRoot}
+              prdPath={project.prdPath}
+              {repoAccess}
+              sessions={projectSessions}
+            />
           </div>
         {:else}
           <div class="activity-tab" data-testid="detail-activity">

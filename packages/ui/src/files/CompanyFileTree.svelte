@@ -50,6 +50,8 @@
     selectedPath?: string | null;
     /** Optional case-insensitive name filter over loaded nodes (DESKTOP-008). */
     filterQuery?: string;
+    /** Last editor / live-edit mark for a row (US-025). */
+    rowNote?: (path: string) => { label: string; live: boolean } | null;
   }
 
   let {
@@ -58,6 +60,7 @@
     onselect,
     selectedPath = null,
     filterQuery = "",
+    rowNote,
   }: Props = $props();
 
   // The lazily-built top-level node list (children of `rootPath`).
@@ -317,7 +320,9 @@
       aria-label="Loading files"
       data-testid="file-tree-loading"
     >
-      Loading…
+      {#each [0, 1, 2, 3] as row (row)}
+        <span class="ft-skel" style={`width:${78 - row * 8}%`}></span>
+      {/each}
     </div>
   {:else if rootError}
     <div
@@ -345,6 +350,7 @@
     {#each rows as { node, depth } (node.path)}
       {@const meta = fileTreeRowMeta(node, rootPath)}
       {#if node.isDir}
+        {@const note = rowNote?.(node.path) ?? null}
         <div
           class="ft-dir-item"
           class:focused={node.path === focusedPath}
@@ -392,6 +398,12 @@
             {#if loadingPaths.has(node.path)}
               <span class="ft-spinner"></span>
             {/if}
+            {#if note}
+              <span class="ft-note">
+                {#if note.live}<i class="ft-live" aria-hidden="true"></i>{/if}
+                {note.label}
+              </span>
+            {/if}
           </div>
           {#if loadErrorPaths.has(node.path) && (filtering || expanded.has(node.path))}
             <div
@@ -415,6 +427,7 @@
           {/if}
         </div>
       {:else}
+        {@const note = rowNote?.(node.path) ?? null}
         <button
           type="button"
           class="ft-row ft-file"
@@ -435,6 +448,12 @@
               <span class="ft-meta">{meta}</span>
             {/if}
           </span>
+          {#if note}
+            <span class="ft-note">
+              {#if note.live}<i class="ft-live" aria-hidden="true"></i>{/if}
+              {note.label}
+            </span>
+          {/if}
         </button>
       {/if}
     {/each}
@@ -493,10 +512,35 @@
 
   /* Selected file row — neutral emphasis (no purple, hard Indigo policy). */
   .ft-row.selected {
-    background: transparent;
-    box-shadow: inset 0 -1px 0 var(--v4-hairline);
+    background: var(--v4-active-row);
+    box-shadow: none;
     color: var(--v4-text-1);
     font-weight: 600;
+  }
+
+  .ft-note {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--v4-text-3);
+    font-size: 11px;
+    white-space: nowrap;
+  }
+
+  .ft-live {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--v4-ok);
+  }
+
+  .ft-skel {
+    display: block;
+    height: 12px;
+    margin: 6px 8px;
+    border-radius: 4px;
+    background: var(--v4-control-faint);
   }
 
   .ft-copy {
