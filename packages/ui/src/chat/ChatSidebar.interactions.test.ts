@@ -75,6 +75,7 @@ describe("ChatSidebar right-click context menu", () => {
       target: host,
       props: {
         api: stubApi(), seedDirectory: [companyRow],
+        scopeUid: "cmp_1",
         rowExtras: () => ({ children: [{ id: 'new', label: 'New session', kind: 'action', onselect: vi.fn() }] }),
       },
     });
@@ -826,11 +827,16 @@ describe("ChatSidebar resolves a name for a bare-uid DM peer", () => {
 });
 
 describe("ChatSidebar channel rail stamp on the owner's own send", () => {
-  /** A channel last active 10 days ago is folded away under "Last week". */
+  /**
+   * A project channel last active 10 days ago is folded away under "Last week".
+   * Company-scoped channels no longer use the Home day groups (US-008); they
+   * render in the selected company's Activity list, so this stamp regression
+   * stays on a project row, which Home still day-groups.
+   */
   const staleRow: ChannelDirectoryRow = {
     channelId: "chn_hq_dev",
-    type: "company",
-    scope: "company",
+    type: "project",
+    scope: "project",
     companyUid: "cmp_indigo",
     name: "hq-dev",
     lastActivityAt: new Date(Date.now() - 10 * 86_400_000).toISOString(),

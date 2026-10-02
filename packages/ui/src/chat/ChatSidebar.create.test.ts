@@ -270,6 +270,7 @@ describe("ChatSidebar create flow", () => {
           sendChannelMessage,
         },
         companies: [INDIGO],
+        scopeUid: INDIGO.cloudUid,
         seedDirectory,
       },
     });
@@ -328,8 +329,13 @@ describe("ChatSidebar create flow", () => {
       channelId: "chn_new",
       body: "kicking this off",
     });
-    // The new channel is in the rail immediately (optimistic upsert).
-    expect(host.textContent).toContain("Q4 board");
+    // Company channels paint under Activity for the selected company, not
+    // in the Home day groups. The optimistic upsert still shows immediately.
+    const activity = host.querySelector('[data-testid="company-activity-channels"]');
+    expect(activity?.textContent).toContain("Q4 board");
+    expect(
+      host.querySelector('[data-testid="chat-today"]')?.textContent ?? "",
+    ).not.toContain("Q4 board");
     // …and the open request carries its NAME, so the header never paints the
     // raw `chn_…` id while the directory feed catches up (reported bug).
     expect(takePendingChannelOpen()).toMatchObject({

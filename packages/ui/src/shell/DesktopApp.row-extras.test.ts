@@ -61,7 +61,11 @@ afterEach(async () => {
 // process clock).
 const now = () => new Date().toISOString();
 
-/** A project channel row (has sessions) and a plain company channel (none). */
+/**
+ * A project channel row (has sessions), a personal channel (none), and a
+ * company channel that Home must not paint (US-008 — it belongs under the
+ * company Activity list).
+ */
 const projectRow: ChannelDirectoryRow = {
   channelId: "chn_launch",
   type: "project",
@@ -72,6 +76,14 @@ const projectRow: ChannelDirectoryRow = {
   lastActivityAt: now(),
 };
 const plainRow: ChannelDirectoryRow = {
+  channelId: "chn_notes",
+  type: "chat",
+  scope: "personal",
+  companyUid: null,
+  name: "notes",
+  lastActivityAt: now(),
+};
+const companyRow: ChannelDirectoryRow = {
   channelId: "chn_general",
   type: "chat",
   scope: "company",
@@ -87,7 +99,7 @@ function directoryApi(): ChatSidebarApi {
       snapshot: true,
       cursor: "cur_1",
       cursorExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
-      rows: [projectRow, plainRow],
+      rows: [projectRow, plainRow, companyRow],
     }),
     listContacts: async () => ({ contacts: [] }),
     listDmRequests: async () => ({ requests: [] }),
@@ -188,7 +200,11 @@ function rowButton(id: string): HTMLButtonElement {
 async function waitForRows(): Promise<void> {
   await vi.waitFor(() => {
     rowButton("ch:chn_launch");
-    rowButton("ch:chn_general");
+    rowButton("ch:chn_notes");
+    expect(
+      host.querySelector('[data-conversation-id="ch:chn_general"]'),
+      "company channels stay out of the Home list",
+    ).toBeNull();
   });
 }
 
@@ -220,7 +236,7 @@ describe("DesktopApp rowExtras", () => {
       decorated.textContent?.indexOf("2 sessions") ?? -1,
     );
 
-    const plain = rowButton("ch:chn_general");
+    const plain = rowButton("ch:chn_notes");
     expect(plain.querySelector('[data-testid="chat-row-extra-badge"]')).toBeNull();
   });
 
@@ -264,7 +280,7 @@ describe("DesktopApp rowExtras", () => {
     await waitForRows();
 
     // Hovering the plain row shows nothing: the host returned null for it.
-    rowButton("ch:chn_general")
+    rowButton("ch:chn_notes")
       .closest(".chat-li")
       ?.dispatchEvent(new MouseEvent("mouseenter", { bubbles: false }));
     await tick();
@@ -335,7 +351,7 @@ describe("DesktopApp rowExtras", () => {
     await mountShell(projectRowExtras(() => {}));
     await waitForRows();
 
-    rowButton("ch:chn_general").dispatchEvent(
+    rowButton("ch:chn_notes").dispatchEvent(
       new MouseEvent("contextmenu", { bubbles: true, clientX: 40, clientY: 40 }),
     );
     await tick();

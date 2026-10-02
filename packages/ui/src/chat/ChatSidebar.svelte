@@ -1335,8 +1335,14 @@
     // and rows that hydrate a beat later — but once the first fetch has
     // settled (or timed out) with nothing else, open #setup so the pane is
     // never an infinite skeleton.
+    // A selected company paints its channels under Activity, not in the
+    // Home day groups. Prefer one of those over a personal DM (US-008).
+    const livePool =
+      companyScoped && activityChannelRows.length > 0
+        ? activityChannelRows
+        : inboxRows;
     const live = pickAutoOpenConversation(
-      inboxRows.filter((row) => !isSetupChannel(row.channelId)),
+      livePool.filter((row) => !isSetupChannel(row.channelId)),
       selectedId,
       humanOnly,
     );
