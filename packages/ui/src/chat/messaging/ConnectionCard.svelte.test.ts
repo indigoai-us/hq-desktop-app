@@ -204,6 +204,17 @@ describe("a connection card", () => {
     expect(primary(el)!.disabled).toBe(false);
   });
 
+  it("draws each card on its own brand wallpaper, as a layer a screen reader skips", () => {
+    const root = renderBlock({ views: views(), onaction: () => {} });
+    const art = (which: ConnectTarget) => card(root, which).querySelector<HTMLElement>(".connection-card-art")!;
+    expect(art("slack").getAttribute("aria-hidden")).toBe("true");
+    expect(art("slack").style.backgroundImage).toContain("aurora");
+    expect(art("tools").style.backgroundImage).toContain("node-constellation");
+    // The words and the buttons are not inside the art layer.
+    expect(art("slack").children).toHaveLength(0);
+    expect(card(root, "slack").querySelector(".connection-card-glass")?.textContent).toContain("Slack");
+  });
+
   it("shows the host's in-flight press as a disabled button", () => {
     const el = renderCard(connectionCardView("slack", input({ inFlight: new Set(["slack:connect"]) })));
     expect(primary(el)!.disabled).toBe(true);
