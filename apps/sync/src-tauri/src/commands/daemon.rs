@@ -310,6 +310,7 @@ pub(crate) fn handle_watch_stdout_line<R: tauri::Runtime>(
             let mut context = phase_context
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+            observe_watcher_status_protocol(&mut context);
             if status.state == "running" {
                 context.first_pass_started = true;
                 note_operation_lock_recovered();
@@ -319,9 +320,7 @@ pub(crate) fn handle_watch_stdout_line<R: tauri::Runtime>(
         crate::commands::client_health::set_watcher_waiting_for_lock(
             status.state == "waiting-for-lock",
         );
-        if let Err(error) = app.emit_to("main", crate::events::EVENT_SYNC_WATCHER_STATUS, status) {
-            log("daemon", &format!("failed to emit watcher status: {error}"));
-        }
+        emit_watcher_status_to_windows(app, status);
         return true;
     }
     // Shared tolerant parse seam — blank, malformed, and unknown-type lines
@@ -456,6 +455,24 @@ fn parse_watch_runner_status(line: &str) -> Option<WatcherProtocolStatus> {
         state: state.to_string(),
         holder_command,
     })
+}
+
+fn emit_watcher_status_to_windows<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    status: WatcherProtocolStatus,
+) {
+    for window in ["main", "desktop-alt"] {
+        if let Err(error) = app.emit_to(
+            window,
+            crate::events::EVENT_SYNC_WATCHER_STATUS,
+            status.clone(),
+        ) {
+            log(
+                "daemon",
+                &format!("failed to emit watcher status to {window}: {error}"),
+            );
+        }
+    }
 }
 
 fn start_daemon_heartbeat_watchdog(
@@ -1609,6 +1626,7 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                         // quit/logout) carry no health signal and must not persist
                         // a failure across an ordinary shutdown.
                         if watch_exit_should_record_health(cancelled, signal)
+                            && should_record_watcher_exit_health(code, signal)
                             && watch_owner_exit
                                 .as_ref()
                                 .is_none_or(|plan| plan.record_failure)
@@ -1797,7 +1815,8 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                                 },
                                 || {
                                     if plan.record_failure {
-                                        handle_watcher_exit(
+                                        handle_watcher_exit_for_app(
+                                            &app,
                                             code,
                                             signal,
                                             success,
@@ -1824,7 +1843,8 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                                 },
                             )
                         } else {
-                            handle_watcher_exit(
+                            handle_watcher_exit_for_app(
+                                &app,
                                 code,
                                 signal,
                                 success,
@@ -2381,6 +2401,13 @@ fn observe_watcher_phase_from_event(phase_context: &Mutex<WatcherPhaseContext>, 
                 context.observed_at = now;
             }
         }
+    }
+}
+
+fn observe_watcher_status_protocol(context: &mut WatcherPhaseContext) {
+    if context.phase == RUNNER_PHASE_PRE_PROTOCOL {
+        context.phase = "unknown";
+        context.observed_at = Instant::now();
     }
 }
 
@@ -4180,6 +4207,68 @@ fn handle_watcher_exit(
         current_termination_host(),
         context,
     )
+}
+
+fn handle_watcher_exit_for_app<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    code: Option<i32>,
+    signal: Option<i32>,
+    success: bool,
+    cancelled: bool,
+    watcher_command: &str,
+    last_stderr: Option<&str>,
+    context: &WatcherExitCaptureContext,
+) -> RunnerReportDirDisposition {
+    let mut effects = ProductionWatcherProcessEffects;
+    handle_watcher_exit_with_app(
+        app,
+        &mut effects,
+        code,
+        signal,
+        success,
+        cancelled,
+        watcher_command,
+        last_stderr,
+        current_termination_host(),
+        context,
+    )
+}
+
+fn handle_watcher_exit_with_app<R: tauri::Runtime, E: WatcherProcessEffects>(
+    app: &AppHandle<R>,
+    effects: &mut E,
+    code: Option<i32>,
+    signal: Option<i32>,
+    success: bool,
+    cancelled: bool,
+    watcher_command: &str,
+    last_stderr: Option<&str>,
+    host: TerminationHost,
+    context: &WatcherExitCaptureContext,
+) -> RunnerReportDirDisposition {
+    crate::commands::client_health::set_watcher_waiting_for_lock(false);
+    emit_watcher_status_to_windows(
+        app,
+        WatcherProtocolStatus {
+            state: "stopped".to_string(),
+            holder_command: None,
+        },
+    );
+    handle_watcher_exit_with_effects(
+        effects,
+        code,
+        signal,
+        success,
+        cancelled,
+        watcher_command,
+        last_stderr,
+        host,
+        context,
+    )
+}
+
+fn should_record_watcher_exit_health(code: Option<i32>, signal: Option<i32>) -> bool {
+    !is_operation_lock_timeout_exit(code, signal)
 }
 
 fn handle_watcher_exit_with_effects<E: WatcherProcessEffects>(
@@ -7877,6 +7966,113 @@ mod tests {
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 2);
         assert_eq!(seen[1]["state"], "running");
+    }
+
+    #[test]
+    fn status_lines_mark_the_watcher_protocol_as_observed() {
+        let app = tauri::test::mock_app();
+        let hq_folder = TempDir::new().unwrap();
+        let totals = Mutex::new(RunTotals::default());
+        let phase = Mutex::new(WatcherPhaseContext::default());
+
+        assert_eq!(phase.lock().unwrap().phase, RUNNER_PHASE_PRE_PROTOCOL);
+        assert!(handle_watch_stdout_line(
+            app.handle(),
+            hq_folder.path().to_str().unwrap(),
+            &totals,
+            &phase,
+            r#"{"type":"status","state":"waiting-for-lock"}"#,
+        ));
+
+        assert_eq!(phase.lock().unwrap().phase, "unknown");
+    }
+
+    #[test]
+    fn waiting_for_lock_status_reaches_the_visible_desktop_window() {
+        use std::sync::Arc;
+        use tauri::Listener;
+
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let desktop = tauri::WebviewWindowBuilder::new(&app, "desktop-alt", Default::default())
+            .build()
+            .unwrap();
+        let seen = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let seen_w = seen.clone();
+        desktop.listen(crate::events::EVENT_SYNC_WATCHER_STATUS, move |event| {
+            seen_w
+                .lock()
+                .unwrap()
+                .push(serde_json::from_str(event.payload()).unwrap());
+        });
+
+        assert!(handle_watch_stdout_line(
+            &handle,
+            TempDir::new().unwrap().path().to_str().unwrap(),
+            &Mutex::new(RunTotals::default()),
+            &Mutex::new(WatcherPhaseContext::default()),
+            r#"{"type":"status","state":"waiting-for-lock","holder":{"command":"hq sync"}}"#,
+        ));
+        std::thread::sleep(Duration::from_millis(30));
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0]["state"], "waiting-for-lock");
+        assert_eq!(seen[0]["holderCommand"], "hq sync");
+    }
+
+    #[test]
+    fn operation_lock_timeouts_are_excluded_from_client_health_failures() {
+        assert!(!should_record_watcher_exit_health(
+            Some(OPERATION_LOCKED_EXIT),
+            None
+        ));
+        assert!(should_record_watcher_exit_health(Some(1), None));
+        assert!(should_record_watcher_exit_health(None, None));
+    }
+
+    #[test]
+    fn watcher_exit_publishes_lock_clear_to_main_and_visible_desktop() {
+        use std::sync::Arc;
+        use tauri::Listener;
+
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let main = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
+        let desktop = tauri::WebviewWindowBuilder::new(&app, "desktop-alt", Default::default())
+            .build()
+            .unwrap();
+        let observed = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        for window in [&main, &desktop] {
+            let observed = observed.clone();
+            window.listen(crate::events::EVENT_SYNC_WATCHER_STATUS, move |event| {
+                observed
+                    .lock()
+                    .unwrap()
+                    .push(serde_json::from_str(event.payload()).unwrap());
+            });
+        }
+        let mut effects = RecordingWatcherEffects::default();
+
+        handle_watcher_exit_with_app(
+            &handle,
+            &mut effects,
+            Some(0),
+            None,
+            true,
+            false,
+            "hq sync watch",
+            None,
+            TerminationHost::Posix,
+            &WatcherExitCaptureContext::default(),
+        );
+        std::thread::sleep(Duration::from_millis(30));
+
+        let observed = observed.lock().unwrap();
+        assert_eq!(observed.len(), 2);
+        assert!(observed.iter().all(|status| status["state"] == "stopped"));
     }
 
     #[test]
