@@ -13,6 +13,7 @@ The release moves it under the version it ships in.
   then picks Starter or Workforce. Workforce opens checkout in your browser
   and HQ picks up when you come back. Someone who was invited can join that
   company instead.
+- Desktop sign-in can open the website first to link the new account to the native app; if that check fails, it opens Cognito directly as before.
 
 ## [0.10.373] — 2026-10-01
 
