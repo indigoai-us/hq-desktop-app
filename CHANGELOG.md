@@ -9,6 +9,8 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 - Daemon sync controls explain paused, disabled, and stopped states. Resume also re-enables sync for machines migrated from the older daemon setting. Instant Sync changes reach an existing daemon and require HQ CLI 5.312.0 or later. Sync actions wait briefly for host selection at launch, then use the legacy or daemon path. Company-specific Sync Now no longer starts a sync across every company when the daemon owns sync.
 
+- Watcher exit diagnostics now report external Node frames without exposing a user's file name.
+
 - Fixes the sidebar order shipped in 0.10.373 and 0.10.374, which listed
   conversations by unread count and then by name within each day instead of
   by time. The order and the day headings now both follow the latest message
