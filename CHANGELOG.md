@@ -10,7 +10,6 @@ The release moves it under the version it ships in.
 - Core Drift ignores setup PATH changes and generated wrapper markers while retaining raw-hash fallback when settings JSON cannot be parsed.
 - Core Drift ignores the desktop-generated `env.PATH` in `.claude/settings.json` and the company skill-wrapper marker, while continuing to report other settings edits.
 
-- Desktop company-creation invites identify the desktop surface in the hq-pro team invite action.
 - Windows setup now detects Claude Code from the current user PATH and
   Anthropic's user-local install directory, including on Retry.
 - Library Back now leaves internal Library tab history and returns to the prior app screen.
