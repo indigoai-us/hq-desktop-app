@@ -208,6 +208,8 @@
 </div>
 
 <style>
+  /* Segmented controls size to their tabs; nothing stretches or centres them. */
+  .tabs, .seg { width: max-content; flex: none; justify-content: flex-start; }
   .activity {
     height: 100%;
     min-height: 0;

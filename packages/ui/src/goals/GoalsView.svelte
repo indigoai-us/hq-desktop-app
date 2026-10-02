@@ -238,6 +238,8 @@
 </div>
 
 <style>
+  /* Segmented controls size to their tabs; nothing stretches or centres them. */
+  .tabs, .seg { width: max-content; flex: none; justify-content: flex-start; }
   .goals {
     position: relative;
     height: 100%;

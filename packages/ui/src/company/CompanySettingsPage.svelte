@@ -273,6 +273,8 @@
 />
 
 <style>
+  /* Segmented controls size to their tabs; nothing stretches or centres them. */
+  .tabs, .seg { width: max-content; flex: none; justify-content: flex-start; }
   .settings {
     display: grid;
     grid-template-columns: 176px minmax(0, 1fr);
