@@ -21,6 +21,14 @@ export interface ShellSettingsPrefs {
   uiSize: SettingsUiSize;
   /** Company names on channels/agents and emails on people, in the conversation rail. */
   showSidebarScopeLabels: boolean;
+  /**
+   * Rail pin order for this device. `null` means first run has not seeded
+   * yet (default company + next most recently used). An empty array is an
+   * explicit "nothing pinned".
+   */
+  pinnedCompanyIds: string[] | null;
+  /** Most recently opened company first. Used only to seed pins. */
+  companyRecentIds: string[];
 }
 
 export const SETTINGS_PREFS_KEY = "hq-work-settings-prefs";
@@ -30,7 +38,24 @@ export const DEFAULT_SETTINGS_PREFS: ShellSettingsPrefs = {
   windowOpacity: MAX_WINDOW_OPACITY - DEFAULT_WINDOW_TRANSPARENCY,
   uiSize: "default",
   showSidebarScopeLabels: true,
+  pinnedCompanyIds: null,
+  companyRecentIds: [],
 };
+
+function parseIdList(value: unknown, limit: number): string[] {
+  if (!Array.isArray(value)) return [];
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (typeof entry !== "string") continue;
+    const id = entry.trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+    if (ids.length >= limit) break;
+  }
+  return ids;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -66,6 +91,12 @@ export function parseSettingsPrefs(raw: unknown): ShellSettingsPrefs {
       typeof rec.showSidebarScopeLabels === "boolean"
         ? rec.showSidebarScopeLabels
         : DEFAULT_SETTINGS_PREFS.showSidebarScopeLabels,
+    pinnedCompanyIds:
+      !Object.prototype.hasOwnProperty.call(rec, "pinnedCompanyIds") ||
+      rec.pinnedCompanyIds == null
+        ? null
+        : parseIdList(rec.pinnedCompanyIds, 6),
+    companyRecentIds: parseIdList(rec.companyRecentIds, 12),
   };
 }
 

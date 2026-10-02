@@ -37,6 +37,8 @@
   import ChannelSkeleton from "./ChannelSkeleton.svelte";
   import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
   import AppRail from "./AppRail.svelte";
+  import Sidepane from "./Sidepane.svelte";
+  import { SidepaneScrollMemory, sidepaneModelKey } from "./sidepane-models.js";
   import {
     RAIL_SHORTCUT_COUNT,
     activeRailItemId,
@@ -45,6 +47,12 @@
     railPlaceholderForPage,
     type RailItem,
   } from "./app-rail.js";
+  import {
+    companyLiveCount,
+    rememberCompanyId,
+    reorderPinnedIds,
+    seedPinnedCompanyIds,
+  } from "./pinned-companies.js";
   import ChatSidebar, {
     type ChatSidebarActions,
   } from "../chat/ChatSidebar.svelte";
@@ -67,7 +75,7 @@
   import IdentityMark from "../chat/messaging/IdentityMark.svelte";
   import BotKindChip from "../chat/BotKindChip.svelte";
   import { botKindFor } from "../chat/bot-kind.js";
-  import { presenceStatus } from "../chat/presence-store.svelte.js";
+  import { presenceSnapshot, presenceStatus } from "../chat/presence-store.svelte.js";
   import { authorAvatarUrl } from "../chat/messaging/agent-avatars.js";
   import AgentThinkingRow from "../chat/messaging/AgentThinkingRow.svelte";
   import AgentTaskStrip from "../chat/tasks/AgentTaskStrip.svelte";
@@ -321,7 +329,7 @@
     hasAppearanceHost,
     readStoredTheme,
   } from "../settings/shell-settings-model.js";
-  import { readSettingsPrefs } from "../settings/settings-prefs.js";
+  import { readSettingsPrefs, writeSettingsPrefs } from "../settings/settings-prefs.js";
   import {
     EMPTY_LIVE_SYNC,
     lastSyncLabelFromLive,
@@ -1725,6 +1733,8 @@
   let displayRows = $state<ConversationRow[]>([]);
   /** Sidebar entry points for app-wide shortcuts; null while unmounted. */
   let sidebarActions = $state<ChatSidebarActions | null>(null);
+  // US-006: one scroll memory for the sidepane host, outliving collapse.
+  const sidepaneScrollMemory = new SidepaneScrollMemory();
   let cheatSheetOpen = $state(false);
 
   /**
@@ -7156,6 +7166,12 @@
     // Remove every visible selection before the re-keyed sidebar begins reads
     // in the replacement scope.
     tenantCompanyId = companyUid;
+    if (companyUid) {
+      const prefs = readSettingsPrefs();
+      writeSettingsPrefs({
+        companyRecentIds: rememberCompanyId(prefs.companyRecentIds, companyUid),
+      });
+    }
     selectedRow = null;
     liveTimeline = [];
     liveTimelineId = null;
@@ -8227,14 +8243,49 @@
     void navigate({ kind: "library", tab: next });
   }
 
-  const railItemList = $derived(
-    railItems(
-      (companies ?? [])
-        .filter((c) => c.kind === "company" && (c.cloudUid ?? "").trim())
-        .map((c) => ({ uid: c.cloudUid!.trim(), label: c.displayName || c.slug })),
-      resolvedAccountLabel ?? "You",
-    ),
+  // Per-device pin order. null = not seeded yet. Read once from local prefs;
+  // the roster effect below fills it after companies are already cached.
+  let pinnedCompanyIds = $state<string[] | null>(
+    readSettingsPrefs().pinnedCompanyIds,
   );
+
+  const railCompanyRoster = $derived(
+    (effectiveCompanies ?? [])
+      .filter((c) => c.kind === "company" && (c.cloudUid ?? "").trim())
+      .map((c) => ({
+        uid: c.cloudUid!.trim(),
+        label: c.displayName || c.slug,
+        iconUrl: companyIcons.get(c.cloudUid!.trim()) ?? c.iconUrl ?? null,
+      })),
+  );
+
+  $effect(() => {
+    if (pinnedCompanyIds != null) return;
+    if (railCompanyRoster.length === 0) return;
+    const seeded = seedPinnedCompanyIds(railCompanyRoster, {
+      defaultCompanyId: tenantCompanyId,
+      recentIds: readSettingsPrefs().companyRecentIds,
+    });
+    pinnedCompanyIds = seeded;
+    writeSettingsPrefs({ pinnedCompanyIds: seeded });
+  });
+
+  const railItemList = $derived.by(() => {
+    const byUid = new Map(railCompanyRoster.map((company) => [company.uid, company]));
+    const order =
+      pinnedCompanyIds ??
+      railCompanyRoster.map((company) => company.uid).slice(0, 6);
+    const snap = presenceSnapshot();
+    const pinned = order
+      .map((uid) => byUid.get(uid))
+      .filter((company): company is NonNullable<typeof company> => Boolean(company))
+      .slice(0, 6)
+      .map((company) => ({
+        ...company,
+        liveCount: companyLiveCount(snap, company.uid),
+      }));
+    return railItems(pinned, resolvedAccountLabel ?? "You");
+  });
   const activeRailId = $derived(
     activeRailItemId({ view, tenantCompanyId, extraPageId, settingsSection }),
   );
@@ -8248,6 +8299,14 @@
     if (item.kind === "home") changeTenantCompany(null);
     else if (item.kind === "company") changeTenantCompany(item.companyUid);
     void navigate(railDestination(item, { localFiles: !isWeb }));
+  }
+
+  function reorderPinnedCompanies(fromUid: string, toUid: string): void {
+    const current =
+      pinnedCompanyIds ?? railCompanyRoster.map((company) => company.uid).slice(0, 6);
+    const next = reorderPinnedIds(current, fromUid, toUid);
+    pinnedCompanyIds = next;
+    writeSettingsPrefs({ pinnedCompanyIds: next });
   }
 
   function selectRailIndex(index: number): void {
@@ -8877,6 +8936,7 @@
       {unreadCount}
       youInitials={resolvedAccountInitials ?? ""}
       onselect={selectRailItem}
+      onreorderpins={reorderPinnedCompanies}
     />
   {/if}
   <div class="shell-column">
@@ -9065,6 +9125,11 @@
            loading and the #setup fallback, so unmounting it leaves the phone
            with nothing selected. -->
       {#if !sidebarCollapsed || phoneViewport}
+        <Sidepane
+          modelKey={sidepaneModelKey({ tenantCompanyId })}
+          scrollSelector=".chat-scroll"
+          memory={sidepaneScrollMemory}
+        >
         {#key `${tenantGeneration}:${tenantCompanyId ?? "all"}`}
         <ChatSidebar
           offscreen={phoneViewport && sidebarCollapsed}
@@ -9155,6 +9220,7 @@
           {/snippet}
         </ChatSidebar>
         {/key}
+        </Sidepane>
         {#if !phoneViewport}<SidebarResizeHandle bind:width={sidebarWidth} />{/if}
       {/if}
 

@@ -89,12 +89,22 @@ export function railPlaceholderForPage(
 export interface RailCompany {
   uid: string;
   label: string;
+  iconUrl?: string | null;
+  /** Online people or bots already in the presence snapshot. */
+  liveCount?: number;
 }
 
 export type RailItem =
   | { kind: "home"; id: "home"; label: "Home" }
   | { kind: "meetings"; id: "meetings"; label: "Meetings" }
-  | { kind: "company"; id: `company:${string}`; label: string; companyUid: string }
+  | {
+      kind: "company";
+      id: `company:${string}`;
+      label: string;
+      companyUid: string;
+      iconUrl: string | null;
+      liveCount: number;
+    }
   | { kind: "more-companies"; id: "more-companies"; label: "More companies" }
   | { kind: "library"; id: "library"; label: "Library" }
   | { kind: "personal"; id: RailPersonalId; label: string }
@@ -127,6 +137,8 @@ export function railItems(
       id: `company:${c.uid}`,
       label: c.label || c.uid,
       companyUid: c.uid,
+      iconUrl: c.iconUrl?.trim() || null,
+      liveCount: Math.max(0, c.liveCount ?? 0),
     }));
   return [
     { kind: "home", id: "home", label: "Home" },
@@ -174,6 +186,11 @@ export function railTooltip(item: RailItem, counts: { unread?: number } = {}): s
   if (item.kind === "home") {
     const unread = counts.unread ?? 0;
     return unread > 0 ? `Home · ${unread} unread` : "Home · Messages & Inbox";
+  }
+  if (item.kind === "company") {
+    return item.liveCount > 0
+      ? `${item.label} · ${item.liveCount} live`
+      : item.label;
   }
   if (item.kind === "library") return "Library · your files & vault";
   if (item.kind === "you") return `${item.label} · Profile`;
