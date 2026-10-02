@@ -70,8 +70,12 @@ export const meetingCanvasDoor = door(
   () => import("../meetings/MeetingCanvasHost.svelte"),
 );
 
-/** Warm every door once the first frame is up, so later clicks skip the skeleton. */
-export function preloadDoorsWhenIdle(): void {
+/**
+ * Warm every door once the first frame is up, so later clicks skip the
+ * skeleton. Returns a cancel for unmount, so a torn-down shell never starts
+ * chunk loads.
+ */
+export function preloadDoorsWhenIdle(): () => void {
   const all = [
     profilePaneDoor,
     notificationsPopoverDoor,
@@ -86,8 +90,9 @@ export function preloadDoorsWhenIdle(): void {
   ];
   const run = () => all.forEach((d) => d.preload());
   if (typeof requestIdleCallback === "function") {
-    requestIdleCallback(run, { timeout: 3000 });
-  } else {
-    setTimeout(run, 1500);
+    const id = requestIdleCallback(run, { timeout: 3000 });
+    return () => cancelIdleCallback(id);
   }
+  const id = setTimeout(run, 1500);
+  return () => clearTimeout(id);
 }

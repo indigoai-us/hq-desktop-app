@@ -51,6 +51,19 @@ const memoryStorage = installMemoryLocalStorage();
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 
+/**
+ * Rail clicks start lazy chunk loads that cannot be cancelled. A test waits
+ * for the bodies it opened before teardown, so none resolves (and injects its
+ * CSS) into a torn-down environment. Each test waits only for its own bodies:
+ * the skeleton assertions in later tests need the other chunks still cold.
+ */
+async function lazyBodiesLoaded(...loads: Array<() => Promise<unknown>>): Promise<void> {
+  await Promise.all(loads.map((load) => load()));
+  await settle();
+}
+
+const meetingsBodies = [() => meetingsSidepaneDoor.load(), () => meetingCanvasDoor.load()];
+
 afterEach(async () => {
   if (component) await unmount(component);
   component = null;
@@ -148,6 +161,7 @@ describe("DesktopApp app rail (console-rail US-003)", () => {
     await settle();
     expect(current()).toBe("meetings");
     expect(host.querySelector('[data-testid="meetings-dek"]')).not.toBeNull();
+    await lazyBodiesLoaded(...meetingsBodies);
   });
 
   it("opens the Outpost page through its lazy host instead of the placeholder", async () => {
@@ -158,6 +172,7 @@ describe("DesktopApp app rail (console-rail US-003)", () => {
     expect(host.querySelector('[data-testid="outpost-rail-host"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="rail-placeholder"]')).toBeNull();
     expect(current()).toBe("outpost");
+    await lazyBodiesLoaded(loadOutpost);
   });
 
   it("opens personal secrets through the lazy host instead of the placeholder", async () => {
@@ -168,6 +183,7 @@ describe("DesktopApp app rail (console-rail US-003)", () => {
     expect(host.querySelector('[data-testid="personal-rail-skeleton"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="rail-placeholder"]')).toBeNull();
     expect(current()).toBe("secrets");
+    await lazyBodiesLoaded(loadPersonalRail);
   });
 
   it("opens library and personal deployments through lazy hosts", async () => {
@@ -182,6 +198,10 @@ describe("DesktopApp app rail (console-rail US-003)", () => {
     expect(host.querySelector('[data-testid="personal-deployments-host"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="personal-deployments-skeleton"]')).not.toBeNull();
     expect(current()).toBe("deployments");
+    await lazyBodiesLoaded(
+      () => import("../library/PersonalLibraryPage.svelte"),
+      () => import("../library/PersonalDeploymentsPage.svelte"),
+    );
   });
 
   it("opens telemetry through the lazy host instead of the placeholder", async () => {
@@ -192,6 +212,7 @@ describe("DesktopApp app rail (console-rail US-003)", () => {
     expect(host.querySelector('[data-testid="telemetry-skeleton"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="rail-placeholder"]')).toBeNull();
     expect(current()).toBe("telemetry");
+    await lazyBodiesLoaded(loadTelemetry);
   });
 
   it("shows one sidepane: personal pages and Meetings replace the Messages list", async () => {
@@ -214,15 +235,7 @@ describe("DesktopApp app rail (console-rail US-003)", () => {
     click("rail-home");
     await settle();
     expect(chatSlot()?.style.display).toBe("contents");
-    // Let the lazy bodies this walk started finish before teardown.
-    await Promise.all([
-      loadTelemetry(),
-      loadPersonalRail(),
-      loadOutpost(),
-      meetingsSidepaneDoor.load(),
-      meetingCanvasDoor.load(),
-    ]);
-    await settle();
+    await lazyBodiesLoaded(loadTelemetry, loadPersonalRail, loadOutpost, ...meetingsBodies);
   });
 
   it("maps Cmd+1 to Cmd+9 to rail items in order", async () => {
@@ -249,5 +262,10 @@ describe("DesktopApp app rail (console-rail US-003)", () => {
     expect(current()).toBe("outpost");
     await press("1");
     expect(current()).toBe("home");
+    await lazyBodiesLoaded(
+      loadOutpost,
+      () => import("../library/PersonalLibraryPage.svelte"),
+      ...meetingsBodies,
+    );
   });
 });
