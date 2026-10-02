@@ -34,9 +34,13 @@ describe("personal workspace stays local-only in the console rail", () => {
   });
 
   it("enables the Atlas summary read only inside the company pane", () => {
-    const atlas = block('{:else if railPlaceholder?.id === "atlas" && companyPaneCompany}', 400);
+    // 9e0775c7 kept this branch behind companyPaneCompany and made the
+    // props tolerate the pane going null once during teardown. The slug
+    // still comes only from that pane.
+    const atlas = block('{:else if railPlaceholder?.id === "atlas" && companyPaneCompany}', 520);
     expect(atlas).toContain("<AtlasLandingHost");
-    expect(atlas).toContain("slug={companyPaneCompany.slug}");
+    expect(atlas).toContain('slug={companyPaneCompany?.slug ?? ""}');
+    expect(atlas).toContain("summaryEnabled={Boolean(adapter.company)}");
   });
 
   it("never reads the personal board flag, so it cannot switch a personal board on", () => {
