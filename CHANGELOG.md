@@ -8,9 +8,17 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
-- The desktop setup funnel can now be followed end to end in the vyg CDP. When you sign in through the browser, hqforwork.com tells the app which website visitor downloaded it, and the app mirrors first launch, each onboarding step shown, sign-in, company creation, first sync, and a quit before sign-in to the CDP under that visitor, with app version, OS version, chip, and install source. Off by default; turned on remotely with the `desktop.cdp-mirror` flag. No email, name, or token is ever sent.
-
 - When hq-flags enables `desktop.setup-deps-timeout-retry-v1`, a dependency setup timeout gets one automatic retry before setup is marked passed with that step skipped.
+
+
+
+
+
+- Internal: startup diagnostics now label observed CLI resolver candidates, managed package state, and bundled CLI source.
+
+## [0.10.378] — 2026-10-02
+
+- The desktop setup funnel can now be followed end to end in the vyg CDP. When you sign in through the browser, hqforwork.com tells the app which website visitor downloaded it, and the app mirrors first launch, each onboarding step shown, sign-in, company creation, first sync, and a quit before sign-in to the CDP under that visitor, with app version, OS version, chip, and install source. Off by default; turned on remotely with the `desktop.cdp-mirror` flag. No email, name, or token is ever sent.
 
 - Desktop no longer shows your personal space in the Companies list, where clicking it looped between Setting up and Tap to retry.
 
@@ -19,8 +27,6 @@ The release moves it under the version it ships in.
 - Platform wording and keyboard hints now follow the visitor's or desktop's OS instead of assuming macOS.
 
 - Fixes a race in the agent sign-in test when reading the child process ID.
-
-- Internal: startup diagnostics now label observed CLI resolver candidates, managed package state, and bundled CLI source.
 
 - Desktop usage uploads are limited to four requests and 4 MB per sync; remaining records resume on later syncs.
 
