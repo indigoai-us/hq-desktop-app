@@ -19,7 +19,7 @@
    */
   import { untrack } from "svelte";
   import { formatShortcut } from "../../common/keyboard-shortcuts.js";
-  import { isMac } from "../../common/platform.js";
+  import { platformStrings } from "../../common/platform-strings.js";
   import type { PlatformAdapter, VaultFileHit, VaultNoteLinks, VaultSummaryWire } from "@hq/platform";
   import type { Workspace } from "../../chat/workspaces.js";
   import FilePreviewPane from "../FilePreviewPane.svelte";
@@ -55,7 +55,7 @@
   }
 
   let { adapter, companies, vaultId = null, path = null, onlocationchange }: Props = $props();
-  const fileManagerName = $derived(isMac() ? "Finder" : "file manager");
+  const fileManagerName = $derived(platformStrings().fileManager);
 
   const vaults = $derived(vaultsFor(companies));
   let currentVaultId = $state<string>(untrack(() => vaultId) ?? PERSONAL_VAULT.id);

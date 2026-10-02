@@ -16,7 +16,7 @@
    * company membership before reading or dispatching anything.
    */
   import type { PlatformAdapter } from "@hq/platform";
-  import { isMac } from "../common/platform.js";
+  import { platformStrings } from "../common/platform-strings.js";
   import { renderMarkdownDocument } from "../common/markdown.js";
   import { filePreviewKind } from "./file-preview-kind.js";
   import OpenFileInClaudeCode from "./OpenFileInClaudeCode.svelte";
@@ -61,7 +61,7 @@
   let copyGeneration = 0;
 
   const fileName = $derived(path.split("/").pop() ?? path);
-  const fileManagerName = $derived(isMac() ? "Finder" : "file manager");
+  const fileManagerName = $derived(platformStrings().fileManager);
   const kind = $derived(filePreviewKind(path));
   const isMarkdown = $derived(kind === "markdown");
   const isImage = $derived(kind === "image");

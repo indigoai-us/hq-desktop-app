@@ -27,9 +27,9 @@
    * claims to affect the native host is read from and written through it.
    */
   import { onMount } from "svelte";
+  import { platformStrings } from "../common/platform-strings";
   import {
     startJitteredPoll,
-    hostComputerNoun,
     type MeetingPermissionsSnapshot,
   } from "@hq/platform";
   import type { NotifyPrefs, NotifyPrefsPatch, PlatformAdapter } from "@hq/platform";
@@ -136,6 +136,7 @@
   // applied its persisted transparency to <html>; seed the slider from that
   // instead of the local pref so the two never disagree on first paint.
   const hostOpacity = readHostWindowOpacity();
+  const osStrings = platformStrings();
   let prefs = $state<ShellSettingsPrefs>(
     hostOpacity == null
       ? readSettingsPrefs(storage)
@@ -1200,16 +1201,16 @@
       <div class="set-row">
         <div>
           <div class="sn">Launch at login</div>
-          <div class="sd">Start HQ when you sign in to {hostComputerNoun() === "Mac" ? "your Mac" : hostComputerNoun() === "PC" ? "your PC" : "your computer"}</div>
+          <div class="sd">Start HQ when you sign in to your {osStrings.computer}</div>
         </div>
         <button type="button" class="toggle" class:on={native.startAtLogin} role="switch" aria-checked={native.startAtLogin} aria-label="Launch at login" aria-busy={pending("launch")} disabled={!nativeLoaded || pending("launch")} onclick={() => void toggleLaunch()}></button>
       </div>
       <div class="set-row">
-        <div><div class="sn">{hostComputerNoun() === "Mac" ? "Show in Dock" : "Show in taskbar"}</div><div class="sd">Keep HQ in the {hostComputerNoun() === "Mac" ? "Dock" : "taskbar"} and {hostComputerNoun() === "Mac" ? "⌘-Tab" : "Alt+Tab"} switcher</div></div>
-        <button type="button" class="toggle" class:on={prefs.showInDock} role="switch" aria-checked={prefs.showInDock} aria-label={hostComputerNoun() === "Mac" ? "Show in Dock" : "Show in taskbar"} data-testid="settings-dock-toggle" onclick={() => void toggleDock()}></button>
+        <div><div class="sn">{osStrings.dockToggle}</div><div class="sd">{osStrings.dockToggleHint}</div></div>
+        <button type="button" class="toggle" class:on={prefs.showInDock} role="switch" aria-checked={prefs.showInDock} aria-label={osStrings.dockToggle} data-testid="settings-dock-toggle" onclick={() => void toggleDock()}></button>
       </div>
       <div class="set-row unavailable" data-testid="settings-menubar-unavailable">
-        <div><div class="sn">{hostComputerNoun() === "Mac" ? "Menu bar quick access" : "System tray quick access"}</div><div class="sd">Managed by the native HQ popover in this release; this embedded screen cannot change it.</div></div>
+        <div><div class="sn">{osStrings.trayRow}</div><div class="sd">Managed by the native HQ popover in this release; this embedded screen cannot change it.</div></div>
         <span class="mono">HOST-OWNED</span>
       </div>
     {/if}
@@ -1261,7 +1262,7 @@
     <div class="set-row"><div><div class="sn">Share notifications</div><div class="sd">Show file-share activity from teammates</div></div><button type="button" class="toggle" class:on={native.shareNotifications} role="switch" aria-checked={native.shareNotifications} aria-label="Share notifications" disabled={!nativeLoaded || pending("share-notifications")} onclick={() => void toggleNativeBoolean("share-notifications", "shareNotifications")}></button></div>
     <div class="set-row"><div><div class="sn">DM notifications</div><div class="sd">Show direct-message activity in the native HQ surfaces</div></div><button type="button" class="toggle" class:on={native.dmNotifications} role="switch" aria-checked={native.dmNotifications} aria-label="DM notifications" disabled={!nativeLoaded || pending("dm-notifications")} onclick={() => void toggleNativeBoolean("dm-notifications", "dmNotifications")}></button></div>
     {#if native.dmNotifications === false}
-      <p class="settings-note" data-testid="notify-prefs-master-off">DM notifications are off on this {hostComputerNoun()}, so HQ shows no message notifications here. The settings below still apply on your other devices.</p>
+      <p class="settings-note" data-testid="notify-prefs-master-off">DM notifications are off on this {osStrings.computer}, so HQ shows no message notifications here. The settings below still apply on your other devices.</p>
     {/if}
     <div class="set-subhead" data-testid="notify-prefs-section">
       <div class="sn">Notify me about</div>
@@ -1437,9 +1438,9 @@
           <div class="sn">Meeting detection</div>
           <div class="sd">
             {#if meetingPerms.allRequiredGranted}
-              HQ can spot Zoom, Teams, and Meet calls on this {hostComputerNoun()}
+              HQ can spot Zoom, Teams, and Meet calls on this {osStrings.computer}
             {:else}
-              Off — HQ needs {meetingPermsMissing.join(", ")} to spot meetings on this {hostComputerNoun()}
+              Off — HQ needs {meetingPermsMissing.join(", ")} to spot meetings on this {osStrings.computer}
             {/if}
             {#if meetingPermsError}
               <div class="sd" role="alert" data-testid="settings-meeting-permissions-error">{meetingPermsError}</div>
