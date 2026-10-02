@@ -1034,7 +1034,7 @@ pub fn start_daemon_for_app_launch<R: tauri::Runtime>(app: AppHandle<R>) -> Resu
     start_daemon_with_origin(app, WatcherLaunchOrigin::AppLaunch)
 }
 
-fn start_daemon_for_supervisor_respawn<R: tauri::Runtime>(
+pub(crate) fn start_daemon_for_supervisor_respawn<R: tauri::Runtime>(
     app: AppHandle<R>,
 ) -> Result<String, String> {
     start_daemon_with_origin(app, WatcherLaunchOrigin::SupervisorRespawn)
@@ -1300,6 +1300,8 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
         // emitted, mirroring the manual route, so the exit capture can tell
         // "died before any protocol" from "died mid-work".
         let mut watcher_stdout_line_count = 0_u32;
+        #[cfg(test)]
+        crate::commands::process::record_sync_runner_spawn_attempt();
         let result = run_process_impl_for_generation(
             DAEMON_HANDLE,
             daemon_generation,
@@ -7255,10 +7257,25 @@ pub fn setup_daemon_supervisor(app: &AppHandle) {
 /// pid-file lifecycle; we don't shell out to a separate stop CLI here.
 #[tauri::command]
 pub fn stop_daemon() -> Result<bool, String> {
-    if crate::commands::hq_daemon_host::daemon_mode_active() {
-        return crate::commands::hq_daemon_host::set_sync_enabled(false);
+    stop_daemon_for_phase(
+        crate::commands::hq_daemon_host::current_phase(),
+        || crate::commands::hq_daemon_host::set_sync_enabled(false),
+        stop_watch_runner,
+    )
+}
+
+fn stop_daemon_for_phase(
+    phase: crate::commands::hq_daemon_host::HostPhase,
+    stop_hosted: impl FnOnce() -> Result<bool, String>,
+    stop_legacy: impl FnOnce() -> Result<bool, String>,
+) -> Result<bool, String> {
+    if phase == crate::commands::hq_daemon_host::HostPhase::Daemon {
+        stop_hosted()
+    } else {
+        // Pending retains the old legacy fallthrough while the launch gate is
+        // unresolved; flag-off users must still be able to stop Auto-sync.
+        stop_legacy()
     }
-    stop_watch_runner()
 }
 
 /// Stop the app's own watch runner, including one left by an earlier session.
@@ -7359,6 +7376,25 @@ pub fn daemon_status() -> Result<DaemonStatus, String> {
     })
 }
 
+/// Read daemon ownership, health, last pass, and the associated log path.
+#[tauri::command]
+pub async fn daemon_sync_status(
+) -> Result<Option<crate::commands::hq_daemon_host::DaemonSyncStatusDetails>, String> {
+    if !crate::commands::hq_daemon_host::daemon_mode_active() {
+        return Ok(None);
+    }
+    tokio::task::spawn_blocking(crate::commands::hq_daemon_host::hosted_daemon_sync_status)
+        .await
+        .map_err(|error| {
+            log(
+                "hq-daemon-host",
+                &format!("daemon sync status task failed: {error}"),
+            );
+            "HQ daemon status could not be read. Tap to retry.".to_string()
+        })?
+        .map(Some)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -7369,6 +7405,26 @@ mod tests {
     use crate::commands::process::{deregister_process, try_register_handle};
     use crate::util::test_support::{scoped_home, ENV_MUTEX};
     use tempfile::TempDir;
+
+    #[test]
+    fn stopping_while_host_selection_is_pending_uses_the_legacy_stop_path() {
+        let mut hosted_called = false;
+        let mut legacy_called = false;
+        let result = stop_daemon_for_phase(
+            crate::commands::hq_daemon_host::HostPhase::Pending,
+            || {
+                hosted_called = true;
+                Ok(false)
+            },
+            || {
+                legacy_called = true;
+                Ok(true)
+            },
+        );
+        assert_eq!(result, Ok(true));
+        assert!(!hosted_called);
+        assert!(legacy_called);
+    }
 
     /// Terminal watch exits must reach the client-health recorder for every
     /// genuine death (auth-expiry exit 0, crashes, fault signals), and for

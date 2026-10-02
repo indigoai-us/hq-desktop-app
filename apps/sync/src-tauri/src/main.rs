@@ -830,6 +830,7 @@ fn main() {
             commands::daemon::start_daemon,
             commands::daemon::stop_daemon,
             commands::daemon::daemon_status,
+            commands::daemon::daemon_sync_status,
             tray::set_tray_state,
             tray::finish_replay_intro,
             updater::check_for_updates,

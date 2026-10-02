@@ -40,18 +40,19 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use chrono::SecondsFormat;
-use hq_desktop_core::runner_error_shape::{classify_runner_stack_input, PreRunnerCause, PreRunnerSite};
+use hq_desktop_core::runner_error_shape::{
+    classify_runner_stack_input, PreRunnerCause, PreRunnerSite,
+};
 #[cfg(test)]
 use hq_desktop_core::sync_outcome::classify_runner_exit_disposition;
 use hq_desktop_core::sync_outcome::{
-    classify_error_event, classify_runner_error_class,
-    classify_runner_exit_disposition_with_fault, classify_runner_fatal_class,
-    classify_windows_exit_status, describe_exit, is_expected_acl_scope_skip,
-    runner_phase_elapsed_bucket, runner_phase_from_event, runner_stack_shape_for_exit,
-    should_synthesize_all_complete, termination_fingerprint_token, windows_exit_status_hex,
-    windows_fault_symbol, RunnerExitDisposition, RunnerFatalClass, SessionEndLatchReading,
-    SyncCancelCause, WindowsTerminatorAttribution, SYNC_DISK_FULL_DETAIL, SYNC_FILE_LOCKED_DETAIL,
-    RUNNER_PHASE_PRE_PROTOCOL,
+    classify_error_event, classify_runner_error_class, classify_runner_exit_disposition_with_fault,
+    classify_runner_fatal_class, classify_windows_exit_status, describe_exit,
+    is_expected_acl_scope_skip, runner_phase_elapsed_bucket, runner_phase_from_event,
+    runner_stack_shape_for_exit, should_synthesize_all_complete, termination_fingerprint_token,
+    windows_exit_status_hex, windows_fault_symbol, RunnerExitDisposition, RunnerFatalClass,
+    SessionEndLatchReading, SyncCancelCause, WindowsTerminatorAttribution,
+    RUNNER_PHASE_PRE_PROTOCOL, SYNC_DISK_FULL_DETAIL, SYNC_FILE_LOCKED_DETAIL,
 };
 use hq_desktop_core::toolchain::ManagedToolchain;
 use hq_desktop_core::watcher_fault::{classify_unmatched_stderr_shape, UnmatchedStderrShapeRollup};
@@ -59,9 +60,6 @@ use tauri::{AppHandle, Emitter};
 
 use crate::commands::cognito;
 use crate::commands::config::{ensure_machine_id, HqConfig, MenubarPrefs};
-use crate::commands::session_end_attribution::{
-    current_session_end_latch_reading_for_exit, current_windows_terminator_attribution,
-};
 #[cfg(test)]
 use crate::commands::process::run_process_impl;
 use crate::commands::process::{
@@ -69,6 +67,9 @@ use crate::commands::process::{
     cancellation_record_for_generation, generation_for_handle, is_cancelled_for_generation,
     run_process_impl_for_generation, try_register_handle_gen, CancellationRecord, ProcessEvent,
     SpawnArgs,
+};
+use crate::commands::session_end_attribution::{
+    current_session_end_latch_reading_for_exit, current_windows_terminator_attribution,
 };
 use crate::commands::status::{journal_for_sync_complete, write_journal};
 use crate::commands::vault_client::VaultClient;
@@ -1405,10 +1406,7 @@ fn progress_coalescers() -> &'static Mutex<HashMap<String, ProgressCoalescer>> {
     SYNC_PROGRESS_COALESCERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn with_progress_coalescer<T>(
-    hq_folder: &str,
-    f: impl FnOnce(&mut ProgressCoalescer) -> T,
-) -> T {
+fn with_progress_coalescer<T>(hq_folder: &str, f: impl FnOnce(&mut ProgressCoalescer) -> T) -> T {
     let mut map = progress_coalescers()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
@@ -2467,6 +2465,23 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
     // Now, sync-on-launch, and notification retries — at the single Rust choke
     // point so no surface can start a sync while the titlebar says Cloud Off.
     start_sync_cloud_gate()?;
+    let host_phase = crate::commands::hq_daemon_host::resolved_phase_for_command().await?;
+    if let Some(result) = crate::commands::hq_daemon_host::daemon_sync_now_for_phase(
+        host_phase,
+        company_slug.as_deref(),
+        crate::commands::hq_daemon_host::request_daemon_sync_now,
+    ) {
+        return result;
+    }
+    match host_phase {
+        crate::commands::hq_daemon_host::HostPhase::Daemon => {
+            unreachable!("daemon phase returned through daemon_sync_now_for_phase")
+        }
+        crate::commands::hq_daemon_host::HostPhase::Pending => {
+            unreachable!("pending phase is returned as a retry error")
+        }
+        crate::commands::hq_daemon_host::HostPhase::Legacy => {}
+    }
     let scope = parse_sync_scope(company_slug)?;
     log("sync", &format!("scope={scope:?}"));
     log("sync", "start_sync invoked");
@@ -3038,7 +3053,9 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
     // disposition flags or the three fingerprint rollups — so an exit a first-push
     // fault preceded is attributable without changing grouping or alerting.
     if !pre_runner_failures.is_empty() {
-        let mut initial = totals.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut initial = totals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         for (site, status, cause) in &pre_runner_failures {
             initial.record_pre_runner_failure(*site, *status, *cause);
         }
@@ -3060,6 +3077,8 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
     // the only evidence that existed instead of reaching Sentry with every axis
     // empty.
     let mut runner_unmatched_stderr = UnmatchedStderrShapeRollup::default();
+    #[cfg(test)]
+    crate::commands::process::record_sync_runner_spawn_attempt();
     tauri::async_runtime::spawn_blocking(move || {
         log("sync", "bg task: entering run_process_impl");
         #[cfg(debug_assertions)]
@@ -3277,12 +3296,8 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                     // only on clean completions (including no-change runs);
                     // everything else maps to a closed reason code and
                     // triggers an immediate heartbeat.
-                    let final_totals =
-                        totals.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                    crate::commands::client_health::record_sync_run_ended(
-                        success,
-                        &final_totals,
-                    );
+                    let final_totals = totals.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                    crate::commands::client_health::record_sync_run_ended(success, &final_totals);
                     // Remove this run's report directory if it still exists (a clean
                     // success wrote none; the capture path's read already removed it).
                     // One terminal cleanup for every exit branch, bounding disk under
@@ -3308,10 +3323,7 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                 capture_sync_error(None, "(spawn)", &message);
                 // No child existed, so no Exit event will close this run for
                 // client health — record the failed attempt here.
-                crate::commands::client_health::record_sync_run_ended(
-                    false,
-                    &RunTotals::default(),
-                );
+                crate::commands::client_health::record_sync_run_ended(false, &RunTotals::default());
                 ("(spawn)", message)
             } else {
                 // Preserve the existing user-visible error text. The typed
@@ -3340,6 +3352,11 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
 /// Returns `true` if a sync was running and cancellation was initiated.
 #[tauri::command]
 pub fn cancel_sync() -> bool {
+    if crate::commands::hq_daemon_host::current_phase()
+        != crate::commands::hq_daemon_host::HostPhase::Legacy
+    {
+        return false;
+    }
     generation_for_handle(SYNC_HANDLE)
         .map(|generation| {
             cancel_process_for_generation(
@@ -3397,7 +3414,10 @@ mod tests {
         let mut c = ProgressCoalescer::default();
         let t0 = Instant::now();
         assert_eq!(c.offer(progress("a"), t0), Some(progress("a")));
-        assert!(c.flush(t0).is_none(), "nothing held after an immediate emit");
+        assert!(
+            c.flush(t0).is_none(),
+            "nothing held after an immediate emit"
+        );
     }
 
     #[test]
@@ -3420,9 +3440,14 @@ mod tests {
         assert!(c.offer(progress("a"), t0).is_some());
         let t1 = t0 + SYNC_PROGRESS_EMIT_INTERVAL;
         // A held event is superseded by the due one (the UI wants the newest).
-        assert!(c.offer(progress("b"), t0 + Duration::from_millis(1)).is_none());
+        assert!(c
+            .offer(progress("b"), t0 + Duration::from_millis(1))
+            .is_none());
         assert_eq!(c.offer(progress("c"), t1), Some(progress("c")));
-        assert!(c.flush(t1).is_none(), "the due emit drops the stale held event");
+        assert!(
+            c.flush(t1).is_none(),
+            "the due emit drops the stale held event"
+        );
     }
 
     #[test]
@@ -3446,7 +3471,9 @@ mod tests {
         let totals = Mutex::new(RunTotals::default());
         let phase = Mutex::new(RunnerPhaseContext::default());
         let line = r#"{"type":"progress","company":"indigo","path":"run1.md","bytes":1}"#;
-        assert!(handle_sync_line(&handle, folder, &totals, &phase, "jwt", line));
+        assert!(handle_sync_line(
+            &handle, folder, &totals, &phase, "jwt", line
+        ));
         std::thread::sleep(Duration::from_millis(30));
         assert_eq!(seen.lock().unwrap().as_slice(), ["run1.md"]);
 
@@ -3463,7 +3490,9 @@ mod tests {
         // Run 2 starts immediately, well inside SYNC_PROGRESS_EMIT_INTERVAL of
         // run 1's emit. Without the prune its first progress would be HELD.
         let line2 = r#"{"type":"progress","company":"indigo","path":"run2.md","bytes":1}"#;
-        assert!(handle_sync_line(&handle, folder, &totals, &phase, "jwt", line2));
+        assert!(handle_sync_line(
+            &handle, folder, &totals, &phase, "jwt", line2
+        ));
         std::thread::sleep(Duration::from_millis(30));
         assert_eq!(
             seen.lock().unwrap().as_slice(),
@@ -3493,7 +3522,9 @@ mod tests {
         for path in ["a.md", "b.md"] {
             let line =
                 format!(r#"{{"type":"progress","company":"indigo","path":"{path}","bytes":1}}"#);
-            assert!(handle_sync_line(&handle, folder, &totals, &phase, "jwt", &line));
+            assert!(handle_sync_line(
+                &handle, folder, &totals, &phase, "jwt", &line
+            ));
         }
         std::thread::sleep(Duration::from_millis(30));
         assert_eq!(seen.lock().unwrap().as_slice(), ["a.md"], "b.md is held");
@@ -3535,10 +3566,11 @@ mod tests {
         // Three per-file events back-to-back (well inside 120ms): only the first
         // is emitted immediately; the rest are coalesced.
         for path in ["a.md", "b.md", "c.md"] {
-            let line = format!(
-                r#"{{"type":"progress","company":"indigo","path":"{path}","bytes":1}}"#
-            );
-            assert!(handle_sync_line(&handle, folder, &totals, &phase, "jwt", &line));
+            let line =
+                format!(r#"{{"type":"progress","company":"indigo","path":"{path}","bytes":1}}"#);
+            assert!(handle_sync_line(
+                &handle, folder, &totals, &phase, "jwt", &line
+            ));
         }
         std::thread::sleep(Duration::from_millis(30));
         assert_eq!(seen.lock().unwrap().as_slice(), ["a.md"]);
@@ -3591,7 +3623,11 @@ mod tests {
         std::thread::sleep(Duration::from_millis(30));
 
         let seen = seen.lock().unwrap();
-        assert_eq!(seen.len(), 1, "exactly one conflict event per conflicted path");
+        assert_eq!(
+            seen.len(),
+            1,
+            "exactly one conflict event per conflicted path"
+        );
         assert_eq!(seen[0]["path"], "knowledge/readme.md");
         assert_eq!(seen[0]["company"], "indigo");
         assert_eq!(seen[0]["canAutoResolve"], false);
@@ -4995,7 +5031,10 @@ mod tests {
         // prose records are lower-cased-prose-led, and each distinct message skeleton is
         // signed — making this exact flood self-describing on its next occurrence even
         // though the fingerprint (and the `unknown_unnamed` cause) are unchanged.
-        assert_eq!(event.tags["runner_error_unknown_profiles"], "lower_prose:160");
+        assert_eq!(
+            event.tags["runner_error_unknown_profiles"],
+            "lower_prose:160"
+        );
         assert_eq!(
             event.tags["runner_error_residual_signature"],
             "4620a8381a84:120,57244c1e9fa5:40"
@@ -5083,8 +5122,13 @@ mod tests {
             runner_unmatched_stderr_shapes: rollup.tag_value(),
             ..Default::default()
         };
-        let (tags, _extras) =
-            runner_exit_telemetry_context(Some(1), None, &RunTotals::default(), &context, "uncancelled");
+        let (tags, _extras) = runner_exit_telemetry_context(
+            Some(1),
+            None,
+            &RunTotals::default(),
+            &context,
+            "uncancelled",
+        );
         assert!(
             tags.iter().any(|(key, value)| {
                 *key == "runner_unmatched_stderr_shapes" && value.as_str() == "other:1"
@@ -5100,8 +5144,13 @@ mod tests {
         // assertion in watcher_capture_reports_not_applicable_fault_provenance.
         let context = ManualRunnerExitContext::default();
         assert!(context.runner_unmatched_stderr_shapes.is_none());
-        let (tags, _extras) =
-            runner_exit_telemetry_context(Some(1), None, &RunTotals::default(), &context, "uncancelled");
+        let (tags, _extras) = runner_exit_telemetry_context(
+            Some(1),
+            None,
+            &RunTotals::default(),
+            &context,
+            "uncancelled",
+        );
         assert!(
             tags.iter()
                 .all(|(key, _)| *key != "runner_unmatched_stderr_shapes"),
@@ -5141,9 +5190,18 @@ mod tests {
         // A run with no first-push failure attaches neither pre-runner axis (nor the
         // http axis), so a clean run's event is byte-identical to before.
         let context = ManualRunnerExitContext::default();
-        let (tags, _extras) =
-            runner_exit_telemetry_context(Some(1), None, &RunTotals::default(), &context, "uncancelled");
-        for absent in ["pre_runner_failures", "pre_runner_causes", "runner_error_http"] {
+        let (tags, _extras) = runner_exit_telemetry_context(
+            Some(1),
+            None,
+            &RunTotals::default(),
+            &context,
+            "uncancelled",
+        );
+        for absent in [
+            "pre_runner_failures",
+            "pre_runner_causes",
+            "runner_error_http",
+        ] {
             assert!(
                 tags.iter().all(|(key, _)| *key != absent),
                 "an absent pre-runner axis must attach no {absent} tag: {tags:?}"
@@ -5581,7 +5639,10 @@ mod tests {
             let grammar_ok = message.ends_with("(other;none;path_like)")
                 || message.ends_with("(other;none;ndjson_record)")
                 || message.ends_with("(other;none;other)");
-            assert!(grammar_ok, "unexpected breadcrumb grammar/class: {message:?}");
+            assert!(
+                grammar_ok,
+                "unexpected breadcrumb grammar/class: {message:?}"
+            );
             if message.ends_with("(other;none;path_like)") {
                 path_like += 1;
             }
@@ -6082,23 +6143,27 @@ mod tests {
         let mut terminal = None;
 
         let captures = sentry::test::with_captured_events(|| {
-            run_process_impl("manual-runner-unknown-unnamed", &spawn, |event| match event {
-                ProcessEvent::Stderr(line) => {
-                    sequence = sequence.saturating_add(1);
-                    sentry::add_breadcrumb(runner_stderr_breadcrumb(sequence, &line));
-                    assert!(update_runner_stderr_totals(&totals, &line).is_none());
-                    push_runner_stderr_tail(
-                        &mut stderr_tail.lock().unwrap_or_else(|e| e.into_inner()),
-                        line,
-                    );
-                }
-                ProcessEvent::Exit {
-                    code,
-                    signal,
-                    success,
-                } => terminal = Some((code, signal, success)),
-                ProcessEvent::Stdout(_) => {}
-            })
+            run_process_impl(
+                "manual-runner-unknown-unnamed",
+                &spawn,
+                |event| match event {
+                    ProcessEvent::Stderr(line) => {
+                        sequence = sequence.saturating_add(1);
+                        sentry::add_breadcrumb(runner_stderr_breadcrumb(sequence, &line));
+                        assert!(update_runner_stderr_totals(&totals, &line).is_none());
+                        push_runner_stderr_tail(
+                            &mut stderr_tail.lock().unwrap_or_else(|e| e.into_inner()),
+                            line,
+                        );
+                    }
+                    ProcessEvent::Exit {
+                        code,
+                        signal,
+                        success,
+                    } => terminal = Some((code, signal, success)),
+                    ProcessEvent::Stdout(_) => {}
+                },
+            )
             .expect("real fake runner should run");
 
             // A first-push fault ALSO preceded this exit: seed the adopted pre-runner
@@ -6112,8 +6177,14 @@ mod tests {
                 );
             }
             let snapshot = totals.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            let context =
-                manual_runner_exit_context(&SyncRunScope::All, &phase, &stderr_tail, sequence, 0, None);
+            let context = manual_runner_exit_context(
+                &SyncRunScope::All,
+                &phase,
+                &stderr_tail,
+                sequence,
+                0,
+                None,
+            );
             capture_runner_exit_error(Some(2), None, &snapshot, &payload, &context);
         });
 
@@ -6197,30 +6268,54 @@ mod tests {
         // The observed HQ-DESKTOP-63/64 body carries the SCOPE_EXCEEDS_PARENT marker.
         let scope_body = "{\"error\":\"Child scope exceeds parent permissions: Requested prefixes not covered by parent grant\",\"code\":\"SCOPE_EXCEEDS_PARENT\"}";
         let plain_body = "vend-child returned HTTP 403 Forbidden for cmp_acme";
-        assert!(is_expected_acl_scope_skip(scope_body), "scope body is an expected skip");
-        assert!(!is_expected_acl_scope_skip(plain_body), "a plain 403 is not an expected skip");
+        assert!(
+            is_expected_acl_scope_skip(scope_body),
+            "scope body is an expected skip"
+        );
+        assert!(
+            !is_expected_acl_scope_skip(plain_body),
+            "a plain 403 is not an expected skip"
+        );
 
         // The expected ACL-scope skip yields ZERO captures.
         let skipped = sentry::test::with_captured_events(|| {
             report(scope_body, Some(403), PreRunnerCause::ScopeExceedsParent);
         });
-        assert!(skipped.is_empty(), "an expected ACL-scope skip must not be captured");
+        assert!(
+            skipped.is_empty(),
+            "an expected ACL-scope skip must not be captured"
+        );
 
         // A plain 403 vend failure yields exactly ONE content-safe capture.
         let captured = sentry::test::with_captured_events(|| {
             report(plain_body, Some(403), PreRunnerCause::VendHttp);
         });
-        assert_eq!(captured.len(), 1, "a plain first-push failure is captured once");
+        assert_eq!(
+            captured.len(),
+            1,
+            "a plain first-push failure is captured once"
+        );
         let event = hq_telemetry::before_send(captured.into_iter().next().unwrap())
             .expect("first-push capture remains sendable");
-        assert_eq!(event.fingerprint, vec!["sync", "first-push-failed", "vend_http"]);
+        assert_eq!(
+            event.fingerprint,
+            vec!["sync", "first-push-failed", "vend_http"]
+        );
         // The content-safe pre-runner capture tags ride the event and survive egress.
         assert_eq!(event.tags["pre_runner_cause"], "vend_http");
         assert_eq!(event.tags["pre_runner_status"], "http_403");
         // The constant message ships; the server body never rides the capture.
         let serialized = serde_json::to_string(&event).expect("serialize");
-        for forbidden in ["SCOPE_EXCEEDS_PARENT", "Forbidden", "Requested prefixes", "vend-child"] {
-            assert!(!serialized.contains(forbidden), "leaked body substring {forbidden:?}");
+        for forbidden in [
+            "SCOPE_EXCEEDS_PARENT",
+            "Forbidden",
+            "Requested prefixes",
+            "vend-child",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "leaked body substring {forbidden:?}"
+            );
         }
     }
 
