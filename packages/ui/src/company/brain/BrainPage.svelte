@@ -767,10 +767,10 @@
     width: min(520px, calc(100% - 48px));
     max-height: calc(100% - 80px);
     overflow: auto;
-    background: var(--panel-bg, var(--v4-ground));
-    border: 1px solid var(--panel-border, var(--v4-rowline));
+    background: var(--overlay-bg);
+    border: 1px solid var(--overlay-border);
     border-radius: 8px;
-    box-shadow: var(--panel-shadow, none);
+    box-shadow: var(--overlay-shadow);
     padding: 16px 20px;
     display: grid;
     gap: 10px;
@@ -780,10 +780,9 @@
   .sheet input, .sheet textarea {
     font: inherit;
     color: var(--v4-text-1);
-    background: transparent;
     font-size: 13px;
-    border: 1px solid var(--line2, var(--v4-control-border));
-    background: var(--btn-bg, transparent);
+    border: 1px solid var(--overlay-field-border);
+    background: var(--overlay-field-bg);
     border-radius: 6px;
     padding: 4px 8px;
   }

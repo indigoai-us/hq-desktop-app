@@ -180,7 +180,7 @@
     display: flex;
     flex-direction: column;
     z-index: 9;
-    background: var(--v4-popover, var(--v4-ground, #161616));
+    background: var(--overlay-bg);
     border: 1px solid var(--v4-hairline, var(--v4-rowline));
     border-radius: 8px;
     color: var(--v4-text-1);

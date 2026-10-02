@@ -533,7 +533,7 @@
     /* Solid popover material (D-03): popover-strong is the near-opaque token
        tier so text never bleeds through. No backdrop-filter: it paints a
        square blur behind the rounded card in WKWebView. */
-    background: var(--v4-popover-strong, var(--pop-bg));
+    background: var(--overlay-bg);
     box-shadow: var(--v4-shadow-popover, var(--pop-shadow));
     color: var(--v4-text-1, var(--pop-text));
     transform-origin: top center;

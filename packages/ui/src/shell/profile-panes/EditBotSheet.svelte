@@ -145,7 +145,7 @@
   .sheet {
     width: min(560px, calc(100% - 32px)); max-height: calc(100% - 48px);
     display: flex; flex-direction: column;
-    background: var(--v4-popover, var(--v4-ground));
+    background: var(--overlay-bg);
     border: 1px solid var(--v4-hairline, var(--line));
     border-radius: 8px; color: var(--v4-text-1); overflow: hidden;
   }

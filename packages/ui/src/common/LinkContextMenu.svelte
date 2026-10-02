@@ -104,12 +104,10 @@
     flex-direction: column;
     min-width: 168px;
     padding: 6px;
-    border: 1px solid var(--panel-border, var(--v4-hairline, rgba(255, 255, 255, 0.1)));
+    border: 1px solid var(--overlay-border);
     border-radius: 12px;
-    background: var(--panel-bg, rgba(44, 44, 54, 0.94));
-    box-shadow: var(--panel-shadow, 0 16px 40px rgba(0, 0, 0, 0.4));
-    backdrop-filter: blur(40px) saturate(1.5);
-    -webkit-backdrop-filter: blur(40px) saturate(1.5);
+    background: var(--overlay-bg);
+    box-shadow: var(--overlay-shadow);
     color: var(--t1, var(--v4-text-1, inherit));
     font: 400 12px/1.35 var(--font-ui, inherit);
   }
@@ -130,7 +128,7 @@
 
   .link-context-row:hover,
   .link-context-row:focus-visible {
-    background: var(--hover, rgba(255, 255, 255, 0.06));
+    background: var(--overlay-hover);
     outline: none;
   }
 </style>

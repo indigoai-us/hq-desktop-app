@@ -58,6 +58,14 @@ Weights shipped: Geist 400/500/600 (comment at ChannelConversation.svelte:2714).
 | `--btn-bg` | rgba(255,255,255,.07) | rgba(0,0,0,.045) | field/secondary button fill | :15 / :47 |
 | `--raised` | rgba(255,255,255,.05) | rgba(0,0,0,.035) | code block, grouped card | :14 / :46 |
 | Semantic only | `--ok` #34c759, `--warn`, `--red` #f0616d | | state dots/text | :31-34; messaging-tokens.css:58 |
+| `--overlay-bg` | `--v4-popover-strong`: #242424 opaque; rgb(44 44 54 / >=.90) translucent | #fafafa opaque | every sheet, dialog, popover, picker, context menu surface | home/tokens.css, chat/tokens.css (OWNER-006) |
+| `--overlay-border` | `--v4-hairline` rgba(255,255,255,.12) | rgba(0,0,0,.12) | overlay outer border | same |
+| `--overlay-shadow` | `--v4-shadow-popover` (0 22px 55px rgba(0,0,0,.22) default) | same | overlay elevation | same |
+| `--overlay-field-bg` | `--v4-control-bg` rgba(255,255,255,.10) | #0000000d | inputs, textareas, segmented tracks inside overlays | same |
+| `--overlay-field-border` | `--v4-control-border` rgba(255,255,255,.16) | #00000014 | field borders inside overlays | same |
+| `--overlay-hover` | `--hover` rgba(255,255,255,.05) | rgba(0,0,0,.045) | overlay row hover | same |
+
+Overlay standard (OWNER-006): the values above are measured from the titlebar Launch menu (`.v4-launch-menu`, V4TitleBar.svelte), which the owner confirmed as the reference. `--panel-bg` (rgba(44,44,54,.94)) and `--v4-surface-solid` (#1e1e24) are slate/blue-tinted and must not paint overlays. No per-component greys, hex fills or `--vio-*`/`--ice-*` backgrounds, and no CSS backdrop-filter on rounded overlay cards (WKWebView). Guard: packages/ui/src/common/overlay-surface-guard.test.ts.
 
 Accent: monochrome. **DEV**: `--accent: var(--vio-ink)` (messaging-tokens.css:48) and `--ice-ink` for links/thread replies (ChannelConversation.svelte:3107; ChatSidebar.svelte:4630). Do not carry violet/ice into the console rail; primary button = `--t1` fill on `--panel-bg` ink (NewChannelSheet.svelte:237).
 

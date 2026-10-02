@@ -262,7 +262,7 @@
     position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
     width: min(480px, calc(100vw - 32px)); max-height: calc(100% - 40px);
     display: flex; flex-direction: column; overflow: hidden; z-index: 71;
-    background: var(--v4-popover); border: 1px solid var(--v4-hairline);
+    background: var(--overlay-bg); border: 1px solid var(--overlay-border);
     border-radius: 8px; box-shadow: var(--v4-shadow-popover); color: var(--v4-text-1);
   }
   .sh {

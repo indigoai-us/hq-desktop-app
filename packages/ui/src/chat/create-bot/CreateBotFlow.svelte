@@ -696,7 +696,7 @@
     font-size: 13px;
     height: 28px;
     padding: 0 10px;
-    border: 1px solid var(--panel-border, var(--v4-control-border, var(--border)));
+    border: 1px solid var(--overlay-field-border);
     border-radius: 6px;
     background: var(--v4-control-bg, transparent);
     color: var(--t1);

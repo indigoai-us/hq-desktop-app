@@ -208,13 +208,13 @@
     position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
     width: min(480px, calc(100vw - 32px)); max-height: calc(100% - 40px);
     display: flex; flex-direction: column; overflow: hidden; z-index: 71;
-    background: var(--panel-bg, var(--v4-popover));
-    border: 1px solid var(--panel-border, var(--v4-hairline));
+    background: var(--overlay-bg);
+    border: 1px solid var(--overlay-border);
     border-radius: 8px; color: var(--t1, var(--v4-text-1));
   }
   .sh {
     height: 52px; display: flex; align-items: center; gap: 8px;
-    padding: 0 10px 0 20px; border-bottom: 1px solid var(--panel-border, var(--v4-hairline));
+    padding: 0 10px 0 20px; border-bottom: 1px solid var(--overlay-border);
     font-size: 13px; font-weight: 500;
   }
   .sub { font-size: 13px; font-weight: 400; color: var(--t3, var(--v4-text-3)); }
@@ -233,7 +233,7 @@
   .lb { font-size: 13px; color: var(--t3, var(--v4-text-3)); padding-top: 6px; }
   .search {
     display: flex; align-items: center; height: 28px; gap: 4px; padding: 0 8px;
-    border: 1px solid var(--panel-border, var(--v4-control-border)); border-radius: 6px;
+    border: 1px solid var(--overlay-field-border); border-radius: 6px;
   }
   .search input { flex: 1; border: 0; background: transparent; color: inherit; font: inherit; font-size: 13px; min-width: 0; }
   .pre, .hint, .mono { color: var(--t3, var(--v4-text-3)); font-size: 13px; }
@@ -242,7 +242,7 @@
   /* QA-020: the company strip scrolls inside its own column; the form never shifts. */
   .tabs {
     display: flex; gap: 2px; width: max-content; max-width: 100%; min-width: 0;
-    overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; padding: 2px; border-radius: 6px; border: 1px solid var(--panel-border); background: var(--hover); }
+    overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; padding: 2px; border-radius: 6px; border: 1px solid var(--overlay-field-border); background: var(--overlay-field-bg); }
   .tabs::-webkit-scrollbar { display: none; }
   .tab { border: 0; background: transparent; color: var(--t2, inherit); font: inherit; font-size: 13px; padding: 4px 8px; border-radius: 4px; flex: 0 0 auto; white-space: nowrap; }
   .tab[aria-selected="true"] { background: var(--v4-active-row, var(--hover)); color: var(--t1, inherit); }
@@ -260,10 +260,10 @@
     background: var(--t3, #888);
   }
   .tog.on { background: var(--t1, var(--v4-text-1)); border-color: transparent; }
-  .tog.on::after { left: 14px; background: #fff; }
+  .tog.on::after { left: 14px; background: var(--overlay-bg); }
   .sf { display: flex; align-items: center; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--panel-border); }
   .sf .hint { flex: 1; margin: 0; }
   .btn { border: 1px solid var(--panel-border); background: transparent; color: inherit; border-radius: 6px; padding: 6px 10px; font: inherit; }
-  .btn.primary { background: var(--t1, #111); color: var(--panel-bg, #fff); }
+  .btn.primary { background: var(--t1, #111); color: var(--overlay-bg); }
   .btn:disabled { opacity: 0.45; }
 </style>

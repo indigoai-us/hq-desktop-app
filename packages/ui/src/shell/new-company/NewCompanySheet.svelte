@@ -339,7 +339,7 @@
     position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
     width: min(480px, calc(100vw - 32px)); max-height: calc(100% - 40px);
     display: flex; flex-direction: column; overflow: hidden; z-index: 71;
-    background: var(--v4-popover); border: 1px solid var(--v4-hairline);
+    background: var(--overlay-bg); border: 1px solid var(--overlay-border);
     border-radius: 8px; color: var(--v4-text-1);
     box-shadow: var(--v4-shadow-popover, none);
   }
@@ -397,7 +397,7 @@
     border-radius: 50%; background: var(--v4-text-3);
   }
   .tog.on { background: var(--v4-text-1); border-color: transparent; }
-  .tog.on::after { left: 14px; background: var(--v4-popover); }
+  .tog.on::after { left: 14px; background: var(--overlay-bg); }
   .ncs-done {
     display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center;
     padding: 8px 10px; border: 1px solid var(--v4-control-border); border-radius: 6px;
@@ -439,6 +439,6 @@
     border: 1px solid var(--v4-control-border); background: transparent; color: var(--v4-text-1);
     border-radius: 6px; padding: 6px 10px; font: inherit; font-size: 13px; cursor: pointer;
   }
-  .btn.primary { background: var(--v4-text-1); color: var(--v4-popover); }
+  .btn.primary { background: var(--v4-text-1); color: var(--overlay-bg); }
   .btn:disabled { opacity: 0.45; }
 </style>

@@ -198,7 +198,7 @@
     flex-direction: column;
     padding: 8px;
     border-radius: var(--v4-radius-popover, 8px);
-    background: var(--v4-popover);
+    background: var(--overlay-bg);
     color: var(--v4-text-1);
     border: 1px solid var(--v4-hairline);
     box-shadow: var(--v4-shadow-popover);

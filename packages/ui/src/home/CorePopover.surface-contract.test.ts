@@ -44,8 +44,8 @@ describe("Core popout surface matches the Launch popout", () => {
     },
   );
 
-  it("does not fall back to the slate --panel-bg as its primary surface", () => {
-    expect(decl(core, "background")).toMatch(/^var\(--v4-popover-strong,/);
+  it("uses the shared overlay surface, not the slate --panel-bg", () => {
+    expect(decl(core, "background")).toBe("var(--overlay-bg)");
   });
 
   it("carries no backdrop-filter", () => {

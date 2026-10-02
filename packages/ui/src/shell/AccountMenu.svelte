@@ -128,7 +128,7 @@
     max-height: calc(100vh - 24px);
     overflow: auto;
     padding: 8px;
-    background: var(--v4-popover);
+    background: var(--overlay-bg);
     border: 1px solid var(--v4-hairline);
     border-radius: var(--v4-radius-popover, 8px);
     box-shadow: var(--v4-shadow-popover);
@@ -165,7 +165,7 @@
     height: 8px;
     border-radius: 50%;
     background: var(--v4-ok);
-    border: 2px solid var(--v4-popover);
+    border: 2px solid var(--overlay-bg);
   }
 
   .copy {

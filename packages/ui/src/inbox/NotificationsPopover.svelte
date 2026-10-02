@@ -264,7 +264,7 @@
     display: flex;
     flex-direction: column;
     padding: 8px 8px 6px;
-    background: var(--v4-popover);
+    background: var(--overlay-bg);
     border: 1px solid var(--v4-hairline);
     border-radius: var(--v4-radius-popover);
     box-shadow: var(--v4-shadow-popover);

@@ -1091,10 +1091,10 @@
     width: 340px;
     max-width: calc(100vw - 24px);
     padding: 8px;
-    border: 1px solid var(--v4-hairline, var(--panel-border, var(--line2)));
+    border: 1px solid var(--overlay-border);
     border-radius: var(--v4-radius-popover, 10px);
-    background: var(--v4-popover-strong, var(--panel-bg, var(--btn-bg)));
-    box-shadow: var(--v4-shadow-popover, var(--panel-shadow, 0 8px 24px rgba(0, 0, 0, 0.18)));
+    background: var(--overlay-bg);
+    box-shadow: var(--overlay-shadow);
   }
 
   .v4-launch-sec {

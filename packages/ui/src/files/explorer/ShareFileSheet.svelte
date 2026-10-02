@@ -49,7 +49,7 @@
     transform: translateX(-50%);
     border: 1px solid var(--v4-hairline);
     border-radius: 12px;
-    background: var(--v4-popover-strong);
+    background: var(--overlay-bg);
     box-shadow: var(--v4-shadow-popover);
     color: var(--v4-text-1);
     font-size: 13px;

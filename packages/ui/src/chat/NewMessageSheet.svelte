@@ -231,8 +231,8 @@
     max-height: calc(100% - 40px);
     display: flex;
     flex-direction: column;
-    background: var(--panel-bg, var(--v4-popover));
-    border: 1px solid var(--panel-border, var(--v4-hairline));
+    background: var(--overlay-bg);
+    border: 1px solid var(--overlay-border);
     border-radius: 8px;
     z-index: 71;
     color: var(--t1, var(--v4-text-1));
@@ -244,7 +244,7 @@
     align-items: center;
     gap: 8px;
     padding: 0 10px 0 20px;
-    border-bottom: 1px solid var(--panel-border, var(--v4-hairline));
+    border-bottom: 1px solid var(--overlay-border);
     font-size: 13px;
     font-weight: 500;
   }
@@ -273,7 +273,7 @@
     max-width: 100%;
     padding: 2px;
     border-radius: 6px;
-    border: 1px solid var(--panel-border, var(--v4-control-border));
+    border: 1px solid var(--overlay-field-border);
     background: var(--hover, var(--v4-control-faint));
     overflow-x: auto;
     overscroll-behavior-x: contain;
@@ -299,7 +299,7 @@
   .ta {
     width: 100%;
     min-height: 60px;
-    border: 1px solid var(--panel-border, var(--v4-control-border));
+    border: 1px solid var(--overlay-field-border);
     border-radius: 6px;
     background: transparent;
     color: inherit;
@@ -313,11 +313,11 @@
     align-items: center;
     gap: 8px;
     padding: 12px 20px;
-    border-top: 1px solid var(--panel-border, var(--v4-hairline));
+    border-top: 1px solid var(--overlay-border);
   }
   .sf .hint { flex: 1; margin: 0; }
   .btn {
-    border: 1px solid var(--panel-border, var(--v4-control-border));
+    border: 1px solid var(--overlay-field-border);
     background: transparent;
     color: inherit;
     border-radius: 6px;
@@ -325,6 +325,6 @@
     font: inherit;
     font-size: 13px;
   }
-  .btn.primary { background: var(--t1, var(--v4-text-1)); color: var(--panel-bg, #fff); }
+  .btn.primary { background: var(--t1, var(--v4-text-1)); color: var(--overlay-bg); }
   .btn:disabled { opacity: 0.45; }
 </style>

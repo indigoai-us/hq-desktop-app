@@ -600,11 +600,6 @@
       --v4-popover-strong,
       var(--v4-popover, var(--pop-bg, rgba(42, 42, 42, 0.82)))
     );
-    backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
-    -webkit-backdrop-filter: var(
-      --v4-glass-filter-popover,
-      var(--v4-glass-filter)
-    );
     box-shadow:
       var(--v4-shadow-popover, var(--pop-shadow)),
       inset 0 1px 0 var(--v4-glass-highlight);

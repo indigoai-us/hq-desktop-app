@@ -94,9 +94,9 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
-    border: 1px solid var(--panel-border, var(--v4-hairline));
+    border: 1px solid var(--overlay-border);
     border-radius: 8px;
-    background: var(--panel-bg, var(--v4-popover));
+    background: var(--overlay-bg);
     color: var(--t1, var(--v4-text-1));
     font-size: 13px;
   }
@@ -125,7 +125,7 @@
   .pp-q input {
     width: 100%;
     height: 28px;
-    border: 1px solid var(--panel-border, var(--v4-control-border));
+    border: 1px solid var(--overlay-field-border);
     border-radius: 6px;
     background: transparent;
     color: inherit;
@@ -162,7 +162,7 @@
     width: 14px;
     height: 14px;
     border-radius: 4px;
-    border: 1px solid var(--panel-border, var(--v4-control-border));
+    border: 1px solid var(--overlay-field-border);
     display: grid;
     place-items: center;
     font-size: 10px;

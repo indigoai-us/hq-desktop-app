@@ -125,7 +125,7 @@
     overflow: auto;
     z-index: 5;
     padding: 6px;
-    background: var(--v4-popover, var(--v4-ground, #111));
+    background: var(--overlay-bg);
     border: 1px solid var(--v4-hairline, var(--v4-rowline));
     border-radius: 8px;
     box-shadow: var(--v4-shadow-popover, none);

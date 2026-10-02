@@ -55,7 +55,7 @@
     flex-direction: column;
     gap: 8px;
     min-height: 0;
-    background: var(--v4-popover, var(--v4-raised, transparent));
+    background: var(--overlay-bg);
     color: var(--v4-text-1, inherit);
     font-family: var(--font-ui, inherit);
   }

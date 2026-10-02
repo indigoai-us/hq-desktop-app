@@ -49,7 +49,7 @@ describe("desktop visual hierarchy regressions", () => {
   });
 
   it("paints the sign-out confirm on an opaque card", () => {
-    expect(confirmDialog).toContain("--v4-surface-solid");
+    expect(confirmDialog).toContain("background: var(--overlay-bg)");
     expect(confirmDialog).not.toMatch(
       /\.confirm-card\s*\{[^}]*background:\s*var\(--raised/,
     );

@@ -3199,7 +3199,7 @@
     border-radius: 14px;
     /* Never --v4-ground here — that token is glass and lets timeline text
        bleed through. */
-    background: var(--v4-surface-solid, #fff);
+    background: var(--overlay-bg);
     box-shadow: var(--v4-shadow-window, var(--panel-shadow));
     outline: none;
   }
@@ -3608,7 +3608,7 @@
     appearance: none;
     -webkit-appearance: none;
     padding: 6px 8px;
-    border: 1px solid var(--line2, rgba(255, 255, 255, 0.12));
+    border: 1px solid var(--overlay-border);
     border-radius: 8px;
     background: transparent;
     color: var(--t1);
@@ -3737,10 +3737,10 @@
     max-height: calc(100% - 24px);
     overflow-y: auto;
     padding: 14px 16px;
-    border: 1px solid var(--line2, rgba(255, 255, 255, 0.12));
+    border: 1px solid var(--overlay-border);
     border-radius: 12px;
-    background: var(--v4-surface-solid, #fff);
-    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+    background: var(--overlay-bg);
+    box-shadow: var(--overlay-shadow);
   }
 
   .create-confirm-title {
@@ -3880,13 +3880,13 @@
   :global(:root[data-force-theme="dark"]) .create-confirm,
   :global(.dark) .create-card,
   :global(.dark) .create-confirm {
-    background: var(--v4-surface-solid, #303030);
+    background: var(--overlay-bg);
   }
 
   @media (prefers-color-scheme: dark) {
     :global(:root:not([data-force-theme="light"])) .create-card,
     :global(:root:not([data-force-theme="light"])) .create-confirm {
-      background: var(--v4-surface-solid, #303030);
+      background: var(--overlay-bg);
     }
   }
 </style>

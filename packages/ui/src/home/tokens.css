@@ -489,3 +489,19 @@ html[data-platform="windows"] {
 :where(button, input, select, textarea) {
   font: inherit;
 }
+
+/* Overlay surface set (OWNER-006). One standard for every sheet, dialog,
+   popover, picker and context menu, measured from the titlebar Launch menu.
+   Aliases are re-declared on .dark / forced-theme roots so each scope
+   resolves its own appearance values. */
+:root,
+.dark,
+:root[data-force-theme="light"],
+:root[data-force-theme="dark"] {
+  --overlay-bg: var(--v4-popover-strong);
+  --overlay-border: var(--v4-hairline);
+  --overlay-shadow: var(--v4-shadow-popover);
+  --overlay-field-bg: var(--v4-control-bg);
+  --overlay-field-border: var(--v4-control-border);
+  --overlay-hover: var(--hover, var(--v4-active-row));
+}

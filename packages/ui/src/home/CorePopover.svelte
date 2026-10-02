@@ -919,10 +919,10 @@
     overflow-x: hidden;
     overflow-y: auto;
     padding: 8px;
-    border: 1px solid var(--v4-hairline, var(--panel-border, var(--line2)));
+    border: 1px solid var(--overlay-border);
     border-radius: var(--v4-radius-popover, 10px);
-    background: var(--v4-popover-strong, var(--panel-bg, var(--btn-bg)));
-    box-shadow: var(--v4-shadow-popover, var(--panel-shadow));
+    background: var(--overlay-bg);
+    box-shadow: var(--overlay-shadow);
     color: var(--v4-text-1, var(--t1));
     font: 400 13px/1.45 var(--font-ui);
   }
