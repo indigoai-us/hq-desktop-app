@@ -21,19 +21,34 @@ describe('sync plan-limit event contract', () => {
     expect(eventSource).toContain('EVENT_SYNC_PLAN_LIMIT: &str = "sync:plan-limit"');
   });
 
-  it('forwards the event from manual and background sync runs', () => {
+  it('records and forwards the event from manual and background sync runs', () => {
+    // hard-stop US-019: the registry behind the status header and the menu
+    // bar records the notice, then the desktop window hears it. The emit stays
+    // targeted; the perf-budget ratchet caps broadcast emits.
     expect(manualSyncSource).toMatch(
-      /SyncEvent::PlanLimit\(payload\)\s*=>\s*app\.emit_to\(\s*crate::commands::desktop_alt::WINDOW_LABEL,\s*EVENT_SYNC_PLAN_LIMIT,\s*payload\.clone\(\),?\s*\)/,
+      /SyncEvent::PlanLimit\(payload\)\s*=>\s*\{\s*crate::commands::uploads_paused::record_plan_limit\(app, hq_folder, payload\);\s*app\.emit_to\(\s*crate::commands::desktop_alt::WINDOW_LABEL,\s*EVENT_SYNC_PLAN_LIMIT,\s*payload\.clone\(\),?\s*\)/,
     );
     expect(daemonSource).toContain('if let SyncEvent::PlanLimit(payload) = &event');
+    expect(daemonSource).toContain(
+      'crate::commands::uploads_paused::record_plan_limit(app, hq_folder, payload);',
+    );
     expect(daemonSource).toMatch(
       /app\.emit_to\(\s*crate::commands::desktop_alt::WINDOW_LABEL,\s*EVENT_SYNC_PLAN_LIMIT,\s*payload\.clone\(\),?\s*\)/,
     );
+    for (const source of [manualSyncSource, daemonSource]) {
+      expect(source).not.toMatch(/app\.emit\(EVENT_SYNC_PLAN_LIMIT/);
+      // The pass end settles the pause and persists it in the journal.
+      expect(source).toContain('crate::commands::uploads_paused::settle_pass(app, hq_folder, &uploads_pass)');
+    }
   });
 
   it('renders a dismissible notice with a server-linked upgrade action', () => {
     expect(workShellSource).toContain("'sync:plan-limit'");
-    expect(workShellSource).toContain('approvedExternalUrl(upgradeUrl)');
+    expect(workShellSource).toContain("'sync:uploads-paused'");
+    expect(workShellSource).toContain("invokeFn('get_sync_status')");
+    expect(workShellSource).toContain(
+      'return approvedPlanUpgradeUrl(withDesktopLimitEntrySurface(approved));',
+    );
     expect(workShellSource).toContain('New files are paused for {notice.company}.');
     expect(workShellSource).toContain('testId="sync-plan-limit-upgrade"');
     expect(workShellSource).toContain('onUpgrade={openPlanLimitUpgrade}');

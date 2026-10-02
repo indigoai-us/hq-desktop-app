@@ -89,7 +89,11 @@ async fn lookup(tool: SessionTool) -> Result<programs::ProgramLookup, String> {
     .map_err(|_| "Provider lookup timed out. Please retry.".to_owned())?
     .map_err(|_| "Provider lookup failed. Please retry.".to_owned())
 }
-async fn command(program: &str, args: &[&str]) -> Result<tokio::process::Command, ()> {
+async fn command(
+    tool: SessionTool,
+    program: &str,
+    args: &[&str],
+) -> Result<tokio::process::Command, ()> {
     let program = program.to_owned();
     let args: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
     tokio::time::timeout(
@@ -99,8 +103,12 @@ async fn command(program: &str, args: &[&str]) -> Result<tokio::process::Command
                 &program,
                 &args.iter().map(String::as_str).collect::<Vec<_>>(),
             );
+            let child_path = match tool {
+                SessionTool::Claude => programs::claude_probe_path(),
+                _ => paths::child_path(),
+            };
             command
-                .env("PATH", paths::child_path())
+                .env("PATH", child_path)
                 .stdin(Stdio::null())
                 .kill_on_drop(true);
             apply_account_env(
@@ -319,7 +327,7 @@ async fn probe_detail(tool: SessionTool, program: &str) -> Result<bool, ProbeErr
         SessionTool::Codex => &["login", "status"],
         SessionTool::Grok => &["models"],
     };
-    let mut child = command(program, args)
+    let mut child = command(tool, program, args)
         .await
         .map_err(|()| ProbeError::failed("the lookup timed out"))?
         .stdout(Stdio::piped())
@@ -404,27 +412,34 @@ async fn run_login(
         SessionTool::Grok => &["login"],
     };
     if cancel.try_recv().is_ok() {
-        *status.lock().unwrap() = state("disconnected", Some("Sign-in cancelled."));
+        *status
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            state("disconnected", Some("Sign-in cancelled."));
         return;
     }
     if force && tool == SessionTool::Claude {
-        if let Ok(mut logout) = command(&program, &["auth", "logout"]).await {
+        if let Ok(mut logout) = command(tool, &program, &["auth", "logout"]).await {
             if let Ok(mut child) = logout.stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
                 let _ = tokio::time::timeout(Duration::from_secs(8), child.wait()).await;
                 let _ = child.kill().await;
             }
         }
     }
-    let mut login = match command(&program, args).await {
+    let mut login = match command(tool, &program, args).await {
         Ok(login) => login,
         Err(()) => {
-            *status.lock().unwrap() =
+            *status
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) =
                 state("error", Some("Provider lookup timed out. Please retry."));
             return;
         }
     };
     let Ok(mut child) = login.stdout(Stdio::null()).stderr(Stdio::null()).spawn() else {
-        *status.lock().unwrap() = state(
+        *status
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = state(
             "error",
             Some("Could not start sign-in. Check that the provider is installed and retry."),
         );
@@ -439,7 +454,9 @@ async fn run_login(
             } else { state("error", Some("Sign-in did not complete. Please retry.")) }
         }
     };
-    *status.lock().unwrap() = result;
+    *status
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = result;
 }
 async fn start_with(
     attempts: &Attempts,
@@ -452,7 +469,11 @@ async fn start_with(
     let mut attempts = attempts.lock().await;
     if let Some(attempt) = attempts.get(key(tool)) {
         if !attempt.task.is_finished() {
-            return attempt.state.lock().unwrap().clone();
+            return attempt
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
         }
     }
     match probe(tool, &program).await {
@@ -481,7 +502,10 @@ async fn start_with(
         deadline,
         force,
     ));
-    let result = status.lock().unwrap().clone();
+    let result = status
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
     attempts.insert(
         key(tool),
         Attempt {
@@ -510,7 +534,11 @@ pub async fn agent_provider_login_start(
 pub async fn agent_provider_login_status(tool: SessionTool) -> Result<LoginState, String> {
     let attempts = attempts().lock().await;
     let previous = if let Some(attempt) = attempts.get(key(tool)) {
-        let previous = attempt.state.lock().unwrap().clone();
+        let previous = attempt
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
         if !attempt.task.is_finished() {
             return Ok(previous);
         }
@@ -533,7 +561,11 @@ async fn cancel_with(attempts: &Attempts, tool: SessionTool) -> LoginState {
             let _ = cancel.send(());
         }
         let _ = attempt.task.await;
-        return attempt.state.lock().unwrap().clone();
+        return attempt
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
     }
     state("disconnected", None)
 }
@@ -570,7 +602,11 @@ mod tests {
             "a lookup that found nothing is not installed, whatever a probe says"
         );
         assert_eq!(
-            classify_runtime(true, Err(ProbeError::failed("it did not answer in time")), searched),
+            classify_runtime(
+                true,
+                Err(ProbeError::failed("it did not answer in time")),
+                searched
+            ),
             RuntimeStatus::ProbeFailed {
                 reason: "it did not answer in time".to_owned()
             }
@@ -680,7 +716,11 @@ mod tests {
     #[tokio::test]
     async fn a_binary_that_is_not_on_disk_reports_missing_rather_than_signed_out() {
         let dir = tempfile::tempdir().unwrap();
-        let program = dir.path().join("definitely-not-here").to_string_lossy().into_owned();
+        let program = dir
+            .path()
+            .join("definitely-not-here")
+            .to_string_lossy()
+            .into_owned();
         let error = probe_detail(SessionTool::Claude, &program)
             .await
             .expect_err("a missing binary cannot answer");
@@ -774,18 +814,15 @@ mod tests {
         std::fs::write(dir.path().join("connected"), "stale").unwrap();
         let attempts = Attempts::default();
         assert_eq!(
-            start_with(
-                &attempts,
-                SessionTool::Claude,
-                program,
-                LOGIN_TIMEOUT,
-                true,
-            )
-            .await
-            .state,
+            start_with(&attempts, SessionTool::Claude, program, LOGIN_TIMEOUT, true,)
+                .await
+                .state,
             "waiting"
         );
-        assert_eq!(finished(&attempts, SessionTool::Claude).await.state, "connected");
+        assert_eq!(
+            finished(&attempts, SessionTool::Claude).await.state,
+            "connected"
+        );
         assert_eq!(
             std::fs::read_to_string(dir.path().join("calls")).unwrap(),
             "login\n"
@@ -866,7 +903,14 @@ mod tests {
             "echo 'secret-token-private-url' >&2; exit 1",
         );
         let attempts = Attempts::default();
-        start_with(&attempts, SessionTool::Claude, program, LOGIN_TIMEOUT, false).await;
+        start_with(
+            &attempts,
+            SessionTool::Claude,
+            program,
+            LOGIN_TIMEOUT,
+            false,
+        )
+        .await;
         let reply = finished(&attempts, SessionTool::Claude).await;
         assert_eq!(reply.state, "error");
         assert!(!serde_json::to_string(&reply)
@@ -877,7 +921,14 @@ mod tests {
     async fn successful_exit_without_real_auth_is_not_connected() {
         let (_dir, program) = fake(SessionTool::Claude, "exit 0");
         let attempts = Attempts::default();
-        start_with(&attempts, SessionTool::Claude, program, LOGIN_TIMEOUT, false).await;
+        start_with(
+            &attempts,
+            SessionTool::Claude,
+            program,
+            LOGIN_TIMEOUT,
+            false,
+        )
+        .await;
         assert_eq!(
             finished(&attempts, SessionTool::Claude).await.state,
             "error"
@@ -949,7 +1000,10 @@ mod tests {
             account_name(Some("  ".into()), || Some("from-passwd".into())),
             Some("from-passwd".to_owned())
         );
-        assert_eq!(account_name(None, || Some("from-passwd".into())), Some("from-passwd".to_owned()));
+        assert_eq!(
+            account_name(None, || Some("from-passwd".into())),
+            Some("from-passwd".to_owned())
+        );
         // Nothing known: leave the child's environment alone rather than
         // inventing an account name that would read the wrong keychain item.
         assert_eq!(account_name(None, || None), None);
@@ -981,6 +1035,37 @@ mod tests {
         .await;
         assert_eq!(status.lock().unwrap().state, "disconnected");
         assert!(!dir.path().join("calls").exists());
+    }
+
+    #[tokio::test]
+    async fn cancelled_login_recovers_a_poisoned_status_mutex() {
+        let status = Arc::new(SyncMutex::new(state("waiting", None)));
+        let poisoned_status = status.clone();
+        let panic = std::thread::spawn(move || {
+            let _guard = poisoned_status.lock().unwrap();
+            panic!("poison login state");
+        })
+        .join();
+        assert!(panic.is_err());
+
+        let (cancel, receiver) = oneshot::channel();
+        cancel.send(()).unwrap();
+        run_login(
+            SessionTool::Claude,
+            String::new(),
+            status.clone(),
+            receiver,
+            LOGIN_TIMEOUT,
+            false,
+        )
+        .await;
+
+        let recovered = status
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        assert_eq!(recovered.state, "disconnected");
+        assert_eq!(recovered.message, Some("Sign-in cancelled."));
     }
 
     #[tokio::test]

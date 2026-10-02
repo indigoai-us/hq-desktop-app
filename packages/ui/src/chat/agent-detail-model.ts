@@ -121,7 +121,7 @@ export function formatRunningFor(
   return `Running for ${days} days`;
 }
 
-export function formatRelativeAgo(
+function formatRelativeAgo(
   iso: string | null | undefined,
   now: Date = new Date(),
 ): string | null {

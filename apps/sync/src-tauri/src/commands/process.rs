@@ -33,6 +33,24 @@ use uuid::Uuid;
 // Bound queued output events so slow callbacks backpressure the child's pipes.
 const PROCESS_EVENT_CHANNEL_CAPACITY: usize = 64;
 
+#[cfg(test)]
+static SYNC_RUNNER_SPAWN_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+pub(crate) fn record_sync_runner_spawn_attempt() {
+    SYNC_RUNNER_SPAWN_ATTEMPTS.fetch_add(1, Ordering::SeqCst);
+}
+
+#[cfg(test)]
+pub(crate) fn sync_runner_spawn_attempts() -> usize {
+    SYNC_RUNNER_SPAWN_ATTEMPTS.load(Ordering::SeqCst)
+}
+
+#[cfg(test)]
+pub(crate) fn reset_sync_runner_spawn_attempts() {
+    SYNC_RUNNER_SPAWN_ATTEMPTS.store(0, Ordering::SeqCst);
+}
+
 #[cfg(target_os = "windows")]
 use std::os::windows::ffi::OsStrExt;
 #[cfg(target_os = "windows")]
@@ -265,7 +283,8 @@ static APP_EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// Blocks new HQ-owned child registrations while a Windows app or CLI update
 /// is quiescing command processes. The updater sets this before taking its
 /// process snapshot, so a child cannot slip into the install window after the
-/// snapshot but before the package replacement or app exit.
+/// snapshot but before the package replacement or app exit. This is process
+/// local state; it must not be persisted as a marker that can survive exit.
 static UPDATE_QUIESCE_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// Blocks new `hq-sync` passes while an automatic/forced desktop update is
 /// waiting for in-flight transfers to drain, then installing. Distinct from
@@ -363,6 +382,9 @@ pub fn begin_update_sensitive_operation() -> Result<UpdateSensitiveOperationGuar
 mod update_sensitive_operation_tests {
     use super::*;
 
+    const RESTART_TEST_MODE: &str = "HQ_TEST_UPDATE_SENSITIVE_RESTART_MODE";
+    const RESTART_TEST_MARKER: &str = "HQ_TEST_UPDATE_SENSITIVE_RESTART_MARKER";
+
     #[test]
     fn operation_admission_and_update_quiescence_are_race_closed() {
         let quiesce_requested = AtomicBool::new(false);
@@ -377,6 +399,67 @@ mod update_sensitive_operation_tests {
 
         drop(guard);
         assert_eq!(active.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn stale_marker_from_dead_process_does_not_defer_a_fresh_process() {
+        let test_name = concat!(
+            "commands::process::update_sensitive_operation_tests::",
+            "stale_marker_from_dead_process_does_not_defer_a_fresh_process"
+        );
+        if let Some(mode) = std::env::var_os(RESTART_TEST_MODE) {
+            let marker = std::env::var_os(RESTART_TEST_MARKER)
+                .expect("restart probe receives the stale marker path");
+            let marker = std::path::PathBuf::from(marker);
+
+            if mode == "old" {
+                let _operation = begin_update_sensitive_operation()
+                    .expect("the old process starts its sensitive operation");
+                UPDATE_QUIESCE_REQUESTED.store(true, Ordering::SeqCst);
+                assert!(
+                    begin_update_sensitive_operation().is_err(),
+                    "the old process closes admission while its updater quiesces"
+                );
+                std::fs::write(&marker, "operation active")
+                    .expect("the simulated process leaves a stale marker");
+                // Model a killed process: do not drop the operation guard.
+                std::process::exit(0);
+            }
+
+            assert_eq!(mode, "fresh");
+            assert!(marker.exists(), "the old process marker remains on disk");
+            let operation = begin_update_sensitive_operation()
+                .expect("fresh process memory starts with an open admission gate");
+            drop(operation);
+            return;
+        }
+
+        let directory = tempfile::tempdir().expect("restart marker temp directory");
+        let marker = directory.path().join("stale-update-sensitive-operation");
+        let current_exe = std::env::current_exe().expect("current test executable");
+
+        let old_process = Command::new(&current_exe)
+            .args(["--exact", test_name])
+            .env(RESTART_TEST_MODE, "old")
+            .env(RESTART_TEST_MARKER, &marker)
+            .status()
+            .expect("old process test starts");
+        assert!(
+            old_process.success(),
+            "old process exits after leaving its marker"
+        );
+        assert!(marker.exists(), "old process leaves the marker behind");
+
+        let fresh_process = Command::new(current_exe)
+            .args(["--exact", test_name])
+            .env(RESTART_TEST_MODE, "fresh")
+            .env(RESTART_TEST_MARKER, &marker)
+            .status()
+            .expect("fresh process test starts");
+        assert!(
+            fresh_process.success(),
+            "a stale marker left by the terminated process does not defer the fresh process"
+        );
     }
 }
 
@@ -744,6 +827,40 @@ fn register_process_for_generation_with_containment(
 
 pub fn register_process(handle: &str, pid: u32) {
     let _ = register_process_gen(handle, pid);
+}
+
+/// Attach a long-lived child spawned outside this module (the hosted
+/// `hq daemon`) to the generation reserved with [`try_register_handle_gen`].
+/// On Windows the child goes into a kill-on-close Job Object first, which
+/// `quiesce_for_update` requires before a desktop update. When the reservation
+/// was cancelled or replaced, the child is stopped and reaped here and an
+/// error is returned; the caller keeps no process.
+pub fn attach_hosted_child(
+    handle: &str,
+    generation: u64,
+    child: std::process::Child,
+) -> Result<std::process::Child, String> {
+    let mut containment = ChildContainment::establish(handle, &child);
+    match register_process_for_generation_with_containment(
+        handle,
+        generation,
+        child.id(),
+        &mut containment,
+    ) {
+        ProcessAttachOutcome::Attached => Ok(child),
+        ProcessAttachOutcome::Cancelled => {
+            Err(
+                ownership_lost_after_spawn(handle, generation, child, true, containment)
+                    .to_string(),
+            )
+        }
+        ProcessAttachOutcome::RefusedStale => {
+            Err(
+                ownership_lost_after_spawn(handle, generation, child, false, containment)
+                    .to_string(),
+            )
+        }
+    }
 }
 
 /// Record the Windows Job Object that owns `handle`'s process tree.
@@ -8109,3 +8226,82 @@ mod child_env_tests {
 #[cfg(test)]
 #[path = "process_output_backpressure_tests.rs"]
 mod process_output_backpressure_tests;
+
+/// The hosted `hq daemon` is spawned by `hq_daemon_host`, not by this module,
+/// but a desktop update still has to be able to stop it: on Windows
+/// `quiesce_for_update` refuses any registered child without a Job Object.
+#[cfg(test)]
+mod hosted_child_tests {
+    use super::*;
+    use hq_desktop_core::daemon::is_pid_alive;
+    use std::process::Command as StdCommand;
+
+    fn long_running_child() -> std::process::Child {
+        // Same shape as the hosted daemon: on Unix it leads its own process group.
+        #[cfg(unix)]
+        let mut command = {
+            use std::os::unix::process::CommandExt;
+            let mut command = StdCommand::new("sleep");
+            command.arg("30").process_group(0);
+            command
+        };
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = StdCommand::new("cmd.exe");
+            command.args(["/d", "/c", "ping 127.0.0.1 -n 30 > nul"]);
+            command
+        };
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("fixture child must spawn")
+    }
+
+    #[test]
+    fn a_hosted_child_is_registered_with_the_containment_updates_require() {
+        let handle = format!("hosted-child-{}", Uuid::new_v4());
+        let generation = try_register_handle_gen(&handle).expect("fresh handle");
+
+        let mut child = attach_hosted_child(&handle, generation, long_running_child())
+            .expect("reserved generation accepts the child");
+
+        let registered = registered_process_for(&handle, child.id()).expect("child registered");
+        assert_eq!(registered.generation, generation);
+        #[cfg(target_os = "windows")]
+        {
+            assert!(
+                registered.job_attached,
+                "hosted child must be in a Job Object"
+            );
+            assert!(require_update_job_containment(&[registered]).is_ok());
+        }
+
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(deregister_generation(&handle, generation));
+    }
+
+    #[test]
+    fn a_hosted_child_whose_reservation_was_lost_is_stopped_and_not_registered() {
+        let handle = format!("hosted-child-{}", Uuid::new_v4());
+        let generation = try_register_handle_gen(&handle).expect("fresh handle");
+        assert!(deregister_generation(&handle, generation));
+
+        let child = long_running_child();
+        let pid = child.id();
+        let started = std::time::Instant::now();
+        assert!(attach_hosted_child(&handle, generation, child).is_err());
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "refused child must be killed, not waited out"
+        );
+
+        assert!(!is_registered(&handle));
+        assert!(
+            !is_pid_alive(pid),
+            "refused child {pid} must be stopped and reaped"
+        );
+    }
+}

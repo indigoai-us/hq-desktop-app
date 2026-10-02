@@ -32,6 +32,8 @@ installAppearancePreferences({
   // Pre-Tahoe Macs get the vibrancy fallback, not Liquid Glass; the surfaces
   // must stay nearly solid there or the whole window reads as washed-out grey.
   readMaterial: () => invoke<string>('window_material_capability'),
+  applyNativeTransparency: (transparency) =>
+    invoke('set_window_backdrop_transparency', { transparency }),
 });
 
 const target = document.getElementById('desktop-alt');

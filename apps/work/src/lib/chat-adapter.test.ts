@@ -88,6 +88,129 @@ describe("hydrateLiveRail", () => {
   afterEach(() => {
     resetLiveRailHydrate();
     vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it("bounds a stalled work-feed body and retains its cached activity", async () => {
+    vi.useFakeTimers();
+    const row = {
+      channelId: "chn_project",
+      scope: "project",
+      projectId: "proj_1",
+      name: "Project",
+      createdAt: "2026-09-01T00:00:00.000Z",
+      updatedAt: "2026-09-01T00:00:00.000Z",
+      lastActivityAt: "2026-09-01T00:00:00.000Z",
+    };
+    const adapter = stubAdapter(async () => ok({ rows: [row] }));
+    vi.mocked(hqProFetch).mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          items: [
+            {
+              projectId: "proj_1",
+              lastActivityAt: "2026-09-20T00:00:00.000Z",
+            },
+          ],
+        }),
+        { status: 200 },
+      ),
+    );
+    await hydrateLiveRail(adapter, [], "prs_deadline");
+    vi.setSystemTime(Date.now() + 60_001);
+
+    const bodyFetch = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) => {
+        const response = new Response(null, { status: 200 });
+        Object.defineProperty(response, "json", {
+          value: () => new Promise(() => {}),
+        });
+        return response;
+      },
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const pending = hydrateLiveRail(adapter, [], "prs_deadline", {
+      fetch: bodyFetch as typeof fetch,
+    });
+    await Promise.resolve();
+    expect(bodyFetch.mock.calls[0]?.[1]?.signal).toBeDefined();
+
+    await vi.advanceTimersByTimeAsync(15_000);
+    const rail = await pending;
+
+    expect(rail.directory[0]?.lastActivityAt).toBe(
+      "2026-09-20T00:00:00.000Z",
+    );
+    expect(warn).toHaveBeenCalledWith(
+      "[hq-work-feed] request failed",
+      expect.objectContaining({ event: "timeout" }),
+    );
+    warn.mockRestore();
+  });
+
+  it("bounds a stalled fetch that ignores its abort signal", async () => {
+    vi.useFakeTimers();
+    const adapter = stubAdapter(async () => ok({ rows: [] }));
+    const nativeFetch = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Promise<Response>(() => {}),
+    );
+    const pending = hydrateLiveRail(adapter, [], "prs_ignores_abort", {
+      fetch: nativeFetch as typeof fetch,
+    });
+    const resolved = vi.fn();
+    void pending.then(resolved);
+    await Promise.resolve();
+    expect(nativeFetch.mock.calls[0]?.[1]?.signal).toBeDefined();
+
+    await vi.advanceTimersByTimeAsync(15_000);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(resolved).toHaveBeenCalled();
+    expect(resolved.mock.calls[0]?.[0].directory).toEqual([]);
+  });
+
+  it("logs a bounded work-feed transport failure and keeps the empty result", async () => {
+    const adapter = stubAdapter(async () => ok({ rows: [] }));
+    vi.mocked(hqProFetch).mockRejectedValue(
+      new Error("transport detail must not be logged"),
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const rail = await hydrateLiveRail(adapter, [], "prs_transport");
+
+    expect(rail.directory).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(
+      "[hq-work-feed] request failed",
+      expect.objectContaining({ event: "transport-error" }),
+    );
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(
+      "transport detail must not be logged",
+    );
+    warn.mockRestore();
+  });
+
+  it("logs a bounded work-feed JSON failure and keeps the empty result", async () => {
+    const adapter = stubAdapter(async () => ok({ rows: [] }));
+    const response = new Response(null, { status: 200 });
+    Object.defineProperty(response, "json", {
+      value: () => Promise.reject(new Error("private body detail")),
+    });
+    vi.mocked(hqProFetch).mockResolvedValue(response);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const rail = await hydrateLiveRail(adapter, [], "prs_json");
+
+    expect(rail.directory).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(
+      "[hq-work-feed] request failed",
+      expect.objectContaining({ event: "body-error" }),
+    );
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(
+      "private body detail",
+    );
+    warn.mockRestore();
   });
 
   it("retries after a rejected hydrate instead of keeping the failed promise", async () => {
@@ -680,7 +803,10 @@ describe("createChatSidebarApi", () => {
         }),
       ],
     });
-    expect(fetchImpl).toHaveBeenCalledWith("/v1/work-mesh/work");
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "/v1/work-mesh/work",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
     expect(hqProFetch).not.toHaveBeenCalled();
   });
 
@@ -719,7 +845,10 @@ describe("createChatSidebarApi", () => {
         }),
       ],
     });
-    expect(hqProFetch).toHaveBeenCalledWith("/v1/work-mesh/work");
+    expect(hqProFetch).toHaveBeenCalledWith(
+      "/v1/work-mesh/work",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 
   it("normalizes both platform search result shapes to the UI envelope", async () => {

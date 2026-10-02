@@ -1,17 +1,17 @@
 // oauth.rs — OAuth loopback listener + PKCE login flow for HQ Sync menubar.
 //
-// Starts a one-shot HTTP server on 127.0.0.1:53682 and advertises the
-// callback as http://localhost:53682/callback, which matches the
-// `http://localhost:*/callback` wildcard registered on Cognito app client
+// Starts a one-shot HTTP server on a registered localhost port, preferring
+// 53682 and falling back to 8765 or 3000 when an earlier callback port is busy.
+// These exact redirect URIs are registered on Cognito app client
 // 7acei2c8v870enheptb1j5foln (hq-prod stack, canonical post-2026-04-25 cutover).
 // Binding the loopback addresses 127.0.0.1 and ::1 (never 0.0.0.0/::) keeps the
 // listener off the LAN. `localhost` in the redirect URI is required because
 // Cognito matches the host segment literally — `127.0.0.1` fails — and because
 // macOS commonly resolves `localhost` to ::1 first, we bind both families so
 // the callback lands no matter which one the browser picks.
-// and waits for the browser to redirect back to /callback?code=...&state=...
-// with the authorization code. Responds with a friendly HTML page that tells
-// the user to return to HQ Sync, then shuts the listener down.
+// It waits for the browser to redirect back to /callback?code=...&state=...
+// with the authorization code. The callback responds with a friendly HTML page
+// that tells the user to return to HQ Sync, then shuts the listener down.
 //
 // Login flow (Svelte frontend):
 //   1. Call `start_oauth_login` — binds the loopback listener *and* returns
@@ -35,13 +35,16 @@
 //   Errors that the UI should show a friendly, specific message for are
 //   returned as a JSON string `{"code": "...", "message": "..."}` rather than
 //   a plain string, so the frontend can pattern-match on `code` instead of
-//   sniffing English text. Currently: `OAUTH_PORT_IN_USE`, `OAUTH_PROVIDER_ERROR`.
+//   sniffing English text. Currently: `OAUTH_PORT_IN_USE`, `OAUTH_PROVIDER_ERROR`,
+//   `MICROSOFT_EMAIL_REQUIRED`, `MICROSOFT_ENABLEMENT_REQUIRED`,
+//   `MICROSOFT_RESOLVE_FAILED`.
 
 use super::cognito::{AuthState, CognitoTokens};
+use hq_desktop_core::microsoft_org::identity_provider_for_sign_in;
 use hq_desktop_core::oauth::{
-    build_authorize_url_from, cognito_client_id, cognito_identity_provider, cognito_token_url,
-    compute_code_challenge, generate_code_verifier, parse_callback, AuthorizeRequest,
-    CallbackOutcome, CallbackRejection, REDIRECT_URI,
+    bind_loopback_listeners, build_authorize_url_from_redirect, cognito_client_id,
+    cognito_token_url, compute_code_challenge, generate_code_verifier, parse_callback,
+    AuthorizeRequest, CallbackOutcome, CallbackRejection, REDIRECT_URI,
 };
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
@@ -66,9 +69,9 @@ fn set_oauth_flow_active(active: bool) {
     OAUTH_FLOW_ACTIVE.store(active, Ordering::SeqCst);
 }
 
-const LOOPBACK_PORT: u16 = 53682;
-const LOOPBACK_HOST: &str = "127.0.0.1";
-const IPV6_LOOPBACK_HOST: &str = "::1";
+// Keep these exact ports in sync with the callback URLs registered for the
+// static Cognito client. Never choose an unregistered ephemeral redirect URI.
+const REGISTERED_LOOPBACK_PORTS: [u16; 3] = [53682, 8765, 3000];
 const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -78,6 +81,7 @@ const READ_TIMEOUT: Duration = Duration::from_secs(10);
 struct PendingPkce {
     verifier: String,
     identity_provider: Option<String>,
+    redirect_uri: String,
 }
 
 static PKCE_VERIFIER: OnceLock<Mutex<Option<PendingPkce>>> = OnceLock::new();
@@ -108,46 +112,6 @@ static PENDING_LISTENER: OnceLock<Mutex<Option<PendingListener>>> = OnceLock::ne
 
 fn listener_store() -> &'static Mutex<Option<PendingListener>> {
     PENDING_LISTENER.get_or_init(|| Mutex::new(None))
-}
-
-/// Bind loopback listeners for the callback on both IPv4 (`127.0.0.1`) and,
-/// when available, IPv6 (`::1`) on the *same* port. Returns whatever bound;
-/// only errors if neither family could bind (e.g. the port is truly in use).
-/// Never binds `0.0.0.0`/`::` — the listener stays off the LAN.
-fn bind_loopback_listeners(port: u16) -> std::io::Result<Vec<TcpListener>> {
-    let mut listeners = Vec::with_capacity(2);
-    let mut first_error = None;
-    let mut bind_port = port;
-
-    match TcpListener::bind((LOOPBACK_HOST, port)) {
-        Ok(listener) => {
-            if port == 0 {
-                bind_port = listener.local_addr()?.port();
-            }
-            listeners.push(listener);
-        }
-        Err(e) => first_error = Some(e),
-    }
-
-    match TcpListener::bind((IPV6_LOOPBACK_HOST, bind_port)) {
-        Ok(listener) => listeners.push(listener),
-        Err(e) => {
-            if first_error.is_none() {
-                first_error = Some(e);
-            }
-        }
-    }
-
-    if listeners.is_empty() {
-        Err(first_error.unwrap_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::AddrNotAvailable,
-                "no loopback listeners bound",
-            )
-        }))
-    } else {
-        Ok(listeners)
-    }
 }
 
 /// Read the first HTTP request chunk without blocking cancellation. Browsers
@@ -315,7 +279,7 @@ fn cancel_pending_listener(expected_state: Option<&str>) -> Result<bool, String>
     let pending = {
         let mut guard = listener_store()
             .lock()
-            .map_err(|e| format!("Listener lock poisoned: {e}"))?;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         match guard.as_ref() {
             Some(pending) if expected_state.map_or(true, |state| pending.state == state) => {
                 guard.take()
@@ -452,16 +416,28 @@ fn write_response(stream: &mut TcpStream, status: &str, body: &str) {
 /// It also surfaces a port-in-use conflict immediately, instead of after
 /// the user has already been sent to the provider's sign-in page.
 #[tauri::command]
-pub async fn start_oauth_login(app: AppHandle, provider: String) -> Result<OAuthFlowInit, String> {
-    let identity_provider = cognito_identity_provider(&provider)?;
+pub async fn start_oauth_login(
+    app: AppHandle,
+    provider: String,
+    email: Option<String>,
+) -> Result<OAuthFlowInit, String> {
+    let identity_provider = resolve_identity_provider(&provider, email.as_deref()).await?;
     // Explicit identity_provider tells Cognito Hosted UI to skip its own
     // username/password form and redirect straight to the selected provider.
     // No nonce: this path has no confirmation step to bind a token back to.
-    let armed = arm_oauth_flow(&app, Some(identity_provider), None)?;
+    let armed = arm_oauth_flow(&app, Some(&identity_provider), None)?;
     Ok(OAuthFlowInit {
         authorize_url: armed.authorize_url,
         state: armed.state,
     })
+}
+
+async fn resolve_identity_provider(provider: &str, email: Option<&str>) -> Result<String, String> {
+    let client = hq_desktop_core::client_info::build_client();
+    let api_base = hq_desktop_core::continuation_endpoints::api_base();
+    identity_provider_for_sign_in(provider, email, &client, &api_base)
+        .await
+        .map_err(|err| structured_error(err.code(), &err.message()))
 }
 
 /// An armed loopback listener and the values that identify its attempt.
@@ -503,30 +479,35 @@ pub(crate) fn arm_oauth_flow(
     }
 
     // A Retry replaces any preceding browser attempt. Wait for the old
-    // listener thread to relinquish its sockets before binding the new one so
-    // the fixed callback port is immediately reusable.
+    // listener thread to relinquish its sockets before binding the next
+    // registered callback port.
     cancel_pending_listener(None)?;
     // Clear until bind succeeds — a port-in-use failure must not leave the
     // blur-hide suppressor stuck on from the previous attempt.
     set_oauth_flow_active(false);
 
-    let listeners = bind_loopback_listeners(LOOPBACK_PORT).map_err(|e| {
+    let listeners = bind_loopback_listeners(&REGISTERED_LOOPBACK_PORTS).map_err(|_| {
         structured_error(
             "OAUTH_PORT_IN_USE",
-            &format!(
-                "Sign-in needs local port {LOOPBACK_PORT}, but another process is already \
-                 using it ({e}). Close the other sign-in window or app using that port, \
-                 then retry."
-            ),
+            "Sign-in could not open a registered local callback port (53682, 8765, or 3000). \
+             Close another sign-in window or app using one of those ports, then retry.",
         )
     })?;
+    let callback_port = listeners
+        .iter()
+        .find_map(|listener| {
+            let address = listener.local_addr().ok()?;
+            address.ip().is_ipv4().then_some(address.port())
+        })
+        .ok_or_else(|| "No IPv4 localhost callback listener was bound.".to_string())?;
+    let redirect_uri = format!("http://localhost:{callback_port}/callback");
 
     // Start accepting before returning the authorize URL. This makes both
     // localhost address families ready before the frontend can open a browser.
     {
         let mut guard = listener_store()
             .lock()
-            .map_err(|e| format!("Listener lock poisoned: {e}"))?;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         *guard = Some(start_loopback_listener(listeners, state.clone()));
     }
     set_oauth_flow_active(true);
@@ -537,19 +518,23 @@ pub(crate) fn arm_oauth_flow(
     {
         let mut guard = pkce_store()
             .lock()
-            .map_err(|e| format!("PKCE lock poisoned: {e}"))?;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         *guard = Some(PendingPkce {
             verifier,
             identity_provider: selected_identity_provider,
+            redirect_uri: redirect_uri.clone(),
         });
     }
 
-    let authorize_url = build_authorize_url_from(&AuthorizeRequest {
-        state: &state,
-        challenge: &challenge,
-        identity_provider,
-        nonce,
-    });
+    let authorize_url = build_authorize_url_from_redirect(
+        &AuthorizeRequest {
+            state: &state,
+            challenge: &challenge,
+            identity_provider,
+            nonce,
+        },
+        &redirect_uri,
+    );
 
     Ok(ArmedOAuthFlow {
         authorize_url,
@@ -563,9 +548,10 @@ pub(crate) fn arm_oauth_flow(
 pub fn oauth_cancel_listen(state: Option<String>) -> Result<(), String> {
     let cancelled = cancel_pending_listener(state.as_deref())?;
     if cancelled || state.is_none() {
-        if let Ok(mut guard) = pkce_store().lock() {
-            *guard = None;
-        }
+        let mut guard = pkce_store()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *guard = None;
         set_oauth_flow_active(false);
     }
     eprintln!("[oauth] sign-in cancelled");
@@ -584,7 +570,7 @@ pub(crate) async fn exchange_code_for_tokens(code: &str) -> Result<ExchangedOAut
     let pending_pkce = {
         let mut guard = pkce_store()
             .lock()
-            .map_err(|e| format!("PKCE lock poisoned: {e}"))?;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         guard
             .take()
             .ok_or_else(|| "No PKCE verifier found — was start_oauth_login called?".to_string())?
@@ -593,6 +579,7 @@ pub(crate) async fn exchange_code_for_tokens(code: &str) -> Result<ExchangedOAut
     let PendingPkce {
         verifier,
         identity_provider,
+        redirect_uri,
     } = pending_pkce;
 
     let client = crate::util::client_info::build_client();
@@ -602,7 +589,7 @@ pub(crate) async fn exchange_code_for_tokens(code: &str) -> Result<ExchangedOAut
         ("grant_type", "authorization_code"),
         ("client_id", client_id.as_str()),
         ("code", code),
-        ("redirect_uri", REDIRECT_URI),
+        ("redirect_uri", redirect_uri.as_str()),
         ("code_verifier", &verifier),
     ];
 
@@ -678,16 +665,17 @@ pub async fn oauth_exchange_code(app: AppHandle, code: String) -> Result<AuthSta
     // also ends on, so there is exactly one definition of "signed in".
     let state = crate::commands::auth::complete_auth_session(&app, &tokens).await?;
     // The control cohort needs the same durable login-completed edge as the
-    // continuation cohort. Persist before background delivery so a transient
-    // telemetry failure cannot make its completed sign-in disappear.
+    // continuation cohort. The flag-gated path waits for its local queue write
+    // before returning to the wizard; network delivery remains asynchronous.
     if let Some(account_id) = state.account_id.as_deref() {
-        let _ = crate::commands::desktop_auth::record_desktop_login_completed(
+        crate::commands::desktop_auth::record_desktop_login_completed_gated(
             &app,
             account_id,
             "manual_oauth",
             "control",
             identity_provider.as_deref(),
-        );
+        )
+        .await;
     } else {
         eprintln!("[desktop-onboarding] login_completed receipt not queued without an authenticated account");
     }
@@ -714,7 +702,7 @@ pub(crate) async fn oauth_listen_for_code_internal(
     let state = {
         let guard = listener_store()
             .lock()
-            .map_err(|e| format!("Listener lock poisoned: {e}"))?;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         guard
             .as_ref()
             .ok_or_else(|| "No pending sign-in listener.".to_string())?
@@ -737,7 +725,7 @@ pub async fn oauth_listen_for_code(app: AppHandle, state: String) -> Result<OAut
     let receiver = {
         let mut guard = listener_store()
             .lock()
-            .map_err(|e| format!("Listener lock poisoned: {e}"))?;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let pending = guard.as_mut().ok_or_else(|| {
             "No pending sign-in listener — was start_oauth_login called?".to_string()
         })?;
@@ -761,7 +749,7 @@ pub async fn oauth_listen_for_code(app: AppHandle, state: String) -> Result<OAut
     let thread = {
         let mut guard = listener_store()
             .lock()
-            .map_err(|e| format!("Listener lock poisoned: {e}"))?;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         match guard.as_ref() {
             Some(pending) if pending.state == state && pending.result.is_none() => {
                 guard.take().and_then(|mut pending| pending.thread.take())
@@ -807,6 +795,9 @@ pub async fn oauth_listen_for_code(app: AppHandle, state: String) -> Result<OAut
 mod tests {
     use super::*;
 
+    const LOOPBACK_HOST: &str = "127.0.0.1";
+    const IPV6_LOOPBACK_HOST: &str = "::1";
+
     // The listener_store tests mutate a process-global singleton, so cargo's
     // parallel runner can otherwise let them observe each other's writes.
     // Serialize them behind this lock and each leaves the store empty.
@@ -820,6 +811,7 @@ mod tests {
             *guard = Some(PendingPkce {
                 verifier: "test-verifier".to_string(),
                 identity_provider: Some("Google".to_string()),
+                redirect_uri: REDIRECT_URI.to_string(),
             });
         }
         {
@@ -830,6 +822,7 @@ mod tests {
                 Some(PendingPkce {
                     verifier: "test-verifier".to_string(),
                     identity_provider: Some("Google".to_string()),
+                    redirect_uri: REDIRECT_URI.to_string(),
                 })
             );
         }
@@ -887,6 +880,24 @@ mod tests {
     }
 
     #[test]
+    fn cancel_pending_listener_recovers_a_poisoned_store() {
+        let _serialize = STORE_TEST_LOCK.lock().unwrap();
+        *listener_store()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+
+        let panic = std::thread::spawn(|| {
+            let _guard = listener_store().lock().unwrap();
+            panic!("poison pending OAuth listener store");
+        })
+        .join();
+        assert!(panic.is_err());
+
+        assert_eq!(cancel_pending_listener(None), Ok(false));
+        listener_store().clear_poison();
+    }
+
+    #[test]
     fn listener_store_replacing_pending_listener_drops_the_old_one() {
         let _serialize = STORE_TEST_LOCK.lock().unwrap();
         // Simulates: user clicks a provider button, abandons that attempt,
@@ -916,8 +927,8 @@ mod tests {
     fn bind_loopback_listeners_binds_ipv4_and_when_available_ipv6_same_port() {
         // The regression this guards: binding IPv4 only lets a `localhost`
         // callback that resolves to `::1` (common on macOS) hit a dead port.
-        let ipv6_loopback_available = TcpListener::bind((IPV6_LOOPBACK_HOST, 0)).is_ok();
-        let listeners = bind_loopback_listeners(0).expect("bind loopback listeners");
+        let ipv6_loopback_available = TcpListener::bind(("::1", 0)).is_ok();
+        let listeners = bind_loopback_listeners(&[0]).expect("bind loopback listeners");
         assert!(!listeners.is_empty());
 
         let port = listeners
@@ -947,7 +958,7 @@ mod tests {
         // The authorize URL is returned only after start_loopback_listener
         // returns. This guards the original race: a fast browser redirect must
         // be accepted even when oauth_listen_for_code has not run yet.
-        let listeners = bind_loopback_listeners(0).expect("bind loopback listeners");
+        let listeners = bind_loopback_listeners(&[0]).expect("bind loopback listeners");
         let port = listeners[0].local_addr().unwrap().port();
         let mut pending = start_loopback_listener(listeners, "test-state".to_string());
 
@@ -971,7 +982,7 @@ mod tests {
 
     fn callback_response(request: &[u8], state: &str) -> String {
         use std::io::Read;
-        let listeners = bind_loopback_listeners(0).expect("bind loopback listeners");
+        let listeners = bind_loopback_listeners(&[0]).expect("bind loopback listeners");
         let port = listeners[0].local_addr().unwrap().port();
         let mut pending = start_loopback_listener(listeners, state.to_string());
         let mut callback = TcpStream::connect((LOOPBACK_HOST, port)).expect("connect");

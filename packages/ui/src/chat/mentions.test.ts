@@ -5,6 +5,7 @@ import {
   collapseDuplicateMentionTargets,
   filterMentionCandidates,
   mergeMentionTargets,
+  mentionPayloadTargets,
   mentionSpansForBody,
   mentionsPresentInBody,
   mentionRowPill,
@@ -23,6 +24,82 @@ describe("channel mentions", () => {
   it("tags agt_* as agents and prs_* as humans", () => {
     expect(mentionTypeForUid("agt_01KTX6WQ6SYH3TZGF3DSDRPGGD")).toBe("agent");
     expect(mentionTypeForUid("prs_01KQ2RY9VB1S105X2GZ2EPHKWY")).toBe("human");
+  });
+
+  it("derives the posted participant type from the uid, not a stored type", () => {
+    const payload = mentionPayloadTargets([
+      {
+        participantUid: "prs_owner",
+        participantType: "agent",
+        displayName: "Owner",
+      },
+      {
+        participantUid: "agt_helper",
+        participantType: "human",
+        displayName: "Helper",
+      },
+    ]);
+
+    expect(
+      payload.map(({ participantUid, participantType }) => [participantUid, participantType]),
+    ).toEqual([
+      ["prs_owner", "human"],
+      ["agt_helper", "agent"],
+    ]);
+  });
+
+  it("drops non-addressable ids and deduplicates the outgoing mention list", () => {
+    const payload = mentionPayloadTargets([
+      {
+        participantUid: "prs_ada",
+        participantType: "agent",
+        displayName: "Ada",
+      },
+      {
+        participantUid: "prs_ada",
+        participantType: "human",
+        displayName: "Ada Lovelace",
+      },
+      {
+        participantUid: "agent:legacy",
+        participantType: "agent",
+        displayName: "Legacy",
+      },
+      {
+        participantUid: "channel_everyone",
+        participantType: "human",
+        displayName: "Everyone",
+      },
+    ]);
+
+    expect(payload).toEqual([
+      { participantUid: "prs_ada", participantType: "human", displayName: "Ada" },
+    ]);
+  });
+
+  it("caps named outgoing mentions at the server limit and retains @here", () => {
+    const named = Array.from({ length: 26 }, (_, index) => ({
+      participantUid: `prs_person_${index}`,
+      participantType: "human" as const,
+      displayName: `Person ${index}`,
+    }));
+    const payload = mentionPayloadTargets([
+      ...named,
+      { participantUid: "here", participantType: "broadcast", displayName: "here" },
+    ]);
+
+    expect(
+      payload.filter((mention) => mention.participantType !== "broadcast"),
+    ).toHaveLength(25);
+    expect(payload.at(-1)).toEqual({
+      participantUid: "here",
+      participantType: "broadcast",
+      displayName: "",
+    });
+    expect(payload.map((mention) => mention.participantUid)).toEqual([
+      ...named.slice(0, 25).map((mention) => mention.participantUid),
+      "here",
+    ]);
   });
 
   it("keeps two people who share a name but have different emails", () => {

@@ -4,7 +4,7 @@ import { mapSignInError } from './onboarding-signin';
 describe('mapSignInError', () => {
   it('uses friendly copy for the structured port-in-use error', () => {
     expect(mapSignInError('{"code":"OAUTH_PORT_IN_USE"}', 'Google')).toBe(
-      'Sign-in needs local port 53682, but another process is already using it. Close the other sign-in window or app using that port, then retry.',
+      'Sign-in could not open a registered local callback port (53682, 8765, or 3000). Close another sign-in window or app using one, then retry.',
     );
   });
 
@@ -15,6 +15,23 @@ describe('mapSignInError', () => {
         'Microsoft',
       ),
     ).toBe('The sign-in was denied.');
+  });
+
+  it('surfaces Microsoft resolve failures instead of sending work users to personal sign-in', () => {
+    expect(
+      mapSignInError(
+        '{"code":"MICROSOFT_ENABLEMENT_REQUIRED","message":"This Microsoft work account is not set up for HQ Desktop yet. Sign in at hqforwork.com first, then return here."}',
+        'Microsoft',
+      ),
+    ).toBe(
+      'This Microsoft work account is not set up for HQ Desktop yet. Sign in at hqforwork.com first, then return here.',
+    );
+    expect(
+      mapSignInError(
+        '{"code":"MICROSOFT_RESOLVE_FAILED","message":"We could not identify your Microsoft account. Check your connection and retry."}',
+        'Microsoft',
+      ),
+    ).toBe('We could not identify your Microsoft account. Check your connection and retry.');
   });
 
   it('maps token exchange failures to retryable copy', () => {

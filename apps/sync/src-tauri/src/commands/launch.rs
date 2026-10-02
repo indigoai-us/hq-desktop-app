@@ -91,11 +91,32 @@ fn is_allowed_claude_url_byte(byte: u8) -> bool {
 /// whitespace/control byte, the shell-dangerous set (`"' \` < > \ |`), and a
 /// malformed `%XX` percent-escape.
 pub fn validate_claude_deep_link(url: &str) -> Result<(), String> {
-    if !url.starts_with("claude://") {
-        return Err(format!("refusing to open non-claude scheme: {}", url));
+    validate_deep_link_bytes(url, "claude")
+}
+
+/// Same byte-level allowlist as `validate_claude_deep_link`, restricted to the
+/// `codex://` scheme registered by the ChatGPT desktop app. HQ opens
+/// `codex://threads/new?prompt=…` links so Codex inside ChatGPT can install
+/// the Codex CLI without the person opening a terminal.
+pub fn validate_codex_deep_link(url: &str) -> Result<(), String> {
+    validate_deep_link_bytes(url, "codex")
+}
+
+/// Scheme-parameterised byte validator shared by every assistant deep-link
+/// command. Every acceptance rule matches the original `validate_claude_deep_link`.
+fn validate_deep_link_bytes(url: &str, scheme: &'static str) -> Result<(), String> {
+    let prefix_owned;
+    let prefix: &str = if scheme.is_empty() {
+        return Err("refusing to open URL: empty scheme".to_string());
+    } else {
+        prefix_owned = format!("{scheme}://");
+        prefix_owned.as_str()
+    };
+    if !url.starts_with(prefix) {
+        return Err(format!("refusing to open non-{scheme} scheme: {}", url));
     }
-    if url.len() == "claude://".len() {
-        return Err("refusing to open empty claude:// URL".to_string());
+    if url.len() == prefix.len() {
+        return Err(format!("refusing to open empty {scheme}:// URL"));
     }
 
     let bytes = url.as_bytes();
@@ -104,13 +125,13 @@ pub fn validate_claude_deep_link(url: &str) -> Result<(), String> {
         let byte = bytes[i];
         if !(0x21..=0x7e).contains(&byte) {
             return Err(format!(
-                "refusing to open claude:// URL with whitespace/control byte at offset {i}"
+                "refusing to open {scheme}:// URL with whitespace/control byte at offset {i}"
             ));
         }
         match byte {
             b'"' | b'\'' | b'`' | b'<' | b'>' | b'\\' | b'|' => {
                 return Err(format!(
-                    "refusing to open claude:// URL with disallowed character {:?}",
+                    "refusing to open {scheme}:// URL with disallowed character {:?}",
                     byte as char
                 ));
             }
@@ -119,9 +140,9 @@ pub fn validate_claude_deep_link(url: &str) -> Result<(), String> {
                     || !is_hex_digit(bytes[i + 1])
                     || !is_hex_digit(bytes[i + 2])
                 {
-                    return Err(
-                        "refusing to open claude:// URL with malformed percent escape".to_string(),
-                    );
+                    return Err(format!(
+                        "refusing to open {scheme}:// URL with malformed percent escape"
+                    ));
                 }
                 i += 3;
                 continue;
@@ -129,7 +150,7 @@ pub fn validate_claude_deep_link(url: &str) -> Result<(), String> {
             _ if is_allowed_claude_url_byte(byte) => {}
             _ => {
                 return Err(format!(
-                    "refusing to open claude:// URL with disallowed character {:?}",
+                    "refusing to open {scheme}:// URL with disallowed character {:?}",
                     byte as char
                 ));
             }
@@ -617,6 +638,47 @@ mod tests {
         assert!(validate_claude_deep_link("claude://x%2").is_err());
         assert!(validate_claude_deep_link("claude://x%zz").is_err());
         assert!(validate_claude_deep_link("claude://x%").is_err());
+    }
+
+    /// The `codex://` validator inherits the same byte allow-list; these
+    /// pins verify the scheme lock and the security-relevant rejects don't
+    /// silently regress when someone adds a scheme parameter.
+    #[test]
+    fn codex_deep_link_accepts_the_install_prompt_url_shape() {
+        assert!(validate_codex_deep_link(
+            "codex://threads/new?prompt=install%20codex"
+        )
+        .is_ok());
+        assert!(validate_codex_deep_link("codex://launch").is_ok());
+    }
+
+    #[test]
+    fn codex_deep_link_rejects_non_codex_schemes_and_empty_body() {
+        assert!(validate_codex_deep_link("claude://code/new").is_err());
+        assert!(validate_codex_deep_link("https://evil.example/x").is_err());
+        assert!(validate_codex_deep_link("codex://").is_err());
+    }
+
+    #[test]
+    fn codex_deep_link_rejects_shell_metacharacters_and_control_bytes() {
+        for evil in [
+            "codex://threads/new?prompt=`whoami`",
+            "codex://threads/new?prompt=one two",
+            "codex://threads/new?prompt=one\ttwo",
+            "codex://threads/new?prompt=<xss>",
+            "codex://threads/new?prompt=|pipe",
+        ] {
+            assert!(
+                validate_codex_deep_link(evil).is_err(),
+                "should reject: {evil}"
+            );
+        }
+    }
+
+    #[test]
+    fn codex_deep_link_rejects_malformed_percent_escape() {
+        assert!(validate_codex_deep_link("codex://x%2").is_err());
+        assert!(validate_codex_deep_link("codex://x%zz").is_err());
     }
 
     #[test]

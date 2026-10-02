@@ -25,6 +25,7 @@
    */
   import {
     CLAUDE_PROVIDER_FLAG,
+    HUMAN_ONLY_CONVERSATIONS_FLAG,
     failure,
     hostComputerNoun,
     startJitteredPoll,
@@ -223,6 +224,23 @@
     type NotifyLevel,
   } from "../chat/notify-level";
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
+  import GuidedTour from "../tour/GuidedTour.svelte";
+  import {
+    TOUR_AUTO_START_DELAY_MS,
+    TOUR_IDLE,
+    backTourState,
+    isTourHomeRow,
+    nextTourState,
+    readTourSeenLocally,
+    shouldAutoStartTour,
+    skipTourState,
+    startTourState,
+    tourSteps,
+    writeTourSeenLocally,
+    type TourEnterAction,
+    type TourState,
+  } from "../tour/guided-tour.js";
+  import { vaultsFor } from "../files/explorer/vault-model.js";
   import MemberProfilePanel from "../chat/MemberProfilePanel.svelte";
   import AgentDetailPanel from "../chat/AgentDetailPanel.svelte";
   import LocalBotDetailPanel from "../chat/LocalBotDetailPanel.svelte";
@@ -263,6 +281,7 @@
     destinationLabel,
     extraParamCompanyKey,
     historyNeighbor,
+    priorNonLibraryIndex,
     type NavigationDestination,
     type NavigationEntry,
     type NavigationScrollState,
@@ -334,7 +353,11 @@
   } from "../chat/mentions.js";
   import {
     clearAgentEverywhere,
-    clearRowFromMessages,
+    clearRowOnReply,
+    forgetAnswered,
+    releaseAnswered,
+    visibleThinking,
+    type AnsweredWhileBusy,
     agentDisplayName,
     applyAgentStatus,
     dropRow,
@@ -533,6 +556,7 @@
     sinceForChannelWake,
     timelineHasEvent,
     timelinePageFromPayload,
+    HUMAN_HISTORY_VIEW,
   } from "../chat/live-messages.js";
   import {
     DM_INBOX_SINCE_KEY,
@@ -540,6 +564,7 @@
     dmActivityFromInboxPage,
     dmActivityFromThreadsPage,
     dmActivityFromTimeline,
+    dmThreadsPageCarriesHumanRecency,
     type InboxDmActivity,
     isMissingEndpointFailure,
     mergeDmActivity,
@@ -840,11 +865,50 @@
      */
     setupInstallGuide?: {
       oninstall(tool: "claude" | "codex"): Promise<{ ok: boolean; reason?: string }>;
-      onsignin(tool: "claude" | "codex"): Promise<{ ok: boolean; reason?: string }>;
+      onsignin(
+        tool: "claude" | "codex",
+        options?: { signal?: AbortSignal },
+      ): Promise<{ ok: boolean; reason?: string }>;
+      /** Is this tool already signed in? Lets the guide skip to Continue. */
+      onstatus?(tool: "claude" | "codex"): Promise<boolean>;
+      /** Stop a pending sign-in so the guide can open a fresh one. */
+      oncancelsignin?(tool: "claude" | "codex"): Promise<void>;
       onrefresh(): Promise<void>;
       downloadUrlFor(tool: "claude" | "codex"): string;
       onopen(url: string): Promise<{ ok: boolean; reason?: string }> | void;
+      /**
+       * Open one of the assistant desktop apps with a fixed install prompt
+       * pre-filled. Wired to `open_claude_code_link` /
+       * `open_codex_deep_link` via the install-guide adapter. When present,
+       * the shared InstallChoice panel offers a "Set up with Claude" or
+       * "Set up with ChatGPT" button on both the New bot wizard and the
+       * setup assistant.
+       */
+      onopenassistant?(
+        assistant: "claude-desktop" | "chatgpt-desktop",
+        url: string,
+      ): Promise<{ ok: boolean; reason?: string }>;
     } | null;
+    /**
+     * Live AiTools payload. Passed through the New-bot wizard so the
+     * shared InstallChoice panel can decide which assistant buttons to
+     * offer without a per-open probe. Null while the initial probe runs.
+     */
+    aiTools?: import("../install-choice/install-choice.js").AiTools | null;
+    /** Open the assistant desktop app with a pre-filled install prompt. */
+    onopenassistant?: (
+      assistant: import("../install-choice/install-choice.js").AssistantId,
+      url: string,
+    ) => Promise<import("../install-choice/install-choice.js").InstallOutcome>;
+    /** HQ's own one-click installer for a coding tool. */
+    onassistedinstall?: (
+      tool: import("../install-choice/install-choice.js").CodingTool,
+    ) => Promise<import("../install-choice/install-choice.js").InstallOutcome>;
+    /**
+     * Ask the host to (re-)probe `detect_ai_tools`. Called lazily by the
+     * New bot wizard on mount so the probe is not paid on every app open.
+     */
+    onrequestaitools?: () => void;
   }
 
   let {
@@ -908,6 +972,10 @@
     rowExtrasError = false,
     rowExtras = null,
     setupInstallGuide = null,
+    aiTools = null,
+    onopenassistant,
+    onassistedinstall,
+    onrequestaitools,
   }: Props = $props();
 
   const derivedChrome = $derived(accountChromeFromSelf(self));
@@ -1296,6 +1364,17 @@
         conflictFiles = [];
       }),
     );
+    // hard-stop US-019: the native registry announces every change to the
+    // plan-limit upload pause; re-read the journal-backed status so the Core
+    // header stops saying "All synced" without waiting for the 30s poll.
+    track(
+      host.listen("sync:uploads-paused", () => {
+        if (!adapter.isAvailable("canSync")) return;
+        void readLiveSyncStatus(adapter).then((next) => {
+          if (!disposed) liveSync = next;
+        });
+      }),
+    );
 
     return () => {
       disposed = true;
@@ -1527,6 +1606,7 @@
   } | null>(null);
   let navigationCanGoBack = $state(false);
   let navigationCanGoForward = $state(false);
+  let libraryBackTargetIndex = $state<number | null>(null);
   let navigationBackLabel = $state("");
   let navigationForwardLabel = $state("");
   let pendingRestoreScroll = $state<NavigationScrollState | null>(null);
@@ -1633,6 +1713,54 @@
   /** Sidebar entry points for app-wide shortcuts; null while unmounted. */
   let sidebarActions = $state<ChatSidebarActions | null>(null);
   let cheatSheetOpen = $state(false);
+
+  /**
+   * desktop.human-only-conversations: on by default. The desktop adapters
+   * pin the flag to `HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT` (true), so
+   * the initial state is `true` to avoid a first-paint flash of mesh rows.
+   * An adapter that answers `ok(false)` (or fails) still turns it off; the
+   * web adapter keeps the registry read. Callers hide mesh / non-human messages in
+   * conversation views and reorder the sidebar by last human message when
+   * this is true. See `packages/platform/src/humanMessage.ts` for the rule.
+   */
+  let humanOnlyConversations = $state(true);
+  /**
+   * The adapter has answered that the flag is on. `humanOnlyConversations`
+   * starts `true` before any answer so the first paint hides mesh rows, but a
+   * history request only asks the server for the human view (`view=human`)
+   * once the answer is in. Otherwise a host that ends up with the flag off
+   * would have loaded a server-filtered page it then has to show unfiltered.
+   */
+  let humanOnlyConfirmed = $state(false);
+  $effect(() => {
+    const identity = adapter?.identity;
+    if (!identity || typeof identity.hasFeature !== "function") return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const initial = await identity.hasFeature(
+          HUMAN_ONLY_CONVERSATIONS_FLAG,
+        );
+        if (cancelled) return;
+        humanOnlyConversations = initial.ok && initial.value === true;
+        humanOnlyConfirmed = humanOnlyConversations;
+      } catch {
+        // Registry outage / partial mock — stay dark.
+      }
+    })();
+    const unsubscribe =
+      typeof identity.subscribeFeature === "function"
+        ? identity.subscribeFeature(HUMAN_ONLY_CONVERSATIONS_FLAG, (result) => {
+            if (cancelled) return;
+            humanOnlyConversations = result.ok && result.value === true;
+            humanOnlyConfirmed = humanOnlyConversations;
+          })
+        : undefined;
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  });
 
   // ── Personal local bots (local-bots US-009) ────────────────────────────────
   // The host's bots API shells to `hq bot list --json`; rows carry the server's
@@ -3195,6 +3323,15 @@
           void navigate({ kind: "explorer" });
         },
       });
+      nav.push({
+        id: "command-take-tour",
+        label: "Take the tour",
+        detail: "An eight-step walk through HQ Desktop",
+        // Start after the palette has closed so it cannot take focus back.
+        action: () => {
+          window.setTimeout(startGuidedTour, 0);
+        },
+      });
     }
     nav.push({
       id: "command-go-library",
@@ -3455,13 +3592,12 @@
   const activeTab = $derived(isProjectChannel ? tab : "chat");
 
   const headerTitle = $derived(
-    resolveConversationTitle(selectedRow, railRows, selectedHomeCompany?.slug ?? null),
+    selectedHomeCompany?.displayName?.trim() ||
+      selectedHomeCompany?.slug?.trim() ||
+      resolveConversationTitle(selectedRow, railRows),
   );
 
-  /**
-   * Company hero shows the company's display name ("Ramen Bae"), not the
-   * channel slug ("ramen-bae") — the channel header keeps `#ramen-bae`.
-   */
+  /** Company hero and home-channel title use the company display name. */
   const companyHeroTitle = $derived(
     companyAppearanceName ||
       companyDisplayName(selectedRow?.companyUid, companyNames) ||
@@ -3615,6 +3751,28 @@
    * predates the peer index. Stop asking; the inbox path still runs.
    */
   let dmThreadsUnsupported = false;
+  /**
+   * The DM thread listing reported a last human message (or a known "none")
+   * for at least one pair, so this server maintains it. Only then is the
+   * listing re-read when a DM arrives or is sent: the sidebar orders such a
+   * pair by a value nothing else on the client can supply. An older server
+   * sends neither field and keeps the single backfill read.
+   */
+  let dmThreadsCarryHumanRecency = false;
+  /**
+   * Re-reads of the DM thread listing for human recency are throttled the
+   * way the rail throttles its directory read: an arriving DM asks for one
+   * read per interval, and the person's own send is read at once.
+   */
+  const DM_HUMAN_RECENCY_MIN_INTERVAL_MS = 20_000;
+  let dmHumanRecencyTimer: ReturnType<typeof setTimeout> | null = null;
+  let dmHumanRecencyLastRunAt = 0;
+  /**
+   * Counts DM thread listing requests. A response is applied only when it
+   * answers the newest request, so two reads in flight cannot land out of
+   * order and leave an older listing on the rail.
+   */
+  let dmThreadsRequestSeq = 0;
 
   // Client-side "agent is thinking" rows, keyed by conversation row id.
   // Local only — the backend has no typing/ack events. Per-conversation so
@@ -3637,13 +3795,21 @@
     const { [uid]: _started, ...rest } = kickoffPendingByUid;
     kickoffPendingByUid = rest;
     if (decision.state === "start") {
+      answeredWhileBusy = forgetAnswered(answeredWhileBusy, uid);
       thinkingByRow = startThinkingIn(thinkingByRow, row.id, { agentUid: uid, agentName: row.title?.trim() || name }, Date.now(), {
         afterMs: decision.afterMs,
       });
     }
   });
+  // A row whose agent already has a newer message in the open timeline is
+  // hidden in the same render that shows the reply, whichever path appended it.
   const agentThinking = $derived<ThinkingEntry[]>(
-    selectedRow ? (thinkingByRow[selectedRow.id] ?? []) : [],
+    selectedRow
+      ? visibleThinking(
+          thinkingByRow[selectedRow.id] ?? [],
+          liveTimelineId === selectedRow.id ? liveTimeline : [],
+        )
+      : [],
   );
 
   // While a local bot's conversation is open, list its bots often enough that
@@ -3660,23 +3826,25 @@
     };
   });
 
-  // A local bot that is mid-turn keeps its indicator, even after it posts.
-  // The CLI reports `busy` from the bot's own in-flight marker, so a progress
-  // note in the middle of a long turn no longer reads as "finished" and the
-  // DM stops going silent while the bot is still working. When the turn ends,
-  // `busy` drops and the row is cleared here.
+  // A local bot that is busy (the CLI's in-flight marker) shows its row in its
+  // DM. Its reply ends the row at once (`clearThinkingFromIncoming`); the
+  // marker can outlive the post by a poll or two, so a bot answered while busy
+  // is not re-shown until `busy` drops (new turn) or the person writes again.
   let previouslyBusyBotUids: string[] = [];
+  let answeredWhileBusy: AnsweredWhileBusy = {};
   const busyBotUids = $derived(busyLocalBotUids(localBots));
   $effect(() => {
     const busy = busyBotUids;
     // The map is read and written here, so it must not be a dependency of
     // this effect — only the busy list is.
     untrack(() => {
+      answeredWhileBusy = releaseAnswered(answeredWhileBusy, busy);
       const next = syncBusyThinking(thinkingByRow, {
         busy,
         previouslyBusy: previouslyBusyBotUids,
         nameOf: (uid) => localBots.find((b) => b.agentUid === uid)?.name ?? "bot",
         now: Date.now(),
+        answered: answeredWhileBusy,
       });
       previouslyBusyBotUids = busy;
       if (next !== thinkingByRow) thinkingByRow = next;
@@ -3750,12 +3918,15 @@
     rowId: string,
   ): void {
     if (!thinkingByRow[rowId]?.length) return;
-    // A local bot that is still mid-turn keeps its row: its interim post is
-    // not the end of the turn, and the in-flight marker outranks the message.
-    if (busyBotUids.some((uid) => rowId === `dm:${uid}`)) return;
-    // Timestamp-aware so a full-history hydrate or overlapping catch-up page
-    // containing an OLD agent message cannot clear a newer row.
-    thinkingByRow = clearRowFromMessages(thinkingByRow, rowId, messages);
+    // The reply ends the row now, even while a local bot's `busy` flag is
+    // still set: that flag is polled and outlives the post, and holding the
+    // row for it left "working on it" under the answer for seconds. A bot
+    // answered while busy is remembered so the same stale flag cannot bring
+    // the row back. Timestamp-aware so a full-history hydrate or overlapping
+    // catch-up page containing an OLD agent message cannot clear a newer row.
+    const next = clearRowOnReply(thinkingByRow, answeredWhileBusy, rowId, messages, busyBotUids);
+    answeredWhileBusy = next.answered;
+    if (next.map !== thinkingByRow) thinkingByRow = next.map;
   }
 
   /** Same messages (by reference) in the same order — nothing to repaint. */
@@ -3807,9 +3978,18 @@
     });
   }
 
+  /**
+   * `history` marks the read that loads a conversation's newest history page
+   * (its result goes to `applyFetchedTimeline`). Only that read asks the
+   * server for the human view. A catch-up read does not, with or without
+   * `since`: it runs on every wake and on the safety poll, and a filtered
+   * read may scan a thousand rows on the server where an unfiltered one
+   * reads twenty. The local filter hides what a catch-up page should not show.
+   */
   async function fetchTimelineRaw(
     row: ConversationRow,
     since?: string,
+    history = false,
   ): Promise<unknown | null> {
     const started = performance.now();
     console.info("[hq-desktop]", {
@@ -3818,12 +3998,16 @@
       id: row.id,
       since: since ?? null,
     });
+    const view = history && !since && wantsServerHumanView()
+      ? { view: HUMAN_HISTORY_VIEW }
+      : {};
     try {
       if (row.kind === "dm" && row.personUid) {
         const res = await adapter.messaging.fetchDmThread({
           withPersonUid: row.personUid,
           limit: since ? 20 : 50,
           since,
+          ...view,
         });
         console.info("[hq-desktop]", {
           t: Date.now(),
@@ -3839,6 +4023,7 @@
           channelId: row.channelId,
           limit: since ? 20 : 50,
           since,
+          ...view,
         });
         console.info("[hq-desktop]", {
           t: Date.now(),
@@ -3863,6 +4048,36 @@
   }
 
   let historyCursors = $state<Record<string, string | null>>({});
+  /**
+   * Row id → the newest history page for it came back with `view: "human"`,
+   * meaning the server filtered and paged it. Only then is the page trusted:
+   * "earlier" exists exactly when the page carried a `nextCursor`, and a 1:1
+   * DM gets a cursor at all. An older server ignores `view` and echoes
+   * nothing, which leaves a row out of this map and on the previous
+   * behaviour (local filter, bounded auto-fetch, no DM paging).
+   */
+  let historyServerView = $state<Record<string, boolean>>({});
+
+  /** History requests ask for the server-side human view only once the flag is confirmed on. */
+  function wantsServerHumanView(): boolean {
+    return humanOnlyConversations && humanOnlyConfirmed;
+  }
+
+  /** Record what one history page says about paging for this row. */
+  function recordHistoryPage(
+    row: ConversationRow,
+    raw: unknown,
+    requestedCursor: string | null,
+  ): void {
+    const page = timelinePageFromPayload(raw);
+    const serverView = page.view === HUMAN_HISTORY_VIEW;
+    historyServerView[row.id] = serverView;
+    // Without the echo a 1:1 DM keeps no cursor, as before this option
+    // existed. With it, the server's cursor is the only paging signal.
+    const next = row.channelId || serverView ? (page.nextCursor ?? null) : null;
+    historyCursors[row.id] =
+      requestedCursor !== null && next === requestedCursor ? null : next;
+  }
 
   async function loadEarlierTimeline(): Promise<void> {
     const row = selectedRow;
@@ -3870,14 +4085,39 @@
     const generation = tenantGeneration;
     const cursor = historyCursors[row.id];
     if (!cursor) return;
+    // A cursor from a human-view page must go back with `view=human`. One
+    // from an unfiltered page is a plain row key, which that route accepts
+    // too, so the option follows the mode and not the cursor's origin.
+    const view = wantsServerHumanView() ? { view: HUMAN_HISTORY_VIEW } : {};
     const raw = row.channelId
-      ? unwrapAdapter(await adapter.messaging.fetchChannel({ channelId: row.channelId, cursor, limit: 50 }))
-      : null;
+      ? unwrapAdapter(await adapter.messaging.fetchChannel({ channelId: row.channelId, cursor, limit: 50, ...view }))
+      : row.kind === "dm" && row.personUid
+        ? unwrapAdapter(await adapter.messaging.fetchDmThread({ withPersonUid: row.personUid, cursor, limit: 50, ...view }))
+        : null;
     if (selectedRow?.id !== row.id || tenantGeneration !== generation || raw === null) return;
-    const page = timelinePageFromPayload(raw);
-    historyCursors[row.id] = page.nextCursor === cursor ? null : (page.nextCursor ?? null);
+    recordHistoryPage(row, raw, cursor);
     commitTimeline(row, mergeFetchedTimeline(liveTimeline, raw));
   }
+
+  // The flag turned off while server-filtered pages are held: those pages
+  // lack the rows the unfiltered view shows. Drop them and read the open
+  // conversation again without `view`.
+  $effect(() => {
+    if (humanOnlyConversations) return;
+    untrack(() => {
+      const filtered = Object.keys(historyServerView).filter(
+        (id) => historyServerView[id],
+      );
+      if (filtered.length === 0) return;
+      for (const id of filtered) timelineCache.delete(id);
+      historyServerView = {};
+      const row = selectedRow;
+      if (!row || !filtered.includes(row.id)) return;
+      void fetchTimelineRaw(row, undefined, true)
+        .then((raw) => applyFetchedTimeline(row, raw))
+        .catch(() => {});
+    });
+  });
 
   /**
    * A channel opened by id before it was in the loaded rows (a deep link, a
@@ -3929,7 +4169,7 @@
     timelineHydrating = false;
     if (raw == null) return;
     hydrateStubChannelRow(row, raw);
-    historyCursors[row.id] = row.channelId ? (timelinePageFromPayload(raw).nextCursor ?? null) : null;
+    recordHistoryPage(row, raw, null);
     let incoming = messagesForDisplay(raw);
     // An immediate readback can lag the accepted mutation. Preserve its
     // pending receipt over a stale open card, but accept any newer state.
@@ -4019,7 +4259,7 @@
     timelineHydrating = true;
     const frame = requestAnimationFrame(() => {
       if (selectedRow?.id !== token) return;
-      void fetchTimelineRaw(row)
+      void fetchTimelineRaw(row, undefined, true)
         .then((raw) => applyFetchedTimeline(row, raw))
         .finally(() => {
           if (selectedRow?.id === token) timelineHydrating = false;
@@ -4617,15 +4857,40 @@
   }
 
   async function removeMember(row: StatusPersonRow): Promise<void> {
-    const channelId = selectedRow?.channelId?.trim() ?? "";
+    const activeRow = selectedRow;
+    const channelId = activeRow?.channelId?.trim() ?? "";
     if (!channelId.startsWith("chn_") || removingMemberUid) return;
+    const isSelfLeave = isSelf(row.personUid, self);
     removingMemberUid = row.personUid;
+    channelActionError = null;
     try {
       const res = await adapter.messaging.removeChannelMember(
         channelId,
         row.personUid,
       );
       if (res.ok) {
+        if (isSelfLeave) {
+          // The caller just left the channel: close the popover, drop the
+          // rail row optimistically (same wake delete_channel uses), and
+          // clear the selection so the empty state renders instead of a
+          // dead conversation.
+          membersOpen = false;
+          wakes?.emit?.("channel:removed", { channelId });
+          timelineCache.delete(activeRow?.id ?? "");
+          if (activeRow && selectedRow?.channelId === channelId) {
+            selectedRow = null;
+            liveTimeline = [];
+            liveTimelineId = null;
+            timelineHydrating = false;
+            openReplyRootId = null;
+            openProfileMember = null;
+            openAgentMember = null;
+            attachTray = null;
+            replyPreviewByRoot = {};
+            projectAboutOpen = false;
+          }
+          return;
+        }
         await loadChannelRoster(channelId);
         if (openProfileMember?.personUid === row.personUid) {
           openProfileMember = null;
@@ -4633,10 +4898,36 @@
         if (openAgentMember?.personUid === row.personUid) {
           openAgentMember = null;
         }
+      } else {
+        const fallbackMessage = isSelfLeave
+          ? "Couldn't leave this channel. Refresh and try again."
+          : "Couldn't remove this member. Refresh and try again.";
+        const serverMessage = res.message?.trim();
+        channelActionError = isOwnerCannotLeave(res.code, res.message)
+          ? OWNER_CANNOT_LEAVE_MESSAGE
+          : serverMessage || fallbackMessage;
       }
+    } catch (err) {
+      const message = (err instanceof Error ? err.message : String(err)).trim();
+      const fallbackMessage = isSelfLeave
+        ? "Couldn't leave this channel. Refresh and try again."
+        : "Couldn't remove this member. Refresh and try again.";
+      channelActionError = isOwnerCannotLeave(undefined, message)
+        ? OWNER_CANNOT_LEAVE_MESSAGE
+        : message || fallbackMessage;
     } finally {
       removingMemberUid = null;
     }
+  }
+
+  const OWNER_CANNOT_LEAVE_MESSAGE =
+    "Channel owners can't leave their own channel. Delete it or ask another owner to transfer ownership.";
+
+  function isOwnerCannotLeave(code?: string, message?: string): boolean {
+    return (
+      code === "CHANNEL_OWNER_CANNOT_LEAVE" ||
+      message?.includes("CHANNEL_OWNER_CANNOT_LEAVE") === true
+    );
   }
 
   // ── Channel notification level (header mute control) ─────────────────────
@@ -5067,6 +5358,8 @@
       return {
         messages: normalizeConversationMessages(page.messages),
         nextCursor: page.nextCursor ?? null,
+        ...(page.view ? { view: page.view } : {}),
+        ...(page.viewScanTruncated ? { viewScanTruncated: true } : {}),
       };
     },
     sendChannelMessage: async (args) => {
@@ -5083,6 +5376,8 @@
       return {
         messages: normalizeConversationMessages(page.messages),
         nextCursor: page.nextCursor ?? null,
+        ...(page.view ? { view: page.view } : {}),
+        ...(page.viewScanTruncated ? { viewScanTruncated: true } : {}),
       };
     },
     sendDm: async (args) => {
@@ -5320,7 +5615,16 @@
     void (async () => {
       try {
         const res = await adapter.settings.getSetupStatus();
-        const owed = res.ok ? (res.value as { welcomeSetupOwed?: unknown } | null)?.welcomeSetupOwed : undefined;
+        const status = res.ok
+          ? (res.value as { welcomeSetupOwed?: unknown; welcomeTourShown?: unknown } | null)
+          : null;
+        const owed = status?.welcomeSetupOwed;
+        if (status) {
+          tourHostStatus = {
+            owed: owed === true,
+            shown: status.welcomeTourShown === true,
+          };
+        }
         // Only an explicit "not owed" skips the welcome; anything else keeps today's behaviour.
         resolve(owed !== false);
       } catch {
@@ -5329,6 +5633,132 @@
     })();
     return () => clearTimeout(timer);
   });
+
+  /*
+   * FIRST-RUN GUIDED TOUR. An eight-step spotlight (setup bot, Files button,
+   * new-bot "+" button, invite, meetings, web console, Launch menu, command
+   * palette) that starts by itself once on a fresh install, after the shell
+   * is up and #welcome or the setup bot's DM is on screen, and can be
+   * replayed from the command palette. Model and geometry live in
+   * `tour/guided-tour.ts`; this block holds the titlebar Launch menu open,
+   * opens (and closes) the command palette and persists "seen" the moment it
+   * starts showing. It never navigates: starting, Done and Skip leave the
+   * route and the selected conversation exactly as they are.
+   */
+  /** The host's explicit setup-status answer; null until (or unless) it answers. */
+  let tourHostStatus = $state<{ owed: boolean; shown: boolean } | null>(null);
+  let tourShellReady = $state(false);
+  let tourState = $state<TourState>(TOUR_IDLE);
+  let tourStartedThisSession = false;
+  let tourAutoTimer = 0;
+  const tourSetupBotUid = $derived(existingSetupBot?.agentUid ?? null);
+  const tourVaults = $derived(vaultsFor(companies));
+  const tourStepList = $derived(
+    tourSteps({
+      setupBotDmOpen: Boolean(
+        tourSetupBotUid && view === "conversation" && selectedRow?.id === `dm:${tourSetupBotUid}`,
+      ),
+      setupBotUid: tourSetupBotUid,
+      hasCompanyVault: tourVaults.some((vault) => vault.kind === "company"),
+      hasCompany: (companies ?? []).some((company) => company.kind === "company"),
+    }),
+  );
+  const tourIndex = $derived(tourState.status === "active" ? tourState.index : -1);
+  const tourStep = $derived(tourIndex >= 0 ? (tourStepList[tourIndex] ?? null) : null);
+  const tourLaunchOpen = $derived(tourStep?.onEnter === "open-launch-menu");
+  const tourWelcomeOnScreen = $derived(
+    view === "conversation" && isTourHomeRow(selectedRow?.id, tourSetupBotUid),
+  );
+
+  function tourLocalStorage(): Storage | null {
+    try {
+      return typeof localStorage === "undefined" ? null : localStorage;
+    } catch {
+      return null;
+    }
+  }
+
+  function markTourSeen(): void {
+    writeTourSeenLocally(tourLocalStorage());
+    const mark = adapter.settings.markWelcomeTourShown;
+    if (!mark) return;
+    void Promise.resolve()
+      .then(() => mark.call(adapter.settings))
+      .catch((err) => console.warn("[hq-desktop] could not record the guided tour:", err));
+  }
+
+  function startGuidedTour(): void {
+    if (adapter.kind === "web" || tourState.status === "active") return;
+    tourStartedThisSession = true;
+    tourState = startTourState();
+    markTourSeen();
+  }
+
+  /** The command palette was opened by this tour, so it closes it. */
+  let tourOpenedPalette = false;
+
+  function closeTourSurfaces(keep: TourEnterAction | null): void {
+    if (keep !== "open-palette" && tourOpenedPalette) {
+      tourOpenedPalette = false;
+      paletteOpen = false;
+    }
+  }
+
+  /** Done or Skip: close the layer and what the tour opened; stay put. */
+  function endGuidedTour(): void {
+    tourState = TOUR_IDLE;
+    closeTourSurfaces(null);
+  }
+
+  function tourNext(): void {
+    const next = nextTourState(tourState, tourStepList.length);
+    if (next.status === "active") tourState = next;
+    else endGuidedTour();
+  }
+
+  function tourBack(): void {
+    tourState = backTourState(tourState);
+  }
+
+  function tourSkip(): void {
+    if (skipTourState(tourState).status === "skipped") endGuidedTour();
+  }
+
+  // Auto-start: fresh install, not seen (host flag or local fallback), shell
+  // up, the setup conversation on screen; then a short settle delay.
+  $effect(() => {
+    const ready = shouldAutoStartTour({
+      welcomeSetupOwed: tourHostStatus ? tourHostStatus.owed : null,
+      tourSeen: Boolean(tourHostStatus?.shown) || readTourSeenLocally(tourLocalStorage()),
+      shellReady: tourShellReady,
+      welcomeOnScreen: tourWelcomeOnScreen,
+      startedThisSession: tourStartedThisSession,
+    });
+    if (!ready || adapter.kind === "web") return;
+    tourAutoTimer = window.setTimeout(() => {
+      if (!tourStartedThisSession) startGuidedTour();
+    }, TOUR_AUTO_START_DELAY_MS);
+    return () => clearTimeout(tourAutoTimer);
+  });
+
+  // Entering a step (keyed on the index, so a re-derived step list does not
+  // re-run it): close what the previous step opened, then do this step's
+  // action.
+  $effect(() => {
+    const index = tourIndex;
+    if (index < 0) return;
+    untrack(() => {
+      const step = tourStepList[index];
+      if (!step) return;
+      closeTourSurfaces(step.onEnter);
+      if (step.onEnter === "open-palette" && !paletteOpen) {
+        cheatSheetOpen = false;
+        paletteOpen = true;
+        tourOpenedPalette = true;
+      }
+    });
+  });
+
   /**
    * An explicit conversation deep link (`?channel=` / `?person=`) is a
    * stronger intent than first landing: it must never be swallowed by the
@@ -5547,7 +5977,7 @@
       }
       // Fetch newly created steps even when no live event arrives. Failure
       // must not turn an already-saved choice into a failed mutation.
-      void fetchTimelineRaw(actionRow)
+      void fetchTimelineRaw(actionRow, undefined, true)
         .then((raw) => applyFetchedTimeline(actionRow, raw, state === "pending" ? event.cardId : undefined))
         .catch(() => {});
     }
@@ -6194,6 +6624,7 @@
     const snap = navigationHistory.snapshot();
     navigationCanGoBack = navigationHistory.canGoBack();
     navigationCanGoForward = navigationHistory.canGoForward();
+    libraryBackTargetIndex = priorNonLibraryIndex(snap);
     const back = historyNeighbor(snap, "back");
     const forward = historyNeighbor(snap, "forward");
     navigationBackLabel = back ? destinationLabel(back.destination) : "";
@@ -6433,6 +6864,14 @@
     return navigate({ kind: "messages" });
   }
 
+  function leaveLibrary(): void {
+    if (libraryBackTargetIndex != null) {
+      void navigation.backTo(libraryBackTargetIndex);
+      return;
+    }
+    void navigate({ kind: "messages" });
+  }
+
   $effect(() => {
     navigation.noteAccount((self?.uid ?? tenantAccountId ?? "").trim());
   });
@@ -6447,6 +6886,7 @@
       if (slug) allowed.add(slug);
     }
     navigation.filterAccessible(allowed);
+    syncNavigationChrome();
     const current = navigationHistory.current();
     const shownExtra =
       extraPageId != null
@@ -6686,8 +7126,9 @@
     timelineHydrating = false;
     lastDmTimelineStampByUid.clear();
     lastChannelTimelineStampById.clear();
-    dmThreadsUnsupported = false;
+    resetDmThreadsState();
     thinkingByRow = {};
+    answeredWhileBusy = {};
     openReplyRootId = null;
     openProfileMember = null;
     openAgentMember = null;
@@ -7065,6 +7506,7 @@
       backfill &&
       !dmThreadsUnsupported &&
       typeof notifications.fetchDmThreads === "function";
+    const threadsSeq = wantThreads ? ++dmThreadsRequestSeq : 0;
     const [res, threadsRes] = await Promise.all([
       raceTimeout(
         notifications.fetchDmInbox({
@@ -7089,11 +7531,16 @@
       return;
     }
     let threadActivity: InboxDmActivity[] = [];
-    if (threadsRes) {
+    // A newer listing request was issued while this one was in flight: its
+    // answer is the one to apply, so this one is dropped.
+    if (threadsRes && threadsSeq === dmThreadsRequestSeq) {
       if (threadsRes.ok) {
         threadActivity = dmActivityFromThreadsPage(threadsRes.value, {
           selfUid: self?.uid,
         });
+        if (dmThreadsPageCarriesHumanRecency(threadsRes.value)) {
+          dmThreadsCarryHumanRecency = true;
+        }
       } else if (isMissingEndpointFailure(threadsRes)) {
         dmThreadsUnsupported = true;
       }
@@ -7108,10 +7555,16 @@
       since,
       selfUid: self?.uid,
     });
-    const activity = mergeDmActivity(
-      dmActivityFromInboxPage(res.value, { selfUid: self?.uid }),
-      threadActivity,
-    );
+    const inboxActivity = dmActivityFromInboxPage(res.value, {
+      selfUid: self?.uid,
+    });
+    // An incremental pass does not read the listing itself. When it found
+    // new DMs (a wake this client missed), and the listing also supplies
+    // human recency, it asks for the throttled re-read.
+    if (!backfill && inboxActivity.length > 0) {
+      scheduleDmHumanRecencyRefresh(false);
+    }
+    const activity = mergeDmActivity(inboxActivity, threadActivity);
     const hasUnreads = Boolean(
       parsed.pairUnreads && parsed.pairUnreads.length > 0,
     );
@@ -7131,6 +7584,105 @@
       storage?.setItem(DM_INBOX_SINCE_KEY, parsed.nextSince);
   }
 
+  /** Forget what the previous tenant's DM thread listing said, and its reads. */
+  function resetDmThreadsState(): void {
+    dmThreadsUnsupported = false;
+    dmThreadsCarryHumanRecency = false;
+    dmHumanRecencyLastRunAt = 0;
+    // Any read still in flight belongs to the previous tenant.
+    dmThreadsRequestSeq += 1;
+    if (dmHumanRecencyTimer != null) {
+      clearTimeout(dmHumanRecencyTimer);
+      dmHumanRecencyTimer = null;
+    }
+  }
+
+  /**
+   * The rail orders 1:1 DMs by a value from the DM thread listing only in
+   * human-only mode, and only a server that reports the value is worth
+   * reading again.
+   */
+  function dmHumanRecencyWanted(): boolean {
+    return (
+      humanOnlyConversations &&
+      dmThreadsCarryHumanRecency &&
+      !dmThreadsUnsupported &&
+      typeof adapter.notifications?.fetchDmThreads === "function"
+    );
+  }
+
+  /**
+   * Ask for a re-read of the DM thread listing so a pair's last human message
+   * (which only the server computes) follows a new DM. `immediate` is the
+   * person's own send: an outgoing DM raises no wake on this client, and it
+   * is known to be typed, so it is read at once and replaces a pending
+   * throttled read. Anything else shares one read per interval.
+   */
+  function scheduleDmHumanRecencyRefresh(immediate: boolean): void {
+    if (!dmHumanRecencyWanted()) return;
+    if (immediate) {
+      if (dmHumanRecencyTimer != null) {
+        clearTimeout(dmHumanRecencyTimer);
+        dmHumanRecencyTimer = null;
+      }
+      dmHumanRecencyLastRunAt = Date.now();
+      void refreshDmHumanRecency();
+      return;
+    }
+    if (dmHumanRecencyTimer != null) return;
+    const wait = Math.max(
+      400,
+      dmHumanRecencyLastRunAt + DM_HUMAN_RECENCY_MIN_INTERVAL_MS - Date.now(),
+    );
+    dmHumanRecencyTimer = setTimeout(() => {
+      dmHumanRecencyTimer = null;
+      dmHumanRecencyLastRunAt = Date.now();
+      void refreshDmHumanRecency();
+    }, wait);
+  }
+
+  /** One read of the DM thread listing, applied only if it is still the newest. */
+  async function refreshDmHumanRecency(): Promise<void> {
+    const bus = wakes;
+    const notifications = adapter.notifications;
+    if (!bus || !dmHumanRecencyWanted()) return;
+    if (!notifications || typeof notifications.fetchDmThreads !== "function") {
+      return;
+    }
+    const expectedGeneration = tenantGeneration;
+    const expectedCompanyId = tenantCompanyId;
+    const seq = ++dmThreadsRequestSeq;
+    const res = await raceTimeout(
+      notifications.fetchDmThreads({ limit: 100 }),
+      bootTimeoutMs,
+      "dm-threads",
+    ).catch(() => null);
+    if (!res || !res.ok) return;
+    // A newer request was issued while this one was in flight: drop this one.
+    if (seq !== dmThreadsRequestSeq) return;
+    if (
+      expectedGeneration !== tenantGeneration ||
+      expectedCompanyId !== tenantCompanyId
+    ) {
+      return;
+    }
+    const activity = dmActivityFromThreadsPage(res.value, {
+      selfUid: self?.uid,
+    });
+    if (activity.length > 0) bus.emit?.("dm:pair-unreads", { activity });
+  }
+
+  // The throttled read must not fire after the shell is gone.
+  $effect(() => {
+    return () => {
+      if (dmHumanRecencyTimer != null) {
+        clearTimeout(dmHumanRecencyTimer);
+        dmHumanRecencyTimer = null;
+      }
+      dmThreadsRequestSeq += 1;
+    };
+  });
+
   $effect(() => {
     const bus = wakes;
     if (!bus) return;
@@ -7141,6 +7693,7 @@
       bus.on("dm:new-message", (wake) => {
         void applyDmWake(wake);
         void catchUpDmInbox();
+        scheduleDmHumanRecencyRefresh(false);
       }),
       bus.on("mesh:catchup", () => {
         const row = selectedRow;
@@ -7173,7 +7726,7 @@
     void tenantCompanyId;
     lastDmTimelineStampByUid.clear();
     lastChannelTimelineStampById.clear();
-    dmThreadsUnsupported = false;
+    resetDmThreadsState();
     if (!wakes) return;
     untrack(() => {
       void catchUpDmInbox({ backfill: true });
@@ -7289,6 +7842,7 @@
         const wire = sentMessageFromResult(res.value, extras);
         if (wire)
           commitTimeline(row, mergeTimelineMessages(liveTimeline, [wire]));
+        scheduleDmHumanRecencyRefresh(true);
         // A 1:1 DM with an agent is inherently addressed to that agent, so
         // any send starts the indicator — no @mention required (unlike a
         // channel, where only an explicit mention wakes an agent). Started
@@ -7304,6 +7858,8 @@
           autoRestoreForSend(row.personUid);
         }
         if (isAgentUid(row.personUid) && !unrunnableBotUids[row.personUid.trim()]) {
+          // The person wrote again: a new turn, whatever `busy` still says.
+          answeredWhileBusy = forgetAnswered(answeredWhileBusy, row.personUid);
           // Pin the row to "newer than the agent's last message" — a local
           // bot's previous reply is usually < 2 min old and would otherwise
           // clear the fresh row on the next catch-up (skew fallback).
@@ -7343,6 +7899,9 @@
       }
       const wire = sentMessageFromResult(res.value, extras);
       if (wire) commitTimeline(row, mergeTimelineMessages(liveTimeline, [wire]));
+      // After the commit above, whose activity wake the rail may answer with
+      // a throttled directory read: this one is known to be a typed message.
+      wakes?.emit?.("channel:own-send", { channelId });
       // Channel sends need an explicit @agent mention (agent DMs start their
       // row in the DM branch above).
       for (const mention of mentions) {
@@ -8256,6 +8815,7 @@
     syncState={liveSyncState}
     {lastSyncLabel}
     conflictCount={liveSync.conflicts}
+    uploadsPaused={liveSync.uploadsPaused ?? []}
     conflicts={conflictFiles}
     onresolveconflict={(path, strategy) => resolveConflictFile(path, strategy)}
     onopenconflict={(path) => openConflictInEditor(path)}
@@ -8294,6 +8854,7 @@
     forwardLabel={navigationForwardLabel}
     onback={() => void goBack()}
     onforward={() => void goForward()}
+    launchMenuForcedOpen={tourLaunchOpen}
   />
 
   {#if recommendBanner}
@@ -8517,11 +9078,17 @@
           companyCreate={companyCreateSeam}
           oncreateagent={canCreateCloudBots ? createCloudBotEntry : null}
           loadClaudeProviderFlag={() => adapter.identity.hasFeature(CLAUDE_PROVIDER_FLAG)}
+          humanOnly={humanOnlyConversations}
           loadCloudProvisionOptions={(companyUid) => adapter.agents.getProvisionOptions(companyUid)}
           oncreatebot={adapter.bots ? createBotEntry : null}
           botRuntimeReady={localBotRuntimeReady}
           botRuntimeStatus={localBotRuntimeStatus}
           onrecheckruntimes={recheckLocalBotRuntimes}
+          {aiTools}
+          hqFolderPath={hqFolderPath ?? ""}
+          {onopenassistant}
+          {onassistedinstall}
+          {onrequestaitools}
           botWorkers={localBotWorkers}
           {existingBotNames}
           {botSignIn}
@@ -8538,7 +9105,10 @@
           onactions={(actions) => (sidebarActions = actions)}
           {bootTimeoutMs}
           welcomeFirst={welcomeSetupRun || hasBootDeepLink || initialRow ? false : welcomeSetupOwed === null ? "pending" : welcomeSetupOwed}
-          {onShellReady}
+          onShellReady={() => {
+            tourShellReady = true;
+            onShellReady?.();
+          }}
           projectHasPresence={rowHasProjectPresence}
           dmPresence={(row) => localBotPresence(localBots, row)}
           {rowExtrasLoading}
@@ -9388,6 +9958,7 @@
                 <ChannelConversation
                   restoreScroll={pendingRestoreScroll}
                   {localBots}
+                  humanOnly={humanOnlyConversations}
                   messages={timelineWithActivity}
                   onseen={async () => {
                     const row = selectedRow;
@@ -9400,7 +9971,10 @@
                     wakes?.emit?.("conversation:read", { id: row.id });
                   }}
                   hasEarlier={Boolean(historyCursors[selectedRow.id])}
+                  serverHumanView={humanOnlyConversations &&
+                    Boolean(historyServerView[selectedRow.id])}
                   onloadearlier={loadEarlierTimeline}
+                  conversationKey={selectedRow.id}
                   emptyLabel={conversationEmptyLabel}
                   reactions={rowReactions}
                   placeholder={composerPlaceholder}
@@ -9636,9 +10210,7 @@
       tab={libraryTab}
       itemId={libraryItemId}
       {packagesEvents}
-      onback={() => {
-        void leaveCurrentDestination();
-      }}
+      onback={leaveLibrary}
       onnavigatetab={(next) => void navigate({ kind: "library", tab: next })}
       onnavigateitem={(id) =>
         void navigate({ kind: "library", tab: libraryTab, itemId: id })}
@@ -9649,6 +10221,17 @@
     <CommandPalette
       commands={paletteCommands}
       onclose={() => (paletteOpen = false)}
+    />
+  {/if}
+
+  {#if tourStep}
+    <GuidedTour
+      step={tourStep}
+      index={tourIndex}
+      count={tourStepList.length}
+      onnext={tourNext}
+      onback={tourBack}
+      onskip={tourSkip}
     />
   {/if}
 

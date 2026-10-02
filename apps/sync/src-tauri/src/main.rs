@@ -51,6 +51,7 @@ mod fd_limit;
 #[cfg(target_os = "macos")]
 mod glass;
 mod intro_window;
+mod welcome_window;
 mod recovery;
 mod titlebar_layout;
 mod tray;
@@ -201,6 +202,7 @@ fn setup_startup_surfaces(
 ) -> Result<(), Box<dyn std::error::Error>> {
     tray::setup_tray(app)?;
     crate::recovery::on_startup(app);
+    crate::recovery::spawn_runtime_stall_sentinel();
 
     if first_run {
         tray::show_window_centered(app);
@@ -211,6 +213,10 @@ fn setup_startup_surfaces(
     // (tao parks an in-process status item off-screen on Tahoe).
     #[cfg(target_os = "macos")]
     tray_helper::spawn_and_poll(app);
+
+    // hard-stop-readiness US-019: a plan-limit upload pause recorded in the
+    // journal by the previous run reaches the menu bar before the next pass.
+    commands::uploads_paused::publish_current(app);
 
     register_global_shortcuts(app);
     Ok(())
@@ -665,6 +671,7 @@ fn main() {
             commands::app::hide_main_window,
             commands::app::open_settings_window,
             commands::app::open_claude_code_link,
+            commands::app::open_codex_deep_link,
             commands::ai_tools::detect_ai_tools,
             commands::ai_tools::detect_claude_ready,
             commands::ai_tools::detect_claude_desktop_connectors,
@@ -718,15 +725,21 @@ fn main() {
             commands::first_run::should_show_auto_sync_notice,
             commands::first_run::mark_first_run_complete,
             commands::window_material::window_material_capability,
+            commands::window_material::set_window_backdrop_transparency,
             commands::setup_secret::setup_store_secret,
             commands::first_run::mark_auto_sync_notice_shown,
             commands::first_run::set_main_window_vibrancy,
             intro_window::set_intro_fullscreen,
+            welcome_window::set_welcome_backdrop,
+            welcome_window::set_welcome_window,
+            welcome_window::get_welcome_window_active,
+            welcome_window::get_desktop_wallpaper,
             commands::first_run::show_main_window_at_tray,
             commands::lifecycle::get_lifecycle_state,
             commands::lifecycle::get_startup_setup_evidence,
             commands::lifecycle::get_setup_status,
             commands::lifecycle::mark_welcome_setup_complete,
+            commands::lifecycle::mark_welcome_tour_shown,
             commands::lifecycle::report_unexpected_startup_surface,
             commands::session_end_observer::session_end_observer_status,
             commands::windows_teardown_probe::session_end_teardown_probe_status,
@@ -817,6 +830,7 @@ fn main() {
             commands::daemon::start_daemon,
             commands::daemon::stop_daemon,
             commands::daemon::daemon_status,
+            commands::daemon::daemon_sync_status,
             tray::set_tray_state,
             tray::finish_replay_intro,
             updater::check_for_updates,
@@ -1255,33 +1269,26 @@ fn main() {
                 commands::lifecycle::current_lifecycle_state(app.handle()),
             );
 
-            // The very first launch opens the onboarding FLOATING CARD (transparent,
-            // centered, no frosted popover material, no native window shadow) rather
-            // than the compact popover. Apply that window state BEFORE the window is
-            // shown so it paints correctly framed from the first frame — no flash of
-            // the small frosted popover shell before onboarding resizes it.
+            // The very first launch opens the welcome flow, which fills the
+            // work area of the current monitor (no rounded card, no native
+            // window shadow, no frosted popover material) rather than the
+            // compact popover. Apply that window state BEFORE the window is
+            // shown so it paints correctly framed from the first frame — no
+            // flash of the small frosted popover shell before onboarding
+            // takes the window over (`welcome_window::set_welcome_window`).
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             if let Some(window) = app.get_webview_window("main") {
                 if first_run {
-                    let onboarding_size = window
-                        .current_monitor()
-                        .ok()
-                        .flatten()
-                        .map(|monitor| {
-                            let work_area = monitor.work_area();
-                            let scale = monitor.scale_factor();
-                            tauri::LogicalSize::new(
-                                ((work_area.size.width as f64 / scale) - 32.0)
-                                    .clamp(360.0, 780.0),
-                                ((work_area.size.height as f64 / scale) - 32.0)
-                                    .clamp(420.0, 620.0),
-                            )
-                        })
-                        .unwrap_or_else(|| tauri::LogicalSize::new(780.0, 620.0));
-                    let _ = window.set_size(onboarding_size);
+                    welcome_window::set_welcome_window_active(true);
+                    // Close and minimize controls from the first frame: the
+                    // flow can run for minutes and must never trap the screen.
+                    welcome_window::apply_window_controls(&window, true);
                     let _ = window.set_shadow(false);
                     hq_platform::window_effects::clear_popover_vibrancy(&window);
-                    let _ = window.center();
+                    if !welcome_window::fit_to_work_area(&window) {
+                        let _ = window.set_size(tauri::LogicalSize::new(1024.0, 700.0));
+                        let _ = window.center();
+                    }
                 } else {
                     hq_platform::window_effects::apply_popover_vibrancy(&window);
                     #[cfg(target_os = "windows")]
@@ -1450,34 +1457,17 @@ fn main() {
             // holder, which spawns a short-lived child process.
             std::thread::spawn(commands::git_mirror::reap_stale_index_lock_on_launch);
 
-            // Fire-and-forget: warm the npx cache for
-            // `@indigoai-us/hq-cloud@<HQ_CLOUD_VERSION>` so the user's
-            // first click of "Sync Now" doesn't eat the 3–10s first-time
-            // download. No-ops if the cache is already warm. See
-            // `commands::prewarm` for the rationale.
-            commands::prewarm::spawn_prewarm();
-
             // US-004: silent HQ Work co-install after a Sync update. Canonical
             // path is next launch — macOS download_and_install often kills the
             // process before post-install hooks run.
             commands::hq_work::spawn_maybe_co_install_hq_work();
 
-            // Auto-start the watcher when either flag is on:
-            //   - `autostart_daemon` (V2-prep devtools flag, default OFF)
-            //   - `realtime_sync`   (user-facing Auto-sync toggle, default ON)
-            let dev_disable_auto_sync =
-                std::env::var("HQ_DEV_DISABLE_AUTO_SYNC_ON_LAUNCH").ok().as_deref() == Some("1");
-            if !dev_disable_auto_sync
-                && (commands::daemon::is_autostart_enabled()
-                    || commands::daemon::is_realtime_sync_enabled())
-            {
-                let handle = app.handle().clone();
-                std::thread::spawn(move || {
-                    // Small delay to let the app fully initialize
-                    std::thread::sleep(std::time::Duration::from_secs(2));
-                    let _ = commands::daemon::start_daemon_for_app_launch(handle);
-                });
-            }
+            // Decide once whether hq daemon (flag `desktop.hq-daemon`) or the
+            // app itself runs background sync, then start that side. The app
+            // path warms the npx cache for `@indigoai-us/hq-cloud` and starts
+            // the watcher when Auto-sync (`realtime_sync`) or the
+            // `autostart_daemon` devtools flag is on, as before.
+            commands::hq_daemon_host::setup_sync_host(app.handle());
 
             // Bound the meeting-detect notify ledger on launch: drop entries
             // older than 14 days. Best-effort; failures never block setup.

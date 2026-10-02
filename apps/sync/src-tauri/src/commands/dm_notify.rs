@@ -48,15 +48,16 @@ use crate::commands::messages::Channel;
 use crate::commands::sync::resolve_vault_api_url;
 use crate::util::client_info::{build_client, describe_error_chain, HYDRATE_REQUEST_TIMEOUT};
 use crate::util::logfile::log;
+use hq_desktop_core::coalesced_poll::CoalescedPoll;
 
 pub use hq_desktop_core::dm_notify::{
-    build_compose_payload, build_send_payload, build_thread_reply_payload, build_thread_url,
-    build_threads_url, classify_send_response, clear_in_flight, diff_requests,
-    dm_notifications_enabled, effective_reply_count, enqueue_mention_fetches, esc_thread_seg,
-    filter_human_visible_events, filter_mentions_by_age, is_agent_audience, is_mention_of_me,
-    mention_cursor_after_fetch,
-    mention_notification_body, mention_notification_title, mention_route, mention_summary_title,
-    normalize_scope, partition_unnotified, plan_mention_cap, read_cursor_entry_for_account,
+    build_compose_payload, build_send_payload, build_thread_history_url,
+    build_thread_reply_payload, build_threads_url, classify_send_response, clear_in_flight,
+    diff_requests, dm_notifications_enabled, effective_reply_count, enqueue_mention_fetches,
+    esc_thread_seg, filter_human_visible_events, filter_mentions_by_age, is_agent_audience,
+    is_mention_of_me, mention_cursor_after_fetch, mention_notification_body,
+    mention_notification_title, mention_route, mention_summary_title, normalize_scope,
+    partition_unnotified, plan_mention_cap, read_cursor_entry_for_account,
     requeue_failed_mention_fetches, respond_action_path, respond_action_state,
     should_spawn_mention_detect, should_suppress_duplicate_event,
     should_suppress_mention_for_open_channel, take_mention_fetch_batch, take_unseen_message_ids,
@@ -68,6 +69,7 @@ pub use hq_desktop_core::dm_notify::{
 };
 
 const LOG_TAG: &str = "dm-notify";
+static DM_POLL_GATE: OnceLock<CoalescedPoll> = OnceLock::new();
 
 // ── Fine-grained notification prefs (GET /v1/notify/prefs) ──────────────────
 //
@@ -821,10 +823,23 @@ pub(crate) async fn resolve_notification_auth_snapshot<R: Runtime>(
 pub(crate) async fn resolve_notification_credentials<R: Runtime>(
     app: &AppHandle<R>,
 ) -> Result<(cognito::CognitoTokens, NotificationAuthSnapshot), String> {
-    let started_generation = notification_session_generation(app)
+    resolve_notification_credentials_classified(app)
         .await
-        .ok_or_else(|| "Notification session state is unavailable".to_string())?;
-    let tokens = match cognito::get_valid_tokens().await {
+        .map_err(|error| error.message)
+}
+
+pub(crate) async fn resolve_notification_credentials_classified<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<(cognito::CognitoTokens, NotificationAuthSnapshot), cognito::CognitoTokenResolutionError>
+{
+    let started_generation = notification_session_generation(app).await.ok_or_else(|| {
+        cognito::CognitoTokenResolutionError {
+            message: "Notification session state is unavailable".to_string(),
+            refresh_failure_class: None,
+            requires_reauth: false,
+        }
+    })?;
+    let tokens = match cognito::get_valid_tokens_classified().await {
         Ok(tokens) => tokens,
         Err(error) => {
             // A refresh transport failure is recoverable and must keep its
@@ -844,7 +859,11 @@ pub(crate) async fn resolve_notification_credentials<R: Runtime>(
         tokens.access_token.clone(),
     )
     .await
-    .ok_or_else(|| "Authentication changed while resolving credentials".to_string())?;
+    .ok_or_else(|| cognito::CognitoTokenResolutionError {
+        message: "Authentication changed while resolving credentials".to_string(),
+        refresh_failure_class: None,
+        requires_reauth: false,
+    })?;
     Ok((tokens, snapshot))
 }
 
@@ -1067,27 +1086,28 @@ fn clear_pair_unread_local(app: &AppHandle, with_person_uid: &str) {
 
 // ── Public API ───────────────────────────────────────────────────────────────────
 
-/// Fire one DM inbox poll. Singleton-guarded; safe to call from the shared
-/// interval timer. Called from `share_notify::setup_share_notify_poller`'s
-/// loop (one timer, two fetches) — NOT from a sync event.
+/// Fire one DM inbox poll. Overlapping timer and push wakes coalesce into one
+/// trailing pass so a wake cannot be lost while another inbox request runs.
 pub async fn poll_dm_once(app: AppHandle) {
-    if !try_set_in_flight() {
-        log(LOG_TAG, "DM_NOTIFY_POLL_SKIP poll already in-flight");
-        return;
-    }
-    let auth = match resolve_notification_auth_snapshot(&app).await {
-        Ok(auth) => auth,
-        Err(error) => {
-            log(LOG_TAG, &format!("DM_NOTIFY_POLL_AUTH_FAIL {error}"));
-            // Credential resolution already performs a generation-conditional
-            // clear. An unconditional clear here could erase a newer account
-            // that signed in while an older resolver was failing.
-            clear_in_flight();
-            return;
-        }
-    };
-    do_poll(&app, &auth).await;
-    clear_in_flight();
+    DM_POLL_GATE
+        .get_or_init(CoalescedPoll::new)
+        .run(|| {
+            let app = app.clone();
+            async move {
+                let auth = match resolve_notification_auth_snapshot(&app).await {
+                    Ok(auth) => auth,
+                    Err(error) => {
+                        log(LOG_TAG, &format!("DM_NOTIFY_POLL_AUTH_FAIL {error}"));
+                        // Credential resolution already performs a generation-conditional
+                        // clear. An unconditional clear here could erase a newer account
+                        // that signed in while an older resolver was failing.
+                        return;
+                    }
+                };
+                do_poll(&app, &auth).await;
+            }
+        })
+        .await;
 }
 
 /// Tauri command: manual poll trigger (frontend / tests).
@@ -1288,6 +1308,10 @@ pub async fn fetch_dm_thread(
     with_person_uid: String,
     limit: Option<u32>,
     cursor: Option<String>,
+    // `"human"` asks the server for the human view of the thread. A server
+    // that implements it echoes `view` in the response (carried through
+    // `ThreadResponse`); an older one ignores it. Absent: unchanged request.
+    view: Option<String>,
 ) -> Result<ThreadResponse, String> {
     let target = with_person_uid.trim();
     if target.is_empty() {
@@ -1306,7 +1330,8 @@ pub async fn fetch_dm_thread(
             format!("Could not resolve server URL: {e}")
         })?;
 
-    let url = build_thread_url(&base_url, target, limit, cursor.as_deref());
+    let url =
+        build_thread_history_url(&base_url, target, limit, cursor.as_deref(), view.as_deref());
 
     let resp = build_client()
         .get(&url)
@@ -3897,6 +3922,8 @@ mod tests {
             last_activity_at: None,
             last_message_at: None,
             created_at: None,
+            last_human_message_at: None,
+            has_human_message: None,
             members: None,
             notify_level: None,
             membership_source: None,
@@ -4070,6 +4097,8 @@ mod tests {
             last_activity_at: None,
             last_message_at: None,
             created_at: None,
+            last_human_message_at: None,
+            has_human_message: None,
             members: None,
             notify_level: None,
             membership_source: None,

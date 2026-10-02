@@ -26,9 +26,12 @@ import {
 import { TAURI_CAPABILITIES, type Capability } from "../capabilities.js";
 import { WEB_PATHS } from "../web/index.js";
 import { localBotSettingsArgs } from "./local-bot-settings.js";
+import { hqProFailure, parseHqProErrorBody } from "../plan-limit.js";
 import { createCallsApi } from "../calls/api.js";
 import {
   CLAUDE_PROVIDER_FLAG,
+  HUMAN_ONLY_CONVERSATIONS_FLAG,
+  HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT,
   createFeatureFlagGate,
   createHqProFlagFetch,
   type FeatureFlagGate,
@@ -166,23 +169,9 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     if (rec && typeof rec.status === "number") {
       const text = typeof rec.body === "string" ? rec.body : "";
       if (rec.status < 200 || rec.status >= 300) {
-        let code = `http-${rec.status}`;
-        let message = `${method} ${path} failed`;
-        try {
-          const parsed = text ? JSON.parse(text) : null;
-          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-            const err = parsed as Record<string, unknown>;
-            if (typeof err.code === "string" && err.code.trim()) {
-              code = err.code.trim();
-            }
-            if (typeof err.error === "string" && err.error.trim()) {
-              message = err.error.trim();
-            }
-          }
-        } catch {
-          /* keep http-status defaults */
-        }
-        return failure(code, message);
+        return hqProFailure(
+          parseHqProErrorBody(rec.status, text, `${method} ${path} failed`),
+        );
       }
       try {
         return ok((text ? JSON.parse(text) : undefined) as T);
@@ -211,11 +200,25 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     whoami: () => this.hqProJson("GET", "/v1/identity/whoami"),
     isAdmin: () => this.call("is_admin"),
     hasFeature: (flag) =>
-      this.flags.resolve(flag, () =>
-        flag === CLAUDE_PROVIDER_FLAG
-          ? Promise.resolve(ok(false))
-          : this.call("has_feature", { flag }),
-      ),
+      flag === HUMAN_ONLY_CONVERSATIONS_FLAG
+        ? // Pinned per release; the registry cannot turn it off.
+          Promise.resolve(ok(HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT))
+        : this.flags.resolve(flag, () =>
+            flag === CLAUDE_PROVIDER_FLAG
+              ? Promise.resolve(ok(false))
+              : this.call("has_feature", { flag }),
+          ),
+    subscribeFeature: (flag, onChange) =>
+      flag === HUMAN_ONLY_CONVERSATIONS_FLAG
+        ? () => {}
+        : this.flags.subscribe(
+            flag,
+            () =>
+              flag === CLAUDE_PROVIDER_FLAG
+                ? Promise.resolve(ok(false))
+                : this.call("has_feature", { flag }),
+            onChange,
+          ),
     listWorkspaces: async () => {
       const result = await this.hqProJson<Json>("GET", "/membership/me");
       if (!result.ok) return result;
@@ -304,12 +307,15 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         companyUid: opts?.companyUid,
         limit: opts?.limit,
       }),
-    fetchChannel: ({ channelId, limit, cursor, since }) =>
+    fetchChannel: ({ channelId, limit, cursor, since, view }) =>
+      // The native command forwards `view` and returns the server's echo.
+      // The key is only sent when set.
       this.call("fetch_channel", {
         channelId,
         limit,
         cursor: cursor ?? null,
         since: since ?? null,
+        ...(view ? { view } : {}),
       }),
     listChannelMembers: (channelId) =>
       this.call("list_channel_members", { channelId }),
@@ -343,11 +349,13 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         values: args.values,
         idempotencyKey: args.idempotencyKey ?? null,
       }),
-    fetchDmThread: ({ withPersonUid, limit, since }) =>
+    fetchDmThread: ({ withPersonUid, limit, since, cursor, view }) =>
       this.call("fetch_dm_thread", {
         withPersonUid,
         limit,
         since: since ?? null,
+        ...(cursor ? { cursor } : {}),
+        ...(view ? { view } : {}),
       }),
     sendDm: (toPersonUid, body, extras) =>
       this.call("send_dm", {
@@ -581,6 +589,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     startDaemon: () => this.call("start_daemon"),
     stopDaemon: () => this.call("stop_daemon"),
     daemonStatus: () => this.call("daemon_status"),
+    daemonSyncStatus: () => this.call("daemon_sync_status"),
     startSync: (slug) => this.call("start_sync", { slug }),
     cancelSync: () => this.call("cancel_sync"),
     getSyncStatus: () => this.call("get_sync_status"),
@@ -595,6 +604,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
   readonly shell: PlatformAdapter["shell"] = {
     openInEditor: (path) => this.call("open_in_editor", { path }),
     openClaudeCodeLink: (url) => this.call("open_claude_code_link", { url }),
+    openCodexDeepLink: (url) => this.call("open_codex_deep_link", { url }),
     openFileInClaude: (path) => this.call("open_file_in_claude", { path }),
     launchClaudeCode: (path) => this.call("launch_claude_code", { path }),
     launchCodexWorkspace: (path, prompt) =>
@@ -739,6 +749,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     updateSettings: (patch) => this.queueSettingsPatch(patch),
     getSetupStatus: () => this.call("get_setup_status"),
     markWelcomeSetupComplete: () => this.call("mark_welcome_setup_complete"),
+    markWelcomeTourShown: () => this.call("mark_welcome_tour_shown"),
     getTelemetryConsent: () => this.call("get_telemetry_consent"),
   };
 

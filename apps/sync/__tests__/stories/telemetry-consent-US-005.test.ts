@@ -43,7 +43,10 @@ vi.mock('@tauri-apps/plugin-http', () => ({
 
 import { flushSync, mount, tick, unmount } from 'svelte';
 import OnboardingWizard from '../../src/components/onboarding/OnboardingWizard.svelte';
-import { __resetWizardRouterCompletionForTests } from '../../src/lib/onboarding-wizard';
+import {
+  CONSENT_STEP_INDEX,
+  __resetWizardRouterCompletionForTests,
+} from '../../src/lib/onboarding-wizard';
 import { TELEMETRY_CONSENT_VERSION } from '../../src/lib/consent-version';
 
 const REPROMPT_PERSON = 'prs_alice';
@@ -95,7 +98,7 @@ async function mountReprompt(personUid: string | null = REPROMPT_PERSON) {
   component = mount(OnboardingWizard, {
     target: host,
     props: {
-      initialStep: 3,
+      initialStep: CONSENT_STEP_INDEX,
       mode: 'reprompt',
       repromptPersonUid: personUid,
       onfinish: () => {

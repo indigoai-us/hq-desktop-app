@@ -106,6 +106,27 @@ export function isRawBotFailureText(raw: string | null | undefined): boolean {
   return RAW_FAILURE_SHAPES.some((shape) => shape.test(text));
 }
 
+const UNRECOGNIZED_MODEL_TOOLS: Record<string, string> = {
+  "claude-code": "Claude Code",
+  claude: "Claude Code",
+  codex: "Codex",
+  grok: "Grok",
+};
+
+/**
+ * The plain sentence for a runtime CLI that does not know the bot's model
+ * (for example `[claude-code:unrecognized_model]` from a Claude Code older
+ * than the model). Null when `raw` is some other failure.
+ */
+export function unrecognizedModelMessage(raw: string | null | undefined): string | null {
+  const text = raw ?? "";
+  const match = /\[([a-z-]+):unrecognized_model\]/i.exec(text) ?? /\bunrecognized_model\b/i.exec(text);
+  if (!match) return null;
+  const tool = (match[1] && UNRECOGNIZED_MODEL_TOOLS[match[1].toLowerCase()]) || "coding tool";
+  const article = tool === "coding tool" ? "your coding tool's" : `your ${tool}`;
+  return `This bot's model isn't available in ${article} version. Update ${tool === "coding tool" ? "it" : tool} or pick another model.`;
+}
+
 /**
  * A sentence a person can act on. Plain host messages ("Claude Code is not
  * signed in.") pass through unchanged; machine text falls back to `fallback`.
@@ -114,6 +135,8 @@ export function isRawBotFailureText(raw: string | null | undefined): boolean {
  */
 export function plainBotFailure(raw: string | null | undefined, fallback: string): string {
   const text = (raw ?? "").trim();
+  const modelMissing = unrecognizedModelMessage(text);
+  if (modelMissing) return modelMissing;
   if (!text || isRawBotFailureText(text)) return fallback;
   const firstLine = (text.split(/\r?\n/)[0] ?? "").trim();
   if (!firstLine || firstLine.length > 200 || isRawBotFailureText(firstLine)) return fallback;
@@ -181,10 +204,10 @@ export function localBotNeedsOfflineNotice(bot: LocalBotRow | null | undefined):
 /**
  * Agent uids of local bots that are mid-turn right now.
  *
- * The thinking indicator is otherwise ended by the first message from the
- * agent, which is wrong for a bot that posts an interim note and keeps
- * working. The CLI reports `busy` from its own in-flight marker, so this is
- * the truthful "still answering" signal for a local bot's DM.
+ * The CLI reports `busy` from its own in-flight marker. It starts a local
+ * bot's thinking row even when no send did (a scheduled or kickoff turn). It
+ * is polled and can outlive the bot's post, so it never holds the row past
+ * the reply (see `clearRowOnReply` in agent-thinking.ts).
  */
 export function busyLocalBotUids(bots: readonly LocalBotRow[] | null | undefined): string[] {
   if (!bots) return [];

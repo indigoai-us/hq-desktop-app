@@ -13,6 +13,8 @@ import {
   type InstallerStepPingPayload,
   type OnboardingStepEvent,
 } from './onboarding-step-telemetry';
+import { INSTALLER_STEP_BY_WIZARD_STEP } from './installer-step-telemetry';
+import { normalizeSetupErrorKind } from './onboarding-setup';
 
 function memoryStorage(): Storage {
   const values = new Map<string, string>();
@@ -84,6 +86,75 @@ describe('onboarding step telemetry', () => {
         properties: { step: 'directory', action: 'completed' },
       },
     ]);
+  });
+
+  it('records first-folder-step transitions only on the desktop onboarding event path', async () => {
+    const telemetry = createTelemetry();
+    expect(INSTALLER_STEP_BY_WIZARD_STEP['first-folder-sync' as never]).toBeNull();
+
+    for (const action of ['entered', 'started', 'skipped', 'completed'] as const) {
+      telemetry.record({
+        properties: {
+          step: 'first-folder-sync' as never,
+          action,
+          flow: 'first_install',
+        },
+      });
+    }
+    await telemetry.flush();
+
+    expect(emitted.map(({ properties }) => [properties.step, properties.action])).toEqual([
+      ['first-folder-sync', 'entered'],
+      ['first-folder-sync', 'started'],
+      ['first-folder-sync', 'skipped'],
+      ['first-folder-sync', 'completed'],
+    ]);
+    expect(pings).toEqual([]);
+    expect(
+      Object.keys(
+        desktopPropertiesForOnboardingStep(emitted[0]!),
+      ).sort(),
+    ).toEqual(['action', 'appVersion', 'flow', 'platform', 'step', 'surface']);
+  });
+
+  it('keeps directory rejection reasons bounded and drops path-shaped values', () => {
+    expect(normalizeSetupErrorKind('directory_nonempty_non_hq')).toBe(
+      'directory_nonempty_non_hq',
+    );
+    expect(normalizeSetupErrorKind('directory_not_writable')).toBe(
+      'directory_not_writable',
+    );
+    expect(normalizeSetupErrorKind('/Users/alice/Documents')).toBe('unknown');
+
+    const properties = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-09-28T10:00:00.000Z',
+      properties: {
+        step: 'directory',
+        action: 'failed',
+        outcome: 'invalid_directory',
+        errorKind: '/Users/alice/Documents' as never,
+        surface: 'desktop_installer',
+        platform: 'macos',
+      },
+    });
+
+    expect(properties.errorKind).toBe('unknown');
+    expect(JSON.stringify(properties)).not.toContain('/Users/alice');
+
+    const boundedProperties = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-09-28T10:00:00.000Z',
+      properties: {
+        step: 'directory',
+        action: 'failed',
+        outcome: 'invalid_directory',
+        errorKind: 'directory_nonempty_non_hq',
+        surface: 'desktop_installer',
+        platform: 'macos',
+      },
+    });
+    expect(boundedProperties.errorKind).toBe('directory_nonempty_non_hq');
   });
 
   it('continues to emit operational setup after a person declines skill telemetry', async () => {
@@ -493,6 +564,25 @@ describe('onboarding step telemetry', () => {
       },
     ]);
     expect(pings[0]?.installSessionId).toBe(emitted[0]?.sessionId);
+  });
+
+  it('uses the shared installAttemptId for first-run onboarding event session identity', async () => {
+    const telemetry = createTelemetry({
+      newSessionId: () => '11111111-1111-4111-8111-111111111111',
+    });
+    const installAttemptId = '22222222-2222-4222-8222-222222222222';
+
+    telemetry.setInstallAttemptId(installAttemptId);
+    telemetry.recordFirstLaunch();
+    await Promise.resolve();
+
+    expect(emitted).toMatchObject([
+      {
+        sessionId: installAttemptId,
+        properties: { step: 'welcome-signin', action: 'entered' },
+      },
+    ]);
+    expect(pings.every((ping) => ping.installSessionId === installAttemptId)).toBe(true);
   });
 
   it('omits personUid before sign-in and includes it on later pings', async () => {

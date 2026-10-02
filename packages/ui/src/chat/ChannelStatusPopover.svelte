@@ -82,8 +82,14 @@
 
   function canRemove(row: StatusPersonRow): boolean {
     if (!onremovemember) return false;
-    // Server contract: self-leave always allowed; owner may remove others.
-    return isSelf(row.personUid, self) || selfIsOwner;
+    // The roster is asynchronous. Only offer self-leave once the caller is
+    // explicitly known to be a member; unknown/stale role data must fail
+    // closed because the server rejects owner self-leave.
+    if (isSelf(row.personUid, self)) {
+      const role = (row.role ?? "").trim().toLowerCase();
+      return !selfIsOwner && role === "member";
+    }
+    return selfIsOwner;
   }
 
   let container: HTMLDivElement | null = $state(null);
@@ -549,6 +555,19 @@
             </span>
             <span class="m-name">{a.displayName}</span>
             {@render kindChip(a.personUid)}
+          {/if}
+          {#if selfIsOwner && !!onremovemember}
+            <button
+              type="button"
+              class="m-remove"
+              data-testid="status-agent-remove"
+              title={`Remove ${a.displayName} from channel`}
+              aria-label={`Remove ${a.displayName} from channel`}
+              disabled={removingUid === a.personUid}
+              onclick={() => onremovemember?.(a)}
+            >
+              {removingUid === a.personUid ? "…" : "×"}
+            </button>
           {/if}
         </div>
       {/each}

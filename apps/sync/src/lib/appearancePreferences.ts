@@ -1,8 +1,17 @@
+import { DEFAULT_WINDOW_TRANSPARENCY } from '@hq/ui/settings/appearance-seam';
+
+export { DEFAULT_WINDOW_TRANSPARENCY } from '@hq/ui/settings/appearance-seam';
+
 export const APPEARANCE_STORAGE_KEY = 'hq-sync.appearance.v1';
+/**
+ * Set once the one-time 100% opacity reset has run for this install. Earlier
+ * releases defaulted to 35% opacity; the reset moves every existing install to
+ * the new solid default once, and a choice made after it is kept.
+ */
+export const APPEARANCE_OPAQUE_RESET_KEY = 'hq-sync.appearance.opaque-reset.v1';
 export const APPEARANCE_CHANGE_EVENT = 'hq:appearance-change';
 export const APPEARANCE_REQUEST_EVENT = 'hq:appearance-request';
 
-export const DEFAULT_WINDOW_TRANSPARENCY = 65;
 export const MIN_WINDOW_TRANSPARENCY = 0;
 export const MAX_WINDOW_TRANSPARENCY = 100;
 export const MIN_WINDOW_OPACITY = 0;
@@ -47,6 +56,11 @@ interface AppearancePreferenceOptions {
   applyNativeTheme?: (theme: NativeTheme) => Promise<void> | void;
   /** Resolve the native window material; re-applies the preference once known. */
   readMaterial?: () => Promise<WindowMaterial | string | null | undefined>;
+  /**
+   * Drive the native backdrop (Liquid Glass / vibrancy) from the persisted
+   * transparency. Called once per distinct value; 0 means fully solid.
+   */
+  applyNativeTransparency?: (transparency: number) => Promise<void> | void;
   onError?: (error: unknown) => void;
 }
 
@@ -112,6 +126,27 @@ export function readAppearancePreferences(
     return normalizeAppearancePreferences(JSON.parse(raw));
   } catch {
     return normalizeAppearancePreferences(null);
+  }
+}
+
+/**
+ * Run the one-time 100% opacity reset. A saved opacity is replaced with the
+ * solid default (the theme is kept), then the reset is recorded so it never
+ * runs again. Storage failures are ignored: the window still renders solid.
+ */
+export function resetWindowOpacityOnce(storage: AppearanceStorage | null): void {
+  if (!storage) return;
+  try {
+    if (storage.getItem(APPEARANCE_OPAQUE_RESET_KEY) !== null) return;
+    if (storage.getItem(APPEARANCE_STORAGE_KEY) !== null) {
+      writeAppearancePreferences(storage, {
+        ...readAppearancePreferences(storage),
+        windowTransparency: DEFAULT_WINDOW_TRANSPARENCY,
+      });
+    }
+    storage.setItem(APPEARANCE_OPAQUE_RESET_KEY, '1');
+  } catch {
+    // Blocked storage has no saved opacity to reset.
   }
 }
 
@@ -211,6 +246,7 @@ export function installAppearancePreferences(
     ((error: unknown) => {
       console.warn('appearance preference failed:', error);
     });
+  resetWindowOpacityOnce(storage);
   let current = readAppearancePreferences(storage);
   let desiredNativeTheme: NativeTheme =
     current.colorTheme === 'system' ? null : current.colorTheme;
@@ -251,10 +287,24 @@ export function installAppearancePreferences(
   };
 
   let material: WindowMaterial | null = normalizeWindowMaterial(root.dataset.material);
+  let appliedNativeTransparency: number | null = null;
+  const applyNativeTransparency = (transparency: number): void => {
+    if (disposed || !options.applyNativeTransparency) return;
+    if (appliedNativeTransparency === transparency) return;
+    appliedNativeTransparency = transparency;
+    void Promise.resolve()
+      .then(() => options.applyNativeTransparency?.(transparency))
+      .catch((error: unknown) => {
+        // Allow a retry on the next request for the same value.
+        if (appliedNativeTransparency === transparency) appliedNativeTransparency = null;
+        onError(error);
+      });
+  };
   const apply = (preferences: AppearancePreferences): void => {
     current = normalizeAppearancePreferences(preferences);
     currentAppearanceByTarget.set(target, current);
     applyAppearancePreferences(root, current, material);
+    applyNativeTransparency(current.windowTransparency);
     desiredNativeTheme = current.colorTheme === 'system' ? null : current.colorTheme;
     nativeRequestRevision += 1;
     drainNativeTheme();
@@ -267,6 +317,10 @@ export function installAppearancePreferences(
 
   const onRequest = (event: Event): void => {
     apply((event as CustomEvent<AppearancePreferences>).detail);
+    // Requests may come straight from packages/ui (Settings slider), which
+    // cannot reach this module's storage helper — persist here so the value
+    // survives a restart.
+    writeAppearancePreferences(storage, current);
   };
   const onStorage = (event: StorageEvent): void => {
     if (event.key !== null && event.key !== APPEARANCE_STORAGE_KEY) return;

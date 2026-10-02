@@ -1,6 +1,11 @@
 export { default as Button } from "./Button.svelte";
 export { classNames } from "./class-names.js";
 
+// Shared install-choice panel: the "open Claude Desktop or ChatGPT with a
+// prefilled install prompt" buttons used by the New bot wizard AND the setup
+// assistant. One component, one adapter — the two cannot drift.
+export * from "./install-choice/index.js";
+
 // HQ first-run installer (ported from hq-desktop-app onboarding).
 export * from "./onboarding/index.js";
 
@@ -26,6 +31,8 @@ export * from "./chat/live-catchup.js";
 export * from "./chat/reply-layout.js";
 export * from "./chat/channels.js";
 export * from "./chat/setup-channel.js";
+export * from "./chat/create-company/create-company-flow.js";
+export * from "./chat/create-company/slug-availability.js";
 export * from "./chat/setup-run.js";
 export * from "./chat/setup-agent.svelte.js";
 // Agent "thinking" indicator state machine. Explicit list: `isAgentUid` is
@@ -299,3 +306,4 @@ export {
   type RoomTaskFetcher,
 } from "./chat/tasks/task-feed-controller.svelte";
 export * from "./chat/tasks/visible-tasks";
+export { TOUR_SEEN_STORAGE_KEY } from "./tour/guided-tour.js";

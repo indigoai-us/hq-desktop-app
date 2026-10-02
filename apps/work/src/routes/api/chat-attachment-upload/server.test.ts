@@ -72,10 +72,12 @@ describe("PUT /api/chat-attachment-upload", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
   it("forwards a body at the web chat attachment limit", async () => {
+    vi.useFakeTimers();
     const response = await PUT(
       event(
         uploadRequest(new Uint8Array(WEB_CHAT_ATTACHMENT_MAX_BYTES), {
@@ -85,6 +87,7 @@ describe("PUT /api/chat-attachment-upload", () => {
     );
 
     expect(response.status).toBe(201);
+    expect(vi.getTimerCount()).toBe(0);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [target, options] = fetchMock.mock.calls[0]!;
     expect(target).toBe(uploadUrl);
@@ -180,5 +183,32 @@ describe("PUT /api/chat-attachment-upload", () => {
     });
     expect(bodyWasRead()).toBe(false);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("returns UPLOAD_UNREACHABLE when the upstream PUT stalls", async () => {
+    vi.useFakeTimers();
+    fetchMock.mockImplementation(
+      (_input, init) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("Aborted", "AbortError")),
+            { once: true },
+          );
+        }),
+    );
+
+    const pending = PUT(event(uploadRequest(new Uint8Array([1, 2, 3]))));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+    await vi.runAllTimersAsync();
+    const response = await pending;
+
+    expect(response.status).toBe(502);
+    expect(vi.getTimerCount()).toBe(0);
+    await expect(response.json()).resolves.toEqual({
+      error: "Upload upstream failed",
+      code: "UPLOAD_UNREACHABLE",
+    });
   });
 });

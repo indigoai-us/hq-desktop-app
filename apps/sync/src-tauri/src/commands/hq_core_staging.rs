@@ -244,18 +244,18 @@ async fn fetch_main_tree(
     repo: &str,
 ) -> Result<BTreeMap<String, BTreeSet<String>>, String> {
     let url = format!("https://api.github.com/repos/{repo}/git/trees/main?recursive=1");
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| format!("GET {url}: {e}"))?;
+    let resp = crate::commands::github_api::get(
+        client,
+        &url,
+        crate::commands::github_api::ApiScope::Authenticated,
+    )
+    .await
+    .map_err(|e| format!("GET {url}: {e}"))?;
     if !resp.status().is_success() {
         return Err(format!("staging main tree HTTP {}", resp.status()));
     }
-    let parsed: GhTreesResponse = resp
-        .json()
-        .await
-        .map_err(|e| format!("parse staging tree JSON: {e}"))?;
+    let parsed: GhTreesResponse =
+        serde_json::from_slice(&resp.body).map_err(|e| format!("parse staging tree JSON: {e}"))?;
     if parsed.truncated {
         log(
             "hq-core-staging",
@@ -279,18 +279,18 @@ async fn fetch_open_pr_numbers(client: &reqwest::Client, repo: &str) -> Result<V
         let url = format!(
             "https://api.github.com/repos/{repo}/pulls?state=open&per_page=100&page={page}"
         );
-        let resp = client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| format!("GET {url}: {e}"))?;
+        let resp = crate::commands::github_api::get(
+            client,
+            &url,
+            crate::commands::github_api::ApiScope::Authenticated,
+        )
+        .await
+        .map_err(|e| format!("GET {url}: {e}"))?;
         if !resp.status().is_success() {
             return Err(format!("staging pulls list HTTP {}", resp.status()));
         }
-        let pulls: Vec<GhPull> = resp
-            .json()
-            .await
-            .map_err(|e| format!("parse pulls JSON: {e}"))?;
+        let pulls: Vec<GhPull> =
+            serde_json::from_slice(&resp.body).map_err(|e| format!("parse pulls JSON: {e}"))?;
         let n = pulls.len();
         numbers.extend(pulls.into_iter().map(|p| p.number));
         if n < 100 {
@@ -313,17 +313,17 @@ async fn fetch_pr_files(
         let url = format!(
             "https://api.github.com/repos/{repo}/pulls/{pr}/files?per_page=100&page={page}"
         );
-        let resp = client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| format!("GET {url}: {e}"))?;
+        let resp = crate::commands::github_api::get(
+            client,
+            &url,
+            crate::commands::github_api::ApiScope::Authenticated,
+        )
+        .await
+        .map_err(|e| format!("GET {url}: {e}"))?;
         if !resp.status().is_success() {
             return Err(format!("staging PR #{pr} files HTTP {}", resp.status()));
         }
-        let files: Vec<GhPullFile> = resp
-            .json()
-            .await
+        let files: Vec<GhPullFile> = serde_json::from_slice(&resp.body)
             .map_err(|e| format!("parse PR #{pr} files JSON: {e}"))?;
         let n = files.len();
         for f in files {
@@ -535,6 +535,54 @@ fn npx_telemetry_resolution(
     }
 }
 
+pub(crate) const RESCUE_MIN_GIT_VERSION: &str = "2.19.0";
+
+pub(crate) fn add_automatic_rescue_lock_timeout(
+    args: &mut Vec<std::ffi::OsString>,
+    source: &str,
+) {
+    if source == "automatic" {
+        args.push("--lock-timeout".into());
+        args.push("900".into());
+    }
+}
+
+pub(crate) fn rescue_git_preflight_diagnostic(version: &str) -> String {
+    format!(
+        "HQ_RESCUE_FAILURE_KIND=git_too_old\ngit_version={version}\nrequired_git_version={RESCUE_MIN_GIT_VERSION}\nGit {RESCUE_MIN_GIT_VERSION} or newer is required to update HQ Core. Update Git and try again."
+    )
+}
+
+pub(crate) fn rescue_git_version_is_supported(version: &str) -> Option<bool> {
+    let mut components = version.split('.').take(3).map(str::parse::<u32>);
+    let parsed = (
+        components.next()?.ok()?,
+        components.next()?.ok()?,
+        components.next()?.ok()?,
+    );
+    Some(parsed >= (2, 19, 0))
+}
+
+pub(crate) async fn rescue_git_version_on_path(path: &str) -> Option<String> {
+    let output = tokio::process::Command::new("git")
+        .arg("--version")
+        .env("PATH", path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let line = String::from_utf8_lossy(&output.stdout);
+    line.split_whitespace()
+        .find(|part| part.as_bytes().first().is_some_and(u8::is_ascii_digit))
+        .filter(|version| rescue_git_version_is_supported(version).is_some())
+        .map(str::to_string)
+}
+
 pub(crate) fn rescue_command() -> (
     tokio::process::Command,
     crate::commands::hq_core_state::CoreUpdateNpxResolution,
@@ -738,6 +786,7 @@ async fn run_replace_from_staging_observed(
                 managed_git_retry:
                     crate::commands::hq_core_state::ManagedGitRetryOutcome::NotNeeded,
             },
+            crate::commands::telemetry::emit_desktop_telemetry_best_effort,
         ),
         Err(error) => crate::commands::hq_core_state::emit_core_update_failed_event(
             observation.source(),
@@ -750,6 +799,7 @@ async fn run_replace_from_staging_observed(
             None,
             error.kind().label(),
             crate::commands::hq_core_state::core_update_failure_details(error),
+            crate::commands::telemetry::emit_desktop_telemetry_best_effort,
         ),
     }
     outcome
@@ -842,6 +892,7 @@ async fn run_replace_from_staging_inner(
 
     // Materialize the pinned hq-cloud npx cache under the shared lock before
     // spawning, so a rescue can't race prewarm/sync into a corrupt `_npx` tree.
+    let rescue_path = paths::child_path();
     let (mut cmd, npx_resolution) = rescue_command();
 
     #[cfg(windows)]
@@ -878,6 +929,35 @@ async fn run_replace_from_staging_inner(
         .with_npx_resolution(npx_resolution)
     })?;
 
+    if let Some(git_version) = rescue_git_version_on_path(&rescue_path).await {
+        if rescue_git_version_is_supported(&git_version) == Some(false) {
+            let diagnostic = rescue_git_preflight_diagnostic(&git_version);
+            crate::commands::hq_core_state::emit_core_update_git_preflight_failure(
+                update_source,
+                crate::commands::hq_core_state::Channel::Staging,
+                &git_version,
+            );
+            let _ = std::fs::write(&log_path, &diagnostic);
+            return Ok(RescueRunResult {
+                exit_code: 1,
+                log_tail: diagnostic.clone(),
+                log_path: log_path.display().to_string(),
+                rescue_stderr_tail: hq_telemetry::redact_core_update_diagnostic_tail(&diagnostic),
+                rescue_telemetry:
+                    crate::commands::hq_core_state::CoreUpdateRescueTelemetry::from_raw_with_probes(
+                        &diagnostic,
+                        1,
+                    )
+                    .await,
+                npx_resolution,
+                baseline_persisted: false,
+                baseline_retry_target: "main".to_string(),
+                baseline_refresh_pending: false,
+                rescue_error_kind: Some("git_too_old"),
+            });
+        }
+    }
+
     let _update_guard =
         crate::commands::process::begin_update_sensitive_operation().map_err(|error| {
             crate::commands::hq_core_state::CoreUpdateError::new(
@@ -891,7 +971,9 @@ async fn run_replace_from_staging_inner(
     //     --hq-root <folder> --source <repo> --yes
     // Staging leaves --ref to the engine default (main) and has no floor SHA.
     // Token is passed via env (never in argv — argv shows up in `ps`).
-    cmd.args(build_rescue_args(&hq_folder, &repo, None, None))
+    let mut rescue_args = build_rescue_args(&hq_folder, &repo, None, None);
+    add_automatic_rescue_lock_timeout(&mut rescue_args, update_source);
+    cmd.args(rescue_args)
         .env("GH_TOKEN", &token)
         .stdout(std::process::Stdio::from(log_file_for_stdout))
         .stderr(std::process::Stdio::from(log_file_for_stderr));
@@ -938,16 +1020,18 @@ async fn run_replace_from_staging_inner(
                         .as_ref()
                         .map(|diagnostic| {
                             format!(
-                                "{} {diagnostic} {}",
+                                "{} {diagnostic} {} {}",
                                 "staging update applied but baseline persistence failed:",
                                 result.persistence_stamp_marker(),
+                                result.fetch_failure_class_marker(),
                             )
                         })
                         .unwrap_or_else(|| {
                             format!(
-                                "staging update applied; baseline refresh pending for {repo}@{} {}",
+                                "staging update applied; baseline refresh pending for {repo}@{} {} {}",
                                 result.commit,
                                 result.persistence_stamp_marker(),
+                                result.fetch_failure_class_marker(),
                             )
                         });
                     crate::commands::hq_core_state::record_core_update_baseline_persistence_failure(
@@ -1046,6 +1130,30 @@ pub(crate) fn tail_log(path: &std::path::Path, n_lines: usize) -> Result<String,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rescue_git_preflight_checks_and_reports_the_minimum_version() {
+        assert_eq!(rescue_git_version_is_supported("2.18.9"), Some(false));
+        assert_eq!(rescue_git_version_is_supported("2.19.0"), Some(true));
+        assert_eq!(rescue_git_version_is_supported("2.44.1"), Some(true));
+        assert_eq!(rescue_git_version_is_supported("not a version"), None);
+        let diagnostic = rescue_git_preflight_diagnostic("2.15.0");
+        assert!(diagnostic.contains("required_git_version=2.19.0"));
+        assert!(diagnostic.contains("git_version=2.15.0"));
+        assert!(diagnostic.contains("Git 2.19.0 or newer"));
+    }
+
+    #[test]
+    fn automatic_rescue_wait_is_bounded_to_fifteen_minutes() {
+        let mut automatic = vec![std::ffi::OsString::from("--yes")];
+        add_automatic_rescue_lock_timeout(&mut automatic, "automatic");
+        assert_eq!(automatic[1], std::ffi::OsString::from("--lock-timeout"));
+        assert_eq!(automatic[2], std::ffi::OsString::from("900"));
+
+        let mut manual = vec![std::ffi::OsString::from("--yes")];
+        add_automatic_rescue_lock_timeout(&mut manual, "manual");
+        assert_eq!(manual, vec![std::ffi::OsString::from("--yes")]);
+    }
     #[cfg(not(windows))]
     use crate::util::test_support::{scoped_home, write_usable_managed_git, ENV_MUTEX};
 
@@ -1168,6 +1276,32 @@ mod tests {
         assert!(!tail.contains("HOME="));
         assert!(!tail.contains("/Users/[user]/.npm/_logs/rescue.log"));
         assert!(tail.contains("[Filtered]"));
+    }
+
+    #[test]
+    fn redacted_disk_full_tail_remains_classifiable_from_observed_message() {
+        let temp = tempfile::tempdir().unwrap();
+        let log_path = temp.path().join("rescue.log");
+        std::fs::write(
+            &log_path,
+            "error: insufficient free space for safety snapshot (need 6442450944 bytes, have 5368709120).\nHQ_RESCUE_FAILURE_KIND=disk_full\n",
+        )
+        .unwrap();
+
+        let tail = read_rescue_diagnostic_tail(&log_path).unwrap();
+
+        assert!(tail.contains("insufficient free space for safety snapshot"));
+        assert!(!tail.contains("HQ_RESCUE_FAILURE_KIND=disk_full"));
+        assert_eq!(
+            crate::commands::hq_core_state::classify_rescue_exit_failure(
+                &tail,
+                crate::commands::hq_core_state::CoreUpdateNpxResolution {
+                    resolved: true,
+                    source: "system",
+                },
+            ),
+            crate::commands::hq_core_state::RescueFailureCategory::DiskFull
+        );
     }
 
     #[test]

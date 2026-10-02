@@ -107,6 +107,7 @@ let chatSidebar = "";
 let filesSidebar = "";
 let setupChannelIntro = "";
 let desktopAltBoot = "";
+let shareNotifyPoller = "";
 
 beforeAll(async () => {
   [uiStyleFiles, uiScriptFiles, coreScriptFiles] = await Promise.all([
@@ -125,6 +126,7 @@ beforeAll(async () => {
     filesSidebar,
     setupChannelIntro,
     desktopAltBoot,
+    shareNotifyPoller,
   ] = await Promise.all(
     [
       "apps/sync/src-tauri/src/commands/sync.rs",
@@ -136,6 +138,7 @@ beforeAll(async () => {
       "packages/ui/src/files/FilesModeSidebar.svelte",
       "packages/ui/src/chat/SetupChannelIntro.svelte",
       "apps/sync/src/desktop-alt/boot.ts",
+      "apps/sync/src-tauri/src/commands/share_notify.rs",
     ].map((p) => readFile(resolve(rootDir, p), "utf8")),
   );
 });
@@ -367,6 +370,16 @@ const SESSIONS_HIDDEN_POLL_FLOOR_SECS = 120;
  */
 const FAST_POLLER_ALLOWLIST = new Map<string, string>([
   [
+    "packages/ui/src/tour/GuidedTour.svelte",
+    "250ms re-measure of the spotlight target while the guided tour is on " +
+      "screen, so the cutout follows layout shifts that fire no resize or " +
+      "scroll event (a sidebar row mounting, the Launch menu opening). Not a " +
+      "long-lived poller: it exists only while the tour layer is mounted (once " +
+      "on a fresh install, or when replayed from the palette), is cleared on " +
+      "every step change, Done, Skip and Esc, and only reads layout; it writes " +
+      "state when the target rect actually changed.",
+  ],
+  [
     "packages/ui/src/chat/messaging/AgentThinkingRow.svelte",
     "1s tick driving the visible 'working for 42s' counter while an agent is " +
       "mid-turn. Not a long-lived poller: the $effect returns early when there " +
@@ -438,6 +451,14 @@ describe("poll-interval floors", () => {
         "add the file to FAST_POLLER_ALLOWLIST with the reason — and make the " +
         "poller pause on visibilitychange.",
     ).toEqual([]);
+  });
+
+  it("keeps the Rust fallback scheduler on fixed interval deadlines", () => {
+    expect(shareNotifyPoller).toMatch(/share_poll_interval\(\)/);
+    expect(shareNotifyPoller).toMatch(/poll_ticker\.tick\(\)/);
+    expect(shareNotifyPoller).not.toMatch(
+      /sleep\(Duration::from_secs\(SHARE_POLL_INTERVAL_SECS\)\)/,
+    );
   });
 
   it("the stores fixed in the perf pass still pause when hidden", () => {

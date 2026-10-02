@@ -2348,3 +2348,78 @@ describe("pickWelcomeFirstConversation", () => {
     expect(pickWelcomeFirstConversation([setup, live], "ch:chn_ops")).toBeNull();
   });
 });
+
+// desktop.human-only-conversations — sidebar ordering rule.
+describe("sortConversations(humanOnly)", () => {
+  function ch(
+    id: string,
+    lastActivityAt: number,
+    lastHumanMessageAt?: number,
+  ): ConversationRow {
+    return {
+      id,
+      kind: "channel",
+      title: id,
+      companyUid: null,
+      unreadDot: false,
+      lastActivityAt,
+      ...(lastHumanMessageAt !== undefined ? { lastHumanMessageAt } : {}),
+      pinned: false,
+      channelId: id.replace("ch:", ""),
+    };
+  }
+
+  const quietHuman = ch("ch:quiet-human", 9, 9);
+  const noisyBot = ch("ch:noisy-bot", 11, 8);
+  const noHuman = ch("ch:no-human", 10);
+
+  it("flag off: newer lastActivityAt wins even when it is mesh/bot", () => {
+    const rows = [quietHuman, noisyBot, noHuman];
+    expect(
+      sortConversations(rows, "recent", false).map((r) => r.id),
+    ).toEqual(["ch:noisy-bot", "ch:no-human", "ch:quiet-human"]);
+  });
+
+  it("flag on: quiet-human (newer human message) beats noisy-bot", () => {
+    const rows = [noisyBot, quietHuman, noHuman];
+    // `no-human` carries neither human field, so its state is unknown (an
+    // older server, or a row the server has not examined). It falls back to
+    // lastActivityAt (10) and slots above the two known rows. A row the server
+    // KNOWS holds no human message is covered in
+    // sidebar-model.human-recency.test.ts.
+    expect(
+      sortConversations(rows, "recent", true).map((r) => r.id),
+    ).toEqual(["ch:no-human", "ch:quiet-human", "ch:noisy-bot"]);
+  });
+
+  it("ties break deterministically (title/id) in both modes", () => {
+    const a = ch("ch:a", 5, 5);
+    const b = ch("ch:b", 5, 5);
+    expect(
+      sortConversations([b, a], "recent", true).map((r) => r.id),
+    ).toEqual(["ch:a", "ch:b"]);
+    expect(
+      sortConversations([b, a], "recent", false).map((r) => r.id),
+    ).toEqual(["ch:a", "ch:b"]);
+  });
+
+  it("no human fields at all: humanOnly falls back to lastActivityAt", () => {
+    // What an older server sends for every row, and what today's server sends
+    // for every 1:1 DM. Absent is unknown, not "none".
+    const later = ch("ch:later", 30);
+    const earlier = ch("ch:earlier", 10);
+    expect(
+      sortConversations([earlier, later], "recent", true).map((r) => r.id),
+    ).toEqual(["ch:later", "ch:earlier"]);
+  });
+
+  it("applySidebarFilters threads humanOnly through", () => {
+    const result = applySidebarFilters([noisyBot, quietHuman], {
+      humanOnly: true,
+    });
+    expect(result.map((r) => r.id)).toEqual([
+      "ch:quiet-human",
+      "ch:noisy-bot",
+    ]);
+  });
+});

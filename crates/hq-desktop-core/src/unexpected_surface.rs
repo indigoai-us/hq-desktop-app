@@ -112,6 +112,43 @@ pub fn prior_surface_tag(surface: &str) -> &'static str {
     }
 }
 
+/// Limit auth-session and refresh-failure diagnostics to stable buckets.
+pub fn auth_session_status_tag(status: &str) -> &'static str {
+    match status {
+        "active" => "active",
+        "credentials_absent" => "credentials_absent",
+        "credentials_read_error" => "credentials_read_error",
+        "credentials_invalid" => "credentials_invalid",
+        "refresh_temporarily_unavailable" => "refresh_temporarily_unavailable",
+        "non_human_principal" => "non_human_principal",
+        _ => "unknown",
+    }
+}
+
+pub fn refresh_failure_class_tag(class: &str) -> &'static str {
+    match class {
+        "none" => "none",
+        "network" => "network",
+        "timeout" => "timeout",
+        "http_4xx" => "http_4xx",
+        "http_5xx" => "http_5xx",
+        "http_other" => "http_other",
+        "response_decode" => "response_decode",
+        "unknown" => "unknown",
+        _ => "unknown",
+    }
+}
+
+pub fn refresh_failure_class_for_session_tag(status: &str, class: &str) -> &'static str {
+    let status = auth_session_status_tag(status);
+    let class = refresh_failure_class_tag(class);
+    if status == "refresh_temporarily_unavailable" && class == "none" {
+        "unknown"
+    } else {
+        class
+    }
+}
+
 /// Cognito startup restores from ~/.hq/cognito-tokens.json, not macOS Keychain.
 pub const KEYCHAIN_STATUS_TAG: &str = "not_used_token_file";
 
@@ -185,11 +222,16 @@ pub struct StartupDiagnosticTags {
     pub node_resolved: &'static str,
     pub node_resolved_program_kind: &'static str,
     pub require_local_toolchain_demoted: &'static str,
+    pub auth_session_status: &'static str,
+    pub refresh_failure_class: &'static str,
+    pub invalidation_marker_present: bool,
+    pub first_read_result: &'static str,
+    pub recheck_read_result: &'static str,
 }
 
 impl StartupDiagnosticTags {
     /// Keep the Sentry keys and values together so tests cover the reporter contract.
-    pub fn as_pairs(self) -> [(&'static str, &'static str); 20] {
+    pub fn as_pairs(self) -> [(&'static str, &'static str); 25] {
         [
             ("session_restore_state", self.session_restore_state),
             ("token_present", self.token_present),
@@ -217,6 +259,14 @@ impl StartupDiagnosticTags {
                 "require_local_toolchain_demoted",
                 self.require_local_toolchain_demoted,
             ),
+            ("auth_session_status", self.auth_session_status),
+            ("refresh_failure_class", self.refresh_failure_class),
+            (
+                "invalidation_marker_present",
+                bool_tag(self.invalidation_marker_present),
+            ),
+            ("first_read_result", self.first_read_result),
+            ("recheck_read_result", self.recheck_read_result),
         ]
     }
 }
@@ -228,6 +278,27 @@ pub fn startup_diagnostic_tags(
     elapsed_ms: Option<u128>,
     prior_surface: &str,
     lifecycle: StartupLifecycleInputs,
+) -> StartupDiagnosticTags {
+    startup_diagnostic_tags_with_auth_session(
+        authenticated,
+        token_presence,
+        elapsed_ms,
+        prior_surface,
+        lifecycle,
+        "unknown",
+        "none",
+    )
+}
+
+/// Build startup tags with the native auth status and bounded refresh class.
+pub fn startup_diagnostic_tags_with_auth_session(
+    authenticated: bool,
+    token_presence: &str,
+    elapsed_ms: Option<u128>,
+    prior_surface: &str,
+    lifecycle: StartupLifecycleInputs,
+    auth_session_status: &str,
+    refresh_failure_class: &str,
 ) -> StartupDiagnosticTags {
     let inputs = lifecycle.inputs;
     StartupDiagnosticTags {
@@ -251,7 +322,45 @@ pub fn startup_diagnostic_tags(
         node_resolved: program_resolved_tag(lifecycle.node_program_kind),
         node_resolved_program_kind: program_kind_tag(lifecycle.node_program_kind),
         require_local_toolchain_demoted: bool_tag(lifecycle.require_local_toolchain_demoted),
+        auth_session_status: auth_session_status_tag(auth_session_status),
+        refresh_failure_class: refresh_failure_class_for_session_tag(
+            auth_session_status,
+            refresh_failure_class,
+        ),
+        invalidation_marker_present: false,
+        first_read_result: "not_checked",
+        recheck_read_result: "not_checked",
     }
+}
+
+/// Apply the production token-store diagnostic gate to an unexpected-surface
+/// snapshot. Callers pass the auth probe's first-read result so this diagnostic
+/// stays paired with the probe that produced the event.
+pub fn apply_startup_token_store_diagnostics(
+    mut tags: StartupDiagnosticTags,
+    surface: &str,
+    token_presence: &str,
+    first_read_result: Option<&str>,
+) -> StartupDiagnosticTags {
+    if surface == "sign-in" && token_presence == "present" {
+        let first_read_result = match first_read_result {
+            Some("ok_some") => "ok_some",
+            Some("ok_none") => "ok_none",
+            Some("err_io") => "err_io",
+            Some("err_parse") => "err_parse",
+            _ => "unknown",
+        };
+        let diagnostics =
+            crate::cognito::startup_token_store_diagnostics_after_first(first_read_result);
+        tags.invalidation_marker_present = diagnostics.invalidation_marker_present;
+        tags.first_read_result = diagnostics.first_read_result;
+        tags.recheck_read_result = diagnostics.recheck_read_result;
+    } else {
+        tags.invalidation_marker_present = false;
+        tags.first_read_result = "not_checked";
+        tags.recheck_read_result = "not_checked";
+    }
+    tags
 }
 
 /// Replace the home directory in a path string with `~` so usernames are
@@ -516,7 +625,12 @@ mod tests {
 
     #[test]
     fn startup_diagnostic_tags_are_bounded_and_explain_restore_state() {
-        let tags = startup_diagnostic_tags(
+        let _home_lock = crate::cognito::HQ_TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let isolated_home = tempfile::tempdir().expect("isolated test home");
+        std::env::set_var("HQ_TEST_HOME", isolated_home.path());
+        let tags = startup_diagnostic_tags_with_auth_session(
             false,
             "present",
             Some(5_000),
@@ -538,6 +652,8 @@ mod tests {
                 node_program_kind: Some(ResolvedProgramKind::Exe),
                 require_local_toolchain_demoted: false,
             },
+            "credentials_invalid",
+            "http_4xx",
         );
         assert!(
             tags.as_pairs()
@@ -545,9 +661,21 @@ mod tests {
                 .any(|(key, _)| *key == "hq_root_valid"),
             "the existing unexpected-surface event must tag the lifecycle classifier inputs"
         );
+        assert!(
+            tags.as_pairs()
+                .iter()
+                .any(|(key, _)| *key == "auth_session_status"),
+            "unexpected startup events must identify the authoritative auth-session status"
+        );
+        assert!(
+            tags.as_pairs()
+                .iter()
+                .any(|(key, _)| *key == "refresh_failure_class"),
+            "unexpected startup events must identify the bounded refresh failure class"
+        );
         assert_eq!(
-            tags.as_pairs(),
-            [
+            tags.as_pairs().to_vec(),
+            vec![
                 ("session_restore_state", "unauthenticated_with_token"),
                 ("token_present", "present"),
                 ("keychain_status", "not_used_token_file"),
@@ -568,7 +696,44 @@ mod tests {
                 ("node_resolved", "true"),
                 ("node_resolved_program_kind", "exe"),
                 ("require_local_toolchain_demoted", "false"),
+                ("auth_session_status", "credentials_invalid"),
+                ("refresh_failure_class", "http_4xx"),
+                ("invalidation_marker_present", "false"),
+                ("first_read_result", "not_checked"),
+                ("recheck_read_result", "not_checked"),
             ]
+        );
+        assert_eq!(
+            auth_session_status_tag("person@example.com"),
+            "unknown",
+            "free-form identity values must never become tags"
+        );
+        std::env::remove_var("HQ_TEST_HOME");
+        for (status, tag) in [
+            ("active", "active"),
+            ("credentials_absent", "credentials_absent"),
+            ("credentials_read_error", "credentials_read_error"),
+            ("credentials_invalid", "credentials_invalid"),
+            (
+                "refresh_temporarily_unavailable",
+                "refresh_temporarily_unavailable",
+            ),
+            ("non_human_principal", "non_human_principal"),
+        ] {
+            assert_eq!(auth_session_status_tag(status), tag);
+        }
+        assert_eq!(
+            refresh_failure_class_tag("eyJhbGciOiJ..."),
+            "unknown",
+            "free-form or credential values must never become tags"
+        );
+        assert_eq!(
+            refresh_failure_class_for_session_tag("refresh_temporarily_unavailable", "none"),
+            "unknown"
+        );
+        assert_eq!(
+            refresh_failure_class_for_session_tag("credentials_invalid", "none"),
+            "none"
         );
         assert_eq!(token_presence_tag("permission-denied"), "unknown");
         assert_eq!(session_restore_state_tag(false, "absent"), "signed_out");
@@ -590,6 +755,121 @@ mod tests {
         assert_eq!(prior_surface_tag("onboarding"), "onboarding");
         assert_eq!(prior_surface_tag("arbitrary-user-data"), "unknown");
         assert_eq!(KEYCHAIN_STATUS_TAG, "not_used_token_file");
+    }
+
+    fn token_store_tags(
+        home: &std::path::Path,
+        surface: &str,
+        token_presence: &str,
+        first_read_result: Option<&str>,
+    ) -> StartupDiagnosticTags {
+        std::env::set_var("HQ_TEST_HOME", home);
+        apply_startup_token_store_diagnostics(
+            startup_diagnostic_tags_with_auth_session(
+                false,
+                token_presence,
+                None,
+                "loading",
+                StartupLifecycleInputs {
+                    inputs: LifecycleInputs {
+                        install_completed: true,
+                        first_run_completed: true,
+                        had_machine_id: true,
+                        config_valid: true,
+                        hq_root_valid: true,
+                        has_auth: false,
+                        install_in_progress: false,
+                        consent_answered: true,
+                        evidence_unreadable: false,
+                    },
+                    hq_root_probe: Some(HqRootProbe::Valid),
+                    hq_program_kind: None,
+                    node_program_kind: None,
+                    require_local_toolchain_demoted: false,
+                },
+                "credentials_invalid",
+                "http_4xx",
+            ),
+            surface,
+            token_presence,
+            first_read_result,
+        )
+    }
+
+    fn write_token_fixture(home: &std::path::Path, with_marker: bool) {
+        let token_dir = home.join(".hq");
+        std::fs::create_dir_all(&token_dir).expect("token dir");
+        let path = token_dir.join("cognito-tokens.json");
+        let access_token = "test-access-token";
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "accessToken": access_token,
+                "idToken": null,
+                "refreshToken": "test-refresh-token",
+                "expiresAt": 1
+            })
+            .to_string(),
+        )
+        .expect("token fixture");
+        if with_marker {
+            let marker = token_dir.join(format!(
+                "cognito-tokens.json.invalid.{}",
+                crate::cognito::access_token_fingerprint(access_token)
+            ));
+            std::fs::write(marker, "").expect("invalidation marker");
+        }
+    }
+
+    #[test]
+    fn startup_diagnostics_distinguish_invalidated_token_from_readable_token() {
+        let _home_lock = crate::cognito::HQ_TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let invalidated_home = tempfile::tempdir().expect("invalidated temp home");
+        write_token_fixture(invalidated_home.path(), true);
+        let invalidated = token_store_tags(
+            invalidated_home.path(),
+            "sign-in",
+            "present",
+            Some("ok_none"),
+        );
+        assert!(invalidated.invalidation_marker_present);
+        assert_eq!(invalidated.first_read_result, "ok_none");
+        assert_eq!(invalidated.recheck_read_result, "ok_none");
+
+        let readable_home = tempfile::tempdir().expect("readable temp home");
+        write_token_fixture(readable_home.path(), false);
+        let readable =
+            token_store_tags(readable_home.path(), "sign-in", "present", Some("ok_some"));
+        assert!(!readable.invalidation_marker_present);
+        assert_eq!(readable.first_read_result, "ok_some");
+        assert_eq!(readable.recheck_read_result, "ok_some");
+
+        let skipped_home = tempfile::tempdir().expect("skipped temp home");
+        write_token_fixture(skipped_home.path(), true);
+        for (surface, token_presence) in [("loading", "present"), ("sign-in", "absent")] {
+            let skipped = token_store_tags(
+                skipped_home.path(),
+                surface,
+                token_presence,
+                Some("ok_some"),
+            );
+            assert!(!skipped.invalidation_marker_present);
+            assert_eq!(skipped.first_read_result, "not_checked");
+            assert_eq!(skipped.recheck_read_result, "not_checked");
+        }
+
+        let unknown_home = tempfile::tempdir().expect("unknown temp home");
+        let unknown = token_store_tags(
+            unknown_home.path(),
+            "sign-in",
+            "present",
+            Some("unexpected-sensitive-error"),
+        );
+        assert_eq!(unknown.first_read_result, "unknown");
+        assert_eq!(unknown.recheck_read_result, "ok_none");
+        std::env::remove_var("HQ_TEST_HOME");
     }
 
     #[test]

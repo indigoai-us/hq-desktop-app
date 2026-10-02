@@ -22,12 +22,31 @@ export function mapSignInError(message: string, provider?: SignInProvider): stri
   if (structured?.code === 'OAUTH_PORT_IN_USE') {
     return (
       structured.message ||
-      'Sign-in needs local port 53682, but another process is already using it. Close the other sign-in window or app using that port, then retry.'
+      'Sign-in could not open a registered local callback port (53682, 8765, or 3000). Close another sign-in window or app using one, then retry.'
     );
   }
 
   if (structured?.code === 'OAUTH_PROVIDER_ERROR') {
     return structured.message || 'Sign-in was cancelled or denied. Retry when you are ready.';
+  }
+
+  if (
+    structured?.code === 'MICROSOFT_EMAIL_REQUIRED' ||
+    structured?.code === 'MICROSOFT_ENABLEMENT_REQUIRED' ||
+    structured?.code === 'MICROSOFT_RESOLVE_FAILED'
+  ) {
+    return (
+      structured.message ||
+      'We could not identify your Microsoft account. Check your connection and retry.'
+    );
+  }
+
+  if (/state (mismatch|does not match)/i.test(message)) {
+    return 'That sign-in attempt no longer matches. Choose a provider to start again.';
+  }
+
+  if (/expired|timed out waiting for sign-in/i.test(message)) {
+    return 'Sign-in took too long. Choose a provider to try again.';
   }
 
   if (/token exchange/i.test(message)) {

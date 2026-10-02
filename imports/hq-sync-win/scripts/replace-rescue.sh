@@ -444,6 +444,58 @@ fi
 TMPDIR="$(mktemp -d -t hq-replace-rescue-XXXXXX)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
+# Keep clone diagnostics only long enough to classify the failure. Git's raw
+# stderr may include the authenticated URL or credential-helper output, so it
+# is never copied to the rescue log. The saved diagnostic is capped at 16 KiB.
+CLONE_DIAGNOSTIC_LIMIT_BYTES=16384
+LAST_CLONE_FAILURE_CLASS=""
+
+classify_clone_failure() {
+  local diagnostic_path="$1"
+  local lower
+  lower="$(tr '[:upper:]' '[:lower:]' < "$diagnostic_path")"
+
+  case "$lower" in
+    *"authentication failed"*|*"could not read username"*|*"could not ask for username"*|*"cannot prompt because user interactivity has been disabled"*|*"http basic: access denied"*|*"support for password authentication was removed"*|*"invalid username or password"*|*"repository not found"*|*"credential helper"*)
+      printf 'auth'
+      ;;
+    *"you have not agreed to the xcode license agreements"*|*"remote-https"*"is not a git command"*|*"remote helper 'https' aborted session"*|*"unknown option"*shallow-exclude*)
+      printf 'git_unusable'
+      ;;
+    *"unknown option"*filter*|*"filter"*"not supported"*|*"filter"*"not recognized"*|*"server does not support filtering"*|*"server does not support filter"*)
+      printf 'filter_unsupported'
+      ;;
+    *"filename too long"*|*"enametoolong"*|*"path too long"*)
+      printf 'path'
+      ;;
+    *"destination path"*"already exists"*|*"already exists and is not an empty directory"*|*"file exists"*)
+      printf 'exists'
+      ;;
+    *"could not resolve host"*|*"could not resolve proxy"*|*"name or service not known"*|*"temporary failure in name resolution"*|*"failed to connect"*|*"connection timed out"*|*"operation timed out"*|*"connection reset"*|*"connection refused"*|*"network is unreachable"*|*"remote end hung up unexpectedly"*|*"early eof"*|*"http 5"[0-9][0-9]*|*"returned error: 5"[0-9][0-9]*)
+      printf 'network'
+      ;;
+    *)
+      printf 'unknown'
+      ;;
+  esac
+}
+
+run_clone() {
+  local diagnostic_path="$TMPDIR/clone-diagnostic"
+  if git clone "$@" 2>&1 | tail -c "$CLONE_DIAGNOSTIC_LIMIT_BYTES" > "$diagnostic_path"; then
+    LAST_CLONE_FAILURE_CLASS=""
+    return 0
+  fi
+
+  LAST_CLONE_FAILURE_CLASS="$(classify_clone_failure "$diagnostic_path")"
+  return 1
+}
+
+report_clone_failure() {
+  printf 'HQ_RESCUE_CLONE_FAILURE_CLASS=%s\nerror: clone failed\n' \
+    "${LAST_CLONE_FAILURE_CLASS:-unknown}" >&2
+}
+
 # Build the clone URL. If GH_TOKEN is set in the environment, inject it as
 # the basic-auth user so `git clone` can access private staging repos
 # without an interactive credential prompt. This is the form the GitHub
@@ -467,23 +519,29 @@ if [ "$HISTORY_CHECK" = "1" ]; then
   # practice. Checkout of HEAD does fetch HEAD-tree blobs, which we need
   # anyway for the cmp-based current-state comparison.
   echo "==> Cloning $CLONE_URL_DISPLAY @$REF (full history, blob:none filter) ..."
-  git clone --filter=blob:none "$CLONE_URL" "$TMPDIR/src" >/dev/null 2>&1 || {
-    echo "error: clone failed" >&2; exit 5
-  }
+  if ! run_clone --filter=blob:none "$CLONE_URL" "$TMPDIR/src"; then
+    report_clone_failure
+    exit 5
+  fi
   (cd "$TMPDIR/src" && git checkout "$REF" >/dev/null 2>&1) || {
     echo "error: could not check out ref '$REF' from $SOURCE_REPO" >&2
     exit 5
   }
 else
   echo "==> Cloning $CLONE_URL_DISPLAY @$REF (shallow) ..."
-  git clone --depth 1 --branch "$REF" "$CLONE_URL" "$TMPDIR/src" >/dev/null 2>&1 || {
+  if ! run_clone --depth 1 --branch "$REF" "$CLONE_URL" "$TMPDIR/src"; then
     echo "    (shallow branch clone failed; trying full clone + checkout)"
-    git clone "$CLONE_URL" "$TMPDIR/src" >/dev/null
+    # If both attempts fail, report only the full-clone attempt's class; a
+    # shallow-only diagnostic is intentionally discarded after fallback.
+    if ! run_clone "$CLONE_URL" "$TMPDIR/src"; then
+      report_clone_failure
+      exit 5
+    fi
     (cd "$TMPDIR/src" && git checkout "$REF" >/dev/null 2>&1) || {
       echo "error: could not check out ref '$REF' from $SOURCE_REPO" >&2
       exit 5
     }
-  }
+  fi
 fi
 
 SRC_SHA="$(cd "$TMPDIR/src" && git rev-parse HEAD)"

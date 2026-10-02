@@ -52,11 +52,11 @@ use crate::util::logfile::log;
 
 #[allow(unused_imports)]
 pub use hq_desktop_core::messages::{
-    apply_contact_preview_filter, build_channel_messages_url, build_create_payload,
-    build_create_payload_with_project, build_ensure_project_channel_payload, build_group_payload,
-    build_reaction_payload, build_reactions_url, esc_query, esc_seg, invite_member_payload,
-    Channel, ChannelDetail, ChannelMember, ChannelMembersResponse, ChannelMessage,
-    ChannelParticipant, ChannelsResponse, Contact, ContactsResponse,
+    apply_contact_preview_filter, build_channel_history_url, build_channel_messages_url,
+    build_create_payload, build_create_payload_with_project, build_ensure_project_channel_payload,
+    build_group_payload, build_reaction_payload, build_reactions_url, esc_query, esc_seg,
+    invite_member_payload, Channel, ChannelDetail, ChannelMember, ChannelMembersResponse,
+    ChannelMessage, ChannelParticipant, ChannelsResponse, Contact, ContactsResponse,
     EnsureProjectChannelResponse, MessageReactions, ReactionAggregate, RequestsResponse,
     UnreadSummary,
 };
@@ -602,26 +602,24 @@ pub async fn ensure_project_channel(
 /// `GET /v1/notify/channels/{id}/messages`. Opening a channel also marks it
 /// read server-side (the page read advances the caller's cursor), but the
 /// caller should still call `mark_channel_read` to zero the local unread.
+///
+/// `view: "human"` asks the server for the human view of the history. A
+/// server that implements it echoes `view` in the response (carried through
+/// `ChannelDetail`); an older one ignores the parameter. Absent, the request
+/// is unchanged.
 #[tauri::command]
 pub async fn fetch_channel(
     channel_id: String,
     limit: Option<u32>,
     cursor: Option<String>,
+    view: Option<String>,
 ) -> Result<ChannelDetail, String> {
     let id = channel_id.trim();
     if id.is_empty() {
         return Err("channelId must not be empty".to_string());
     }
     let (base, token) = auth_and_base("MESSAGES_CHANNEL_FETCH").await?;
-    let mut url = format!("{base}/v1/notify/channels/{}/messages", esc_seg(id));
-    let mut sep = '?';
-    if let Some(n) = limit {
-        url.push_str(&format!("{sep}limit={n}"));
-        sep = '&';
-    }
-    if let Some(c) = cursor.as_deref().filter(|c| !c.is_empty()) {
-        url.push_str(&format!("{sep}cursor={}", esc_seg(c)));
-    }
+    let url = build_channel_history_url(&base, id, limit, cursor.as_deref(), view.as_deref());
     let out: ChannelDetail = get_json(&url, &token, "MESSAGES_CHANNEL_FETCH").await?;
     log(
         LOG_TAG,
@@ -1314,18 +1312,13 @@ pub async fn remove_channel_member(
         })?;
     let status = resp.status();
     if !status.is_success() {
-        let server_msg = resp
-            .json::<serde_json::Value>()
-            .await
-            .ok()
-            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string));
+        let body = resp.json::<serde_json::Value>().await.ok();
+        let server_msg = remove_channel_member_error_message(status.as_u16(), body.as_ref());
         log(
             LOG_TAG,
             &format!("MESSAGES_CHANNEL_REMOVE_ERROR status={status} msg={server_msg:?}"),
         );
-        return Err(
-            server_msg.unwrap_or_else(|| format!("Remove failed (status {})", status.as_u16()))
-        );
+        return Err(server_msg);
     }
     // The server returns the updated member list; tolerate an empty 204 by
     // re-listing only if the body didn't parse.
@@ -1340,6 +1333,19 @@ pub async fn remove_channel_member(
         &format!("MESSAGES_CHANNEL_REMOVE_OK id={id} uid={uid}"),
     );
     Ok(out)
+}
+
+/// Keep the owner self-leave code intact across the Tauri string error seam so
+/// the UI can replace it with a safe, actionable message.
+fn remove_channel_member_error_message(status: u16, body: Option<&serde_json::Value>) -> String {
+    let code = body.and_then(|v| v.get("code")).and_then(|c| c.as_str());
+    if status == 409 && code == Some("CHANNEL_OWNER_CANNOT_LEAVE") {
+        return "CHANNEL_OWNER_CANNOT_LEAVE".to_string();
+    }
+    body.and_then(|v| v.get("error"))
+        .and_then(|e| e.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("Remove failed (status {status})"))
 }
 
 /// Success body of `DELETE /v1/notify/channels/{id}`.
@@ -1622,6 +1628,18 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
     use tauri::Manager;
+
+    #[test]
+    fn remove_channel_member_preserves_owner_conflict_code_for_ui_mapping() {
+        let body = serde_json::json!({
+            "error": "A channel owner cannot leave",
+            "code": "CHANNEL_OWNER_CANNOT_LEAVE"
+        });
+        assert_eq!(
+            remove_channel_member_error_message(409, Some(&body)),
+            "CHANNEL_OWNER_CANNOT_LEAVE"
+        );
+    }
 
     #[test]
     fn mark_messages_viewed_resets_unread_state() {

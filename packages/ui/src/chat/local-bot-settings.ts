@@ -15,31 +15,52 @@ export interface LocalBotModelChoice {
 }
 
 export interface LocalBotRuntimeSettings {
+  /** Specific model versions offered for new picks, newest first. */
   models: LocalBotModelChoice[];
+  /**
+   * Older values a bot may still have saved but that are no longer offered.
+   * Shown with a friendly label when a bot has one; never offered for a new pick.
+   */
+  legacyModels?: LocalBotModelChoice[];
   efforts: string[];
   defaultModelLabel: string;
+  /** How the picker names the tool a person may need to update. */
+  toolLabel: string;
 }
 
 export const LOCAL_BOT_SETTINGS: Record<LocalBotRow["runtime"], LocalBotRuntimeSettings> = {
   claude: {
     defaultModelLabel: "Claude Code's default",
+    toolLabel: "Claude Code",
+    // Full model ids, not the opus/sonnet/haiku aliases: an alias resolves per
+    // Claude Code version, so "opus" can mean an older Opus on an older install.
     models: [
-      { value: "opus", label: "Opus" },
-      { value: "sonnet", label: "Sonnet" },
-      { value: "haiku", label: "Haiku" },
+      { value: "claude-opus-5-5", label: "Opus 5.5" },
+      { value: "claude-opus-5", label: "Opus 5" },
+      { value: "claude-sonnet-5", label: "Sonnet 5" },
+      { value: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
+    ],
+    legacyModels: [
+      { value: "opus", label: "Opus (latest in Claude Code)" },
+      { value: "sonnet", label: "Sonnet (latest in Claude Code)" },
+      { value: "haiku", label: "Haiku (latest in Claude Code)" },
     ],
     efforts: ["low", "medium", "high", "xhigh", "max"],
   },
   codex: {
     defaultModelLabel: "Codex's default",
+    toolLabel: "Codex",
     models: [
+      { value: "gpt-6-astra", label: "GPT-6 Astra" },
       { value: "gpt-5.5", label: "GPT-5.5" },
     ],
     efforts: ["minimal", "low", "medium", "high", "xhigh"],
   },
   grok: {
     defaultModelLabel: "Grok's default",
+    toolLabel: "Grok",
     models: [
+      { value: "grok-4.7", label: "Grok 4.7" },
       { value: "grok-4.6", label: "Grok 4.6" },
       { value: "grok-4.5", label: "Grok 4.5" },
     ],
@@ -61,13 +82,29 @@ export function effortLabel(level: string, isDefault = level === DEFAULT_LOCAL_B
   return isDefault ? `${label} (default)` : label;
 }
 
-/** The model choices for a bot, keeping a custom model it already uses. */
+/**
+ * The model choices for a bot, keeping a model it already uses: a saved legacy
+ * alias gets its friendly label, anything else shows as the raw id.
+ */
 export function modelChoicesFor(bot: Pick<LocalBotRow, "runtime" | "model">): LocalBotModelChoice[] {
   const settings = LOCAL_BOT_SETTINGS[bot.runtime];
   const choices: LocalBotModelChoice[] = [{ value: "", label: settings.defaultModelLabel }, ...settings.models];
   const current = bot.model?.trim();
-  if (current && !choices.some((c) => c.value === current)) choices.push({ value: current, label: current });
+  if (current && !choices.some((c) => c.value === current)) {
+    const legacy = settings.legacyModels?.find((c) => c.value === current);
+    choices.push(legacy ?? { value: current, label: current });
+  }
   return choices;
+}
+
+/**
+ * Help line under the picker when a specific model is chosen. A model newer
+ * than the installed CLI fails at the bot's first turn, and updating the CLI
+ * is the fix. Null for the tool's default.
+ */
+export function modelUpdateHint(runtime: LocalBotRow["runtime"], model: string | null | undefined): string | null {
+  if (!model?.trim()) return null;
+  return `If a bot can't start with this model, update ${LOCAL_BOT_SETTINGS[runtime].toolLabel}.`;
 }
 
 /** One line for the profile: "Opus · thinking High" / "Claude Code's default · thinking Medium". */

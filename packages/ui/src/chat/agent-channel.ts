@@ -33,13 +33,6 @@ export function isAgentConversationRow(
   return !!row.members?.some((m) => isAgentUid(m.personUid));
 }
 
-export function agentNameFromRow(row: ConversationRow | null): string {
-  const title = row?.title?.trim();
-  if (title) return title;
-  const member = row?.members?.find((m) => isAgentUid(m.personUid));
-  return member?.displayName?.trim() || "Agent";
-}
-
 function fieldValue(
   fields: unknown,
   id: string,

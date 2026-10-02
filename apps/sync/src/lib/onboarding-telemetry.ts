@@ -72,35 +72,59 @@ export async function postOptIn({
   consentVersion,
   invokeCommand = invoke as InvokeCommand,
 }: PostOptInOptions): Promise<PostOptInResult> {
-  let cached = false;
+  const cached = await cacheOptInAnswer({ enabled, surface, consentVersion, invokeCommand });
+  const upload = await uploadOptInAnswer({ enabled, surface, consentVersion, invokeCommand });
+  return upload.uploaded ? { cached, uploaded: true } : { cached, ...upload };
+}
+
+function optInArgs({ enabled, surface, consentVersion }: PostOptInOptions): Record<string, unknown> {
+  const args: Record<string, unknown> = { enabled };
+  if (surface !== undefined) args.surface = surface;
+  if (consentVersion !== undefined) args.consentVersion = consentVersion;
+  return args;
+}
+
+/**
+ * The local half of {@link postOptIn}: cache the answer AND its provenance
+ * (surface + consent version) on this machine. Returns whether it landed.
+ *
+ * Caching the provenance is what lets an OFFLINE self-heal replay restate the
+ * same version the person answered against. Without it the replay posts a
+ * version-less record that the server reads as stale and re-prompts against the
+ * exact wording already answered. It also stamps the answer with the account
+ * that gave it, and lets an offline person finish setup.
+ *
+ * The welcome flow calls this on its own when the person answers before the
+ * install has provisioned their person entity: the answer is held here, and
+ * {@link uploadOptInAnswer} sends it once the entity exists.
+ */
+export async function cacheOptInAnswer({
+  invokeCommand = invoke as InvokeCommand,
+  ...options
+}: PostOptInOptions): Promise<boolean> {
   try {
-    // The local cache carries the answer AND its provenance (surface + consent
-    // version). Caching the provenance is what lets an OFFLINE self-heal replay
-    // restate the same version the person answered against — without it the
-    // replay posts a version-less record that the server reads as stale and
-    // re-prompts against the exact wording already answered. Still runs FIRST
-    // and best-effort: it also stamps the answer with the account that gave it
-    // and lets an offline person finish setup.
-    const cacheArgs: Record<string, unknown> = { enabled };
-    if (surface !== undefined) cacheArgs.surface = surface;
-    if (consentVersion !== undefined) cacheArgs.consentVersion = consentVersion;
-    await invokeCommand(WRITE_PREF_COMMAND, cacheArgs);
-    cached = true;
+    await invokeCommand(WRITE_PREF_COMMAND, optInArgs(options));
+    return true;
   } catch (err) {
     console.error('[telemetry] write_menubar_telemetry_pref failed:', err);
+    return false;
   }
+}
 
+/**
+ * The remote half of {@link postOptIn}. Never throws; a failed upload is
+ * REPORTED so the caller can show a retry (or, when offline, let the person
+ * finish knowing the cached answer will be reconciled later).
+ */
+export async function uploadOptInAnswer({
+  invokeCommand = invoke as InvokeCommand,
+  ...options
+}: PostOptInOptions): Promise<{ uploaded: true } | { uploaded: false; error: string }> {
   try {
-    const args: Record<string, unknown> = { enabled };
-    if (surface !== undefined) args.surface = surface;
-    if (consentVersion !== undefined) args.consentVersion = consentVersion;
-    await invokeCommand(POST_OPT_IN_COMMAND, args);
-    return { cached, uploaded: true };
+    await invokeCommand(POST_OPT_IN_COMMAND, optInArgs(options));
+    return { uploaded: true };
   } catch (err) {
-    // Do NOT swallow: the caller must learn the write did not reach the server
-    // so it can show a retry (or, when offline, let the person finish anyway
-    // knowing the cached answer will be reconciled later).
-    return { cached, uploaded: false, error: errorText(err) };
+    return { uploaded: false, error: errorText(err) };
   }
 }
 

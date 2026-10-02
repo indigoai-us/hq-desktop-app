@@ -202,7 +202,31 @@
       onrefresh(): Promise<void>;
       downloadUrlFor(tool: "claude" | "codex"): string;
       onopen(url: string): Promise<{ ok: boolean; reason?: string }> | void;
+      onopenassistant?(
+        assistant: "claude-desktop" | "chatgpt-desktop",
+        url: string,
+      ): Promise<{ ok: boolean; reason?: string }>;
     } | null;
+    /**
+     * Live AiTools payload — flows through to DesktopApp's InstallChoice
+     * panel so the New bot wizard's "not installed" state can offer the
+     * assistant-app buttons when Claude Desktop or the ChatGPT app is here.
+     */
+    aiTools?: import("@hq/ui").AiTools | null;
+    /** Open the assistant desktop app with a pre-filled install prompt. */
+    onopenassistant?: (
+      assistant: "claude-desktop" | "chatgpt-desktop",
+      url: string,
+    ) => Promise<{ ok: boolean; reason?: string }>;
+    /** HQ's own one-click installer for a coding tool. */
+    onassistedinstall?: (
+      tool: "claude" | "codex",
+    ) => Promise<{ ok: boolean; reason?: string }>;
+    /**
+     * Ask the host to (re-)probe `detect_ai_tools`. Called lazily by the
+     * New bot wizard on mount so the probe never runs at app boot (#1152).
+     */
+    onrequestaitools?: () => void;
     /**
      * Backoff between failed company-roster fetches (tests shorten it). The
      * default is bounded; a roster that keeps failing stops retrying.
@@ -244,6 +268,10 @@
     rowExtrasError = false,
     rowExtras = null,
     setupInstallGuide = null,
+    aiTools = null,
+    onopenassistant,
+    onassistedinstall,
+    onrequestaitools,
     rosterRetryDelaysMs,
   }: WorkShellProps = $props();
 
@@ -987,6 +1015,10 @@
       {rowExtrasError}
       {rowExtras}
       {setupInstallGuide}
+      {aiTools}
+      {onopenassistant}
+      {onassistedinstall}
+      {onrequestaitools}
     />
   {/key}
   {#if externalLinkError}

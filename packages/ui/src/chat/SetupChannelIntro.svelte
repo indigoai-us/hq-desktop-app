@@ -65,12 +65,13 @@
     setupBotActionLabel,
     type SetupBotLauncher,
   } from "./setup-bot";
-  import { hostComputerNoun } from "@hq/platform";
+  import { hostComputerNoun, subscribeHostComputerNoun } from "@hq/platform";
   import type { EntryPointResult } from "./lifecycle-entry-points";
   import type { Workspace } from "./workspaces";
   import SetupInstallGuide, {
     type CodingTool,
     type InstallOutcome,
+    type SignInOptions,
   } from "../settings/SetupInstallGuide.svelte";
 
   interface Props {
@@ -148,10 +149,25 @@
      */
     installGuide?: {
       oninstall(tool: CodingTool): Promise<InstallOutcome>;
-      onsignin(tool: CodingTool): Promise<InstallOutcome>;
+      onsignin(tool: CodingTool, options?: SignInOptions): Promise<InstallOutcome>;
+      /** Is this tool already signed in? Lets the guide skip to Continue. */
+      onstatus?(tool: CodingTool): Promise<boolean>;
+      /** Stop a pending sign-in so "Open the sign-in page again" can restart it. */
+      oncancelsignin?(tool: CodingTool): Promise<void>;
       onrefresh(): Promise<void>;
       downloadUrlFor(tool: CodingTool): string;
       onopen(url: string): Promise<InstallOutcome> | void;
+      /**
+       * Optional: open one of the assistant desktop apps with a fixed
+       * install prompt pre-filled — the operator-directed shortcut that
+       * lets a person set up their coding tool without opening a terminal.
+       * Wired via the install-guide adapter to `open_claude_code_link` /
+       * `open_codex_deep_link`.
+       */
+      onopenassistant?(
+        assistant: "claude-desktop" | "chatgpt-desktop",
+        url: string,
+      ): Promise<InstallOutcome>;
     } | null;
     /** "Show details": open the underlying session on the Sessions page. */
     onopensessiondetails?: (sessionId: string) => void;
@@ -203,10 +219,15 @@
   const rosterFailed = $derived(rosterStatus === "failed" && !hasCompany);
   /**
    * The plain-language name for the host machine ("Mac", "PC", or
-   * "computer"). Read once at mount from the shared Tauri probe so the copy
-   * a person reads never suddenly renames their computer.
+   * "computer"). Subscribe to the shared helper: the first read still lands
+   * synchronously, and if the Tauri OS plugin resolves a moment later (the
+   * `apps/sync` webview does not inject `__HQ_HOST_OS__` inline the way
+   * `apps/work` does), the "no coding tool" prompt and setup-bot copy under
+   * this hero flip from "on this computer" to "on this PC" without any
+   * click.
    */
-  const hostNoun = hostComputerNoun();
+  let hostNoun = $state(hostComputerNoun());
+  onMount(() => subscribeHostComputerNoun((next) => (hostNoun = next)));
   const hero = $derived(setupHeroFor(companies, rosterStatus, { noun: hostNoun }));
   const copy = $derived(setupBotCopy({ noun: hostNoun }));
 
@@ -283,6 +304,15 @@
   let botBusy = $state(false);
   let botError = $state<string | null>(null);
   const visibleBotError = $derived(botError ?? setupBot?.error);
+  /**
+   * No coding tool is signed in and the host can install and sign one in:
+   * the install guide owns the next step, so the hero's own Open Setup Agent
+   * button and the Retry button (both of which would only fail again) step
+   * aside and the guide's Continue takes over once a tool is signed in.
+   */
+  const showInstallGuide = $derived(
+    Boolean(installGuide) && isSetupBotNoRuntimeMessage(visibleBotError),
+  );
   /** The bot could not be made: the scripted run takes over from the next click. */
   let scriptedFallback = $state(false);
 
@@ -477,6 +507,7 @@
         <!-- No signed-in agent on this Mac yet: connect one first. -->
         <SetupConnectStep api={agent.api} providers={agent.providers} onrefresh={() => agent!.refreshProviders(true)} />
       {:else}
+      {#if !showInstallGuide}
       <div class="hero-actions" role="group" aria-label="Set up this Mac">
         <SetupButton
           variant="primary"
@@ -495,19 +526,25 @@
               : runLabel}
         </SetupButton>
       </div>
+      {/if}
       {#if visibleBotError}
         <!-- The bot could not be created: say why, offer another go, and
              keep the old scripted run one click away. -->
         <div class="bot-failure" data-testid="setup-bot-failure">
           <p class="launch-error" role="alert" data-testid="setup-bot-error">{visibleBotError}</p>
-          {#if installGuide && isSetupBotNoRuntimeMessage(visibleBotError)}
+          {#if installGuide && showInstallGuide}
             <!-- US-005: no coding tool is signed in. Instead of dead-ending
-                 the user, offer a guided Install + sign-in path. -->
+                 the user, offer a guided Install + sign-in path. Continue
+                 (shown as soon as a tool is signed in, detected by itself)
+                 starts the setup bot, which is what Retry used to do. -->
             {#await ensureInstallGuideTools() then _}
               <SetupInstallGuide
                 tools={installGuideTools}
                 oninstall={installGuide.oninstall}
                 onsignin={installGuide.onsignin}
+                onstatus={installGuide.onstatus}
+                oncancelsignin={installGuide.oncancelsignin}
+                oncontinue={runSetupBot}
                 onrefresh={async () => {
                   installGuideProbed = false;
                   await ensureInstallGuideTools();
@@ -515,13 +552,16 @@
                 }}
                 downloadUrlFor={installGuide.downloadUrlFor}
                 onopen={installGuide.onopen}
+                onopenassistant={installGuide.onopenassistant}
               />
             {/await}
           {/if}
           <div class="hero-actions" role="group" aria-label="Setup bot recovery">
-            <SetupButton data-testid="setup-bot-retry" disabled={botBusy} onclick={() => void runSetupBot()}>
-              {copy.retry}
-            </SetupButton>
+            {#if !showInstallGuide}
+              <SetupButton data-testid="setup-bot-retry" disabled={botBusy} onclick={() => void runSetupBot()}>
+                {copy.retry}
+              </SetupButton>
+            {/if}
             <SetupButton
               variant="quiet"
               data-testid="setup-bot-fallback"

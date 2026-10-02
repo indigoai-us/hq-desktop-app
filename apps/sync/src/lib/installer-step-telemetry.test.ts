@@ -48,8 +48,16 @@ describe('installer step mapping', () => {
     expect(INSTALLER_STEP_BY_WIZARD_STEP['connector-import']).toBe('connector-import');
   });
 
-  it('omits post-ready extras from the install funnel', () => {
-    for (const id of ['trust', 'settings', 'run-setup', 'handoff', 'build'] as const) {
+  it('omits optional extras without a historical equivalent from the install funnel', () => {
+    for (const id of [
+      'first-folder-sync',
+      'invite-teammate',
+      'trust',
+      'settings',
+      'run-setup',
+      'handoff',
+      'build',
+    ] as const) {
       expect(INSTALLER_STEP_BY_WIZARD_STEP[id]).toBeNull();
       expect(installerStepsForOnboarding({ step: id, action: 'entered' })).toEqual([]);
     }

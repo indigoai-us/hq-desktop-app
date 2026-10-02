@@ -11,7 +11,12 @@
   import { invoke as tauriInvoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import WorkShell from '@hq/work/WorkShell';
-  import { createSyncPlatformAdapter, type SyncInvokeFn } from '@hq/platform';
+  import {
+    approvedPlanUpgradeUrl,
+    createSyncPlatformAdapter,
+    DESKTOP_LIMIT_STATUS_PUSH_FLAG,
+    type SyncInvokeFn,
+  } from '@hq/platform';
   import { createSetupInstallGuideCallbacks } from './lib/install-guide-adapter';
   import {
     applyAvailableUpdate,
@@ -38,15 +43,12 @@
   } from '@hq/ui';
   import { flushSync, onDestroy, onMount, tick, untrack, type ComponentProps } from 'svelte';
   import { safeUnlisten } from '../lib/listener-registry';
+  import { emitPlanLimitPromptTelemetry } from '../lib/desktop-telemetry';
   import type { DmRequestContact } from '../lib/dmRequests';
   import { dismissBootLoader } from './boot-loader';
   import SignInPrompt from '../components/SignInPrompt.svelte';
   import PlanUpgradeAction from '../components/PlanUpgradeAction.svelte';
-  import {
-    approvedExternalUrl,
-    openApprovedExternalUrl,
-    openBrowserUrl,
-  } from './external-open';
+  import { openApprovedExternalUrl, openBrowserUrl } from './external-open';
   import {
     applyDesktopAltRoute,
     createEmbeddedNavigationController,
@@ -91,6 +93,43 @@
       invokeFn(command, args as never) as Promise<T>,
     openUrl: (url: string) => openBrowserUrl(url),
   });
+  /**
+   * Live AiTools state for the shared InstallChoice panel used by BOTH the
+   * setup assistant and the New bot wizard. Populated LAZILY: the probe is
+   * expensive (shell probes for claude/codex/grok plus stats of thousands
+   * of files under ~/.claude / ~/.codex / ~/.grok) and running it on every
+   * app launch froze boot (#1152). The wizard/setup surfaces ask for it
+   * on demand via `requestInstallChoiceAiTools` (wired to the shell as
+   * `onrequestaitools`). Kept null until then; InstallChoice renders a
+   * neutral "Checking…" line and stays interactive with a "Check again"
+   * retry, so a slow or failing probe never blocks the UI.
+   */
+  let installChoiceAiTools = $state<
+    import('@hq/ui').AiTools | null
+  >(null);
+  let installChoiceAiToolsProbing = $state(false);
+  async function refreshInstallChoiceAiTools(): Promise<void> {
+    if (installChoiceAiToolsProbing) return;
+    installChoiceAiToolsProbing = true;
+    try {
+      const res = await adapter.shell.detectAiTools();
+      installChoiceAiTools = res.ok
+        ? (res.value as unknown as import('@hq/ui').AiTools)
+        : null;
+    } catch {
+      installChoiceAiTools = null;
+    } finally {
+      installChoiceAiToolsProbing = false;
+    }
+  }
+  /**
+   * Called by shell consumers (New bot wizard's HomeStep on mount, the
+   * setup assistant's install guide) when they actually need the probe.
+   * Idempotent — running twice while a probe is in flight is a no-op.
+   */
+  function requestInstallChoiceAiTools(): void {
+    void refreshInstallChoiceAiTools();
+  }
   onDestroy(() => {
     void adapter.dispose?.();
   });
@@ -114,6 +153,7 @@
   type AuthSessionStatus =
     | 'active'
     | 'credentials_absent'
+    | 'credentials_read_error'
     | 'credentials_invalid'
     | 'refresh_temporarily_unavailable'
     | 'non_human_principal';
@@ -133,9 +173,62 @@
   let signingOut = $state(false);
   interface PlanLimitNotice {
     company: string;
-    upgradeUrl: string;
+    companyUid: string | null;
+    exposureId: string;
+    /** Approved, attributed upgrade link; null → no upgrade action. */
+    upgradeUrl: string | null;
+    /** Notice inferred from hq-pro usage status rather than a native sync event. */
+    statusPush?: boolean;
   }
   let planLimitNotices = $state<PlanLimitNotice[]>([]);
+  // Notices the person dismissed while the pause is still in effect. A
+  // dismissal lasts until the company's uploads resume (it leaves the native
+  // snapshot), so a pause that comes back later is shown again.
+  const dismissedPlanLimitKeys = new Set<string>();
+
+  function planLimitKey(notice: PlanLimitNotice): string {
+    return `${notice.company}\n${notice.upgradeUrl ?? ''}`;
+  }
+
+  /** Server link → desktop-attributed, approved link (or null). */
+  function planLimitUpgradeLink(raw: unknown): string | null {
+    const approved = approvedPlanUpgradeUrl(raw);
+    if (!approved) return null;
+    return approvedPlanUpgradeUrl(withDesktopLimitEntrySurface(approved));
+  }
+
+  /**
+   * hard-stop-readiness US-019: the native registry's authoritative list of
+   * companies whose uploads a plan limit paused. Seeded from `get_sync_status`
+   * on mount (so a window opened after the sync pass still shows it) and
+   * replaced on every `sync:uploads-paused` change.
+   */
+  function applyUploadsPausedSnapshot(raw: unknown): void {
+    if (!Array.isArray(raw)) return;
+    const next: PlanLimitNotice[] = planLimitNotices.filter((notice) => notice.statusPush);
+    const seen = new Set<string>();
+    for (const entry of raw) {
+      if (!entry || typeof entry !== 'object') continue;
+      const rec = entry as { company?: unknown; upgradeUrl?: unknown };
+      const company = typeof rec.company === 'string' ? rec.company.trim() : '';
+      if (!company || seen.has(company)) continue;
+      seen.add(company);
+      for (let index = next.length - 1; index >= 0; index -= 1) {
+        if (next[index].company === company) next.splice(index, 1);
+      }
+      next.push({
+        company,
+        companyUid: resolvePlanLimitCompanyUid(company),
+        exposureId: `exposure:${crypto.randomUUID()}`,
+        upgradeUrl: planLimitUpgradeLink(rec.upgradeUrl),
+      });
+    }
+    const live = new Set(next.map(planLimitKey));
+    for (const key of [...dismissedPlanLimitKeys]) {
+      if (!live.has(key)) dismissedPlanLimitKeys.delete(key);
+    }
+    planLimitNotices = next.filter((notice) => !dismissedPlanLimitKeys.has(planLimitKey(notice)));
+  }
   let planLimitOpenError = $state<string | null>(null);
   let notificationWakeSeq = $state(0);
   let hydration = $state(0);
@@ -199,6 +292,7 @@
     return (
       value === 'active' ||
       value === 'credentials_absent' ||
+      value === 'credentials_read_error' ||
       value === 'credentials_invalid' ||
       value === 'refresh_temporarily_unavailable' ||
       value === 'non_human_principal'
@@ -215,6 +309,7 @@
       return;
     }
     planLimitNotices = [];
+    dismissedPlanLimitKeys.clear();
     planLimitOpenError = null;
     authGeneration = next.generation;
     authAccountId = next.accountId;
@@ -229,7 +324,10 @@
     signOutError = null;
     navigation.clear();
 
-    if (next.status === 'credentials_absent') {
+    if (
+      next.status === 'credentials_absent' ||
+      next.status === 'credentials_read_error'
+    ) {
       signedOutReason = 'signed-out';
       lifecycle = 'signed-out';
       flushSync();
@@ -283,15 +381,133 @@
    * left to retry) and `false` when the fetch failed for the session that asked.
    */
   let workspaceRequest = 0;
+  const PLAN_LIMIT_WARNING_PCT = 80;
+  const PLAN_LIMIT_STATUS_RESOURCES = [
+    'users',
+    'secrets',
+    'deployments',
+    'storageBytes',
+    'integrations',
+    'agents',
+  ] as const;
+
+  function removeStatusPushNotice(company: string): void {
+    const existing = planLimitNotices.filter(
+      (notice) => notice.company === company && notice.statusPush,
+    );
+    for (const notice of existing) dismissedPlanLimitKeys.delete(planLimitKey(notice));
+    planLimitNotices = planLimitNotices.filter(
+      (notice) => notice.company !== company || !notice.statusPush,
+    );
+  }
+
+  function applyStatusPlanLimitNotice(company: string, upgradeUrl: string | null): void {
+    const currentNotice = planLimitNotices.find(
+      (notice) => notice.company === company && notice.upgradeUrl === upgradeUrl,
+    );
+    const notice: PlanLimitNotice = currentNotice
+      ? { ...currentNotice, statusPush: true }
+      : {
+          company,
+          companyUid: resolvePlanLimitCompanyUid(company),
+          exposureId: `exposure:${crypto.randomUUID()}`,
+          upgradeUrl,
+          statusPush: true,
+        };
+    if (dismissedPlanLimitKeys.has(planLimitKey(notice))) return;
+    planLimitNotices = [
+      ...planLimitNotices.filter((current) => current.company !== company),
+      notice,
+    ];
+    planLimitOpenError = null;
+  }
+
+  async function refreshPlanLimitStatus(
+    workspaces: Workspace[],
+    isCurrent: () => boolean,
+  ): Promise<void> {
+    try {
+      const flag = await adapter.identity.hasFeature(DESKTOP_LIMIT_STATUS_PUSH_FLAG);
+      if (!isCurrent()) return;
+      if (!flag.ok || !flag.value || !capabilities?.fetch) {
+        for (const notice of planLimitNotices.filter((item) => item.statusPush)) {
+          removeStatusPushNotice(notice.company);
+        }
+        return;
+      }
+
+      const companyWorkspaces = workspaces.filter(
+        (workspace) => workspace.kind === 'company' && /^cmp_[A-Za-z0-9_-]+$/.test(workspace.cloudUid ?? ''),
+      );
+      const present = new Set(companyWorkspaces.map((workspace) => workspace.slug));
+      for (const notice of planLimitNotices.filter((item) => item.statusPush && !present.has(item.company))) {
+        removeStatusPushNotice(notice.company);
+      }
+
+      for (const workspace of companyWorkspaces) {
+        if (!isCurrent()) return;
+        const companyUid = workspace.cloudUid!.trim();
+        try {
+          const response = await capabilities.fetch(
+            `/v1/billing/usage-limits?companyUid=${encodeURIComponent(companyUid)}`,
+            { method: 'GET' },
+          );
+          if (!response.ok) throw new Error(`usage-limits returned HTTP ${response.status}`);
+          const status = (await response.json()) as Record<string, unknown>;
+          if (!isCurrent()) return;
+          const plan = status.planLimits && typeof status.planLimits === 'object'
+            ? (status.planLimits as Record<string, unknown>)
+            : status;
+          if (
+            plan.plan !== 'free' ||
+            plan.cohort !== 'enforceable' ||
+            plan.planLimitsExempt === true
+          ) {
+            removeStatusPushNotice(workspace.slug);
+            continue;
+          }
+          const hasWarning = PLAN_LIMIT_STATUS_RESOURCES.some((resource) => {
+            if (resource === 'agents' && plan.agentsGrandfathered === true) return false;
+            const value = plan[resource];
+            if (!value || typeof value !== 'object') return false;
+            const row = value as Record<string, unknown>;
+            return row.over === true || (
+              typeof row.pctUsed === 'number' &&
+              Number.isFinite(row.pctUsed) &&
+              row.pctUsed >= PLAN_LIMIT_WARNING_PCT
+            );
+          });
+          if (!hasWarning) {
+            removeStatusPushNotice(workspace.slug);
+            continue;
+          }
+          const upgradeUrl = planLimitUpgradeLink(plan.upgradeUrl ?? status.upgradeUrl);
+          applyStatusPlanLimitNotice(workspace.slug, upgradeUrl);
+        } catch (error) {
+          console.error(`Could not refresh plan-limit status for ${workspace.slug}.`, error);
+        }
+      }
+    } catch (error) {
+      console.error('Could not resolve the desktop plan-limit status flag.', error);
+    }
+  }
   async function refreshWorkspaces(request: number, generation = authGeneration): Promise<boolean> {
     const sequence = ++workspaceRequest;
     const isCurrent = () => sequence === workspaceRequest && request === hydration && generation === authGeneration && lifecycle === 'ready';
+    let planLimitStatusStarted = false;
+    const startPlanLimitStatusRefresh = () => {
+      if (planLimitStatusStarted || !companies) return;
+      planLimitStatusStarted = true;
+      void refreshPlanLimitStatus(companies, isCurrent);
+    };
     try {
       // The native request keeps running after the UI deadline. Accept a late
       // success while it still belongs to this account and newest request.
       const pending = adapter.identity.listWorkspaces().then((result) => {
         if (isCurrent() && result.ok) {
           companies = workspacesFromMembershipRows(result.value);
+          resolvePendingPlanLimitNoticeCompanies();
+          startPlanLimitStatusRefresh();
           workspaceError = null;
         }
         return result;
@@ -307,6 +523,8 @@
         return false;
       }
       companies = workspacesFromMembershipRows(result.value);
+      resolvePendingPlanLimitNoticeCompanies();
+      startPlanLimitStatusRefresh();
       workspaceError = null;
       return true;
     } catch (error) {
@@ -430,6 +648,7 @@
       authGeneration += 1;
       authAccountId = null;
       planLimitNotices = [];
+      dismissedPlanLimitKeys.clear();
       planLimitOpenError = null;
       self = null;
       companies = null;
@@ -637,30 +856,52 @@
       if (cancelled) return;
       const company =
         typeof event.payload?.company === 'string' ? event.payload.company.trim() : '';
-      const upgradeUrl =
-        typeof event.payload?.upgradeUrl === 'string' ? event.payload.upgradeUrl : '';
-      if (!company || !upgradeUrl) {
-        console.error('Sync plan-limit notice is missing its company or server upgrade URL.');
+      if (!company) {
+        console.error('Sync plan-limit notice is missing its company.');
         return;
       }
-      try {
-        // The plan URL is server-selected. Keep the desktop's approved-host
-        // boundary before rendering an action that can open it.
-        const approvedUrl = approvedExternalUrl(upgradeUrl);
-        planLimitNotices = [
-          ...planLimitNotices.filter(
-            (notice) => notice.company !== company || notice.upgradeUrl !== approvedUrl,
-          ),
-          { company, upgradeUrl: approvedUrl },
-        ];
-        planLimitOpenError = null;
-      } catch (error) {
-        console.error('Sync plan-limit notice contains an unapproved server upgrade URL.', error);
-      }
+      // The plan URL is server-selected. Only a link on a host hq-pro returns
+      // becomes an action; the notice itself still shows without one.
+      const upgradeUrl = planLimitUpgradeLink(event.payload?.upgradeUrl);
+      const currentNotice = planLimitNotices.find(
+        (notice) => notice.company === company && notice.upgradeUrl === upgradeUrl,
+      );
+      const notice: PlanLimitNotice = currentNotice
+        ? { ...currentNotice, statusPush: false }
+        : {
+        company,
+        companyUid: resolvePlanLimitCompanyUid(company),
+        exposureId: `exposure:${crypto.randomUUID()}`,
+        upgradeUrl,
+        };
+      if (dismissedPlanLimitKeys.has(planLimitKey(notice))) return;
+      planLimitNotices = [
+        ...planLimitNotices.filter((current) => current.company !== company),
+        notice,
+      ];
+      planLimitOpenError = null;
     }).catch((error) => {
       console.error('Could not subscribe to sync plan-limit notices.', error);
       return () => {};
     });
+    const unlistenUploadsPausedPromise = listen<{ companies?: unknown }>(
+      'sync:uploads-paused',
+      (event) => {
+        if (!cancelled) applyUploadsPausedSnapshot(event.payload?.companies);
+      },
+    ).catch((error) => {
+      console.error('Could not subscribe to paused-upload updates.', error);
+      return () => {};
+    });
+    void Promise.resolve()
+      .then(() => invokeFn('get_sync_status'))
+      .then((status) => {
+        if (cancelled || !status || typeof status !== 'object') return;
+        applyUploadsPausedSnapshot((status as { uploadsPaused?: unknown }).uploadsPaused);
+      })
+      .catch(() => {
+        // The live events still arrive; a missing journal is not an error.
+      });
     // Website-created companies are provisioned by the sync runner after
     // sign-in; re-read the roster when it says so instead of after a restart.
     const unsubscribeRosterEvents = subscribeRosterRefreshEvents(listen, () => {
@@ -787,6 +1028,7 @@
       void unlistenMeetingFocusPromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenAuthReadyPromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenPlanLimitPromise.then((unlisten) => safeUnlisten(unlisten)());
+      void unlistenUploadsPausedPromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenShortcutPromise.then((unlisten) => safeUnlisten(unlisten)());
       for (const unlistenPromise of unlistenUpdatePromises) {
         void unlistenPromise.then((unlisten) => safeUnlisten(unlisten)());
@@ -809,13 +1051,111 @@
   });
 
   function dismissPlanLimitNotice(notice: PlanLimitNotice): void {
+    dismissedPlanLimitKeys.add(planLimitKey(notice));
     planLimitNotices = planLimitNotices.filter(
-      (current) =>
-        current.company !== notice.company || current.upgradeUrl !== notice.upgradeUrl,
+      (current) => planLimitKey(current) !== planLimitKey(notice),
     );
   }
 
+  function resolvePlanLimitCompanyUid(
+    companyLabel: string,
+    workspaces: Workspace[] | null = companies,
+  ): string | null {
+    const normalized = companyLabel.trim().toLowerCase();
+    const scoped = (workspaces ?? []).filter((workspace) => workspace.kind === 'company');
+    const slugMatches = scoped.filter((workspace) => workspace.slug.toLowerCase() === normalized);
+    const matches = slugMatches.length > 0
+      ? slugMatches
+      : scoped.filter((workspace) => workspace.displayName.trim().toLowerCase() === normalized);
+    if (matches.length !== 1) return null;
+    const companyUid = matches[0].cloudUid?.trim() ?? '';
+    return /^cmp_[A-Za-z0-9_-]+$/.test(companyUid) ? companyUid : null;
+  }
+
+  function resolvePendingPlanLimitNoticeCompanies(): void {
+    if (!companies) return;
+    planLimitNotices = planLimitNotices.map((notice) => {
+      if (notice.companyUid) return notice;
+      const companyUid = resolvePlanLimitCompanyUid(notice.company, companies);
+      return companyUid ? { ...notice, companyUid } : notice;
+    });
+  }
+
+  function trackPlanLimitNoticeExposure(
+    node: HTMLElement,
+    initialNotice: PlanLimitNotice,
+  ) {
+    let notice = initialNotice;
+    let attempted = false;
+    const emitWhenVisible = () => {
+      if (document.visibilityState === 'visible') emitExposure();
+    };
+    const emitExposure = () => {
+      void tick().then(() => {
+        if (
+          attempted ||
+          !node.isConnected ||
+          document.visibilityState !== 'visible' ||
+          !notice.companyUid ||
+          !capabilities?.fetch
+        ) return;
+        attempted = true;
+        void emitPlanLimitPromptTelemetry({
+          fetch: capabilities.fetch,
+          eventName: 'plan_limit_prompt_exposed',
+          companyUid: notice.companyUid,
+          exposureId: notice.exposureId,
+        });
+      });
+    };
+    emitExposure();
+    document.addEventListener('visibilitychange', emitWhenVisible);
+    window.addEventListener('focus', emitWhenVisible);
+    return {
+      update(nextNotice: PlanLimitNotice) {
+        notice = nextNotice;
+        emitExposure();
+      },
+      destroy() {
+        document.removeEventListener('visibilitychange', emitWhenVisible);
+        window.removeEventListener('focus', emitWhenVisible);
+      },
+    };
+  }
+
+
+  function withDesktopLimitEntrySurface(value: string): string {
+    const url = new URL(value);
+    const callbackUrl = url.searchParams.get('callbackUrl');
+    if (callbackUrl) {
+      const callback = new URL(callbackUrl, url.origin);
+      const callbackParts = callback.pathname.split('/').filter(Boolean);
+      if (callbackParts.length === 5 && callbackParts[0] === 'api' && callbackParts[1] === 'companies' &&
+        /^cmp_[A-Za-z0-9_-]+$/.test(callbackParts[2]) && callbackParts[3] === 'billing' && callbackParts[4] === 'upgrade') {
+        callback.searchParams.set('entrySurface', 'desktop_limit');
+        url.searchParams.set('callbackUrl', `${callback.pathname}${callback.search}${callback.hash}`);
+        return url.toString();
+      }
+    }
+    const parts = url.pathname.split('/').filter(Boolean);
+    if (parts.length === 3 && parts[0] === 'companies' && parts[2] === 'billing') {
+      url.searchParams.set('entrySurface', 'desktop_limit');
+      return url.toString();
+    }
+    return value;
+  }
+
   async function openPlanLimitUpgrade(url: string): Promise<void> {
+    const notice = planLimitNotices.find((candidate) => candidate.upgradeUrl === url);
+    if (notice?.companyUid && capabilities?.fetch) {
+      void emitPlanLimitPromptTelemetry({
+        fetch: capabilities.fetch,
+        eventName: 'plan_limit_prompt_engaged',
+        companyUid: notice.companyUid,
+        exposureId: notice.exposureId,
+        action: 'upgrade_clicked',
+      });
+    }
     try {
       await openApprovedExternalUrl(url);
       planLimitOpenError = null;
@@ -888,14 +1228,16 @@
     {/if}
     {#if planLimitNotices.length > 0}
       <div class="plan-limit-notices" data-testid="sync-plan-limit-notice" role="status">
-        {#each planLimitNotices as notice (notice.company + notice.upgradeUrl)}
-          <div class="plan-limit-notice">
+        {#each planLimitNotices as notice (planLimitKey(notice))}
+          <div class="plan-limit-notice" use:trackPlanLimitNoticeExposure={notice}>
             <span>New files are paused for {notice.company}.</span>
-            <PlanUpgradeAction
-              upgradeUrl={notice.upgradeUrl}
-              onUpgrade={openPlanLimitUpgrade}
-              testId="sync-plan-limit-upgrade"
-            />
+            {#if notice.upgradeUrl}
+              <PlanUpgradeAction
+                upgradeUrl={notice.upgradeUrl}
+                onUpgrade={openPlanLimitUpgrade}
+                testId="sync-plan-limit-upgrade"
+              />
+            {/if}
             <button
               type="button"
               class="plan-limit-dismiss"
@@ -937,6 +1279,14 @@
         onactivethreadchange={setActiveReplyThread}
         {extraPages}
         {setupInstallGuide}
+        aiTools={installChoiceAiTools}
+        onrequestaitools={requestInstallChoiceAiTools}
+        onopenassistant={setupInstallGuide.onopenassistant}
+        onassistedinstall={async (tool) => {
+          const outcome = await setupInstallGuide.oninstall(tool);
+          if (outcome.ok) await refreshInstallChoiceAiTools();
+          return outcome;
+        }}
         bootTimeoutMs={bootTimeoutMs}
         onShellReady={() => {
           void invokeFn('shell_ready');
@@ -983,27 +1333,13 @@
     overflow: hidden;
   }
 
-  /* PR #772's staged window backing, below the shared surface tokens.
-     AppKit supplies the blur; repeating backdrop-filter inside WebKit washes
-     the native window out. Preserve the existing opacity control, with the
-     reference's .82/.86 alphas at its default transparency of 65.
-     The dark backing follows the supplied rendered PR reference: unobstructed
-     canvas samples (600,200) = #171435 and (540,940) = #12182e on its
-     1920x1305 preview. This retains that reference appearance across desktops. */
+  /* No window backing here. The shell's own ground (`--v4-ground` on
+     .desktop-shell) is the single layer that scales with the Appearance
+     window-opacity setting. A second full-window fill at this level (PR #772's
+     staged backing, alpha floor .72/.78) stacked under that ground and made
+     the window read as solid at every slider value. */
   .hq-work-embedded {
-    background: rgb(250 250 252 / clamp(0.72, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.276923), 1));
-  }
-
-  @media (prefers-color-scheme: dark) {
-    :global(:root:not([data-force-theme="light"])) .hq-work-embedded {
-      --reference-window-alpha: clamp(0.78, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.215385), 1);
-      background: linear-gradient(180deg, rgb(23 20 53 / var(--reference-window-alpha)), rgb(18 24 46 / var(--reference-window-alpha)));
-    }
-  }
-
-  :global(:root[data-force-theme="dark"]) .hq-work-embedded {
-    --reference-window-alpha: clamp(0.78, calc(1 - var(--hq-window-transparency-factor, 0.65) * 0.215385), 1);
-    background: linear-gradient(180deg, rgb(23 20 53 / var(--reference-window-alpha)), rgb(18 24 46 / var(--reference-window-alpha)));
+    background: transparent;
   }
 
   .lifecycle-state {
