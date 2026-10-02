@@ -428,13 +428,13 @@
   .external .mono {
     font-family: var(--font-mono);
   }
+  /* Plain meta text after the summary, not a bordered chip. */
   .ext-chip {
     margin-left: 6px;
-    padding: 1px 6px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: 999px;
-    font: 500 10px/1.4 var(--font-mono);
-    color: var(--t2);
+    color: var(--t3);
+  }
+  .ext-chip::before {
+    content: "· ";
   }
   .home-cards {
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -461,8 +461,8 @@
     border-radius: 6px;
     background: var(--v4-control-faint, rgba(127, 127, 127, 0.12));
     color: var(--t2);
-    font-size: 10px;
-    font-weight: 600;
+    font-size: 11px;
+    font-weight: 500;
     overflow: hidden;
     flex: 0 0 auto;
   }

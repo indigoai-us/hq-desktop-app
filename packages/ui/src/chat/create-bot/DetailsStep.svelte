@@ -396,7 +396,7 @@
     overflow-y: auto;
     padding: 8px;
     border: 1px solid var(--v4-hairline);
-    border-radius: 10px;
+    border-radius: 8px;
   }
   .brings {
     padding: 8px 10px;

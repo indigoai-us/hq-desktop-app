@@ -194,24 +194,25 @@
     border: 1px solid var(--v4-hairline);
     border-radius: 8px;
     background: var(--v4-control-faint, rgba(127, 127, 127, 0.08));
-    font-size: 12px;
+    font-size: 13px;
     color: var(--t2);
   }
   .signin-text {
     flex: 1 1 200px;
-    line-height: 1.4;
+    line-height: 1.45;
   }
   .signin-text.ok {
-    color: var(--v4-ok, #2e9e5b);
+    color: var(--t1);
   }
   .signin-text.error {
     color: var(--v4-error, #d9534f);
   }
   .signin-btn {
     font: inherit;
-    font-size: 12px;
-    padding: 4px 10px;
-    border: 1px solid var(--v4-control-border, var(--border));
+    font-size: 13px;
+    height: 28px;
+    padding: 0 10px;
+    border: 1px solid var(--panel-border, var(--v4-control-border, var(--border)));
     border-radius: 6px;
     background: var(--v4-control-bg, transparent);
     color: var(--t1);

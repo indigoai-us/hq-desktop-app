@@ -321,7 +321,7 @@
     min-width: 0;
     padding: 8px 10px;
     border: 1px solid var(--v4-control-border, var(--border));
-    border-radius: 8px;
+    border-radius: 6px;
     background: var(--v4-control-bg, transparent);
     color: var(--t1);
     font-size: 13px;
@@ -329,7 +329,7 @@
   }
   .cloud-choice:has(input:checked),
   .cloud-size-option.selected {
-    background: color-mix(in srgb, var(--v4-brand-accent, #4c6fff) 9%, transparent);
+    background: var(--sel, var(--v4-active-row, rgba(127, 127, 127, 0.14)));
   }
   .cloud-choice input,
   .cloud-size-option input {
@@ -350,20 +350,22 @@
     min-width: 0;
   }
   .cloud-size-copy strong {
-    font-weight: 600;
+    font-weight: 500;
   }
   .cloud-size-copy small {
     color: var(--t3);
     font-size: 13px;
-    line-height: 1.35;
+    line-height: 1.45;
   }
   .cloud-retry {
-    padding: 5px 9px;
-    border: 1px solid var(--v4-control-border, var(--border));
-    border-radius: 7px;
+    height: 28px;
+    padding: 0 10px;
+    border: 1px solid var(--panel-border, var(--v4-control-border, var(--border)));
+    border-radius: 6px;
     background: var(--v4-control-bg, transparent);
     color: var(--t1);
     font: inherit;
+    font-size: 13px;
     cursor: pointer;
   }
   .cloud-retry:disabled {
@@ -377,7 +379,7 @@
   }
   .handle-at {
     color: var(--t3);
-    font: 500 13px/1 var(--font-mono);
+    font-size: 13px;
   }
   .handle-row .cb-input {
     flex: 1 1 auto;

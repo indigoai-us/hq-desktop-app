@@ -73,13 +73,14 @@
     gap: 12px;
     padding: 20px 16px;
     border: 1px solid var(--v4-hairline);
-    border-radius: 12px;
+    border-radius: 8px;
     background: var(--v4-control-faint, rgba(127, 127, 127, 0.06));
     text-align: center;
   }
   .preview-handle {
     color: var(--t3);
-    font: 500 11px/1.2 var(--font-mono);
+    font-size: 13px;
+    line-height: 17px;
   }
   .preview.top {
     flex-direction: row;
@@ -95,7 +96,6 @@
     border-radius: 50%;
     overflow: hidden;
     flex: 0 0 auto;
-    font-size: 20px;
   }
   .preview-mark :global(.identity) {
     width: 56px;
@@ -125,23 +125,29 @@
   .preview.top .preview-name-row {
     justify-content: flex-start;
   }
+  /* The wizard's one title: the profile-name scale, 20px / 500. */
   .preview-name {
     color: var(--t1);
-    font-size: 15px;
-    font-weight: 600;
+    font-size: 20px;
+    font-weight: 500;
+    line-height: 1.25;
     overflow-wrap: anywhere;
+  }
+  .preview.top .preview-name {
+    font-size: 13px;
+    line-height: 17px;
   }
   .preview-title {
     color: var(--t2);
-    font-size: 12px;
+    font-size: 13px;
     overflow-wrap: anywhere;
   }
   .preview-kind {
     color: var(--t2);
-    font-size: 12px;
+    font-size: 13px;
   }
   .preview-thinks {
     color: var(--t3);
-    font-size: 12px;
+    font-size: 13px;
   }
 </style>

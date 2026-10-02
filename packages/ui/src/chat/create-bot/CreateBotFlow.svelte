@@ -552,7 +552,7 @@
         {prevStep(step, draft) ? "Back" : "Cancel"}
       </button>
       <span class="flow-issue" data-testid="create-bot-issue" aria-live="polite">{issue ?? ""}</span>
-      <span class="flow-hint" aria-hidden="true">{primaryEnterHint} TO CREATE</span>
+      <span class="flow-hint" aria-hidden="true">{primaryEnterHint} to create</span>
       <button
         type="button"
         class="flow-primary"
@@ -628,15 +628,19 @@
     background: transparent;
     color: var(--t3);
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
+    line-height: 17px;
     cursor: pointer;
+  }
+  .flow-crumb-btn:hover:not(:disabled) {
+    background: var(--hover, var(--v4-control-faint));
   }
   .flow-crumb-btn:disabled {
     cursor: default;
   }
   .flow-crumb.current .flow-crumb-btn {
     color: var(--t1);
-    font-weight: 600;
+    font-weight: 500;
   }
   .flow-crumb.done .flow-crumb-btn {
     color: var(--t2);
@@ -645,19 +649,13 @@
     outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
     outline-offset: 1px;
   }
+  /* Step numbers are plain sans digits, no ring or filled disc. */
   .flow-crumb-n {
-    display: grid;
-    place-items: center;
-    width: 16px;
-    height: 16px;
-    border-radius: 50%;
-    border: 1px solid currentColor;
-    font: 500 10px/1 var(--font-mono);
+    color: var(--t3);
+    font-variant-numeric: tabular-nums;
   }
   .flow-crumb.current .flow-crumb-n {
-    background: var(--t1);
-    border-color: var(--t1);
-    color: var(--v4-surface-solid, #fff);
+    color: var(--t2);
   }
   .flow-crumb:not(:last-child)::after {
     content: "›";
@@ -680,8 +678,8 @@
     border-radius: 8px;
     background: color-mix(in srgb, var(--v4-error, #d9534f) 10%, transparent);
     color: var(--v4-error, #d9534f);
-    font-size: 12px;
-    line-height: 1.4;
+    font-size: 13px;
+    line-height: 1.45;
   }
   .flow-footer {
     display: flex;
@@ -693,9 +691,10 @@
   .flow-back {
     font: inherit;
     font-size: 13px;
-    padding: 6px 12px;
-    border: 1px solid var(--v4-control-border, var(--border));
-    border-radius: 8px;
+    height: 28px;
+    padding: 0 10px;
+    border: 1px solid var(--panel-border, var(--v4-control-border, var(--border)));
+    border-radius: 6px;
     background: var(--v4-control-bg, transparent);
     color: var(--t1);
     cursor: pointer;
@@ -703,7 +702,7 @@
   .flow-issue {
     flex: 1 1 auto;
     color: var(--t3);
-    font-size: 12px;
+    font-size: 13px;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -711,18 +710,19 @@
   }
   .flow-hint {
     color: var(--t3);
-    font: 500 10px/1 var(--font-mono);
-    letter-spacing: 0.06em;
+    font-size: 13px;
   }
+  /* Messages sheet primary: --t1 fill on panel ink, 28px, radius 6. */
   .flow-primary {
     font: inherit;
     font-size: 13px;
-    font-weight: 600;
-    padding: 7px 14px;
-    border: 0;
-    border-radius: 8px;
-    background: var(--v4-cta-bg, var(--v4-brand-accent, #4c6fff));
-    color: var(--v4-cta-text, #fff);
+    font-weight: 500;
+    height: 28px;
+    padding: 0 12px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: var(--t1, #111);
+    color: var(--panel-bg, #fff);
     cursor: pointer;
   }
   .flow-primary:disabled,
