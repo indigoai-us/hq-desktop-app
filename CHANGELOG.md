@@ -15,6 +15,8 @@ The release moves it under the version it ships in.
 
 - Reinstalling HQ setup preserves files already present in your HQ folder.
 
+## [0.10.376] — 2026-10-02
+
 - Core update failures now report a specific snapshot failure class, such as
   insufficient space, a protected recovery snapshot, a permission error, a
   symlink, or a copy failure.
