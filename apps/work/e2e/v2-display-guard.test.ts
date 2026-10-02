@@ -119,34 +119,36 @@ test.describe("v2 display library: empty states, no fixture fallback", () => {
     await expect(page.getByTestId("titlebar-core-pill")).toHaveCount(0);
   });
 
-  test("meetings destination is the prototype page, not the unavailable fallback", async ({
+  test("meetings destination is the rail canvas with calendar and paste-a-link", async ({
     page,
   }) => {
     await page.goto("/");
     await expect(page.getByTestId("desktop-shell")).toBeVisible();
     await page.getByTestId("rail-meetings").click();
-    await expect(page.getByTestId("desktop-alt-meetings")).toBeVisible();
     await expect(page.getByTestId("meetings-feature-hidden")).toHaveCount(0);
     await expect(
       page.getByText("Meetings aren't available for this account"),
     ).toHaveCount(0);
-    await expect(page.getByTestId("meetings-connect-calendar")).toBeVisible();
-    await expect(
-      page.getByPlaceholder("Paste a Zoom or Google Meet URL"),
-    ).toBeVisible();
-    await expect(page.getByTestId("meetings-url-invite")).toBeVisible();
 
-    // The primary "Connect calendar" control now starts in-app Google OAuth
-    // (POST /v1/google/connect) rather than the old dead console handoff, so it
-    // no longer opens an hq.computer popup. The console handoff survives as the
-    // secondary "Manage in console" footer link — assert that reaches the
-    // personal integrations console.
+    // US-042: the calendar chip and paste-link button sit on the right of the
+    // Meetings toolbar. With no calendar the canvas shows the connect state.
+    // Manage in console is not carried over.
+    await expect(page.getByTestId("meetings-calendar-chip")).toContainText("No calendar");
+    await expect(page.getByTestId("meetings-paste-link")).toBeVisible();
+    await expect(page.getByTestId("meetings-no-calendar")).toContainText(
+      "Connect your calendar to see meetings here",
+    );
+    await expect(page.getByTestId("no-calendar-connect-google")).toBeVisible();
+    await expect(page.getByTestId("meetings-manage")).toBeHidden();
+
+    // Paste a Zoom link and Join: the link opens in the browser.
+    const zoom = "https://zoom.us/j/88412290117?pwd=abc";
+    await page.getByTestId("no-calendar-paste-input").fill(zoom);
+    await expect(page.getByTestId("no-calendar-paste-provider")).toHaveText("Zoom");
     const popupPromise = page.waitForEvent("popup");
-    await page.getByTestId("meetings-manage").click();
+    await page.getByTestId("no-calendar-paste-join").click();
     const popup = await popupPromise;
-    expect(popup.url()).toContain("hq.computer");
-    expect(popup.url()).toContain("personal");
-    expect(popup.url()).toContain("integrations");
+    expect(popup.url()).toContain("zoom.us/j/88412290117");
     await popup.close();
   });
 });

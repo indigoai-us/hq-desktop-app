@@ -83,6 +83,7 @@
     sheetOnly
     mode="empty"
     sheetOpen
+    sheetLink={meetingsRailState.sheetLink}
     {openExternal}
     oncopy={(text: string) => void copy(text)}
     oncloseSheet={() => meetingsRailState.openSheet(false)}
@@ -96,10 +97,11 @@
     {companyName}
     {sections}
     sheetOpen={meetingsRailState.sheetOpen}
+    sheetLink={meetingsRailState.sheetLink}
     {openExternal}
     oncopy={(text: string) => void copy(text)}
     onselect={(id: string) => meetingsRailState.select(id)}
-    onopenSheet={() => meetingsRailState.openSheet(true)}
+    onopenSheet={(link?: string) => meetingsRailState.openSheet(true, link ?? null)}
     oncloseSheet={() => meetingsRailState.openSheet(false)}
     oncreate={(created: import("./meetings-model").MeetingEvent) => meetingsRailState.addLocalMeeting(created)}
   />

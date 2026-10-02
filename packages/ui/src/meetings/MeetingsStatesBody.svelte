@@ -24,7 +24,12 @@
     type MeetingLinkKind,
     type NewMeetingDraft,
   } from "./meeting-states-model";
-  import { eventStart } from "./meetings-model";
+  import { eventStart, isPlausibleMeetingUrl } from "./meetings-model";
+  import MeetingsToolbarControls from "./MeetingsToolbarControls.svelte";
+  import { meetingsStore } from "./meetings-store.svelte";
+  import { meetingsRailState } from "./meetings-rail-state.svelte";
+  import { PROVIDER_LABEL, detectMeetingProvider } from "./meeting-link";
+  import { connectGoogleCalendar, joinPastedLink } from "./meeting-calendar-actions";
 
   interface Props {
     mode: "recap" | "upcoming" | "empty";
@@ -40,7 +45,9 @@
     onselect?: (id: string) => void;
     oncreate?: (event: MeetingEvent) => void;
     oncloseSheet?: () => void;
-    onopenSheet?: () => void;
+    onopenSheet?: (link?: string) => void;
+    /** Link handed in by "New meeting with this link". */
+    sheetLink?: string | null;
     /** Sheet only, over the live canvas. */
     sheetOnly?: boolean;
   }
@@ -61,6 +68,7 @@
     oncloseSheet,
     onopenSheet,
     sheetOnly = false,
+    sheetLink = null,
   }: Props = $props();
 
   let tab = $state<"recap" | "transcript" | "notes" | "agenda">("recap");
@@ -72,7 +80,56 @@
 
   const recap = $derived(event ? recapModel(event, bot) : null);
   const turns = $derived(event ? filterTranscript(transcriptTurns(event), query) : []);
-  const url = $derived((event?.meetingUrl || event?.hangoutLink || "").trim());
+  const url = $derived(
+    (event?.meetingUrl || event?.hangoutLink || (event ? meetingsRailState.attachedLinks.get(event.id) : "") || "").trim(),
+  );
+  // US-042: settled, no error, and no linked account → connect-first canvas.
+  const noCalendar = $derived(
+    !meetingsStore.initialLoadPending && !meetingsStore.fetchError && meetingsStore.accounts.length === 0,
+  );
+  let firstRunLink = $state("");
+  let firstRunJoining = $state(false);
+  const firstRunProvider = $derived(detectMeetingProvider(firstRunLink.trim()));
+  const pastedProvider = $derived(detectMeetingProvider(draft.pastedUrl.trim()));
+
+  async function joinFirstRun(): Promise<void> {
+    if (!firstRunProvider || firstRunJoining) return;
+    firstRunJoining = true;
+    try {
+      await joinPastedLink(firstRunLink.trim(), openExternal);
+      firstRunLink = "";
+    } finally {
+      firstRunJoining = false;
+    }
+  }
+
+  function takePastedLink(text: string): boolean {
+    const link = text.trim();
+    if (!isPlausibleMeetingUrl(link)) return false;
+    draft.link = "paste";
+    draft.pastedUrl = link;
+    return true;
+  }
+
+  function onSheetPaste(e: ClipboardEvent): void {
+    const text = e.clipboardData?.getData("text") ?? "";
+    const target = e.target as HTMLElement | null;
+    // Only hijack pastes outside the title/agenda text, or into the link field.
+    if (target?.dataset?.field && target.dataset.field !== "link") return;
+    if (takePastedLink(text)) e.preventDefault();
+  }
+
+  let sheetSeeded: string | null = null;
+  $effect.pre(() => {
+    if (!sheetOpen) {
+      sheetSeeded = null;
+      return;
+    }
+    if (sheetLink && sheetLink !== sheetSeeded) {
+      sheetSeeded = sheetLink;
+      takePastedLink(sheetLink);
+    }
+  });
   const canJoin = $derived(event ? joinAvailable(event, now) : false);
   const today = $derived(sections.find((s) => s.id === "today")?.rows ?? []);
   const past = $derived(sections.find((s) => s.id === "past")?.rows ?? []);
@@ -122,10 +179,29 @@
       <h1>Meetings</h1>
       <span class="sub">Nothing live</span>
       <span class="grow"></span>
+      <MeetingsToolbarControls {openExternal} onnewWithLink={(link: string) => onopenSheet?.(link)} />
       <button type="button" class="btn" data-testid="empty-new-meeting" onclick={() => onopenSheet?.()}>New meeting</button>
     </div>
     <div class="empty-body" data-testid="meetings-empty">
-      {#if nextRow}
+      {#if noCalendar}
+        <div class="next first-run" data-testid="meetings-no-calendar">
+          <div class="kind">Get started</div>
+          <h2>Connect your calendar to see meetings here</h2>
+          <div class="subline">HQ reads your events and their video links so it can brief you before a call, send a notetaker, and file the recap. Nothing is written to your calendar unless you create a meeting here.</div>
+          <div class="actions">
+            <button type="button" class="btn primary" data-testid="no-calendar-connect-google" disabled={meetingsStore.connectPending} aria-busy={meetingsStore.connectPending} onclick={() => void connectGoogleCalendar(openExternal)}>{meetingsStore.connectPending ? "Finish in your browser…" : "Connect Google"}</button>
+            <button type="button" class="btn" data-testid="no-calendar-connect-microsoft" disabled title="Microsoft calendar connect is not available yet">Connect Microsoft</button>
+          </div>
+          <div class="rule"></div>
+          <div class="kind">Or paste a meeting link</div>
+          <div class="actions">
+            <input class="field inline" data-testid="no-calendar-paste-input" placeholder="zoom.us, meet.google.com, or teams.microsoft.com link" aria-label="Meeting link" bind:value={firstRunLink} onkeydown={(e) => e.key === "Enter" && void joinFirstRun()} />
+            {#if firstRunProvider}<span class="chip" data-testid="no-calendar-paste-provider">{PROVIDER_LABEL[firstRunProvider]}</span>{/if}
+            <button type="button" class="btn" data-testid="no-calendar-paste-join" disabled={!firstRunProvider || firstRunJoining} aria-busy={firstRunJoining} onclick={() => void joinFirstRun()}>Join</button>
+          </div>
+          <div class="subline">Joining from a link sends the notetaker. The meeting appears under Today until it ends.</div>
+        </div>
+      {:else if nextRow}
         <div class="next">
           <div class="kind">Next</div>
           <h2>{nextRow.title} at {nextRow.time}</h2>
@@ -270,11 +346,11 @@
 
   {#if sheetOpen}
     <div class="scrim" data-testid="new-meeting-scrim" onclick={() => oncloseSheet?.()} role="presentation"></div>
-    <div class="sheet" role="dialog" aria-label="New meeting" data-testid="new-meeting-sheet">
+    <div class="sheet" role="dialog" aria-label="New meeting" data-testid="new-meeting-sheet" tabindex="-1" onpaste={onSheetPaste}>
       <div class="sh-row">New meeting<span class="grow"></span><button type="button" class="icon-btn" aria-label="Close" onclick={() => oncloseSheet?.()}>✕</button></div>
       <div class="sb">
         <label class="fr"><span class="lb">Title</span>
-          <input class="field" bind:value={draft.title} aria-invalid={titleError} placeholder="Meeting title" />
+          <input class="field" data-field="title" bind:value={draft.title} aria-invalid={titleError} placeholder="Meeting title" />
         </label>
         <div class="fr"><span class="lb">When</span>
           <div class="inl">
@@ -298,15 +374,28 @@
           </label>
         </div>
         <div class="fr"><span class="lb">Link</span>
-          <div class="tabs" data-testid="link-tabs">
-            {#each ["zoom", "meet", "none"] as kind (kind)}
-              <button type="button" class="tab" aria-pressed={draft.link === kind} onclick={() => setLink(kind as MeetingLinkKind)}>{kind === "zoom" ? "Zoom" : kind === "meet" ? "Meet" : "None"}</button>
-            {/each}
+          <div>
+            <div class="tabs" data-testid="link-tabs">
+              {#each ["zoom", "meet", "paste", "none"] as kind (kind)}
+                <button type="button" class="tab" aria-pressed={draft.link === kind} onclick={() => setLink(kind as MeetingLinkKind)}>{kind === "zoom" ? "New Zoom" : kind === "meet" ? "New Meet" : kind === "paste" ? "Paste link" : "None"}</button>
+              {/each}
+            </div>
+            {#if draft.link === "paste"}
+              <div class="inl">
+                <input class="field" data-field="link" data-testid="sheet-paste-input" placeholder="Paste a Zoom, Meet, or Teams link" aria-label="Meeting link" bind:value={draft.pastedUrl} />
+                {#if draft.pastedUrl}<button type="button" class="btn" onclick={() => (draft.pastedUrl = "")}>Clear</button>{/if}
+              </div>
+              {#if pastedProvider}
+                <p class="muted" data-testid="sheet-paste-provider"><span class="chip">{PROVIDER_LABEL[pastedProvider]}</span> Detected from the link</p>
+              {/if}
+              <p class="muted">Uses this room as is. Zoom, Meet, and Teams links are recognized.</p>
+            {:else}
+              <p class="muted">{draft.link === "none" ? "No link is created." : `A ${draft.link === "zoom" ? "Zoom" : "Meet"} link is created when calendar save is connected.`}</p>
+            {/if}
           </div>
-          <p class="muted">A {draft.link === "none" ? "link is not created" : `${draft.link} link is created when calendar save is connected`}.</p>
         </div>
         <label class="fr"><span class="lb">Agenda</span>
-          <textarea class="field area" bind:value={draft.agenda} aria-label="Agenda" placeholder="1. …"></textarea>
+          <textarea class="field area" data-field="agenda" bind:value={draft.agenda} aria-label="Agenda" placeholder="1. …"></textarea>
         </label>
       </div>
       <div class="sf">
@@ -377,4 +466,8 @@
   .field.area { height: auto; min-height: 60px; padding: 6px 8px; }
   .tog-row { margin-top: 8px; font-size: 13px; }
   .att .meta { margin-left: auto; }
+  .field.inline { margin: 0; flex: 1; max-width: 360px; }
+  .next .actions { margin-top: 12px; }
+  .first-run { max-width: 560px; }
+  .first-run .subline { margin-top: 6px; line-height: 1.45; }
 </style>

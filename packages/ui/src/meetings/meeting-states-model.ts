@@ -47,7 +47,7 @@ export interface TranscriptTurn {
   signal: string | null;
 }
 
-export type MeetingLinkKind = "zoom" | "meet" | "none";
+export type MeetingLinkKind = "zoom" | "meet" | "paste" | "none";
 export type MeetingDurationMin = 30 | 45 | 60;
 
 export interface NewMeetingDraft {
@@ -58,6 +58,8 @@ export interface NewMeetingDraft {
   attendeeIds: string[];
   notetaker: boolean;
   link: MeetingLinkKind;
+  /** Room used as is when link is "paste" (US-042). */
+  pastedUrl: string;
   agenda: string;
 }
 
@@ -209,6 +211,7 @@ export function emptyNewMeetingDraft(now = new Date()): NewMeetingDraft {
     attendeeIds: [],
     notetaker: true,
     link: "zoom",
+    pastedUrl: "",
     agenda: "",
   };
 }
@@ -226,7 +229,12 @@ export function draftToEvent(draft: NewMeetingDraft, id: string): MeetingEvent |
     status: "confirmed",
     start: { dateTime: start.toISOString() },
     end: { dateTime: end.toISOString() },
-    meetingUrl: draft.link === "none" ? null : draft.link === "meet" ? "https://meet.google.com/new" : null,
+    meetingUrl:
+      draft.link === "paste"
+        ? draft.pastedUrl.trim() || null
+        : draft.link === "meet"
+          ? "https://meet.google.com/new"
+          : null,
     outline: lines.map((line, i) => ({ id: `${id}-ag-${i}`, title: line, state: "todo" as const })),
     notes: [],
   };

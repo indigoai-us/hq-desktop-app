@@ -199,6 +199,8 @@ let rowPending = $state<Map<string, MeetingBotAction>>(new Map());
 let started = false;
 let viewActive = false;
 let lastRefreshAt = 0;
+/** Last successful network refresh, for the calendar panel's "synced" line. */
+let lastSyncedAt = $state(0);
 let stopPoll: (() => void) | null = null;
 
 // In-app Google calendar OAuth: pending flag + bounded post-consent account
@@ -372,6 +374,7 @@ async function refreshOnce(refreshRevision: number, epoch: number): Promise<void
     // hydrates a complete view.
     persistSnapshot();
     lastRefreshAt = Date.now();
+    lastSyncedAt = lastRefreshAt;
     hasLiveSnapshot = true;
   } catch (err) {
     if (epoch !== sessionEpoch || refreshRevision !== mutationRevision) return;
@@ -1075,6 +1078,7 @@ export function stopMeetingsStore(): void {
   hydratedFromCache = false;
   firstRefreshSettled = false;
   hasLiveSnapshot = false;
+  lastSyncedAt = 0;
   lastRefreshAt = 0;
 }
 
@@ -1189,6 +1193,9 @@ export const meetingsStore = {
   },
   get connectPending() {
     return connectPending;
+  },
+  get lastSyncedAt() {
+    return lastSyncedAt;
   },
   get connectNotice() {
     return connectNotice;
