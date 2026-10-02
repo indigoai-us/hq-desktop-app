@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { WebPlatformAdapter } from "./index.js";
+import { PERSONAL_WORKSPACE_BOARD_FLAG } from "../flags.js";
 
 interface RecordedCall {
   method: string;
@@ -59,6 +60,14 @@ describe("WebPlatformAdapter hasFeature", () => {
       adapter.identity.hasFeature("agents.claude-provider"),
     ).resolves.toEqual({ ok: true, value: false });
     expect(calledFlagsResolve(calls)).toBe(true);
+    expect(calledIdentityFeatures(calls)).toBe(false);
+  });
+
+  it("personal workspace board flag fails closed without a configured registry value", async () => {
+    const { adapter, calls } = makeAdapter({});
+    await expect(
+      adapter.identity.hasFeature(PERSONAL_WORKSPACE_BOARD_FLAG),
+    ).resolves.toEqual({ ok: true, value: false });
     expect(calledIdentityFeatures(calls)).toBe(false);
   });
 

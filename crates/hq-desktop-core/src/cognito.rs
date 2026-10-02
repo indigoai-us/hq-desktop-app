@@ -243,10 +243,21 @@ pub struct AuthState {
 pub enum AuthSessionStatus {
     Active,
     CredentialsAbsent,
+    CredentialsReadError,
     CredentialsInvalid,
     RefreshTemporarilyUnavailable,
     /// Usable credentials that belong to a fleet agent or outpost, not a person.
     NonHumanPrincipal,
+}
+
+/// Classify a missing token-store result after startup resolution fails.
+/// A failed read is not evidence that the store is empty.
+pub fn startup_token_store_status(read_failed: bool) -> AuthSessionStatus {
+    if read_failed {
+        AuthSessionStatus::CredentialsReadError
+    } else {
+        AuthSessionStatus::CredentialsAbsent
+    }
 }
 
 /// Convert the authoritative native session classification into the startup
@@ -376,6 +387,24 @@ fn remove_invalidation_marker_at(path: &Path, access_token: &str) -> Result<(), 
     }
 }
 
+fn record_rejected_refresh_at(path: &Path, access_token: &str) -> Result<(), String> {
+    let _lock = lock_token_file_at(path)?;
+    invalidate_token_at_unlocked(path, access_token)?;
+    std::fs::write(
+        invalidation_path_for_token(path, access_token),
+        b"refresh-rejected",
+    )
+    .map_err(|e| format!("Failed to record rejected token refresh: {e}"))
+}
+
+fn refresh_rejection_recorded_at(path: &Path, access_token: &str) -> Result<bool, String> {
+    match std::fs::read(invalidation_path_for_token(path, access_token)) {
+        Ok(contents) => Ok(contents == b"refresh-rejected"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(format!("Failed to read rejected token marker: {e}")),
+    }
+}
+
 fn read_tokens_from_path_raw(path: &Path) -> Result<Option<CognitoTokens>, TokenReadError> {
     if !path.exists() {
         return Ok(None);
@@ -388,6 +417,13 @@ fn read_tokens_from_path_raw(path: &Path) -> Result<Option<CognitoTokens>, Token
 fn read_tokens_from_path(path: &Path) -> Result<Option<CognitoTokens>, TokenReadError> {
     let tokens = read_tokens_from_path_raw(path)?;
     Ok(tokens.filter(|tokens| !token_is_invalidated_at(path, &tokens.access_token)))
+}
+
+fn read_tokens_marked_invalidated_from_path(
+    path: &Path,
+) -> Result<Option<CognitoTokens>, TokenReadError> {
+    let tokens = read_tokens_from_path_raw(path)?;
+    Ok(tokens.filter(|tokens| token_is_invalidated_at(path, &tokens.access_token)))
 }
 
 /// Bounded, non-secret observations used by the unexpected startup surface.
@@ -566,8 +602,7 @@ fn write_tokens_to_path_unlocked(path: &Path, tokens: &CognitoTokens) -> Result<
         .map_err(|e| format!("Failed to serialize tokens: {}", e))?;
 
     // A successful login/refresh for this exact token generation is
-    // authoritative. Remove its old rejection marker before publishing the
-    // token file; a failure observed after this point will recreate it.
+    // authoritative. Remove its old rejection marker before publishing it.
     remove_invalidation_marker_at(path, &tokens.access_token)?;
 
     let file_name = path.file_name().unwrap_or_default().to_string_lossy();
@@ -597,12 +632,20 @@ fn persist_refreshed_tokens_if_current_unlocked(
     path: &Path,
     started_from: &CognitoTokens,
     refreshed: &CognitoTokens,
+    accept_matching_invalidation: bool,
 ) -> Result<RefreshPersistenceOutcome, String> {
-    let current = read_tokens_from_path(path).map_err(|error| match error {
+    let current_raw = read_tokens_from_path_raw(path).map_err(|error| match error {
         TokenReadError::Io(error) => format!("Failed to read token file: {error}"),
         TokenReadError::Parse(error) => format!("Failed to parse token file: {error}"),
     })?;
-    if current.as_ref() != Some(started_from) {
+    let current = current_raw
+        .clone()
+        .filter(|tokens| !token_is_invalidated_at(path, &tokens.access_token));
+    let started_generation_is_usable = current.as_ref() == Some(started_from);
+    let started_generation_is_marked = accept_matching_invalidation
+        && current_raw.as_ref() == Some(started_from)
+        && token_is_invalidated_at(path, &started_from.access_token);
+    if !started_generation_is_usable && !started_generation_is_marked {
         return Ok(RefreshPersistenceOutcome::Superseded(current));
     }
 
@@ -616,7 +659,7 @@ fn persist_refreshed_tokens_if_current_at(
     refreshed: &CognitoTokens,
 ) -> Result<RefreshPersistenceOutcome, String> {
     let _lock = lock_token_file_at(path)?;
-    persist_refreshed_tokens_if_current_unlocked(path, started_from, refreshed)
+    persist_refreshed_tokens_if_current_unlocked(path, started_from, refreshed, false)
 }
 
 pub fn write_tokens_to_file(tokens: &CognitoTokens) -> Result<(), String> {
@@ -708,21 +751,20 @@ pub async fn set_tokens(tokens: &CognitoTokens) -> Result<(), String> {
     Ok(())
 }
 
-/// Publish a refresh result only if the exact token generation it started from
-/// is still the current, usable on-disk generation.
-///
-/// The comparison and atomic token-file replacement share a cross-process
-/// sidecar lock with login, sign-out, and invalidation writes. A newer login or
-/// refresh is returned as `Superseded(Some(tokens))`; sign-out or invalidation
-/// is returned as `Superseded(None)`.
-pub async fn persist_refreshed_tokens_if_current(
+async fn persist_refreshed_tokens_if_current_with_invalidation(
     started_from: &CognitoTokens,
     refreshed: &CognitoTokens,
+    accept_matching_invalidation: bool,
 ) -> Result<RefreshPersistenceOutcome, String> {
     let path = tokens_file_path()?;
     let mut guard = cache().lock().await;
     let _file_lock = lock_token_file_at(&path)?;
-    let outcome = persist_refreshed_tokens_if_current_unlocked(&path, started_from, refreshed)?;
+    let outcome = persist_refreshed_tokens_if_current_unlocked(
+        &path,
+        started_from,
+        refreshed,
+        accept_matching_invalidation,
+    )?;
 
     *guard = match outcome.current_tokens() {
         Some(tokens) => Some(CachedTokens {
@@ -734,6 +776,20 @@ pub async fn persist_refreshed_tokens_if_current(
     };
     crate::feature_gate::clear_cached_gate();
     Ok(outcome)
+}
+
+/// Publish a refresh result only if the exact token generation it started from
+/// is still the current, usable on-disk generation.
+///
+/// The comparison and atomic token-file replacement share a cross-process
+/// sidecar lock with login, sign-out, and invalidation writes. A newer login or
+/// refresh is returned as `Superseded(Some(tokens))`; sign-out or invalidation
+/// is returned as `Superseded(None)`.
+pub async fn persist_refreshed_tokens_if_current(
+    started_from: &CognitoTokens,
+    refreshed: &CognitoTokens,
+) -> Result<RefreshPersistenceOutcome, String> {
+    persist_refreshed_tokens_if_current_with_invalidation(started_from, refreshed, false).await
 }
 
 /// Mark one rejected token generation unusable without deleting the shared
@@ -895,16 +951,47 @@ async fn resolve_tokens(
         .map_err(|error| error.message)
 }
 
+async fn get_tokens_for_resolution() -> Result<Option<(CognitoTokens, bool)>, String> {
+    if let Some(tokens) = get_tokens().await? {
+        return Ok(Some((tokens, false)));
+    }
+
+    let path = tokens_file_path()?;
+    let marked = read_tokens_marked_invalidated_from_path(&path).map_err(|error| match error {
+        TokenReadError::Io(error) => format!("Failed to read token file: {error}"),
+        TokenReadError::Parse(error) => format!("Failed to parse token file: {error}"),
+    })?;
+    if let Some(tokens) = marked {
+        // The marker rejects this access-token generation, not necessarily its
+        // refresh token. Verify the stored refresh token before showing sign-in.
+        return Ok(Some((tokens, true)));
+    }
+
+    // A concurrent successful write may have cleared a marker or installed a
+    // newer generation between the first read and the raw marker check.
+    Ok(get_tokens().await?.map(|tokens| (tokens, false)))
+}
+
 async fn resolve_tokens_classified(
     force_refresh: bool,
     cognito_endpoint: &str,
 ) -> Result<CognitoTokens, CognitoTokenResolutionError> {
     for _ in 0..VALID_TOKEN_RESOLUTION_ATTEMPTS {
-        let tokens = get_tokens()
+        let (tokens, matching_invalidation) = get_tokens_for_resolution()
             .await
             .map_err(CognitoTokenResolutionError::plain)?
             .ok_or_else(|| CognitoTokenResolutionError::plain("Not signed in".to_string()))?;
-        if !force_refresh && !is_expired(&tokens) {
+        let path = tokens_file_path().map_err(CognitoTokenResolutionError::plain)?;
+        if refresh_rejection_recorded_at(&path, &tokens.access_token)
+            .map_err(CognitoTokenResolutionError::plain)?
+        {
+            return Err(CognitoTokenResolutionError::refresh(
+                REAUTH_MESSAGE.to_string(),
+                CognitoRefreshFailureClass::Http4xx,
+                true,
+            ));
+        }
+        if !force_refresh && !matching_invalidation && !is_expired(&tokens) {
             return Ok(tokens);
         }
 
@@ -923,6 +1010,17 @@ async fn resolve_tokens_classified(
                                 requires_reauth,
                             )
                         })?;
+                        let path =
+                            tokens_file_path().map_err(CognitoTokenResolutionError::plain)?;
+                        record_rejected_refresh_at(&path, &tokens.access_token).map_err(
+                            |message| {
+                                CognitoTokenResolutionError::refresh(
+                                    message,
+                                    failure_class,
+                                    requires_reauth,
+                                )
+                            },
+                        )?;
                     }
                     match get_tokens().await.map_err(|message| {
                         CognitoTokenResolutionError::refresh(
@@ -948,10 +1046,14 @@ async fn resolve_tokens_classified(
                 }
             };
 
-        match persist_refreshed_tokens_if_current(&tokens, &refreshed)
-            .await
-            .map_err(CognitoTokenResolutionError::plain)?
-            .into_current_tokens()
+        match persist_refreshed_tokens_if_current_with_invalidation(
+            &tokens,
+            &refreshed,
+            matching_invalidation,
+        )
+        .await
+        .map_err(CognitoTokenResolutionError::plain)?
+        .into_current_tokens()
         {
             Some(current) if !is_expired(&current) => return Ok(current),
             Some(_) => continue,
@@ -986,6 +1088,12 @@ pub struct IdTokenClaims {
     pub sub: Option<String>,
     pub email: Option<String>,
     /// Whether Cognito verified the email address on this identity.
+    ///
+    /// ID tokens carry this as a JSON bool. Access tokens minted since the
+    /// hq-pro pre-token-generation change carry it as the string `"true"` /
+    /// `"false"`, so accept both; a strict `bool` here made every
+    /// access-token decode fail and held sign-in receipts forever.
+    #[serde(default, deserialize_with = "deserialize_bool_or_string")]
     pub email_verified: Option<bool>,
     pub name: Option<String>,
     pub given_name: Option<String>,
@@ -1121,6 +1229,31 @@ impl IdTokenClaims {
 
 /// Decode the middle segment of a JWT and parse it as the claims struct.
 /// JWT format: `header.payload.signature` (base64url-encoded segments).
+/// Deserialize a claim that Cognito emits either as a JSON bool or as the
+/// string `"true"` / `"false"` (custom-attribute style). Any other value is a
+/// parse error so a malformed token still fails loudly.
+fn deserialize_bool_or_string<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error as _;
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    match value {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::Bool(flag)) => Ok(Some(flag)),
+        Some(serde_json::Value::String(text)) => match text.trim() {
+            "true" => Ok(Some(true)),
+            "false" => Ok(Some(false)),
+            other => Err(D::Error::custom(format!(
+                "expected \"true\" or \"false\", got {other:?}"
+            ))),
+        },
+        Some(other) => Err(D::Error::custom(format!(
+            "expected bool or bool-string, got {other}"
+        ))),
+    }
+}
+
 pub fn decode_id_token_claims(id_token: &str) -> Result<IdTokenClaims, String> {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     let payload = id_token
@@ -1344,6 +1477,35 @@ mod tests {
     }
 
     #[test]
+    fn startup_token_store_read_error_is_not_classified_as_absent() {
+        assert_eq!(
+            startup_token_store_status(true),
+            AuthSessionStatus::CredentialsReadError
+        );
+        assert_eq!(
+            startup_token_store_status(false),
+            AuthSessionStatus::CredentialsAbsent
+        );
+        assert_eq!(
+            serde_json::to_string(&AuthSessionStatus::CredentialsReadError).unwrap(),
+            "\"credentials_read_error\""
+        );
+        let signed_out = startup_auth_state_result(
+            AuthState {
+                authenticated: false,
+                expires_at: None,
+                account_id: None,
+                email: None,
+                display_name: None,
+                startup_token_read_result: None,
+            },
+            &AuthSessionStatus::CredentialsReadError,
+        )
+        .expect("read errors preserve the existing signed-out startup route");
+        assert!(!signed_out.authenticated);
+    }
+
+    #[test]
     fn refresh_failure_statuses_map_to_low_cardinality_buckets() {
         assert_eq!(refresh_failure_class_from_status(401).as_tag(), "http_4xx");
         assert_eq!(refresh_failure_class_from_status(503).as_tag(), "http_5xx");
@@ -1478,6 +1640,57 @@ mod tests {
         .expect("valid claims");
 
         assert_eq!(claims.email_verified, Some(false));
+    }
+
+    #[test]
+    fn decode_claims_accepts_access_token_email_verified_string_true() {
+        // Cognito access tokens (post hq-pro pre-token-generation change)
+        // carry `email_verified` as the string "true", not a JSON bool.
+        let claims = decode_id_token_claims(&claims_jwt(serde_json::json!({
+            "sub": "person-a",
+            "email_verified": "true"
+        })))
+        .expect("string-form email_verified must decode");
+
+        assert_eq!(claims.sub.as_deref(), Some("person-a"));
+        assert_eq!(claims.email_verified, Some(true));
+    }
+
+    #[test]
+    fn decode_claims_accepts_access_token_email_verified_string_false() {
+        let claims = decode_id_token_claims(&claims_jwt(serde_json::json!({
+            "sub": "person-a",
+            "email_verified": "false"
+        })))
+        .expect("string-form email_verified must decode");
+
+        assert_eq!(claims.email_verified, Some(false));
+    }
+
+    #[test]
+    fn decode_claims_still_accepts_bool_and_absent_email_verified() {
+        let claims = decode_id_token_claims(&claims_jwt(serde_json::json!({
+            "sub": "person-a",
+            "email_verified": true
+        })))
+        .expect("bool email_verified must decode");
+        assert_eq!(claims.email_verified, Some(true));
+
+        let claims = decode_id_token_claims(&claims_jwt(serde_json::json!({
+            "sub": "person-a"
+        })))
+        .expect("absent email_verified must decode");
+        assert_eq!(claims.email_verified, None);
+    }
+
+    #[test]
+    fn decode_claims_rejects_non_bool_email_verified() {
+        let error = decode_id_token_claims(&claims_jwt(serde_json::json!({
+            "sub": "person-a",
+            "email_verified": "yes"
+        })))
+        .expect_err("unrecognised email_verified string must fail");
+        assert!(error.contains("claims json parse failed"), "{error}");
     }
 
     #[tokio::test]
@@ -1942,6 +2155,92 @@ mod tests {
 
         assert!(read_tokens_from_path(&path).unwrap().is_none());
         assert!(has_non_empty_token_at(&path).unwrap());
+
+        std::fs::write(
+            invalidation_path_for_token(&path, &tokens.access_token),
+            b"refresh-rejected",
+        )
+        .unwrap();
+        write_tokens_to_path(&path, &tokens).unwrap();
+        assert!(!invalidation_path_for_token(&path, &tokens.access_token).exists());
+    }
+
+    #[tokio::test]
+    async fn resolve_tokens_refreshes_matching_invalidated_generation_before_sign_in() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let home = tempfile::tempdir().expect("temporary token home");
+        let _test_home = TestHome::set(home.path());
+        let mut cached_tokens = token_generation("marked");
+        cached_tokens.expires_at = i64::MAX;
+        set_tokens(&cached_tokens)
+            .await
+            .expect("store refreshable tokens");
+        let tokens_path = home.path().join(".hq/cognito-tokens.json");
+        invalidate_token_at(&tokens_path, &cached_tokens.access_token).unwrap();
+
+        let cognito = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "AuthenticationResult": {
+                    "AccessToken": "recovered-access",
+                    "ExpiresIn": 3600
+                }
+            })))
+            .expect(1)
+            .mount(&cognito)
+            .await;
+
+        let result = resolve_tokens_classified(false, &cognito.uri()).await;
+        assert!(
+            result.is_ok(),
+            "a matching access-token marker must try the still-available refresh token"
+        );
+        let resolved = result.unwrap();
+        assert_eq!(resolved.access_token, "recovered-access");
+        assert_eq!(get_tokens().await.unwrap(), Some(resolved));
+        cognito.verify().await;
+    }
+
+    #[tokio::test]
+    async fn resolve_tokens_keeps_rejected_refresh_on_sign_in_after_marker() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let home = tempfile::tempdir().expect("temporary token home");
+        let _test_home = TestHome::set(home.path());
+        let mut cached_tokens = token_generation("rejected");
+        cached_tokens.expires_at = i64::MAX;
+        set_tokens(&cached_tokens)
+            .await
+            .expect("store tokens for rejected refresh");
+        let tokens_path = home.path().join(".hq/cognito-tokens.json");
+        invalidate_token_at(&tokens_path, &cached_tokens.access_token).unwrap();
+
+        let cognito = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "__type": "NotAuthorizedException",
+                "message": "Invalid Refresh Token"
+            })))
+            .expect(1)
+            .mount(&cognito)
+            .await;
+
+        let failure = resolve_tokens_classified(false, &cognito.uri())
+            .await
+            .expect_err("rejected refresh must remain a sign-in condition");
+        assert!(failure.requires_reauth);
+
+        let repeated_failure = resolve_tokens_classified(false, &cognito.uri())
+            .await
+            .expect_err("the rejected token generation must stay signed out");
+        assert!(repeated_failure.requires_reauth);
+        assert!(get_tokens().await.unwrap().is_none());
+        cognito.verify().await;
     }
 
     #[test]
@@ -2103,6 +2402,7 @@ mod tests {
         std::fs::write(&path, serde_json::to_string(&tokens).unwrap()).unwrap();
         invalidate_token_at(&path, &tokens.access_token).unwrap();
         let marker = invalidation_path_for_token(&path, &tokens.access_token);
+        std::fs::write(&marker, b"refresh-rejected").unwrap();
         assert!(marker.exists());
         assert!(has_non_empty_token_at(&path).unwrap());
 

@@ -202,6 +202,7 @@ fn setup_startup_surfaces(
 ) -> Result<(), Box<dyn std::error::Error>> {
     tray::setup_tray(app)?;
     crate::recovery::on_startup(app);
+    crate::recovery::spawn_runtime_stall_sentinel();
 
     if first_run {
         tray::show_window_centered(app);
@@ -731,6 +732,7 @@ fn main() {
             intro_window::set_intro_fullscreen,
             welcome_window::set_welcome_backdrop,
             welcome_window::set_welcome_window,
+            welcome_window::get_welcome_window_active,
             welcome_window::get_desktop_wallpaper,
             commands::first_run::show_main_window_at_tray,
             commands::lifecycle::get_lifecycle_state,
@@ -828,6 +830,7 @@ fn main() {
             commands::daemon::start_daemon,
             commands::daemon::stop_daemon,
             commands::daemon::daemon_status,
+            commands::daemon::daemon_sync_status,
             tray::set_tray_state,
             tray::finish_replay_intro,
             updater::check_for_updates,

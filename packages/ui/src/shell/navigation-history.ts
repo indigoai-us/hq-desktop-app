@@ -127,6 +127,16 @@ export function historyNeighbor(
   return snapshot.entries[index] ?? null;
 }
 
+/** Find the nearest prior route outside the Library overlay. */
+export function priorNonLibraryIndex(
+  snapshot: NavigationHistorySnapshot,
+): number | null {
+  for (let index = snapshot.index - 1; index >= 0; index -= 1) {
+    if (snapshot.entries[index]?.destination.kind !== "library") return index;
+  }
+  return null;
+}
+
 const CHANNEL_TABS = new Set<ChannelSurfaceTab>(["chat", "board", "files"]);
 const AGENT_SURFACES = new Set<AgentSurfaceTab>(["chat", "details"]);
 // Office/Team/Settings/Atlas are not desktop tabs; those ids are

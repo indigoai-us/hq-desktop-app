@@ -9,6 +9,8 @@
  * throw. Unknown keys on known envelopes are ignored (additive-safe).
  */
 
+import { isRecord } from "../../common/is-record.js";
+
 /** Known system-event types from the v1 envelope. */
 export type KnownSystemEventType =
   | "run_started"
@@ -266,10 +268,6 @@ const DEFAULT_TITLES: Record<SystemEventLineType | "work_session", string> = {
   work_session_finished: "Finished",
   member_added: "Added to the channel",
 };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function asOptionalString(value: unknown): string | null {
   if (typeof value !== "string") return null;

@@ -10,6 +10,8 @@ import {
   sentMessageFromResult,
   sinceForChannelWake,
   timelineHasEvent,
+  timelinePageFromPayload,
+  HUMAN_HISTORY_VIEW,
   TIMELINE_ROOT_PAGE_SIZE,
 } from "./live-messages.js";
 
@@ -477,5 +479,53 @@ describe("sentMessageFromResult", () => {
         direction: "out",
       }),
     );
+  });
+});
+
+describe("timelinePageFromPayload: server human view fields", () => {
+  it("an ordinary page (older server, or no view requested) carries no view", () => {
+    const page = timelinePageFromPayload({ messages: [], nextCursor: "abc" });
+    expect(page.nextCursor).toBe("abc");
+    expect("view" in page).toBe(false);
+    expect("viewScanTruncated" in page).toBe(false);
+  });
+
+  it("reads the view echo of a server-filtered page", () => {
+    const page = timelinePageFromPayload({
+      messages: [{ eventId: "e1" }],
+      view: "human",
+      nextCursor: "abc",
+    });
+    expect(page.view).toBe(HUMAN_HISTORY_VIEW);
+    expect(page.nextCursor).toBe("abc");
+    expect("viewScanTruncated" in page).toBe(false);
+  });
+
+  it("reads viewScanTruncated together with its cursor", () => {
+    const page = timelinePageFromPayload({
+      messages: [],
+      view: "human",
+      nextCursor: "abc",
+      viewScanTruncated: true,
+    });
+    expect(page).toEqual({
+      messages: [],
+      nextCursor: "abc",
+      view: "human",
+      viewScanTruncated: true,
+    });
+  });
+
+  it("an empty filtered page with no cursor means no more visible history", () => {
+    const page = timelinePageFromPayload({ messages: [], view: "human" });
+    expect(page.view).toBe("human");
+    expect(page.nextCursor).toBeNull();
+  });
+
+  it("ignores an unknown view value and a truncated flag without the echo", () => {
+    const other = timelinePageFromPayload({ messages: [], view: "everything" });
+    expect("view" in other).toBe(false);
+    const noEcho = timelinePageFromPayload({ messages: [], viewScanTruncated: true });
+    expect("viewScanTruncated" in noEcho).toBe(false);
   });
 });

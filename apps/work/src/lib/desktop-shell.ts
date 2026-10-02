@@ -26,6 +26,7 @@ export interface ShellSignOutOptions {
 export type NativeAuthSessionStatus =
   | "active"
   | "credentials_absent"
+  | "credentials_read_error"
   | "credentials_invalid"
   | "refresh_temporarily_unavailable";
 
@@ -41,6 +42,7 @@ function isNativeAuthSessionStatus(
   return (
     value === "active" ||
     value === "credentials_absent" ||
+    value === "credentials_read_error" ||
     value === "credentials_invalid" ||
     value === "refresh_temporarily_unavailable"
   );

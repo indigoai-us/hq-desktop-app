@@ -20,6 +20,7 @@
     type UpdateInfo,
   } from "./pending-update";
   import {
+    DEFAULT_WINDOW_TRANSPARENCY,
     MAX_DESKTOP_ZOOM,
     MIN_DESKTOP_ZOOM,
     windowOpacityFromTransparency,
@@ -414,7 +415,10 @@
     "dock-icon": null,
   });
   let appearance = $state<AppearancePreferences>(
-    appearanceSeam?.read() ?? { colorTheme: "system", windowTransparency: 65 },
+    appearanceSeam?.read() ?? {
+      colorTheme: "system",
+      windowTransparency: DEFAULT_WINDOW_TRANSPARENCY,
+    },
   );
   let interfaceZoom = $state(zoomSeam?.read() ?? 1);
 
@@ -1428,7 +1432,10 @@
       updateResult = "Restarting…";
     } else {
       console.error("install update failed:", res.message);
-      updateResult = "Install failed";
+      updateResult =
+        res.message === "HQ will restart to update after your recording finishes"
+          ? res.message
+          : "Install failed";
       appUpdateInstalling = false;
     }
   }

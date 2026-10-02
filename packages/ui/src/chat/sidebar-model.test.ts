@@ -2382,7 +2382,11 @@ describe("sortConversations(humanOnly)", () => {
 
   it("flag on: quiet-human (newer human message) beats noisy-bot", () => {
     const rows = [noisyBot, quietHuman, noHuman];
-    // no-human falls back to lastActivityAt (10) and slots between the two.
+    // `no-human` carries neither human field, so its state is unknown (an
+    // older server, or a row the server has not examined). It falls back to
+    // lastActivityAt (10) and slots above the two known rows. A row the server
+    // KNOWS holds no human message is covered in
+    // sidebar-model.human-recency.test.ts.
     expect(
       sortConversations(rows, "recent", true).map((r) => r.id),
     ).toEqual(["ch:no-human", "ch:quiet-human", "ch:noisy-bot"]);
@@ -2399,7 +2403,9 @@ describe("sortConversations(humanOnly)", () => {
     ).toEqual(["ch:a", "ch:b"]);
   });
 
-  it("no human messages: humanOnly falls back to lastActivityAt", () => {
+  it("no human fields at all: humanOnly falls back to lastActivityAt", () => {
+    // What an older server sends for every row, and what today's server sends
+    // for every 1:1 DM. Absent is unknown, not "none".
     const later = ch("ch:later", 30);
     const earlier = ch("ch:earlier", 10);
     expect(

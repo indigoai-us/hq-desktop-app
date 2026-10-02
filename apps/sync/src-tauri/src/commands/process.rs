@@ -33,6 +33,24 @@ use uuid::Uuid;
 // Bound queued output events so slow callbacks backpressure the child's pipes.
 const PROCESS_EVENT_CHANNEL_CAPACITY: usize = 64;
 
+#[cfg(test)]
+static SYNC_RUNNER_SPAWN_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+pub(crate) fn record_sync_runner_spawn_attempt() {
+    SYNC_RUNNER_SPAWN_ATTEMPTS.fetch_add(1, Ordering::SeqCst);
+}
+
+#[cfg(test)]
+pub(crate) fn sync_runner_spawn_attempts() -> usize {
+    SYNC_RUNNER_SPAWN_ATTEMPTS.load(Ordering::SeqCst)
+}
+
+#[cfg(test)]
+pub(crate) fn reset_sync_runner_spawn_attempts() {
+    SYNC_RUNNER_SPAWN_ATTEMPTS.store(0, Ordering::SeqCst);
+}
+
 #[cfg(target_os = "windows")]
 use std::os::windows::ffi::OsStrExt;
 #[cfg(target_os = "windows")]
@@ -830,22 +848,18 @@ pub fn attach_hosted_child(
         &mut containment,
     ) {
         ProcessAttachOutcome::Attached => Ok(child),
-        ProcessAttachOutcome::Cancelled => Err(ownership_lost_after_spawn(
-            handle,
-            generation,
-            child,
-            true,
-            containment,
-        )
-        .to_string()),
-        ProcessAttachOutcome::RefusedStale => Err(ownership_lost_after_spawn(
-            handle,
-            generation,
-            child,
-            false,
-            containment,
-        )
-        .to_string()),
+        ProcessAttachOutcome::Cancelled => {
+            Err(
+                ownership_lost_after_spawn(handle, generation, child, true, containment)
+                    .to_string(),
+            )
+        }
+        ProcessAttachOutcome::RefusedStale => {
+            Err(
+                ownership_lost_after_spawn(handle, generation, child, false, containment)
+                    .to_string(),
+            )
+        }
     }
 }
 
@@ -8257,7 +8271,10 @@ mod hosted_child_tests {
         assert_eq!(registered.generation, generation);
         #[cfg(target_os = "windows")]
         {
-            assert!(registered.job_attached, "hosted child must be in a Job Object");
+            assert!(
+                registered.job_attached,
+                "hosted child must be in a Job Object"
+            );
             assert!(require_update_job_containment(&[registered]).is_ok());
         }
 
@@ -8282,6 +8299,9 @@ mod hosted_child_tests {
         );
 
         assert!(!is_registered(&handle));
-        assert!(!is_pid_alive(pid), "refused child {pid} must be stopped and reaped");
+        assert!(
+            !is_pid_alive(pid),
+            "refused child {pid} must be stopped and reaped"
+        );
     }
 }

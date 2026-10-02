@@ -682,6 +682,22 @@ describe("createCacheSidebarApi channel capabilities", () => {
 });
 
 describe("parseChannelMembers — enriched profile fields", () => {
+  it("preserves an unknown human role instead of assuming member", () => {
+    const roster = parseChannelMembers({
+      members: [
+        { personUid: "prs_missing", displayName: "Missing role" },
+        { personUid: "prs_null", displayName: "Null role", role: null },
+        { personUid: "prs_member", displayName: "Known member", role: "member" },
+      ],
+    });
+
+    expect(roster.map(({ role }) => role)).toEqual([
+      undefined,
+      undefined,
+      "member",
+    ]);
+  });
+
   it("reads avatarUrl + description from flat rows", () => {
     const [m] = parseChannelMembers({
       members: [

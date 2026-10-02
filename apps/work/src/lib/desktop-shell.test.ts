@@ -182,6 +182,7 @@ describe("native auth session envelopes", () => {
 
   it.each([
     "credentials_absent",
+    "credentials_read_error",
     "credentials_invalid",
     "refresh_temporarily_unavailable",
   ] as const)("retains the %s session status", (status) => {

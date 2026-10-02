@@ -59,6 +59,7 @@ pub mod cpu_throttle;
 pub mod daemon;
 pub mod deep_link;
 pub mod desktop_alt;
+pub mod desktop_signin_link;
 pub mod routes;
 pub mod dm_notify;
 pub mod drift_scope;
@@ -124,6 +125,7 @@ pub mod watcher_fault;
 pub mod win32_path;
 pub mod update_gate;
 pub mod workspaces;
+pub mod watch_owner;
 
 #[cfg(test)]
 pub(crate) mod test_support;

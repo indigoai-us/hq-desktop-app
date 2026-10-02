@@ -3,10 +3,13 @@ import type { FlagClient, FlagSnapshot } from "@indigoai-us/hq-flags-client";
 import { failure, ok } from "./adapter.js";
 import {
   CLAUDE_PROVIDER_FLAG,
+  DESKTOP_LIMIT_STATUS_PUSH_FLAG,
   FLAG_REFRESH_INTERVAL_MS,
   INVITE_TEAMMATE_STEP_FLAG,
+  LOGIN_RECEIPT_DURABILITY_FLAG,
   MEETINGS_LEGACY_FLAG,
   MEETINGS_REGISTRY_KEY,
+  PERSONAL_WORKSPACE_BOARD_FLAG,
   SETUP_STAGE_TIMEOUT_FIX_FLAG,
   bearerTokenFromHeaders,
   createFeatureFlagGate,
@@ -56,6 +59,22 @@ describe("registry key mapping", () => {
     );
   });
 
+  it("maps the personal workspace board through the default-off hq-flags gate", () => {
+    expect(PERSONAL_WORKSPACE_BOARD_FLAG).toBe(
+      "desktop.personal-workspace-board-v1",
+    );
+    expect(registryKeyFor(PERSONAL_WORKSPACE_BOARD_FLAG)).toBe(
+      PERSONAL_WORKSPACE_BOARD_FLAG,
+    );
+  });
+
+  it("registers desktop limit status push as a default-off hq-flags key", () => {
+    expect(DESKTOP_LIMIT_STATUS_PUSH_FLAG).toBe("desktop.limit-status-push");
+    expect(registryKeyFor(DESKTOP_LIMIT_STATUS_PUSH_FLAG)).toBe(
+      DESKTOP_LIMIT_STATUS_PUSH_FLAG,
+    );
+  });
+
   it("maps the first-folder onboarding flag using the registry key format", () => {
     const key = "desktop.first-folder-sync-step-v1";
     expect(key).toMatch(/^[a-z0-9-]+(?:\.[a-z0-9-]+)*$/);
@@ -74,6 +93,28 @@ describe("registry key mapping", () => {
     expect(registryKeyFor(SETUP_STAGE_TIMEOUT_FIX_FLAG)).toBe(
       SETUP_STAGE_TIMEOUT_FIX_FLAG,
     );
+  });
+
+  it("maps receipt durability through the hq-flags registry", () => {
+    expect(LOGIN_RECEIPT_DURABILITY_FLAG).toBe(
+      "desktop.login-receipt-durable-before-return-v1",
+    );
+    expect(registryKeyFor(LOGIN_RECEIPT_DURABILITY_FLAG)).toBe(
+      LOGIN_RECEIPT_DURABILITY_FLAG,
+    );
+  });
+
+  it("keeps login receipt durability off when the registry is unavailable", async () => {
+    const isEnabled = vi.fn(() => true);
+    const adapter = createSyncPlatformAdapter({
+      invoke: vi.fn(async () => undefined),
+      createFlagClient: () =>
+        fakeClient({ ready: async () => {}, snapshot: () => null, isEnabled }),
+    });
+    await expect(
+      adapter.identity.hasFeature(LOGIN_RECEIPT_DURABILITY_FLAG),
+    ).resolves.toEqual(ok(false));
+    expect(isEnabled).not.toHaveBeenCalled();
   });
 });
 
@@ -94,6 +135,24 @@ describe("createFeatureFlagGate", () => {
       ok(true),
     );
     expect(isEnabled).toHaveBeenCalledExactlyOnceWith(SETUP_STAGE_TIMEOUT_FIX_FLAG);
+  });
+
+  it("keeps personal workspace board reads off when hq-flags has no configured value", async () => {
+    const isEnabled = vi.fn(() => true);
+    const adapter = createSyncPlatformAdapter({
+      invoke: vi.fn(async () => undefined),
+      createFlagClient: () =>
+        fakeClient({
+          ready: async () => {},
+          snapshot: () => ({ version: 1, flags: {} }),
+          isEnabled,
+        }),
+    });
+
+    await expect(
+      adapter.identity.hasFeature(PERSONAL_WORKSPACE_BOARD_FLAG),
+    ).resolves.toEqual(ok(false));
+    expect(isEnabled).not.toHaveBeenCalled();
   });
 
   it("uses the first-folder registry override when it is explicitly enabled", async () => {
