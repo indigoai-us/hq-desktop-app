@@ -8,7 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
-- Cognito refresh failures now log the status and sanitized provider error details. Only explicit invalid or revoked refresh tokens require sign-in, and the shared token lock uses the CLI-compatible PID-file protocol.
+- Cognito refresh failures now log the status and sanitized provider error details. HTTP 401, invalid client or grant responses, and Cognito NotAuthorizedException responses require sign-in; other failures retry and keep the session. The shared token lock uses the CLI-compatible PID-file protocol.
 
 - The "Name your company" setup form no longer shows "(optional)" twice on the Website label, and the Invite teammates box now matches the other fields.
 

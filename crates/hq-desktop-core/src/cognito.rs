@@ -161,11 +161,12 @@ fn cognito_error_code(body: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn classify_refresh_failure(_status: u16, body: &str) -> (bool, bool) {
-    let definitive_refusal = matches!(
+fn classify_refresh_failure(status: u16, body: &str) -> (bool, bool) {
+    let code_refusal = matches!(
         cognito_error_code(body).as_deref(),
-        Some("NotAuthorizedException" | "invalid_grant")
+        Some("NotAuthorizedException" | "invalid_grant" | "invalid_client")
     );
+    let definitive_refusal = status == 401 || code_refusal;
     (!definitive_refusal, definitive_refusal)
 }
 
@@ -1103,7 +1104,13 @@ async fn resolve_tokens_classified(
                 Err(err) => {
                     let failure_class = err.failure_class;
                     let requires_reauth = err.requires_reauth;
-                    let error_code = err.error_code.clone();
+                    let error_code = if err.status_code == Some(401)
+                        && !matches!(err.error_code.as_deref(), Some("NotAuthorizedException" | "invalid_grant" | "invalid_client"))
+                    {
+                        Some("HTTP401".to_string())
+                    } else {
+                        err.error_code.clone()
+                    };
                     if err.requires_reauth {
                         invalidate_tokens(&tokens).await.map_err(|message| {
                             CognitoTokenResolutionError::refresh(
@@ -2242,8 +2249,26 @@ mod tests {
             classify_refresh_failure(400, r#"{"error":"invalid_request"}"#),
             (true, false),
         );
-        assert_eq!(classify_refresh_failure(401, r#"{"error":"invalid_client"}"#), (true, false));
+        assert_eq!(classify_refresh_failure(401, r#"{"error":"invalid_client"}"#), (false, true));
         assert_eq!(classify_refresh_failure(503, "{}"), (true, false));
+    }
+
+    #[test]
+    fn refresh_failure_branches_are_exclusive_and_only_definitive_codes_reauth() {
+        for body in [r#"{"error":"invalid_client"}"#, r#"{"error":"invalid_grant"}"#, r#"{"__type":"NotAuthorizedException"}"#] {
+            assert_eq!(classify_refresh_failure(400, body), (false, true));
+        }
+        assert_eq!(classify_refresh_failure(401, r#"{"error":"unknown"}"#), (false, true));
+        for (status, body) in [
+            (400, r#"{"error":"unknown"}"#),
+            (400, "{}"),
+            (403, r#"{"__type":"ForbiddenException"}"#),
+            (400, r#"{"__type":"TooManyRequestsException"}"#),
+            (400, r#"{"__type":"InternalErrorException"}"#),
+            (500, r#"{"__type":"InternalErrorException"}"#),
+        ] {
+            assert_eq!(classify_refresh_failure(status, body), (true, false));
+        }
     }
 
     #[tokio::test]
