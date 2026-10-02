@@ -9680,7 +9680,10 @@ mod tests {
         assert_eq!(recorded_tag(capture, "stderr_cause"), "already_owned");
         assert_eq!(recorded_tag(capture, "watch_owner_result"), "busy");
         assert_eq!(recorded_tag(capture, "exit_producer"), "runner");
-        assert!(capture.tags.iter().all(|(_, value)| !value.contains("fixture")));
+        assert!(capture
+            .tags
+            .iter()
+            .all(|(_, value)| !value.contains("fixture")));
         assert!(capture.tags.iter().all(|(_, value)| !value.contains("123")));
     }
 
@@ -9703,7 +9706,10 @@ mod tests {
         assert_eq!(recorded_tag(capture, "stderr_cause"), "owner_lease_lost");
         assert_eq!(recorded_tag(capture, "watch_owner_result"), "lost");
         assert_eq!(recorded_tag(capture, "exit_producer"), "runner");
-        assert!(capture.tags.iter().all(|(_, value)| !value.contains("fixture detail")));
+        assert!(capture
+            .tags
+            .iter()
+            .all(|(_, value)| !value.contains("fixture detail")));
     }
 
     #[test]
@@ -9737,7 +9743,10 @@ mod tests {
         set_payload_tag(&mut tags, "exit_producer", "unknown".to_string());
         apply_report_to_fault_tags(&mut tags, &report);
 
-        assert_eq!(report_tag_of(&tags, "node_error_code"), "ERR_MODULE_NOT_FOUND");
+        assert_eq!(
+            report_tag_of(&tags, "node_error_code"),
+            "ERR_MODULE_NOT_FOUND"
+        );
         assert_eq!(report_tag_of(&tags, "node_error_name"), "Error");
         // A frame outside our packages and node: internals reports only
         // "external", so a user's file name never leaves the machine.
