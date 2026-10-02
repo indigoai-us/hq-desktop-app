@@ -21,8 +21,8 @@ use std::time::{Duration, Instant};
 
 use hq_desktop_core::daemon::{
     compose_runner_spawn_flags, effective_runner_heap_ceiling, is_autostart_enabled,
-    is_instant_sync_enabled, is_pid_alive, is_realtime_sync_enabled, resolve_hq_folder_path,
-    sync_child_env, DaemonStatus,
+    is_instant_sync_enabled, is_pid_alive, is_realtime_sync_enabled, read_menubar_bool,
+    resolve_hq_folder_path, sync_child_env, DaemonStatus,
 };
 use hq_desktop_core::hq_daemon::{
     after_daemon_exit, choose_sync_host, cli_supports_daemon_instant_sync, daemon_run_args,
@@ -54,6 +54,10 @@ const RESERVE_RETRY: Duration = Duration::from_secs(5);
 const INSTANT_SYNC_UNSUPPORTED_MESSAGE: &str = "Instant Sync is off, but this HQ CLI version cannot apply that setting. Update HQ CLI to use Instant Sync controls.";
 const HOST_PHASE_WAIT_SECONDS: u64 = 15;
 const HOST_PHASE_RETRY_MESSAGE: &str = "Sync setup is still resolving. Try again in a moment.";
+/// Rollout gate for honoring the existing Sync on launch preference when
+/// background Auto-sync is disabled. The lead creates this hq-flags key with
+/// defaultValue=false before enabling the behavior.
+pub const SYNC_ON_LAUNCH_RECONCILE_FLAG: &str = "desktop.sync-on-launch-reconcile-v1";
 static INSTANT_SYNC_CLI_SUPPORTED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -556,19 +560,33 @@ pub fn setup_sync_host(app: &AppHandle) {
         // The previous app may have exited during an automatic update after
         // pausing daemon sync. Resume before the hosted daemon starts new work.
         crate::updater::resume_daemon_sync_after_update(&handle).await;
-        match resolve_mode().await {
+        let (mode, launch_reconcile_enabled) = tokio::join!(
+            resolve_mode(),
+            crate::commands::hq_pro::feature_flag_enabled(SYNC_ON_LAUNCH_RECONCILE_FLAG),
+        );
+        match mode {
             SyncHostMode::Legacy(reason) => {
                 log(
                     LOG_TAG,
                     &format!("running the app's own sync services: {}", reason.describe()),
                 );
                 set_phase(HostPhase::Legacy);
-                start_legacy_services(handle);
+                start_legacy_services(handle, launch_reconcile_enabled);
             }
             SyncHostMode::Daemon => {
                 log(LOG_TAG, "hq daemon runs background services on this launch");
                 set_phase(HostPhase::Daemon);
-                std::thread::spawn(move || enter_daemon_mode(handle));
+                let launch_sync = hq_desktop_core::daemon::should_run_sync_on_launch(
+                    launch_reconcile_enabled,
+                    sync_on_launch_enabled(),
+                    is_realtime_sync_enabled(),
+                    is_autostart_enabled(),
+                );
+                let daemon_handle = handle.clone();
+                std::thread::spawn(move || enter_daemon_mode(daemon_handle));
+                if launch_sync {
+                    schedule_sync_on_launch(handle);
+                }
             }
         }
     });
@@ -594,7 +612,7 @@ async fn resolve_mode() -> SyncHostMode {
 }
 
 /// Today's launch behaviour: warm the npx cache and start the watch runner.
-fn start_legacy_services(handle: AppHandle) {
+fn start_legacy_services(handle: AppHandle, launch_reconcile_enabled: bool) {
     crate::commands::prewarm::spawn_prewarm();
     let dev_disable_auto_sync = std::env::var("HQ_DEV_DISABLE_AUTO_SYNC_ON_LAUNCH")
         .ok()
@@ -608,7 +626,32 @@ fn start_legacy_services(handle: AppHandle) {
             std::thread::sleep(Duration::from_secs(2));
             let _ = crate::commands::daemon::start_daemon_for_app_launch(handle);
         });
+    } else if !dev_disable_auto_sync
+        && hq_desktop_core::daemon::should_run_sync_on_launch(
+            launch_reconcile_enabled,
+            sync_on_launch_enabled(),
+            is_realtime_sync_enabled(),
+            is_autostart_enabled(),
+        )
+    {
+        schedule_sync_on_launch(handle);
     }
+}
+
+fn sync_on_launch_enabled() -> bool {
+    read_menubar_bool(|prefs| prefs.sync_on_launch, true)
+}
+
+fn schedule_sync_on_launch(app: AppHandle) {
+    std::thread::spawn(move || {
+        // Let the app finish choosing its sync host before the one-shot pass.
+        std::thread::sleep(Duration::from_secs(2));
+        tauri::async_runtime::spawn(async move {
+            if let Err(error) = crate::commands::sync::start_sync(app, None).await {
+                log(LOG_TAG, &format!("sync-on-launch pass failed: {error}"));
+            }
+        });
+    });
 }
 
 /// Sync should run: Auto-sync on, cloud not paused, and no dev kill switch.
@@ -923,7 +966,6 @@ mod tests {
         assert!(legacy_services_enabled(HostPhase::Legacy));
         assert!(!legacy_services_enabled(HostPhase::Daemon));
     }
-
     // ── settings toggles change the daemon's saved config ────────────────
 
     #[test]

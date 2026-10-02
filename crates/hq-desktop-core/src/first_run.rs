@@ -105,6 +105,15 @@ pub fn should_autoshow_on_launch(kind: LaunchKind) -> bool {
     kind == LaunchKind::FirstRun
 }
 
+/// Whether the first-run handoff may schedule one initial sync.
+pub fn should_sync_after_first_run_handoff(
+    flag_enabled: bool,
+    kind: LaunchKind,
+    realtime_sync: bool,
+) -> bool {
+    flag_enabled && kind == LaunchKind::FirstRun && realtime_sync
+}
+
 /// True when `autoSyncNoticeShown` is explicitly `true`.
 pub fn notice_shown_in_map(obj: &Map<String, Value>) -> bool {
     obj.get("autoSyncNoticeShown")
@@ -748,6 +757,35 @@ mod tests {
         assert!(should_autoshow_on_launch(LaunchKind::FirstRun));
         assert!(!should_autoshow_on_launch(LaunchKind::ExistingUpdate));
         assert!(!should_autoshow_on_launch(LaunchKind::Normal));
+    }
+
+    #[test]
+    fn first_launch_sync_is_gated_to_fresh_installs_and_auto_sync() {
+        assert!(!should_sync_after_first_run_handoff(
+            false,
+            LaunchKind::FirstRun,
+            true
+        ));
+        assert!(!should_sync_after_first_run_handoff(
+            true,
+            LaunchKind::ExistingUpdate,
+            true
+        ));
+        assert!(!should_sync_after_first_run_handoff(
+            true,
+            LaunchKind::Normal,
+            true
+        ));
+        assert!(!should_sync_after_first_run_handoff(
+            true,
+            LaunchKind::FirstRun,
+            false
+        ));
+        assert!(should_sync_after_first_run_handoff(
+            true,
+            LaunchKind::FirstRun,
+            true
+        ));
     }
 
     #[test]

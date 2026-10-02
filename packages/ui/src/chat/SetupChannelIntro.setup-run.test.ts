@@ -113,6 +113,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  Reflect.deleteProperty(globalThis, "__HQ_HOST_OS__");
   if (component) await unmount(component);
   component = null;
   host?.remove();
@@ -147,6 +148,12 @@ async function clickRunSetup() {
 }
 
 describe("SetupChannelIntro with a Setup Agent", () => {
+  it("uses the Windows noun for the setup action group", async () => {
+    Object.defineProperty(globalThis, "__HQ_HOST_OS__", { value: "windows", configurable: true });
+    await mountIntro({});
+    expect(q('[role="group"][aria-label="Set up this PC"]')).toBeTruthy();
+  });
+
   it("Run Setup starts the agent's guided run in place; the stepper appears on the hero", async () => {
     const api = fakeSetupRun();
     const agent = new SetupAgent(api);

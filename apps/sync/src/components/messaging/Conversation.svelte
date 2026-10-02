@@ -25,6 +25,7 @@
   import { isJumboEmojiBody } from '../../lib/emojiShortcodes';
   import { shareTitle } from '../../lib/share-path';
   import { sanitizeVisibleIdentifiers } from '../../lib/visible-labels';
+  import { primaryEnterKeyHint } from '@hq/platform';
   import type { ShareEvent } from '../../lib/notificationGroups';
   import AttachmentStack from './AttachmentStack.svelte';
   import AttachmentPicker from './AttachmentPicker.svelte';
@@ -828,7 +829,7 @@
       {#if sendError}
         <span class="dm-reply-error" role="alert">{sendError}</span>
       {:else}
-        <span class="dm-reply-hint">⌘↵ to send</span>
+        <span class="dm-reply-hint">{primaryEnterKeyHint()} to send</span>
       {/if}
       <button
         class="btn btn-send"

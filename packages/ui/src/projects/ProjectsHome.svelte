@@ -5,7 +5,8 @@
    * company's project board below (CompanyProjectsPage: Board/List of projects,
    * and each project's task board, detail and files).
    */
-  import type { PlatformAdapter } from "@hq/platform";
+  import { onMount } from "svelte";
+  import { hostComputerNoun, subscribeHostComputerNoun, type PlatformAdapter } from "@hq/platform";
   import type { Workspace } from "../chat/workspaces.js";
   import CompanyProjectsPage from "./CompanyProjectsPage.svelte";
 
@@ -23,6 +24,9 @@
   }
 
   let { adapter, companies, slug = null, preferredSlug = null, onslugchange }: Props = $props();
+
+  let hostNoun = $state(hostComputerNoun());
+  onMount(() => subscribeHostComputerNoun((next) => (hostNoun = next)));
 
   /** Companies with projects on this Mac, by name. */
   const choices = $derived(
@@ -80,7 +84,7 @@
   {#if !current}
     <div class="ph-empty" data-testid="projects-home-empty">
       <h2>Projects</h2>
-      <p>No company folders on this Mac yet. Projects show up here once a company has synced.</p>
+      <p>No company folders on this {hostNoun} yet. Projects show up here once a company has synced.</p>
     </div>
   {:else}
     <div class="ph-body">

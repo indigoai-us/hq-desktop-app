@@ -1,4 +1,5 @@
 import { isWorkspaceSyncEnabled, type Workspace } from "../chat/workspaces";
+import { thisComputerNoun } from "@hq/platform";
 import { CORE_SETUP_LABEL, isCorePath } from "./progressLabel";
 
 export type SyncState =
@@ -294,7 +295,7 @@ export function buildSourceRows(args: {
       connectable:
         workspace.state === "local-only" || workspace.state === "broken",
       name: workspace.displayName,
-      detail: !syncEnabled ? "Sync disabled on this Mac" : detail,
+      detail: !syncEnabled ? `Sync disabled on ${thisComputerNoun()}` : detail,
       liveState: syncing
         ? "syncing"
         : reauth || sourceAttention
