@@ -112,3 +112,16 @@ describe("pinned company tiles (US-004)", () => {
     expect(order).toEqual([["co_live", "co_quiet"]]);
   });
 });
+
+// The rail must never yield width to a wide sibling (the Meetings canvas,
+// a long channel list): a flex item with a shrinkable basis collapses to a
+// sliver in a 1280 px window. Lock the fixed 56 px column.
+describe("AppRail fixed width", () => {
+  const rule = source.match(/\.app-rail\s*\{([^}]*)\}/)?.[1] ?? "";
+
+  it("is a non-shrinking 56 px column", () => {
+    expect(rule).toMatch(/flex:\s*0 0 56px;/);
+    expect(rule).toMatch(/(^|\s)width:\s*56px;/);
+    expect(rule).not.toMatch(/min-width:\s*0/);
+  });
+});
