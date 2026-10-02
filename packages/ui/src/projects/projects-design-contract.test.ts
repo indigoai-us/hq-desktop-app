@@ -107,3 +107,20 @@ describe("filesErrorReason (QA-007)", () => {
     expect(fallback).not.toContain("X_9");
   });
 });
+
+describe("project board at narrow widths (QA-029)", () => {
+  const css = styleOf("CompanyProjectsPage.svelte");
+
+  it("sizes columns from the board's own width, not the page", () => {
+    const main = css.match(/\.projects-main \{[^}]*\}/)?.[0] ?? "";
+    expect(main).toContain("container: projects-board / inline-size;");
+    expect(css).toContain("@container projects-board (max-width: 620px)");
+    expect(css).toContain("@container projects-board (max-width: 320px)");
+  });
+
+  it("never scrolls the board sideways or pins columns to a minimum width", () => {
+    expect(css).not.toMatch(/repeat\(4, minmax\(\d+px/);
+    const boards = [...css.matchAll(/\.kanban-board \{[^}]*\}/g)].map((m) => m[0]).join("\n");
+    expect(boards).not.toContain("overflow-x: auto");
+  });
+});

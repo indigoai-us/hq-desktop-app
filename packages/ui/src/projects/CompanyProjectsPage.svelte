@@ -1633,11 +1633,14 @@
     grid-template-columns: minmax(0, 1fr) 360px;
   }
 
+  /* The board measures its own width: with the task view pane open it is far
+     narrower than the page. */
   .projects-main {
     display: flex;
     flex-direction: column;
     gap: 12px;
     min-width: 0;
+    container: projects-board / inline-size;
   }
 
   /* Full content height from the toolbar down; sticks while the board
@@ -1732,15 +1735,18 @@
     font-variant-numeric: tabular-nums;
   }
 
-  /* Four columns share the width down to ~640px of canvas; below that the
-     board keeps a minimum width and scrolls sideways on its own (headers stop
-     sticking only in that narrow case). */
-  @container company-projects (max-width: 640px) {
+  /* Four columns while each can hold a card (QA-029). A narrower board wraps
+     to two columns, then one, so cards never clip or scroll sideways. */
+  @container projects-board (max-width: 620px) {
     .kanban-board {
-      grid-template-columns: repeat(4, minmax(150px, 1fr));
-      overflow-x: auto;
-      overflow-y: hidden;
-      padding-bottom: 6px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      row-gap: 16px;
+    }
+  }
+
+  @container projects-board (max-width: 320px) {
+    .kanban-board {
+      grid-template-columns: minmax(0, 1fr);
     }
   }
 
