@@ -11,6 +11,7 @@ import {
   openCreateCompanyDraft,
   sendCompanyInvites,
   submitCreateCompany,
+  waitForCompanyProvisioned,
   type CompanyDraftForm,
 } from "./create-company-flow.js";
 
@@ -187,7 +188,12 @@ describe("submitCreateCompany", () => {
     );
     expect(result).toEqual({
       ok: true,
-      company: { companyUid: "cmp_acme", companyChannelId: "chn_acme", inviteFailures: [] },
+      company: {
+        companyUid: "cmp_acme",
+        companyChannelId: "chn_acme",
+        inviteFailures: [],
+        queuedInvites: [],
+      },
     });
   });
 
@@ -269,6 +275,100 @@ describe("submitCreateCompany", () => {
       actionId: "invite",
       values: { email: "ada@example.com", role: "owner", inviteSurface: "desktop" },
     });
+  });
+});
+
+describe("submitCreateCompany waits for provisioning before inviting", () => {
+  const created = () =>
+    vi.fn(async () => ({
+      cardId: "card_create_company_2",
+      actionId: "submit",
+      state: "done",
+      companyUid: "cmp_acme",
+      companyChannelId: "chn_acme",
+    }));
+  const invited = () => vi.fn(async () => ({ cardId: "team:invite", actionId: "invite", state: "done" }));
+  const INVITES = [{ email: "ada@example.com", role: "member" }];
+
+  it("sends invites only after the company reports provisioned", async () => {
+    const order: string[] = [];
+    const readCompanyProvisioned = vi
+      .fn()
+      .mockImplementationOnce(async () => (order.push("read:false"), false))
+      .mockImplementationOnce(async () => (order.push("read:true"), true));
+    const runCompanyTabAction = vi.fn(async () => {
+      order.push("invite");
+      return { cardId: "team:invite", actionId: "invite", state: "done" };
+    });
+    const sleep = vi.fn(async () => {});
+    const result = await submitCreateCompany(
+      api({ runCardAction: created(), runCompanyTabAction, readCompanyProvisioned }),
+      FORM,
+      { name: "Acme" },
+      INVITES,
+      { sleep, provisionPollMs: 5 },
+    );
+    expect(order).toEqual(["read:false", "read:true", "invite"]);
+    expect(readCompanyProvisioned).toHaveBeenCalledWith("cmp_acme");
+    expect(sleep).toHaveBeenCalledWith(5);
+    expect(result.ok && result.company).toMatchObject({ inviteFailures: [], queuedInvites: [] });
+  });
+
+  it("queues the invites, sends none, and still reports the company when provisioning is not ready in time", async () => {
+    const runCompanyTabAction = invited();
+    const readCompanyProvisioned = vi.fn(async () => false);
+    const result = await submitCreateCompany(
+      api({ runCardAction: created(), runCompanyTabAction, readCompanyProvisioned }),
+      FORM,
+      { name: "Acme" },
+      INVITES,
+      { sleep: async () => {}, provisionPollAttempts: 3 },
+    );
+    expect(readCompanyProvisioned).toHaveBeenCalledTimes(3);
+    expect(runCompanyTabAction).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      ok: true,
+      company: {
+        companyUid: "cmp_acme",
+        companyChannelId: "chn_acme",
+        inviteFailures: [],
+        queuedInvites: INVITES,
+      },
+    });
+  });
+
+  it("treats a failed status read as not ready, never as ready", async () => {
+    const runCompanyTabAction = invited();
+    const readCompanyProvisioned = vi.fn(async () => {
+      throw new Error("Network error: offline");
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const result = await submitCreateCompany(
+      api({ runCardAction: created(), runCompanyTabAction, readCompanyProvisioned }),
+      FORM,
+      { name: "Acme" },
+      INVITES,
+      { sleep: async () => {}, provisionPollAttempts: 2 },
+    );
+    expect(runCompanyTabAction).not.toHaveBeenCalled();
+    expect(result.ok && result.company.queuedInvites).toEqual(INVITES);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("does not poll when there is nobody to invite", async () => {
+    const readCompanyProvisioned = vi.fn(async () => false);
+    await submitCreateCompany(
+      api({ runCardAction: created(), readCompanyProvisioned }),
+      FORM,
+      { name: "Acme" },
+      [],
+    );
+    expect(readCompanyProvisioned).not.toHaveBeenCalled();
+  });
+
+  it("waitForCompanyProvisioned is false on a host that cannot read status", async () => {
+    expect(await waitForCompanyProvisioned({}, "cmp_acme")).toBe(false);
   });
 });
 

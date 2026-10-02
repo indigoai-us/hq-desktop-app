@@ -1,4 +1,9 @@
 import {
+  normalizeHttpStatus,
+  normalizeInviteErrorKind,
+  type InviteErrorKind,
+} from './onboarding-invite';
+import {
   emitDesktopOperationalTelemetryStrict,
   type DesktopTelemetryProperties,
 } from './desktop-telemetry';
@@ -67,14 +72,16 @@ export interface OnboardingStepProperties {
   failedDependency?: FailedDependency;
   errorCategory?: ErrorCategory;
   failureStage?: StageId;
-  errorKind?: SetupErrorKind;
+  /** Setup failures carry a SetupErrorKind; the invite step an InviteErrorKind. */
+  errorKind?: SetupErrorKind | InviteErrorKind;
+  /** HTTP status of a failed invite-step request, when there was one. */
+  statusCode?: number;
   errorOperation?: SymlinkErrorOperation;
   errorIoKind?: SymlinkErrorIoKind;
   errorCode?: number;
   setupRunId?: string;
   /** Company scope for the invite and company steps; never attach invitee data here. */
   companyUid?: string;
-  inviteErrorKind?: 'request_failed' | 'email_delivery_failed';
 }
 
 export interface OnboardingStepEvent {
@@ -282,13 +289,6 @@ export function desktopPropertiesForOnboardingStep(
   ) {
     properties.companyUid = event.properties.companyUid;
   }
-  if (
-    event.properties.step === 'invite-teammate' &&
-    (event.properties.inviteErrorKind === 'request_failed' ||
-      event.properties.inviteErrorKind === 'email_delivery_failed')
-  ) {
-    properties.inviteErrorKind = event.properties.inviteErrorKind;
-  }
   if (event.properties.step === 'connector-import') {
     if (event.properties.outcome !== undefined) {
       properties.outcome = normalizeConnectorImportOutcome(event.properties.outcome);
@@ -301,7 +301,11 @@ export function desktopPropertiesForOnboardingStep(
   }
   if (event.properties.action === 'failed') {
     properties.errorCategory = normalizeErrorCategory(event.properties.errorCategory);
-    if (event.properties.errorKind !== undefined) {
+    if (event.properties.step === 'invite-teammate') {
+      properties.errorKind = normalizeInviteErrorKind(event.properties.errorKind);
+      const statusCode = normalizeHttpStatus(event.properties.statusCode);
+      if (statusCode !== undefined) properties.statusCode = statusCode;
+    } else if (event.properties.errorKind !== undefined) {
       properties.errorKind = normalizeSetupErrorKind(event.properties.errorKind);
     }
     if (event.properties.component === 'deps') {

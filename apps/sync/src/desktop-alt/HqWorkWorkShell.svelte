@@ -43,6 +43,8 @@
   } from '@hq/ui';
   import { flushSync, onDestroy, onMount, tick, untrack, type ComponentProps } from 'svelte';
   import { safeUnlisten } from '../lib/listener-registry';
+  import { createFirstRunCompanyApi, type InvokeFn } from '../lib/first-run-company';
+  import { flushPendingCompanyInvites } from '../lib/pending-company-invites';
   import { emitPlanLimitPromptTelemetry } from '../lib/desktop-telemetry';
   import { isPostReadyActionReady } from '../lib/post-ready-action-telemetry';
   import type { DmRequestContact } from '../lib/dmRequests';
@@ -79,6 +81,26 @@
     bootTimeoutMs,
     rosterRetryDelaysMs,
   }: Props = $props();
+
+  /**
+   * Send invites the "Name your company" setup step queued while the new
+   * company was still provisioning. A no-op when nothing is queued.
+   */
+  function sendQueuedCompanyInvites(): void {
+    let storage: Storage | null = null;
+    try {
+      storage = typeof localStorage === 'undefined' ? null : localStorage;
+    } catch {
+      return;
+    }
+    void flushPendingCompanyInvites(storage, createFirstRunCompanyApi(invokeFn as InvokeFn))
+      .then((report) => {
+        for (const failure of report.failed) {
+          console.warn('Queued company invite was refused.', failure.companyUid, failure.reason);
+        }
+      })
+      .catch((error) => console.error('Could not send queued company invites.', error));
+  }
 
   const adapter = createSyncPlatformAdapter({
     invoke: (command, args) => invokeFn(command, args),
@@ -613,6 +635,7 @@
       if (request !== hydration || expectedGeneration !== authGeneration) return;
       lifecycle = 'ready';
       void rosterRefresher.refresh();
+      sendQueuedCompanyInvites();
     } catch (error) {
       if (request !== hydration || expectedGeneration !== authGeneration) return;
       identityError = readableError(error, 'Couldn’t verify your account.');
@@ -923,7 +946,10 @@
     // Website-created companies are provisioned by the sync runner after
     // sign-in; re-read the roster when it says so instead of after a restart.
     const unsubscribeRosterEvents = subscribeRosterRefreshEvents(listen, () => {
-      if (!cancelled && lifecycle === 'ready') void rosterRefresher.refresh();
+      if (!cancelled && lifecycle === 'ready') {
+        void rosterRefresher.refresh();
+        sendQueuedCompanyInvites();
+      }
     });
     const unlistenWorkPushes = WORK_PUSH_EVENTS.map((eventName) =>
       listen(eventName, (event) => {

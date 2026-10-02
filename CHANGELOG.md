@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Inviting a teammate after setup no longer fails when that address was already invited: HQ resends the existing invitation and says so. Other invite failures now name the cause (plan limit, invalid email, no connection, server problem) instead of a generic message, and the setup telemetry records the error kind and HTTP status.
+- When you name a new company during setup, HQ now waits for the company's cloud storage to be ready before sending invites. If it isn't ready yet, the invites are queued and sent the next time the app sees the company ready, and the setup screen says they are pending instead of reporting them sent.
 - The "Name your company" setup form no longer shows "(optional)" twice on the Website label, and the Invite teammates box now matches the other fields.
 
 ## [0.10.380] — 2026-10-02
