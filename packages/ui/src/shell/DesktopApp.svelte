@@ -26,6 +26,7 @@
   import {
     CLAUDE_PROVIDER_FLAG,
     HUMAN_ONLY_CONVERSATIONS_FLAG,
+    READY_FIRST_ACTION_FLAG,
     failure,
     hostComputerNoun,
     startJitteredPoll,
@@ -782,6 +783,8 @@
           }
         | null,
     ) => void;
+    /** The persisted post-ready marker used by the desktop telemetry path. */
+    readyFirstActionReady?: boolean;
     /**
      * When true, messagesByRow is first-paint only — the shell still fetches
      * REST for the selected row so mentions, member-added lines, and the
@@ -960,6 +963,7 @@
     uiVersion = null,
     notificationWakeSeq = 0,
     onactivethreadchange,
+    readyFirstActionReady = false,
     hydrateLiveMessages = false,
     onlivemessages,
     onselectrow,
@@ -1732,6 +1736,26 @@
    * would have loaded a server-filtered page it then has to show unfiltered.
    */
   let humanOnlyConfirmed = $state(false);
+  let readyFirstActionEnabled = $state(false);
+  $effect(() => {
+    const identity = adapter?.identity;
+    if (!identity || adapter.kind !== "desktop") return;
+    let cancelled = false;
+    void identity.hasFeature(READY_FIRST_ACTION_FLAG).then((result) => {
+      if (!cancelled) readyFirstActionEnabled = result.ok && result.value === true;
+    }).catch((err) => {
+      console.warn("[hq-desktop] ready first action flag lookup failed:", err);
+    });
+    const unsubscribe = typeof identity.subscribeFeature === "function"
+      ? identity.subscribeFeature(READY_FIRST_ACTION_FLAG, (result) => {
+          if (!cancelled) readyFirstActionEnabled = result.ok && result.value === true;
+        })
+      : undefined;
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  });
   $effect(() => {
     const identity = adapter?.identity;
     if (!identity || typeof identity.hasFeature !== "function") return;
@@ -9831,6 +9855,9 @@
                     {rosterStatus}
                     {onretryroster}
                     onsetupstarted={recordWelcomeSetupRun}
+                    readyFirstActionEnabled={readyFirstActionEnabled}
+                    {readyFirstActionReady}
+                    onstartsync={() => adapter.sync.startSync()}
                     agent={setupAgent}
                     setupBot={setupBotLauncher}
                     installGuide={setupInstallGuide}

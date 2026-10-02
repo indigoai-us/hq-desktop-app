@@ -13,6 +13,8 @@ The release moves it under the version it ships in.
   the top frame's file name for HQ's own scripts only; frames from other files
   report "external", so a user's file names are never sent.
 
+- Behind `desktop.ready-first-action-v1`, the post-setup welcome screen can offer a one-click first sync and record whether the action was shown and used.
+
 - Reinstalling HQ setup preserves files already present in your HQ folder.
 
 ## [0.10.376] — 2026-10-02

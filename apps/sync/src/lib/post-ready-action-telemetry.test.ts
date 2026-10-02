@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   POST_READY_ACTIONS,
   createPostReadyActionTelemetry,
+  isPostReadyActionReady,
   markPostReadyActionReady,
   type PostReadyActionEvent,
   type PostReadyActionStorage,
@@ -31,7 +32,9 @@ function makeTracker(storage = new MemoryStorage(), flagEnabled = true) {
 describe('post-ready action telemetry', () => {
   it('sends at most one event for each fixed action type in the first post-ready session', async () => {
     const setup = makeTracker();
+    expect(isPostReadyActionReady(setup.storage)).toBe(false);
     markPostReadyActionReady(setup.storage);
+    expect(isPostReadyActionReady(setup.storage)).toBe(true);
 
     for (const action of POST_READY_ACTIONS) {
       expect(await setup.tracker.record(action)).toBe(true);

@@ -44,6 +44,7 @@
   import { flushSync, onDestroy, onMount, tick, untrack, type ComponentProps } from 'svelte';
   import { safeUnlisten } from '../lib/listener-registry';
   import { emitPlanLimitPromptTelemetry } from '../lib/desktop-telemetry';
+  import { isPostReadyActionReady } from '../lib/post-ready-action-telemetry';
   import type { DmRequestContact } from '../lib/dmRequests';
   import { dismissBootLoader } from './boot-loader';
   import SignInPrompt from '../components/SignInPrompt.svelte';
@@ -143,6 +144,10 @@
   let companies = $state<Workspace[] | null>(null);
   let capabilities = $state<NativeWorkShellCapabilities | null>(null);
   let version = $state('0.0.0');
+  // Use the same persisted marker that admits post-ready telemetry. The work
+  // window normally opens after onboarding, but refresh once on mount for a
+  // late handoff.
+  let postReadyActionReady = $state(isPostReadyActionReady());
   let uiVersion = $state<string | null>(null);
   type Lifecycle =
     | 'loading'
@@ -750,6 +755,7 @@
   const IDENTITY_SETTLE_TIMEOUT_MS = 4000;
 
   onMount(() => {
+    postReadyActionReady = isPostReadyActionReady();
     let cancelled = false;
     let latestLiveNavigation: 'meetings' | 'other' | null = null;
     let receivedLiveMeetingFocus = false;
@@ -1278,6 +1284,7 @@
         {notificationWakeSeq}
         onactivethreadchange={setActiveReplyThread}
         {extraPages}
+        {postReadyActionReady}
         {setupInstallGuide}
         aiTools={installChoiceAiTools}
         onrequestaitools={requestInstallChoiceAiTools}
