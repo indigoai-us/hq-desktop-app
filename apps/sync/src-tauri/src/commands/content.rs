@@ -2204,6 +2204,29 @@ mod tests {
     }
 
     #[test]
+    fn extract_keeps_existing_file_bytes() {
+        let dir = tempdir().unwrap();
+        let existing = dir.path().join("core.yaml");
+        let user_bytes = b"name: personal HQ settings\n";
+        std::fs::write(&existing, user_bytes).unwrap();
+
+        let content = b"name: template defaults\n".to_vec();
+        let archive = build_test_tarball(&[(
+            "indigoai-us-hq-core-deadbeef/core.yaml",
+            file_header(content.len() as u64, 0o644),
+            Some(content),
+        )]);
+
+        extract_tarball(&archive, dir.path()).expect("extraction should succeed");
+
+        assert_eq!(
+            std::fs::read(existing).unwrap(),
+            user_bytes,
+            "installing the HQ template must preserve an existing user file"
+        );
+    }
+
+    #[test]
     fn extract_writes_safe_entries_and_skips_malicious_ones() {
         let dir = tempdir().unwrap();
         let wrapper = "indigoai-us-hq-core-deadbeef";

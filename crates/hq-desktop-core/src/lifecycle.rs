@@ -992,15 +992,16 @@ mod tests {
 
     #[test]
     fn valid_hq_root_plus_auth_alone_is_installed() {
-        // "hq path + cognito login on disk => show the menu bar": a valid HQ
-        // root plus usable auth is enough, even with no menubar markers.
+        // Reinstall report: a reusable HQ root and auth do not prove that this
+        // app install completed setup. With consent unanswered and no app-local
+        // completion marker, route through full setup.
         let verdict = classify_lifecycle(LifecycleInputs {
             hq_root_valid: true,
             has_auth: true,
             ..input()
         });
 
-        assert_eq!(verdict.state, LifecycleState::InstalledFirstRun);
+        assert_eq!(verdict.state, LifecycleState::NeedsInstall);
     }
 
     #[test]
