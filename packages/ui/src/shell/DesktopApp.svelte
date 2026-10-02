@@ -3203,7 +3203,7 @@
    */
   async function resolveConflictFile(
     path: string,
-    strategy: "keep-local" | "keep-remote",
+    strategy: "keep-local" | "keep-remote" | "discard",
   ): Promise<void> {
     if (!adapter.isAvailable("canSync")) return;
     if (typeof adapter.sync?.resolveConflict !== "function") return;
@@ -9150,7 +9150,11 @@
     conflictCount={liveSync.conflicts}
     uploadsPaused={liveSync.uploadsPaused ?? []}
     conflicts={conflictFiles}
-    onresolveconflict={(path, strategy) => resolveConflictFile(path, strategy)}
+    onresolveconflict={(path, strategy) =>
+      resolveConflictFile(
+        path,
+        strategy as "keep-local" | "keep-remote" | "discard",
+      )}
     onopenconflict={(path) => openConflictInEditor(path)}
     onresolveconflicts={openConflictResolution}
     {manifestError}

@@ -12,6 +12,8 @@
     createLaunchActions,
     type LaunchKey,
   } from "../settings/launch-actions.js";
+  import { displayHqRoot, readRememberedHqRoot, rememberHqRoot } from "./launch-folder.js";
+  import type { AiTools } from "../settings/setup-launch.js";
   import Tooltip from "../common/Tooltip.svelte";
   import BrandLogoSlot from "../brand/BrandLogoSlot.svelte";
   import { isEntitledBrand, type CachedBrand } from "../brand/brand.js";
@@ -113,7 +115,7 @@
     oncloudtoggle?: (paused: boolean) => void;
     onresolveconflict?: (
       path: string,
-      strategy: "keep-local" | "keep-remote",
+      strategy: "keep-local" | "keep-remote" | "discard",
     ) => void | Promise<void>;
     onopenconflict?: (path: string) => void | Promise<void>;
     onopendrift?: () => void | Promise<void>;
@@ -336,21 +338,67 @@
   let launchAlignEnd = $state(false);
   let launching = $state<LaunchKey | null>(null);
   let launchErrors = $state<Partial<Record<LaunchKey, string>>>({});
+  /** Null until the open-time tool check returns. Unknown stays launchable. */
+  let launchTools = $state<AiTools | null>(null);
+  let launchToolsChecked = $state(false);
 
   const resolvedLaunchFolder = $derived(
-    (hqFolderPath ?? launchFolder ?? "").trim(),
+    (launchFolder ?? hqFolderPath ?? readRememberedHqRoot() ?? "").trim(),
   );
 
+  const launchFolderLabel = $derived(
+    resolvedLaunchFolder ? displayHqRoot(resolvedLaunchFolder) : "not set",
+  );
+
+  function toolInstalled(key: LaunchKey, tools: AiTools | null): boolean | null {
+    if (!tools) return null;
+    if (key === "claude") return Boolean(tools.claude_cli || tools.claude_desktop);
+    if (key === "codex") return Boolean(tools.codex_cli || tools.codex_desktop);
+    return Boolean(tools.grok_cli);
+  }
+
+  async function refreshLaunchTools(): Promise<void> {
+    try {
+      const res = await adapter?.shell?.detectAiTools?.();
+      if (res && res.ok && res.value && typeof res.value === "object") {
+        launchTools = res.value as unknown as AiTools;
+      }
+    } catch {
+      /* keep the previous snapshot; the row stays launchable */
+    } finally {
+      launchToolsChecked = true;
+    }
+  }
+
   async function ensureLaunchFolder(): Promise<void> {
-    if (resolvedLaunchFolder || launchFolder !== null) return;
+    const remembered = readRememberedHqRoot();
+    if (!hqFolderPath && remembered && launchFolder === null) {
+      launchFolder = remembered;
+    }
+    if (resolvedLaunchFolder || launchFolder !== null) {
+      if (resolvedLaunchFolder) rememberHqRoot(resolvedLaunchFolder);
+      return;
+    }
     try {
       const res = await adapter?.settings?.getSetupStatus?.();
       const status =
         res && res.ok ? (res.value as { hqFolderPath?: string } | null) : null;
       launchFolder = status?.hqFolderPath?.trim() ?? "";
+      if (launchFolder) rememberHqRoot(launchFolder);
     } catch {
       launchFolder = "";
     }
+  }
+
+  async function changeLaunchFolder(): Promise<void> {
+    const pick = adapter?.shell?.pickFolder;
+    if (!pick) return;
+    const res = await pick();
+    if (!res.ok || !res.value) return;
+    const next = res.value.trim();
+    if (!next) return;
+    launchFolder = next;
+    rememberHqRoot(next);
   }
 
   /** The host is holding the menu open (see `launchMenuForcedOpen`). */
@@ -375,6 +423,7 @@
       coreOpen = false;
       launchErrors = {};
       void ensureLaunchFolder();
+      void refreshLaunchTools();
     }
   }
 
@@ -469,10 +518,15 @@
       window.removeEventListener("keydown", onKeyDown);
     };
   });
-  const LAUNCH_ITEMS: ReadonlyArray<{ key: LaunchKey; label: string }> = [
-    { key: "claude", label: "Claude Code" },
-    { key: "codex", label: "Codex (ChatGPT)" },
-    { key: "grok", label: "Grok Build (terminal)" },
+  const LAUNCH_ITEMS: ReadonlyArray<{
+    key: LaunchKey;
+    label: string;
+    mark: string;
+    hint: string;
+  }> = [
+    { key: "claude", label: "Claude Code", mark: "CC", hint: "Opens in the HQ folder" },
+    { key: "codex", label: "Codex", mark: "CX", hint: "Opens in the HQ folder" },
+    { key: "grok", label: "Grok Build", mark: "GB", hint: "Needs grok on PATH" },
   ];
 
   /**
@@ -729,27 +783,69 @@
           data-testid="titlebar-launch-menu"
           bind:this={launchMenuEl}
         >
+          <div class="v4-launch-sec">
+            Launch
+            <span class="v4-launch-sec-path" data-testid="titlebar-launch-root">{launchFolderLabel}</span>
+          </div>
           {#each LAUNCH_ITEMS as item (item.key)}
-            <button
-              type="button"
-              class="v4-launch-item"
-              role="menuitem"
-              data-testid={`titlebar-launch-${item.key}`}
-              disabled={launching !== null && launching !== item.key}
-              onclick={() => void runLaunch(item.key)}
-            >
-              <span class="v4-launch-item-label">
-                {launching === item.key ? `Opening ${item.label}…` : item.label}
-              </span>
-              {#if launchErrors[item.key]}
-                <span
-                  class="v4-launch-item-error"
-                  data-testid={`titlebar-launch-${item.key}-error`}
-                  >{launchErrors[item.key]}</span
-                >
-              {/if}
-            </button>
+            {@const installed = toolInstalled(item.key, launchTools)}
+            {#if launchToolsChecked && installed === false}
+              <div
+                class="v4-launch-item v4-launch-missing"
+                data-testid={`titlebar-launch-${item.key}`}
+              >
+                <span class="v4-launch-mark off">{item.mark}</span>
+                <span class="v4-launch-copy">
+                  <span class="v4-launch-item-label">
+                    {item.label}
+                    <span class="v4-launch-dim" data-testid={`titlebar-launch-${item.key}-missing`}>Not installed</span>
+                  </span>
+                  <small>{item.hint}</small>
+                </span>
+                <button
+                  type="button"
+                  class="v4-launch-install"
+                  data-testid={`titlebar-launch-${item.key}-install`}
+                  onclick={() => void refreshLaunchTools()}
+                >Install</button>
+              </div>
+            {:else}
+              <button
+                type="button"
+                class="v4-launch-item"
+                role="menuitem"
+                data-testid={`titlebar-launch-${item.key}`}
+                disabled={launching !== null && launching !== item.key}
+                onclick={() => void runLaunch(item.key)}
+              >
+                <span class="v4-launch-mark">{item.mark}</span>
+                <span class="v4-launch-copy">
+                  <span class="v4-launch-item-label">
+                    {launching === item.key ? `Opening ${item.label}…` : item.label}
+                  </span>
+                  <small>{item.hint}</small>
+                  {#if launchErrors[item.key]}
+                    <span
+                      class="v4-launch-item-error"
+                      data-testid={`titlebar-launch-${item.key}-error`}
+                      >{launchErrors[item.key]}</span
+                    >
+                  {/if}
+                </span>
+              </button>
+            {/if}
           {/each}
+          {#if launchToolsChecked}
+            <div class="v4-launch-foot">
+              <span>Installed tools are checked on open.</span>
+              <button type="button" class="v4-launch-change" data-testid="titlebar-launch-recheck" onclick={() => void refreshLaunchTools()}>Check again</button>
+            </div>
+          {/if}
+          <div class="v4-launch-foot">
+            <span>Folder</span>
+            <code data-testid="titlebar-launch-folder">{launchFolderLabel}</code>
+            <button type="button" class="v4-launch-change" data-testid="titlebar-launch-change" onclick={() => void changeLaunchFolder()}>Change…</button>
+          </div>
         </div>
       {/if}
     </div>
@@ -1016,13 +1112,30 @@
     z-index: 10000;
     display: flex;
     flex-direction: column;
-    min-width: 220px;
+    width: 340px;
     max-width: calc(100vw - 24px);
-    padding: 4px;
-    border: 1px solid var(--panel-border, var(--line2));
-    border-radius: 10px;
+    padding: 8px;
+    border: 1px solid var(--v4-hairline, var(--panel-border, var(--line2)));
+    border-radius: var(--v4-radius-popover, 10px);
     background: var(--v4-popover-strong, var(--panel-bg, var(--btn-bg)));
-    box-shadow: var(--panel-shadow, 0 8px 24px rgba(0, 0, 0, 0.18));
+    box-shadow: var(--v4-shadow-popover, var(--panel-shadow, 0 8px 24px rgba(0, 0, 0, 0.18)));
+  }
+
+  .v4-launch-sec {
+    display: flex;
+    padding: 4px 8px 6px;
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--v4-text-3, var(--t3));
+  }
+
+  .v4-launch-sec-path {
+    margin-left: auto;
+    letter-spacing: 0;
+    font-weight: 400;
+    text-transform: none;
   }
 
   /* Viewport clamp: right-align to the button when bottom-start overflows. */
@@ -1035,23 +1148,106 @@
     appearance: none;
     -webkit-appearance: none;
     display: flex;
-    flex-direction: column;
     align-items: flex-start;
-    gap: 2px;
-    padding: 7px 10px;
+    gap: 10px;
+    padding: 8px;
     border: 0;
-    border-radius: 7px;
+    border-radius: 8px;
     background: transparent;
-    color: var(--t1);
+    color: var(--v4-text-1, var(--t1));
     font: inherit;
-    font-size: 12.5px;
+    font-size: 14px;
     text-align: left;
     cursor: pointer;
   }
 
+  .v4-launch-missing { cursor: default; }
+  .v4-launch-missing:hover { background: transparent; }
+
+  .v4-launch-mark {
+    width: 24px;
+    height: 24px;
+    border-radius: 6px;
+    background: var(--v4-control-bg, var(--btn-bg));
+    display: grid;
+    place-items: center;
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 10px;
+    font-weight: 600;
+    flex: none;
+    margin-top: 1px;
+  }
+
+  .v4-launch-mark.off { opacity: 0.45; }
+
+  .v4-launch-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+  .v4-launch-copy small {
+    display: block;
+    font-size: 12px;
+    color: var(--v4-text-3, var(--t3));
+    margin-top: 2px;
+  }
+
+  .v4-launch-dim {
+    color: var(--v4-text-3, var(--t3));
+    font-weight: 400;
+    font-size: 12px;
+    margin-left: 6px;
+  }
+
+  .v4-launch-install {
+    flex: none;
+    appearance: none;
+    border: 1px solid var(--v4-control-border, var(--line2));
+    background: var(--v4-control-bg, transparent);
+    color: var(--v4-text-1, var(--t1));
+    border-radius: 6px;
+    padding: 2px 8px;
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+  }
+
+  .v4-launch-foot {
+    margin: 6px 0 0;
+    padding: 8px 8px 2px;
+    border-top: 1px solid var(--v4-rowline, var(--line2));
+    font-size: 12px;
+    color: var(--v4-text-3, var(--t3));
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .v4-launch-foot code {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 11px;
+    color: var(--v4-text-2, var(--t2));
+  }
+
+  .v4-launch-change {
+    margin-left: auto;
+    appearance: none;
+    border: 0;
+    background: transparent;
+    padding: 0;
+    font: inherit;
+    font-size: 12px;
+    color: var(--v4-text-2, var(--t2));
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
   .v4-launch-item:hover:not(:disabled),
   .v4-launch-item:focus-visible {
-    background: var(--hover);
+    background: var(--v4-hover, var(--hover));
+  }
+
+  .v4-launch-item.v4-launch-missing:hover {
+    background: transparent;
   }
 
   .v4-launch-item:focus-visible {

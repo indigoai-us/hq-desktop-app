@@ -210,18 +210,27 @@ describe("V4TitleBar Launch menu", () => {
     ).toEqual(["path", "tool"]);
   });
 
-  it("shows a per-item error and keeps the menu open when a launch fails", async () => {
+  it("shows Not installed with Install when a tool is missing", async () => {
     const adapter = makeAdapter({});
-    // No tools detected at all → prompt-free "not detected" copy (no /setup).
-    await openMenuAndClick(adapter, "titlebar-launch-claude");
-    const error = host.querySelector(
-      '[data-testid="titlebar-launch-claude-error"]',
+    await mountBar(adapter);
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="titlebar-launch"]')
+      ?.click();
+    await tick();
+    await new Promise((r) => setTimeout(r, 0));
+    await tick();
+    const missing = host.querySelector(
+      '[data-testid="titlebar-launch-claude-missing"]',
     );
-    expect(error?.textContent).toContain("Claude Code was not detected");
-    expect(error?.textContent).not.toContain("/setup");
+    expect(missing?.textContent).toContain("Not installed");
     expect(
-      host.querySelector('[data-testid="titlebar-launch-menu"]'),
-    ).toBeTruthy();
+      host.querySelector('[data-testid="titlebar-launch-claude-install"]')
+        ?.textContent,
+    ).toContain("Install");
+    expect(adapter.shell.openClaudeCodeLink).not.toHaveBeenCalled();
+    expect(
+      host.querySelector('[data-testid="titlebar-launch-folder"]')?.textContent,
+    ).toContain("/tmp/HQ");
   });
 });
 

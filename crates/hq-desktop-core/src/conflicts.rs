@@ -1,7 +1,7 @@
 //! Conflict resolution helpers.
 
 /// Valid resolution strategies.
-const VALID_STRATEGIES: &[&str] = &["keep-local", "keep-remote"];
+const VALID_STRATEGIES: &[&str] = &["keep-local", "keep-remote", "discard"];
 
 /// Validate that a strategy string is one of the accepted values.
 pub fn validate_strategy(strategy: &str) -> Result<(), String> {

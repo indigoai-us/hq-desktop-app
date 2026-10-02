@@ -41,6 +41,8 @@
     type UpdateStoreAdapter,
   } from "../settings/update-store.svelte";
   import "./tokens.css";
+  import ResolveConflictsDoor from "./overlays/resolve-conflicts-door.svelte";
+  import BrowsePacksDoor from "./overlays/browse-packs-door.svelte";
 
   interface Props {
     /** Platform seam — updates/packages slices + capability flags.
@@ -101,7 +103,7 @@
     onclose?: () => void;
     onresolve?: (
       path: string,
-      strategy: "keep-local" | "keep-remote",
+      strategy: "keep-local" | "keep-remote" | "discard",
     ) => void | Promise<void>;
     onopeneditor?: (path: string) => void | Promise<void>;
     onopendrift?: () => void | Promise<void>;
@@ -155,6 +157,8 @@
   }: Props = $props();
 
   let packsExpanded = $state(true);
+  let resolveSheetOpen = $state(false);
+  let browsePacksOpen = $state(false);
   let coreRestoring = $state(false);
   let packs = $state<CorePopoverPack[]>([]);
   let packsLoading = $state(false);
@@ -567,7 +571,15 @@
         class="core-section-header"
         data-testid="core-popover-conflict-header"
       >
-        {model.conflictHeader}
+        <span>{model.conflictHeader}</span>
+        <button
+          type="button"
+          class="core-link"
+          data-testid="core-popover-resolve-conflicts"
+          onclick={() => (resolveSheetOpen = true)}
+        >
+          Resolve conflicts
+        </button>
       </header>
       <ul class="core-conflict-list">
         {#each model.conflictRows as row (row.path)}
@@ -823,17 +835,38 @@
           {/each}
         {/if}
       </ul>
-      <button
-        type="button"
-        class="core-btn secondary core-marketplace"
-        data-testid="core-popover-open-marketplace"
-        onclick={() => {
-          onopenMarketplace?.();
-          onclose?.();
-        }}
-      >
-        Open marketplace
-      </button>
+      <div class="core-pack-actions">
+        <button
+          type="button"
+          class="core-btn secondary"
+          data-testid="core-popover-browse-packs"
+          onclick={() => (browsePacksOpen = true)}
+        >
+          Browse packs
+        </button>
+        <button
+          type="button"
+          class="core-btn secondary core-marketplace"
+          data-testid="core-popover-open-marketplace"
+          onclick={() => {
+            onopenMarketplace?.();
+            onclose?.();
+          }}
+        >
+          Open marketplace
+        </button>
+        <button
+          type="button"
+          class="core-btn secondary"
+          data-testid="core-popover-open-library"
+          onclick={() => {
+            onopenLibrary?.();
+            onclose?.();
+          }}
+        >
+          Library
+        </button>
+      </div>
     {/if}
   </section>
 
@@ -848,6 +881,22 @@
     <p class="core-load-error" role="status">{loadError}</p>
   {/if}
 </div>
+
+{#if resolveSheetOpen}
+  <ResolveConflictsDoor
+    conflicts={conflicts}
+    onresolve={onresolve}
+    onclose={() => (resolveSheetOpen = false)}
+  />
+{/if}
+{#if browsePacksOpen}
+  <BrowsePacksDoor
+    installed={modelPacks}
+    marketplace={adapter.marketplace}
+    onopenLibrary={onopenLibrary}
+    onclose={() => (browsePacksOpen = false)}
+  />
+{/if}
 
 <style>
   .core-popover {
@@ -1047,9 +1096,34 @@
   }
 
   .core-section-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     font-size: 13px;
     font-weight: 500;
     color: var(--t1);
+  }
+
+  .core-link {
+    margin-left: auto;
+    appearance: none;
+    border: 0;
+    background: transparent;
+    padding: 0;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--v4-text-2, var(--t2));
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    cursor: pointer;
+  }
+
+  .core-pack-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
   }
 
   .core-conflict-list {
