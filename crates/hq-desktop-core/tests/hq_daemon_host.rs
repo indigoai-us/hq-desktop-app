@@ -68,8 +68,8 @@ fn flag_on_with_a_new_enough_installed_cli_uses_the_daemon() {
 #[test]
 fn instant_sync_capability_gate_is_separate_from_daemon_host_gate() {
     assert_eq!(HQ_DAEMON_HOST_MIN_CLI, "5.310.0");
-    assert!(!cli_supports_daemon_instant_sync(Some("5.310.9")));
-    assert!(cli_supports_daemon_instant_sync(Some("5.311.0")));
+    assert!(!cli_supports_daemon_instant_sync(Some("5.311.4")));
+    assert!(cli_supports_daemon_instant_sync(Some("5.312.0")));
 }
 
 // ── starting and relaunching ─────────────────────────────────────────────

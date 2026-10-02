@@ -7,7 +7,7 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
-- Daemon sync controls explain paused, disabled, and stopped states. Resume also re-enables sync for machines migrated from the older daemon setting. Instant Sync changes reach an existing daemon, and require HQ CLI 5.311.0 or later. Company-specific Sync Now no longer starts a sync across every company when the daemon owns sync.
+- Daemon sync controls explain paused, disabled, and stopped states. Resume also re-enables sync for machines migrated from the older daemon setting. Instant Sync changes reach an existing daemon and require HQ CLI 5.312.0 or later. Sync actions wait briefly for host selection at launch, then use the legacy or daemon path. Company-specific Sync Now no longer starts a sync across every company when the daemon owns sync.
 
 - Desktop now uses the current cloud company name for workspace rows and
   home-channel labels before falling back to cached names or slugs.

@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use hq_desktop_core::daemon::{
@@ -52,6 +52,8 @@ const HEALTHY_RUN: Duration = Duration::from_secs(600);
 /// How long to wait while the process registry refuses the daemon (a desktop update is in progress).
 const RESERVE_RETRY: Duration = Duration::from_secs(5);
 const INSTANT_SYNC_UNSUPPORTED_MESSAGE: &str = "Instant Sync is off, but this HQ CLI version cannot apply that setting. Update HQ CLI to use Instant Sync controls.";
+const HOST_PHASE_WAIT_SECONDS: u64 = 15;
+const HOST_PHASE_RETRY_MESSAGE: &str = "Sync setup is still resolving. Try again in a moment.";
 static INSTANT_SYNC_CLI_SUPPORTED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +67,8 @@ pub enum HostPhase {
 /// Starts Pending in the app. Unit tests of the app's own services run as the
 /// legacy host, which is what production uses whenever the flag is off.
 static PHASE: AtomicU8 = AtomicU8::new(if cfg!(test) { 1 } else { 0 });
+static PHASE_WAIT_LOCK: Mutex<()> = Mutex::new(());
+static PHASE_CHANGED: Condvar = Condvar::new();
 /// Pid of the running daemon child, 0 when none.
 static CHILD_PID: AtomicU32 = AtomicU32::new(0);
 /// Set to relaunch the child at once (its environment changed).
@@ -75,6 +79,8 @@ static CHILD_ENV: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
 static TEST_DAEMON_COMMANDS_ENABLED: AtomicBool = AtomicBool::new(false);
 #[cfg(test)]
 static TEST_DAEMON_COMMANDS: Mutex<Vec<Vec<String>>> = Mutex::new(Vec::new());
+#[cfg(test)]
+static TEST_PHASE_LOCK: Mutex<()> = Mutex::new(());
 
 pub fn current_phase() -> HostPhase {
     match PHASE.load(Ordering::Acquire) {
@@ -90,7 +96,78 @@ fn set_phase(phase: HostPhase) {
         HostPhase::Legacy => 1,
         HostPhase::Daemon => 2,
     };
+    let _guard = PHASE_WAIT_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     PHASE.store(value, Ordering::Release);
+    PHASE_CHANGED.notify_all();
+}
+
+fn wait_for_phase_resolution(timeout: Duration) -> HostPhase {
+    let deadline = Instant::now() + timeout;
+    let mut guard = PHASE_WAIT_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    while current_phase() == HostPhase::Pending {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let (next_guard, result) = PHASE_CHANGED
+            .wait_timeout(guard, remaining)
+            .unwrap_or_else(|error| error.into_inner());
+        guard = next_guard;
+        if result.timed_out() {
+            break;
+        }
+    }
+    current_phase()
+}
+
+fn phase_wait_timeout() -> Duration {
+    let seconds = std::env::var("HQ_SYNC_HOST_PHASE_WAIT_SECS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(HOST_PHASE_WAIT_SECONDS)
+        .min(HOST_PHASE_WAIT_SECONDS);
+    Duration::from_secs(seconds)
+}
+
+pub(crate) async fn resolved_phase_for_command() -> Result<HostPhase, String> {
+    resolved_phase_for_command_with_timeout(phase_wait_timeout()).await
+}
+
+async fn resolved_phase_for_command_with_timeout(timeout: Duration) -> Result<HostPhase, String> {
+    if current_phase() != HostPhase::Pending {
+        return Ok(current_phase());
+    }
+    let phase = tauri::async_runtime::spawn_blocking(move || wait_for_phase_resolution(timeout))
+        .await
+        .map_err(|error| {
+            log(
+                LOG_TAG,
+                &format!("waiting for sync host phase failed: {error}"),
+            );
+            HOST_PHASE_RETRY_MESSAGE.to_string()
+        })?;
+    if phase == HostPhase::Pending {
+        Err(HOST_PHASE_RETRY_MESSAGE.to_string())
+    } else {
+        Ok(phase)
+    }
+}
+
+#[cfg(test)]
+fn dispatch_sync_host_phase<T, L, D>(phase: HostPhase, legacy: L, daemon: D) -> Result<T, String>
+where
+    L: FnOnce() -> Result<T, String>,
+    D: FnOnce() -> Result<T, String>,
+{
+    match phase {
+        HostPhase::Pending => Err(HOST_PHASE_RETRY_MESSAGE.to_string()),
+        HostPhase::Legacy => legacy(),
+        HostPhase::Daemon => daemon(),
+    }
 }
 
 /// The app's own background services run only once the legacy host is chosen.
@@ -306,6 +383,21 @@ pub fn run_daemon_sync_command(args: &[&str]) -> Result<String, String> {
     let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
     log(LOG_TAG, &format!("daemon sync control failed: {detail}"));
     Err(daemon_sync_command_error(&detail).to_string())
+}
+
+pub(crate) async fn run_daemon_sync_command_blocking(args: Vec<String>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let borrowed = args.iter().map(String::as_str).collect::<Vec<_>>();
+        run_daemon_sync_command(&borrowed)
+    })
+    .await
+    .map_err(|error| {
+        log(
+            LOG_TAG,
+            &format!("daemon sync command task failed: {error}"),
+        );
+        "HQ daemon could not complete that action. Tap to retry.".to_string()
+    })?
 }
 
 pub fn parse_daemon_sync_mode(
@@ -1035,7 +1127,72 @@ mod tests {
     }
 
     #[test]
+    fn pending_phase_wait_resolves_to_legacy_and_runs_legacy_dispatch() {
+        let _phase_guard = TEST_PHASE_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        set_phase(HostPhase::Pending);
+        let resolver = std::thread::spawn(|| set_phase(HostPhase::Legacy));
+        let phase = wait_for_phase_resolution(Duration::from_secs(1));
+        resolver.join().unwrap();
+
+        assert_eq!(phase, HostPhase::Legacy);
+        let mut legacy_called = false;
+        let result = dispatch_sync_host_phase(
+            phase,
+            || {
+                legacy_called = true;
+                Ok("legacy".to_string())
+            },
+            || Ok("daemon".to_string()),
+        );
+        assert_eq!(result, Ok("legacy".to_string()));
+        assert!(legacy_called);
+    }
+
+    #[test]
+    fn pending_phase_wait_resolves_to_daemon_without_spawning_a_runner() {
+        let _phase_guard = TEST_PHASE_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        set_phase(HostPhase::Pending);
+        let resolver = std::thread::spawn(|| set_phase(HostPhase::Daemon));
+        let phase = wait_for_phase_resolution(Duration::from_secs(1));
+        resolver.join().unwrap();
+
+        TEST_DAEMON_COMMANDS_ENABLED.store(true, Ordering::Release);
+        TEST_DAEMON_COMMANDS
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
+        crate::commands::process::reset_sync_runner_spawn_attempts();
+        let result = daemon_sync_now_for_phase(phase, None, request_daemon_sync_now);
+        assert_eq!(result, Some(Ok("hq-daemon-sync".to_string())));
+        assert_eq!(crate::commands::process::sync_runner_spawn_attempts(), 0);
+        TEST_DAEMON_COMMANDS_ENABLED.store(false, Ordering::Release);
+        set_phase(HostPhase::Legacy);
+    }
+
+    #[test]
+    fn pending_phase_wait_timeout_returns_pending_for_retry_message() {
+        let _phase_guard = TEST_PHASE_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        set_phase(HostPhase::Pending);
+        let error = tauri::async_runtime::block_on(resolved_phase_for_command_with_timeout(
+            Duration::from_millis(1),
+        ))
+        .unwrap_err();
+        assert_eq!(error, HOST_PHASE_RETRY_MESSAGE);
+        assert!(!error.to_ascii_lowercase().contains("daemon"));
+        set_phase(HostPhase::Legacy);
+    }
+
+    #[test]
     fn daemon_mode_controls_and_lifecycle_do_not_spawn_a_sync_runner() {
+        let _phase_guard = TEST_PHASE_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         TEST_DAEMON_COMMANDS_ENABLED.store(true, Ordering::Release);
         TEST_DAEMON_COMMANDS
             .lock()

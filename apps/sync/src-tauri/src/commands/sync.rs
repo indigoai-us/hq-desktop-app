@@ -2465,7 +2465,7 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
     // Now, sync-on-launch, and notification retries — at the single Rust choke
     // point so no surface can start a sync while the titlebar says Cloud Off.
     start_sync_cloud_gate()?;
-    let host_phase = crate::commands::hq_daemon_host::current_phase();
+    let host_phase = crate::commands::hq_daemon_host::resolved_phase_for_command().await?;
     if let Some(result) = crate::commands::hq_daemon_host::daemon_sync_now_for_phase(
         host_phase,
         company_slug.as_deref(),
@@ -2478,7 +2478,7 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
             unreachable!("daemon phase returned through daemon_sync_now_for_phase")
         }
         crate::commands::hq_daemon_host::HostPhase::Pending => {
-            return Err("HQ daemon is still starting. Try again in a moment.".to_string());
+            unreachable!("pending phase is returned as a retry error")
         }
         crate::commands::hq_daemon_host::HostPhase::Legacy => {}
     }

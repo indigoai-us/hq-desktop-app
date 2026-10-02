@@ -22,7 +22,7 @@ pub const HQ_DAEMON_FLAG: &str = "desktop.hq-daemon";
 pub const HQ_DAEMON_HOST_MIN_CLI: &str = "5.310.0";
 
 /// First hq-cli release that consumes `HQ_DAEMON_INSTANT_SYNC` (#1248).
-pub const HQ_DAEMON_INSTANT_SYNC_MIN_CLI: &str = "5.311.0";
+pub const HQ_DAEMON_INSTANT_SYNC_MIN_CLI: &str = "5.312.0";
 
 pub fn cli_supports_daemon_instant_sync(cli_version: Option<&str>) -> bool {
     let minimum = semver::Version::parse(HQ_DAEMON_INSTANT_SYNC_MIN_CLI)
