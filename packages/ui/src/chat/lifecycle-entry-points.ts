@@ -219,6 +219,34 @@ export interface CloudBotEntryOptions {
   idempotencyKey?: string;
 }
 
+/** Shown when the server failed for a reason a person cannot act on. */
+export const CLOUD_BOT_SERVER_FAILED_REASON =
+  "We couldn't create this bot. Try again in a moment.";
+
+/**
+ * What to show for a thrown failure. A short sentence the server wrote for a
+ * person is kept. Anything that reads like a raw backend error (cloud resource
+ * names, status payloads, stack text, long strings) is replaced with a plain
+ * line, and the detail goes to the support log instead of the screen.
+ */
+function shownFailure(err: unknown): { reason: string; raw: boolean } {
+  const message = cardActionFailureMessage(err);
+  const raw =
+    message.length > 140 ||
+    /arn:aws|not authorized to perform|AccessDenied|Exception\b|statusCode|status \d{3}|\{\s*"|\bat \S+ \(/i.test(
+      message,
+    );
+  return raw
+    ? { reason: CLOUD_BOT_SERVER_FAILED_REASON, raw: true }
+    : { reason: message, raw: false };
+}
+
+/** A single-line, length-bounded copy of a failure for the support log. */
+function failureDetail(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err ?? "");
+  return raw.replace(/\s+/g, " ").trim().slice(0, 400);
+}
+
 interface WireField {
   id: string;
   value: string;
@@ -317,12 +345,9 @@ export async function runCreateCloudBotEntry(
       idempotencyKey: options.idempotencyKey,
     });
   } catch (err) {
-    logCloudBotExit(api, "open-failed", {});
-    return {
-      ok: false,
-      reason: cardActionFailureMessage(err),
-      blocked: isPermission(err),
-    };
+    const shown = shownFailure(err);
+    logCloudBotExit(api, "open-failed", { detail: failureDetail(err) });
+    return { ok: false, reason: shown.reason, blocked: !shown.raw && isPermission(err) };
   }
   if (opened.state === "blocked") {
     logCloudBotExit(api, "open-blocked", {});
@@ -386,12 +411,12 @@ export async function runCreateCloudBotEntry(
       values,
     });
   } catch (err) {
-    logCloudBotExit(api, "create-failed", { permission: String(isPermission(err)) });
-    return {
-      ok: false,
-      reason: cardActionFailureMessage(err),
-      blocked: isPermission(err),
-    };
+    // A raw backend failure (a cloud permission, a status payload) is the
+    // server's defect, not the person's refusal: it is neither shown nor
+    // treated as "you may not do this".
+    const shown = shownFailure(err);
+    logCloudBotExit(api, "create-failed", { detail: failureDetail(err) });
+    return { ok: false, reason: shown.reason, blocked: !shown.raw && isPermission(err) };
   }
 
   const agentChannelId = trimmed(result.agentChannelId);

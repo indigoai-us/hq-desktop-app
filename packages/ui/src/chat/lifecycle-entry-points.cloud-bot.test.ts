@@ -17,6 +17,7 @@ import {
   CLOUD_BOT_NAME_TAKEN_REASON,
   CLOUD_BOT_NEEDS_MORE_REASON,
   CLOUD_BOT_NO_NEXT_STEP_REASON,
+  CLOUD_BOT_SERVER_FAILED_REASON,
   runCreateCloudBotEntry,
   type CloudBotDraft,
   type CloudBotEntryApi,
@@ -336,6 +337,37 @@ describe("runCreateCloudBotEntry", () => {
     expect(await runCreateCloudBotEntry(denied.api, "cmp_acme", DRAFT)).toMatchObject({
       ok: false,
       blocked: true,
+    });
+  });
+
+  it("never shows a raw backend error: a plain line on screen, the detail in the support log", async () => {
+    // Regression (owner walkthrough 2026-10-02): a missing cloud permission
+    // put the full "User: arn:aws:sts::... is not authorized to perform:
+    // dynamodb:Scan on resource: arn:aws:dynamodb:..." text on the screen.
+    const denial =
+      "User: arn:aws:sts::000000000000:assumed-role/fn-role/fn is not authorized to perform: dynamodb:Scan on resource: arn:aws:dynamodb:us-east-1:000000000000:table/entities because no identity-based policy allows the dynamodb:Scan action";
+    const { api, logToFile } = harness({ created: new Error(denial) });
+    expect(await runCreateCloudBotEntry(api, "cmp_acme", DRAFT)).toEqual({
+      ok: false,
+      reason: CLOUD_BOT_SERVER_FAILED_REASON,
+      // The word "authorized" must not make this read as the person's refusal.
+      blocked: false,
+    });
+    const line = String(logToFile.mock.calls[0]![1]);
+    expect(line).toContain("exit=create-failed");
+    expect(line).toContain("dynamodb:Scan");
+    expect(line).not.toContain("Polar");
+  });
+
+  it.each([
+    'agent create returned status 409: {"statusCode":409,"body":"{}"}',
+    "AgentsFunction Unhandled: TypeError: x is not a function at handler (/var/task/bundle.js:1:1)",
+    "x".repeat(200),
+  ])("replaces backend text %j with the plain line", async (text) => {
+    const { api } = harness({ created: new Error(text) });
+    expect(await runCreateCloudBotEntry(api, "cmp_acme", DRAFT)).toMatchObject({
+      ok: false,
+      reason: CLOUD_BOT_SERVER_FAILED_REASON,
     });
   });
 
