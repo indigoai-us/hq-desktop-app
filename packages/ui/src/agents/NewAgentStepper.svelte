@@ -261,7 +261,7 @@
           {/if}
           <button type="button" class="nas-choice" aria-pressed={form.place === "external"} data-testid="new-agent-place-external" onclick={() => pickPlace("external")}>
             <span>External bot</span>
-            <small>An agent you already run elsewhere · enroll it with a one-time code on its host</small>
+            <small>An agent you already run elsewhere (OpenClaw, Muse, any MCP agent) · enroll it with a one-time code on its host</small>
             <em data-testid="new-agent-paid-chip">Paid plans</em>
           </button>
           {#if form.place === "external"}
@@ -396,7 +396,7 @@
       </div>
       <footer class="nas-foot">
         <span class="nas-hint">
-          {#if step === "runtime"}A hosted seat is a recurring charge. The exact number comes from the quote at Verify.{:else if step === "access"}Nothing is granted until Verify passes.{:else if step === "verify"}Re-run any time with hq agent probe. The enroll code is never shown.{:else}The draft stays on this Mac until Verify.{/if}
+          {#if step === "runtime"}A hosted seat is a recurring charge on the {companyLabel} payer. The exact number comes from the CLI quote at Verify, never from this sheet.{:else if step === "access"}Nothing is granted until Verify passes. Secret values are mounted per run with hq secrets exec, never shown in chat.{:else if step === "verify"}Re-run any time with hq agent probe. The enroll code is never shown.{:else if step === "identity"}The identity is minted at Verify. Until then this is a draft on this Mac.{:else if step === "membership"}Joining a channel posts its introduction there once. It never reads a channel it has not joined.{:else}Tools run inside its box with only the secrets from Access. Slack posts outside joined channels always ask.{/if}
         </span>
         <button type="button" data-testid="new-agent-back" disabled={!prevAgentStep(step) || busy} onclick={back}>Back</button>
         <button type="button" class="nas-primary" data-testid="new-agent-next" disabled={busy || !canContinue(step, form, existingNames)} onclick={() => void forward()}>{continueLabel(step)}</button>
@@ -406,8 +406,27 @@
     <aside class="nas-sum" aria-label="Summary">
       <strong>{form.name.trim() || "New agent"}</strong>
       <p>@{handle || "handle"} · owned by {ownerLabel}</p>
-      <p>{runtimeSummary(form)}</p>
-      <p>{accessSummary(form)}</p>
+      {#each AGENT_STEPS as id (id)}
+        {@const done = stepIndex(id) < stepIndex(step)}
+        {@const current = id === step}
+        <div class="nas-sumi" class:todo={!done && !current}>
+          <div class="nas-sumk">{STEP_COPY[id].title} {#if done}<span>done</span>{:else if current}<span>editing</span>{/if}</div>
+          <p>
+            {#if done || current}
+              {#if id === "runtime"}{runtimeSummary(form)}
+              {:else if id === "identity"}{form.name.trim() || "In progress"}{#if handle} · @{handle}{/if}
+              {:else if id === "membership"}{form.companies.find((row) => row.joined)?.label ?? "In progress"}
+              {:else if id === "access"}{accessSummary(form)}
+              {:else if id === "capabilities"}{form.skills.filter((row) => row.selected).length} skills · {form.model}
+              {:else if form.probeStatus === "passed"}Probe passed · reply received
+              {:else}In progress
+              {/if}
+            {:else if id === "verify"}Probe runs after Capabilities
+            {:else}Not set
+            {/if}
+          </p>
+        </div>
+      {/each}
       {#if form.probeStatus === "passed"}<p data-testid="new-agent-verified">Verified · reply received</p>{/if}
     </aside>
   </div>
@@ -448,6 +467,11 @@
   .nas-steps, .nas-sum { padding: 16px 12px; overflow: auto; }
   .nas-steps { border-right: 1px solid var(--v4-rowline, transparent); }
   .nas-sum { border-left: 1px solid var(--v4-rowline, transparent); background: var(--v4-secondary-sidebar, transparent); }
+  .nas-sumi { padding: 8px 0; border-bottom: 1px solid var(--v4-rowline, transparent); }
+  .nas-sumi p { margin: 2px 0 0; font-size: var(--type-metadata, 12px); }
+  .nas-sumk { font-size: 12px; display: flex; gap: 8px; }
+  .nas-sumk span { margin-left: auto; color: var(--v4-text-3, inherit); }
+  .nas-sumi.todo { color: var(--v4-text-3, inherit); }
   .nas-step {
     display: grid;
     grid-template-columns: 16px 1fr;
