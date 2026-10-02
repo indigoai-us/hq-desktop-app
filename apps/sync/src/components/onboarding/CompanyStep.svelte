@@ -270,6 +270,13 @@
     slugWatcher?.cancel();
     stopCheckoutListen?.();
   });
+
+  /** Server labels may already include "(optional)" (e.g. "Website (optional) — …"); only append it when missing. */
+  function fieldLabel(field: { label: string; required?: boolean }): string {
+    if (field.required || /\(optional\)/i.test(field.label)) return field.label;
+    return `${field.label} (optional)`;
+  }
+
 </script>
 
 <div class="follow-on on" data-testid="onboarding-company">
@@ -317,7 +324,7 @@
       >
         {#each form.fields as field (field.id)}
           <label for={`onboarding-company-${field.id}`}>
-            {field.label}{field.required ? '' : ' (optional)'}
+            {fieldLabel(field)}
           </label>
           <input
             id={`onboarding-company-${field.id}`}
@@ -437,10 +444,6 @@
 </div>
 
 <style>
-  .company-form textarea {
-    font: inherit;
-    resize: vertical;
-  }
   .plan-options {
     border: 0;
     margin: 0 0 16px;
