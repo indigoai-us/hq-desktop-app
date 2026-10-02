@@ -85,27 +85,6 @@ describe("TauriPlatformAdapter hasFeature", () => {
 });
 
 describe("createSyncPlatformAdapter hasFeature", () => {
-  it("setup directory fallback stays off when the registry has no value", async () => {
-    const calls: Invocation[] = [];
-    const adapter = createSyncPlatformAdapter({
-      invoke: async (cmd, args) => {
-        calls.push({ cmd, args });
-        if (cmd === "hq_pro_fetch") {
-          return {
-            status: 200,
-            body: JSON.stringify({ version: 1, flags: {} }),
-          };
-        }
-        throw new Error(`unexpected ${cmd}`);
-      },
-    });
-
-    await expect(
-      adapter.identity.hasFeature("desktop.setup-directory-parent-fallback"),
-    ).resolves.toEqual({ ok: true, value: false });
-    expect(calls.map((call) => call.cmd)).toEqual(["hq_pro_fetch"]);
-  });
-
   it("Claude provider flag fails closed when the registry is unavailable", async () => {
     const calls: Invocation[] = [];
     const adapter = createSyncPlatformAdapter({

@@ -285,11 +285,11 @@ describe('Windows production installer E2E', () => {
     );
     expect(updater).toContain('automatic update v{version} installing on sync idle gap');
     expect(updater).toContain(
-      'automatic update v{version} deferral cap reached; pausing new sync cycles',
+      'automatic update v{version} deferral cap reached; new sync cycles paused, draining in-flight transfers',
     );
     expect(updater).toContain('manual install of v{version} proceeding without deferral');
     expect(updater).toContain(
-      'forced update v{version} bypassing idle wait; pausing new sync cycles then installing',
+      'forced update v{version} bypassing idle wait; new sync cycles paused, draining in-flight transfers, then installing',
     );
     expect(processRegistry).toContain('UPDATE_QUIESCE_REQUESTED');
     expect(processRegistry).toContain('pub fn quiesce_for_update');

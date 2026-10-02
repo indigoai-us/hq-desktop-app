@@ -69,7 +69,8 @@ describe('master automatic-updates switch', () => {
     );
     expect(appUpdater).toContain('InstallTrigger::Forced');
     expect(appUpdater).toContain('InstallTrigger::Manual');
-    expect(appUpdater).toContain('pause_new_sync_cycles()');
+    expect(appUpdater).toContain('pause_cycles_drain_then_install(');
+    expect(appUpdater).toContain('crate::commands::process::pause_new_sync_cycles,');
     expect(appUpdater).toContain(
       'crate::windows_update::install_verified_update(app, update).await',
     );
@@ -613,7 +614,7 @@ describe('master automatic-updates switch', () => {
     expect(appCli).toContain('read_hq_cli_package_holders(prefix).await');
     expect(appCli).toContain('windows_busy_install_target_retry_rung(retry_number)');
     expect(appCli).toContain(
-      'windows_busy_install_target_retry_delay_for_recovery(retry_number, extended)',
+      'windows_busy_install_target_retry_delay(retry_number)',
     );
     expect(appCli).toContain('tokio::time::sleep(delay).await');
     expect(appCli).toContain('WindowsBusyRetryOutcome::DeferredUserCli');

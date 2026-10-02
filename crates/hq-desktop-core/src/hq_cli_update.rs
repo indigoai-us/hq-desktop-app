@@ -5501,26 +5501,8 @@ const WINDOWS_BUSY_INSTALL_TARGET_RETRY_RUNGS: [&str; WINDOWS_BUSY_INSTALL_TARGE
     "windows-busy-install-target-backoff-3",
 ];
 
-/// Four total npm attempts use three bounded waits totalling ten seconds.
+/// Four total npm attempts use three bounded waits with a 50-second ceiling.
 pub fn windows_busy_install_target_retry_delay(retry_number: usize) -> Option<std::time::Duration> {
-    match retry_number {
-        1 => Some(std::time::Duration::from_secs(1)),
-        2 => Some(std::time::Duration::from_secs(3)),
-        3 => Some(std::time::Duration::from_secs(6)),
-        _ => None,
-    }
-}
-
-/// Select the retry delays for the bounded Windows EBUSY recovery. The extended
-/// schedule is reserved for the explicit hq-flags rollout; the missing/false
-/// value preserves the current ten-second retry budget.
-pub fn windows_busy_install_target_retry_delay_for_recovery(
-    retry_number: usize,
-    extended: bool,
-) -> Option<std::time::Duration> {
-    if !extended {
-        return windows_busy_install_target_retry_delay(retry_number);
-    }
     match retry_number {
         1 => Some(std::time::Duration::from_secs(5)),
         2 => Some(std::time::Duration::from_secs(15)),
@@ -7112,35 +7094,22 @@ mod windows_busy_backoff_tests {
     const DETAIL: &str = "npm error code EBUSY\nnpm error errno -4082\nnpm error syscall rename\nnpm error path C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\@indigoai-us\\hq-cli";
 
     #[test]
-    fn extended_windows_busy_backoff_is_opt_in_and_bounded() {
-        let default_delays = (1..=WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES)
-            .map(|retry| {
-                windows_busy_install_target_retry_delay_for_recovery(retry, false).unwrap()
-            })
-            .collect::<Vec<_>>();
-        let extended_delays = (1..=WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES)
-            .map(|retry| windows_busy_install_target_retry_delay_for_recovery(retry, true).unwrap())
+    fn windows_busy_backoff_is_unconditional_and_bounded() {
+        let delays = (1..=WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES)
+            .map(|retry| windows_busy_install_target_retry_delay(retry).unwrap())
             .collect::<Vec<_>>();
 
         assert_eq!(
-            default_delays,
-            [
-                std::time::Duration::from_secs(1),
-                std::time::Duration::from_secs(3),
-                std::time::Duration::from_secs(6),
-            ]
-        );
-        assert_eq!(
-            extended_delays,
+            delays,
             [
                 std::time::Duration::from_secs(5),
                 std::time::Duration::from_secs(15),
                 std::time::Duration::from_secs(30),
             ]
         );
-        assert!(windows_busy_install_target_retry_delay_for_recovery(4, true).is_none());
+        assert!(windows_busy_install_target_retry_delay(4).is_none());
         assert_eq!(
-            extended_delays
+            delays
                 .iter()
                 .map(|delay| delay.as_secs())
                 .sum::<u64>(),
@@ -7149,19 +7118,19 @@ mod windows_busy_backoff_tests {
     }
 
     #[test]
-    fn windows_busy_backoff_runs_three_bounded_retries_over_ten_seconds() {
+    fn windows_busy_backoff_runs_three_bounded_retries_over_fifty_seconds() {
         let delays = (1..=WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES)
             .map(|retry| windows_busy_install_target_retry_delay(retry).unwrap())
             .collect::<Vec<_>>();
         assert_eq!(
             delays,
             [
-                std::time::Duration::from_secs(1),
-                std::time::Duration::from_secs(3),
-                std::time::Duration::from_secs(6),
+                std::time::Duration::from_secs(5),
+                std::time::Duration::from_secs(15),
+                std::time::Duration::from_secs(30),
             ]
         );
-        assert_eq!(delays.iter().map(|delay| delay.as_secs()).sum::<u64>(), 10);
+        assert_eq!(delays.iter().map(|delay| delay.as_secs()).sum::<u64>(), 50);
         assert!(windows_busy_install_target_retry_delay(4).is_none());
 
         let first_retry = windows_busy_install_target_retry_rung(1).unwrap();

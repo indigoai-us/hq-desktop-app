@@ -553,6 +553,9 @@ pub fn replay_last_pass<R: Runtime>(app: &AppHandle<R>, hq_folder: &str, pass: &
 pub fn setup_sync_host(app: &AppHandle) {
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
+        // The previous app may have exited during an automatic update after
+        // pausing daemon sync. Resume before the hosted daemon starts new work.
+        crate::updater::resume_daemon_sync_after_update(&handle).await;
         match resolve_mode().await {
             SyncHostMode::Legacy(reason) => {
                 log(

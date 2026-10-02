@@ -560,7 +560,7 @@ describe('hq-CLI Windows EBUSY recovery waits for app commands and records the b
     expect(retry).toContain('should_retry_windows_busy_install_target(');
     expect(retry).toContain('windows_busy_install_target_retry_rung(retry_number)');
     expect(retry).toContain(
-      'windows_busy_install_target_retry_delay_for_recovery(retry_number, extended)',
+      'windows_busy_install_target_retry_delay(retry_number)',
     );
     expect(retry).toContain('tokio::time::sleep(delay).await');
     expect(retry).toContain('NpmLockHolderClass::UserTerminalHqCli');

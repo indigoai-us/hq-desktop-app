@@ -68,6 +68,10 @@ function stubInvoke(overrides: Record<string, Handler> = {}): void {
     switch (command) {
       case 'resolve_hq_path':
         return '/Users/placeholder/hq';
+      case 'detect_hq':
+        return { exists: false };
+      case 'check_writable':
+        return true;
       case 'detect_ai_tools':
         return TOOLS;
       case 'detect_claude_desktop_connectors':
