@@ -12,6 +12,13 @@
  *   the fresh card back, return its fields.
  *   `submitCreateCompany` — run that card's primary action with the values the
  *   person typed, then send one `team:invite` per address.
+ *
+ * Invites wait for the new company's cloud provisioning. An invite sent to a
+ * company whose vault isn't provisioned yet lands on a company nobody can sync,
+ * so when the host can read provisioning status the flow polls it for a
+ * bounded time and hands back any invites it could not send yet as
+ * `queuedInvites`. The host queues those and sends them once it sees the
+ * company ready (`sendCompanyInvites`). Company creation itself does not wait.
  */
 
 import type { CardActionResult, ConversationApi } from "../chat-api.js";
@@ -40,7 +47,13 @@ export type CreateCompanyApi = Pick<
   ConversationApi,
   "runCardAction" | "fetchChannel"
 > &
-  Partial<Pick<ConversationApi, "runCompanyTabAction" | "checkCompanySlug">>;
+  Partial<Pick<ConversationApi, "runCompanyTabAction" | "checkCompanySlug">> & {
+    /**
+     * Whether the company's cloud vault is provisioned. A host without it
+     * sends invites right after creation, as before.
+     */
+    readCompanyProvisioned?: (companyUid: string) => Promise<boolean>;
+  };
 
 /** The form step 2 renders: the card, as the server declared it. */
 export interface CompanyDraftForm {
@@ -76,6 +89,11 @@ export interface CreatedCompany {
   companyChannelId: string | null;
   /** Invites the server refused. The company still exists. */
   inviteFailures: InviteFailure[];
+  /**
+   * Invites not sent because the company was not provisioned within the wait.
+   * The caller must queue these and send them once the company is ready.
+   */
+  queuedInvites: CompanyInvite[];
 }
 
 export type CreateCompanyResult =
@@ -87,7 +105,14 @@ export interface CreateCompanyOptions {
   pollAttempts?: number;
   pollMs?: number;
   sleep?: (ms: number) => Promise<void>;
+  /** Provisioning status reads before invites are queued. Default 20. */
+  provisionPollAttempts?: number;
+  /** Wait between provisioning status reads. Default 1500ms. */
+  provisionPollMs?: number;
 }
+
+const PROVISION_POLL_ATTEMPTS = 20;
+const PROVISION_POLL_MS = 1_500;
 
 /** Shown when the server never posted the card its answer pointed at. */
 export const CREATE_COMPANY_NO_CARD_REASON =
@@ -292,14 +317,59 @@ export async function submitCreateCompany(
     return { ok: false, reason: CREATE_COMPANY_NO_RESULT_REASON, blocked: false };
   }
 
-  const inviteFailures = companyUid
-    ? await sendCompanyInvites(api, companyUid, invites)
-    : invites.map((invite) => ({
-        email: invite.email,
-        reason: "The server didn't name the new company, so the invite wasn't sent.",
-      }));
+  const wanted = invites.filter((invite) => invite.email.trim());
+  if (!companyUid) {
+    return {
+      ok: true,
+      company: {
+        companyUid,
+        companyChannelId,
+        inviteFailures: wanted.map((invite) => ({
+          email: invite.email,
+          reason: "The server didn't name the new company, so the invite wasn't sent.",
+        })),
+        queuedInvites: [],
+      },
+    };
+  }
 
-  return { ok: true, company: { companyUid, companyChannelId, inviteFailures } };
+  if (wanted.length > 0 && typeof api.readCompanyProvisioned === "function") {
+    const ready = await waitForCompanyProvisioned(api, companyUid, options);
+    if (!ready) {
+      return {
+        ok: true,
+        company: { companyUid, companyChannelId, inviteFailures: [], queuedInvites: [...wanted] },
+      };
+    }
+  }
+
+  const inviteFailures = await sendCompanyInvites(api, companyUid, wanted);
+  return { ok: true, company: { companyUid, companyChannelId, inviteFailures, queuedInvites: [] } };
+}
+
+/**
+ * Poll the company's provisioning status, bounded. A failed read counts as
+ * "not ready yet" and is logged, never treated as ready.
+ */
+export async function waitForCompanyProvisioned(
+  api: Pick<CreateCompanyApi, "readCompanyProvisioned">,
+  companyUid: string,
+  options: Pick<CreateCompanyOptions, "provisionPollAttempts" | "provisionPollMs" | "sleep"> = {},
+): Promise<boolean> {
+  const read = api.readCompanyProvisioned;
+  if (typeof read !== "function") return false;
+  const attempts = Math.max(1, options.provisionPollAttempts ?? PROVISION_POLL_ATTEMPTS);
+  const ms = options.provisionPollMs ?? PROVISION_POLL_MS;
+  const sleep = options.sleep ?? ((wait: number) => new Promise<void>((r) => setTimeout(r, wait)));
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (attempt > 0) await sleep(ms);
+    try {
+      if (await read.call(api, companyUid)) return true;
+    } catch (err) {
+      console.warn("company provisioning status read failed:", err);
+    }
+  }
+  return false;
 }
 
 /**
@@ -307,7 +377,7 @@ export async function submitCreateCompany(
  * never allowed to stop the addresses behind it.
  */
 export async function sendCompanyInvites(
-  api: CreateCompanyApi,
+  api: Pick<CreateCompanyApi, "runCompanyTabAction">,
   companyUid: string,
   invites: readonly CompanyInvite[],
 ): Promise<InviteFailure[]> {

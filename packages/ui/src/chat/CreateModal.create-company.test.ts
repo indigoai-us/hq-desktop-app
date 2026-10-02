@@ -101,7 +101,7 @@ const created: CreateCompanyResult = {
   company: {
     companyUid: "cmp_new",
     companyChannelId: "chn_company",
-    inviteFailures: [],
+    inviteFailures: [], queuedInvites: [],
   },
 };
 
@@ -334,7 +334,7 @@ describe("CreateModal — create company from the palette", () => {
         company: {
           companyUid: "cmp_new",
           companyChannelId: "chn_company",
-          inviteFailures: [{ email: "ada@example.com", reason: "Already a member." }],
+          inviteFailures: [{ email: "ada@example.com", reason: "Already a member." }], queuedInvites: [],
         },
       }),
     });
