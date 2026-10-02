@@ -197,7 +197,7 @@
       <div class="page-head">
         <div>
           <h2>Brand</h2>
-          <p class="sub">Logo, monochrome mark, accent, and voice</p>
+          <p class="sub">Logo, accent color, and voice</p>
         </div>
         <span class="grow"></span>
         <div class="seg" role="tablist">
@@ -207,7 +207,7 @@
         <button type="button" class="btn primary" onclick={remember}>Save changes</button>
       </div>
       <label class="fr"><span class="lb">Logo<small>file name</small></span><input class="in" bind:value={snap.brand.logoName} placeholder="wordmark.svg" /></label>
-      <p class="note">The rail mark stays a circle in currentColor. Accent tints only this company's chrome through the existing brand layer. Live stays green.</p>
+      <p class="note">The logo shows on this company's rail tile. The accent color tints this company's buttons and highlights. The live indicator stays green.</p>
       <label class="fr"><span class="lb">Accent</span><input class="in mono" bind:value={snap.brand.accent} placeholder="#4F46E5" /></label>
       <label class="fr"><span class="lb">Voice notes</span><textarea class="in ta" bind:value={snap.brand.voice}></textarea></label>
       <label class="fr"><span class="lb">Bot branding</span><input class="in" bind:value={snap.brand.botIntro} /></label>

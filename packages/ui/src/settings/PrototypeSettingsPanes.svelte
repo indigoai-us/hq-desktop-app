@@ -1312,7 +1312,7 @@
     </div>
     <div class="set-row">
       <div>
-        <div class="sn">Sync daemon</div>
+        <div class="sn">Background sync</div>
         <div class="sd">
           {#if liveSync.daemonOwner}
             Sync owner: {liveSync.daemonOwner}
@@ -1349,7 +1349,7 @@
         <div>
           <div class="sn">Sync status</div>
           <div class="sd" role={liveSync.daemonErrors.length > 0 ? "alert" : undefined}>
-            {liveSync.daemonErrors.join(" ") || "No recent daemon errors"}
+            {liveSync.daemonErrors.join(" ") || "No recent sync errors"}
           </div>
           {#if liveSync.daemonLogPath}
             <div class="sd mono-path">Log: {liveSync.daemonLogPath}</div>
@@ -1712,7 +1712,7 @@
                   : "Version unavailable"}
         </div>
         {#if cliUpdateStatus === "unlocated"}
-          <div class="sd" data-testid="settings-cli-remediation">Add the CLI directory to this HQ root’s .claude/settings.local.json (or settings.json) env.PATH, then refresh. The host uses that Claude settings PATH before broader PATH locations.</div>
+          <div class="sd" data-testid="settings-cli-remediation">HQ could not find the command line tool. Add the folder that holds it to the PATH setting in this HQ folder’s Claude settings, then refresh. HQ checks that setting first.</div>
         {:else if cliUpdateStatus === "failed"}
           <div class="sd">CLI version probe failed: {cliProbeError ?? "The check did not finish. Try again."}</div>
         {:else if cliUpdateStatus === "unchecked"}
