@@ -68,7 +68,10 @@ export type EntryPointApi = Pick<ConversationApi, "runCardAction">;
 export type CloudBotEntryApi = Pick<
   ConversationApi,
   "runCardAction" | "fetchChannel" | "runCompanyTabAction"
->;
+> & {
+  /** Desktop support-log bridge. Optional so web hosts remain compatible. */
+  logToFile?: (tag: string, message: string) => Promise<void>;
+};
 
 function isNotFound(err: unknown): boolean {
   const raw = err instanceof Error ? err.message : String(err ?? "");
@@ -183,9 +186,23 @@ const CLOUD_BOT_POLL_ATTEMPTS = 8;
 const CLOUD_BOT_POLL_MS = 150;
 
 /** Card actions that mean "let me try that again", by id. */
-const RECOVERY_ACTION_IDS = ["retry", "try_again", "start_over", "again", "edit"];
+const RECOVERY_ACTION_IDS = [
+  "retry",
+  "try_again",
+  "start_over",
+  "again",
+  "edit",
+];
 /** Card actions that mean "put this away", by id. */
-const DISMISS_ACTION_IDS = ["dismiss", "cancel", "close", "discard", "abandon", "delete", "remove"];
+const DISMISS_ACTION_IDS = [
+  "dismiss",
+  "cancel",
+  "close",
+  "discard",
+  "abandon",
+  "delete",
+  "remove",
+];
 
 export interface CloudBotDraft {
   /** The name the person typed in the New bot flow. */
@@ -297,7 +314,11 @@ async function pollForCard(
   channelId: string,
   pick: (cards: LifecycleCardModel[]) => LifecycleCardModel | null,
   poll: PollBudget,
-): Promise<{ card: LifecycleCardModel | null; cards: LifecycleCardModel[]; error: unknown }> {
+): Promise<{
+  card: LifecycleCardModel | null;
+  cards: LifecycleCardModel[];
+  error: unknown;
+}> {
   let cards: LifecycleCardModel[] = [];
   let error: unknown = null;
   for (let attempt = 0; attempt < poll.attempts; attempt += 1) {
@@ -318,16 +339,24 @@ async function pollForCard(
 
 /** The action a card's own primary button would have run. */
 function primaryActionOf(card: LifecycleCardModel): string | null {
-  const primary = card.actions.find((action) => action.style === "primary" && !action.href);
+  const primary = card.actions.find(
+    (action) => action.style === "primary" && !action.href,
+  );
   const fallback = card.actions.find((action) => !action.href);
   return (primary ?? fallback)?.id ?? null;
 }
 
 /** The card's own action of one of these kinds, if it offers one. Never a link. */
-function actionOf(card: LifecycleCardModel, ids: readonly string[]): string | null {
+function actionOf(
+  card: LifecycleCardModel,
+  ids: readonly string[],
+): string | null {
   for (const action of card.actions) {
     if (action.href) continue;
-    const key = action.id.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
+    const key = action.id
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_");
     if (ids.includes(key)) return action.id;
   }
   return null;
@@ -348,7 +377,12 @@ async function abandonCard(
   const actionId = actionOf(card, DISMISS_ACTION_IDS);
   if (!actionId) return false;
   try {
-    await api.runCardAction({ channelId, cardId: card.cardId, actionId, values: {} });
+    await api.runCardAction({
+      channelId,
+      cardId: card.cardId,
+      actionId,
+      values: {},
+    });
     return true;
   } catch {
     return false;
@@ -361,7 +395,9 @@ async function abandonCard(
  * so the opening turn is the only one a New bot draft can fill from scratch.
  */
 function isOpeningTurn(card: LifecycleCardModel): boolean {
-  return card.fields.some((field) => field.id === "name" && field.control !== "readonly");
+  return card.fields.some(
+    (field) => field.id === "name" && field.control !== "readonly",
+  );
 }
 
 /** True when an earlier create_agent card in this channel already asked for a name. */
@@ -371,7 +407,9 @@ function resumesEarlierSequence(
 ): boolean {
   const at = cards.indexOf(card);
   const before = at < 0 ? cards : cards.slice(0, at);
-  return before.some((row) => row.cardKind === "create_agent" && isOpeningTurn(row));
+  return before.some(
+    (row) => row.cardKind === "create_agent" && isOpeningTurn(row),
+  );
 }
 
 /**
@@ -430,9 +468,42 @@ function valuesForCard(
   return values;
 }
 
+/** A stable, non-sensitive identity for detecting an in-place card advance. */
+function cardRevision(card: LifecycleCardModel): string {
+  return JSON.stringify({
+    state: card.state,
+    actions: card.actions.map((action) => [action.id, action.style]),
+    fields: card.fields.map((field) => [field.id, field.control, field.value]),
+  });
+}
+
+function logCloudBotExit(
+  api: CloudBotEntryApi,
+  exit: string,
+  turn: number,
+  cards: readonly LifecycleCardModel[],
+): void {
+  const seen =
+    cards
+      .map((row) => `${row.cardId}:${row.cardKind}:${row.state}`)
+      .join(",") || "none";
+  console.warn(`[cloud-bot] exit=${exit} turn=${turn} cards=${seen}`);
+  if (typeof api.logToFile !== "function") return;
+  void api
+    .logToFile("cloud-bot", `exit=${exit} turn=${turn} cards=${seen}`)
+    .catch((err: unknown) => {
+      console.error("[cloud-bot] logToFile failed", err);
+    });
+}
+
 /** Either the card this attempt starts from, or the answer to give instead. */
 type OpenedSequence =
-  | { kind: "card"; channelId: string; card: LifecycleCardModel; cards: LifecycleCardModel[] }
+  | {
+      kind: "card";
+      channelId: string;
+      card: LifecycleCardModel;
+      cards: LifecycleCardModel[];
+    }
   | { kind: "done"; result: EntryPointResult };
 
 /** Run the Team tab's `add_agent` and read back the card it points at. */
@@ -445,7 +516,11 @@ async function openCreateAgent(
 ): Promise<OpenedSequence> {
   const noNextStep: OpenedSequence = {
     kind: "done",
-    result: { ok: false, reason: CLOUD_BOT_NO_NEXT_STEP_REASON, blocked: false },
+    result: {
+      ok: false,
+      reason: CLOUD_BOT_NO_NEXT_STEP_REASON,
+      blocked: false,
+    },
   };
   let opened: CardActionResult;
   try {
@@ -460,7 +535,11 @@ async function openCreateAgent(
   } catch (err) {
     return {
       kind: "done",
-      result: { ok: false, reason: cardActionFailureMessage(err), blocked: isPermission(err) },
+      result: {
+        ok: false,
+        reason: cardActionFailureMessage(err),
+        blocked: isPermission(err),
+      },
     };
   }
   if (opened.state === "blocked") {
@@ -468,7 +547,9 @@ async function openCreateAgent(
       kind: "done",
       result: {
         ok: false,
-        reason: trimmed(opened.reason) || "You don't have permission to add bots here",
+        reason:
+          trimmed(opened.reason) ||
+          "You don't have permission to add bots here",
         blocked: true,
       },
     };
@@ -501,7 +582,10 @@ async function openCreateAgent(
   if (found.card.cardKind !== "create_agent") {
     // A plan that cannot host a bot answers with the upgrade card instead.
     // That card still renders, so this is a destination, not a failure.
-    return { kind: "done", result: { ok: true, target: { channelId, cardId, cardKind: null } } };
+    return {
+      kind: "done",
+      result: { ok: true, target: { channelId, cardId, cardKind: null } },
+    };
   }
   return { kind: "card", channelId, card: found.card, cards: found.cards };
 }
@@ -525,29 +609,51 @@ async function enterSequence(
   idempotencyKey: string | undefined,
   poll: PollBudget,
 ): Promise<OpenedSequence> {
-  const first = await openCreateAgent(api, runTabAction, companyUid, idempotencyKey, poll);
+  const first = await openCreateAgent(
+    api,
+    runTabAction,
+    companyUid,
+    idempotencyKey,
+    poll,
+  );
   if (first.kind === "done") return first;
-  if (isOpeningTurn(first.card) || !resumesEarlierSequence(first.cards, first.card)) return first;
+  if (
+    isOpeningTurn(first.card) ||
+    !resumesEarlierSequence(first.cards, first.card)
+  )
+    return first;
 
   const recorded = recordedHandleFor(first.cards, first.card);
   if (recorded && recorded === botHandle(draft)) return first;
 
   const stale: OpenedSequence = {
     kind: "done",
-    result: { ok: false, reason: cloudBotStaleCardReason(recorded), blocked: false },
+    result: {
+      ok: false,
+      reason: cloudBotStaleCardReason(recorded),
+      blocked: false,
+    },
   };
   if (!(await abandonCard(api, first.channelId, first.card))) return stale;
 
   // A fresh key: the same one would let the server replay the answer that
   // pointed at the card just put away.
-  const second = await openCreateAgent(api, runTabAction, companyUid, undefined, poll);
+  const second = await openCreateAgent(
+    api,
+    runTabAction,
+    companyUid,
+    undefined,
+    poll,
+  );
   if (second.kind === "done") return second;
   if (isOpeningTurn(second.card)) return second;
   return {
     kind: "done",
     result: {
       ok: false,
-      reason: cloudBotStaleCardReason(recordedHandleFor(second.cards, second.card)),
+      reason: cloudBotStaleCardReason(
+        recordedHandleFor(second.cards, second.card),
+      ),
       blocked: false,
     },
   };
@@ -575,18 +681,32 @@ export async function runCreateCloudBotEntry(
   options: CloudBotEntryOptions = {},
 ): Promise<EntryPointResult> {
   const uid = companyUid.trim();
-  if (!uid) return { ok: false, reason: "Pick a company first", blocked: false };
+  if (!uid)
+    return { ok: false, reason: "Pick a company first", blocked: false };
   const runTabAction = api.runCompanyTabAction;
   if (typeof runTabAction !== "function") {
-    return { ok: false, reason: "Adding bots isn't available in this build", blocked: false };
+    return {
+      ok: false,
+      reason: "Adding bots isn't available in this build",
+      blocked: false,
+    };
   }
   const poll: PollBudget = {
     attempts: Math.max(1, options.pollAttempts ?? CLOUD_BOT_POLL_ATTEMPTS),
     ms: options.pollMs ?? CLOUD_BOT_POLL_MS,
-    sleep: options.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms))),
+    sleep:
+      options.sleep ??
+      ((ms: number) => new Promise<void>((r) => setTimeout(r, ms))),
   };
 
-  const opened = await enterSequence(api, runTabAction, uid, draft, options.idempotencyKey, poll);
+  const opened = await enterSequence(
+    api,
+    runTabAction,
+    uid,
+    draft,
+    options.idempotencyKey,
+    poll,
+  );
   if (opened.kind === "done") return opened.result;
   const channelId = opened.channelId;
   let card: LifecycleCardModel | null = opened.card;
@@ -594,10 +714,19 @@ export async function runCreateCloudBotEntry(
   const maxTurns = options.maxTurns ?? CLOUD_BOT_MAX_TURNS;
   /** Cards this attempt already answered, so a poll never picks one again. */
   const submitted = new Set<string>();
+  /** Revision before each submit. The live card advances in place, retaining its id. */
+  const submittedRevision = new Map<string, string>();
   /** Refusals this attempt already answered once; a second one is final. */
   const recovered = new Set<string>();
   for (let turn = 0; turn < maxTurns; turn += 1) {
-    if (!card) return { ok: false, reason: CLOUD_BOT_NO_NEXT_STEP_REASON, blocked: false };
+    if (!card) {
+      logCloudBotExit(api, "missing-card", turn + 1, []);
+      return {
+        ok: false,
+        reason: CLOUD_BOT_NO_NEXT_STEP_REASON,
+        blocked: false,
+      };
+    }
     let recovery: string | null = null;
     if (card.state === "blocked") {
       // A refusal left over from an earlier attempt is not this attempt's
@@ -619,7 +748,11 @@ export async function runCreateCloudBotEntry(
       recovered.add(card.cardId);
     }
     if (!card.viewer.canAct) {
-      return { ok: false, reason: "You don't have permission to add bots here", blocked: true };
+      return {
+        ok: false,
+        reason: "You don't have permission to add bots here",
+        blocked: true,
+      };
     }
     const actionId = recovery ?? primaryActionOf(card);
     const values = valuesForCard(card, draft);
@@ -642,10 +775,19 @@ export async function runCreateCloudBotEntry(
     const answered = card;
     let result: CardActionResult;
     try {
-      result = await api.runCardAction({ channelId, cardId: answered.cardId, actionId, values });
+      result = await api.runCardAction({
+        channelId,
+        cardId: answered.cardId,
+        actionId,
+        values,
+      });
     } catch (err) {
       await abandonCard(api, channelId, answered);
-      return { ok: false, reason: cardActionFailureMessage(err), blocked: isPermission(err) };
+      return {
+        ok: false,
+        reason: cardActionFailureMessage(err),
+        blocked: isPermission(err),
+      };
     }
     const agentChannelId = trimmed(result.agentChannelId);
     if (agentChannelId) {
@@ -665,11 +807,15 @@ export async function runCreateCloudBotEntry(
       };
     }
     submitted.add(answered.cardId);
+    submittedRevision.set(answered.cardId, cardRevision(answered));
     if (result.state === "blocked") {
       const settled = await readLifecycleCards(api, channelId).catch(
         () => [] as LifecycleCardModel[],
       );
-      const refused = newestCard(settled, (row) => row.cardId === answered.cardId);
+      const refused = newestCard(
+        settled,
+        (row) => row.cardId === answered.cardId,
+      );
       // Nobody can see this card, so nobody can clear it: put it away here if
       // the server offers a way, and leave the next attempt a clean start.
       if (refused) await abandonCard(api, channelId, refused);
@@ -690,16 +836,20 @@ export async function runCreateCloudBotEntry(
           (row) =>
             row.cardKind === "create_agent" &&
             row.state === "open" &&
-            !submitted.has(row.cardId),
+            (!submitted.has(row.cardId) ||
+              submittedRevision.get(row.cardId) !== cardRevision(row)),
         ),
       poll,
     );
+    if (!next.card)
+      logCloudBotExit(api, "next-card-timeout", turn + 1, next.cards);
     card = next.card;
   }
   // Out of turns: this sequence is longer than the build knows how to drive.
   // Put the card still waiting away if the server offers a way, so the next
   // attempt does not inherit a draft this one abandoned.
   if (card) await abandonCard(api, channelId, card);
+  logCloudBotExit(api, "max-turns", maxTurns, card ? [card] : []);
   return { ok: false, reason: CLOUD_BOT_NO_NEXT_STEP_REASON, blocked: false };
 }
 

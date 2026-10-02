@@ -5368,6 +5368,9 @@
             state: typeof raw?.state === "string" ? raw.state : "",
             fields: raw?.fields,
             replayed: raw?.replayed === true,
+            agentChannelId:
+              typeof raw?.agentChannelId === "string" ? raw.agentChannelId : undefined,
+            agentUid: typeof raw?.agentUid === "string" ? raw.agentUid : undefined,
             navigateTo:
               raw?.navigateTo === "chat" ? "chat" : undefined,
             focusCardId:

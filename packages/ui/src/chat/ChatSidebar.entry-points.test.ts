@@ -55,7 +55,11 @@ const seedDirectory = [
 
 const okTarget: EntryPointResult = {
   ok: true,
-  target: { channelId: "setup", cardId: "card_create_company_2", cardKind: null },
+  target: {
+    channelId: "setup",
+    cardId: "card_create_company_2",
+    cardKind: null,
+  },
 };
 
 const CLOUD_PROVISION_OPTIONS: AgentProvisionOptionsView = {
@@ -120,7 +124,9 @@ function mountSidebar(props: Record<string, unknown>): void {
 }
 
 async function openModal(): Promise<void> {
-  host.querySelector<HTMLButtonElement>('[data-testid="chat-new-message"]')!.click();
+  host
+    .querySelector<HTMLButtonElement>('[data-testid="chat-new-message"]')!
+    .click();
   await settle();
 }
 
@@ -137,7 +143,9 @@ afterEach(async () => {
   component = null;
   host?.remove();
   document
-    .querySelectorAll('[data-testid="chat-create-modal"], [data-testid="chat-scope-menu"]')
+    .querySelectorAll(
+      '[data-testid="chat-create-modal"], [data-testid="chat-scope-menu"]',
+    )
     .forEach((node) => node.remove());
   window.localStorage?.clear?.();
   takePendingChannelOpen();
@@ -185,23 +193,27 @@ describe("ChatSidebar lifecycle entry points", () => {
     const takeover = q('[data-testid="new-bot-takeover"]');
     expect(takeover?.getAttribute("role")).toBe("dialog");
     expect(takeover?.getAttribute("aria-modal")).toBe("true");
-    expect(takeover?.style.getPropertyValue("--new-bot-wallpaper")).toContain("url(");
-    expect(takeover?.textContent).toContain("Make it");
+    expect(takeover?.style.getPropertyValue("--new-bot-wallpaper")).toContain(
+      "url(",
+    );
+    expect(takeover?.textContent).toContain("Enter a name");
     expect(q('[data-testid="new-bot-create-screen"]')).toBeTruthy();
     expect(takeover?.querySelectorAll(".new-bot-takeover-card").length).toBe(1);
     expect(oncreateagent).not.toHaveBeenCalled();
   });
 
   it("reopens the current waking progress when its sidebar bot is clicked after close", async () => {
-    const oncreateagent = vi.fn(async (): Promise<EntryPointResult> => ({
-      ok: true,
-      target: {
-        channelId: "chn_nova",
-        cardId: null,
-        cardKind: null,
-        agentUid: "agt_nova",
-      },
-    }));
+    const oncreateagent = vi.fn(
+      async (): Promise<EntryPointResult> => ({
+        ok: true,
+        target: {
+          channelId: "chn_nova",
+          cardId: null,
+          cardKind: null,
+          agentUid: "agt_nova",
+        },
+      }),
+    );
     mountSidebar({
       companies: [INDIGO],
       oncreateagent,
@@ -219,6 +231,8 @@ describe("ChatSidebar lifecycle entry points", () => {
     name.value = "Nova";
     name.dispatchEvent(new Event("input", { bubbles: true }));
     await settle();
+    click('[data-testid="new-bot-continue-name"]');
+    await settle();
     click('[data-testid="new-bot-create-submit"]');
     await settle();
 
@@ -228,29 +242,39 @@ describe("ChatSidebar lifecycle entry points", () => {
     await settle();
     expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
 
-    const sidebarBot = q<HTMLButtonElement>('[data-conversation-id="ch:chn_nova"]');
+    const sidebarBot = q<HTMLButtonElement>(
+      '[data-conversation-id="ch:chn_nova"]',
+    );
     const sidebarRing = q<HTMLElement>('[data-testid="chat-waking-bot-ring"]');
     expect(sidebarBot?.textContent).toContain("Nova");
-    expect(sidebarRing?.style.getPropertyValue("--chat-waking-progress")).toBe("8%");
+    expect(sidebarRing?.style.getPropertyValue("--chat-waking-progress")).toBe(
+      "8%",
+    );
     sidebarBot!.click();
     await settle();
 
-    expect(q('[data-testid="new-bot-waking-screen"]')?.textContent).toContain("Waking up Nova");
-    expect(q('[data-testid="new-bot-waking-ring"]')?.getAttribute("aria-valuenow")).toBe("8");
+    expect(q('[data-testid="new-bot-waking-screen"]')?.textContent).toContain(
+      "Waking up Nova",
+    );
+    expect(
+      q('[data-testid="new-bot-waking-ring"]')?.getAttribute("aria-valuenow"),
+    ).toBe("8");
   });
 
   it("opens a ready bot chat after the live handoff when no real directory row exists yet", async () => {
     vi.useFakeTimers();
     try {
-      const oncreateagent = vi.fn(async (): Promise<EntryPointResult> => ({
-        ok: true,
-        target: {
-          channelId: "chn_nova",
-          cardId: null,
-          cardKind: null,
-          agentUid: "agt_nova",
-        },
-      }));
+      const oncreateagent = vi.fn(
+        async (): Promise<EntryPointResult> => ({
+          ok: true,
+          target: {
+            channelId: "chn_nova",
+            cardId: null,
+            cardKind: null,
+            agentUid: "agt_nova",
+          },
+        }),
+      );
       mountSidebar({
         companies: [INDIGO],
         seedDirectory: [],
@@ -268,6 +292,8 @@ describe("ChatSidebar lifecycle entry points", () => {
       const name = q<HTMLInputElement>('[data-testid="new-bot-name"]')!;
       name.value = "Nova";
       name.dispatchEvent(new Event("input", { bubbles: true }));
+      await settle();
+      click('[data-testid="new-bot-continue-name"]');
       await settle();
       click('[data-testid="new-bot-create-submit"]');
       await settle(10);
@@ -296,12 +322,22 @@ describe("ChatSidebar lifecycle entry points", () => {
     await settle();
     expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
     expect(q('[data-testid="chat-create-modal"]')).toBeTruthy();
-    expect(document.activeElement?.getAttribute("data-testid")).toBe("chat-create-query");
+    expect(document.activeElement?.getAttribute("data-testid")).toBe(
+      "chat-create-query",
+    );
   });
 
   it("links to the unchanged local creation flow from the takeover", async () => {
-    const oncreatebot = vi.fn(async () => ({ ok: true as const, agentUid: "agt_new", name: "assistant" }));
-    mountSidebar({ companies: [INDIGO], oncreateagent: async () => okTarget, oncreatebot });
+    const oncreatebot = vi.fn(async () => ({
+      ok: true as const,
+      agentUid: "agt_new",
+      name: "assistant",
+    }));
+    mountSidebar({
+      companies: [INDIGO],
+      oncreateagent: async () => okTarget,
+      oncreatebot,
+    });
     await settle();
     await openModal();
     click('[data-testid="chat-create-new-bot"]');
@@ -317,7 +353,9 @@ describe("ChatSidebar lifecycle entry points", () => {
     const oncreatecompany = vi.fn(async () => okTarget);
     mountSidebar({ companies: [INDIGO, ACME], oncreatecompany });
     await settle();
-    host.querySelector<HTMLButtonElement>('[data-testid="chat-scope-pill"]')!.click();
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="chat-scope-pill"]')!
+      .click();
     await settle();
     const menu = q('[data-testid="chat-scope-menu"]');
     expect(menu).toBeTruthy();
@@ -342,7 +380,9 @@ describe("ChatSidebar lifecycle entry points", () => {
     );
     mountSidebar({ companies: [INDIGO], oncreatecompany });
     await settle();
-    host.querySelector<HTMLButtonElement>('[data-testid="chat-scope-pill"]')!.click();
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="chat-scope-pill"]')!
+      .click();
     await settle();
     q<HTMLButtonElement>('[data-testid="chat-scope-new-company"]')!.click();
     await settle(10);
@@ -355,7 +395,9 @@ describe("ChatSidebar lifecycle entry points", () => {
   it("omits the switcher row without a host callback", async () => {
     mountSidebar({ companies: [INDIGO] });
     await settle();
-    host.querySelector<HTMLButtonElement>('[data-testid="chat-scope-pill"]')!.click();
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="chat-scope-pill"]')!
+      .click();
     await settle();
     expect(q('[data-testid="chat-scope-menu"]')).toBeTruthy();
     expect(q('[data-testid="chat-scope-new-company"]')).toBeNull();
@@ -371,18 +413,28 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
   });
 
   it("walks kind → home → details and submits name, runtime, and pre-approval to the host", async () => {
-    const oncreatebot = vi.fn(async () => ({ ok: true as const, agentUid: "agt_new", name: "assistant" }));
+    const oncreatebot = vi.fn(async () => ({
+      ok: true as const,
+      agentUid: "agt_new",
+      name: "assistant",
+    }));
     mountSidebar({ companies: [INDIGO], oncreatebot });
     await settle();
     await openModal();
     const plus = q<HTMLButtonElement>('[data-testid="chat-new-message"]');
-    expect(plus?.getAttribute("aria-label")).toBe("New message, channel, company, or bot");
+    expect(plus?.getAttribute("aria-label")).toBe(
+      "New message, channel, company, or bot",
+    );
     const row = q<HTMLButtonElement>('[data-testid="chat-create-new-bot"]');
     expect(row).toBeTruthy();
     expect(row?.textContent).toContain("Runs on this computer");
     await toHomeStep();
     // Only a local host here → Local is checked and Cloud is not offered at all.
-    expect(q<HTMLButtonElement>('[data-testid="chat-bot-where-local"]')?.getAttribute("aria-checked")).toBe("true");
+    expect(
+      q<HTMLButtonElement>(
+        '[data-testid="chat-bot-where-local"]',
+      )?.getAttribute("aria-checked"),
+    ).toBe("true");
     expect(q('[data-testid="chat-bot-where-cloud"]')).toBeNull();
     click('[data-testid="chat-bot-runtime-grok"]');
     await settle();
@@ -391,16 +443,26 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     expect(q('[data-testid="create-bot-details-step"]')).toBeTruthy();
     const name = q<HTMLInputElement>('[data-testid="chat-bot-name"]')!;
     expect(name.value).toBe("assistant");
-    expect(q('[data-testid="bot-preview-name"]')?.textContent).toBe("assistant");
-    expect(q('[data-testid="bot-preview-thinks"]')?.textContent).toBe("thinks with Grok");
+    expect(q('[data-testid="bot-preview-name"]')?.textContent).toBe(
+      "assistant",
+    );
+    expect(q('[data-testid="bot-preview-thinks"]')?.textContent).toBe(
+      "thinks with Grok",
+    );
     click('[data-testid="chat-bot-create"]');
     await settle(10);
-    expect(oncreatebot).toHaveBeenCalledWith({ name: "assistant", runtime: "grok", autoApprove: true }, {});
+    expect(oncreatebot).toHaveBeenCalledWith(
+      { name: "assistant", runtime: "grok", autoApprove: true },
+      {},
+    );
     expect(q('[data-testid="chat-create-modal"]')).toBeNull();
   });
 
   it("shows the host's reason inline and stays open when creation fails", async () => {
-    const oncreatebot = vi.fn(async () => ({ ok: false as const, reason: "Claude Code is not signed in." }));
+    const oncreatebot = vi.fn(async () => ({
+      ok: false as const,
+      reason: "Claude Code is not signed in.",
+    }));
     mountSidebar({ companies: [INDIGO], oncreatebot });
     await settle();
     await openModal();
@@ -408,17 +470,27 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     await settle();
     // ⌘↵ creates from the first step once the draft is complete.
     q('[data-testid="chat-create-bot-step"]')!.dispatchEvent(
-      new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true }),
+      new KeyboardEvent("keydown", {
+        key: "Enter",
+        metaKey: true,
+        bubbles: true,
+      }),
     );
     await settle(10);
     expect(oncreatebot).toHaveBeenCalledTimes(1);
-    expect(q('[data-testid="chat-create-entry-error"]')?.textContent).toContain("not signed in");
+    expect(q('[data-testid="chat-create-entry-error"]')?.textContent).toContain(
+      "not signed in",
+    );
     expect(q('[data-testid="chat-create-modal"]')).toBeTruthy();
     expect(q('[data-testid="chat-create-bot-step"]')).toBeTruthy();
   });
 
   it("takes a free-form name, blocks a taken handle, gates on a signed-in runtime, and never caps the bot count", async () => {
-    const oncreatebot = vi.fn(async () => ({ ok: true as const, agentUid: "agt_new", name: "x" }));
+    const oncreatebot = vi.fn(async () => ({
+      ok: true as const,
+      agentUid: "agt_new",
+      name: "x",
+    }));
     // No per-person limit: the row stays enabled no matter how many bots exist.
     mountSidebar({ companies: [INDIGO], oncreatebot });
     await settle();
@@ -438,15 +510,28 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     await openModal();
     await toHomeStep();
     // Claude is not signed in → the first signed-in runtime (Codex) is preselected.
-    expect(q<HTMLButtonElement>('[data-testid="chat-bot-runtime-codex"]')?.getAttribute("aria-checked")).toBe("true");
-    expect(q<HTMLButtonElement>('[data-testid="chat-bot-runtime-claude"]')!.textContent).toContain("not signed in");
+    expect(
+      q<HTMLButtonElement>(
+        '[data-testid="chat-bot-runtime-codex"]',
+      )?.getAttribute("aria-checked"),
+    ).toBe("true");
+    expect(
+      q<HTMLButtonElement>('[data-testid="chat-bot-runtime-claude"]')!
+        .textContent,
+    ).toContain("not signed in");
     click('[data-testid="chat-bot-runtime-claude"]');
     await settle();
-    expect(q<HTMLButtonElement>('[data-testid="create-bot-next"]')!.disabled).toBe(true);
-    expect(q('[data-testid="create-bot-issue"]')?.textContent).toContain("Claude Code is not signed in");
+    expect(
+      q<HTMLButtonElement>('[data-testid="create-bot-next"]')!.disabled,
+    ).toBe(true);
+    expect(q('[data-testid="create-bot-issue"]')?.textContent).toContain(
+      "Claude Code is not signed in",
+    );
     click('[data-testid="chat-bot-runtime-codex"]');
     await settle();
-    expect(q<HTMLButtonElement>('[data-testid="create-bot-next"]')!.disabled).toBe(false);
+    expect(
+      q<HTMLButtonElement>('[data-testid="create-bot-next"]')!.disabled,
+    ).toBe(false);
     click('[data-testid="create-bot-next"]');
     await settle();
     const name = q<HTMLInputElement>('[data-testid="chat-bot-name"]')!;
@@ -454,32 +539,48 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     name.value = "Dr Love";
     name.dispatchEvent(new Event("input", { bubbles: true }));
     await settle();
-    expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled).toBe(false);
-    expect(q('[data-testid="chat-bot-derived-handle"]')?.textContent).toBe("@dr-love");
+    expect(
+      q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled,
+    ).toBe(false);
+    expect(q('[data-testid="chat-bot-derived-handle"]')?.textContent).toBe(
+      "@dr-love",
+    );
     // An emoji-only name has nothing to slugify: the handle is what blocks.
     name.value = "🚀";
     name.dispatchEvent(new Event("input", { bubbles: true }));
     await settle();
-    expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled).toBe(true);
-    expect(q('[data-testid="chat-bot-name-help"]')?.textContent).toContain("no letters or digits");
+    expect(
+      q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled,
+    ).toBe(true);
+    expect(q('[data-testid="chat-bot-name-help"]')?.textContent).toContain(
+      "no letters or digits",
+    );
     // The handle field opens on its own so the block is fixable in place.
     const handle = q<HTMLInputElement>('[data-testid="chat-bot-handle"]')!;
     handle.value = "rocket";
     handle.dispatchEvent(new Event("input", { bubbles: true }));
     await settle();
-    expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled).toBe(false);
+    expect(
+      q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled,
+    ).toBe(false);
     handle.value = "";
     handle.dispatchEvent(new Event("input", { bubbles: true }));
     name.value = "Scout";
     name.dispatchEvent(new Event("input", { bubbles: true }));
     await settle();
-    expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled).toBe(true);
-    expect(q('[data-testid="chat-bot-name-help"]')?.textContent).toContain("handle @scout");
+    expect(
+      q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled,
+    ).toBe(true);
+    expect(q('[data-testid="chat-bot-name-help"]')?.textContent).toContain(
+      "handle @scout",
+    );
     // A free name clears the block.
     name.value = "assistant";
     name.dispatchEvent(new Event("input", { bubbles: true }));
     await settle();
-    expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled).toBe(false);
+    expect(
+      q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled,
+    ).toBe(false);
     expect(oncreatebot).not.toHaveBeenCalled();
   });
 });
@@ -488,7 +589,22 @@ describe("ChatSidebar offers the user's local bots in the '+' modal", () => {
   it("finds a local bot by name even though the contacts roster omits it", async () => {
     mountSidebar({
       companies: [INDIGO],
-      localBots: [{ name: "scout", agentUid: "agt_01SCOUT", ownerUid: "prs_me", runtime: "claude", state: "running", pid: 1, processAlive: true, online: true, lastHeartbeatAt: null, daemonInstalled: true, daemonLoaded: true, dir: "/tmp/scout" }],
+      localBots: [
+        {
+          name: "scout",
+          agentUid: "agt_01SCOUT",
+          ownerUid: "prs_me",
+          runtime: "claude",
+          state: "running",
+          pid: 1,
+          processAlive: true,
+          online: true,
+          lastHeartbeatAt: null,
+          daemonInstalled: true,
+          daemonLoaded: true,
+          dir: "/tmp/scout",
+        },
+      ],
     });
     await settle();
     await openModal();
@@ -496,7 +612,11 @@ describe("ChatSidebar offers the user's local bots in the '+' modal", () => {
     query.value = "scout";
     query.dispatchEvent(new Event("input", { bubbles: true }));
     await settle(30);
-    await vi.waitFor(() => expect(q('[data-testid="chat-create-modal"]')?.textContent).toContain("scout"));
+    await vi.waitFor(() =>
+      expect(q('[data-testid="chat-create-modal"]')?.textContent).toContain(
+        "scout",
+      ),
+    );
   });
 });
 
@@ -540,13 +660,16 @@ describe("ChatSidebar company switcher — in-modal company creation", () => {
     const oncreatecompany = vi.fn(async () => okTarget);
     mountSidebar({ companies: [INDIGO, ACME], oncreatecompany, companyCreate });
     await settle();
-    host.querySelector<HTMLButtonElement>('[data-testid="chat-scope-pill"]')!.click();
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="chat-scope-pill"]')!
+      .click();
     await settle();
     click('[data-testid="chat-scope-new-company"]');
     await settle(10);
     expect(q('[data-testid="chat-create-company-step"]')).toBeTruthy();
     expect(
-      q<HTMLInputElement>('[data-testid="chat-create-company-field-name"]')?.value,
+      q<HTMLInputElement>('[data-testid="chat-create-company-field-name"]')
+        ?.value,
     ).toBe("");
     expect(oncreatecompany).not.toHaveBeenCalled();
   });

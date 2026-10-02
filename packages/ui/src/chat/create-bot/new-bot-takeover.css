@@ -1,6 +1,7 @@
 @font-face {
   font-family: "New Bot Fraunces";
-  src: url("./assets/new-bot-wallpapers/fraunces-variable-latin.woff2") format("woff2");
+  src: url("./assets/new-bot-wallpapers/fraunces-variable-latin.woff2")
+    format("woff2");
   font-style: italic;
   font-weight: 300 700;
   font-display: swap;
@@ -20,7 +21,12 @@
   color: var(--new-bot-ink);
   background: #09090b var(--new-bot-wallpaper) center / cover no-repeat;
   color-scheme: dark;
-  font-family: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family:
+    "Geist",
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
   font-weight: 400;
 }
 
@@ -29,7 +35,11 @@
   z-index: -1;
   inset: 0;
   background:
-    radial-gradient(ellipse at center, rgba(9, 9, 11, 0.24), rgba(9, 9, 11, 0.82)),
+    radial-gradient(
+      ellipse at center,
+      rgba(9, 9, 11, 0.24),
+      rgba(9, 9, 11, 0.82)
+    ),
     rgba(9, 9, 11, 0.2);
 }
 
@@ -85,7 +95,9 @@
   border-radius: 18px;
   padding: clamp(30px, 7vw, 42px);
   background: rgba(17, 17, 19, 0.62);
-  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  box-shadow:
+    0 30px 80px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
   backdrop-filter: blur(28px) saturate(140%);
   -webkit-backdrop-filter: blur(28px) saturate(140%);
   animation: new-bot-takeover-arrive 280ms cubic-bezier(0.23, 1, 0.32, 1) both;
@@ -145,6 +157,40 @@
 .new-bot-create {
   display: grid;
   gap: 14px;
+}
+
+.new-bot-step {
+  display: grid;
+  gap: 14px;
+  min-height: 300px;
+  animation: new-bot-step-arrive 180ms ease-out both;
+}
+
+.new-bot-progress {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.new-bot-progress span {
+  width: 6px;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.24);
+}
+
+.new-bot-progress span.active {
+  background: rgba(255, 255, 255, 0.88);
+}
+
+.new-bot-back {
+  justify-self: start;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--new-bot-muted);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
 }
 
 .new-bot-create h1 {
@@ -213,6 +259,7 @@
 
 .new-bot-brain,
 .new-bot-size,
+.new-bot-company,
 .new-bot-email {
   display: flex;
   align-items: center;
@@ -227,8 +274,22 @@
 }
 
 .new-bot-brain.selected,
-.new-bot-size.selected {
+.new-bot-size.selected,
+.new-bot-company.selected {
   background: rgba(255, 255, 255, 0.12);
+}
+
+.new-bot-companies {
+  display: grid;
+  gap: 7px;
+}
+.new-bot-company {
+  min-height: 42px;
+}
+.new-bot-company input,
+.new-bot-brain input,
+.new-bot-size input {
+  accent-color: #fafafa;
 }
 
 .new-bot-brain small {
@@ -299,8 +360,13 @@
   width: 76px;
   height: 76px;
   border-radius: 50%;
-  background: conic-gradient(#ffb580 var(--waking-progress), rgba(255, 255, 255, 0.16) 0);
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.2), 0 10px 34px rgba(0, 0, 0, 0.28);
+  background: conic-gradient(
+    #ffb580 var(--waking-progress),
+    rgba(255, 255, 255, 0.16) 0
+  );
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.2),
+    0 10px 34px rgba(0, 0, 0, 0.28);
 }
 
 .new-bot-waking-avatar {
@@ -376,6 +442,29 @@
   }
 }
 
+@keyframes new-bot-step-arrive {
+  from {
+    opacity: 0;
+    transform: translateX(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 @media (max-width: 560px) {
   .new-bot-takeover-header {
     padding: 18px 20px;
@@ -388,6 +477,10 @@
 
 @media (prefers-reduced-motion: reduce) {
   .new-bot-takeover-card {
+    animation: none;
+  }
+
+  .new-bot-step {
     animation: none;
   }
 }

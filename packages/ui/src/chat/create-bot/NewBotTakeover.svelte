@@ -208,6 +208,7 @@
           loadProvisionOptions={loadProvisionOptions}
           oncreate={oncreate}
           oncomplete={startWaking}
+          onopenlocal={canCreateLocalBot ? onopenlocal : null}
         />
       {:else}
         <p class="new-bot-takeover-kicker">A new teammate</p>
@@ -220,7 +221,7 @@
         <p class="new-bot-takeover-next">Name and brain are next.</p>
       {/if}
 
-      {#if canCreateLocalBot && onopenlocal}
+      {#if !oncreate && canCreateLocalBot && onopenlocal}
         <button
           type="button"
           class="new-bot-takeover-local"

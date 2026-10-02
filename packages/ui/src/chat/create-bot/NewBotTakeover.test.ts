@@ -19,7 +19,9 @@ async function settle(times = 4): Promise<void> {
 }
 
 function takeover(): HTMLElement {
-  const element = document.querySelector<HTMLElement>('[data-testid="new-bot-takeover"]');
+  const element = document.querySelector<HTMLElement>(
+    '[data-testid="new-bot-takeover"]',
+  );
   if (!element) throw new Error("missing new bot takeover");
   return element;
 }
@@ -60,7 +62,9 @@ describe("NewBotTakeover", () => {
     const dialog = takeover();
     expect(dialog.getAttribute("role")).toBe("dialog");
     expect(dialog.getAttribute("aria-modal")).toBe("true");
-    expect(dialog.style.getPropertyValue("--new-bot-wallpaper")).toContain("url(");
+    expect(dialog.style.getPropertyValue("--new-bot-wallpaper")).toContain(
+      "url(",
+    );
     expect(takeoverStyles()).toMatch(
       /\.new-bot-takeover\s*\{[\s\S]*?color-scheme:\s*dark;/,
     );
@@ -73,12 +77,28 @@ describe("NewBotTakeover", () => {
     render({ canCreateLocalBot: true, oncancel, onopenlocal });
     await settle();
 
-    const cancel = document.querySelector<HTMLButtonElement>('[data-testid="new-bot-takeover-cancel"]')!;
-    const local = document.querySelector<HTMLButtonElement>('[data-testid="new-bot-takeover-local"]')!;
+    const cancel = document.querySelector<HTMLButtonElement>(
+      '[data-testid="new-bot-takeover-cancel"]',
+    )!;
+    const local = document.querySelector<HTMLButtonElement>(
+      '[data-testid="new-bot-takeover-local"]',
+    )!;
     cancel.focus();
-    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }));
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Tab",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
     expect(document.activeElement).toBe(local);
-    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
     expect(oncancel).toHaveBeenCalledOnce();
     local.click();
     expect(onopenlocal).toHaveBeenCalledOnce();
@@ -101,23 +121,66 @@ describe("NewBotTakeover", () => {
         value: {
           defaultInstanceType: "t4g.medium",
           catalogVersion: "test",
-          options: [{ key: "basic" as const, productName: "Basic", instanceType: "t4g.medium", listCents: 5000, default: true, selectable: true, netMonthlyCents: 5000, deltaCents: 5000, unavailableReason: null, notBilled: false, lanes: 1, workers: 1 }],
+          options: [
+            {
+              key: "basic" as const,
+              productName: "Basic",
+              instanceType: "t4g.medium",
+              listCents: 5000,
+              default: true,
+              selectable: true,
+              netMonthlyCents: 5000,
+              deltaCents: 5000,
+              unavailableReason: null,
+              notBilled: false,
+              lanes: 1,
+              workers: 1,
+            },
+          ],
         },
       }),
-      oncreate: async () => ({ ok: true as const, target: { channelId: "chn_nova", cardId: null, cardKind: null, agentUid: "agt_nova" } }),
-      getStatus: async () => ({ ok: true, value: { setupState: { phase: "creating" } } }),
+      oncreate: async () => ({
+        ok: true as const,
+        target: {
+          channelId: "chn_nova",
+          cardId: null,
+          cardKind: null,
+          agentUid: "agt_nova",
+        },
+      }),
+      getStatus: async () => ({
+        ok: true,
+        value: { setupState: { phase: "creating" } },
+      }),
       onwaking,
     });
     await settle();
-    const input = document.querySelector<HTMLInputElement>('[data-testid="new-bot-name"]')!;
+    const input = document.querySelector<HTMLInputElement>(
+      '[data-testid="new-bot-name"]',
+    )!;
     input.value = "Nova";
     input.dispatchEvent(new InputEvent("input", { bubbles: true }));
     await settle();
-    document.querySelector<HTMLButtonElement>('[data-testid="new-bot-create-submit"]')!.click();
+    document
+      .querySelector<HTMLButtonElement>(
+        '[data-testid="new-bot-continue-name"]',
+      )!
+      .click();
+    await settle();
+    document
+      .querySelector<HTMLButtonElement>(
+        '[data-testid="new-bot-create-submit"]',
+      )!
+      .click();
     await settle();
 
-    expect(document.querySelector('[data-testid="new-bot-waking-screen"]')?.textContent).toContain("Waking up Nova");
-    expect(onwaking).toHaveBeenCalledWith(expect.objectContaining({ agentUid: "agt_nova", channelId: "chn_nova" }));
+    expect(
+      document.querySelector('[data-testid="new-bot-waking-screen"]')
+        ?.textContent,
+    ).toContain("Waking up Nova");
+    expect(onwaking).toHaveBeenCalledWith(
+      expect.objectContaining({ agentUid: "agt_nova", channelId: "chn_nova" }),
+    );
   });
 
   it("shows that the bot is live before opening chat once the status says ready", async () => {
@@ -126,21 +189,36 @@ describe("NewBotTakeover", () => {
     const onclosewaking = vi.fn();
     const onwakingchange = vi.fn();
     render({
-      wakingSession: beginWakingSession({ agentUid: "agt_nova", channelId: "chn_nova", companyUid: "cmp_acme", name: "Nova" }),
-      getStatus: async () => ({ ok: true, value: { setupState: { phase: "ready" } } }),
+      wakingSession: beginWakingSession({
+        agentUid: "agt_nova",
+        channelId: "chn_nova",
+        companyUid: "cmp_acme",
+        name: "Nova",
+      }),
+      getStatus: async () => ({
+        ok: true,
+        value: { setupState: { phase: "ready" } },
+      }),
       onopenchat,
       onclosewaking,
       onwakingchange,
     });
     await settle();
 
-    expect(document.querySelector('[data-testid="new-bot-waking-status"]')?.textContent).toContain("Nova is live");
+    expect(
+      document.querySelector('[data-testid="new-bot-waking-status"]')
+        ?.textContent,
+    ).toContain("Nova is live");
     expect(onopenchat).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(350);
     expect(onwakingchange).toHaveBeenCalledWith(null);
-    expect(onopenchat).toHaveBeenCalledWith(expect.objectContaining({ agentUid: "agt_nova", phase: "ready" }));
+    expect(onopenchat).toHaveBeenCalledWith(
+      expect.objectContaining({ agentUid: "agt_nova", phase: "ready" }),
+    );
     expect(onclosewaking).toHaveBeenCalledOnce();
-    expect(document.querySelector('[data-testid="new-bot-waking-screen"]')).toBeNull();
+    expect(
+      document.querySelector('[data-testid="new-bot-waking-screen"]'),
+    ).toBeNull();
     vi.useRealTimers();
   });
 
@@ -148,16 +226,34 @@ describe("NewBotTakeover", () => {
     const retryAgent = vi.fn(async () => ({ ok: true }));
     const onwakingchange = vi.fn();
     render({
-      wakingSession: { ...beginWakingSession({ agentUid: "agt_nova", channelId: "chn_nova", companyUid: "cmp_acme", name: "Nova" }), phase: "failed" as const },
+      wakingSession: {
+        ...beginWakingSession({
+          agentUid: "agt_nova",
+          channelId: "chn_nova",
+          companyUid: "cmp_acme",
+          name: "Nova",
+        }),
+        phase: "failed" as const,
+      },
       retryAgent,
       onwakingchange,
     });
     await settle();
-    document.querySelector<HTMLButtonElement>('[data-testid="new-bot-waking-retry"]')!.click();
+    document
+      .querySelector<HTMLButtonElement>('[data-testid="new-bot-waking-retry"]')!
+      .click();
     await settle();
 
     expect(retryAgent).toHaveBeenCalledWith("agt_nova");
-    expect(onwakingchange).toHaveBeenLastCalledWith(expect.objectContaining({ agentUid: "agt_nova", channelId: "chn_nova", phase: "waking" }));
-    expect(document.querySelector('[data-testid="new-bot-create-screen"]')).toBeNull();
+    expect(onwakingchange).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        agentUid: "agt_nova",
+        channelId: "chn_nova",
+        phase: "waking",
+      }),
+    );
+    expect(
+      document.querySelector('[data-testid="new-bot-create-screen"]'),
+    ).toBeNull();
   });
 });
