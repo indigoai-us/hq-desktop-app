@@ -438,13 +438,7 @@ mod macos {
         // is checked for nil before use.
         let result = autoreleasepool(|_| unsafe {
             let screen = window_screen(window)?;
-            let workspace_class = AnyClass::get(c"NSWorkspace")?;
-            let workspace: Option<Retained<AnyObject>> =
-                msg_send![workspace_class, sharedWorkspace];
-            let workspace = workspace?;
-            let url: Option<Retained<AnyObject>> =
-                msg_send![&*workspace, desktopImageURLForScreen: &*screen];
-            let url = url?;
+            let url = wallpaper_url(&screen)?;
             let path: *mut AnyObject = msg_send![&*url, path];
             if path.is_null() {
                 return None;
@@ -462,6 +456,14 @@ mod macos {
             );
         }
         result
+    }
+
+    /// The `NSURL` of the wallpaper on `screen`. Main thread only.
+    unsafe fn wallpaper_url(screen: &AnyObject) -> Option<Retained<AnyObject>> {
+        let workspace_class = AnyClass::get(c"NSWorkspace")?;
+        let workspace: Option<Retained<AnyObject>> = msg_send![workspace_class, sharedWorkspace];
+        let workspace = workspace?;
+        msg_send![&*workspace, desktopImageURLForScreen: screen]
     }
 
     /// Decode, scale down, and JPEG-encode the wallpaper at `path`. Runs off
@@ -754,7 +756,9 @@ mod macos {
                 let class = AnyClass::get(c"NSScreen")?;
                 let screen: Option<Retained<AnyObject>> = msg_send![class, mainScreen];
                 let screen = screen?;
-                encode_wallpaper(&screen)
+                // encode_wallpaper takes the file URL, not the screen.
+                let url = wallpaper_url(&screen)?;
+                encode_wallpaper(&url)
             }
             let bytes = autoreleasepool(|_| unsafe { main_screen_wallpaper() });
             if let Some(bytes) = bytes {
