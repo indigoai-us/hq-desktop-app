@@ -14,6 +14,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const shell = readFileSync(new URL("./DesktopApp.svelte", import.meta.url), "utf8");
+const roster = readFileSync(new URL("./pinned-companies.ts", import.meta.url), "utf8");
 
 function block(start: string, length = 900): string {
   const at = shell.indexOf(start);
@@ -23,9 +24,15 @@ function block(start: string, length = 900): string {
 
 describe("personal workspace stays local-only in the console rail", () => {
   it("builds company tiles only for cloud-backed companies, never the personal workspace", () => {
-    const roster = block("const railCompanyRoster = $derived(", 400);
-    expect(roster).toContain('c.kind === "company"');
-    expect(roster).toContain('(c.cloudUid ?? "").trim()');
+    // 110f9c2b moved the filter into the shared memberCompanies helper so the
+    // rail and the company list read one roster.
+    const tiles = block("const railCompanyRoster = $derived(", 400);
+    expect(tiles).toContain("memberCompanies(effectiveCompanies)");
+    const at = roster.indexOf("export function memberCompanies");
+    expect(at).toBeGreaterThan(-1);
+    const helper = roster.slice(at, at + 300);
+    expect(helper).toContain('c.kind === "company"');
+    expect(helper).toContain('(c.cloudUid ?? "").trim()');
   });
 
   it("opens the company pane only for a tile in that roster", () => {
