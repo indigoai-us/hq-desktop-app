@@ -11,6 +11,7 @@
   import MeetingPermissionsWindow from '../src/components/MeetingPermissionsWindow.svelte';
   import OnboardingWizard from '../src/components/onboarding/OnboardingWizard.svelte';
   import CinematicIntro from '../src/components/onboarding/CinematicIntro.svelte';
+  import CompanyStepPreview from './CompanyStepPreview.svelte';
   import { WIZARD_STEPS } from '../src/lib/onboarding-wizard';
   import GlobalErrorBoundary from '../src/components/GlobalErrorBoundary.svelte';
   import GlobalErrorPreview from './GlobalErrorPreview.svelte';
@@ -252,6 +253,11 @@
     mode={params.get('mode') === 'replay' ? 'replay' : 'onboarding'}
     onfinish={() => {}}
   />
+{:else if view === 'onboarding-company'}
+  <!-- The first-run company step on its own: ?scenario=create|join|paused.
+       Size the viewport to ~800x900 like the welcome window. -->
+  <div class="fake-desktop" aria-hidden="true"></div>
+  <CompanyStepPreview />
 {:else if view === 'global-error'}
   <!-- Deterministic render failure for visually verifying the production
        Svelte error boundary without breaking any other harness route. -->
