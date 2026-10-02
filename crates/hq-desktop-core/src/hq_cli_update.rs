@@ -4261,6 +4261,98 @@ fn npm_path_shape(detail: &str, prefix: Option<&str>) -> NpmPathShape {
     }
 }
 
+/// Extract npm's reported rename resources and their in-prefix parents for a
+/// Windows Restart Manager query. Returned paths stay in process memory and
+/// must never cross the telemetry boundary.
+pub fn npm_reported_target_resources(prefix: &str, npm_detail: &str) -> Vec<std::path::PathBuf> {
+    fn normalized(value: &str) -> String {
+        value
+            .trim()
+            .trim_matches(|character| character == '\'' || character == '"')
+            .replace('/', "\\")
+            .to_ascii_lowercase()
+    }
+
+    let prefix_text = normalized(prefix).trim_end_matches('\\').to_string();
+    let mut resources = Vec::new();
+    for line in npm_detail.lines() {
+        let Some(path) = line
+            .strip_prefix("npm error path ")
+            .or_else(|| line.strip_prefix("npm error dest "))
+        else {
+            continue;
+        };
+        let path_text = normalized(path);
+        if path_text.contains("\\..\\")
+            || path_text.ends_with("\\..")
+            || path_text.contains("\\.\\")
+            || (path_text != prefix_text && !path_text.starts_with(&format!("{prefix_text}\\")))
+        {
+            continue;
+        }
+        let mut current = path
+            .trim()
+            .trim_matches(|character| character == '\'' || character == '"')
+            .to_string();
+        loop {
+            if resources.len() >= 32 {
+                break;
+            }
+            resources.push(std::path::PathBuf::from(&current));
+            let Some((parent, _)) = current.rsplit_once('\\') else {
+                break;
+            };
+            let parent_text = normalized(parent);
+            if parent_text == prefix_text {
+                resources.push(std::path::PathBuf::from(parent));
+                break;
+            }
+            if !parent_text.starts_with(&format!("{prefix_text}\\")) {
+                break;
+            }
+            current = parent.to_string();
+        }
+    }
+    resources.sort();
+    resources.dedup();
+    resources
+}
+
+#[cfg(test)]
+mod npm_reported_target_resources_tests {
+    use super::npm_reported_target_resources;
+
+    #[test]
+    fn busy_query_registers_npm_rename_targets_and_each_parent_inside_the_prefix() {
+        let resources = npm_reported_target_resources(
+            r"C:\npm",
+            concat!(
+                "npm error path C:\\npm\\node_modules\\@indigoai-us\\hq-cli\n",
+                "npm error dest C:\\npm\\node_modules\\@indigoai-us\\.hq-cli-X\n",
+                "npm error path C:\\private\\outside.exe\n",
+                "npm error dest C:\\npm\\..\\private\\outside.exe\n",
+            ),
+        );
+        let path_strings = resources
+            .iter()
+            .map(|path| path.to_string_lossy().to_ascii_lowercase())
+            .collect::<Vec<_>>();
+        for expected in [
+            r"c:\npm\node_modules\@indigoai-us\hq-cli",
+            r"c:\npm\node_modules\@indigoai-us",
+            r"c:\npm\node_modules",
+            r"c:\npm",
+            r"c:\npm\node_modules\@indigoai-us\.hq-cli-x",
+        ] {
+            assert!(
+                path_strings.iter().any(|path| path == expected),
+                "{expected}"
+            );
+        }
+        assert!(!path_strings.iter().any(|path| path.contains("private")));
+    }
+}
+
 /// The `@indigoai-us/hq-cli` shim a bin-collision or prefix-permission event
 /// names, reduced to a CLOSED enumeration: one of [`HQ_CLI_BIN_NAMES`] when the
 /// reported path's basename is that shim (with or without a Windows `.cmd` /
@@ -5242,6 +5334,7 @@ pub struct RestartManagerHolderClassification {
     pub class: NpmLockHolderClass,
     pub count: u16,
     owned_processes: Vec<RestartManagerProcessIdentity>,
+    image_basename: Option<String>,
 }
 
 impl RestartManagerHolderClassification {
@@ -5253,6 +5346,10 @@ impl RestartManagerHolderClassification {
         self.owned_processes.iter().any(|identity| {
             identity.process_id == process_id && identity.process_start_time == process_start_time
         })
+    }
+
+    pub fn image_basename(&self) -> Option<&str> {
+        self.image_basename.as_deref()
     }
 }
 
@@ -5318,6 +5415,7 @@ pub fn classify_restart_manager_holders(
     let mut identities = Vec::new();
     let mut owned_processes = Vec::new();
     let mut selected = NpmLockHolderClass::None;
+    let mut selected_image_basename: Option<String> = None;
     for result in results {
         if result.process_id == 0 {
             continue;
@@ -5345,13 +5443,45 @@ pub fn classify_restart_manager_holders(
         };
         if priority(class) > priority(selected) {
             selected = class;
+            selected_image_basename = result
+                .image_name
+                .as_deref()
+                .and_then(telemetry_image_basename);
+        } else if class == selected {
+            if let Some(image_basename) = result
+                .image_name
+                .as_deref()
+                .and_then(telemetry_image_basename)
+            {
+                if selected_image_basename
+                    .as_ref()
+                    .is_none_or(|current| image_basename < *current)
+                {
+                    selected_image_basename = Some(image_basename);
+                }
+            }
         }
     }
     RestartManagerHolderClassification {
         class: selected,
         count: identities.len().min(u16::MAX as usize) as u16,
         owned_processes,
+        image_basename: selected_image_basename,
     }
+}
+
+fn telemetry_image_basename(value: &str) -> Option<String> {
+    if value.is_empty()
+        || value.len() > 96
+        || value.contains('/')
+        || value.contains('\\')
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return None;
+    }
+    Some(value.to_string())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -5379,6 +5509,7 @@ pub struct RestartManagerHolderObservation {
     pub count: u16,
     pub query_outcome: NpmLockHolderQueryOutcome,
     owned_processes: Vec<RestartManagerProcessIdentity>,
+    image_basename: Option<String>,
 }
 
 impl RestartManagerHolderObservation {
@@ -5409,6 +5540,11 @@ impl RestartManagerHolderObservation {
                 .unwrap_or(classification.count),
             query_outcome,
             owned_processes: classification.owned_processes,
+            image_basename: if query_outcome == NpmLockHolderQueryOutcome::Complete {
+                classification.image_basename
+            } else {
+                None
+            },
         }
     }
 
@@ -5417,6 +5553,7 @@ impl RestartManagerHolderObservation {
             class: self.class,
             count: self.count,
             query_outcome: self.query_outcome,
+            image_basename: self.image_basename.clone(),
         }
     }
 
@@ -5431,13 +5568,14 @@ impl RestartManagerHolderObservation {
     }
 }
 
-/// Telemetry-safe holder summary. This type deliberately has no PID or name
-/// fields; only its closed values may cross the reporting boundary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Telemetry-safe holder summary. It carries no PID or path; the only process
+/// identifier is a validated basename with a bounded ASCII vocabulary.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct NpmLockHolderDiagnostic {
     pub class: NpmLockHolderClass,
     pub count: u16,
     pub query_outcome: NpmLockHolderQueryOutcome,
+    pub image_basename: Option<String>,
 }
 
 pub const WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES: usize = 3;
@@ -6636,6 +6774,7 @@ mod windows_busy_deferral_tests {
             class: NpmLockHolderClass::None,
             count: 0,
             query_outcome: NpmLockHolderQueryOutcome::Complete,
+            image_basename: None,
         }
     }
 
@@ -6787,12 +6926,14 @@ mod windows_busy_deferral_tests {
             class: NpmLockHolderClass::DefenderOrIndexer,
             count: 1,
             query_outcome: NpmLockHolderQueryOutcome::Complete,
+            image_basename: Some("MsMpEng.exe".into()),
         };
-        assert_eq!(decide(true, real_holder, None), None);
+        assert_eq!(decide(true, real_holder.clone(), None), None);
         let incomplete_query = NpmLockHolderDiagnostic {
             class: NpmLockHolderClass::None,
             count: 0,
             query_outcome: NpmLockHolderQueryOutcome::Unavailable,
+            image_basename: None,
         };
         assert_eq!(decide(true, incomplete_query, None), None);
         assert!(install_failure_report(Some(-4082), DETAIL, Some(PREFIX)).is_some());
@@ -7002,6 +7143,7 @@ mod restart_manager_holder_tests {
         let classification = classify_restart_manager_holders(&[duplicate.clone(), duplicate]);
         assert_eq!(classification.class, NpmLockHolderClass::UserTerminalHqCli);
         assert_eq!(classification.count, 1);
+        assert_eq!(classification.image_basename(), Some("node.exe"));
         let mut windows_search = result(7, "Windows Search", Some("svchost.exe"), false, None);
         windows_search.service_short_name = "WSearch".to_string();
         assert_eq!(
@@ -7012,6 +7154,36 @@ mod restart_manager_holder_tests {
             classify_restart_manager_holders(&[]).class,
             NpmLockHolderClass::None
         );
+    }
+
+    #[test]
+    fn holder_telemetry_has_only_a_safe_basename_and_never_a_path_or_message() {
+        let safe = RestartManagerHolderObservation::from_results(
+            &[result(9, "untrusted message", Some("node.exe"), true, None)],
+            NpmLockHolderQueryOutcome::Complete,
+        )
+        .diagnostic();
+        assert_eq!(safe.class, NpmLockHolderClass::UserTerminalHqCli);
+        let safe_output = format!("{safe:?}");
+        assert!(safe_output.contains("image_basename: Some(\"node.exe\")"));
+
+        let path_shaped = RestartManagerHolderObservation::from_results(
+            &[result(
+                10,
+                "untrusted message",
+                Some(r"C:\Users\private\node.exe"),
+                true,
+                None,
+            )],
+            NpmLockHolderQueryOutcome::Complete,
+        )
+        .diagnostic();
+        let path_shaped_output = format!("{path_shaped:?}");
+        assert!(path_shaped_output.contains("image_basename: None"));
+        assert!(!format!("{safe_output} {path_shaped_output}").contains("untrusted message"));
+        let serialized = format!("{safe_output} {path_shaped_output}");
+        assert!(!serialized.contains('/'));
+        assert!(!serialized.contains('\\'));
     }
 
     #[test]
@@ -7131,6 +7303,7 @@ mod deferred_user_cli_report_tests {
                 class: NpmLockHolderClass::UserTerminalHqCli,
                 count: 1,
                 query_outcome: NpmLockHolderQueryOutcome::Complete,
+                image_basename: Some("node.exe".into()),
             }),
             ..InstallEnvironment::default()
         };
@@ -7613,7 +7786,7 @@ pub fn report_install_failure_with_environment(
             env.windows_busy_retry_outcome,
             WindowsBusyRetryOutcome::NotArmed | WindowsBusyRetryOutcome::Failed
         ) {
-            let diagnostic = env.lock_holder_diagnostic.unwrap_or_default();
+            let diagnostic = env.lock_holder_diagnostic.clone().unwrap_or_default();
             npm_diagnostics.push_str(&format!(
                 " lock_holder_class={} lock_holder_count={} lock_holder_query_outcome={}",
                 diagnostic.class.tag_value(),
@@ -7728,13 +7901,16 @@ pub fn report_install_failure_with_environment(
                     env.windows_busy_retry_outcome,
                     WindowsBusyRetryOutcome::NotArmed | WindowsBusyRetryOutcome::Failed
                 ) {
-                    let diagnostic = env.lock_holder_diagnostic.unwrap_or_default();
+                    let diagnostic = env.lock_holder_diagnostic.clone().unwrap_or_default();
                     scope.set_tag("npm_lock_holder_class", diagnostic.class.tag_value());
                     scope.set_tag("npm_lock_holder_count", diagnostic.count.to_string());
                     scope.set_tag(
                         "npm_lock_holder_query_outcome",
                         diagnostic.query_outcome.tag_value(),
                     );
+                    if let Some(image_basename) = diagnostic.image_basename.as_deref() {
+                        scope.set_tag("npm_lock_holder_image_basename", image_basename);
+                    }
                 }
                 scope.set_tag("npm_windows_busy_retry_attempts", attempts.to_string());
                 scope.set_tag(

@@ -588,6 +588,7 @@ async fn run_npm_install(
 }
 
 const MAX_NPM_INSTALL_ATTEMPTS: usize = 4;
+const CLI_PACKAGE_USE_LEASE_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug)]
 struct NpmInstallAttempt {
@@ -674,6 +675,40 @@ async fn read_hq_cli_package_holder_roots(
             )
         }
     }
+}
+
+#[cfg(target_os = "windows")]
+async fn read_hq_cli_package_busy_holders(
+    prefix: &str,
+    npm_detail: &str,
+) -> RestartManagerHolderObservation {
+    let prefix = prefix.to_string();
+    let npm_detail = npm_detail.to_string();
+    match tauri::async_runtime::spawn_blocking(move || {
+        crate::commands::process::query_hq_cli_package_busy_holders(&prefix, &npm_detail)
+    })
+    .await
+    {
+        Ok(observation) => observation,
+        Err(_) => {
+            log(
+                "hq-cli-update",
+                "Restart Manager rename-target query worker failed; holder class is unavailable",
+            );
+            RestartManagerHolderObservation::from_results(
+                &[],
+                NpmLockHolderQueryOutcome::Unavailable,
+            )
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+async fn read_hq_cli_package_busy_holders(
+    prefix: &str,
+    _npm_detail: &str,
+) -> RestartManagerHolderObservation {
+    read_hq_cli_package_holders(Some(prefix)).await
 }
 
 fn record_deferred_user_cli_breadcrumb(diagnostic: NpmLockHolderDiagnostic, attempts: u8) {
@@ -1053,7 +1088,11 @@ async fn run_npm_install_local_recovery_ladder(
                 break;
             }
 
-            let observation = read_hq_cli_package_holders(prefix).await;
+            let observation = if let Some(prefix) = prefix {
+                read_hq_cli_package_busy_holders(prefix, &detail).await
+            } else {
+                read_hq_cli_package_holders(prefix).await
+            };
             *lock_holder_diagnostic = Some(observation.diagnostic());
             if observation.class == NpmLockHolderClass::UserTerminalHqCli {
                 *windows_busy_retry_attempts = Some(retries_started as u8);
@@ -1161,6 +1200,71 @@ async fn run_npm_install_local_recovery_ladder(
     Ok(output)
 }
 
+async fn resolve_npm_global_prefix_for_lease(npm: &str, path: &str) -> Result<String, String> {
+    let mut command = paths::spawn_command(npm, &[]);
+    command.args(["prefix", "-g"]).env("PATH", path);
+    let output = tokio::time::timeout(
+        Duration::from_secs(3),
+        tokio::process::Command::from_std(command)
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .map_err(|_| "Timed out resolving npm's global prefix; npm was not started".to_string())?
+    .map_err(|error| {
+        format!(
+            "Could not resolve npm's global prefix ({:?}); npm was not started",
+            error.kind()
+        )
+    })?;
+    if !output.status.success() {
+        return Err(format!(
+            "npm could not resolve its global prefix (exit {:?}); npm was not started",
+            output.status.code()
+        ));
+    }
+    let prefix = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if prefix.is_empty() || !Path::new(&prefix).is_absolute() {
+        return Err("npm returned an invalid global prefix; npm was not started".to_string());
+    }
+    Ok(prefix)
+}
+
+async fn acquire_cli_package_update_lease(
+    npm: &str,
+    path: &str,
+    prefix: Option<&str>,
+) -> Result<
+    (
+        hq_desktop_core::package_use_lease::PackageUseUpdateGuard,
+        crate::commands::process::UpdateQuiescenceGuard,
+    ),
+    String,
+> {
+    let started = tokio::time::Instant::now();
+    let resolved_prefix = match prefix {
+        Some(prefix) => prefix.to_string(),
+        None => resolve_npm_global_prefix_for_lease(npm, path).await?,
+    };
+    let request = hq_desktop_core::package_use_lease::PackageUseUpdateRequest::begin(Path::new(
+        &resolved_prefix,
+    ))?;
+
+    // The pending lock prevents fresh CLI entry and asks resident daemons to
+    // hand off. Close this app's child admission as well, so no controlled CLI
+    // work can start while the updater waits for the package's shared lease.
+    #[cfg(target_os = "windows")]
+    let process_guard =
+        crate::commands::process::wait_for_cli_install_quiescence(CLI_PACKAGE_USE_LEASE_TIMEOUT)
+            .await?;
+    #[cfg(not(target_os = "windows"))]
+    let process_guard = crate::commands::process::close_cli_process_admission_for_update()?;
+
+    let remaining = CLI_PACKAGE_USE_LEASE_TIMEOUT.saturating_sub(started.elapsed());
+    let package_guard = request.wait(remaining).await?;
+    Ok((package_guard, process_guard))
+}
+
 async fn run_npm_install_with_retries(
     npm: &str,
     path: &str,
@@ -1168,6 +1272,8 @@ async fn run_npm_install_with_retries(
     prefix: Option<&str>,
     base_args: Vec<String>,
 ) -> Result<NpmInstallRun, String> {
+    let (_package_use_lease, _process_admission) =
+        acquire_cli_package_update_lease(npm, path, prefix).await?;
     let mut ledger = Vec::with_capacity(MAX_NPM_INSTALL_ATTEMPTS);
     let mut missing_target_state = MissingTargetState::Unknown;
     let mut windows_busy_retry_attempts = None;
@@ -2540,11 +2646,6 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
             .flatten()
     };
 
-    #[cfg(target_os = "windows")]
-    let _cli_process_quiescence = crate::commands::process::wait_for_cli_install_quiescence(
-        CLI_INSTALL_PROCESS_QUIESCE_TIMEOUT,
-    )
-    .await?;
     let initial_holder_observation = read_hq_cli_package_holders(prefix.as_deref()).await;
     if initial_holder_observation.class == NpmLockHolderClass::UserTerminalHqCli {
         record_deferred_user_cli_breadcrumb(initial_holder_observation.diagnostic(), 0);
@@ -4559,6 +4660,10 @@ mod tests {
     use std::cell::Cell;
     use std::ffi::{OsStr, OsString};
     #[cfg(unix)]
+    use std::io::BufRead;
+    #[cfg(unix)]
+    use std::process::{Command, Stdio};
+    #[cfg(unix)]
     use std::sync::{Mutex, OnceLock};
 
     // Serialize HOME mutation against every other test that reads or writes
@@ -4580,6 +4685,40 @@ mod tests {
                 std::env::remove_var("HOME");
             }
         }
+    }
+
+    #[cfg(unix)]
+    fn spawn_cli_package_use_lease(prefix: &Path) -> std::process::Child {
+        let script = r#"
+const fs = require('node:fs'); const os = require('node:os'); const path = require('node:path');
+const { createHash } = require('node:crypto'); const { performance } = require('node:perf_hooks');
+let canonical = fs.realpathSync.native(process.argv[1]).replace(/\\/g, '/');
+const digest = createHash('sha256').update(canonical, 'utf8').digest('hex');
+const state = process.platform === 'win32'
+  ? path.join(process.env.LOCALAPPDATA, 'hq-cli', 'state', 'package-use')
+  : path.join((process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state')).trim(), 'hq-cli', 'package-use');
+const dir = path.join(state, digest); fs.mkdirSync(dir, { recursive: true });
+const record = { pid: process.pid, start_time_ms: Math.floor(performance.timeOrigin), hq_version: 'test' };
+const target = path.join(dir, `${record.pid}-${record.start_time_ms}.json`);
+const temp = `${target}.${Math.random().toString(36).slice(2)}.tmp`;
+fs.writeFileSync(temp, JSON.stringify(record) + '\n', { flag: 'wx', mode: 0o600 }); fs.renameSync(temp, target);
+console.log('ready'); setInterval(() => {}, 1000);
+"#;
+        let mut child = Command::new("node")
+            .arg("-e")
+            .arg(script)
+            .arg(prefix)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("Node lease fixture starts");
+        let mut ready = String::new();
+        std::io::BufReader::new(child.stdout.as_mut().expect("fixture stdout"))
+            .read_line(&mut ready)
+            .expect("lease fixture publishes its record");
+        assert_eq!(ready.trim(), "ready");
+        child
     }
 
     #[test]
@@ -5235,6 +5374,117 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn cli_package_update_waits_for_shared_cli_lease_before_starting_npm() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let prefix = temp.path().join("npm-prefix");
+        fs::create_dir_all(&prefix).unwrap();
+        let mut cli_lease = spawn_cli_package_use_lease(&prefix);
+
+        let npm = temp.path().join("fake-npm");
+        let attempts = temp.path().join("attempts");
+        fs::write(
+            &npm,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' started >> '{}'\nexit 0\n",
+                attempts.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&npm).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&npm, permissions).unwrap();
+        let npm_cache = temp.path().join("npm-cache");
+        fs::create_dir_all(&npm_cache).unwrap();
+        let npm = npm.to_string_lossy().into_owned();
+        let path = std::env::var("PATH").unwrap();
+        let prefix_text = prefix.to_string_lossy().into_owned();
+        let npm_cache_text = npm_cache.to_string_lossy().into_owned();
+        let update = tokio::spawn(async move {
+            run_npm_install_with_retries(
+                &npm,
+                &path,
+                Path::new(&npm_cache_text),
+                Some(&prefix_text),
+                install_argv(Some(&prefix_text), None),
+            )
+            .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(
+            !attempts.exists(),
+            "npm must not start while a CLI process holds the shared package lease"
+        );
+        cli_lease.kill().expect("release child lease holder");
+        cli_lease.wait().expect("lease holder exits");
+        let run = tokio::time::timeout(Duration::from_secs(5), update)
+            .await
+            .expect("the updater should proceed immediately after the CLI releases its lease")
+            .unwrap()
+            .unwrap();
+        assert!(run.output.status.success());
+        assert_eq!(fs::read_to_string(attempts).unwrap().lines().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cli_package_lease_timeout_is_actionable_and_does_not_start_npm() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let prefix = temp.path().join("npm-prefix");
+        fs::create_dir_all(&prefix).unwrap();
+        let mut cli_lease = spawn_cli_package_use_lease(&prefix);
+        let npm = temp.path().join("fake-npm");
+        let attempts = temp.path().join("attempts");
+        fs::write(
+            &npm,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' started >> '{}'\nexit 0\n",
+                attempts.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&npm).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&npm, permissions).unwrap();
+        let npm_cache = temp.path().join("npm-cache");
+        fs::create_dir_all(&npm_cache).unwrap();
+        let npm = npm.to_string_lossy().into_owned();
+        let path = std::env::var("PATH").unwrap();
+        let prefix_text = prefix.to_string_lossy().into_owned();
+        let npm_cache_text = npm_cache.to_string_lossy().into_owned();
+        let update = tokio::spawn(async move {
+            run_npm_install_with_retries(
+                &npm,
+                &path,
+                Path::new(&npm_cache_text),
+                Some(&prefix_text),
+                install_argv(Some(&prefix_text), None),
+            )
+            .await
+        });
+        let error = tokio::time::timeout(Duration::from_secs(35), update)
+            .await
+            .expect("the package lease wait must be bounded")
+            .unwrap()
+            .unwrap_err();
+        assert!(error.contains("The HQ CLI is still running"), "{error}");
+        assert!(error.contains("npm was not started"), "{error}");
+        assert!(
+            !attempts.exists(),
+            "npm must not mutate the prefix on timeout"
+        );
+        cli_lease.kill().expect("release child lease holder");
+        cli_lease.wait().expect("lease holder exits");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn app_owned_cache_reaches_every_install_retry_attempt() {
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
@@ -5681,6 +5931,10 @@ exit 1
         // Attempt 1 fails ENOTEMPTY naming the planted scope; attempt 2 succeeds.
         let script = format!(
             r#"#!/bin/sh
+if [ "$1" = "prefix" ] && [ "$2" = "-g" ]; then
+  printf '%s\n' '{}'
+  exit 0
+fi
 state="{}"
 attempts="{}"
 count=0
@@ -5694,6 +5948,7 @@ if [ "$count" -eq 1 ]; then
 fi
 exit 0
 "#,
+            temp.path().display(),
             state.display(),
             attempts.display(),
             scope.display(),
