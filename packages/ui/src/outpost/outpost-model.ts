@@ -203,6 +203,34 @@ export function fixtureOutpost(): OutpostCache {
   };
 }
 
+/**
+ * An empty job for the New job sheet (QA-053): fresh id, blank name and
+ * prompt, the default hourly cadence, and DM alerts on failure.
+ */
+export function blankJob(id = `job-${Date.now().toString(36)}`): OutpostJob {
+  return {
+    id,
+    name: "",
+    detail: "",
+    runtime: "Claude",
+    cadence: "hourly",
+    cadenceLabel: "hourly",
+    cron: presetCron("hourly"),
+    timezone: "",
+    nextRun: "",
+    lastResult: "",
+    status: "ok",
+    paused: false,
+    alert: "dm",
+    alertWhen: "on fail",
+    mode: "prompt",
+    prompt: "",
+    skill: "",
+    args: "",
+    secretNames: [],
+  };
+}
+
 export function alertLabel(alert: JobAlert, when: OutpostJob["alertWhen"]): string {
   return alert === "none" ? "none" : `dm · ${when}`;
 }

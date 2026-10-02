@@ -13,6 +13,7 @@
     clampJobAlert,
     filterJobs,
     filterRuns,
+    blankJob,
     fixtureOutpost,
     formatRetry,
     metadata,
@@ -39,6 +40,7 @@
   let logFilter = $state<"all" | "info" | "warn" | "err">("all");
   let selectedJob = $state("attio-call-sync");
   let sheet = $state<OutpostJob | null>(null);
+  let draftName = $state("");
   let draftCadence = $state<JobCadence>("hourly");
   let draftCron = $state("0 * * * *");
   let draftMode = $state<JobRunMode>("prompt");
@@ -77,8 +79,16 @@
   const cronPreview = $derived(previewCron(draftCron, new Date("2026-10-01T18:00:00Z"), 5));
   const offline = $derived(data.unreachable || !data.host.online);
 
+  // QA-053: New job opens a blank sheet; Edit keeps the job's values.
+  const sheetIsNew = $derived(sheet != null && !data.jobs.some((job) => job.id === sheet?.id));
+
+  function openNew(): void {
+    openEdit(blankJob());
+  }
+
   function openEdit(job: OutpostJob): void {
     sheet = job;
+    draftName = job.name;
     draftCadence = job.cadence;
     draftCron = job.cron;
     draftMode = job.mode;
@@ -100,6 +110,35 @@
       return;
     }
     const alert = clampJobAlert(draftAlert);
+    if (sheetIsNew) {
+      const name = draftName.trim();
+      if (!name) {
+        notice = "Name the job before saving.";
+        return;
+      }
+      data = {
+        ...data,
+        jobs: [
+          ...data.jobs,
+          {
+            ...sheet,
+            name,
+            cadence: draftCadence,
+            cadenceLabel: draftCadence === "custom" ? draftCron : draftCadence,
+            cron: draftCron,
+            mode: draftMode,
+            alert,
+            prompt: draftPrompt,
+            skill: draftSkill,
+            args: draftArgs,
+          },
+        ],
+      };
+      writeOutpostCache("personal", data);
+      notice = "";
+      sheet = null;
+      return;
+    }
     data = {
       ...data,
       jobs: data.jobs.map((job) =>
@@ -191,7 +230,7 @@
           {#each ["all", "active", "paused", "failing"] as name (name)}
             <button type="button" class:on={jobFilter === name} onclick={() => (jobFilter = name as typeof jobFilter)}>{name}</button>
           {/each}
-          <button type="button" class="btn primary" disabled={offline} onclick={() => openEdit(data.jobs[0])}>New job</button>
+          <button type="button" class="btn primary" disabled={offline} data-testid="new-job" onclick={openNew}>New job</button>
         </div>
         <div class="jrow hd"><span>Job</span><span>Cadence</span><span>Next run</span><span>Last result</span><span>Alerts</span><span></span></div>
         {#each jobs as job (job.id)}
@@ -199,7 +238,7 @@
             <span class="cell"><span class="nm">{job.name}</span><small>{job.detail}</small></span>
             <span>{job.cadenceLabel}</span>
             <span>{job.nextRun}</span>
-            <span class="st {job.status}">{job.lastResult}</span>
+            <span class="st result {job.status}" data-testid="job-last-result" title={job.lastResult}>{job.lastResult}</span>
             <span data-testid="job-alert">{alertLabel(job.alert, job.alertWhen)}</span>
             <span class="act">
               <button type="button" class="tab" disabled={offline} onclick={(e) => { e.stopPropagation(); togglePause(job); }}>{job.paused ? "Resume" : "Pause"}</button>
@@ -267,11 +306,15 @@
 
   {#if sheet}
     <div class="ov" data-testid="edit-job-sheet">
-      <div class="sheet" role="dialog" aria-label="Edit job" use:dismissable={{ onclose: () => (sheet = null), outside: true }}>
-        <header>Edit job <span class="sub">{sheet.name} · {data.host.name}</span>
+      <div class="sheet" role="dialog" aria-label={sheetIsNew ? "New job" : "Edit job"} use:dismissable={{ onclose: () => (sheet = null), outside: true }}>
+        <header>{sheetIsNew ? "New job" : "Edit job"} <span class="sub">{sheetIsNew ? data.host.name : `${sheet.name} · ${data.host.name}`}</span>
           <button type="button" aria-label="Close" onclick={() => (sheet = null)}>✕</button>
         </header>
         <div class="body">
+          {#if sheetIsNew}
+            <label class="lbl" for="job-name">Name</label>
+            <input id="job-name" data-testid="job-name-input" bind:value={draftName} />
+          {/if}
           <span class="lbl">Cadence</span>
           <div class="seg">
             {#each ["hourly", "daily", "weekdays", "weekly", "custom"] as name (name)}
@@ -354,6 +397,10 @@
   .tabs .btn { margin-left: auto; }
   .jrow { display: grid; grid-template-columns: minmax(0, 1.8fr) 120px 100px minmax(0, 1fr) 90px 120px; gap: 8px; align-items: center; height: 31px; box-sizing: border-box; padding: 0 8px; border-radius: 8px; cursor: pointer; }
   .jrow > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* QA-052: at narrow widths the last result wraps instead of clipping the
+     time, duration, and failure streak. The row grows to fit. */
+  .jrow:not(.hd) { height: auto; min-height: 31px; padding-block: 6px; }
+  .jrow > .st.result { display: block; white-space: normal; overflow: visible; overflow-wrap: anywhere; }
   .jrow.paused { color: var(--t3, var(--v4-text-3)); }
   .jrow.hd { color: var(--t3, var(--v4-text-3)); cursor: default; }
   .jrow.hd:hover { background: transparent; }

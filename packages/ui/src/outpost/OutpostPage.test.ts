@@ -34,6 +34,55 @@ describe("US-034 OutpostPage", () => {
     expect(terminal?.hasAttribute("disabled")).toBe(true);
   });
 
+  it("keeps the full last result readable in the job row (QA-052)", () => {
+    const cache = fixtureOutpost();
+    writeOutpostCache("personal", cache);
+    const target = mountPage();
+    const cells = [...target.querySelectorAll<HTMLElement>("[data-testid='job-last-result']")];
+    expect(cells.length).toBe(cache.jobs.length);
+    cells.forEach((cell, i) => {
+      expect(cell.textContent).toBe(cache.jobs[i].lastResult);
+      expect(cell.getAttribute("title")).toBe(cache.jobs[i].lastResult);
+      expect(cell.classList.contains("result")).toBe(true);
+    });
+  });
+
+  it("New job opens a blank sheet and Edit keeps the job's values (QA-053)", () => {
+    const cache = fixtureOutpost();
+    writeOutpostCache("personal", cache);
+    const target = mountPage();
+    (target.querySelector("[data-testid='new-job']") as HTMLButtonElement).click();
+    flushSync();
+    const sheet = target.querySelector("[data-testid='edit-job-sheet']");
+    expect(sheet?.querySelector("[role='dialog']")?.getAttribute("aria-label")).toBe("New job");
+    const name = target.querySelector("[data-testid='job-name-input']") as HTMLInputElement;
+    expect(name.value).toBe("");
+    expect(sheet?.textContent).not.toContain(cache.jobs[0].name);
+    const prompt = sheet?.querySelector("textarea") as HTMLTextAreaElement | null;
+    if (prompt) expect(prompt.value).toBe("");
+    // Saving without a name is refused; with a name it adds a new job.
+    const save = () => [...target.querySelectorAll("button")].find((b) => b.textContent === "Save")?.click();
+    save();
+    flushSync();
+    expect(target.querySelector("[data-testid='edit-job-sheet']")).not.toBeNull();
+    name.value = "Weekly digest";
+    name.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+    save();
+    flushSync();
+    expect(target.querySelector("[data-testid='edit-job-sheet']")).toBeNull();
+    expect(target.textContent).toContain("Weekly digest");
+    expect(target.textContent).toContain(cache.jobs[0].name);
+
+    const edit = [...target.querySelectorAll("button")].find((b) => b.textContent === "Edit");
+    edit?.click();
+    flushSync();
+    const editSheet = target.querySelector("[data-testid='edit-job-sheet']");
+    expect(editSheet?.querySelector("[role='dialog']")?.getAttribute("aria-label")).toBe("Edit job");
+    expect(editSheet?.textContent).toContain(cache.jobs[0].name);
+    expect(target.querySelector("[data-testid='job-name-input']")).toBeNull();
+  });
+
   it("rejects a bad custom cron and lists five runs for a valid one", () => {
     writeOutpostCache("personal", fixtureOutpost());
     const target = mountPage();
