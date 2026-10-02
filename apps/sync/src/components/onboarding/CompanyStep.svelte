@@ -31,9 +31,16 @@
     type FirstRunPlan,
     type InvokeFn,
   } from '../../lib/first-run-company';
+  import { flushPendingCompanyInvites, queuePendingCompanyInvites } from '../../lib/pending-company-invites';
 
   export type CompanyStepEvent =
-    | { action: 'company_created'; companyUid: string; inviteCount: number; inviteFailureCount: number }
+    | {
+        action: 'company_created';
+        companyUid: string;
+        inviteCount: number;
+        inviteFailureCount: number;
+        inviteQueuedCount: number;
+      }
     | { action: 'company_create_failed'; blocked: boolean }
     | { action: 'invite_joined'; inviteCount: number }
     | { action: 'invite_join_failed' }
@@ -90,6 +97,14 @@
   const canCreate = $derived(
     !busy && form !== null && missing.length === 0 && !slugBlocksSubmit(slugState) && invites.invalid.length === 0,
   );
+
+  function browserStorage(): Storage | null {
+    try {
+      return typeof localStorage === 'undefined' ? null : localStorage;
+    } catch {
+      return null;
+    }
+  }
 
   function toHandle(name: string): string {
     return name
@@ -169,16 +184,40 @@
     }
     slugWatcher?.cancel();
     companyUid = result.company.companyUid;
+    const queued = result.company.queuedInvites;
+    const failedEmails = result.company.inviteFailures.map((failure) => failure.email);
+    let queuedSaved = false;
+    if (queued.length > 0) {
+      queuedSaved = queuePendingCompanyInvites(browserStorage(), companyUid, queued);
+      if (queuedSaved) {
+        // The app sends these when it next sees the company ready; also try
+        // once more in the background in case provisioning finishes soon.
+        void flushPendingCompanyInvites(browserStorage(), api).catch((err) =>
+          console.warn('onboarding: sending queued invites failed', err),
+        );
+      } else {
+        failedEmails.push(...queued.map((invite) => invite.email));
+      }
+    }
     onTelemetry?.({
       action: 'company_created',
       companyUid,
       inviteCount: invites.valid.length,
-      inviteFailureCount: result.company.inviteFailures.length,
+      inviteFailureCount: failedEmails.length,
+      inviteQueuedCount: queuedSaved ? queued.length : 0,
     });
-    note =
-      result.company.inviteFailures.length > 0
-        ? `Some invites did not go out: ${result.company.inviteFailures.map((failure) => failure.email).join(', ')}. You can invite them again from the Team tab.`
-        : null;
+    const notes: string[] = [];
+    if (queuedSaved) {
+      notes.push(
+        `Your company is still being set up. HQ will send the invites to ${queued.map((invite) => invite.email).join(', ')} as soon as it is ready.`,
+      );
+    }
+    if (failedEmails.length > 0) {
+      notes.push(
+        `Some invites did not go out: ${failedEmails.join(', ')}. You can invite them again from the Team tab.`,
+      );
+    }
+    note = notes.length > 0 ? notes.join(' ') : null;
     phase = 'plan';
   }
 

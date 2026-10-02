@@ -6,6 +6,8 @@ import {
   CHECKOUT_FAILED_REASON,
   createFirstRunCompanyApi,
   isCheckoutReturnFor,
+  isProvisionedCompanyEntity,
+  readCompanyProvisioned,
   parseInviteEmails,
   resolveFirstRunCompanyPath,
   startWorkforceCheckout,
@@ -140,6 +142,33 @@ describe('createFirstRunCompanyApi', () => {
     });
     await api.checkCompanySlug?.('acme');
     expect(invoke).toHaveBeenCalledWith('check_company_slug', { slug: 'acme' });
+  });
+});
+
+describe('company provisioning status', () => {
+  const answer = (status: number, body: unknown) => ({ status, body: JSON.stringify(body) });
+
+  it('is ready only when the entity has a bucket and is not provisioning', () => {
+    expect(isProvisionedCompanyEntity({ entity: { bucketName: 'hq-vault-cmp-a', status: 'active' } })).toBe(true);
+    expect(isProvisionedCompanyEntity({ entity: { bucketName: '', status: 'active' } })).toBe(false);
+    expect(isProvisionedCompanyEntity({ entity: { bucketName: 'b', status: 'provisioning' } })).toBe(false);
+    expect(isProvisionedCompanyEntity({ entity: { bucketName: 'b', deleted: true } })).toBe(false);
+    expect(isProvisionedCompanyEntity(null)).toBe(false);
+  });
+
+  it('reads GET /entity/{uid} through hq_pro_fetch', async () => {
+    const invoke = vi.fn(async () => answer(200, { entity: { bucketName: 'hq-vault-cmp-a', status: 'active' } }));
+    await expect(readCompanyProvisioned(invoke as never, 'cmp_a')).resolves.toBe(true);
+    expect(invoke).toHaveBeenCalledWith('hq_pro_fetch', { url: '/entity/cmp_a', method: 'GET', body: null });
+  });
+
+  it('treats 404 as not ready and other errors as a failed read', async () => {
+    await expect(readCompanyProvisioned((async () => answer(404, {})) as never, 'cmp_a')).resolves.toBe(false);
+    await expect(readCompanyProvisioned((async () => answer(500, {})) as never, 'cmp_a')).rejects.toThrow('500');
+  });
+
+  it('is exposed on the first-run company api', () => {
+    expect(typeof createFirstRunCompanyApi(vi.fn() as never).readCompanyProvisioned).toBe('function');
   });
 });
 

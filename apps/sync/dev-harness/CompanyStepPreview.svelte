@@ -73,6 +73,12 @@
       case 'claim_pending_company_invite':
         return { ok: true, claimedSlugs: ['northwind'], message: 'Joined' };
       case 'hq_pro_fetch':
+        if (typeof args?.url === 'string' && args.url.startsWith('/entity/')) {
+          return {
+            status: 200,
+            body: JSON.stringify({ entity: { status: 'active', bucketName: 'hq-vault-preview' } }),
+          };
+        }
         if (scenario === 'paused') {
           return { status: 503, body: JSON.stringify({ code: 'team_signup_disabled' }) };
         }
