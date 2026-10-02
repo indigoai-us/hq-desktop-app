@@ -434,6 +434,8 @@
 
 <style>
   .nas {
+    /* The stepper sizes to its host: a 480 px sheet or a full page. */
+    container-type: inline-size;
     display: flex;
     flex-direction: column;
     min-height: 0;
@@ -513,8 +515,11 @@
   .nas-foot .nas-hint { flex: 1; }
   .nas-primary { background: var(--v4-active-row, transparent); }
   .nas-error { color: var(--v4-error, inherit); margin: 0; }
-  @media (max-width: 800px) {
-    .nas-sheet { grid-template-columns: 1fr; }
+  /* Narrow host (the 480 px sheet): one column, form first, and the sheet
+     scrolls so the summary never covers the footer buttons. */
+  @container (max-width: 800px) {
+    .nas-sheet { grid-template-columns: minmax(0, 1fr); overflow: auto; }
+    .nas-form { order: -1; }
     .nas-steps, .nas-sum { border: 0; }
   }
 </style>
