@@ -41,6 +41,8 @@
   import type { MoreCompany } from "./more-companies.js";
   import TelemetryRailHost from "./TelemetryRailHost.svelte";
   import AtlasLandingHost from "./AtlasLandingHost.svelte";
+  import TeamPage from "../company/TeamPage.svelte";
+  import BotsPage from "../company/BotsPage.svelte";
   import { atlasRoster, atlasWorkingNow, rosterNamesFromRows } from "./atlas-landing.js";
   import AccountMenu from "./AccountMenu.svelte";
   import {
@@ -9546,6 +9548,28 @@
             onopenperson={(personUid) => {
               void navigate({ kind: "dm", personUid });
             }}
+          />
+        {:else if railPlaceholder?.id === "team" && companyPaneCompany}
+          <TeamPage
+            slug={companyPaneCompany.slug ?? ""}
+            companyUid={companyPaneCompany.uid}
+            company={adapter.company ?? null}
+            messaging={adapter.messaging ?? null}
+            senderName={resolvedAccountLabel ?? "you"}
+          />
+        {:else if railPlaceholder?.id === "bots" && companyPaneCompany}
+          <BotsPage
+            companyUid={companyPaneCompany.uid}
+            {adapter}
+            companies={effectiveCompanies}
+            {localBots}
+            onmessage={(uid) => {
+              void navigate({ kind: "dm", personUid: uid });
+            }}
+            onopensession={(uid) => {
+              void navigate({ kind: "dm", personUid: uid });
+            }}
+            onsettings={() => openSettings("bots")}
           />
         {:else if railPlaceholder?.id === "telemetry"}
           <TelemetryRailHost />
