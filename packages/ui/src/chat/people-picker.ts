@@ -22,6 +22,8 @@ export interface PeoplePickerEntry {
   companyUid: string | null;
   /** Every company this person or bot is known in (dedup merges these). */
   companyUids?: readonly string[];
+  /** True when no source supplied a name or email; the label is a fallback. */
+  unnamed?: boolean;
 }
 
 export interface PeoplePickerSection {
@@ -80,6 +82,49 @@ export function togglePickerId(selected: readonly string[], id: string): string[
     : [...selected, id];
 }
 
+/** Internal entity ids (person, agent, company) that must never be a row's primary label (QA-083). */
+const RAW_ENTITY_ID = /^(prs|agt|cmp)_/i;
+
+export function isRawEntityId(value: string | null | undefined): boolean {
+  return RAW_ENTITY_ID.test((value ?? "").trim());
+}
+
+export const UNNAMED_MEMBER_LABEL = "Unnamed member";
+export const PENDING_INVITE_LABEL = "Invited · pending";
+
+/**
+ * Primary label for a list row: name, else email, else a plain fallback.
+ * Every picker row renders through this, so a bare prs_/agt_/cmp_ id can
+ * never be the primary text. The id belongs in the secondary line only.
+ */
+export function rowPrimaryLabel(args: {
+  name?: string | null;
+  email?: string | null;
+  pending?: boolean;
+  fallback?: string;
+}): string {
+  const name = args.name?.trim() ?? "";
+  if (name && !isRawEntityId(name)) return name;
+  const email = args.email?.trim() ?? "";
+  if (email && !isRawEntityId(email)) return email;
+  if (args.pending) return PENDING_INVITE_LABEL;
+  return args.fallback ?? UNNAMED_MEMBER_LABEL;
+}
+
+/** Roster rows from hq-pro may name the person `name` and flag invites by status. */
+function contactName(contact: DmContactInput): string {
+  const loose = contact as DmContactInput & { name?: unknown };
+  const name = contact.displayName?.trim() || (typeof loose.name === "string" ? loose.name.trim() : "");
+  return isRawEntityId(name) ? "" : name;
+}
+
+function contactPending(contact: DmContactInput): boolean {
+  const loose = contact as DmContactInput & { status?: unknown; pending?: unknown };
+  if (loose.pending === true) return true;
+  const status = typeof loose.status === "string" ? loose.status.toLowerCase() : "";
+  return status === "pending" || status === "invited";
+}
+
 /** Directory + contacts already in memory. Groups and guests are explicit. */
 export function entriesFromDirectory(args: {
   rows: readonly ConversationRow[];
@@ -93,6 +138,13 @@ export function entriesFromDirectory(args: {
   const remember = (entry: PeoplePickerEntry) => {
     if (!entry.id || !entry.name) return;
     const prior = byId.get(entry.id);
+    // A later source (contacts after a roster row, or the reverse) may carry
+    // the real name; replace a fallback label with it.
+    if (prior?.unnamed && !entry.unnamed) {
+      const uids = new Set([...(prior.companyUids ?? []), ...(entry.companyUid ? [entry.companyUid] : [])]);
+      byId.set(entry.id, { ...entry, companyUids: [...uids] });
+      return;
+    }
     if (!prior) {
       byId.set(entry.id, {
         ...entry,
@@ -110,11 +162,14 @@ export function entriesFromDirectory(args: {
     const uid = row.personUid?.trim();
     if (row.kind !== "dm" || !uid) continue;
     const agent = isAgentUid(uid);
+    const named = Boolean(row.title?.trim()) && !isRawEntityId(row.title);
+    const email = row.email?.trim() ?? "";
     remember({
       id: uid,
       kind: agent ? "agent" : "person",
-      name: row.title,
-      detail: agent ? "Bot" : (row.email ?? ""),
+      name: rowPrimaryLabel({ name: named ? row.title : "", email }),
+      detail: agent ? "Bot" : named || email ? email : uid,
+      unnamed: !named && !email,
       meta: "",
       live: false,
       companyUid: row.companyUid,
@@ -124,12 +179,15 @@ export function entriesFromDirectory(args: {
     const uid = contact.personUid?.trim();
     if (!uid) continue;
     const agent = isAgentUid(uid);
-    const name = contact.displayName?.trim() || contact.email?.trim() || uid;
+    const name = contactName(contact);
+    const email = contact.email?.trim() ?? "";
+    const unnamed = !name && !email;
     remember({
       id: uid,
       kind: agent ? "agent" : "person",
-      name,
-      detail: agent ? "Bot" : (contact.email?.trim() ?? ""),
+      name: rowPrimaryLabel({ name, email, pending: contactPending(contact) }),
+      detail: agent ? "Bot" : unnamed ? uid : email,
+      unnamed,
       meta: "",
       live: false,
       companyUid: contact.companyUid ?? null,

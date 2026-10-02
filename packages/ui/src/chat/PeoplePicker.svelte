@@ -2,6 +2,7 @@
   import {
     filterPickerEntries,
     groupPickerEntries,
+    rowPrimaryLabel,
     type PeoplePickerEntry,
   } from "./people-picker.js";
 
@@ -42,7 +43,7 @@
           onclick={() => onToggle(entry)}
         >
           <span class="mini" class:sq={entry.kind === "agent"} class:grp={entry.kind === "group"}>{initials(entry.name)}</span>
-          {entry.name}
+          {rowPrimaryLabel({ name: entry.name })}
           <span class="x" aria-hidden="true">✕</span>
         </button>
       {/each}
@@ -74,7 +75,7 @@
           <i aria-hidden="true">{selected.includes(entry.id) ? "✓" : ""}</i>
           <span class="mini" class:sq={entry.kind === "agent"} class:grp={entry.kind === "group"}>{initials(entry.name)}</span>
           <span class="who">
-            <b>{entry.name}</b>
+            <b>{rowPrimaryLabel({ name: entry.name })}</b>
             {#if entry.detail}<span class="m">{entry.detail}</span>{/if}
           </span>
           {#if entry.meta}
