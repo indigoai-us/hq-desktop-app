@@ -21,6 +21,13 @@
     /** More companies opens a popover instead of a page. */
     onmore?: () => void;
     moreExpanded?: boolean;
+    /** You opens the account menu instead of a page. */
+    onyou?: () => void;
+    youExpanded?: boolean;
+    /** Own live dot, from PresenceStore. */
+    youLive?: boolean;
+    /** Hover line for current work. Empty keeps the default tooltip. */
+    youWork?: string;
   }
 
   let {
@@ -32,6 +39,10 @@
     onreorderpins,
     onmore,
     moreExpanded = false,
+    onyou,
+    youExpanded = false,
+    youLive = false,
+    youWork = "",
   }: Props = $props();
 
   let dragUid = $state("");
@@ -76,7 +87,13 @@
 </script>
 
 {#snippet railButton(item: RailItem)}
-  <Tooltip label={railTooltip(item, { unread: unreadCount })} side="right" delay={150}>
+  <Tooltip
+    label={item.kind === "you" && youWork
+      ? `${item.label} · ${youWork}`
+      : railTooltip(item, { unread: unreadCount })}
+    side="right"
+    delay={150}
+  >
     {#snippet trigger(describedBy: string)}
       <button
         type="button"
@@ -86,7 +103,11 @@
         aria-label={item.label}
         aria-describedby={describedBy || undefined}
         aria-current={activeId === item.id ? "page" : undefined}
-        aria-expanded={item.kind === "more-companies" ? moreExpanded : undefined}
+        aria-expanded={item.kind === "more-companies"
+          ? moreExpanded
+          : item.kind === "you"
+            ? youExpanded
+            : undefined}
         aria-keyshortcuts={shortcutHint(item)?.replace("⌘", "Meta+") ?? undefined}
         draggable={item.kind === "company" ? "true" : "false"}
         ondragstart={(event) => onDragStart(item, event)}
@@ -96,6 +117,10 @@
         onclick={() => {
           if (item.kind === "more-companies" && onmore) {
             onmore();
+            return;
+          }
+          if (item.kind === "you" && onyou) {
+            onyou();
             return;
           }
           onselect(item);
@@ -136,6 +161,9 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="6" rx="1.5" /><rect x="3" y="13" width="18" height="6" rx="1.5" /><path d="M7 8h.01M7 16h.01" /></svg>
         {:else if item.kind === "you"}
           <span class="avatar" aria-hidden="true">{youInitials || initials(item.label)}</span>
+          {#if youLive}
+            <span class="live you-live" data-testid="rail-you-live" aria-hidden="true"></span>
+          {/if}
         {/if}
       </button>
     {/snippet}
@@ -261,6 +289,11 @@
     background: var(--v4-ok);
     border: 2px solid var(--v4-sidebar);
     animation: dot-pulse 1.8s ease-in-out infinite;
+  }
+
+  .you-live {
+    bottom: 4px;
+    right: 4px;
   }
 
   @keyframes dot-pulse {

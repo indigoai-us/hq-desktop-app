@@ -77,31 +77,25 @@ describe("DesktopApp settings on web", () => {
 
     expect(host.querySelector('[data-testid="settings-host"]')).toBeNull();
 
-    const card = host.querySelector<HTMLButtonElement>(
-      '[data-testid="chat-user-card"]',
-    );
-    expect(card).toBeTruthy();
-    card?.click();
+    expect(host.querySelector('[data-testid="chat-user-card"]')).toBeNull();
+    host.querySelector<HTMLButtonElement>('[data-testid="rail-you"]')?.click();
+    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 0));
     await tick();
 
-    const settingsItem = [
-      ...host.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
-    ].find((button) => button.textContent?.trim() === "Settings");
+    const settingsItem = host.querySelector<HTMLButtonElement>(
+      '[data-testid="account-settings"]',
+    );
     expect(settingsItem).toBeTruthy();
     settingsItem?.click();
     await tick();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await tick();
 
-    const settings = host.querySelector('[data-testid="settings-host"]');
-    expect(settings).toBeTruthy();
-    expect(
-      settings?.querySelector('[data-testid="settings-nav-notifications"]'),
-    ).toBeTruthy();
-    expect(
-      settings?.querySelector('[data-testid="settings-nav-sync"]'),
-    ).toBeNull();
-    expect(
-      settings?.querySelector('[data-testid="settings-nav-updates"]'),
-    ).toBeNull();
+    const placeholder = host.querySelector('[data-testid="rail-placeholder"]');
+    expect(placeholder?.getAttribute("data-story")).toBe("US-035");
+    expect(placeholder?.textContent).toContain("Settings");
+    expect(host.querySelector('[data-testid="settings-host"]')).toBeNull();
   });
 
   it("keeps the selected company scope when the tenant-keyed sidebar remounts", async () => {

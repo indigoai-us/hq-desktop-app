@@ -95,18 +95,13 @@ test.describe("v2 display library: empty states, no fixture fallback", () => {
     ).toHaveCount(0);
     await page.getByTestId("notifications-back").click();
 
-    await page.getByTestId("chat-user-card").click();
-    await expect(
-      page.getByRole("menuitem", { name: "Settings" }),
-    ).toBeVisible();
-    await expect(
-      page.getByRole("menuitem", { name: "Sign out" }),
-    ).toBeVisible();
-    await page.getByRole("menuitem", { name: "Settings" }).click();
-    await expect(page.getByTestId("settings-host")).toBeVisible();
-    await expect(page.getByTestId("settings-nav-notifications")).toBeVisible();
-    await expect(page.getByTestId("settings-nav-sync")).toHaveCount(0);
-    await expect(page.getByTestId("settings-nav-updates")).toHaveCount(0);
+    await expect(page.getByTestId("chat-user-card")).toHaveCount(0);
+    await page.getByTestId("rail-you").click();
+    await expect(page.getByTestId("account-settings")).toBeVisible();
+    await expect(page.getByTestId("account-sign-out")).toBeVisible();
+    await page.getByTestId("account-settings").click();
+    await expect(page.getByTestId("rail-placeholder")).toContainText("Settings");
+    await expect(page.getByTestId("settings-host")).toHaveCount(0);
     await expect(page.getByTestId("library-overlay")).toHaveCount(0);
     await expect(page.getByTestId("titlebar-core-pill")).toHaveCount(0);
   });

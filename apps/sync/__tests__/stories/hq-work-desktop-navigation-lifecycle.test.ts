@@ -1018,7 +1018,9 @@ describe('embedded Work navigation and lifecycle', () => {
     });
     await flush(128);
 
-    expect(host.querySelector('[data-testid="chat-user-card"]')?.textContent).toContain('Blaise');
+    expect(host.querySelector('[data-testid="rail-you"]')?.getAttribute('aria-label')).toContain(
+      'Blaise',
+    );
     expect(host.querySelector('[data-testid="titlebar-notifications-badge"]')).toBeTruthy();
     expect(host.querySelector('[data-testid="notifications-unread"]')?.textContent?.trim()).toBe(
       '1 unread',

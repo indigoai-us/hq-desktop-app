@@ -40,6 +40,15 @@
   import MoreCompaniesPopover from "./MoreCompaniesPopover.svelte";
   import type { MoreCompany } from "./more-companies.js";
   import TelemetryRailHost from "./TelemetryRailHost.svelte";
+  import AccountMenu from "./AccountMenu.svelte";
+  import {
+    accountPageId,
+    accountPlaceholderForPage,
+    accountRoleRows,
+    ownLiveWork,
+    type AccountPageId,
+    type AccountRoleRow,
+  } from "./account-menu.js";
   import Sidepane from "./Sidepane.svelte";
   import { SidepaneScrollMemory, sidepaneModelKey } from "./sidepane-models.js";
   import CompanySidepane from "./CompanySidepane.svelte";
@@ -6602,6 +6611,7 @@
     if (destination.kind === "extra") {
       if (
         railPlaceholderForPage(destination.page) ||
+        accountPlaceholderForPage(destination.page) ||
         companyPagePlaceholderForPage(destination.page)
       ) {
         return { status: "ready", destination };
@@ -8269,6 +8279,8 @@
   let companyRecentIds = $state<string[]>(readSettingsPrefs().companyRecentIds);
   let moreCompaniesOpen = $state(false);
   let moreCompaniesAnchor = $state({ top: 72, left: 64 });
+  let accountMenuOpen = $state(false);
+  let accountMenuAnchor = $state({ left: 64, bottom: 16 });
 
   const railCompanyRoster = $derived(
     (effectiveCompanies ?? [])
@@ -8325,8 +8337,28 @@
   );
   const railPlaceholder = $derived(
     view === "extra"
-      ? (railPlaceholderForPage(extraPageId) ?? companyPagePlaceholderForPage(extraPageId))
+      ? (railPlaceholderForPage(extraPageId) ??
+        accountPlaceholderForPage(extraPageId) ??
+        companyPagePlaceholderForPage(extraPageId))
       : null,
+  );
+  const accountRoles = $derived(
+    accountRoleRows(
+      railCompanyRoster.map((company) => ({
+        uid: company.uid,
+        label: company.label,
+        role:
+          (effectiveCompanies ?? []).find((row) => (row.cloudUid ?? "").trim() === company.uid)
+            ?.role ?? null,
+      })),
+    ),
+  );
+  const youPresence = $derived(
+    ownLiveWork(
+      presenceSnapshot(),
+      self?.uid ?? "",
+      Object.fromEntries(railCompanyRoster.map((company) => [company.uid, company.label])),
+    ),
   );
 
   // US-007: a company tile opens the company sidepane; Home returns to chat.
@@ -8357,6 +8389,39 @@
       const rect = button.getBoundingClientRect();
       moreCompaniesAnchor = { top: rect.top, left: rect.right + 8 };
     }
+  }
+
+  function placeAccountMenu(): void {
+    const button = document.querySelector("[data-testid='rail-you']");
+    if (button instanceof HTMLElement) {
+      const rect = button.getBoundingClientRect();
+      accountMenuAnchor = {
+        left: rect.right + 8,
+        bottom: Math.max(8, window.innerHeight - rect.bottom),
+      };
+    }
+  }
+
+  function toggleAccountMenu(): void {
+    if (accountMenuOpen) {
+      accountMenuOpen = false;
+      return;
+    }
+    moreCompaniesOpen = false;
+    placeAccountMenu();
+    accountMenuOpen = true;
+  }
+
+  function openAccountPage(page: AccountPageId): void {
+    accountMenuOpen = false;
+    void navigate({ kind: "extra", page: accountPageId(page) });
+  }
+
+  function openCompanyFromAccount(row: AccountRoleRow): void {
+    accountMenuOpen = false;
+    companyPaneOpen = true;
+    changeTenantCompany(row.uid);
+    void navigate(companyRowDestination("company-settings", row.uid));
   }
 
   function toggleMoreCompanies(): void {
@@ -8392,6 +8457,7 @@
       return;
     }
     moreCompaniesOpen = false;
+    accountMenuOpen = false;
     companyPaneOpen = item.kind === "company";
     if (item.kind === "home") changeTenantCompany(null);
     else if (item.kind === "company") {
@@ -9054,7 +9120,30 @@
       onreorderpins={reorderPinnedCompanies}
       onmore={toggleMoreCompanies}
       moreExpanded={moreCompaniesOpen}
+      onyou={toggleAccountMenu}
+      youExpanded={accountMenuOpen}
+      youLive={youPresence.live}
+      youWork={youPresence.work}
     />
+    {#if accountMenuOpen}
+      <AccountMenu
+        name={resolvedAccountLabel ?? "You"}
+        email={self?.email ?? ""}
+        initials={resolvedAccountInitials ?? ""}
+        live={youPresence.live}
+        work={youPresence.work}
+        roles={accountRoles}
+        anchorLeft={accountMenuAnchor.left}
+        anchorBottom={accountMenuAnchor.bottom}
+        onclose={() => (accountMenuOpen = false)}
+        onpage={openAccountPage}
+        oncompany={openCompanyFromAccount}
+        onsignout={() => {
+          accountMenuOpen = false;
+          void signOutWithImageCleanup();
+        }}
+      />
+    {/if}
     {#if moreCompaniesOpen}
       <MoreCompaniesPopover
         companies={moreCompanyList}
@@ -9306,6 +9395,7 @@
             void navigate({ kind: "messages" });
           }}
           onopenSettings={() => openSettings()}
+          hideAccountFooter={!phoneViewport}
           onsignout={onsignout ? signOutWithImageCleanup : undefined}
           oncreatecompany={canRunEntryPoints ? createCompanyEntry : null}
           companyCreate={companyCreateSeam}

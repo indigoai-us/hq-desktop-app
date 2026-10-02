@@ -1,0 +1,266 @@
+<script lang="ts">
+  /**
+   * Account menu (console-rail US-010). 300 px popover on the You avatar.
+   * Paints from the cached identity and membership roster. Sign out confirms
+   * through confirm-sign-out.ts before the host ends the session.
+   */
+  import { confirmSignOut } from "../settings/confirm-sign-out.js";
+  import type { AccountPageId, AccountRoleRow } from "./account-menu.js";
+
+  interface Props {
+    name: string;
+    email?: string;
+    initials?: string;
+    live?: boolean;
+    work?: string;
+    roles: readonly AccountRoleRow[];
+    anchorLeft?: number;
+    anchorBottom?: number;
+    onclose?: () => void;
+    onpage?: (page: AccountPageId) => void;
+    oncompany?: (row: AccountRoleRow) => void;
+    onsignout?: () => void;
+  }
+
+  let {
+    name,
+    email = "",
+    initials = "",
+    live = false,
+    work = "",
+    roles,
+    anchorLeft = 64,
+    anchorBottom = 16,
+    onclose,
+    onpage,
+    oncompany,
+    onsignout,
+  }: Props = $props();
+
+  function mark(): string {
+    if (initials.trim()) return initials.trim().slice(0, 2).toUpperCase();
+    const parts = name.trim().split(/\s+/).filter(Boolean);
+    if (parts.length === 0) return "?";
+    if (parts.length === 1) return parts[0]!.slice(0, 2).toUpperCase();
+    return `${parts[0]![0]}${parts[1]![0]}`.toUpperCase();
+  }
+
+  function choose(page: AccountPageId): void {
+    onpage?.(page);
+  }
+
+  function signOut(): void {
+    if (!confirmSignOut()) return;
+    onsignout?.();
+  }
+
+  function onKeydown(event: KeyboardEvent): void {
+    if (event.key === "Escape") {
+      event.stopPropagation();
+      onclose?.();
+    }
+  }
+</script>
+
+<svelte:window onkeydown={onKeydown} />
+
+<button
+  type="button"
+  class="scrim"
+  aria-label="Close account menu"
+  data-testid="account-menu-scrim"
+  onclick={() => onclose?.()}
+></button>
+<div
+  class="menu"
+  role="menu"
+  tabindex="-1"
+  aria-label="Account"
+  data-testid="account-menu"
+  style="left: {anchorLeft}px; bottom: {anchorBottom}px;"
+>
+  <div class="who">
+    <span class="avatar" aria-hidden="true">
+      {mark()}
+      {#if live}<span class="live" data-testid="account-menu-live"></span>{/if}
+    </span>
+    <span class="copy">
+      <span class="name">{name}</span>
+      {#if email || work}
+        <span class="meta">{email}{email && work ? " · " : ""}{work}</span>
+      {/if}
+    </span>
+    {#if live}<span class="chip" data-testid="account-menu-live-chip">live</span>{/if}
+  </div>
+  <button type="button" class="row" role="menuitem" data-testid="account-profile" onclick={() => choose("profile")}>
+    Profile
+  </button>
+  <button type="button" class="row" role="menuitem" data-testid="account-billing" onclick={() => choose("billing")}>
+    Billing
+  </button>
+  <button type="button" class="row" role="menuitem" data-testid="account-settings" onclick={() => choose("settings")}>
+    Settings
+  </button>
+  {#if roles.length > 0}
+    <div class="sec">Companies</div>
+    {#each roles as row (row.uid)}
+      <button
+        type="button"
+        class="row"
+        role="menuitem"
+        data-testid="account-role"
+        data-company={row.uid}
+        onclick={() => oncompany?.(row)}
+      >
+        <span class="t">{row.label}</span>
+        <span class="role">{row.role}</span>
+      </button>
+    {/each}
+  {/if}
+  <div class="foot">
+    <button type="button" class="row signout" role="menuitem" data-testid="account-sign-out" onclick={signOut}>
+      Sign out
+    </button>
+  </div>
+</div>
+
+<style>
+  .scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    cursor: default;
+  }
+
+  .menu {
+    position: fixed;
+    z-index: 31;
+    width: 300px;
+    max-height: min(420px, calc(100vh - 24px));
+    overflow: auto;
+    padding: 8px;
+    background: var(--v4-popover);
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-popover, 8px);
+    box-shadow: var(--v4-shadow-popover);
+    color: var(--v4-text-1);
+  }
+
+  .who {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    padding: 6px 8px 10px;
+    border-bottom: 1px solid var(--v4-rowline);
+    margin-bottom: 6px;
+  }
+
+  .avatar {
+    position: relative;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    flex: 0 0 auto;
+    font: 600 11px/1 var(--font-ui);
+    background: var(--v4-control-bg);
+    color: var(--v4-text-1);
+  }
+
+  .live {
+    position: absolute;
+    right: -1px;
+    bottom: -1px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--v4-ok);
+    border: 2px solid var(--v4-popover);
+  }
+
+  .copy {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .name {
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .meta {
+    font-size: 12px;
+    color: var(--v4-text-3);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .chip {
+    margin-left: auto;
+    font: 500 10px/1 var(--font-mono, ui-monospace, monospace);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--v4-ok);
+  }
+
+  .sec {
+    padding: 8px 8px 2px;
+    font: 600 10px/1 var(--font-mono, ui-monospace, monospace);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--v4-text-2);
+  }
+
+  .row {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 30px;
+    padding: 4px 8px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--v4-text-1);
+    font: 400 14px/1.2 var(--font-ui);
+    text-align: left;
+    cursor: default;
+  }
+
+  .row:hover,
+  .row:focus-visible {
+    background: var(--v4-active-row);
+    outline: none;
+  }
+
+  .t {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .role {
+    margin-left: auto;
+    font-size: 12px;
+    color: var(--v4-text-3);
+    text-transform: capitalize;
+  }
+
+  .foot {
+    margin-top: 4px;
+    padding-top: 6px;
+    border-top: 1px solid var(--v4-rowline);
+  }
+
+  .signout {
+    color: var(--v4-text-3);
+  }
+</style>

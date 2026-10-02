@@ -7,7 +7,8 @@
  * the three content models it swaps between and the per-destination scroll
  * memory that survives the swap.
  *
- *   - home:    the existing ChatSidebar (Messages & Inbox), unchanged.
+ *   - home:    the existing ChatSidebar (Messages & Inbox). The account footer
+ *              lives on the rail avatar (US-010), not in this pane.
  *   - company: Console-aligned sections with Company settings pinned in the footer.
  *   - atlas:   the company sections with Atlas selected, then Live now / Idle rosters.
  *
