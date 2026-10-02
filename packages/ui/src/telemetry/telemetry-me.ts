@@ -9,6 +9,8 @@
  */
 import type { AdapterPromise, Json } from "@hq/platform";
 import {
+  OTHER_BAND,
+  dayTotal,
   formatTokens,
   listRateUsd,
   type DayStack,
@@ -203,17 +205,33 @@ export function snapshotFromMe(body: unknown, range: TelemetryRange): TelemetryS
         }
       : undefined;
 
+  // The chart stacks the same rows as the By-model table. Tokens of a model
+  // folded into Other, and any day total the per-model split does not cover
+  // (no model id), go into the Other band, so each day adds up.
+  const shownLabels = models.map((m) => m.label);
+  const stackBands = unattributed ? [...shownLabels, OTHER_BAND] : shownLabels;
   const days: DayStack[] = daily.map((point, i) => {
     const p = record(point);
-    const stack: DayStack = { label: dayLabel(String(p.date ?? "")), opus: 0, sonnet: 0, haiku: 0 };
+    const stack: DayStack = { label: dayLabel(String(p.date ?? "")), opus: 0, sonnet: 0, haiku: 0, bands: {} };
+    const bands = stack.bands!;
+    let modelTokens = 0;
     for (const [model, value] of Object.entries(record(p.tokensByModel))) {
+      const tokens = bucketTotal(buckets(value));
+      if (tokens <= 0) continue;
+      modelTokens += tokens;
       const family = modelFamily(model);
-      if (family) stack[family] += bucketTotal(buckets(value));
+      if (family) stack[family] += tokens;
+      const label = modelDisplayName(model);
+      const band = shownLabels.includes(label) ? label : OTHER_BAND;
+      bands[band] = (bands[band] ?? 0) + tokens;
     }
+    const noModel = bucketTotal(buckets(p.tokens)) - modelTokens;
+    if (noModel > 0) bands[OTHER_BAND] = (bands[OTHER_BAND] ?? 0) + noModel;
+    if (bands[OTHER_BAND] && !stackBands.includes(OTHER_BAND)) stackBands.push(OTHER_BAND);
     if (i === daily.length - 1) stack.today = true;
     return stack;
   });
-  const peak = days.reduce((m, d) => Math.max(m, d.opus + d.sonnet + d.haiku), 0);
+  const peak = days.reduce((m, d) => Math.max(m, dayTotal(d)), 0);
   const dayLabels =
     days.length === 0
       ? []
@@ -272,6 +290,7 @@ export function snapshotFromMe(body: unknown, range: TelemetryRange): TelemetryS
     byCompany: [],
     byActor: [],
     unattributed,
+    stackBands,
     io: {
       input: formatTokens(sum.inputTokens),
       cacheRead: formatTokens(sum.cacheReadTokens),

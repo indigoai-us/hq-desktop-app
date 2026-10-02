@@ -57,6 +57,20 @@ export interface DayStack {
   opus: number;
   sonnet: number;
   haiku: number;
+  /**
+   * Tokens per By-model row label (and "Other"). When present, the chart
+   * stacks these instead of the three Claude families.
+   */
+  bands?: Record<string, number>;
+}
+
+/** Chart band name for tokens no By-model row covers. */
+export const OTHER_BAND = "Other";
+
+export interface ChartBand {
+  label: string;
+  tokens: number;
+  opacity: number;
 }
 
 export interface TelemetrySession {
@@ -134,6 +148,8 @@ export interface TelemetrySnapshot {
    * shows them as one row so it adds up to the headline.
    */
   unattributed?: { tokens: number; note: string };
+  /** Chart band labels in By-model table order; absent means the three Claude families. */
+  stackBands?: string[];
   io: { input: string; cacheRead: string; cacheWrite: string; output: string };
   outcomeCounts: {
     all: number;
@@ -211,6 +227,38 @@ export function sharePercent(part: number, total: number): number {
   return Math.round((part / total) * 100);
 }
 
+const BAND_OPACITY = [0.9, 0.62, 0.4, 0.26, 0.16, 0.1, 0.06];
+
+/** Legend and stack order for the chart: the By-model rows, then Other. */
+export function chartBandLabels(snapshot: Pick<TelemetrySnapshot, "stackBands">): string[] {
+  return snapshot.stackBands ?? ["Opus", "Sonnet", "Haiku"];
+}
+
+export function bandOpacity(index: number): number {
+  return BAND_OPACITY[Math.min(index, BAND_OPACITY.length - 1)]!;
+}
+
+/** One day's bands in legend order; their tokens sum to the day's total. */
+export function dayBands(day: DayStack, labels: readonly string[]): ChartBand[] {
+  if (!day.bands) {
+    const fixed = [day.opus, day.sonnet, day.haiku];
+    return ["Opus", "Sonnet", "Haiku"].map((label, i) => ({ label, tokens: fixed[i]!, opacity: bandOpacity(i) }));
+  }
+  return labels.map((label, i) => ({ label, tokens: day.bands?.[label] ?? 0, opacity: bandOpacity(i) }));
+}
+
+/** Plain tooltip for one day: the total, then each non-empty band. */
+export function dayTooltip(day: DayStack, labels: readonly string[]): string {
+  const parts = dayBands(day, labels)
+    .filter((band) => band.tokens > 0)
+    .map((band) => `${band.label} ${formatTokens(band.tokens)}`);
+  return [`${day.label}: ${formatTokens(dayTotal(day))} tokens`, ...parts].join(" · ");
+}
+
+export function bandPercent(tokens: number, max: number): number {
+  return max <= 0 ? 0 : (tokens / max) * 100;
+}
+
 export function barPercents(day: DayStack, max: number): { opus: number; sonnet: number; haiku: number } {
   const scale = max <= 0 ? 0 : 100 / max;
   return {
@@ -221,7 +269,7 @@ export function barPercents(day: DayStack, max: number): { opus: number; sonnet:
 }
 
 export function stackMax(days: readonly DayStack[]): number {
-  return days.reduce((m, d) => Math.max(m, d.opus + d.sonnet + d.haiku), 0);
+  return days.reduce((m, d) => Math.max(m, dayTotal(d)), 0);
 }
 
 export function toCsv(snapshot: TelemetrySnapshot): string {
@@ -247,7 +295,8 @@ function shortDate(date: Date): string {
   return `${MONTHS[date.getUTCMonth()]} ${date.getUTCDate()}`;
 }
 
-function dayTotal(day: DayStack): number {
+export function dayTotal(day: DayStack): number {
+  if (day.bands) return Object.values(day.bands).reduce((sum, n) => sum + n, 0);
   return day.opus + day.sonnet + day.haiku;
 }
 

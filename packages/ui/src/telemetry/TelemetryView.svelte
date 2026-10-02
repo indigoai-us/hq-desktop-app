@@ -8,7 +8,11 @@
   import type { TelemetryCache } from "./telemetry-cache.js";
   import {
     LIST_RATE_LABEL,
-    barPercents,
+    bandOpacity,
+    bandPercent,
+    chartBandLabels,
+    dayBands,
+    dayTooltip,
     formatTokens,
     formatUsd,
     hasListRate,
@@ -66,6 +70,8 @@
     snapshot ? outcomesForFilter(snapshot.sessionsRows, outcomeFilter) : [],
   );
   const maxStack = $derived(snapshot ? stackMax(snapshot.days) : 0);
+  // Chart bands are the By-model rows plus Other, in table order.
+  const bandLabels = $derived(snapshot ? chartBandLabels(snapshot) : []);
   const skillMax = $derived(snapshot?.skills[0]?.count ?? 1);
   // Family rows plus the remainder row, so the table total matches the headline.
   const tokenTotal = $derived(
@@ -251,16 +257,15 @@
         </div>
         <div>
           <div class="sech">Tokens per day · stacked by model <span class="grow"></span>
-            <span class="lg"><i class="o"></i>Opus<i class="s"></i>Sonnet<i class="h"></i>Haiku</span>
+            <span class="lg" data-testid="telemetry-legend">{#each bandLabels as label, i (label)}<i style:opacity={bandOpacity(i)}></i>{label}{/each}</span>
           </div>
           <div class="chart" aria-hidden="true">
             <span class="pk">{snapshot.peakLabel}</span>
             {#each snapshot.days as day, i (i)}
-              {@const bars = barPercents(day, maxStack)}
-              <div class="d" class:today={day.today}>
-                <i class="o" style:height="{bars.opus}%"></i>
-                <i class="s" style:height="{bars.sonnet}%"></i>
-                <i class="h" style:height="{bars.haiku}%"></i>
+              <div class="d" class:today={day.today} title={dayTooltip(day, bandLabels)}>
+                {#each dayBands(day, bandLabels) as band (band.label)}
+                  <i data-band={band.label} data-tokens={band.tokens} style:opacity={band.opacity} style:height="{bandPercent(band.tokens, maxStack)}%"></i>
+                {/each}
               </div>
             {/each}
           </div>
@@ -404,7 +409,7 @@
               {/each}
             </div>
             <span class="grow"></span>
-            {#if tokenStack === "model"}<span class="lg"><i class="o"></i>Opus<i class="s"></i>Sonnet<i class="h"></i>Haiku</span>{/if}
+            {#if tokenStack === "model"}<span class="lg" data-testid="telemetry-legend">{#each bandLabels as label, i (label)}<i style:opacity={bandOpacity(i)}></i>{label}{/each}</span>{/if}
           </div>
           {#if stackUnavailable}
           <p class="foot" data-testid="telemetry-stack-unavailable">{tokenStack === "company" ? "Company" : "Actor"} breakdown isn't available yet. HQ does not report tokens per day by {tokenStack} for your account.</p>
@@ -412,11 +417,10 @@
           <div class="chart" data-testid="telemetry-bars">
             <span class="pk">{snapshot.peakLabel}</span>
             {#each snapshot.days as day, i (i)}
-              {@const bars = barPercents(day, maxStack)}
-              <div class="d" class:today={day.today}>
-                <i class="o" style:height="{bars.opus}%"></i>
-                <i class="s" style:height="{bars.sonnet}%"></i>
-                <i class="h" style:height="{bars.haiku}%"></i>
+              <div class="d" class:today={day.today} title={dayTooltip(day, bandLabels)}>
+                {#each dayBands(day, bandLabels) as band (band.label)}
+                  <i data-band={band.label} data-tokens={band.tokens} style:opacity={band.opacity} style:height="{bandPercent(band.tokens, maxStack)}%"></i>
+                {/each}
               </div>
             {/each}
           </div>
@@ -591,9 +595,9 @@
   .lg { display: flex; align-items: center; gap: 10px; font-weight: 400; color: var(--t2, var(--v4-text-2)); }
   .lg i, .nm i, .chart i, .split i, .mix i, .bar i { background: var(--t1, var(--v4-text-1)); }
   .lg i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; margin-right: -4px; }
-  .o, .lg .o, .nm .opus { opacity: 0.9; }
-  .s, .lg .s, .nm .sonnet { opacity: 0.45; }
-  .h, .lg .h, .nm .haiku { opacity: 0.18; }
+  .o, .nm .opus { opacity: 0.9; }
+  .s, .nm .sonnet { opacity: 0.45; }
+  .h, .nm .haiku { opacity: 0.18; }
   .chart { position: relative; height: 96px; display: flex; align-items: flex-end; gap: 3px; border-bottom: 1px solid var(--line, var(--v4-rowline)); }
   .chart .d { flex: 1; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; min-width: 0; }
   .chart .d i { display: block; width: 100%; }

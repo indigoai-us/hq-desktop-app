@@ -92,3 +92,56 @@ describe("Telemetry Tokens page (QA-081)", () => {
     }
   });
 });
+
+describe("Telemetry daily chart stacks every By-model row (QA-086)", () => {
+  let component: Record<string, unknown> | null = null;
+
+  afterEach(async () => {
+    if (component) await unmount(component);
+    component = null;
+  });
+
+  it("draws Fable, System, unknown and Other bands that add up to the headline", async () => {
+    const t = (n: number) => ({ inputTokens: n, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0 });
+    const snapshot = snapshotFromMe(
+      {
+        from: "2026-10-01",
+        to: "2026-10-02",
+        daily: [
+          { date: "2026-10-01", tokensByModel: { "claude-fable-5-1": t(2000), "<synthetic>": t(100) }, tokens: t(2150) },
+          { date: "2026-10-02", tokensByModel: { "claude-fable-5-1": t(1000), "claude-opus-5-5": t(1000), "mystery-9": t(100), "<synthetic>": t(100) }, tokens: t(2350) },
+        ],
+        totals: {
+          distinctSessions: 2,
+          tokensByModel: { "claude-fable-5-1": t(3000), "claude-opus-5-5": t(1000), "<synthetic>": t(200), "mystery-9": t(100) },
+          tokens: t(4500),
+        },
+      },
+      "7d",
+    );
+    const cache = createTelemetryCache({ fallback: snapshot, fetcher: async () => snapshot });
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    component = mount(TelemetryView, { target, props: { cache } });
+    flushSync();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+    const tab = [...target.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Tokens");
+    (tab as HTMLButtonElement).click();
+    flushSync();
+
+    const legend = target.querySelector("[data-testid='telemetry-legend']")?.textContent;
+    expect(legend).toBe("FableOpusSystemmystery-9Other");
+    const bands = [...target.querySelectorAll("[data-testid='telemetry-bars'] [data-band]")];
+    const sum = bands.reduce((n, el) => n + Number(el.getAttribute("data-tokens")), 0);
+    expect(sum).toBe(4500);
+    const byBand = (name: string) =>
+      bands.filter((el) => el.getAttribute("data-band") === name).reduce((n, el) => n + Number(el.getAttribute("data-tokens")), 0);
+    expect(byBand("Fable")).toBe(3000);
+    expect(byBand("System")).toBe(200);
+    expect(byBand("mystery-9")).toBe(100);
+    expect(byBand("Other")).toBe(200);
+    const days = [...target.querySelectorAll("[data-testid='telemetry-bars'] .d")];
+    expect(days[0]?.getAttribute("title")).toMatch(/^Oct 1: 2k tokens · Fable 2k · System 100 · Other 50$/);
+  });
+});
