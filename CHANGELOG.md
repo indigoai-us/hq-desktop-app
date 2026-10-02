@@ -10,7 +10,13 @@ The release moves it under the version it ships in.
 
 - Sign-in and workspace-selection receipts reach HQ again. Since late September the app could not read the `email_verified` claim on Cognito access tokens (it arrives as text, not true/false), so every receipt was held on disk instead of sent. Receipts already held on your machine are sent on the next signed-in start.
 - A first-ever sign-in's receipt is no longer discarded when HQ has not created the person record yet. The app keeps it and resends it once the record exists (HQ stops accepting it after 30 days).
+- First run now sets up your company. After the install finishes, someone
+  with no company names one (with an optional website and teammate invites),
+  then picks Starter or Workforce. Workforce opens checkout in your browser
+  and HQ picks up when you come back. Someone who was invited can join that
+  company instead.
 - Desktop sign-in can open the website first to link the new account to the native app; if that check fails, it opens Cognito directly as before.
+- Library Back now leaves internal Library tab history and returns to the prior app screen.
 
 ## [0.10.373] — 2026-10-01
 
