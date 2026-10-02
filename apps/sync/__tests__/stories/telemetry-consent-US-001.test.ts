@@ -170,22 +170,23 @@ afterEach(() => {
 });
 
 describe('US-001 wizard step model', () => {
-  it('keeps first-folder, invite, consent and connector import between setup and ready in the step model', () => {
+  it('keeps company, first-folder, invite, consent and connector import between setup and ready in the step model', () => {
     // The step model is unchanged underneath: the consent-only runs still use
     // the consent step, and step telemetry keeps its ids.
-    expect(WIZARD_STEPS.slice(0, 8).map((s) => s.id)).toEqual([
+    expect(WIZARD_STEPS.slice(0, 9).map((s) => s.id)).toEqual([
       'welcome-signin',
       'directory',
       'setup',
+      'company',
       'first-folder-sync',
       'invite-teammate',
       'consent',
       'connector-import',
       'ready',
     ]);
-    expect(CONSENT_STEP).toBe(5);
-    expect(WIZARD_STEPS.find((s) => s.id === 'connector-import')?.index).toBe(6);
-    expect(READY_STEP).toBe(7);
+    expect(CONSENT_STEP).toBe(6);
+    expect(WIZARD_STEPS.find((s) => s.id === 'connector-import')?.index).toBe(7);
+    expect(READY_STEP).toBe(8);
   });
 
   it('gates the consent step until the question is answered', () => {
