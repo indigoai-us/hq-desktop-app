@@ -9,6 +9,11 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - On a fresh install, HQ now shows its logo and "Starting HQ..." right away instead of a blank, frozen window while it starts up.
+- First run now sets up your company. After the install finishes, someone
+  with no company names one (with an optional website and teammate invites),
+  then picks Starter or Workforce. Workforce opens checkout in your browser
+  and HQ picks up when you come back. Someone who was invited can join that
+  company instead.
 - Desktop sign-in can open the website first to link the new account to the native app; if that check fails, it opens Cognito directly as before.
 - Library Back now leaves internal Library tab history and returns to the prior app screen.
 
