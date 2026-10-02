@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- On refresh, HQ Desktop can show the existing plan-limit notice when a free company is nearing or over a resource limit.
+
 - Desktop now uses the current cloud company name for workspace rows and
   home-channel labels before falling back to cached names or slugs.
 
