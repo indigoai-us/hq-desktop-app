@@ -561,6 +561,28 @@ mod tests {
         assert!(request.try_acquire().unwrap().is_none());
     }
 
+    #[tokio::test]
+    async fn wait_timeout_returns_the_package_use_lease_timeout_error() {
+        let (_temp, paths) = fixture();
+        let pid = std::process::id();
+        let start = process_start_time_ms(pid).unwrap();
+        record(
+            &paths
+                .lease_directory
+                .join(format!("{pid}-{start}.json")),
+            pid,
+            start,
+        );
+        let request = PackageUseUpdateRequest::begin_at(paths).unwrap();
+
+        let result = request.wait(Duration::from_millis(200)).await;
+
+        assert_eq!(
+            result.as_ref().err().map(String::as_str),
+            Some(PACKAGE_USE_LEASE_TIMEOUT_ERROR)
+        );
+    }
+
     #[test]
     fn a_dead_pid_lease_is_removed_and_does_not_block_mutation() {
         let (_temp, paths) = fixture();
