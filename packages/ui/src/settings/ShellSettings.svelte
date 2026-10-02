@@ -13,7 +13,6 @@
   import { HQ_CONSOLE_BASE } from "../common/hq-console.js";
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
   import PageHeader from "../shell/PageHeader.svelte";
-  import CompaniesSettingsPane from "./CompaniesSettingsPane.svelte";
   import PrototypeSettingsPanes from "./PrototypeSettingsPanes.svelte";
   import AgentsSettingsPane from "./AgentsSettingsPane.svelte";
   import BotsSettingsPane from "./BotsSettingsPane.svelte";
@@ -41,7 +40,6 @@
 
   export type ShellSettingsSection =
     | "profile"
-    | "companies"
     | "general"
     | "agents"
     | "bots"
@@ -54,7 +52,6 @@
   const ALL_SECTIONS: ReadonlyArray<{ id: ShellSettingsSection | "sep"; label: string }> =
     [
       { id: "profile", label: "Profile" },
-      { id: "companies", label: "Companies" },
       { id: "sep", label: "" },
       { id: "general", label: "General" },
       { id: "agents", label: "AI tools" },
@@ -72,8 +69,12 @@
     companies?: Workspace[] | null;
     adapter?: PlatformAdapter | null;
     version?: string;
-    /** Host-routed subsection; null preserves Profile-first normal entry. */
-    initialSection?: ShellSettingsSection | null;
+    /**
+     * Host-routed subsection; null preserves Profile-first normal entry.
+     * "companies" is a retired section kept for old deep links: companies
+     * are reached from the rail, so it lands on Profile.
+     */
+    initialSection?: ShellSettingsSection | "companies" | null;
     /** Monotonic native auth generation; stale profile loads/saves are rejected. */
     sessionGeneration?: number;
     /** Account/company-scoped renderer persistence supplied by the host. */
@@ -148,7 +149,8 @@
     // A bare Settings destination is an explicit Profile-first request too.
     // Without this reset a warm `settings` route could leave a previously
     // selected subsection visible when the settings shell stays mounted.
-    active = initialSection ?? "profile";
+    active =
+      initialSection && initialSection !== "companies" ? initialSection : "profile";
   });
   let signOutConfirmOpen = $state(false);
 
@@ -667,15 +669,6 @@
             copy="No profile data yet."
           />
         {/if}
-      {:else if active === "companies"}
-        <CompaniesSettingsPane
-          {companies}
-          {adapter}
-          {storage}
-          personalLabel={profile?.displayName ?? ""}
-          {consoleBase}
-          onopenconsole={openConsole}
-        />
       {:else if active === "agents"}
         <AgentsSettingsPane {adapter} />
       {:else if active === "bots"}

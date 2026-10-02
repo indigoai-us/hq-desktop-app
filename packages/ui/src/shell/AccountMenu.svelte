@@ -1,12 +1,13 @@
 <script lang="ts">
   /**
    * Account menu (console-rail US-010). 300 px popover on the You avatar.
-   * Paints from the cached identity and membership roster. Sign out confirms
-   * through confirm-sign-out.ts before the host ends the session.
+   * Paints from the cached identity. Companies are reached from the rail
+   * tiles and the More companies popover, so this menu lists none. Sign out
+   * confirms through confirm-sign-out.ts before the host ends the session.
    */
   import { focusReturn } from "./focus-return.js";
   import { confirmSignOut } from "../settings/confirm-sign-out.js";
-  import type { AccountPageId, AccountRoleRow } from "./account-menu.js";
+  import type { AccountPageId } from "./account-menu.js";
 
   interface Props {
     name: string;
@@ -14,12 +15,10 @@
     initials?: string;
     live?: boolean;
     work?: string;
-    roles: readonly AccountRoleRow[];
     anchorLeft?: number;
     anchorBottom?: number;
     onclose?: () => void;
     onpage?: (page: AccountPageId) => void;
-    oncompany?: (row: AccountRoleRow) => void;
     onsignout?: () => void;
   }
 
@@ -29,12 +28,10 @@
     initials = "",
     live = false,
     work = "",
-    roles,
     anchorLeft = 64,
     anchorBottom = 16,
     onclose,
     onpage,
-    oncompany,
     onsignout,
   }: Props = $props();
 
@@ -106,22 +103,6 @@
     <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1" /></svg>
     <span class="t">Settings</span>
   </button>
-  {#if roles.length > 0}
-    <div class="sec">Companies</div>
-    {#each roles as row (row.uid)}
-      <button
-        type="button"
-        class="row"
-        role="menuitem"
-        data-testid="account-role"
-        data-company={row.uid}
-        onclick={() => oncompany?.(row)}
-      >
-        <span class="t">{row.label}</span>
-        <span class="role">{row.role}</span>
-      </button>
-    {/each}
-  {/if}
   <div class="foot">
     <button type="button" class="row signout" role="menuitem" data-testid="account-sign-out" onclick={signOut}>
       <span class="t indent">Sign out</span>
@@ -144,7 +125,7 @@
     position: fixed;
     z-index: 31;
     width: 300px;
-    max-height: min(420px, calc(100vh - 24px));
+    max-height: calc(100vh - 24px);
     overflow: auto;
     padding: 8px;
     background: var(--v4-popover);
@@ -249,14 +230,6 @@
     padding-left: 23px;
   }
 
-  .sec {
-    padding: 8px 8px 2px;
-    font: 600 10px/1 var(--font-mono, ui-monospace, monospace);
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--v4-text-2);
-  }
-
   .row {
     width: 100%;
     display: flex;
@@ -284,13 +257,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  .role {
-    margin-left: auto;
-    font-size: 12px;
-    color: var(--v4-text-3);
-    text-transform: capitalize;
   }
 
   .foot {

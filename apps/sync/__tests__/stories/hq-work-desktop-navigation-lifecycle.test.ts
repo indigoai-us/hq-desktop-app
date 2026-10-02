@@ -1276,18 +1276,16 @@ describe('embedded Work navigation and lifecycle', () => {
     ).toBe('page');
   });
 
-  it('opens approved Console, company, calendar, OAuth, integration, and meeting-join handoffs', async () => {
+  it('opens approved Console, calendar, OAuth, integration, and meeting-join handoffs', async () => {
     await mountShell({ pendingRoute: 'settings' });
 
     (host.querySelector('[data-testid="settings-open-console"]') as HTMLButtonElement).click();
     await flush();
     expect(openExternal).toHaveBeenLastCalledWith('https://hq.computer/');
 
-    (host.querySelector('[data-testid="settings-nav-companies"]') as HTMLButtonElement).click();
-    await flush();
-    (host.querySelector('[data-testid="settings-company-row"] button') as HTMLButtonElement).click();
-    await flush();
-    expect(openExternal).toHaveBeenLastCalledWith('https://hq.computer/companies/indigo');
+    // Settings no longer lists companies; they are reached from the rail
+    // tiles and the More companies popover.
+    expect(host.querySelector('[data-testid="settings-nav-companies"]')).toBeNull();
 
     warmRoute('meetings');
     await flush();

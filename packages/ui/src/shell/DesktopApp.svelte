@@ -75,7 +75,6 @@
     accountRoleRows,
     ownLiveWork,
     type AccountPageId,
-    type AccountRoleRow,
   } from "./account-menu.js";
   import Sidepane from "./Sidepane.svelte";
   import { SidepaneScrollMemory, sidepaneModelKey } from "./sidepane-models.js";
@@ -8664,13 +8663,6 @@
     void navigate({ kind: "extra", page: accountPageId(page) });
   }
 
-  function openCompanyFromAccount(row: AccountRoleRow): void {
-    accountMenuOpen = false;
-    companyPaneOpen = true;
-    changeTenantCompany(row.uid);
-    void navigate(companyRowDestination("company-settings", row.uid));
-  }
-
   function toggleMoreCompanies(): void {
     if (moreCompaniesOpen) {
       moreCompaniesOpen = false;
@@ -9447,12 +9439,10 @@
         initials={resolvedAccountInitials ?? ""}
         live={youPresence.live}
         work={youPresence.work}
-        roles={accountRoles}
         anchorLeft={accountMenuAnchor.left}
         anchorBottom={accountMenuAnchor.bottom}
         onclose={() => (accountMenuOpen = false)}
         onpage={openAccountPage}
-        oncompany={openCompanyFromAccount}
         onsignout={() => {
           accountMenuOpen = false;
           void signOutWithImageCleanup();

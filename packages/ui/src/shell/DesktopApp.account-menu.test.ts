@@ -129,7 +129,10 @@ describe("DesktopApp account menu (US-010)", () => {
     await settle();
     const menu = host.querySelector('[data-testid="account-menu"]');
     expect(menu?.textContent).toContain("Working in Indigo");
-    expect(menu?.textContent).toContain("owner");
+    // Companies live on the rail tiles and the More companies popover only.
+    expect(menu?.querySelector('[data-testid="account-role"]')).toBeNull();
+    expect(menu?.textContent).not.toMatch(/companies/i);
+    expect(menu?.textContent).not.toContain("owner");
 
     host.querySelector<HTMLButtonElement>('[data-testid="account-profile"]')?.click();
     await settle();
@@ -138,16 +141,14 @@ describe("DesktopApp account menu (US-010)", () => {
     expect(profile?.getAttribute("data-page")).toBe("profile");
     expect(host.querySelector('[data-testid="account-menu"]')).toBeNull();
 
-    you?.click();
-    await settle();
-    host.querySelector<HTMLButtonElement>('[data-testid="account-role"]')?.click();
-    await settle();
-    const settings =
-      host.querySelector('[data-testid="company-settings-host"]') ??
-      host.querySelector('[data-testid="rail-placeholder"]');
-    expect(settings).not.toBeNull();
-    const story = settings?.getAttribute("data-story");
-    if (story) expect(story).toBe("US-030");
+    await vi.waitFor(() =>
+      expect(host.querySelector('[data-testid="account-pages"]')).not.toBeNull(),
+    );
+    const pane = host.querySelector('aside[aria-label="Account"]');
+    expect(pane?.querySelector('[data-testid="account-company"]')).toBeNull();
+    expect(pane?.textContent).not.toMatch(/companies/i);
+    expect(pane?.querySelector('[data-testid="nav-settings"]')).not.toBeNull();
+    expect(pane?.querySelector('[data-testid="account-pane-sign-out"]')).not.toBeNull();
   });
 
   it("confirms sign out and asks the host to end the session", async () => {

@@ -120,7 +120,6 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   // More companies popover: opens a company through navigate(), or only
   // toggles the popover.
   openAccountPage: "push",
-  openCompanyFromAccount: "push",
   openCompanyFromMore: "push",
   toggleAccountMenu: "none",
   toggleMoreCompanies: "none",

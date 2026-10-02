@@ -157,15 +157,6 @@
       Settings
       {#if ready}<span class="count">1</span>{/if}
     </button>
-    {#if companies.length > 0}
-      <div class="sec">Companies</div>
-      {#each companies as company (company.uid)}
-        <button type="button" class="row" data-testid="account-company" onclick={() => oncompany?.(company.uid)}>
-          <span class="t">{company.label}</span>
-          <span class="role">{company.role}</span>
-        </button>
-      {/each}
-    {/if}
     <div class="foot">
       <button type="button" class="row quiet" data-testid="account-pane-sign-out" onclick={() => onsignout?.()}>Sign out</button>
     </div>
@@ -269,8 +260,9 @@
           <button type="button" class="link" data-testid="edit-shortcuts" onclick={() => (shortcutsOpen = true)}>Edit shortcuts</button>
           <div class="sech">HQ settings</div>
           {#each ACCOUNT_SETTINGS_SECTIONS as section (section.id)}
-            <button type="button" class="frow linkish" data-testid="settings-section" data-section={section.id} onclick={() => onsettingssection?.(section.id)}>
-              {section.label}
+            <button type="button" class="srow" data-testid="settings-section" data-section={section.id} onclick={() => onsettingssection?.(section.id)}>
+              <span class="t">{section.label}</span>
+              <svg class="chev" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5" /></svg>
             </button>
           {/each}
         </div>
@@ -392,7 +384,7 @@
   }
   .row.on, .row[aria-current="true"] { background: var(--v4-active-row); }
   .row:hover { background: var(--v4-hover); }
-  .role, .count { margin-left: auto; font-size: 12px; color: var(--v4-text-3); }
+  .count { margin-left: auto; font-size: 12px; color: var(--v4-text-3); }
   .foot { margin-top: auto; }
   .quiet { color: var(--v4-text-3); }
   .content { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
@@ -439,7 +431,22 @@
   .tbl td, .tbl th { padding: 8px 8px 8px 0; border-bottom: 1px solid var(--v4-rowline); }
   .tbl tr[aria-current="true"] td { background: var(--v4-active-row); color: var(--v4-text-1); }
   .mono { font-family: var(--font-mono); font-size: 12px; color: var(--v4-text-3); }
-  .link, .linkish {
+  .srow {
+    display: flex; align-items: center; gap: 8px;
+    width: 100%; min-height: 40px; padding: 6px 8px;
+    border: 0; border-bottom: 1px solid var(--v4-rowline);
+    background: transparent; color: var(--v4-text-1);
+    font: 400 14px/1.2 var(--font-ui); text-align: left;
+    cursor: default;
+  }
+  .srow:hover, .srow:focus-visible { background: var(--v4-hover); outline: none; }
+  .srow .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chev {
+    flex: 0 0 auto; width: 14px; height: 14px;
+    fill: none; stroke: var(--v4-text-3); stroke-width: 1.6;
+    stroke-linecap: round; stroke-linejoin: round;
+  }
+  .link {
     background: none; border: 0; padding: 0;
     color: var(--v4-text-2); text-decoration: underline; text-underline-offset: 3px;
     font-size: 12px; cursor: pointer;
