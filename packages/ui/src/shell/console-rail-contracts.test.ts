@@ -207,6 +207,8 @@ describe("US-002 pending console-rail contracts", () => {
     const titlebar = readFileSync(join(REPO_ROOT, "packages/ui/src/home/V4TitleBar.svelte"), "utf8");
     const rail = readFileSync(join(REPO_ROOT, "packages/ui/src/shell/AppRail.svelte"), "utf8");
     expect(titlebar).toMatch(/data-testid="titlebar-notifications"/);
+    expect(titlebar).toMatch(/data-testid="titlebar-sidebar-toggle"/);
+    expect(titlebar).not.toMatch(/titlebar-projects|onopenProjects/);
     expect(rail).not.toMatch(/notifications/i);
   });
 

@@ -9287,9 +9287,6 @@
     coreUseFixtures={coreFixtures}
     ontogglesidebar={() => (sidebarCollapsed = !sidebarCollapsed)}
     onopenNotifications={toggleNotifications}
-    onopenProjects={isWeb ? undefined : () => {
-      void navigate({ kind: "projects" });
-    }}
     onOpenSettings={() => openSettings()}
     onopenLibrary={() => openLibrary("skills")}
     onopenMarketplace={isWeb ? undefined : () => openLibrary("marketplace")}

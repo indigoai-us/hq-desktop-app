@@ -98,6 +98,13 @@ async function openMenuAndClick(
 }
 
 describe("V4TitleBar Launch menu", () => {
+  it("keeps the sidebar toggle and omits the Projects board icon", async () => {
+    await mountBar(makeAdapter({}));
+    expect(host.querySelector('[data-testid="titlebar-sidebar-toggle"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="titlebar-projects"]')).toBeNull();
+    expect(host.querySelector('[data-testid="titlebar-notifications"]')).toBeTruthy();
+  });
+
   it("offers a labeled host create action without launching an external tool", async () => {
     const onselect = vi.fn();
     const adapter = makeAdapter({});

@@ -33,7 +33,7 @@ need a company folder on the Mac, so they are covered by the desktop harness.
 
 | Screen | Gap compared with the storyboard | Owner or next step |
 |---|---|---|
-| All | The titlebar has a sidebar toggle and a Projects board icon that the storyboard does not show. | Owner decision: keep or remove. |
+| All | The titlebar keeps the sidebar toggle. The Projects board icon is gone; the board opens from the company sidepane Projects row and Atlas. | Owner decision, 2026-10-02. |
 | All | The rail has no dividers between groups. The company tile shows initials, not a logomark circle. The You avatar has no live dot in the harness. | Polish lane (`shell/AppRail.svelte`). |
 | 01 Home | The Companies and Pinned blocks are still in the Messages sidebar. The storyboard moves companies to the rail only. | Polish lane (`chat/ChatSidebar.svelte`). |
 | 02 Atlas | The map shows skeleton circles with the harness graph, and the sidepane rows have no icons. | Polish lane (`shell/CompanySidepane.svelte`). |

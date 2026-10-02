@@ -137,9 +137,11 @@ describe("DesktopApp app rail (console-rail US-003)", () => {
     const spacer = host.querySelector('[data-testid="rail-spacer"]');
     const you = host.querySelector('[data-testid="rail-you"]');
     expect(spacer!.compareDocumentPosition(you!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    for (const id of ["titlebar-meetings", "titlebar-console", "titlebar-reveal-folder"]) {
+    for (const id of ["titlebar-meetings", "titlebar-console", "titlebar-reveal-folder", "titlebar-projects"]) {
       expect(host.querySelector(`[data-testid="${id}"]`), id).toBeNull();
     }
+    expect(host.querySelector('[data-testid="titlebar-sidebar-toggle"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="titlebar-notifications"]')).not.toBeNull();
     for (const el of host.querySelectorAll<HTMLButtonElement>('[data-testid="app-rail"] button')) {
       expect(el.getAttribute("aria-label")).toBeTruthy();
     }
