@@ -9,6 +9,8 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 - Daemon sync controls explain paused, disabled, and stopped states. Resume also re-enables sync for machines migrated from the older daemon setting. Instant Sync changes reach an existing daemon, and require HQ CLI 5.311.0 or later. Company-specific Sync Now no longer starts a sync across every company when the daemon owns sync.
 
+- Desktop sign-in can open the website first to link the new account to the native app; if that check fails, it opens Cognito directly as before.
+
 ## [0.10.373] — 2026-10-01
 
 - Setting up a coding tool after onboarding is smoother. You can choose
