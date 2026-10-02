@@ -1215,15 +1215,14 @@
         <button type="button" class="toggle" class:on={prefs.showInDock} role="switch" aria-checked={prefs.showInDock} aria-label={osStrings.dockToggle} data-testid="settings-dock-toggle" onclick={() => void toggleDock()}></button>
       </div>
       <div class="set-row unavailable" data-testid="settings-menubar-unavailable">
-        <div><div class="sn">{osStrings.trayRow}</div><div class="sd">Managed by the native HQ popover in this release; this embedded screen cannot change it.</div></div>
-        <span class="mono">HOST-OWNED</span>
+        <div><div class="sn">{osStrings.trayRow}</div><div class="sd">Change this from the HQ menu bar icon.</div></div>
       </div>
     {/if}
 
   {:else if section === "appearance"}
-    <p class="settings-note">These choices apply only to this embedded HQ Work window. They do not change macOS or other HQ surfaces.</p>
+    <p class="settings-note">These choices apply only to this HQ window. They do not change macOS or the HQ menu bar.</p>
     <div class="set-row">
-      <div><div class="sn">Theme</div><div class="sd">Appearance for this embedded Work view</div></div>
+      <div><div class="sn">Theme</div><div class="sd">Light, dark, or match your computer</div></div>
       <div class="theme-pills" role="radiogroup" aria-label="Color theme">
         {#each APPEARANCE_THEMES as option (option.id)}
           <button type="button" class="chip" class:on={theme === option.id} role="radio" aria-checked={theme === option.id} data-testid={`settings-theme-${option.id}`} onclick={() => setTheme(option.id)}>{option.label}</button>
@@ -1232,12 +1231,12 @@
     </div>
     {#if canTray}
       <div class="set-row">
-        <div><div class="sn">Window opacity</div><div class="sd">Visual treatment for this embedded Work view</div></div>
+        <div><div class="sn">Window opacity</div><div class="sd">How see-through this window is</div></div>
         <div class="range-wrap"><input type="range" min={MIN_SLIDER_WINDOW_OPACITY} max={MAX_SLIDER_WINDOW_OPACITY} value={prefs.windowOpacity} aria-label="Window opacity" oninput={(event) => setOpacity(Number(event.currentTarget.value))} /><span class="mono range-val">{prefs.windowOpacity}%</span></div>
       </div>
     {/if}
     <div class="set-row">
-      <div><div class="sn">Interface size</div><div class="sd">Density in this embedded Work view</div></div>
+      <div><div class="sn">Interface size</div><div class="sd">Text and spacing size in this window</div></div>
       <div class="theme-pills" role="radiogroup" aria-label="Interface size">
         {#each APPEARANCE_SIZES as option (option.id)}
           <button type="button" class="chip" class:on={prefs.uiSize === option.id} role="radio" aria-checked={prefs.uiSize === option.id} onclick={() => setUiSize(option.id)}>{option.label}</button>
@@ -1262,10 +1261,10 @@
     </div>
   {:else if section === "notifications"}
     {#if canSync}
-      <div class="set-row"><div><div class="sn">Meeting notifications</div><div class="sd">Show native alerts for detected and unattributed meetings</div></div><button type="button" class="toggle" class:on={native.notifications} role="switch" aria-checked={native.notifications} aria-label="Meeting notifications" disabled={!nativeLoaded || pending("meeting-notifications")} onclick={() => void toggleNativeBoolean("meeting-notifications", "notifications")}></button></div>
+      <div class="set-row"><div><div class="sn">Meeting notifications</div><div class="sd">Show alerts for meetings HQ detects, including ones not yet linked to a company</div></div><button type="button" class="toggle" class:on={native.notifications} role="switch" aria-checked={native.notifications} aria-label="Meeting notifications" disabled={!nativeLoaded || pending("meeting-notifications")} onclick={() => void toggleNativeBoolean("meeting-notifications", "notifications")}></button></div>
     {/if}
     <div class="set-row"><div><div class="sn">Share notifications</div><div class="sd">Show file-share activity from teammates</div></div><button type="button" class="toggle" class:on={native.shareNotifications} role="switch" aria-checked={native.shareNotifications} aria-label="Share notifications" disabled={!nativeLoaded || pending("share-notifications")} onclick={() => void toggleNativeBoolean("share-notifications", "shareNotifications")}></button></div>
-    <div class="set-row"><div><div class="sn">DM notifications</div><div class="sd">Show direct-message activity in the native HQ surfaces</div></div><button type="button" class="toggle" class:on={native.dmNotifications} role="switch" aria-checked={native.dmNotifications} aria-label="DM notifications" disabled={!nativeLoaded || pending("dm-notifications")} onclick={() => void toggleNativeBoolean("dm-notifications", "dmNotifications")}></button></div>
+    <div class="set-row"><div><div class="sn">DM notifications</div><div class="sd">Show alerts when someone sends you a direct message</div></div><button type="button" class="toggle" class:on={native.dmNotifications} role="switch" aria-checked={native.dmNotifications} aria-label="DM notifications" disabled={!nativeLoaded || pending("dm-notifications")} onclick={() => void toggleNativeBoolean("dm-notifications", "dmNotifications")}></button></div>
     {#if native.dmNotifications === false}
       <p class="settings-note" data-testid="notify-prefs-master-off">DM notifications are off on this {osStrings.computer}, so HQ shows no message notifications here. The settings below still apply on your other devices.</p>
     {/if}
@@ -1336,15 +1335,15 @@
     </div>
     <div class="set-row">
       <div>
-        <div class="sn">Last sync</div>
+        <div class="sn">Sync history</div>
         <div class="sd">
           {#if liveSync.conflicts > 0}
             {liveSync.conflicts} conflict{liveSync.conflicts === 1 ? "" : "s"} need
             a keep-local / keep-cloud choice
           {:else}
-            From {liveSync.source === "none"
-              ? "no journal yet"
-              : "the v1 journal"}
+            {liveSync.source === "none"
+              ? "Nothing synced on this computer yet"
+              : "Changes synced on this computer"}
           {/if}
         </div>
       </div>
@@ -1413,8 +1412,8 @@
     </div>
     <div class="set-row">
       <div>
-        <div class="sn">Sync personal vault</div>
-        <div class="sd">Include personal HQ files in the fanout</div>
+        <div class="sn">Also sync my personal HQ files to the cloud</div>
+        <div class="sd">Your personal folder (notes, knowledge, and settings outside any company) is backed up and kept the same on your other computers.</div>
       </div>
       <button
         type="button"
@@ -1492,7 +1491,7 @@
         <div>
           <div class="sn">Detected-meeting alerts</div>
           <div class="sd">
-            Show a native alert when a meeting is detected
+            Show an alert when a meeting starts
           </div>
         </div>
         <button
@@ -1509,7 +1508,7 @@
       <div class="set-row">
         <div>
           <div class="sn">Alert sources</div>
-          <div class="sd">Which detected meeting apps may show native alerts</div>
+          <div class="sd">Which meeting apps can show alerts</div>
         </div>
         <div class="theme-pills">
           {#each MEETING_PLATFORMS as platform (platform.id)}
@@ -1626,7 +1625,7 @@
       <div>
         <div class="sn">Automatic updates</div>
         <div class="sd">
-          Allow the native host to install eligible desktop app, HQ Core, and CLI updates in the background
+          Install updates to the HQ app, HQ Core, and the command line tool in the background
         </div>
       </div>
       <button
@@ -1690,7 +1689,7 @@
               : coreUpdateStatus === "unlocated"
                 ? "HQ root is required"
                 : coreUpdateStatus === "failed"
-                  ? "Version probe failed"
+                  ? "Version check failed"
                   : "Version unavailable"}
         </div>
         {#if coreUpdateStatus === "unlocated"}
@@ -1712,13 +1711,13 @@
             : cliUpdateStatus === "checking"
               ? "Checking installed location…"
               : cliUpdateStatus === "unlocated"
-                ? "CLI path is required"
+                ? "Command line tool not found"
                 : cliUpdateStatus === "failed"
-                  ? "Version probe failed"
+                  ? "Version check failed"
                   : "Version unavailable"}
         </div>
         {#if cliUpdateStatus === "unlocated"}
-          <div class="sd" data-testid="settings-cli-remediation">HQ could not find the command line tool. Add the folder that holds it to the PATH setting in this HQ folder’s Claude settings, then refresh. HQ checks that setting first.</div>
+          <div class="sd" data-testid="settings-cli-remediation">HQ could not find the command line tool. Make sure it is installed on this computer, then refresh.</div>
         {:else if cliUpdateStatus === "failed"}
           <div class="sd">CLI version probe failed: {cliProbeError ?? "The check did not finish. Try again."}</div>
         {:else if cliUpdateStatus === "unchecked"}
@@ -1759,7 +1758,7 @@
       </select>
     </div>
     <div class="set-row">
-      <div><div class="sn">Update status</div><div class="sd">Refreshes on window focus and native app, Core, or CLI update events.</div></div>
+      <div><div class="sn">Update status</div><div class="sd">Refreshes when you open this window or an update arrives.</div></div>
       <button
         type="button"
         class="chip"

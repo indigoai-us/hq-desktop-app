@@ -253,7 +253,7 @@
       <div class="page-head">
         <div>
           <h2>Grants</h2>
-          <p class="sub">{snap.grants.length} active path grants · {expiringGrantCount(snap.grants)} expire within 7 days</p>
+          <p class="sub">{snap.grants.length} active folder grants · {expiringGrantCount(snap.grants)} expire within 7 days</p>
         </div>
       </div>
       <div class="seg" role="tablist" data-testid="grant-filters">
@@ -263,7 +263,7 @@
           </button>
         {/each}
       </div>
-      <div class="gt hd"><span>Principal</span><span>Path</span><span>Level</span><span>Expiry</span></div>
+      <div class="gt hd"><span>Principal</span><span>Folder</span><span>Level</span><span>Expiry</span></div>
       {#each visibleGrants as g (g.id)}
         <div class="gt" data-testid="grant-row">
           <span class="nm">{g.principal}</span>

@@ -1917,8 +1917,8 @@
                 </label>
                 <label class="setting-row">
                   <span
-                    ><strong>Sync personal vault</strong><small
-                      >Include personal HQ files in the fanout.</small
+                    ><strong>Also sync my personal HQ files to the cloud</strong><small
+                      >Your personal folder (notes, knowledge, and settings outside any company) is backed up and kept the same on your other computers.</small
                     ></span
                   >
                   <input
@@ -2227,15 +2227,15 @@
                         onclick={handleCopyCoreInstallLogPath}
                         disabled={coreLogCopyState === "copying"}
                         aria-busy={coreLogCopyState === "copying"}
-                        title={`Copy install log path: ${coreInstallLogPath}`}
+                        title={`Copy install log location: ${coreInstallLogPath}`}
                       >
                         {coreLogCopyState === "copying"
                           ? "Copying…"
                           : coreLogCopyState === "copied"
-                            ? "Path copied"
+                            ? "Location copied"
                             : coreLogCopyState === "failed"
                               ? "Copy failed"
-                              : "Copy log path"}
+                              : "Copy log location"}
                       </button>
                       <button
                         type="button"
@@ -2673,8 +2673,8 @@
                   <span>
                     <strong>Window opacity</strong>
                     <small
-                      >100% is fully solid. Lower values reveal more native
-                      vibrancy.</small
+                      >100% is fully solid. Lower values let more of your
+                      desktop show through.</small
                     >
                   </span>
                   <span class="range-control">

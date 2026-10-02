@@ -30,6 +30,19 @@ const DENYLIST: RegExp[] = [
   /\bCSS\b/,
   /z-index/i,
   /\b\d+px\b/i,
+  // QA-076: internal plumbing words.
+  /host-owned/i,
+  /\bnative\b/i,
+  /\bembedded\b/i,
+  /\bpopover\b/i,
+  /\bjournal\b/i,
+  /\bfan-?out\b/i,
+  /\bv1\b/i,
+  /\bdaemon\b/i,
+  /\bstore\b/i,
+  /\bhydrat/i,
+  /\bpresign/i,
+  /\bpath\b/i,
 ];
 
 const COPY_ATTR = /\b(?:placeholder|title|aria-label|message|label)="([^"{]*)"/g;
