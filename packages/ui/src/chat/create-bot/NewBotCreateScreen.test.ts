@@ -137,7 +137,7 @@ describe("NewBotCreateScreen", () => {
       .click();
     await settle();
     document
-      .querySelector<HTMLInputElement>("input[value='cmp_other']")!
+      .querySelector<HTMLButtonElement>("[data-company-uid='cmp_other']")!
       .click();
     await settle();
     document.querySelector<HTMLButtonElement>(".new-bot-back")!.click();
@@ -183,5 +183,105 @@ describe("NewBotCreateScreen", () => {
     create.click();
     await settle();
     expect(oncreate).toHaveBeenCalledTimes(2);
+  });
+  async function openCompanyStep(): Promise<void> {
+    await settle();
+    await advanceName();
+    document
+      .querySelector<HTMLButtonElement>(
+        "[data-testid='new-bot-continue-brain']",
+      )!
+      .click();
+    await settle();
+  }
+  function manyCompanies(count: number) {
+    return Array.from({ length: count }, (_, index) => ({
+      companyUid: `cmp_${index}`,
+      label: `Company ${String(index).padStart(2, "0")}`,
+    }));
+  }
+  it("renders companies as one radio group of tiles and keeps Create bot outside the scroll region", async () => {
+    render();
+    await openCompanyStep();
+    const grid = document.querySelector<HTMLElement>(
+      "[data-testid='new-bot-company-grid']",
+    )!;
+    expect(grid.getAttribute("role")).toBe("radiogroup");
+    const tiles = [...grid.querySelectorAll<HTMLButtonElement>("[role='radio']")];
+    expect(tiles.map((tile) => tile.dataset.companyUid)).toEqual([
+      "cmp_current",
+      "cmp_other",
+    ]);
+    expect(tiles[0]!.getAttribute("aria-checked")).toBe("true");
+    expect(tiles[0]!.title).toBe("Current company");
+    tiles[1]!.click();
+    await settle();
+    expect(tiles[1]!.getAttribute("aria-checked")).toBe("true");
+    expect(tiles[0]!.getAttribute("aria-checked")).toBe("false");
+    const scroll = document.querySelector("[data-testid='new-bot-create-scroll']")!;
+    const create = document.querySelector("[data-testid='new-bot-create-submit']")!;
+    expect(scroll.contains(grid)).toBe(true);
+    expect(scroll.contains(create)).toBe(false);
+  });
+  it("moves focus across the grid with arrow keys without changing the selection", async () => {
+    render({ companies: manyCompanies(9), currentCompanyUid: "cmp_0" });
+    await openCompanyStep();
+    const grid = document.querySelector<HTMLElement>(
+      "[data-testid='new-bot-company-grid']",
+    )!;
+    const press = (key: string) =>
+      (document.activeElement ?? grid).dispatchEvent(
+        new KeyboardEvent("keydown", { key, bubbles: true }),
+      );
+    grid.querySelector<HTMLButtonElement>("[data-company-uid='cmp_0']")!.focus();
+    press("ArrowRight");
+    await settle();
+    expect((document.activeElement as HTMLElement).dataset.companyUid).toBe("cmp_1");
+    press("ArrowDown");
+    await settle();
+    expect((document.activeElement as HTMLElement).dataset.companyUid).toBe("cmp_4");
+    expect(
+      grid
+        .querySelector("[data-company-uid='cmp_0']")!
+        .getAttribute("aria-checked"),
+    ).toBe("true");
+  });
+  it("offers a filter only above 12 companies and keeps the selection while filtering", async () => {
+    render({ companies: manyCompanies(12), currentCompanyUid: "cmp_0" });
+    await openCompanyStep();
+    expect(
+      document.querySelector("[data-testid='new-bot-company-filter']"),
+    ).toBeNull();
+    if (component) await unmount(component);
+    component = null;
+    host.remove();
+    const { oncreate } = render({
+      companies: manyCompanies(14),
+      currentCompanyUid: "cmp_3",
+    });
+    await openCompanyStep();
+    const filter = document.querySelector<HTMLInputElement>(
+      "[data-testid='new-bot-company-filter']",
+    )!;
+    filter.value = "13";
+    filter.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    await settle();
+    const visible = [
+      ...document.querySelectorAll<HTMLElement>(
+        "[data-testid='new-bot-company-grid'] [role='radio']",
+      ),
+    ];
+    expect(visible.map((tile) => tile.dataset.companyUid)).toEqual(["cmp_13"]);
+    filter.value = "zzz";
+    filter.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    await settle();
+    expect(
+      document.querySelector("[data-testid='new-bot-company-grid']")?.textContent,
+    ).toContain("No company matches that.");
+    document
+      .querySelector<HTMLButtonElement>("[data-testid='new-bot-create-submit']")!
+      .click();
+    await settle();
+    expect(oncreate).toHaveBeenCalledWith("cmp_3", expect.anything());
   });
 });
