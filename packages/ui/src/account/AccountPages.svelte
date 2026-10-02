@@ -210,7 +210,7 @@
         <span class="grow"></span>
         <button type="button" class="btn" data-testid="manage-payment" onclick={() => openUrl(managePaymentUrl())}>Manage payment</button>
       </div>
-      <div class="split">
+      <div class="split" class:open={invoice != null} data-testid="billing-split">
         <div class="canvas">
           <div class="sech">Invoice history</div>
           <table class="tbl">
@@ -404,8 +404,11 @@
   .toolbar .sub { display: inline; }
   .grow { flex: 1; }
   .canvas { overflow: auto; padding: 8px 20px 32px; }
-  .split { display: grid; grid-template-columns: minmax(0, 1fr) 340px; min-height: 0; flex: 1; }
-  .split .canvas { border-right: 1px solid var(--line, var(--v4-rowline)); }
+  /* QA-049: the invoice inspector takes width only while an invoice is open. */
+  .split { display: grid; grid-template-columns: minmax(0, 1fr); min-height: 0; flex: 1; }
+  .split.open { grid-template-columns: minmax(0, 1fr) 340px; }
+  .split.open .canvas { border-right: 1px solid var(--line, var(--v4-rowline)); }
+  .split td:nth-child(1), .split td:nth-child(2) { white-space: nowrap; }
   .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; }
   .sech { font-weight: 500; color: var(--t2, var(--v4-text-2)); margin: 0; padding: 16px 0 6px; }
   .frow {

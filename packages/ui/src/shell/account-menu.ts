@@ -70,15 +70,45 @@ export interface AccountRoleRow {
   role: string;
 }
 
-/** One row per company membership that already has a role in the cached roster. */
+/**
+ * The signed-in person's role in one company's member roster (the contacts
+ * read scoped to the company uid, the same source Team lists). Accepts the
+ * bare array or `{ contacts: [...] }`. Null when the person is not listed or
+ * the row has no role.
+ */
+export function selfRoleFromRoster(payload: unknown, selfUid: string): string | null {
+  const uid = selfUid.trim();
+  if (!uid) return null;
+  const rows = Array.isArray(payload)
+    ? payload
+    : payload && typeof payload === "object" && Array.isArray((payload as { contacts?: unknown }).contacts)
+      ? (payload as { contacts: unknown[] }).contacts
+      : [];
+  for (const row of rows) {
+    if (!row || typeof row !== "object") continue;
+    const rec = row as Record<string, unknown>;
+    const id = [rec.personUid, rec.uid, rec.id].find((v) => typeof v === "string" && v.trim());
+    if (typeof id !== "string" || id.trim() !== uid) continue;
+    const role = [rec.role, rec.membershipRole].find((v) => typeof v === "string" && v.trim());
+    return typeof role === "string" ? role.trim() : null;
+  }
+  return null;
+}
+
+/**
+ * One row per company membership that has a role. A role read from the
+ * company's member roster wins over the cached membership role, so Profile
+ * agrees with Team (QA-048).
+ */
 export function accountRoleRows(
   companies: readonly AccountRoleInput[],
+  rosterRoles: Readonly<Record<string, string>> = {},
 ): AccountRoleRow[] {
   const rows: AccountRoleRow[] = [];
   for (const company of companies) {
     if (company.kind === "personal") continue;
     const uid = company.uid.trim();
-    const role = company.role?.trim() ?? "";
+    const role = rosterRoles[uid]?.trim() || company.role?.trim() || "";
     if (!uid || !role) continue;
     rows.push({
       uid,

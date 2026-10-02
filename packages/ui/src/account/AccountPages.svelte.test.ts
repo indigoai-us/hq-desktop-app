@@ -46,9 +46,13 @@ describe("AccountPages (US-035)", () => {
       },
     });
     await tick();
+    // QA-049: no inspector column is reserved until an invoice is open.
+    expect(host.querySelector('[data-testid="invoice-pane"]')).toBeNull();
+    expect(host.querySelector('[data-testid="billing-split"]')?.classList.contains("open")).toBe(false);
     host.querySelector<HTMLElement>('[data-testid="invoice-row"]')?.click();
     await tick();
     expect(host.querySelector('[data-testid="invoice-pane"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="billing-split"]')?.classList.contains("open")).toBe(true);
     host.querySelector<HTMLButtonElement>('[data-testid="invoice-pdf"]')?.click();
     host.querySelector<HTMLButtonElement>('[data-testid="invoice-stripe"]')?.click();
     host.querySelector<HTMLButtonElement>('[data-testid="manage-payment"]')?.click();

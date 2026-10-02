@@ -74,6 +74,7 @@
     accountPageId,
     accountPlaceholderForPage,
     accountRoleRows,
+    selfRoleFromRoster,
     ownLiveWork,
     type AccountPageId,
   } from "./account-menu.js";
@@ -8573,6 +8574,40 @@
         railPlaceholder?.id === "connections" ||
         railPlaceholder?.id === "outpost"),
   );
+  // QA-048: Profile reads the signed-in person's role from each company's
+  // member roster, the same source Team lists, so the two views agree.
+  let accountRosterRoles = $state<Record<string, string>>({});
+  const accountProfileOpen = $derived(
+    view === "extra" && accountPlaceholderForPage(extraPageId)?.id === "profile",
+  );
+  $effect(() => {
+    if (!accountProfileOpen) return;
+    const selfUid = self?.uid?.trim() ?? "";
+    const uids = railCompanyRoster.map((company) => company.uid);
+    if (!selfUid || uids.length === 0) return;
+    let cancelled = false;
+    for (const companyUid of uids) {
+      void adapter.messaging
+        .listContacts({ companyUid })
+        .then((res) => {
+          if (cancelled) return;
+          if (!res.ok) {
+            console.warn("[account] company roster read failed", companyUid, res.message ?? res.reason);
+            return;
+          }
+          const role = selfRoleFromRoster(res.value, selfUid);
+          if (role && accountRosterRoles[companyUid] !== role) {
+            accountRosterRoles = { ...accountRosterRoles, [companyUid]: role };
+          }
+        })
+        .catch((err: unknown) => {
+          console.warn("[account] company roster read failed", companyUid, err);
+        });
+    }
+    return () => {
+      cancelled = true;
+    };
+  });
   const accountRoles = $derived(
     accountRoleRows(
       railCompanyRoster.map((company) => ({
@@ -8582,6 +8617,7 @@
           (effectiveCompanies ?? []).find((row) => (row.cloudUid ?? "").trim() === company.uid)
             ?.role ?? null,
       })),
+      accountRosterRoles,
     ),
   );
   const youPresence = $derived(

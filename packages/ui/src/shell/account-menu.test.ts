@@ -6,6 +6,7 @@ import {
   accountPlaceholderForPage,
   accountRoleRows,
   ownLiveWork,
+  selfRoleFromRoster,
 } from "./account-menu.js";
 
 describe("account menu (US-010)", () => {
@@ -26,6 +27,34 @@ describe("account menu (US-010)", () => {
         { uid: "prs_me", label: "Personal", role: "owner", kind: "personal" },
       ]),
     ).toEqual([{ uid: "co_indigo", label: "Indigo", role: "owner" }]);
+  });
+
+  it("prefers the company roster role over the cached membership role (QA-048)", () => {
+    expect(
+      accountRoleRows(
+        [
+          { uid: "co_unicom", label: "unicom", role: "owner", kind: "company" },
+          { uid: "co_indigo", label: "Indigo", role: "owner", kind: "company" },
+        ],
+        { co_unicom: "member" },
+      ),
+    ).toEqual([
+      { uid: "co_unicom", label: "unicom", role: "member" },
+      { uid: "co_indigo", label: "Indigo", role: "owner" },
+    ]);
+  });
+
+  it("reads the signed-in person's role from a company roster payload", () => {
+    const rows = [
+      { personUid: "prs_else", role: "owner" },
+      { personUid: "prs_me", role: "member" },
+    ];
+    expect(selfRoleFromRoster(rows, "prs_me")).toBe("member");
+    expect(selfRoleFromRoster({ contacts: rows }, "prs_me")).toBe("member");
+    expect(selfRoleFromRoster([{ personUid: "prs_me", membershipRole: "admin" }], "prs_me")).toBe("admin");
+    expect(selfRoleFromRoster(rows, "prs_missing")).toBeNull();
+    expect(selfRoleFromRoster(null, "prs_me")).toBeNull();
+    expect(selfRoleFromRoster(rows, "")).toBeNull();
   });
 
   it("reads the signed-in person's live work from a PresenceStore snapshot", () => {
