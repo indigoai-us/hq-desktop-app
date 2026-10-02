@@ -310,3 +310,5 @@ export { TOUR_SEEN_STORAGE_KEY } from "./tour/guided-tour.js";
 
 // Atlas map (US-012): lazy door only — never re-export ./atlas statically.
 export { loadAtlas } from "./shell/atlas-lazy.js";
+// Personal telemetry (US-032): lazy door only — never re-export ./telemetry statically.
+export { loadTelemetry } from "./shell/telemetry-lazy.js";

@@ -37,6 +37,7 @@
   import ChannelSkeleton from "./ChannelSkeleton.svelte";
   import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
   import AppRail from "./AppRail.svelte";
+  import TelemetryRailHost from "./TelemetryRailHost.svelte";
   import Sidepane from "./Sidepane.svelte";
   import { SidepaneScrollMemory, sidepaneModelKey } from "./sidepane-models.js";
   import {
@@ -9260,6 +9261,8 @@
               void leaveCurrentDestination();
             }}
           />
+        {:else if railPlaceholder?.id === "telemetry"}
+          <TelemetryRailHost />
         {:else if railPlaceholder}
           <section
             class="rail-placeholder"

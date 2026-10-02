@@ -148,11 +148,21 @@ describe("DesktopApp app rail (console-rail US-003)", () => {
 
   it("opens a placeholder that names the story for personal pages not built yet", async () => {
     await mountShell();
-    click("rail-telemetry");
+    click("rail-secrets");
     await settle();
     const placeholder = host.querySelector('[data-testid="rail-placeholder"]');
-    expect(placeholder?.getAttribute("data-story")).toBe("US-032");
-    expect(placeholder?.textContent).toContain("Built in US-032");
+    expect(placeholder?.getAttribute("data-story")).toBe("US-033");
+    expect(placeholder?.textContent).toContain("Built in US-033");
+    expect(current()).toBe("secrets");
+  });
+
+  it("opens telemetry through the lazy host instead of the placeholder", async () => {
+    await mountShell();
+    click("rail-telemetry");
+    await settle();
+    expect(host.querySelector('[data-testid="telemetry-host"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="telemetry-skeleton"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="rail-placeholder"]')).toBeNull();
     expect(current()).toBe("telemetry");
   });
 
