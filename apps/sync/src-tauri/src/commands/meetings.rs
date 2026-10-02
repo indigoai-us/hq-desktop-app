@@ -20,6 +20,7 @@
 //!   GET    /v1/bot/list?calendarEventIds=...         — bots for given events
 //!   POST   /v1/bot/invite                            — schedule a new bot
 //!   POST   /v1/bot/{botId}/cancel                    — cancel scheduled bot
+//!   GET    /v1/meetings/{recallBotId}?view=live      — live transcript poll
 
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
@@ -34,9 +35,10 @@ use crate::util::client_info::build_client;
 #[allow(unused_imports)]
 pub use hq_desktop_core::meetings::{
     build_notification_body, build_notification_title, build_set_company_body,
-    cap_unattributed_notifications, dedupe_new, encode_query_value, first_active_bot, is_recorded,
-    is_unattributed, is_url_safe_id, select_recorded, select_unattributed,
-    set_company_error_message, AccountCalendars, AccountsResponse, BotsResponse, CalendarsResponse,
+    cap_unattributed_notifications, dedupe_new, encode_query_value, first_active_bot,
+    interpret_live_transcript_response, is_recorded, is_unattributed, is_url_safe_id,
+    live_transcript_url, select_recorded, select_unattributed, set_company_error_message,
+    AccountCalendars, LiveTranscriptFetch, AccountsResponse, BotsResponse, CalendarsResponse,
     CancelBotResult, CompanyMembership, EventTime, EventsResponse, GoogleAccount, GoogleCalendar,
     InviteBotBody, MeetingEvent, NotifyDetectedPayload, OntologyParticipant, ScheduledBot,
     SelectedCalendarRef, SetCompanyBody, SetCompanyErrorBody, SetCompanyResult,
@@ -318,6 +320,47 @@ pub async fn meetings_list_scheduled_bots(
     let parsed: BotsResponse =
         serde_json::from_str(&text).map_err(|e| format!("bot/list parse: {e} — body: {text}"))?;
     Ok(parsed.bots)
+}
+
+/// `GET /v1/meetings/{recallBotId}?view=live&companyId=&sinceRevision=` —
+/// one live-transcript poll. Sends `If-None-Match` when the renderer has an
+/// ETag, so an unchanged snapshot answers 304. 404s come back as typed
+/// `disabled` / `not-found` results rather than errors; anything else is an
+/// error string that the renderer logs while keeping its last good state.
+#[tauri::command]
+pub async fn meetings_fetch_live_transcript(
+    recall_bot_id: String,
+    company_id: String,
+    since_revision: Option<u64>,
+    etag: Option<String>,
+) -> Result<LiveTranscriptFetch, String> {
+    let base = vault_base().await?;
+    let url = live_transcript_url(
+        &base,
+        recall_bot_id.trim(),
+        company_id.trim(),
+        since_revision,
+    )?;
+    let auth = auth_header().await?;
+    let mut req = build_client().get(url).header("authorization", &auth);
+    if let Some(tag) = etag.as_deref().filter(|t| !t.is_empty()) {
+        req = req.header("if-none-match", tag);
+    }
+    let res = with_timeout(req)
+        .send()
+        .await
+        .map_err(|e| format!("live-transcript fetch: {e}"))?;
+    let status = res.status().as_u16();
+    let etag = res
+        .headers()
+        .get("etag")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("live-transcript read: {e}"))?;
+    interpret_live_transcript_response(status, etag, &text)
 }
 
 #[tauri::command]
