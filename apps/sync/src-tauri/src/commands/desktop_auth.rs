@@ -47,7 +47,7 @@
 
 use hq_desktop_core::authenticated_receipts::DESKTOP_PERSON_MISSING_CODE;
 use hq_desktop_core::authenticated_receipts::{
-    classify_receipt_http_response, may_deliver_for_account, next_receipt_attempt_count,
+    classify_receipt_http_status, may_deliver_for_account, next_receipt_attempt_count,
     next_receipt_retry_at_ms, ReceiptHttpDisposition,
 };
 use hq_desktop_core::continuation_custody::{
@@ -789,7 +789,7 @@ async fn post_authenticated_desktop_receipt(
     } else {
         None
     };
-    match classify_receipt_http_response(status, error_code.as_deref()) {
+    match classify_receipt_http_status(status, error_code.as_deref()) {
         ReceiptHttpDisposition::Delivered => Ok(AuthenticatedReceiptDelivery::Delivered),
         ReceiptHttpDisposition::Retry => {
             if error_code.as_deref() == Some(DESKTOP_PERSON_MISSING_CODE) {
@@ -1326,7 +1326,7 @@ mod authenticated_receipt_tests {
         let code = receipt_error_code(&body);
         assert_eq!(code.as_deref(), Some(DESKTOP_PERSON_MISSING_CODE));
         assert_eq!(
-            classify_receipt_http_response(403, code.as_deref()),
+            classify_receipt_http_status(403, code.as_deref()),
             ReceiptHttpDisposition::Retry
         );
         assert_eq!(
@@ -1334,7 +1334,7 @@ mod authenticated_receipt_tests {
             None
         );
         assert_eq!(
-            classify_receipt_http_response(403, None),
+            classify_receipt_http_status(403, None),
             ReceiptHttpDisposition::Rejected
         );
     }
