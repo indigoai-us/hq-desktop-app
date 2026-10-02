@@ -26,9 +26,9 @@
 
 use std::collections::HashMap;
 use std::future::Future;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use chrono::{SecondsFormat, Utc};
@@ -831,7 +831,6 @@ fn gate_staged_install(app: &AppHandle, trigger: UpdateTrigger) -> Result<(), St
         }
         return Err(UPDATE_DEFERRED_DURING_PROTECTED_ACTIVITY.to_string());
     }
-    }
     Ok(())
 }
 
@@ -1447,9 +1446,12 @@ async fn commit_staged_install_from_waiter(
     commit_staged_install_with_decision(app, staged, trigger, decision, remaining).await
 }
 
-async fn daemon_pause_drain_install<P, PFut, D, DFut, I, IFut, R, RFut>(
+async fn daemon_pause_drain_install<P, PFut, CyclePause, Guard, Paused, D, DFut, I, IFut, R, RFut>(
     daemon_mode: bool,
     pause_daemon: P,
+    pause_new_cycles: CyclePause,
+    on_paused: Paused,
+    drain_after_pause: bool,
     drain: D,
     install: I,
     resume_daemon: R,
@@ -1457,6 +1459,8 @@ async fn daemon_pause_drain_install<P, PFut, D, DFut, I, IFut, R, RFut>(
 where
     P: FnOnce() -> PFut,
     PFut: Future<Output = bool>,
+    CyclePause: FnOnce() -> Guard,
+    Paused: FnOnce(),
     D: FnOnce() -> DFut,
     DFut: Future<Output = ()>,
     I: FnOnce() -> IFut,
@@ -1464,8 +1468,16 @@ where
     R: FnOnce() -> RFut,
     RFut: Future<Output = ()>,
 {
-    let daemon_paused = if daemon_mode { pause_daemon().await } else { false };
-    drain().await;
+    let _local_pause = pause_new_cycles();
+    on_paused();
+    let daemon_paused = if daemon_mode {
+        pause_daemon().await
+    } else {
+        false
+    };
+    if drain_after_pause {
+        drain().await;
+    }
     let result = install().await;
     if daemon_paused && result.is_err() {
         resume_daemon().await;
@@ -1482,30 +1494,31 @@ fn daemon_update_pause_marker(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|error| format!("could not resolve updater state directory: {error}"))
 }
 
-fn clear_daemon_update_pause_marker(app: &AppHandle) {
-    if let Ok(marker) = daemon_update_pause_marker(app) {
-        if let Err(error) = std::fs::remove_file(marker) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                log("updater", &format!("could not clear daemon pause marker: {error}"));
-            }
-        }
-    }
-}
-
 async fn pause_daemon_sync_for_update(app: &AppHandle) -> bool {
-    use crate::commands::hq_daemon_host::{daemon_sync_pause_args, parse_daemon_sync_status, run_daemon_sync_command_blocking};
+    use crate::commands::hq_daemon_host::{
+        daemon_sync_pause_args, parse_daemon_sync_status, run_daemon_sync_command_blocking,
+    };
 
-    let status = run_daemon_sync_command_blocking(
-        vec!["daemon".into(), "sync".into(), "status".into(), "--json".into()],
-    )
+    let status = run_daemon_sync_command_blocking(vec![
+        "daemon".into(),
+        "sync".into(),
+        "status".into(),
+        "--json".into(),
+    ])
     .await
     .and_then(|output| parse_daemon_sync_status(&output));
     let Ok(status) = status else {
-        log("updater", "daemon sync status unavailable; continuing with local drain");
+        log(
+            "updater",
+            "daemon sync status unavailable; continuing with local drain",
+        );
         return false;
     };
     if status.paused {
-        log("updater", "daemon sync was already paused; preserving its existing pause");
+        log(
+            "updater",
+            "daemon sync was already paused; preserving its existing pause",
+        );
         return false;
     }
 
@@ -1520,12 +1533,20 @@ async fn pause_daemon_sync_for_update(app: &AppHandle) -> bool {
         log("updater", "daemon pause marker has no parent directory");
         return false;
     };
-    if let Err(error) = std::fs::create_dir_all(parent).and_then(|_| std::fs::write(&marker, b"paused")) {
-        log("updater", &format!("could not persist daemon pause marker: {error}"));
+    if let Err(error) =
+        std::fs::create_dir_all(parent).and_then(|_| std::fs::write(&marker, b"paused"))
+    {
+        log(
+            "updater",
+            &format!("could not persist daemon pause marker: {error}"),
+        );
         return false;
     }
 
-    let args = daemon_sync_pause_args(true).into_iter().map(String::from).collect();
+    let args = daemon_sync_pause_args(true)
+        .into_iter()
+        .map(String::from)
+        .collect();
     let paused = run_daemon_sync_command_blocking(args)
         .await
         .ok()
@@ -1533,7 +1554,10 @@ async fn pause_daemon_sync_for_update(app: &AppHandle) -> bool {
         .and_then(|value| value.get("paused").and_then(serde_json::Value::as_bool))
         == Some(true);
     if !paused {
-        log("updater", "daemon sync pause failed; continuing with local drain");
+        log(
+            "updater",
+            "daemon sync pause failed; continuing with local drain",
+        );
         resume_daemon_sync_after_update(app).await;
         return false;
     }
@@ -1541,13 +1565,18 @@ async fn pause_daemon_sync_for_update(app: &AppHandle) -> bool {
 }
 
 pub(crate) async fn resume_daemon_sync_after_update(app: &AppHandle) {
-    use crate::commands::hq_daemon_host::{daemon_sync_pause_args, run_daemon_sync_command_blocking};
+    use crate::commands::hq_daemon_host::{
+        daemon_sync_pause_args, run_daemon_sync_command_blocking,
+    };
 
     let marker = match daemon_update_pause_marker(app) {
         Ok(marker) if marker.exists() => marker,
         _ => return,
     };
-    let args = daemon_sync_pause_args(false).into_iter().map(String::from).collect();
+    let args = daemon_sync_pause_args(false)
+        .into_iter()
+        .map(String::from)
+        .collect();
     let resumed = run_daemon_sync_command_blocking(args)
         .await
         .ok()
@@ -1556,10 +1585,16 @@ pub(crate) async fn resume_daemon_sync_after_update(app: &AppHandle) {
         == Some(false);
     if resumed {
         if let Err(error) = std::fs::remove_file(marker) {
-            log("updater", &format!("daemon sync resumed but marker cleanup failed: {error}"));
+            log(
+                "updater",
+                &format!("daemon sync resumed but marker cleanup failed: {error}"),
+            );
         }
     } else {
-        log("updater", "daemon sync resume failed; startup will retry on the next launch");
+        log(
+            "updater",
+            "daemon sync resume failed; startup will retry on the next launch",
+        );
     }
 }
 
@@ -1591,26 +1626,20 @@ async fn commit_staged_install_with_decision(
     }
     emit_update_install_started(app, &version);
     let drain_after_pause = drains_after_pause(trigger, decision);
-    let post_cap = trigger == InstallTrigger::Automatic
-        && decision == DeferralDecision::PauseThenInstall;
+    let post_cap =
+        trigger == InstallTrigger::Automatic && decision == DeferralDecision::PauseThenInstall;
     let daemon_mode = drain_after_pause
         && crate::commands::hq_daemon_host::current_phase()
             == crate::commands::hq_daemon_host::HostPhase::Daemon;
-    let result = pause_cycles_drain_then_install(
-        drain_after_pause,
+    let result = daemon_pause_drain_install(
+        daemon_mode,
+        || pause_daemon_sync_for_update(app),
         crate::commands::process::pause_new_sync_cycles,
         || log_deferral_decision(trigger, decision, &version, remaining),
-        daemon_pause_drain_install(
-            daemon_mode,
-            || pause_daemon_sync_for_update(app),
-            || async {
-                if drain_after_pause {
-                    drain_in_flight_transfers(IN_FLIGHT_DRAIN_TIMEOUT).await;
-                }
-            },
-            || install_staged_update(app, &staged, post_cap),
-            || resume_daemon_sync_after_update(app),
-        ),
+        drain_after_pause,
+        || async { drain_in_flight_transfers(IN_FLIGHT_DRAIN_TIMEOUT).await },
+        || install_staged_update(app, &staged, post_cap),
+        || resume_daemon_sync_after_update(app),
     )
     .await;
     if let Err(message) = &result {
@@ -1969,7 +1998,8 @@ async fn install_staged_update(
 ) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        let result = crate::windows_update::install_verified_bytes(app, &staged.update, &staged.bytes).await;
+        let result =
+            crate::windows_update::install_verified_bytes(app, &staged.update, &staged.bytes).await;
         if result.is_ok() && post_cap {
             emit_post_cap_install_outcome(&staged.info.version, "installed", None);
         }
@@ -3217,6 +3247,9 @@ mod tests {
                 pause_events.lock().unwrap().push("pause");
                 false
             },
+            || (),
+            || {},
+            true,
             move || async move { drain_events.lock().unwrap().push("drain") },
             move || async move {
                 install_events.lock().unwrap().push("install");
@@ -3238,7 +3271,13 @@ mod tests {
         let resume_events = std::sync::Arc::clone(&events);
         let result = daemon_pause_drain_install(
             true,
-            move || async move { pause_events.lock().unwrap().push("pause"); true },
+            move || async move {
+                pause_events.lock().unwrap().push("pause");
+                true
+            },
+            || (),
+            || {},
+            true,
             move || async move { drain_events.lock().unwrap().push("drain") },
             move || async move {
                 install_events.lock().unwrap().push("install");
@@ -3248,7 +3287,10 @@ mod tests {
         )
         .await;
         assert_eq!(result, Err("installer failed".to_string()));
-        assert_eq!(*events.lock().unwrap(), vec!["pause", "drain", "install", "resume"]);
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec!["pause", "drain", "install", "resume"]
+        );
     }
 
     #[tokio::test]
@@ -3260,7 +3302,13 @@ mod tests {
         let resume_events = std::sync::Arc::clone(&events);
         let result = daemon_pause_drain_install(
             true,
-            move || async move { pause_events.lock().unwrap().push("pause"); true },
+            move || async move {
+                pause_events.lock().unwrap().push("pause");
+                true
+            },
+            || (),
+            || {},
+            true,
             move || async move { drain_events.lock().unwrap().push("drain") },
             move || async move {
                 install_events.lock().unwrap().push("install");
