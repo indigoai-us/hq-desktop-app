@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   BOT_CONNECTION_CARDS_STORAGE_KEY,
+  CARD_MODAL_TARGETS,
   CONNECTING_TIMEOUT_MS,
   CONNECT_FIRST_LABEL,
   CONNECT_MORE_LABEL,
@@ -13,6 +14,7 @@ import {
   MAX_BOT_CONNECTION_RECORDS,
   MAX_WAITING_ROWS,
   SLACK_TIMEOUT_NOTE,
+  cardOpensModal,
   TOOLS_TIMEOUT_NOTE,
   companyUidFromStatus,
   connectionActionKey,
@@ -459,6 +461,7 @@ describe("connectionCardView: Slack", () => {
       title: "Slack",
       line: "Talk to Nova in Slack and let it post there.",
       primaryLabel: "Connect Slack",
+      primaryAction: "connect",
       primaryPending: false,
       declineLabel: "Not now",
       mark: null,
@@ -570,6 +573,7 @@ describe("connectionCardView: tools", () => {
       title: "Connect your tools",
       line: "Add any app through HQ Integrations so Nova can work with it.",
       primaryLabel: "Connect a tool",
+      primaryAction: "connect",
       primaryPending: false,
       declineLabel: "Not now",
       mark: null,
@@ -768,6 +772,58 @@ describe("connectionCardView: tools", () => {
     ];
     const copy = JSON.stringify(views);
     expect(copy).not.toMatch(/\u2014|OAuth|ACL|grant/i);
+  });
+});
+
+describe("a card whose main button opens a modal", () => {
+  const slackOnly = new Set(["slack"] as const);
+
+  it("marks no card yet: both cards still connect", () => {
+    expect([...CARD_MODAL_TARGETS]).toEqual([]);
+    expect(cardOpensModal("slack")).toBe(false);
+    expect(cardOpensModal("tools")).toBe(false);
+    const states: ConnectionCardInput[] = [
+      input(),
+      input({ record: markConnecting(null, "slack", NOW) }),
+      input({ record: markConnecting(null, "tools", NOW, []) }),
+      input({ slack: { state: "connected" } }),
+    ];
+    for (const state of states) {
+      expect(connectionCardView("slack", state).primaryAction).toBe("connect");
+      expect(connectionCardView("tools", state).primaryAction).toBe("connect");
+    }
+  });
+
+  it("reads the switch from the set it is given", () => {
+    expect(cardOpensModal("slack", slackOnly)).toBe(true);
+    expect(cardOpensModal("tools", slackOnly)).toBe(false);
+    // Nothing given means the model's own set.
+    expect(cardOpensModal("slack", null)).toBe(false);
+    expect(cardOpensModal("slack", undefined)).toBe(false);
+  });
+
+  it("makes the main button of a marked card open its modal, and only that card", () => {
+    const marked = input({ modalTargets: slackOnly });
+    expect(connectionCardView("slack", marked).primaryAction).toBe("open");
+    expect(connectionCardView("tools", marked).primaryAction).toBe("connect");
+    const waiting = input({ modalTargets: slackOnly, record: markConnecting(null, "slack", NOW) });
+    expect(connectionCardView("slack", waiting).primaryAction).toBe("open");
+  });
+
+  it("changes nothing else on the card", () => {
+    for (const state of [input(), input({ record: markConnecting(null, "slack", NOW) })]) {
+      const { primaryAction: _plain, ...plain } = connectionCardView("slack", state);
+      const { primaryAction: _marked, ...marked } = connectionCardView("slack", { ...state, modalTargets: slackOnly });
+      expect(marked).toEqual(plain);
+    }
+  });
+
+  it("names the press on its own, so an open and a connect never share a key", () => {
+    expect(connectionActionKey("slack", "open")).toBe("slack:open");
+    const opening = new Set([connectionActionKey("slack", "open")]);
+    expect(connectionCardView("slack", input({ modalTargets: slackOnly, inFlight: opening })).primaryPending).toBe(true);
+    // The same press does not hold a card that connects.
+    expect(connectionCardView("slack", input({ inFlight: opening })).primaryPending).toBe(false);
   });
 });
 

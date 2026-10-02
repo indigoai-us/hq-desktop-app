@@ -11,6 +11,13 @@
    * A pressed button is disabled at once and stays so until the host has
    * handled the press, so a double click acts once.
    *
+   * A card can have a modal. Its view then says the main button opens it
+   * (`primaryAction: "open"`): the button tells assistive tech a dialog
+   * follows and the host receives an `open` action. That button is not
+   * disabled by its own press, because focus comes back to it when the
+   * dialog closes; a second press while the first is being handled is
+   * still ignored.
+   *
    * The look follows the New Bot takeover: a brand wallpaper, a dark scrim and
    * a glass panel holding the words. Like the takeover the card is dark in
    * both app themes, so no color here comes from a theme variable.
@@ -20,8 +27,8 @@
    * header, the line and the button strip never move.
    */
   import { onDestroy } from "svelte";
-  import aurora from "../create-bot/assets/new-bot-wallpapers/aurora.jpg";
-  import nodeConstellation from "../create-bot/assets/new-bot-wallpapers/node-constellation.jpg";
+  import ConnectionCardIcon from "./ConnectionCardIcon.svelte";
+  import { connectionCardArt } from "./connection-card-art.js";
   import {
     connectionActionKey,
     type ConnectionCardAction,
@@ -37,7 +44,8 @@
   let { view, onaction }: Props = $props();
 
   /** Each card has its own wallpaper, already bundled for the New Bot takeover. */
-  const art = $derived(view.target === "slack" ? aurora : nodeConstellation);
+  const art = $derived(connectionCardArt(view.target));
+  const primaryAction = $derived(view.primaryAction);
 
   /** Shortest time a pressed button stays disabled: longer than a double click. */
   const PRESS_HOLD_MS = 600;
@@ -59,9 +67,12 @@
     pressed = rest;
   }
 
-  function press(action: ConnectionCardAction, connectionId?: string): void {
+  function press(action: ConnectionCardAction, connectionId?: string, button?: HTMLElement | null): void {
     const key = connectionActionKey(view.target, action, connectionId);
     if (key in pressed) return;
+    // WebKit does not focus a button on a mouse press. The dialog returns
+    // focus to whatever had it when it opened, so put it on the button first.
+    if (action === "open") button?.focus();
     pressed = { ...pressed, [key]: true };
     const startedAt = Date.now();
     const done = (): void => {
@@ -116,19 +127,16 @@
   aria-label={view.title}
 >
   <!-- The art is the app's own bundled image. The card itself takes no style attribute. -->
-  <span class="connection-card-art" aria-hidden="true" style:background-image={`url("${art}")`}></span>
+  <span
+    class="connection-card-art"
+    aria-hidden="true"
+    style:background-image={`url("${art.url}")`}
+    style:background-position={art.position}
+  ></span>
   <div class="connection-card-glass">
     <div class="connection-card-head">
       <span class="connection-card-icon" aria-hidden="true">
-        {#if view.target === "slack"}
-          <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
-            <path d="M6 2.5v11M10 2.5v11M2.5 6h11M2.5 10h11" />
-          </svg>
-        {:else}
-          <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M5.5 1.5v3M10.5 1.5v3M3.5 4.5h9v2.5a4.5 4.5 0 0 1-9 0zM8 11.5v3" />
-          </svg>
-        {/if}
+        <ConnectionCardIcon name={view.target} />
       </span>
       <span class="connection-card-title">{view.title}</span>
       {#if view.mark}
@@ -189,8 +197,10 @@
           type="button"
           class="connection-card-btn is-primary"
           data-testid="connection-card-primary"
-          disabled={view.primaryPending || isPressed("connect")}
-          onclick={() => press("connect")}
+          data-action={primaryAction}
+          aria-haspopup={primaryAction === "open" ? "dialog" : undefined}
+          disabled={view.primaryPending || (primaryAction !== "open" && isPressed(primaryAction))}
+          onclick={(event) => press(primaryAction, undefined, event.currentTarget)}
         >
           {view.primaryLabel}
         </button>
@@ -259,12 +269,6 @@
     background-position: center;
     background-size: cover;
     background-repeat: no-repeat;
-  }
-  .connection-card[data-target="slack"] .connection-card-art {
-    background-position: center 14%;
-  }
-  .connection-card[data-target="tools"] .connection-card-art {
-    background-position: center 96%;
   }
   /* The scrim: darkest at the edges, like the takeover's shade. */
   .connection-card-art::after {

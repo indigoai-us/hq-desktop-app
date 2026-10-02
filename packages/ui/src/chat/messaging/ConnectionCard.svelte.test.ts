@@ -204,6 +204,61 @@ describe("a connection card", () => {
     expect(primary(el)!.disabled).toBe(false);
   });
 
+  it("a card that connects says nothing about a dialog", () => {
+    const el = renderCard(connectionCardView("slack", input()));
+    expect(primary(el)!.hasAttribute("aria-haspopup")).toBe(false);
+    expect(primary(el)!.dataset.action).toBe("connect");
+  });
+
+  it("a main button that opens a modal says so and tells the host to open it, once", async () => {
+    // A view built by hand: no card is switched over yet.
+    const view = { ...connectionCardView("slack", input()), primaryAction: "open" as const };
+    const onaction = vi.fn();
+    const el = renderCard(view, onaction);
+    const button = primary(el)!;
+    expect(button.getAttribute("aria-haspopup")).toBe("dialog");
+    expect(button.dataset.action).toBe("open");
+    expect(button.textContent?.trim()).toBe("Connect Slack");
+    button.click();
+    button.click();
+    await tick();
+    button.click();
+    flushSync();
+    expect(onaction).toHaveBeenCalledTimes(1);
+    expect(onaction).toHaveBeenCalledWith({ target: "slack", action: "open" });
+    // Never a connect: the host must not open the browser page as well.
+    expect(onaction.mock.calls.some(([detail]) => (detail as ConnectionCardActionDetail).action === "connect")).toBe(false);
+  });
+
+  it("keeps the button that opened a modal focusable, with focus on it, so the dialog can give focus back", () => {
+    const view = { ...connectionCardView("tools", input()), primaryAction: "open" as const };
+    const el = renderCard(view, vi.fn(() => new Promise<void>(() => {})));
+    const button = primary(el)!;
+    button.click();
+    flushSync();
+    expect(button.disabled).toBe(false);
+    expect(document.activeElement).toBe(button);
+  });
+
+  it("can open its modal again once the host has handled the press", async () => {
+    vi.useFakeTimers();
+    const view = { ...connectionCardView("slack", input()), primaryAction: "open" as const };
+    const onaction = vi.fn(async () => {});
+    const el = renderCard(view, onaction);
+    primary(el)!.click();
+    await vi.advanceTimersByTimeAsync(700);
+    flushSync();
+    primary(el)!.click();
+    expect(onaction).toHaveBeenCalledTimes(2);
+  });
+
+  it("holds the main button while the host says the open press is on its way", () => {
+    const view = connectionCardView("slack", input({ modalTargets: new Set(["slack"] as const), inFlight: new Set(["slack:open"]) }));
+    const el = renderCard(view);
+    expect(primary(el)!.disabled).toBe(true);
+    expect(decline(el)!.disabled).toBe(false);
+  });
+
   it("draws each card on its own brand wallpaper, as a layer a screen reader skips", () => {
     const root = renderBlock({ views: views(), onaction: () => {} });
     const art = (which: ConnectTarget) => card(root, which).querySelector<HTMLElement>(".connection-card-art")!;

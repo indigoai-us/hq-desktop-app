@@ -20,7 +20,35 @@ import type { ConnectTarget } from "./richMessageContent.js";
 
 export type ConnectionCardState = "offered" | "connecting" | "connected" | "declined";
 
-export type ConnectionCardAction = "connect" | "decline" | "allow";
+/**
+ * What a button on a card does. `open` opens the card's own modal (see
+ * {@link CARD_MODAL_TARGETS}); the others act at once.
+ */
+export type ConnectionCardAction = "connect" | "decline" | "allow" | "open";
+
+/** What a card's main button does: connect at once, or open the card's modal. */
+export type ConnectionCardPrimaryAction = "connect" | "open";
+
+/**
+ * The cards whose main button opens a modal instead of connecting at once.
+ *
+ * This is the one place a target is marked as "has a modal". Add the target
+ * here and register its content in card-modal-registry.ts: the card's main
+ * button then sends `open` and the shell shows that content in a CardModal.
+ * A target listed here with no registered content has a button that does
+ * nothing, so always do both.
+ *
+ * Empty for now: both cards still open a page in the browser.
+ */
+export const CARD_MODAL_TARGETS: ReadonlySet<ConnectTarget> = new Set<ConnectTarget>([]);
+
+/** Whether a card's main button opens its modal. */
+export function cardOpensModal(
+  target: ConnectTarget,
+  modalTargets: ReadonlySet<ConnectTarget> | null | undefined = CARD_MODAL_TARGETS,
+): boolean {
+  return (modalTargets ?? CARD_MODAL_TARGETS).has(target);
+}
 
 /** Storage key of the per-bot record. */
 export const BOT_CONNECTION_CARDS_STORAGE_KEY = "hq.chat.botConnectionCards.v1";
@@ -453,6 +481,11 @@ export interface ConnectionCardView {
   line: string;
   /** Main button, or null when the state has none. */
   primaryLabel: string | null;
+  /**
+   * What the main button does. `open` opens the card's modal: the button
+   * says so to assistive tech and the host receives an `open` action.
+   */
+  primaryAction: ConnectionCardPrimaryAction;
   /** The main button's action is in flight: it is disabled. */
   primaryPending: boolean;
   /** "Not now", or null. */
@@ -486,6 +519,11 @@ export interface ConnectionCardInput {
   inFlight?: ReadonlySet<string> | null;
   /** A sentence the host wants shown: a failed grant, a failed load. */
   notes?: Partial<Record<ConnectTarget, string | null>> | null;
+  /**
+   * The cards whose main button opens a modal. Leave it out to use
+   * {@link CARD_MODAL_TARGETS}.
+   */
+  modalTargets?: ReadonlySet<ConnectTarget> | null;
 }
 
 export const SLACK_TIMEOUT_NOTE = "Slack was not connected. You can try again any time.";
@@ -500,15 +538,21 @@ function declineStands(since: number, messageAt: number | null | undefined): boo
   return !(typeof messageAt === "number" && Number.isFinite(messageAt) && messageAt > since);
 }
 
+function primaryActionOf(target: ConnectTarget, input: ConnectionCardInput): ConnectionCardPrimaryAction {
+  return cardOpensModal(target, input.modalTargets) ? "open" : "connect";
+}
+
 function slackView(input: ConnectionCardInput): ConnectionCardView {
   const bot = input.botName.trim() || "your bot";
   const entry = input.record?.slack;
   const facts = input.slack ?? null;
   const hostNote = input.notes?.slack?.trim() || null;
+  const primaryAction = primaryActionOf("slack", input);
   const base = {
     target: "slack" as const,
     title: "Slack",
-    primaryPending: Boolean(input.inFlight?.has(connectionActionKey("slack", "connect"))),
+    primaryAction,
+    primaryPending: Boolean(input.inFlight?.has(connectionActionKey("slack", primaryAction))),
     usable: [],
     waiting: [],
     moreWaiting: null,
@@ -584,10 +628,12 @@ function toolsView(input: ConnectionCardInput): ConnectionCardView {
     isNew: c.isNew,
   }));
   const left = allWaiting.length - waiting.length;
+  const primaryAction = primaryActionOf("tools", input);
   const base = {
     target: "tools" as const,
     title: "Connect your tools",
-    primaryPending: Boolean(input.inFlight?.has(connectionActionKey("tools", "connect"))),
+    primaryAction,
+    primaryPending: Boolean(input.inFlight?.has(connectionActionKey("tools", primaryAction))),
     usable: usable.map((c) => c.name),
     waiting,
     moreWaiting: left > 0 ? `+${left} more in HQ Integrations` : null,
