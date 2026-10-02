@@ -76,6 +76,9 @@ use super::cognito::{self, AuthState, CognitoTokens};
 /// this file is taken, used, and dropped inside one block. Holding it across an
 /// HTTP round trip would let a slow provider block a Cancel click.
 static CUSTODY: Mutex<Option<ContinuationCustody>> = Mutex::new(None);
+/// The browser-link nonce belongs to the one native continuation attempt and
+/// never crosses the renderer bridge.
+static SIGNIN_LINK_ATTEMPT: Mutex<Option<(String, String)>> = Mutex::new(None);
 
 /// Serializes authenticated receipt drains so one background retry cannot race
 /// another. File mutations use a separate short-lived lock and never span HTTP.
@@ -139,7 +142,51 @@ pub(crate) fn note_auth_transition(end: AttemptEnd) {
         // is not a first launch, and `may_start` refuses on that ground too.
         SIGNED_OUT_THIS_SESSION.store(true, Ordering::SeqCst);
     }
+    SIGNIN_LINK_ATTEMPT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take();
     with_custody(|custody| custody.bump_generation(end));
+}
+
+fn set_signin_link_attempt(attempt_id: String, link: Option<String>) {
+    let mut pending = SIGNIN_LINK_ATTEMPT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *pending = link.map(|link| (attempt_id, link));
+}
+
+fn take_signin_link_attempt(attempt_id: &str) -> Option<String> {
+    let mut pending = SIGNIN_LINK_ATTEMPT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if pending.as_ref().is_some_and(|(id, _)| id == attempt_id) {
+        pending.take().map(|(_, link)| link)
+    } else {
+        None
+    }
+}
+
+fn clear_signin_link_attempt(attempt_id: &str) {
+    let mut pending = SIGNIN_LINK_ATTEMPT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if pending.as_ref().is_some_and(|(id, _)| id == attempt_id) {
+        pending.take();
+    }
+}
+
+fn post_signin_link_best_effort(link: String, bearer: String) {
+    let client = build_client();
+    hq_desktop_core::desktop_signin_link::spawn_best_effort(async move {
+        client
+            .post(hq_desktop_core::desktop_signin_link::SIGNIN_LINK_URL)
+            .bearer_auth(bearer)
+            .json(&serde_json::json!({ "link": link }))
+            .send()
+            .await
+            .map(|_| ())
+    });
 }
 
 /// Set when the person signs out on purpose. Never cleared.
@@ -314,6 +361,21 @@ pub async fn desktop_continuation_start(app: AppHandle) -> Result<ContinuationSt
     // signed in there minutes ago.
     let armed = super::oauth::arm_oauth_flow(&app, None, Some(&nonce))?;
 
+    // A missing, malformed, slow, or unreachable marketing response preserves
+    // today's direct Cognito URL. Only an explicit true can add the web join.
+    let (browser_url, link_nonce) =
+        hq_desktop_core::desktop_signin_link::select_browser_url(&armed.authorize_url, || async {
+            let response = reqwest::Client::new()
+                .get(hq_desktop_core::desktop_signin_link::SIGNIN_CONFIG_URL)
+                .send()
+                .await?;
+            let status = response.status().as_u16();
+            let body = response.text().await?;
+            Ok::<_, reqwest::Error>((status, body))
+        })
+        .await;
+    set_signin_link_attempt(attempt_id.clone(), link_nonce);
+
     with_custody(|custody| {
         let attempt = ContinuationAttempt::start(
             attempt_id.clone(),
@@ -324,8 +386,8 @@ pub async fn desktop_continuation_start(app: AppHandle) -> Result<ContinuationSt
         );
         custody.begin(attempt);
     });
-
-    if let Err(error) = app.shell().open(armed.authorize_url.as_str(), None) {
+    if let Err(error) = app.shell().open(&browser_url, None) {
+        clear_signin_link_attempt(&attempt_id);
         with_custody(|custody| custody.cancel(&attempt_id, AttemptEnd::Failed));
         // The listener was armed before the browser was opened, so a failure
         // here leaves it holding both loopback sockets and the blur-suppression
@@ -364,8 +426,20 @@ pub async fn desktop_continuation_await_identity(
     with_custody(|custody| custody.accept_callback(&attempt_id, &matched_state, now_ms()))
         .map_err(|error| custody_error_code(error).to_string())?;
 
-    let exchanged = super::oauth::exchange_code_for_tokens(&callback.code).await?;
+    let exchanged = match super::oauth::exchange_code_for_tokens(&callback.code).await {
+        Ok(exchanged) => exchanged,
+        Err(error) => {
+            clear_signin_link_attempt(&attempt_id);
+            return Err(error);
+        }
+    };
     let tokens = exchanged.tokens;
+
+    // Link attribution is best-effort and detached: it never waits on the
+    // network and no bearer is added to either browser URL.
+    if let Some(link) = take_signin_link_attempt(&attempt_id) {
+        post_signin_link_best_effort(link, tokens.access_token.clone());
+    }
 
     // Server-side verification. The desktop reading its own claims proves
     // nothing — the backend checks the signature, the audience, and that the
@@ -457,6 +531,7 @@ pub async fn desktop_continuation_cancel(attempt_id: String) -> Result<(), Strin
     // current one is waiting on.
     let state = with_custody(|custody| custody.active_state_for(&attempt_id).map(str::to_string));
     with_custody(|custody| custody.cancel(&attempt_id, AttemptEnd::Cancelled));
+    clear_signin_link_attempt(&attempt_id);
 
     // Dropping the custody entry is not cancelling. Without this the listener
     // thread keeps both loopback sockets and `OAUTH_FLOW_ACTIVE` alive until a

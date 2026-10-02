@@ -281,6 +281,7 @@
     destinationLabel,
     extraParamCompanyKey,
     historyNeighbor,
+    priorNonLibraryIndex,
     type NavigationDestination,
     type NavigationEntry,
     type NavigationScrollState,
@@ -862,7 +863,14 @@
      */
     setupInstallGuide?: {
       oninstall(tool: "claude" | "codex"): Promise<{ ok: boolean; reason?: string }>;
-      onsignin(tool: "claude" | "codex"): Promise<{ ok: boolean; reason?: string }>;
+      onsignin(
+        tool: "claude" | "codex",
+        options?: { signal?: AbortSignal },
+      ): Promise<{ ok: boolean; reason?: string }>;
+      /** Is this tool already signed in? Lets the guide skip to Continue. */
+      onstatus?(tool: "claude" | "codex"): Promise<boolean>;
+      /** Stop a pending sign-in so the guide can open a fresh one. */
+      oncancelsignin?(tool: "claude" | "codex"): Promise<void>;
       onrefresh(): Promise<void>;
       downloadUrlFor(tool: "claude" | "codex"): string;
       onopen(url: string): Promise<{ ok: boolean; reason?: string }> | void;
@@ -1596,6 +1604,7 @@
   } | null>(null);
   let navigationCanGoBack = $state(false);
   let navigationCanGoForward = $state(false);
+  let libraryBackTargetIndex = $state<number | null>(null);
   let navigationBackLabel = $state("");
   let navigationForwardLabel = $state("");
   let pendingRestoreScroll = $state<NavigationScrollState | null>(null);
@@ -6509,6 +6518,7 @@
     const snap = navigationHistory.snapshot();
     navigationCanGoBack = navigationHistory.canGoBack();
     navigationCanGoForward = navigationHistory.canGoForward();
+    libraryBackTargetIndex = priorNonLibraryIndex(snap);
     const back = historyNeighbor(snap, "back");
     const forward = historyNeighbor(snap, "forward");
     navigationBackLabel = back ? destinationLabel(back.destination) : "";
@@ -6748,6 +6758,14 @@
     return navigate({ kind: "messages" });
   }
 
+  function leaveLibrary(): void {
+    if (libraryBackTargetIndex != null) {
+      void navigation.backTo(libraryBackTargetIndex);
+      return;
+    }
+    void navigate({ kind: "messages" });
+  }
+
   $effect(() => {
     navigation.noteAccount((self?.uid ?? tenantAccountId ?? "").trim());
   });
@@ -6762,6 +6780,7 @@
       if (slug) allowed.add(slug);
     }
     navigation.filterAccessible(allowed);
+    syncNavigationChrome();
     const current = navigationHistory.current();
     const shownExtra =
       extraPageId != null
@@ -9966,9 +9985,7 @@
       tab={libraryTab}
       itemId={libraryItemId}
       {packagesEvents}
-      onback={() => {
-        void leaveCurrentDestination();
-      }}
+      onback={leaveLibrary}
       onnavigatetab={(next) => void navigate({ kind: "library", tab: next })}
       onnavigateitem={(id) =>
         void navigate({ kind: "library", tab: libraryTab, itemId: id })}
