@@ -19,6 +19,7 @@
    * heals gaps; the 3-minute safety poll runs only while MQTT is down.
    */
   import { onMount, untrack } from "svelte";
+  import { formatShortcut } from "../common/keyboard-shortcuts";
   import type { Snippet } from "svelte";
   import type { RuntimeStatus } from "./create-bot/runtime-status.js";
   import {
@@ -1752,7 +1753,7 @@
   function scopeShortcutLabel(optionId: string): string {
     // Only Personal keeps a key: ⌘0 collides with zoom-reset and ⌘1–4 switch
     // the main views app-wide.
-    if (optionId === "personal") return "⌘P";
+    if (optionId === "personal") return formatShortcut("Mod+P");
     return "";
   }
 
@@ -2698,7 +2699,7 @@
         aria-label={`Company scope: ${scopeLabel}. Open menu.`}
         aria-expanded={scopeMenuOpen}
         aria-haspopup="menu"
-        title="Company scope (⌘P Personal)"
+        title={`Company scope (${formatShortcut("Mod+P")} Personal)`}
         onclick={openScopeMenu}
       >
         {#if scope === "all"}

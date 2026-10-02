@@ -23,7 +23,12 @@ describe('hq resolver prefers a backed install over an orphan or foreign hq (HQ-
     // swept together through the tiered `hq` selection.
     expect(paths).toContain('let mut dirs = settings_path_dirs();');
     expect(paths).toContain('dirs.extend(extended_search_dirs());');
-    expect(paths).toContain('select_hq_program_on_disk(&dirs, &candidates, &reject, &backing)');
+    const compactPaths = paths.replace(/\s+/g, ' ');
+    expect(compactPaths).toContain(
+      'select_hq_program_on_disk_with_diagnostics( &dirs, &candidates, &reject, &backing, );',
+    );
+    expect(paths).toContain('fn select_hq_program_on_disk_with_diagnostics(');
+    expect(paths).toContain('select_hq_program_on_disk_with_diagnostics(dirs, candidates, reject, backing).0');
 
     // The defect was a SEPARATE settings-only sweep that returned on any hit,
     // pre-empting the extended lane's spawnable pass. It must be gone.
@@ -48,9 +53,10 @@ describe('hq resolver prefers a backed install over an orphan or foreign hq (HQ-
       expect(paths).toContain(variant);
     }
     // The oracle lives in hq_cli_update (owns the package-layout knowledge) and
-    // reuses the version probe, so backing and version-reading cannot disagree.
+    // uses the detailed probe tuple that carries both version and backing, so
+    // backing and version-reading cannot disagree.
     expect(cli).toContain('pub fn hq_cli_backing(hq_bin: &Path) -> paths::CandidateBacking {');
-    expect(cli).toContain('version_from_hq_binary_probe(hq_bin).1');
+    expect(cli).toContain('version_from_hq_binary_probe_detailed(hq_bin).2');
   });
 
   it('adds the closed, additive hq_backing telemetry sub-case without changing the event', () => {

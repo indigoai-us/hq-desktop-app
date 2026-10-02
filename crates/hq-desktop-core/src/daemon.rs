@@ -1750,6 +1750,19 @@ pub fn should_respawn_daemon(realtime_sync: bool, autostart: bool, daemon_alive:
     (realtime_sync || autostart) && !daemon_alive
 }
 
+/// Decide whether the gated launch-only sync pass should run. Background
+/// Auto-sync and the autostart devtools path already start a long-lived host,
+/// so the one-shot path is only needed when the existing Sync on launch
+/// preference is enabled and both background paths are off.
+pub fn should_run_sync_on_launch(
+    flag_enabled: bool,
+    sync_on_launch: bool,
+    realtime_sync: bool,
+    autostart: bool,
+) -> bool {
+    flag_enabled && sync_on_launch && !realtime_sync && !autostart
+}
+
 /// Decide whether the desktop shell must terminate a live-but-stalled watch
 /// runner. PID liveness alone only says that a process exists; a runner that
 /// has stopped emitting its sync protocol cannot make progress and may still
@@ -1820,6 +1833,15 @@ mod tests {
         assert!(!should_respawn_daemon(false, false, false));
         // Auto-sync off, daemon alive → no-op.
         assert!(!should_respawn_daemon(false, false, true));
+    }
+
+    #[test]
+    fn test_should_run_sync_on_launch_is_gated_and_fills_only_the_auto_sync_gap() {
+        assert!(!should_run_sync_on_launch(false, true, false, false));
+        assert!(!should_run_sync_on_launch(true, false, false, false));
+        assert!(!should_run_sync_on_launch(true, true, true, false));
+        assert!(!should_run_sync_on_launch(true, true, false, true));
+        assert!(should_run_sync_on_launch(true, true, false, false));
     }
 
     // ── Cloud Off gating (V2 US-001 / US-016) ─────────────────────────────

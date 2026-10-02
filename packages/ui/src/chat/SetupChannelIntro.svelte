@@ -565,7 +565,7 @@
           </p>
         {/if}
       {/if}
-      <div class="hero-actions" role="group" aria-label="Set up this Mac">
+      <div class="hero-actions" role="group" aria-label={`Set up this ${hostNoun}`}>
         <SetupButton
           variant={readyFirstActionEnabled && readyFirstActionReady && onstartsync ? "quiet" : "primary"}
           data-testid="setup-run"

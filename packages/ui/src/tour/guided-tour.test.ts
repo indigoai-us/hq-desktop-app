@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { formatShortcut } from "../common/keyboard-shortcuts.js";
 import {
   TOUR_IDLE,
   TOUR_SEEN_STORAGE_KEY,
@@ -21,6 +22,18 @@ import {
   writeTourSeenLocally,
   type TourAutoStartInput,
 } from "./guided-tour.js";
+
+const originalUserAgent = navigator.userAgent;
+
+afterEach(() => {
+  Object.defineProperty(navigator, "userAgent", { configurable: true, value: originalUserAgent });
+  vi.unstubAllGlobals();
+});
+
+function setHost(os: "windows" | "macos", userAgent: string): void {
+  vi.stubGlobal("__HQ_HOST_OS__", os);
+  Object.defineProperty(navigator, "userAgent", { configurable: true, value: userAgent });
+}
 
 describe("tourSteps", () => {
   it("has the eight steps in order", () => {
@@ -90,8 +103,22 @@ describe("tourSteps", () => {
       '[data-testid="chat-companies-section"]',
     ]);
     expect(steps[4].targets).toEqual(['[data-testid="titlebar-meetings"]']);
-    expect(steps[7].title).toBe("Find anything with ⌘K");
+    expect(steps[7].title).toBe(`Find anything with ${formatShortcut("Mod+K")}`);
     expect(steps[7].targets).toEqual(['[data-testid="command-palette"]']);
+  });
+
+  it("uses computer wording and Ctrl shortcuts on Windows", () => {
+    setHost("windows", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36");
+    const steps = tourSteps({ hasCompanyVault: true });
+    expect(steps[1].body).toContain("synced to this PC");
+    expect(steps[7].title).toBe("Find anything with Ctrl+K");
+  });
+
+  it("keeps Mac wording and Command shortcuts on macOS", () => {
+    setHost("macos", "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 Safari/605.1.15");
+    const steps = tourSteps({ hasCompanyVault: true });
+    expect(steps[1].body).toContain("synced to this Mac");
+    expect(steps[7].title).toBe("Find anything with ⌘K");
   });
 
   it("centers the invite step with no target until a company exists", () => {

@@ -10,6 +10,7 @@
    * no Tauri invoke inside this component. The host owns the data.
    */
   import { onDestroy } from "svelte";
+  import { isMac } from "../../common/platform.js";
   import type {
     ChannelFileIconKind,
     ChannelFileItemModel,
@@ -451,7 +452,7 @@
                   disabled={actionPending !== null}
                   aria-busy={actionPending === "reveal"}
                   onclick={() => void runAction("reveal", onreveal)}
-                >{actionPending === "reveal" ? "Revealing…" : "Reveal in Finder"}</button>
+                >{actionPending === "reveal" ? "Revealing…" : `Reveal in ${isMac() ? "Finder" : "file manager"}`}</button>
               {/if}
               {#if onopen}
                 <button
