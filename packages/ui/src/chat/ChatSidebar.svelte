@@ -1829,7 +1829,8 @@
       }
       scopeEntryError = result.reason;
     } catch (err) {
-      scopeEntryError = err instanceof Error ? err.message : String(err);
+      console.warn("[chat-sidebar] new company failed", err);
+      scopeEntryError = "Could not start a new company. Try again.";
     } finally {
       scopeEntryBusy = false;
     }
@@ -2780,7 +2781,8 @@
       await onsignout();
       signOutConfirmOpen = false;
     } catch (error) {
-      signOutError = `Couldn’t sign out: ${String(error)}`;
+      console.warn("[chat-sidebar] sign out failed", error);
+      signOutError = "Couldn’t sign out. Try again.";
     } finally {
       signingOut = false;
     }

@@ -414,6 +414,26 @@ describe("ChatSidebar lifecycle entry points", () => {
     ).toContain("Cloud is unreachable");
   });
 
+  it("the switcher row shows plain copy, not raw text, when the callback throws", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const raw = new Error('[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}');
+    const oncreatecompany = vi.fn(async (): Promise<EntryPointResult> => {
+      throw raw;
+    });
+    mountSidebar({ companies: [INDIGO], oncreatecompany });
+    await settle();
+    host.querySelector<HTMLButtonElement>('[data-testid="chat-scope-pill"]')!.click();
+    await settle();
+    q<HTMLButtonElement>('[data-testid="chat-scope-new-company"]')!.click();
+    await settle(10);
+    const error = q('[data-testid="chat-scope-new-company-error"]');
+    expect(error?.textContent).toContain("Could not start a new company. Try again.");
+    expect(document.body.textContent).not.toContain("boom");
+    expect(error?.getAttribute("title") ?? "").not.toContain("boom");
+    expect(warn).toHaveBeenCalledWith("[chat-sidebar] new company failed", raw);
+    warn.mockRestore();
+  });
+
   it("omits the switcher row without a host callback", async () => {
     mountSidebar({ companies: [INDIGO] });
     await settle();

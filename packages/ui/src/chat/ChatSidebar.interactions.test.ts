@@ -211,9 +211,11 @@ describe("ChatSidebar sign out", () => {
     expect(onsignout).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps the confirmation open and surfaces a rejected sign-out callback", async () => {
+  it("keeps the confirmation open and surfaces a rejected sign-out callback as plain copy", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const raw = new Error('[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}');
     const onsignout = vi.fn(async () => {
-      throw new Error("native token store unavailable");
+      throw raw;
     });
     component = mount(ChatSidebar, {
       target: host,
@@ -240,10 +242,14 @@ describe("ChatSidebar sign out", () => {
     await vi.waitFor(() => {
       expect(onsignout).toHaveBeenCalledOnce();
       expect(document.querySelector('[data-testid="confirm-dialog"]')).toBeTruthy();
-      expect(document.body.textContent).toContain(
-        "Couldn’t sign out: Error: native token store unavailable",
-      );
+      expect(document.body.textContent).toContain("Couldn’t sign out. Try again.");
     });
+    expect(document.body.textContent).not.toContain("boom");
+    for (const el of document.querySelectorAll("[title]")) {
+      expect(el.getAttribute("title")).not.toContain("boom");
+    }
+    expect(warn).toHaveBeenCalledWith("[chat-sidebar] sign out failed", raw);
+    warn.mockRestore();
   });
 });
 
