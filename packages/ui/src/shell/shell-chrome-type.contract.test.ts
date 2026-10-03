@@ -60,11 +60,14 @@ describe("shell chrome type contract", () => {
           const mono = /font-mono|monospace/.test(body);
           // Avatar / monogram marks size their initials to the tile.
           const mark = /(mark|mono|mini|avatar|dot)\b|\.pp-li i/.test(selector);
+          // Labelled button labels are 12px by the design standard (OWNER-007).
+          const labelledButton = /\.v4-launch-change\b/.test(selector);
           for (const m of body.matchAll(/font(?:-size)?:[^;]*?\b(\d+)px/g)) {
             const px = Number(m[1]);
             if (px === 13 || px === 20) continue;
             if (mono && px === 12) continue;
             if (mark && px <= 11) continue;
+            if (labelledButton && px === 12) continue;
             bad.push(`${selector.trim()} → ${m[0]}`);
           }
         }
