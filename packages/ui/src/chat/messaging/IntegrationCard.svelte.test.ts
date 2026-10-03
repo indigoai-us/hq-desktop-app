@@ -316,21 +316,20 @@ describe("the logo", () => {
 });
 
 describe("a row of integration cards in a message", () => {
+  // A connect block keeps three items at most (owner: never four cards).
   const BLOCK = parseRichContent({
     v: 1,
     blocks: [
       {
         kind: "connect",
-        items: [
-          { app: "slack" },
-          { domain: "linear.app", why: "Your issues live here" },
-          { domain: "notion.so" },
-          { domain: "asana.com" },
-          { domain: "example.com" },
-          { domain: "unknown.example" },
-        ],
+        items: [{ app: "slack" }, { domain: "linear.app", why: "Your issues live here" }, { domain: "notion.so" }],
       },
     ],
+  })!;
+  /** A second block: a no-auth app, a key app, and one nobody knows. */
+  const MORE = parseRichContent({
+    v: 1,
+    blocks: [{ kind: "connect", items: [{ domain: "asana.com" }, { domain: "example.com" }, { domain: "unknown.example" }] }],
   })!;
 
   const lookups: Record<string, CatalogLookup> = {
@@ -366,13 +365,20 @@ describe("a row of integration cards in a message", () => {
       ["slack", null, "offered"],
       ["integration", "linear.app", "offered"],
       ["integration", "notion.so", "connected"],
-      ["integration", "asana.com", "offered"],
-      ["integration", "example.com", "offered"],
     ]);
     expect(cards(root).every((el) => el.parentElement === row)).toBe(true);
     // Neighbours do not share a wallpaper.
     const arts = cards(root).map((el) => el.querySelector<HTMLElement>(".connection-card-art")!.style.backgroundImage);
     for (let i = 1; i < arts.length; i += 1) expect(arts[i]).not.toBe(arts[i - 1]);
+    void unmount(component!);
+    component = null;
+    host?.remove();
+    // A no-auth app and a key app each get a card; a domain nobody knows gets none.
+    const more = renderBlock(cardsFor(), MORE);
+    expect(cards(more).map((el) => [el.dataset.target, el.dataset.domain ?? null, el.dataset.state])).toEqual([
+      ["integration", "asana.com", "offered"],
+      ["integration", "example.com", "offered"],
+    ]);
   });
 
   it("offers the browse-all link under a row with an integration card, through the host", () => {
@@ -394,7 +400,7 @@ describe("a row of integration cards in a message", () => {
     component = null;
     host?.remove();
     const noLink = renderBlock(cardsFor({ browseAll: null }));
-    expect(cards(noLink)).toHaveLength(5);
+    expect(cards(noLink)).toHaveLength(3);
     expect(noLink.querySelector('[data-testid="rich-connect-browse"]')).toBeNull();
   });
 
@@ -406,7 +412,7 @@ describe("a row of integration cards in a message", () => {
     component = null;
     host?.remove();
     const ready = renderBlock(cardsFor({ rowReady: () => true }));
-    expect(cards(ready)).toHaveLength(5);
+    expect(cards(ready)).toHaveLength(3);
   });
 
   it("draws only the built-in cards when the host has no integration views", () => {

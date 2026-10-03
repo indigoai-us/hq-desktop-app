@@ -52,8 +52,17 @@ const ITEMS = [
   { domain: "unknown.example" },
 ];
 
+/**
+ * A connect block keeps three items at most, so the six go in two blocks:
+ * two rows of cards under the one message, in the bot's order.
+ */
+const ITEM_BLOCKS = [
+  { kind: "connect", items: ITEMS.slice(0, 3) },
+  { kind: "connect", items: ITEMS.slice(3) },
+];
+
 /** Newest first, as the server returns a direct-message page. */
-function thread(blocks: unknown[] = [{ kind: "connect", items: ITEMS }]): Row[] {
+function thread(blocks: unknown[] = ITEM_BLOCKS): Row[] {
   return [
     { eventId: "e2", fromPersonUid: NOVA, fromDisplayName: "Nova", body: `Hi Corey, I am Nova.${fence(blocks)}`, createdAt: "2026-10-02T13:54:20.000Z", rootEventId: "e1" },
     {
