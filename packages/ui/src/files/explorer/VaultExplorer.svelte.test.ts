@@ -40,6 +40,7 @@ const DIRS: Record<string, Array<{ name: string; path: string; isDir: boolean; h
   "companies/acme/knowledge": [
     { name: "pricing.md", path: "companies/acme/knowledge/pricing.md", isDir: false, hasChildren: false },
     { name: "tone.md", path: "companies/acme/knowledge/tone.md", isDir: false, hasChildren: false },
+    { name: "INDEX.md", path: "companies/acme/knowledge/INDEX.md", isDir: false, hasChildren: false },
   ],
 };
 
@@ -47,7 +48,9 @@ const FILES: Record<string, string> = {
   "companies/acme/knowledge/pricing.md":
     "---\nowner: Sara\ntags: [gtm, pricing]\n---\n# Pricing\n\nTone lives in [[tone]].\n\n## Tiers\n\nThree tiers.",
   "companies/acme/knowledge/tone.md": "# Tone\n\nPlain and warm.",
-  "companies/acme/README.md": "# Acme\n\nStart with [[knowledge/pricing|pricing]].",
+  "companies/acme/README.md":
+    "# Acme\n\nStart with [[knowledge/pricing|pricing]].\n\nSee the [Knowledge Index](knowledge/INDEX.md) or [old notes](knowledge/gone.md).",
+  "companies/acme/knowledge/INDEX.md": "# Knowledge Index\n\nEverything Acme knows.",
 };
 
 const hit = (path: string): VaultFileHit => ({ path, name: path.split("/").pop()!, isMarkdown: path.endsWith(".md") });
@@ -231,6 +234,29 @@ describe("VaultExplorer", () => {
     link.click();
     await settle();
     expect(host.querySelector(".note-title")?.textContent).toBe("Tone");
+  });
+
+  it("follows a relative Markdown link to the linked file and selects it (QA-104)", async () => {
+    const { host, onlocationchange } = await render({ path: "companies/acme/README.md" });
+    expect(host.querySelector(".note-title")?.textContent).toBe("Acme");
+    const link = host.querySelector<HTMLAnchorElement>('[data-testid="note-body"] a[href="knowledge/INDEX.md"]')!;
+    expect(link.textContent).toBe("Knowledge Index");
+    link.click();
+    await settle();
+    expect(host.querySelector(".note-title")?.textContent).toBe("Knowledge Index");
+    expect(host.querySelector('[data-testid="note-body"]')!.textContent).toContain("Everything Acme knows.");
+    expect(onlocationchange).toHaveBeenLastCalledWith({
+      vaultId: "company:acme",
+      path: "companies/acme/knowledge/INDEX.md",
+    });
+  });
+
+  it("says when a relative Markdown link points at a missing file (QA-104)", async () => {
+    const { host } = await render({ path: "companies/acme/README.md" });
+    host.querySelector<HTMLAnchorElement>('[data-testid="note-body"] a[href="knowledge/gone.md"]')!.click();
+    await settle();
+    expect(host.querySelector(".note-title")?.textContent).toBe("Acme");
+    expect(host.querySelector('[data-testid="note-link-note"]')?.textContent).toBe("gone.md isn't in this vault");
   });
 
   it("reads notes through the capped reader and never the whole file", async () => {

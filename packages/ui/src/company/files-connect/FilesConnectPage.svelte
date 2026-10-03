@@ -690,7 +690,13 @@
       {#if hasExplorer}
         <section class="vault-preview" aria-label="File preview" data-testid="vault-preview">
           {#if vaultFile}
-            <FilePreviewPane adapter={previewAdapter} path={vaultFile} />
+            <FilePreviewPane
+              adapter={previewAdapter}
+              path={vaultFile}
+              scopeRoot={vaultRoot}
+              scopeLabel="vault"
+              onopenpath={(p) => (vaultFile = p)}
+            />
           {:else}
             <div class="empty" data-testid="vault-preview-empty">
               <span class="empty-title">Select a file</span>
