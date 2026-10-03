@@ -4176,6 +4176,33 @@ mod codex_telemetry_tests {
     }
 
     #[test]
+    fn background_telemetry_flush_path_is_captured_before_home_changes() {
+        // Models a scheduled task whose first poll happens after another test
+        // changes HOME: the production task builders must already own this path.
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let scheduled_home = setup_home();
+        let later_home = setup_home();
+
+        let _scheduled_home = scoped_home(scheduled_home.path());
+        let scheduled_path = crate::commands::cdp_mirror::capture_background_flush_path();
+        let scheduled_path = scheduled_path.expect("HOME A has a menubar path");
+        assert!(crate::commands::cdp_mirror::flush_path_matches_current_home(
+            &scheduled_path
+        ));
+        let _later_home = scoped_home(later_home.path());
+
+        assert_eq!(
+            scheduled_path,
+            scheduled_home.path().join(".hq/menubar.json"),
+            "the path is captured synchronously before a background task is polled"
+        );
+        assert!(!crate::commands::cdp_mirror::flush_path_matches_current_home(
+            &scheduled_path
+        ));
+        assert_ne!(scheduled_path, later_home.path().join(".hq/menubar.json"));
+    }
+
+    #[test]
     fn first_launch_app_opened_carries_a_stable_install_idempotency_key() {
         // Regression: the held first-launch row had no idempotencyKey, so a
         // repeated send was stored twice by hq-pro.
