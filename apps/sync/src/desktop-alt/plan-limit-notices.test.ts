@@ -97,6 +97,7 @@ let host: HTMLElement;
 let component: ReturnType<typeof mount> | null = null;
 
 afterEach(async () => {
+  delete (globalThis as Record<string, unknown>).__harnessInitialActiveCompany;
   if (component) await unmount(component);
   component = null;
   host?.remove();
@@ -104,7 +105,20 @@ afterEach(async () => {
   vi.mocked(shellOpen).mockClear();
 });
 
-async function mountShell(syncStatus: unknown = null): Promise<void> {
+type ActivePane = { uid: string | null; slug: string } | null;
+
+/** QA-075: the shell reports which company pane is open (null = personal). */
+async function openPane(pane: ActivePane): Promise<void> {
+  (globalThis as { __harnessSetActiveCompany?: (p: ActivePane) => void })
+    .__harnessSetActiveCompany?.(pane);
+  await flush();
+}
+
+async function mountShell(
+  syncStatus: unknown = null,
+  pane: ActivePane = { uid: null, slug: 'acme' },
+): Promise<void> {
+  (globalThis as Record<string, unknown>).__harnessInitialActiveCompany = pane;
   host = document.createElement('div');
   document.body.appendChild(host);
   component = mount(HqWorkWorkShell, {
@@ -116,7 +130,7 @@ async function mountShell(syncStatus: unknown = null): Promise<void> {
 
 function notices(): string[] {
   return [...host.querySelectorAll('.plan-limit-notice')].map(
-    (el) => el.querySelector('span')?.textContent ?? '',
+    (el) => el.querySelector('.plan-limit-text')?.textContent ?? '',
   );
 }
 
@@ -137,7 +151,7 @@ describe('HqWorkWorkShell plan-limit upload pause (US-019)', () => {
     expect(shellOpen).toHaveBeenCalledWith(ATTRIBUTED_URL);
   });
 
-  it('follows the native snapshot: adds, keeps link-less rows, and clears', async () => {
+  it('follows the native snapshot per open pane: adds, keeps link-less rows, and clears', async () => {
     await mountShell({ uploadsPaused: [] });
     expect(notices()).toEqual([]);
 
@@ -149,11 +163,12 @@ describe('HqWorkWorkShell plan-limit upload pause (US-019)', () => {
       summary: 'Uploads paused for Acme and Beta',
     });
     await flush();
-    expect(notices()).toEqual([
-      'New files are paused for Acme.',
-      'New files are paused for Beta.',
-    ]);
+    expect(notices()).toEqual(['New files are paused for Acme.']);
     expect(host.querySelectorAll('[data-testid="sync-plan-limit-upgrade"]')).toHaveLength(1);
+
+    await openPane({ uid: null, slug: 'beta' });
+    expect(notices()).toEqual(['New files are paused for Beta.']);
+    expect(host.querySelector('[data-testid="sync-plan-limit-upgrade"]')).toBeNull();
 
     emit('sync:uploads-paused', { companies: [], summary: null });
     await flush();
@@ -171,7 +186,7 @@ describe('HqWorkWorkShell plan-limit upload pause (US-019)', () => {
     expect(host.querySelector('[data-testid="sync-plan-limit-upgrade"]')).toBeNull();
   });
 
-  it('keeps a dismissal while the pause lasts and shows a later pause again', async () => {
+  it('keeps a dismissal per company for the session', async () => {
     await mountShell({ uploadsPaused: [{ company: 'Acme', upgradeUrl: UPGRADE_URL }] });
     host
       .querySelector<HTMLButtonElement>('button[aria-label="Dismiss upgrade notice for Acme"]')
@@ -179,7 +194,6 @@ describe('HqWorkWorkShell plan-limit upload pause (US-019)', () => {
     await flush();
     expect(notices()).toEqual([]);
 
-    // Same pause re-announced (e.g. another company changed): stays dismissed.
     emit('sync:uploads-paused', {
       companies: [
         { company: 'Acme', upgradeUrl: UPGRADE_URL },
@@ -187,13 +201,63 @@ describe('HqWorkWorkShell plan-limit upload pause (US-019)', () => {
       ],
     });
     await flush();
+    expect(notices()).toEqual([]);
+    await openPane({ uid: null, slug: 'beta' });
     expect(notices()).toEqual(['New files are paused for Beta.']);
 
-    // Uploads resumed, then the company went over again: shown again.
+    // Uploads resumed, then Acme went over again: still dismissed this session.
     emit('sync:uploads-paused', { companies: [] });
     await flush();
     emit('sync:uploads-paused', { companies: [{ company: 'Acme', upgradeUrl: UPGRADE_URL }] });
     await flush();
-    expect(notices()).toEqual(['New files are paused for Acme.']);
+    await openPane({ uid: null, slug: 'acme' });
+    expect(notices()).toEqual([]);
+  });
+});
+
+describe('HqWorkWorkShell plan-limit notice placement (QA-075)', () => {
+  const many = ['Acme', 'Beta', 'Gamma', 'Delta', 'Epsilon'].map((company) => ({
+    company,
+    upgradeUrl: UPGRADE_URL,
+  }));
+
+  it('shows a limited company notice only inside that company pane', async () => {
+    await mountShell({ uploadsPaused: many }, { uid: null, slug: 'gamma' });
+    expect(notices()).toEqual(['New files are paused for Gamma.']);
+    const frame = host.querySelector('.work-shell-frame');
+    expect(frame?.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeTruthy();
+
+    await openPane({ uid: null, slug: 'unlimited-co' });
+    expect(notices()).toEqual([]);
+  });
+
+  it('shows no plan-limit notice on personal pages', async () => {
+    await mountShell({ uploadsPaused: many }, null);
+    expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeNull();
+
+    await openPane({ uid: null, slug: 'acme' });
+    expect(notices()).toHaveLength(1);
+    await openPane(null);
+    expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeNull();
+  });
+
+  it('never stacks notices when several companies are limited', async () => {
+    await mountShell({ uploadsPaused: many }, { uid: null, slug: 'acme' });
+    emit('sync:plan-limit', { company: 'Beta', upgradeUrl: UPGRADE_URL });
+    await flush();
+    for (const slug of ['acme', 'beta', 'delta', 'epsilon']) {
+      await openPane({ uid: null, slug });
+      expect(host.querySelectorAll('.plan-limit-notice')).toHaveLength(1);
+      expect(host.querySelectorAll('[data-testid="sync-plan-limit-notice"]')).toHaveLength(1);
+    }
+  });
+
+  // OWNER-002: the old build stacked every paused company's notice above the
+  // shell frame, on the see-through host, so they showed over other apps.
+  it('renders no notice outside the shell frame', async () => {
+    await mountShell({ uploadsPaused: many }, { uid: null, slug: 'delta' });
+    const all = [...host.querySelectorAll('[data-testid="sync-plan-limit-notice"]')];
+    expect(all).toHaveLength(1);
+    for (const el of all) expect(el.closest('.work-shell-frame')).toBeTruthy();
   });
 });
