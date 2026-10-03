@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { PersonName, identityFromTelemetry } from "../common/people/index.js";
   import { compactNumber, exactNumber } from "../common/compact-number.js";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import RailButton from "../common/button/RailButton.svelte";
@@ -222,7 +223,7 @@
                   onclick={() => (selectedId = selectedId === member.id ? null : member.id)}
                   onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectedId = member.id; } }}
                 >
-                  <td>{member.name}</td>
+                  <td><PersonName person={identityFromTelemetry(member)} compact /></td>
                   <td><svg class="spark" width="56" height="14" viewBox="0 0 56 14" aria-hidden="true"><path d={sparkPath(member.trend, 56, 14)} /></svg></td>
                   <td class="r" title={exactNumber(member.tokens)}>{compactNumber(member.tokens)}</td>
                   <td class="r">{member.sessions}</td>
@@ -248,8 +249,7 @@
       <aside class="pane" data-testid="activity-member-pane" aria-label={selected.name}>
         <div class="ph">
           <div class="pn">
-            <b>{selected.name}</b>
-            {#if selected.email}<span class="plain">{selected.email}</span>{/if}
+            <b><PersonName person={identityFromTelemetry(selected)} /></b>
             <span class="plain">{selected.bot ? "Agent" : "Member"}</span>
           </div>
           <button class="x" aria-label="Close" data-testid="activity-member-close" onclick={() => (selectedId = null)}>×</button>
@@ -307,7 +307,7 @@
         <div class="sech">By person</div>
         {#each snapshot.members as member (member.id)}
           <div class="who hq-contain-row">
-            <span>{member.name}</span>
+            <span><PersonName person={identityFromTelemetry(member)} compact /></span>
             <span class="r">{compactNumber(member.tokens)}</span>
           </div>
         {/each}

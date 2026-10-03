@@ -88,8 +88,10 @@ describe("BLANK-1-31 company Activity reads company telemetry", () => {
     expect(read).toHaveBeenCalledWith("acme", expect.objectContaining({ from: expect.any(String), to: expect.any(String) }));
     const [, range] = read.mock.calls[0] as unknown as [string, { from: string; to: string }];
     expect((Date.parse(range.to) - Date.parse(range.from)) / 86_400_000).toBe(29);
-    const names = [...target.querySelectorAll("tbody tr td:first-child")].map((td) => td.textContent);
+    const names = [...target.querySelectorAll("tbody tr td:first-child")].map((td) => td.textContent?.trim());
     expect(names).toEqual(["Ada", "Scout"]);
+    // OWNER-R5 shared person display in the table.
+    expect(target.querySelectorAll("tbody tr td:first-child [data-testid='person-name']")).toHaveLength(2);
     expect(target.textContent).toContain("75% attributed");
   });
 
@@ -185,7 +187,7 @@ describe("OWNER-R7 Activity team table and member pane", () => {
     expect([...target.querySelectorAll("thead th")].map((th) => th.textContent)).toEqual([
       "Member", "Trend", "Tokens", "Sessions", "Stories", "PRs", "Deploys", "Top skill", "Outcomes/1M",
     ]);
-    const rows = [...target.querySelectorAll("tbody tr")].map((tr) => [...tr.querySelectorAll("td")].map((td) => td.textContent));
+    const rows = [...target.querySelectorAll("tbody tr")].map((tr) => [...tr.querySelectorAll("td")].map((td) => td.textContent?.trim()));
     expect(rows[0][0]).toBe("Ada");
     expect(rows[0][5]).toBe("1");
     expect(rows[0][8]).toBe("3.75");

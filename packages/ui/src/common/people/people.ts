@@ -163,6 +163,22 @@ export function resolvePerson(
   return { key: key || "unknown", kind, name: agent ? "Unknown bot" : "Unknown person", detail: agent ? "Bot" : null, resolved: false };
 }
 
+/**
+ * Identity for a telemetry row that already carries its own name (label,
+ * else email) and email: Activity, Atlas. Email shows muted beside the name;
+ * a bot shows "Bot".
+ */
+export function identityFromTelemetry(row: { id: string; name: string; email?: string; bot: boolean }): PersonIdentity {
+  const email = row.email?.trim() ?? "";
+  return {
+    key: row.id,
+    kind: row.bot ? "agent" : "human",
+    name: row.name,
+    detail: row.bot ? "Bot" : email && email !== row.name ? email : null,
+    resolved: true,
+  };
+}
+
 /** Plain-text label: "Name email" for search, titles and aria labels. */
 export function personLabel(identity: PersonIdentity): string {
   return identity.detail ? `${identity.name} ${identity.detail}` : identity.name;

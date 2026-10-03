@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { PersonName, identityFromTelemetry } from "../common/people/index.js";
   import { compactNumber } from "../common/compact-number.js";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import RailButton from "../common/button/RailButton.svelte";
@@ -201,7 +202,7 @@
               onclick={() => onperson?.(person.id)}
             >
               <div class="pmain">
-                <div class="tt">{person.name}{#if person.bot}<span class="tag">agent</span>{/if}<span class="grow"></span><span class="mm tok">{person.tokens > 0 ? compactNumber(person.tokens) : "—"}</span></div>
+                <div class="tt"><PersonName person={identityFromTelemetry(person)} /><span class="grow"></span><span class="mm tok">{person.tokens > 0 ? compactNumber(person.tokens) : "—"}</span></div>
                 <div class="mm prow">
                   {#if !person.bot && person.trend.length > 1}<svg class="spark" width="48" height="12" viewBox="0 0 48 12" aria-hidden="true"><path d={sparkPath(person.trend)} /></svg>{/if}
                   <span>{person.sessions} sess · {person.stories} stories</span>
@@ -228,7 +229,6 @@
   .pmain { width: 100%; min-width: 0; }
   .pmain .tt { display: flex; align-items: baseline; gap: 6px; }
   .pmain .grow { flex: 1; }
-  .tag { color: var(--v4-text-3); }
   .prow { display: flex; align-items: center; gap: 8px; min-width: 0; }
   .prow .sk { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .spark path { fill: none; stroke: currentColor; stroke-width: 1.2; opacity: 0.7; }

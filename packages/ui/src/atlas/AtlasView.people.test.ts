@@ -73,7 +73,10 @@ describe("OWNER-R4 Atlas People & agents", () => {
     expect(rows[0]).toContain("1.2M");
     expect(rows[0]).toContain("7 sess · 2 stories");
     expect(rows[1]).toContain("Unknown bot");
-    expect(rows[1]).toContain("agent");
+    // OWNER-R5 shared person display: name, then "Bot" muted for a bot.
+    const names = [...host.querySelectorAll("[data-testid='atlas-person'] [data-testid='person-name']")];
+    expect(names).toHaveLength(2);
+    expect(names[1]?.querySelector(".pn-detail")?.textContent).toBe("Bot");
     expect(host.textContent).not.toMatch(/\b(prs|agt)_/);
   });
 
