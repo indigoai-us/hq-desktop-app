@@ -261,6 +261,9 @@
               if (payload.error || !payload.packs) {
                 // A background network/update probe must never erase a valid
                 // local installed-pack snapshot.
+                if (payload.error) {
+                  console.warn("[installed-packs] update probe failed", payload.error);
+                }
                 updateProbeError = payload.error ?? "Update check failed";
                 return;
               }
@@ -498,7 +501,6 @@
             <span
               class="pack-action-error"
               role="alert"
-              title={repairCommandError}
             >
               Couldn’t copy to the clipboard.
               <button
@@ -520,7 +522,7 @@
     {/if}
 
     {#if updateProbeError}
-      <p class="probe-note" role="status" title={updateProbeError}>
+      <p class="probe-note" role="status">
         Update availability could not be refreshed. Installed packs remain
         available.
       </p>
@@ -616,7 +618,6 @@
                   <p
                     class="pack-action-error"
                     role="alert"
-                    title={failure.message}
                   >
                     <span>Couldn’t copy to the clipboard.</span>
                     <button
@@ -676,7 +677,6 @@
                   <p
                     class="pack-action-error"
                     role="alert"
-                    title={failure.message}
                   >
                     <span>Couldn’t copy to the clipboard.</span>
                     <button
