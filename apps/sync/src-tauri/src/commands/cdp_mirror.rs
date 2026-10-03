@@ -311,7 +311,12 @@ fn persist_visitor(anon_id: &str, install_source: Option<&str>) {
 /// Build the mirror and start its sender, then record `app_opened` and start
 /// the daily-active check. Called once from `.setup()`.
 pub fn init(app: &AppHandle, is_first_launch: bool) {
-    init_mirror(app, is_first_launch);
+    let telemetry_suppressed = std::env::var("HQ_CI_FIRST_LAUNCH_TELEMETRY_SUPPRESSED")
+        .is_ok_and(|value| value == "1");
+    init_mirror(
+        app,
+        should_record_first_launch(is_first_launch, telemetry_suppressed),
+    );
     emit_operational(OP_APP_OPENED, json!({ "isFirstLaunch": is_first_launch }));
     tauri::async_runtime::spawn(async {
         loop {
@@ -319,6 +324,10 @@ pub fn init(app: &AppHandle, is_first_launch: bool) {
             tokio::time::sleep(FLAG_REFRESH_INTERVAL).await;
         }
     });
+}
+
+fn should_record_first_launch(is_first_launch: bool, telemetry_suppressed: bool) -> bool {
+    is_first_launch && !telemetry_suppressed
 }
 
 /// Without an install id there is nothing to key events on, so no mirror.
@@ -776,6 +785,14 @@ pub fn on_exit_requested(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ci_suppression_skips_only_the_first_launch_mirror_event() {
+        assert!(should_record_first_launch(true, false));
+        assert!(!should_record_first_launch(true, true));
+        assert!(!should_record_first_launch(false, false));
+        assert!(!should_record_first_launch(false, true));
+    }
 
     fn tag(aid: &str) -> hq_desktop_core::download_tag::DownloadTag {
         hq_desktop_core::download_tag::DownloadTag {

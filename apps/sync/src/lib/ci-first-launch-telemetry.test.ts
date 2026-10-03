@@ -52,6 +52,10 @@ describe('CI first-launch telemetry suppression', () => {
       `${repoRoot}/apps/sync/src-tauri/src/commands/desktop_auth.rs`,
       'utf8',
     );
+    const cdpMirror = readFileSync(
+      `${repoRoot}/apps/sync/src-tauri/src/commands/cdp_mirror.rs`,
+      'utf8',
+    );
     const wizard = readFileSync(
       `${repoRoot}/apps/sync/src/components/onboarding/OnboardingWizard.svelte`,
       'utf8',
@@ -72,6 +76,9 @@ describe('CI first-launch telemetry suppression', () => {
     expect(release.match(/HQ_CI_FIRST_LAUNCH_TELEMETRY_SUPPRESSED: "1"/g)).toHaveLength(2);
     expect(release.match(/- name: Non-Indigo artifact smoke[\s\S]*?HQ_CI_FIRST_LAUNCH_TELEMETRY_SUPPRESSED: "1"/g)).toHaveLength(2);
     expect(desktopAuth).toContain('std::env::var("HQ_CI_FIRST_LAUNCH_TELEMETRY_SUPPRESSED")');
+    expect(cdpMirror).toContain('std::env::var("HQ_CI_FIRST_LAUNCH_TELEMETRY_SUPPRESSED")');
+    expect(cdpMirror).toContain('should_record_first_launch(is_first_launch, telemetry_suppressed)');
+    expect(cdpMirror).toContain('EVENT_APP_FIRST_LAUNCH, Map::new()');
     expect(wizard).toContain('shouldSendFirstLaunchReceipt(firstLaunch, context.suppressFirstLaunchTelemetry)');
   });
 });
