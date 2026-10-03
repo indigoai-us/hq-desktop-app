@@ -139,6 +139,14 @@
     packagesEvents?: PackagesEvents | null;
     /** Native notification wake edge forwarded by a desktop host. */
     notificationWakeSeq?: number;
+    /**
+     * Host-owned session-local notification rows (paused uploads). They join
+     * the feed beside channel wakes; ack and read-all are handed back.
+     */
+    hostNotifications?: Record<string, unknown>[];
+    onackhostnotification?: (id: string) => void;
+    onreadallhostnotifications?: () => void;
+    onopenhostnotification?: (id: string, url: string) => void;
     /** Native hosts can bound first paint without replacing DesktopApp's default. */
     bootTimeoutMs?: number;
     /** Native hosts receive DesktopApp's first successful shell-paint signal. */
@@ -260,6 +268,10 @@
     uiVersion = null,
     packagesEvents,
     notificationWakeSeq: hostNotificationWakeSeq,
+    hostNotifications = [],
+    onackhostnotification,
+    onreadallhostnotifications,
+    onopenhostnotification,
     bootTimeoutMs,
     onShellReady,
     onOpenConsole: hostOnOpenConsole,
@@ -351,8 +363,12 @@
   let localNotificationRows = $state<Record<string, unknown>[]>([]);
   const pendingNotificationLookups = new Set<{ id: string; acknowledged: boolean; row?: Record<string, unknown> }>();
   const baseNotificationsApi = createNotificationsApi(adapter, {
-    localNotifications: () => localNotificationRows,
+    localNotifications: () => [...hostNotifications, ...localNotificationRows],
     ackLocalNotification: (id) => {
+      if (hostNotifications.some((row) => row.id === id)) {
+        onackhostnotification?.(id);
+        return;
+      }
       for (const lookup of pendingNotificationLookups) {
         if (lookup.id === id) lookup.acknowledged = true;
       }
@@ -373,6 +389,7 @@
       const lookups = [...pendingNotificationLookups];
       await baseNotificationsApi.readAllNotifications();
       if (account !== effectiveTenantAccountId || generation !== effectiveTenantGeneration) return;
+      onreadallhostnotifications?.();
       for (const lookup of lookups) {
         lookup.acknowledged = true;
         if (lookup.row) rows.add(lookup.row);
@@ -986,6 +1003,7 @@
       mentionCandidates={mentionTargetsFromContacts(shallow.contacts)}
       coreFixtures={false}
       onopenurl={hostOpenUrl ?? openUrl}
+      {onopenhostnotification}
       {wakes}
       {companies}
       onhomechannelresolved={handleHomeChannelResolved}

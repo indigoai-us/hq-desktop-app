@@ -50,14 +50,27 @@
   import type { DmRequestContact } from '../lib/dmRequests';
   import { dismissBootLoader } from './boot-loader';
   import SignInPrompt from '../components/SignInPrompt.svelte';
-  import PlanUpgradeAction from '../components/PlanUpgradeAction.svelte';
   import { openApprovedExternalUrl, openBrowserUrl } from './external-open';
   import {
     applyDesktopAltRoute,
     createEmbeddedNavigationController,
     createHqWorkPackagesEvents,
+    sendNativeRequestBanner,
     subscribeHqWorkNativeWakes,
   } from './hq-work-host';
+  import {
+    endPlanLimitPauses,
+    loadPlanLimitNotifications,
+    markAllPlanLimitNotificationsRead,
+    markPlanLimitNotificationRead,
+    planLimitBannerAllowed,
+    planLimitNativeBanner,
+    recordPlanLimitPauses,
+    resolvePlanLimitCompanyUids,
+    savePlanLimitNotifications,
+    type PlanLimitNotificationRow,
+    type StorageLike,
+  } from './plan-limit-notifications';
   import { startDesktopMeshPresence } from './mesh-presence';
   import { startMeetingRecordingBridge } from './meeting-recording-bridge';
   import { SETUP_PROMPT } from './lib/setup-launch';
@@ -74,12 +87,18 @@
     bootTimeoutMs?: number;
     /** Backoff between failed workspace-roster fetches (tests shorten it). */
     rosterRetryDelaysMs?: readonly number[];
+    /**
+     * How long newly paused companies are gathered before one OS banner goes
+     * out, so one sync pass that pauses 13 companies shows one banner.
+     */
+    planLimitBannerDelayMs?: number;
   }
 
   let {
     invokeFn = tauriInvoke as SyncInvokeFn,
     bootTimeoutMs,
     rosterRetryDelaysMs,
+    planLimitBannerDelayMs = 2_000,
   }: Props = $props();
 
   /**
@@ -156,6 +175,7 @@
   }
   onDestroy(() => {
     void adapter.dispose?.();
+    if (planLimitBannerTimer) clearTimeout(planLimitBannerTimer);
   });
   const wakes = createChatWakeBus();
   const navigation = createEmbeddedNavigationController();
@@ -208,43 +228,13 @@
     /** Notice inferred from hq-pro usage status rather than a native sync event. */
     statusPush?: boolean;
   }
+  // The companies whose uploads are paused right now. Each one is announced
+  // once per paused episode as a row in the notifications panel (see
+  // plan-limit-notifications.ts), never as a banner in the shell.
   let planLimitNotices = $state<PlanLimitNotice[]>([]);
   let watcherLockNotice = $state<string | null>(null);
-  // QA-075: companies whose notice the person dismissed. A dismissal is per
-  // company and lasts for the session (cleared only on an account change).
-  const dismissedPlanLimitKeys = new Set<string>();
-
-  function planLimitKey(notice: PlanLimitNotice): string {
-    return notice.company.trim().toLowerCase();
-  }
-
-  // QA-075: a company's notice shows only inside that company's pane. The
-  // shell reports the open company pane (null on personal pages), and at most
-  // one notice renders. Other companies' limits are summarized in the account
-  // menu (Core popover), never as stacked banners.
-  let activeCompanyPane = $state<{ uid: string | null; slug: string } | null>(null);
-  function setActiveCompanyPane(next: { uid: string | null; slug: string } | null): void {
-    if (
-      next?.uid === activeCompanyPane?.uid &&
-      next?.slug === activeCompanyPane?.slug &&
-      (next === null) === (activeCompanyPane === null)
-    ) {
-      return;
-    }
-    activeCompanyPane = next ? { uid: next.uid, slug: next.slug } : null;
-  }
-  const visiblePlanLimitNotice = $derived.by<PlanLimitNotice | null>(() => {
-    const active = activeCompanyPane;
-    if (!active) return null;
-    const slug = active.slug.trim().toLowerCase();
-    return (
-      planLimitNotices.find(
-        (notice) =>
-          (active.uid !== null && notice.companyUid === active.uid) ||
-          (slug !== '' && notice.company.trim().toLowerCase() === slug),
-      ) ?? null
-    );
-  });
+  let planLimitRows = $state<PlanLimitNotificationRow[]>([]);
+  let planLimitRowsAccount = $state<string | null>(null);
 
   /** Server link → desktop-attributed, approved link (or null). */
   function planLimitUpgradeLink(raw: unknown): string | null {
@@ -279,9 +269,161 @@
         upgradeUrl: planLimitUpgradeLink(rec.upgradeUrl),
       });
     }
-    planLimitNotices = next.filter((notice) => !dismissedPlanLimitKeys.has(planLimitKey(notice)));
+    planLimitNotices = next;
+    syncPlanLimitNotifications();
   }
-  let planLimitOpenError = $state<string | null>(null);
+
+  function planLimitStorage(): StorageLike | null {
+    try {
+      return typeof window !== 'undefined' ? window.localStorage : null;
+    } catch (error) {
+      console.error('Plan-limit notification storage is unavailable.', error);
+      return null;
+    }
+  }
+
+  /**
+   * Rows belong to one account; switch (and load) when the account changes.
+   * Rows recorded before the first session resolved (account still unknown)
+   * are carried into that account unless it already has an open episode for
+   * the company, so an early snapshot does not produce a second row.
+   */
+  function ensurePlanLimitRowsAccount(): void {
+    if (planLimitRowsAccount === authAccountId) return;
+    const carried = planLimitRowsAccount === null ? planLimitRows : [];
+    const unannounced = preAuthPlanLimitBanner;
+    preAuthPlanLimitBanner = [];
+    planLimitRowsAccount = authAccountId;
+    const stored = loadPlanLimitNotifications(planLimitStorage(), authAccountId);
+    if (carried.length === 0 || !authAccountId) {
+      planLimitRows = stored;
+      return;
+    }
+    const open = new Set(stored.filter((row) => row.active).map((row) => row.company));
+    const kept = carried.filter((row) => !(row.active && open.has(row.company)));
+    const rows = [...kept, ...stored];
+    planLimitRows = rows;
+    savePlanLimitNotifications(planLimitStorage(), authAccountId, rows);
+    const keptIds = new Set(kept.map((row) => row.id));
+    const due = unannounced.filter((row) => keptIds.has(row.id));
+    if (due.length > 0) queuePlanLimitBanner(due);
+  }
+
+  /** Re-read the native paused set, e.g. after the signed-in account changed. */
+  function refreshUploadsPausedSnapshot(generation: number): void {
+    void Promise.resolve()
+      .then(() => invokeFn('get_sync_status'))
+      .then((status) => {
+        if (generation !== authGeneration || !status || typeof status !== 'object') return;
+        applyUploadsPausedSnapshot((status as { uploadsPaused?: unknown }).uploadsPaused);
+      })
+      .catch((error) => {
+        console.error('Could not re-read paused uploads after the account changed.', error);
+      });
+  }
+
+  function commitPlanLimitRows(rows: PlanLimitNotificationRow[]): void {
+    planLimitRows = rows;
+    savePlanLimitNotifications(planLimitStorage(), planLimitRowsAccount, rows);
+    notificationWakeSeq += 1;
+  }
+
+  /**
+   * Reconcile the notification rows with the current paused set: open an
+   * episode (one row) for each newly paused company, close the episode of
+   * each company that resumed. Called only where the paused set changes, so
+   * clearing state on sign-in does not end or restart an episode.
+   */
+  function syncPlanLimitNotifications(): void {
+    ensurePlanLimitRowsAccount();
+    const live = new Set(planLimitNotices.map((notice) => notice.company));
+    const ended = planLimitRows
+      .filter((row) => row.active && !live.has(row.company))
+      .map((row) => row.company);
+    const { rows, created } = recordPlanLimitPauses(
+      endPlanLimitPauses(planLimitRows, ended),
+      planLimitNotices.map((notice) => ({
+        company: notice.company,
+        companyUid: notice.companyUid,
+        upgradeUrl: notice.upgradeUrl,
+      })),
+    );
+    const changed =
+      rows.length !== planLimitRows.length ||
+      rows.some((row, index) => row !== planLimitRows[index]);
+    if (changed) commitPlanLimitRows(rows);
+    emitPlanLimitExposures();
+    if (created.length === 0) return;
+    // Before the account is known a row may still turn out to be a repeat of
+    // a stored episode, so its OS banner waits for the account to resolve.
+    if (planLimitRowsAccount) queuePlanLimitBanner(created);
+    else preAuthPlanLimitBanner = [...preAuthPlanLimitBanner, ...created];
+  }
+
+  let preAuthPlanLimitBanner: PlanLimitNotificationRow[] = [];
+  let pendingPlanLimitBanner: PlanLimitNotificationRow[] = [];
+  let planLimitBannerTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function queuePlanLimitBanner(created: PlanLimitNotificationRow[]): void {
+    pendingPlanLimitBanner = [...pendingPlanLimitBanner, ...created];
+    if (planLimitBannerTimer) return;
+    planLimitBannerTimer = setTimeout(() => {
+      planLimitBannerTimer = null;
+      const rows = pendingPlanLimitBanner;
+      pendingPlanLimitBanner = [];
+      void sendPlanLimitBanner(rows);
+    }, planLimitBannerDelayMs);
+  }
+
+  /**
+   * plan_limit_prompt_exposed, once per notification row, sent once the
+   * company uid is known and the window is visible (a hidden window has not
+   * shown the row to anyone yet).
+   */
+  function emitPlanLimitExposures(): void {
+    const fetch = capabilities?.fetch;
+    if (!fetch || typeof document === 'undefined' || document.visibilityState !== 'visible') return;
+    const due = planLimitRows.filter((row) => !row.exposed && row.companyUid);
+    if (due.length === 0) return;
+    for (const row of due) {
+      void emitPlanLimitPromptTelemetry({
+        fetch,
+        eventName: 'plan_limit_prompt_exposed',
+        companyUid: row.companyUid!,
+        exposureId: row.exposureId,
+      });
+    }
+    const sent = new Set(due.map((row) => row.id));
+    commitPlanLimitRows(
+      planLimitRows.map((row) => (sent.has(row.id) ? { ...row, exposed: true } : row)),
+    );
+  }
+
+  /** One OS banner per pass, however many companies it paused. */
+  async function sendPlanLimitBanner(created: PlanLimitNotificationRow[]): Promise<void> {
+    const banner = planLimitNativeBanner(created);
+    if (!banner) return;
+    try {
+      const prefs = adapter.messaging.getNotifyPrefs
+        ? await adapter.messaging.getNotifyPrefs()
+        : null;
+      if (prefs && !prefs.ok && prefs.code !== 'http-404') {
+        console.error('Could not read notification settings for the paused-upload banner.', prefs.message);
+      }
+      if (!planLimitBannerAllowed(prefs?.ok ? prefs.value.prefs : null)) return;
+      await sendNativeRequestBanner(banner);
+    } catch (error) {
+      console.error('Could not send the paused-upload notification.', error);
+    }
+  }
+
+  function ackPlanLimitNotification(id: string): void {
+    commitPlanLimitRows(markPlanLimitNotificationRead(planLimitRows, id));
+  }
+
+  function readAllPlanLimitNotifications(): void {
+    commitPlanLimitRows(markAllPlanLimitNotificationsRead(planLimitRows));
+  }
   let notificationWakeSeq = $state(0);
   let hydration = $state(0);
   let authGeneration = $state(0);
@@ -361,11 +503,10 @@
       return;
     }
     planLimitNotices = [];
-    dismissedPlanLimitKeys.clear();
-    planLimitOpenError = null;
     authGeneration = next.generation;
     authAccountId = next.accountId;
     hydration += 1;
+    if (next.status === 'active' && next.accountId) refreshUploadsPausedSnapshot(next.generation);
     detachNavigation?.();
     detachNavigation = null;
     self = null;
@@ -444,9 +585,14 @@
   ] as const;
 
   function removeStatusPushNotice(company: string): void {
+    const existing = planLimitNotices.filter(
+      (notice) => notice.company === company && notice.statusPush,
+    );
+    if (existing.length === 0) return;
     planLimitNotices = planLimitNotices.filter(
       (notice) => notice.company !== company || !notice.statusPush,
     );
+    syncPlanLimitNotifications();
   }
 
   function applyStatusPlanLimitNotice(company: string, upgradeUrl: string | null): void {
@@ -462,12 +608,11 @@
           upgradeUrl,
           statusPush: true,
         };
-    if (dismissedPlanLimitKeys.has(planLimitKey(notice))) return;
     planLimitNotices = [
       ...planLimitNotices.filter((current) => current.company !== company),
       notice,
     ];
-    planLimitOpenError = null;
+    syncPlanLimitNotifications();
   }
 
   async function refreshPlanLimitStatus(
@@ -697,8 +842,8 @@
       authGeneration += 1;
       authAccountId = null;
       planLimitNotices = [];
-      dismissedPlanLimitKeys.clear();
-      planLimitOpenError = null;
+      planLimitRows = [];
+      planLimitRowsAccount = null;
       self = null;
       companies = null;
       capabilities = null;
@@ -934,12 +1079,11 @@
         exposureId: `exposure:${crypto.randomUUID()}`,
         upgradeUrl,
         };
-      if (dismissedPlanLimitKeys.has(planLimitKey(notice))) return;
       planLimitNotices = [
         ...planLimitNotices.filter((current) => current.company !== company),
         notice,
       ];
-      planLimitOpenError = null;
+      syncPlanLimitNotifications();
     }).catch((error) => {
       console.error('Could not subscribe to sync plan-limit notices.', error);
       return () => {};
@@ -1068,7 +1212,9 @@
       if (!cancelled) requestRevalidation({ automatic: true });
     };
     const onVisibilityChange = () => {
-      if (document.visibilityState === 'visible') revalidateOnRecovery();
+      if (document.visibilityState !== 'visible') return;
+      revalidateOnRecovery();
+      emitPlanLimitExposures();
     };
     window.addEventListener('focus', revalidateOnRecovery);
     window.addEventListener('online', revalidateOnRecovery);
@@ -1114,13 +1260,6 @@
     };
   });
 
-  function dismissPlanLimitNotice(notice: PlanLimitNotice): void {
-    dismissedPlanLimitKeys.add(planLimitKey(notice));
-    planLimitNotices = planLimitNotices.filter(
-      (current) => planLimitKey(current) !== planLimitKey(notice),
-    );
-  }
-
   function resolvePlanLimitCompanyUid(
     companyLabel: string,
     workspaces: Workspace[] | null = companies,
@@ -1143,50 +1282,15 @@
       const companyUid = resolvePlanLimitCompanyUid(notice.company, companies);
       return companyUid ? { ...notice, companyUid } : notice;
     });
+    if (planLimitRowsAccount !== authAccountId) return;
+    const resolved = resolvePlanLimitCompanyUids(planLimitRows, (company) =>
+      resolvePlanLimitCompanyUid(company, companies),
+    );
+    if (resolved.some((row, index) => row !== planLimitRows[index])) {
+      commitPlanLimitRows(resolved);
+    }
+    emitPlanLimitExposures();
   }
-
-  function trackPlanLimitNoticeExposure(
-    node: HTMLElement,
-    initialNotice: PlanLimitNotice,
-  ) {
-    let notice = initialNotice;
-    let attempted = false;
-    const emitWhenVisible = () => {
-      if (document.visibilityState === 'visible') emitExposure();
-    };
-    const emitExposure = () => {
-      void tick().then(() => {
-        if (
-          attempted ||
-          !node.isConnected ||
-          document.visibilityState !== 'visible' ||
-          !notice.companyUid ||
-          !capabilities?.fetch
-        ) return;
-        attempted = true;
-        void emitPlanLimitPromptTelemetry({
-          fetch: capabilities.fetch,
-          eventName: 'plan_limit_prompt_exposed',
-          companyUid: notice.companyUid,
-          exposureId: notice.exposureId,
-        });
-      });
-    };
-    emitExposure();
-    document.addEventListener('visibilitychange', emitWhenVisible);
-    window.addEventListener('focus', emitWhenVisible);
-    return {
-      update(nextNotice: PlanLimitNotice) {
-        notice = nextNotice;
-        emitExposure();
-      },
-      destroy() {
-        document.removeEventListener('visibilitychange', emitWhenVisible);
-        window.removeEventListener('focus', emitWhenVisible);
-      },
-    };
-  }
-
 
   function withDesktopLimitEntrySurface(value: string): string {
     const url = new URL(value);
@@ -1209,23 +1313,26 @@
     return value;
   }
 
-  async function openPlanLimitUpgrade(url: string): Promise<void> {
-    const notice = planLimitNotices.find((candidate) => candidate.upgradeUrl === url);
-    if (notice?.companyUid && capabilities?.fetch) {
+  /** A paused-upload notification was opened: record it, open the upgrade page. */
+  async function openPlanLimitNotification(id: string, url: string): Promise<void> {
+    const row = planLimitRows.find((candidate) => candidate.id === id);
+    if (!row || row.targetRef !== url) {
+      console.error('Paused-upload notification has no matching upgrade link.', id);
+      return;
+    }
+    if (row.companyUid && capabilities?.fetch) {
       void emitPlanLimitPromptTelemetry({
         fetch: capabilities.fetch,
         eventName: 'plan_limit_prompt_engaged',
-        companyUid: notice.companyUid,
-        exposureId: notice.exposureId,
+        companyUid: row.companyUid,
+        exposureId: row.exposureId,
         action: 'upgrade_clicked',
       });
     }
     try {
       await openApprovedExternalUrl(url);
-      planLimitOpenError = null;
     } catch (error) {
       console.error('Could not open the sync plan upgrade page.', error);
-      planLimitOpenError = 'Could not open the upgrade page. Try again.';
     }
   }
 </script>
@@ -1296,35 +1403,6 @@
       </div>
     {/if}
     <div class="work-shell-frame">
-    {#if visiblePlanLimitNotice}
-      {@const notice = visiblePlanLimitNotice}
-      {#key planLimitKey(notice)}
-        <div class="plan-limit-notices" data-testid="sync-plan-limit-notice" role="status">
-          <div class="plan-limit-notice" use:trackPlanLimitNoticeExposure={notice}>
-            <span class="plan-limit-dot" aria-hidden="true"></span>
-            <span class="plan-limit-text">New files are paused for {notice.company}.</span>
-            {#if notice.upgradeUrl}
-              <PlanUpgradeAction
-                upgradeUrl={notice.upgradeUrl}
-                onUpgrade={openPlanLimitUpgrade}
-                testId="sync-plan-limit-upgrade"
-              />
-            {/if}
-            <button
-              type="button"
-              class="plan-limit-dismiss"
-              aria-label={`Dismiss upgrade notice for ${notice.company}`}
-              onclick={() => dismissPlanLimitNotice(notice)}
-            >
-              Dismiss
-            </button>
-          </div>
-          {#if planLimitOpenError}
-            <p class="plan-limit-open-error" role="alert">{planLimitOpenError}</p>
-          {/if}
-        </div>
-      {/key}
-    {/if}
     {#key authGeneration}
       <WorkShell
         data={{ user: capabilities.hostIdentity }}
@@ -1347,8 +1425,11 @@
         onOpenConsole={openApprovedExternalUrl}
         onopenurl={openBrowserUrl}
         {notificationWakeSeq}
+        hostNotifications={planLimitRowsAccount === authAccountId ? planLimitRows : []}
+        onackhostnotification={ackPlanLimitNotification}
+        onreadallhostnotifications={readAllPlanLimitNotifications}
+        onopenhostnotification={(id, url) => void openPlanLimitNotification(id, url)}
         onactivethreadchange={setActiveReplyThread}
-        onactivecompanychange={setActiveCompanyPane}
         {extraPages}
         {postReadyActionReady}
         {setupInstallGuide}
@@ -1487,58 +1568,7 @@
     background: var(--v4-surface-solid, #282828);
   }
 
-  /* QA-075: one contained notice in the company pane, on the dark surface. */
-  .plan-limit-notices {
-    position: absolute;
-    right: 16px;
-    bottom: 16px;
-    z-index: 20;
-    max-width: min(480px, calc(100% - 32px));
-    display: grid;
-    gap: 4px;
-    padding: 8px 12px;
-    border: 1px solid var(--v4-divider, rgba(255, 255, 255, 0.08));
-    border-radius: 8px;
-    background: var(--v4-surface-solid, #282828);
-    color: var(--v4-text-1, #e6e6e6);
-    font-size: 13px;
-    line-height: 18px;
-  }
-
-  .plan-limit-notice {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .plan-limit-dot {
-    flex: 0 0 auto;
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--v4-warn, #d97706);
-  }
-
-  .plan-limit-text {
-    min-width: 0;
-  }
-
-  .plan-limit-dismiss {
-    border: 0;
-    padding: 4px 6px;
-    background: transparent;
-    color: var(--v4-text-2, #b0b0b0);
-    font: inherit;
-    cursor: pointer;
-  }
-
-  .plan-limit-open-error {
-    margin: 0;
-    color: var(--v4-warn, #b45309);
-  }
-
   .work-shell-frame {
-    position: relative;
     flex: 1;
     min-height: 0;
     min-width: 0;
