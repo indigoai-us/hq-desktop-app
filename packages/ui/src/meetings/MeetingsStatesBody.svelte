@@ -219,7 +219,7 @@
   {:else if mode === "empty"}
     <div class="toolbar">
       <h1>Meetings</h1>
-      <span class="sub">Nothing live</span>
+      {#if !calendarFailed}<span class="sub">Nothing live</span>{/if}
       <span class="grow"></span>
       <MeetingsToolbarControls {openExternal} onnewWithLink={(link: string) => onopenSheet?.(link)} />
       <button type="button" class="btn" data-testid="empty-new-meeting" onclick={() => onopenSheet?.()}>New meeting</button>

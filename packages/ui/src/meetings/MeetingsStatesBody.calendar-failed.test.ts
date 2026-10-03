@@ -76,6 +76,13 @@ describe("Meetings failed calendar read (AUDIT-3-16)", () => {
     expect(failed?.textContent).toContain("Couldn't read your calendar.");
     expect(el.querySelector('[data-testid="meetings-calendar-retry"]')).toBeTruthy();
     expect(el.textContent).not.toContain("HTTP 503");
+    // BLANK-2: no empty claims beside the failed line.
+    expect(el.textContent).not.toContain("Nothing live");
+    await vi.waitFor(() => {
+      flushSync();
+      expect(el.querySelector('[data-testid="meetings-calendar-chip"]')).toBeTruthy();
+    });
+    expect(el.querySelector('[data-testid="meetings-calendar-chip"]')?.textContent).not.toContain("No calendar");
   });
 
   it("a refresh that fails outright shows the failed line, not Connect your calendar", async () => {
