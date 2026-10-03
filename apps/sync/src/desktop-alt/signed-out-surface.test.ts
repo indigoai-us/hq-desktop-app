@@ -66,3 +66,12 @@ describe('signed-out sign-in card type (AUDIT-3)', () => {
     expect(prompt).not.toContain('Quit HQ Sync');
   });
 });
+
+describe('signed-out page copy (AUDIT-3)', () => {
+  it('uses the app name HQ, not the internal HQ Work name', () => {
+    const start = shell.indexOf('data-testid="hq-work-signed-out"');
+    const block = shell.slice(start, shell.indexOf('</section>', start));
+    expect(block).not.toMatch(/HQ Work\b/);
+    expect(block).not.toMatch(/fleet agent/);
+  });
+});
