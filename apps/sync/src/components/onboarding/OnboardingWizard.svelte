@@ -122,6 +122,7 @@
   } from '../../lib/onboarding-platform';
   import { postOptIn, markConsentRepromptShown } from '../../lib/onboarding-telemetry';
   import { emitDesktopOperationalTelemetry } from '../../lib/desktop-telemetry';
+  import { inviteFailedEvent, inviteSentEvent, planSelectedEvent } from '../../lib/cdp-funnel-events';
   import {
     createOnboardingStepTelemetry,
     type OnboardingAction,
@@ -1277,6 +1278,7 @@
 
   function recordInviteFailure(failure: InviteFailure): void {
     inviteErrorKind = failure.kind;
+    void emitDesktopOperationalTelemetry(inviteFailedEvent(failure.kind));
     recordStep(INVITE_TEAMMATE_STEP_INDEX, 'failed', {
       errorKind: failure.kind,
       errorCategory: failure.kind === 'network' ? 'network' : 'unknown',
@@ -1334,6 +1336,7 @@
       }
       inviteSent = true;
       inviteResent = alreadyInvited;
+      void emitDesktopOperationalTelemetry(inviteSentEvent());
       recordStep(INVITE_TEAMMATE_STEP_INDEX, 'completed', {
         outcome: alreadyInvited ? 'resent' : 'ok',
       });
@@ -3170,6 +3173,7 @@
   /** Telemetry for the company step. Never carries names, handles or emails. */
   function recordCompanyStep(event: CompanyStepEvent): void {
     if ('companyUid' in event) companyStepCompanyUid = event.companyUid;
+    if (event.action === 'plan_chosen') void emitDesktopOperationalTelemetry(planSelectedEvent(event.plan));
     const failed =
       event.action === 'company_create_failed' ||
       event.action === 'invite_join_failed' ||

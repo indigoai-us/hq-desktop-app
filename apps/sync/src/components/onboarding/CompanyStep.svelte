@@ -420,7 +420,7 @@
     try {
       const result = await invoke<{ ok: boolean; claimedSlugs: string[]; message: string; upgradeUrl?: string }>(
         'claim_pending_company_invite',
-        { companySlug: slug },
+        { companySlug: slug, route: 'onboarding' },
       );
       if (!result.ok) {
         error = result.message || 'HQ could not accept the invite.';
