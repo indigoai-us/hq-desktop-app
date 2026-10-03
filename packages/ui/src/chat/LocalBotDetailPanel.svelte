@@ -145,7 +145,8 @@
         ...(effortValue !== savedEffort ? { effort: effortValue === DEFAULT_LOCAL_BOT_EFFORT ? null : effortValue } : {}),
       });
       if (!result.ok) {
-        actionError = result.message || `Could not change what ${bot.name} thinks with.`;
+        console.warn("[local-bot] save settings failed", result.message);
+        actionError = `Could not change what ${bot.name} thinks with. Try again.`;
         return;
       }
       await onchanged?.();
@@ -153,7 +154,8 @@
       draftEffort = null;
       settingsNote = "Saved. Applies from its next message.";
     } catch (error) {
-      actionError = error instanceof Error ? error.message : `Could not change what ${bot.name} thinks with.`;
+      console.warn("[local-bot] save settings failed", error);
+      actionError = `Could not change what ${bot.name} thinks with. Try again.`;
     } finally {
       savingSettings = false;
     }
@@ -193,13 +195,15 @@
       }
       const result = await api[verb](bot.name);
       if (!result.ok) {
-        actionError = result.message || `Could not ${verb} ${bot.name}.`;
+        console.warn(`[local-bot] ${verb} failed`, result.message);
+        actionError = `Could not ${verb} ${bot.name}. Try again.`;
         return;
       }
       await onchanged?.();
       if (verb === "remove") onclose?.();
     } catch (error) {
-      actionError = error instanceof Error ? error.message : `Could not ${verb} ${bot.name}.`;
+      console.warn(`[local-bot] ${verb} failed`, error);
+      actionError = `Could not ${verb} ${bot.name}. Try again.`;
     } finally {
       busy = null;
     }

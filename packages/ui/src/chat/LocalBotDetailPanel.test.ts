@@ -173,16 +173,22 @@ describe("LocalBotDetailPanel", () => {
     expect(bots.start).not.toHaveBeenCalled();
   });
 
-  it("surfaces a failed action without closing", async () => {
-    const bots = botsApi({ stop: vi.fn(async () => failure("cli", "hq bot stop failed")) });
+  it("surfaces a failed action without closing, as plain copy not the raw CLI text", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const raw = '[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}';
+    const bots = botsApi({ stop: vi.fn(async () => failure("cli", raw)) });
     const onclose = vi.fn();
     const onchanged = vi.fn();
     mountPanel({ bot: bot(), bots, onclose, onchanged });
     await tick();
     q<HTMLButtonElement>('[data-testid="local-bot-detail-stop"]')!.click();
     await vi.waitFor(() =>
-      expect(q('[data-testid="local-bot-detail-error"]')?.textContent).toContain("hq bot stop failed"),
+      expect(q('[data-testid="local-bot-detail-error"]')?.textContent).toContain("Could not stop assistant. Try again."),
     );
+    expect(host.textContent).not.toContain("boom");
+    for (const el of host.querySelectorAll("[title]")) expect(el.getAttribute("title")).not.toContain("boom");
+    expect(warn).toHaveBeenCalledWith("[local-bot] stop failed", raw);
+    warn.mockRestore();
     expect(onchanged).not.toHaveBeenCalled();
     expect(onclose).not.toHaveBeenCalled();
   });
@@ -327,7 +333,7 @@ describe("LocalBotDetailPanel — model and thinking", () => {
     expect(configure).toHaveBeenLastCalledWith("assistant", { model: null, effort: null });
   });
 
-  it("a failed save says why and keeps the choice", async () => {
+  it("a failed save shows plain copy and keeps the choice", async () => {
     const configure = vi.fn(async () => failure("unavailable", "--effort for claude must be one of low, medium"));
     mountPanel({ bot: bot({ effort: "medium" }), bots: botsApi({ configure }) });
     await tick();
@@ -336,7 +342,8 @@ describe("LocalBotDetailPanel — model and thinking", () => {
     effort.dispatchEvent(new Event("change", { bubbles: true }));
     await tick();
     host.querySelector<HTMLButtonElement>('[data-testid="local-bot-detail-settings-save"]')!.click();
-    await vi.waitFor(() => expect(host.querySelector('[data-testid="local-bot-detail-error"]')?.textContent).toContain("must be one of"));
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="local-bot-detail-error"]')?.textContent).toContain("Could not change what assistant thinks with. Try again."));
+    expect(host.textContent).not.toContain("must be one of");
     expect(effort.value).toBe("high");
   });
 
