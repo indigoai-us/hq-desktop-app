@@ -340,11 +340,15 @@
 
   async function refresh(key: string): Promise<void> {
     const next = readBrainCache(key) ?? emptyBrainCache();
-    if (files && key) {
-      if (appShell) {
-        const bound = await appShell.setActiveCompany(key);
-        if (!bound.ok) console.warn("[brain] could not bind company scope", bound.message);
-      }
+    if (files && key && appShell) {
+      const bound = await appShell.setActiveCompany(key);
+      if (!bound.ok) console.warn("[brain] could not bind company scope", bound.message);
+    }
+    // The file lists and the library read are independent; run them side by
+    // side so a slow read does not make Skills and Workers wait on Knowledge
+    // and Policies (BLANK-3: under slow reads the data renders when it lands).
+    const readFiles = async (): Promise<void> => {
+      if (!files || !key) return;
       const [knowledge, policies] = await Promise.all([
         readKnowledge(files, `companies/${key}/knowledge`),
         readPolicies(files, `companies/${key}/policies`),
@@ -355,8 +359,9 @@
       }
       next.knowledge = knowledge ?? next.knowledge;
       next.policies = policies ?? next.policies;
-    }
-    if (library && key) {
+    };
+    const readLibrary = async (): Promise<void> => {
+      if (!library || !key) return;
       const result = await loadLibraryCompany(library, key);
       if (result.ok) {
         next.skills = result.value.skills.map((skill) => skillRowFromLibrary(skill, key));
@@ -368,7 +373,8 @@
           failedLists = [...failedLists, "skills", "workers"];
         }
       }
-    }
+    };
+    await Promise.all([readFiles(), readLibrary()]);
     writeBrainCache(key, next);
     if (slug === key) cache = next;
   }
@@ -407,16 +413,17 @@
       return depth === 0 ? null : [];
     }
     const entries = res.value as unknown as DirEntry[];
-    const filesOut: string[] = [];
-    for (const entry of entries) {
-      if (!entry || typeof entry.path !== "string" || typeof entry.name !== "string") continue;
-      if (!keep(entry.name, entry.isDir)) continue;
-      if (entry.isDir) filesOut.push(...((await collectFiles(api, entry.path, depth + 1, keep)) ?? []));
-      else if (entry.name.endsWith(".md") || entry.name.endsWith(".yaml") || entry.name.endsWith(".yml")) {
-        filesOut.push(entry.path);
-      }
-    }
-    return filesOut;
+    // Subfolders are listed side by side; the result keeps listing order.
+    const parts = await Promise.all(
+      entries.map(async (entry): Promise<string[]> => {
+        if (!entry || typeof entry.path !== "string" || typeof entry.name !== "string") return [];
+        if (!keep(entry.name, entry.isDir)) return [];
+        if (entry.isDir) return (await collectFiles(api, entry.path, depth + 1, keep)) ?? [];
+        if (entry.name.endsWith(".md") || entry.name.endsWith(".yaml") || entry.name.endsWith(".yml")) return [entry.path];
+        return [];
+      }),
+    );
+    return parts.flat();
   }
 
   async function runPrompt(prompt: string, label: string): Promise<void> {
