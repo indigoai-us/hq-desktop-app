@@ -2057,6 +2057,8 @@ describe('anonymous installer step pings', () => {
       switch (command) {
         case 'is_first_run':
           return unresolvedIdentity;
+        case 'emit_desktop_operational_telemetry':
+          return unresolvedIdentity;
         case 'resolve_hq_path':
           return '/Users/test/hq';
         case 'detect_ai_tools':
