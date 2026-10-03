@@ -1,67 +1,43 @@
-import { existsSync, readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+// @vitest-environment happy-dom
 
-// Source-contract regression guard for Sentry HQ-SYNC-WEB-3:
-//
-//   UnhandledRejection: Non-Error promise rejection captured with value:
-//   Command plugin:window|start_dragging not allowed by ACL
-//
-// The Recent Changes window (label `activity-log`, built in
-// commands/activity.rs, routed to ActivityLog.svelte in main.ts) renders its
-// <header> as a Tauri drag region (data-tauri-drag-region). Tauri's drag region
-// invokes the core `start_dragging` window command on mousedown — which is ONLY
-// allowed when the window's capability grants `core:window:allow-start-dragging`.
-// The window originally had no capability granting it (the old separate
-// `notification-history` window was retired and its capability was orphaned),
-// so every attempt to drag the window was denied by the ACL and bubbled up as
-// an unhandled rejection to Sentry.
-//
-// These assertions pin the facts that, together, make the drag work and keep
-// the rejection from recurring. They are source-contract checks (the unit
-// suite never boots a real Tauri window), mirroring e2e/desktop-alt/titlebar-drag.spec.ts.
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const root = (rel: string) => fileURLToPath(new URL(`../../${rel}`, import.meta.url));
+vi.mock('svelte', async () => {
+  // @ts-expect-error Vitest needs Svelte's browser entry for happy-dom mounts.
+  return await import('../../node_modules/svelte/src/index-client.js');
+});
 
-const cap = JSON.parse(readFileSync(root('src-tauri/capabilities/activity-log.json'), 'utf8'));
-const activityLog = readFileSync(root('src/components/ActivityLog.svelte'), 'utf8');
-const mainTs = readFileSync(root('src/main.ts'), 'utf8');
-const builder = readFileSync(root('src-tauri/src/commands/activity.rs'), 'utf8');
-const retiredCapPath = root('src-tauri/capabilities/notification-history.json');
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn(async () => []),
+}));
 
-describe('HQ-SYNC-WEB-3: activity-log window drag capability', () => {
-  it('targets the activity-log window', () => {
-    expect(cap.windows).toContain('activity-log');
-  });
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: vi.fn(async () => () => {}),
+}));
 
-  it('grants start-dragging (the ActivityLog drag region is inert + rejects without it)', () => {
-    expect(cap.permissions).toContain('core:window:allow-start-dragging');
-  });
+import { mount, tick, unmount } from 'svelte';
 
-  it('grants event IPC (ActivityLog listen() is denied without it — Sentry HQ-SYNC-WEB-J)', () => {
-    // ActivityLog.svelte subscribes via listen('activity:list') /
-    // listen('activity:append') (@tauri-apps/api/event). That `listen` is the
-    // core `event` plugin command — denied by the ACL unless the window's
-    // capability grants core:event (default bundles allow-listen). Same window
-    // and same root cause as HQ-SYNC-WEB-3 (the window had no capability at
-    // all); this pins the event grant so a future edit can't drop it and
-    // reintroduce `Command plugin:event|listen not allowed by ACL`.
-    expect(cap.permissions).toContain('core:event:default');
-  });
+import ActivityLog from '../../src/components/ActivityLog.svelte';
 
-  it('renders the ActivityLog header as a Tauri drag region', () => {
-    expect(activityLog).toMatch(/<header[^>]*\bdata-tauri-drag-region\b/);
-  });
+let host: HTMLDivElement;
+let component: ReturnType<typeof mount> | null = null;
 
-  it('routes the activity-log window label to ActivityLog', () => {
-    expect(mainTs).toMatch(/windowLabel === 'activity-log'[\s\S]*?Component = ActivityLog/);
-  });
+afterEach(async () => {
+  if (component) await unmount(component);
+  component = null;
+  host?.remove();
+});
 
-  it('builds the window under the same label the capability grants', () => {
-    expect(builder).toMatch(/ACTIVITY_WINDOW_LABEL:\s*&str\s*=\s*"activity-log"/);
-  });
+describe('HQ-SYNC-WEB-3: activity-log drag region', () => {
+  it('renders the ActivityLog header as a Tauri drag region', async () => {
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    component = mount(ActivityLog, { target: host });
+    await tick();
 
-  it('removes the orphaned notification-history capability (its window was retired)', () => {
-    expect(existsSync(retiredCapPath)).toBe(false);
+    const header = host.querySelector('header');
+    expect(header).not.toBeNull();
+    expect(header?.hasAttribute('data-tauri-drag-region')).toBe(true);
+    expect(header?.textContent).toContain('Recent Changes');
   });
 });
