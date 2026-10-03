@@ -265,7 +265,8 @@
     const res = await adapter.agents.updateProfile(agentUid, patch);
     saveBusy = false;
     if (!res.ok) {
-      saveError = res.message ?? "Could not save profile.";
+      console.warn("[agent-detail] save profile failed", res.message);
+      saveError = "Could not save profile. Try again.";
       return;
     }
     header = {
@@ -279,7 +280,8 @@
   async function pauseJob(jobId: string): Promise<void> {
     const res = await adapter.agents.pauseJob(agentUid, jobId);
     if (!res.ok) {
-      actionError = res.message ?? "Could not pause the job.";
+      console.warn("[agent-detail] pause the job failed", res.message);
+      actionError = "Could not pause the job. Try again.";
       return;
     }
     if (jobsState.status === "ready") {
@@ -297,7 +299,8 @@
   async function pauseAgent(): Promise<void> {
     const res = await adapter.agents.stop(agentUid);
     if (!res.ok) {
-      actionError = res.message ?? "Could not pause the bot.";
+      console.warn("[agent-detail] pause the bot failed", res.message);
+      actionError = "Could not pause the bot. Try again.";
       return;
     }
     header = { ...header, status: "IDLE", runtimeStatus: "stopped" };
@@ -306,7 +309,8 @@
   async function removeAgent(): Promise<void> {
     const res = await adapter.agents.deprovision(agentUid);
     if (!res.ok) {
-      actionError = res.message ?? "Could not remove the bot.";
+      console.warn("[agent-detail] remove the bot failed", res.message);
+      actionError = "Could not remove the bot. Try again.";
       return;
     }
     onclose?.();
