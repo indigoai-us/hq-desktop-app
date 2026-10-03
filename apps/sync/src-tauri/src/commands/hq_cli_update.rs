@@ -132,11 +132,8 @@ pub use hq_desktop_core::hq_cli_update::{
     WINDOWS_BUSY_INSTALL_TARGET_MAX_DEFERRALS, WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES,
 };
 
-// The settings-PATH repair (HQ-DESKTOP-46) runs only on unix — Windows PATH is
-// registry-managed, so there is no `.claude` settings file to rewrite. These
-// symbols are used exclusively by `settings_path_repair_and_refinalize`, so they
-// are imported under the same cfg to avoid unused-import warnings on Windows.
-#[cfg(not(windows))]
+// The settings-PATH repair also handles Windows: Claude's winning HQ settings
+// file can override the registry PATH and shadow the managed `.cmd` shim.
 use hq_desktop_core::hq_cli_update::{
     managed_bin_in_settings_path, settings_path_repair_gate, settings_path_repair_outcome,
     SettingsPathRepairGate,
@@ -3356,9 +3353,9 @@ async fn finalize_convergence(
     // prefix (present shim). Rewrite that settings file's PATH managed-first and
     // re-resolve, instead of wedging auto-update for a shape HQ can actually
     // repair — HQ owns the one input it never fixed: the winning file's env.PATH.
-    // Unix-only: Windows PATH is registry-managed, so there is no settings file
-    // to rewrite (configure_claude_settings_path is a no-op there).
-    #[cfg(not(windows))]
+    // On every platform, the writer updates only the winning settings file under
+    // this HQ root. Windows composes its managed `node` and `npm-prefix` dirs
+    // with the native `;` delimiter so the fresh resolver finds the `.cmd` shim.
     if outcome.non_convergence_kind == Some(NonConvergenceKind::ForeignManaged)
         && executed_copy_aim == ExecutedCopyAim::Undrivable
         && delivered_prefix_shim == DeliveredPrefixShim::Present
@@ -3699,7 +3696,6 @@ async fn repair_managed_shadow_and_refinalize(
 /// function owns the staleness gate, the rewrite, and the re-decide.
 /// Filesystem-only and non-fatal — a write failure never errors the install
 /// command, it just downgrades the outcome.
-#[cfg(not(windows))]
 #[allow(clippy::too_many_arguments)]
 async fn settings_path_repair_and_refinalize(
     app: &AppHandle,
@@ -3722,13 +3718,27 @@ async fn settings_path_repair_and_refinalize(
     );
     let hq_root = paths::resolved_hq_folder();
     let wrote = if gate == SettingsPathRepairGate::Attempt {
-        if let Some(home) = paths::home_dir() {
+        let home = paths::home_dir();
+        let managed_roots_available = !paths::managed_toolchain_roots().is_empty();
+        if paths::settings_path_repair_environment_available(
+            cfg!(windows),
+            home.is_some(),
+            hq_root.is_dir(),
+            managed_roots_available,
+        ) {
+            // Windows' writer ignores home and login_path. Supply an empty
+            // placeholder when that platform has no home/profile variables.
+            let home = home.unwrap_or_default();
             let hq_root = hq_root.clone();
+            #[cfg(not(windows))]
+            let login_path = crate::commands::install_deps::shell_login_path().to_string();
+            #[cfg(windows)]
+            let login_path = String::new();
             let result = tauri::async_runtime::spawn_blocking(move || {
                 crate::commands::install_deps::write_managed_toolchain_settings_path(
                     &hq_root,
                     &home,
-                    crate::commands::install_deps::shell_login_path(),
+                    &login_path,
                 )
             })
             .await

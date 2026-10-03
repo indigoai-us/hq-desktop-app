@@ -2164,7 +2164,6 @@ pub fn composed_settings_env_path(
 /// Return `settings_json` with `.env.PATH` set to `new_path`, preserving every
 /// other key. Creates the `env` object when absent. Errors when the document
 /// is not a JSON object.
-#[cfg(not(windows))]
 pub fn settings_json_with_env_path(settings_json: &str, new_path: &str) -> Result<String, String> {
     let mut doc: serde_json::Value = serde_json::from_str(settings_json)
         .map_err(|e| format!("settings.json is not valid JSON: {e}"))?;
@@ -2189,7 +2188,6 @@ pub fn settings_json_with_env_path(settings_json: &str, new_path: &str) -> Resul
 
 /// The result of writing the composed managed-toolchain PATH into the winning
 /// `.claude` settings file.
-#[cfg(not(windows))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SettingsPathWriteOutcome {
     /// Wrote the composed PATH into this settings file.
@@ -2205,24 +2203,24 @@ pub(crate) enum SettingsPathWriteOutcome {
 /// when it defines a non-empty `env.PATH`, else settings.json — resolved through
 /// the single source of truth [`hq_desktop_core::paths::winning_settings_path_file`].
 ///
-/// This is the heart of the HQ-DESKTOP-46 fix: [`composed_settings_env_path`]
-/// already produces the correct managed-first ordering; only the DESTINATION file
-/// was wrong (it was hard-coded to settings.json, which the resolver ignores
-/// whenever settings.local.json defines a non-empty PATH, so the managed-first
-/// value never reached the file the app resolves `hq` through and a stale foreign
-/// copy kept shadowing the managed CLI).
+/// Unix composes the managed dirs, login-shell PATH and existing entries;
+/// Windows composes its managed toolchain dirs with the native `;` separator.
+/// Both paths update only the file selected by the resolver's shared winning-file
+/// rule, so a stale foreign copy cannot continue shadowing the managed CLI.
 ///
 /// Reuses the existing staged-sibling + [`atomic_replace_file`] so a partial
 /// write is impossible, and canonicalizes the resolved file to require it stay
 /// inside the resolved HQ folder — a symlinked settings file cannot redirect the
 /// write outside the HQ tree. Pure enough to unit-test with a tempdir HQ root and
 /// home (no `AppHandle`).
-#[cfg(not(windows))]
 pub(crate) fn write_managed_toolchain_settings_path(
     hq_root: &Path,
     home: &Path,
     login_path: &str,
 ) -> Result<SettingsPathWriteOutcome, String> {
+    #[cfg(windows)]
+    let _ = (home, login_path);
+
     let file = match hq_desktop_core::paths::winning_settings_path_file(hq_root) {
         hq_desktop_core::paths::SettingsPathFile::Local => "settings.local.json",
         // Base or None both write the generated base file, exactly as before the
@@ -2260,7 +2258,13 @@ pub(crate) fn write_managed_toolchain_settings_path(
     let existing_env_path = serde_json::from_str::<serde_json::Value>(&contents)
         .ok()
         .and_then(|v| v.get("env")?.get("PATH")?.as_str().map(|s| s.to_string()));
+    #[cfg(not(windows))]
     let composed = composed_settings_env_path(home, login_path, existing_env_path.as_deref());
+    #[cfg(windows)]
+    let composed = hq_desktop_core::paths::compose_windows_settings_env_path(
+        &hq_desktop_core::paths::managed_toolchain_roots(),
+        existing_env_path.as_deref(),
+    );
     let updated = settings_json_with_env_path(&contents, &composed)?;
 
     let staged = unique_sibling_path(&settings_path, "pathfix")?;
