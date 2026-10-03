@@ -1174,6 +1174,16 @@ export function createSyncPlatformAdapter(
       getSecrets: (slug) => call('get_company_secrets', { slug }),
       listMembers: (slug) =>
         call('list_company_members', { companyUid: slug }),
+      listCompanyMemberships: (companyUid) =>
+        hqProJson('GET', `/membership/company/${encodeURIComponent(companyUid)}`),
+      listPendingMemberships: (companyUid) =>
+        hqProJson('GET', `/membership/company/${encodeURIComponent(companyUid)}/pending`),
+      getMemberAccess: (companyUid, personUid) =>
+        hqProJson('GET', `/files/${encodeURIComponent(companyUid)}/members/${encodeURIComponent(personUid)}/access`),
+      setMemberRole: (companyUid, membershipKey, newRole) =>
+        hqProJson('POST', '/membership/role', { companyUid, membershipKey, newRole }),
+      revokeMembership: (companyUid, membershipKey) =>
+        hqProJson('POST', '/membership/revoke', { companyUid, membershipKey }),
       getTeamTelemetry: (slug, range) =>
         call('get_company_team_telemetry', range ? { slug, from: range.from, to: range.to } : { slug }),
       claimPendingInvite: (slug) =>

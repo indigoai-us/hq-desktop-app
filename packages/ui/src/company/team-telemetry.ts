@@ -23,6 +23,10 @@ export interface TeamMember {
   role?: string;
   /** Month-year label from an explicit joined/enrolled timestamp. Never inferred. */
   joined?: string;
+  /** OWNER-R9: membership row key for role and removal writes. */
+  membershipKey?: string;
+  /** OWNER-R9: "Self-serve" when the member joined through request access. */
+  badge?: string;
   topSkills: TeamSkillUsage[];
   /** Active project names when known (from outcomes / local board join). */
   activeProjects: string[];

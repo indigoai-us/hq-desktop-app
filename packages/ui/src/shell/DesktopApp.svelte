@@ -40,6 +40,7 @@
   import LazyDoor from "./LazyDoor.svelte";
   import {
     brainPageDoor,
+    teamPageDoor,
     filesConnectDoor,
     meetingCanvasDoor,
     meetingsSidepaneDoor,
@@ -73,7 +74,6 @@
   import type { AtlasLocalSource, AtlasVaultSource } from "./atlas-landing.js";
   import ActivityRailHost from "./ActivityRailHost.svelte";
   import GoalsRailHost from "./GoalsRailHost.svelte";
-  import TeamPage from "../company/TeamPage.svelte";
   import BotsPage from "../company/BotsPage.svelte";
   import { botSubjectName, profileViewingCompanyUid } from "./profile-panes/bot-subject-name.js";
   import CompanySettingsHost from "./CompanySettingsHost.svelte";
@@ -10593,19 +10593,28 @@
             }}
           />
         {:else if railPlaceholder?.id === "team" && companyPaneCompany}
-          <TeamPage
-            slug={companyPaneCompany.slug ?? ""}
-            companyUid={companyPaneCompany.uid}
-            company={adapter.company ?? null}
-            messaging={adapter.messaging ?? null}
-            senderName={resolvedAccountLabel ?? "you"}
-            agents={adapter.agents ?? null}
-            inviteSeq={teamInviteSeq}
-            onaddagent={addAgentFromTeam}
-            onmessage={(uid) => {
-              messagePersonByUid(uid, { companyUid: companyPaneCompany?.uid });
+          <LazyDoor
+            door={teamPageDoor}
+            props={{
+              slug: companyPaneCompany.slug ?? "",
+              companyUid: companyPaneCompany.uid,
+              company: adapter.company ?? null,
+              messaging: adapter.messaging ?? null,
+              senderName: resolvedAccountLabel ?? "you",
+              agents: adapter.agents ?? null,
+              inviteSeq: teamInviteSeq,
+              onaddagent: addAgentFromTeam,
+              onmessage: (uid: string) => {
+                messagePersonByUid(uid, { companyUid: companyPaneCompany?.uid });
+              },
+              selfUid: self?.uid ?? null,
+              selfEmail: self?.email ?? null,
             }}
-          />
+          >
+            {#snippet skeleton()}
+              <div class="team-door-skeleton" data-testid="team-page-loading" aria-busy="true"></div>
+            {/snippet}
+          </LazyDoor>
         {:else if railPlaceholder?.id === "projects" && companyPaneCompany}
           <!-- US-039: the sidepane Projects row opens the US-023 board for
                this company instead of the placeholder. -->

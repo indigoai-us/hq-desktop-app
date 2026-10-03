@@ -14,7 +14,7 @@
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
   import LazyDoor from "../shell/LazyDoor.svelte";
   import ShowMoreRow from "../shell/ShowMoreRow.svelte";
-  import { profilePaneDoor } from "../shell/lazy-doors.js";
+  import { memberAccessDoor, profilePaneDoor } from "../shell/lazy-doors.js";
   import { pageRows } from "../shell/list-paging.js";
   import { UNKNOWN_ROLE } from "../shell/account-menu.js";
   import type { TeamMember, TeamTelemetryView } from "./team-telemetry.js";
@@ -29,7 +29,6 @@
     metadata,
     readCompanyTeam,
     readTeamCache,
-    resendInvite,
     revokeInvite,
     seatCounts,
     writeTeamCache,
@@ -55,6 +54,9 @@
     inviteSeq?: number;
     onaddagent?: () => void;
     onmessage?: (uid: string) => void;
+    /** OWNER-R9: the signed-in person, to read their own role here. */
+    selfUid?: string | null;
+    selfEmail?: string | null;
   }
 
   let {
@@ -67,6 +69,8 @@
     inviteSeq = 0,
     onaddagent,
     onmessage,
+    selfUid = null,
+    selfEmail = null,
   }: Props = $props();
 
   const emptyView: TeamTelemetryView = {
@@ -121,6 +125,27 @@
   const openMember = $derived(
     openId ? ([...humans, ...bots].find((member) => member.id === openId) ?? null) : null,
   );
+  // OWNER-R9: owners and admins change roles and remove members; everyone
+  // else sees the values read-only with no controls.
+  const callerRole = $derived(
+    view.members.find(
+      (m) => (selfUid && m.id === selfUid) || (selfEmail && m.email && m.email.toLowerCase() === selfEmail.toLowerCase()),
+    )?.role ?? "",
+  );
+  const canManage = $derived(callerRole === "Owner" || callerRole === "Admin");
+  const ownerCount = $derived(view.members.filter((m) => m.role === "Owner").length);
+  let pendingRole = $state<{ id: string; role: string } | null>(null);
+  let actionNote = $state("");
+  function isSelf(member: TeamMember): boolean {
+    return Boolean(selfUid && member.id === selfUid);
+  }
+  function manageable(member: TeamMember): boolean {
+    return canManage && Boolean(member.membershipKey) && !isSelf(member) && !(callerRole === "Admin" && member.role === "Owner");
+  }
+  function lastOwner(member: TeamMember): boolean {
+    return member.role === "Owner" && ownerCount <= 1;
+  }
+  const botNameFor = (id: string): string | null => bots.find((b) => b.id === id)?.displayName ?? null;
   const seatLine = $derived.by(() => {
     const { seats } = seatCounts(view);
     const limit = readSettingsCache(slug)?.seatsLimit ?? null;
@@ -234,30 +259,60 @@
     openId = openId === member.id ? null : member.id;
   }
 
-  function setRole(member: TeamMember, role: string): void {
-    const apply = (row: TeamMember) => (row.id === member.id ? { ...row, role } : row);
-    view = {
-      ...view,
-      humans: view.humans.map(apply),
-      agents: view.agents.map(apply),
-      members: view.members.map(apply),
-    };
+  function patchMember(id: string, next: (row: TeamMember) => TeamMember | null): void {
+    const map = (rows: TeamMember[]) =>
+      rows.flatMap((row) => {
+        if (row.id !== id) return [row];
+        const out = next(row);
+        return out ? [out] : [];
+      });
+    view = { ...view, humans: map(view.humans), agents: map(view.agents), members: map(view.members) };
+  }
+
+  /** OWNER-R9: confirmed role change through POST /membership/role; rolls back on failure. */
+  async function setRole(member: TeamMember, role: string): Promise<void> {
+    pendingRole = null;
     menuFor = null;
+    if (!member.membershipKey || !companyUid || !company?.setMemberRole) return;
+    const before = member.role;
+    actionNote = "";
+    patchMember(member.id, (row) => ({ ...row, role }));
+    const res = await Promise.resolve(company.setMemberRole(companyUid, member.membershipKey, role.toLowerCase())).catch(
+      (err: unknown) => {
+        console.warn("[team] role change rejected", err);
+        return { ok: false as const, reason: "network" as const, message: "rejected" };
+      },
+    );
+    if (!res.ok) {
+      console.warn("[team] role change failed", res.message ?? res.reason);
+      patchMember(member.id, (row) => ({ ...row, role: before }));
+      actionNote = `Couldn't change ${member.displayName}'s role. Nothing changed.`;
+      return;
+    }
     remember();
   }
 
-  function confirmRemove(): void {
+  /** OWNER-R9: confirmed removal through POST /membership/revoke; rolls back on failure. */
+  async function confirmRemove(): Promise<void> {
     if (!removeId) return;
     const id = removeId;
-    const drop = (row: TeamMember) => row.id !== id;
-    view = {
-      ...view,
-      humans: view.humans.filter(drop),
-      agents: view.agents.filter(drop),
-      members: view.members.filter(drop),
-    };
+    const member = view.members.find((m) => m.id === id);
     removeId = null;
     menuFor = null;
+    if (!member?.membershipKey || !companyUid || !company?.revokeMembership) return;
+    const snapshot = view;
+    actionNote = "";
+    patchMember(id, () => null);
+    const res = await Promise.resolve(company.revokeMembership(companyUid, member.membershipKey)).catch((err: unknown) => {
+      console.warn("[team] remove rejected", err);
+      return { ok: false as const, reason: "network" as const, message: "rejected" };
+    });
+    if (!res.ok) {
+      console.warn("[team] remove failed", res.message ?? res.reason);
+      view = snapshot;
+      actionNote = `Couldn't remove ${member.displayName}. They are still on the team.`;
+      return;
+    }
     remember();
   }
 
@@ -274,10 +329,24 @@
     remember();
   }
 
-  function confirmRevoke(): void {
+  /** OWNER-R9: revoke a pending invite through POST /membership/revoke. */
+  async function confirmRevoke(): Promise<void> {
     if (!revokeId) return;
-    invites = revokeInvite(invites, revokeId, true);
+    const id = revokeId;
     revokeId = null;
+    const before = invites;
+    invites = revokeInvite(invites, id, true);
+    if (!companyUid || !company?.revokeMembership) return;
+    const res = await Promise.resolve(company.revokeMembership(companyUid, id)).catch((err: unknown) => {
+      console.warn("[team] revoke invite rejected", err);
+      return { ok: false as const, reason: "network" as const, message: "rejected" };
+    });
+    if (!res.ok) {
+      console.warn("[team] revoke invite failed", res.message ?? res.reason);
+      invites = before;
+      actionNote = "Couldn't revoke the invite. It is still pending.";
+      return;
+    }
     remember();
   }
 </script>
@@ -326,6 +395,9 @@
 
   <div class="body">
   <div class="canvas">
+    {#if actionNote}
+      <p class="note action-note" role="status" data-testid="team-action-note">{actionNote}</p>
+    {/if}
     {#if phase === "shimmer"}
       <ReadLoader testid="team-loader" surface="team" onretry={() => (readAttempt += 1)} />
     {:else}
@@ -374,16 +446,12 @@
           <li>
             <span class="nm">{invite.email}</span>
             <span class="meta">{inviteSummary(invite)}</span>
-            <RailButton icon="send"
-              type="button"
-              onclick={() => {
-                invites = resendInvite(invites, invite.id);
-                remember();
-              }}>Resend</RailButton>
-            <RailButton icon="trash"
-              type="button"
-              data-testid={`revoke-${invite.id}`}
-              onclick={() => (revokeId = invite.id)}>Revoke</RailButton>
+            {#if canManage}
+              <RailButton icon="trash"
+                type="button"
+                data-testid={`revoke-${invite.id}`}
+                onclick={() => (revokeId = invite.id)}>Revoke</RailButton>
+            {/if}
           </li>
         {:else}
           <li class="empty">No pending invites.</li>
@@ -420,6 +488,20 @@
           <div class="profile-loading" aria-busy="true"><ReadLoader testid="team-profile-loading" /></div>
         {/snippet}
       </LazyDoor>
+      {#if openMember.kind !== "agent"}
+        <LazyDoor
+          door={memberAccessDoor}
+          props={{
+            company,
+            companyUid,
+            personUid: openMember.id,
+            joined: openMember.joined ?? "",
+            role: openMember.role ?? "",
+            badge: openMember.badge ?? "",
+            botName: botNameFor,
+          }}
+        />
+      {/if}
     </div>
   {/if}
   </div>
@@ -493,12 +575,13 @@
         </span>
         <span class="nm">{member.displayName}</span>
         {#if member.email}<span class="meta em">{member.email}</span>{/if}
+        {#if member.badge}<span class="meta badge" data-testid="team-badge">{member.badge}</span>{/if}
       </span>
       <span class="cell">{roleLine(member)}</span>
       <span class="cell meta">{working(member)}</span>
       <span class="cell meta r">{member.joined ?? ""}</span>
     </button>
-    <span class="act">{@render rowMenu(member, bot)}</span>
+    <span class="act">{#if manageable(member)}{@render rowMenu(member, bot)}{/if}</span>
   </div>
 {/snippet}
 
@@ -514,11 +597,26 @@
     ><svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true"><circle cx="3" cy="7" r="1" fill="currentColor" /><circle cx="7" cy="7" r="1" fill="currentColor" /><circle cx="11" cy="7" r="1" fill="currentColor" /></svg></button>
     {#if menuFor === member.id}
       <div class="menu" role="menu" data-testid="team-row-menu">
-        <span class="menu-note">Change role</span>
-        {#each ["Owner", "Admin", "Member"] as role (role)}
-          <button type="button" class="mi" role="menuitemradio" aria-checked={roleLine(member) === role} onclick={() => setRole(member, role)}>{role}</button>
-        {/each}
-        <button type="button" class="mi" role="menuitem" data-testid={`team-remove-${member.id}`} onclick={() => (removeId = member.id)}>Remove</button>
+        {#if pendingRole?.id === member.id}
+          <span class="menu-note" data-testid="team-role-confirm">Make {member.displayName} {pendingRole.role === "Admin" ? "an" : "a"} {pendingRole.role}?</span>
+          <button type="button" class="mi" role="menuitem" data-testid="team-role-confirm-yes" onclick={() => void setRole(member, pendingRole!.role)}>Change role</button>
+          <button type="button" class="mi" role="menuitem" onclick={() => (pendingRole = null)}>Cancel</button>
+        {:else}
+          <span class="menu-note">Change role</span>
+          {#each (callerRole === "Owner" ? ["Owner", "Admin", "Member"] : ["Admin", "Member"]) as role (role)}
+            <button
+              type="button"
+              class="mi"
+              role="menuitemradio"
+              aria-checked={roleLine(member) === role}
+              disabled={roleLine(member) === role || (lastOwner(member) && role !== "Owner")}
+              data-testid={`team-role-${role.toLowerCase()}`}
+              onclick={() => (pendingRole = { id: member.id, role })}
+            >{role}</button>
+          {/each}
+          {#if lastOwner(member)}<span class="menu-note">A company needs at least one owner.</span>{/if}
+          <button type="button" class="mi" role="menuitem" data-testid={`team-remove-${member.id}`} disabled={lastOwner(member)} onclick={() => (removeId = member.id)}>Remove</button>
+        {/if}
         {#if bot}<span class="menu-note">Reports to its owner</span>{/if}
       </div>
     {/if}
@@ -623,6 +721,8 @@
   .icon:hover { background: var(--hover); color: var(--t1); }
   .meta-line { white-space: nowrap; font-variant-numeric: tabular-nums; }
   .quiet-retry { border: 0; background: none; padding: 0; color: inherit; font: inherit; cursor: pointer; }
+  .badge { padding: 0 6px; border-radius: 999px; background: var(--hover); }
+  .action-note { margin: 0 8px 8px; }
   .quiet-retry:hover { text-decoration: underline; }
   .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--t3); flex: none; }
   .dot.live { background: var(--ok); }

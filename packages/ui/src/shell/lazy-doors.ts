@@ -45,6 +45,10 @@ export const profilePaneDoor = door(
 // OWNER-R5/R6: the shared styled dropdown loads with the first filter that
 // shows it, keeping it out of the start-up bundle.
 export const dropdownDoor = door(() => import("../common/Dropdown.svelte"));
+// OWNER-R9: the Team member pane's access section loads when a pane opens.
+// OWNER-R9: the company Team page loads when Team opens.
+export const teamPageDoor = door(() => import("../company/TeamPage.svelte"));
+export const memberAccessDoor = door(() => import("../company/MemberAccessSection.svelte"));
 export const notificationsPopoverDoor = door(
   () => import("../inbox/NotificationsPopover.svelte"),
 );
@@ -86,6 +90,7 @@ export function preloadDoorsWhenIdle(): () => void {
   const all = [
     profilePaneDoor,
     dropdownDoor,
+    teamPageDoor,
     notificationsPopoverDoor,
     moreCompaniesDoor,
     newMessageSheetDoor,

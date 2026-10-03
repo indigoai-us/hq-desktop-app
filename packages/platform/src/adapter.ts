@@ -1049,6 +1049,19 @@ export interface CompanyApi {
   ): AdapterPromise<Json>;
   getSecrets(slug: string): AdapterPromise<Json[]>;
   listMembers(slug: string): AdapterPromise<Json[]>;
+  /**
+   * OWNER-R9: the company's membership roster with role, acceptedAt, origin and
+   * membershipKey (`GET /membership/company/{uid}` → `{members}`). Desktop only.
+   */
+  listCompanyMemberships?(companyUid: string): AdapterPromise<Json>;
+  /** OWNER-R9: unclaimed invites (`GET /membership/company/{uid}/pending` → `{pending}`). */
+  listPendingMemberships?(companyUid: string): AdapterPromise<Json>;
+  /** OWNER-R9: files and secrets one member can reach (`GET /files/{uid}/members/{personUid}/access`). */
+  getMemberAccess?(companyUid: string, personUid: string): AdapterPromise<Json>;
+  /** OWNER-R9: change a member's role (`POST /membership/role`). Server enforces who may. */
+  setMemberRole?(companyUid: string, membershipKey: string, newRole: string): AdapterPromise<Json>;
+  /** OWNER-R9: remove a member or revoke an invite (`POST /membership/revoke`). Server keeps the last owner. */
+  revokeMembership?(companyUid: string, membershipKey: string): AdapterPromise<Json>;
   /** Company telemetry; `range` is a `YYYY-MM-DD` window (the host defaults to the last 30 days). */
   getTeamTelemetry(slug: string, range?: { from: string; to: string }): AdapterPromise<Json>;
   claimPendingInvite(slug: string): AdapterPromise<Json>;
