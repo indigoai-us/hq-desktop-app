@@ -5,7 +5,7 @@
  * on for the company, New bot → Cloud is one POST /v1/agents and the bot's DM
  * opens; with it off, the card sequence runs exactly as before.
  */
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import { ok, type AgentProvisionOptionsView, type PlatformAdapter } from "@hq/platform";
 
@@ -17,6 +17,13 @@ import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { takePendingChannelOpen } from "../chat/open-target.js";
 import type { ConversationRow } from "../chat/sidebar-model.js";
+import { createBotFlowDoor } from "./lazy-doors.js";
+
+// The create modal preloads the New bot flow when it opens; load it once here
+// so the flow paints in the same tick these tests click into it.
+beforeAll(async () => {
+  await createBotFlowDoor.load();
+});
 
 const COMPANY_ROW: ConversationRow = {
   id: "ch:chn_acme",

@@ -10,7 +10,7 @@
  * (kind → home → details); the Home step picks Local (this Mac) or Cloud
  * (company bot, today's create-agent team action).
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import { ok, type AgentProvisionOptionsView } from "@hq/platform";
 
@@ -18,6 +18,13 @@ import ChatSidebar from "./ChatSidebar.svelte";
 import { createFixtureChatSidebarApi } from "../shell/fixtures.js";
 import type { Workspace } from "./workspaces.js";
 import type { EntryPointResult } from "./lifecycle-entry-points.js";
+import { createBotFlowDoor } from "../shell/lazy-doors.js";
+
+// The create modal preloads the New bot flow when it opens; load it once here
+// so the flow paints in the same tick these tests click into it.
+beforeAll(async () => {
+  await createBotFlowDoor.load();
+});
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;

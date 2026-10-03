@@ -27,7 +27,9 @@
   import { formatShortcut } from "../common/keyboard-shortcuts";
   import type { LocalBotEntryResult } from "./local-bots.js";
   import type { AvatarPack } from "../avatars/types.js";
-  import CreateBotFlow, { type CreateBotExtras } from "./create-bot/CreateBotFlow.svelte";
+  import type { CreateBotExtras } from "./create-bot/CreateBotFlow.svelte";
+  import LazyDoor from "../shell/LazyDoor.svelte";
+  import { createBotFlowDoor } from "../shell/lazy-doors.js";
   import type { BotRuntime } from "./create-bot/create-bot-model.js";
   import type { DirectCloudFlowSeam } from "./create-bot/direct-cloud-lazy.js";
   import type { CreateErrorFix } from "@hq/agents";
@@ -2101,6 +2103,10 @@
     if (issue.reason === "member-other") return true;
     return issue.reason === "member-unreachable" && !offersEmailFallback(issue);
   }
+
+  // Start loading the New bot flow as soon as the modal opens, so the bot
+  // step usually paints with it already loaded.
+  createBotFlowDoor.preload();
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -2615,37 +2621,42 @@
         {/if}
       </div>
     {:else if step === "bot"}
-      <CreateBotFlow
-        {botRuntimeReady}
-        {botRuntimeStatus}
-        {onrecheckruntimes}
-        {aiTools}
-        {hqFolderPath}
-        {onopenassistant}
-        {onassistedinstall}
-        {onrequestaitools}
-        {botWorkers}
-        existingNames={existingBotNames}
-        {botCompanies}
-        agentTargets={canCreateCloudBot ? agentTargets : []}
-        initialCompanyUid={botCompanyUid}
-        initialCompanySlug={botCompanySlug}
-        onCloudCreate={canCreateCloudBot ? newAgentFor : null}
-        {loadClaudeProviderFlag}
-        {loadCloudProvisionOptions}
-        {directCloud}
-        oncreate={canCreateLocalBot ? submitLocalBot : null}
-        onback={() => {
-          entryError = null;
-          step = "find";
+      <!-- The flow loads on first open (preloaded when this modal mounts), so
+           it stays out of the shell's startup JS. -->
+      <LazyDoor
+        door={createBotFlowDoor}
+        props={{
+          botRuntimeReady,
+          botRuntimeStatus,
+          onrecheckruntimes,
+          aiTools,
+          hqFolderPath,
+          onopenassistant,
+          onassistedinstall,
+          onrequestaitools,
+          botWorkers,
+          existingNames: existingBotNames,
+          botCompanies,
+          agentTargets: canCreateCloudBot ? agentTargets : [],
+          initialCompanyUid: botCompanyUid,
+          initialCompanySlug: botCompanySlug,
+          onCloudCreate: canCreateCloudBot ? newAgentFor : null,
+          loadClaudeProviderFlag,
+          loadCloudProvisionOptions,
+          directCloud,
+          oncreate: canCreateLocalBot ? submitLocalBot : null,
+          onback: () => {
+            entryError = null;
+            step = "find";
+          },
+          entryBusy,
+          entryError,
+          entryFix,
+          signInApi: botSignIn,
+          onsignedin: onbotsignedin,
+          avatarPacks,
+          loadAvatarPacks,
         }}
-        {entryBusy}
-        {entryError}
-        {entryFix}
-        signInApi={botSignIn}
-        onsignedin={onbotsignedin}
-        {avatarPacks}
-        {loadAvatarPacks}
       />
     {:else if step === "email"}
       {#if emailOutcome}

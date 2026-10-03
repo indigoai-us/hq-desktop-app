@@ -872,6 +872,8 @@ describe("first-frame-of-Home budget: lazy doors stay lazy", () => {
     "packages/ui/src/chat/NewMessageSheet.svelte",
     "packages/ui/src/chat/NewChannelSheet.svelte",
     "packages/ui/src/chat/PeoplePicker.svelte",
+    // The New bot flow loads when the create modal opens (lazy-doors.ts).
+    "packages/ui/src/chat/create-bot/CreateBotFlow.svelte",
     "packages/ui/src/agents/agent-stepper-model.ts",
     // US-040 gate: Atlas, telemetry, meetings, create sheets, company pages
     // and personal pages load behind their own doors.
