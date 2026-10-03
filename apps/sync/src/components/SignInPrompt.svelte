@@ -120,7 +120,10 @@
         const auth = await invoke<{ authenticated: boolean; expiresAt: string }>(
           'get_auth_state',
         );
-        if (auth.authenticated) onsuccess?.(auth);
+        if (auth.authenticated) {
+          acceptedExistingSession = true;
+          onsuccess?.(auth);
+        }
       } else {
         error = 'That sign-in did not finish. Choose your provider and try once more.';
       }
@@ -217,7 +220,10 @@
     return () => {
       disposed = true;
       window.clearInterval(interval);
-      clearCallbackTimeout();
+      const state = activeState;
+      ++signInRun;
+      resetManualSignInState();
+      if (state) void cancelPendingSignIn(state);
     };
   });
 
@@ -225,8 +231,10 @@
     clearCallbackTimeout();
     callbackTimeout = window.setTimeout(() => {
       if (!isCurrentSignInRun(run)) return;
-      void cancelPendingSignIn();
+      const state = activeState;
+      ++signInRun;
       resetManualSignInState();
+      if (state) void cancelPendingSignIn(state);
       failSignIn(provider, 'provider_page_opened', new Error('sign-in timed out'));
     }, CALLBACK_TIMEOUT_MS);
   }
@@ -304,6 +312,7 @@
 
       // Step 5: Notify parent of success
       if (result.authenticated) {
+        acceptedExistingSession = true;
         // Pull focus back from the browser on macOS and Windows. JS setFocus
         // is often ignored while the browser holds activation — Rust raises
         // via AppKit / Win32. oauth_listen_for_code also raises on callback;

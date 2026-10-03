@@ -193,6 +193,11 @@ describe('SignInPrompt welcome handoff', () => {
 
   it('ends a stalled browser handoff with a plain Try again path', async () => {
     vi.useFakeTimers();
+    let resolveCallback!: (value: { code: string }) => void;
+    const callback = new Promise<{ code: string }>((resolve) => {
+      resolveCallback = resolve;
+    });
+    const onsuccess = vi.fn();
     tauri.invoke.mockImplementation((command: string) => {
       switch (command) {
         case 'desktop_continuation_context':
@@ -202,13 +207,13 @@ describe('SignInPrompt welcome handoff', () => {
         case 'start_oauth_login':
           return Promise.resolve({ authorizeUrl: 'https://login.example.test/google', state: 'state' });
         case 'oauth_listen_for_code':
-          return new Promise(() => {});
+          return callback;
         default:
           return Promise.resolve(undefined);
       }
     });
     tauri.open.mockResolvedValue(undefined);
-    component = mount(SignInPrompt, { target: host });
+    component = mount(SignInPrompt, { target: host, props: { onsuccess } });
     await flush();
 
     providerButtons()[0]?.click();
@@ -218,6 +223,92 @@ describe('SignInPrompt welcome handoff', () => {
 
     expect(host.textContent).toContain('We couldn’t finish sign-in. Try again.');
     expect(host.querySelector<HTMLButtonElement>('[data-testid="retry-signin"]')?.textContent).toBe('Try again');
+    expect(tauri.invoke).toHaveBeenCalledWith('oauth_cancel_listen', { state: 'state' });
+
+    resolveCallback({ code: 'late-code' });
+    await flush();
+
+    expect(tauri.invoke).not.toHaveBeenCalledWith(
+      'oauth_exchange_code',
+      expect.objectContaining({ code: 'late-code' }),
+    );
+    expect(onsuccess).not.toHaveBeenCalled();
+  });
+
+  it('cancels the native listener and ignores its callback after unmount', async () => {
+    let resolveCallback!: (value: { code: string }) => void;
+    const callback = new Promise<{ code: string }>((resolve) => {
+      resolveCallback = resolve;
+    });
+    const onsuccess = vi.fn();
+    tauri.invoke.mockImplementation((command: string) => {
+      switch (command) {
+        case 'desktop_continuation_context':
+          return Promise.resolve(null);
+        case 'get_auth_state':
+          return Promise.resolve({ authenticated: false, expiresAt: '' });
+        case 'start_oauth_login':
+          return Promise.resolve({ authorizeUrl: 'https://login.example.test/google', state: 'state' });
+        case 'oauth_listen_for_code':
+          return callback;
+        default:
+          return Promise.resolve(undefined);
+      }
+    });
+    tauri.open.mockResolvedValue(undefined);
+    component = mount(SignInPrompt, { target: host, props: { onsuccess } });
+    await flush();
+
+    providerButtons()[0]?.click();
+    await flushUntil(() => host.querySelector('[data-testid="signin-browser-handoff"]') !== null);
+    await unmount(component);
+    component = null;
+
+    expect(tauri.invoke).toHaveBeenCalledWith('oauth_cancel_listen', { state: 'state' });
+    resolveCallback({ code: 'late-code' });
+    await flush();
+
+    expect(tauri.invoke).not.toHaveBeenCalledWith(
+      'oauth_exchange_code',
+      expect.objectContaining({ code: 'late-code' }),
+    );
+    expect(onsuccess).not.toHaveBeenCalled();
+  });
+
+  it('reports manual sign-in success only once when the session poll observes it', async () => {
+    vi.useFakeTimers();
+    let authenticated = false;
+    const onsuccess = vi.fn();
+    tauri.invoke.mockImplementation((command: string) => {
+      switch (command) {
+        case 'desktop_continuation_context':
+          return Promise.resolve(null);
+        case 'get_auth_state':
+          return Promise.resolve({
+            authenticated,
+            expiresAt: authenticated ? '2099-01-01T00:00:00Z' : '',
+          });
+        case 'start_oauth_login':
+          return Promise.resolve({ authorizeUrl: 'https://login.example.test/google', state: 'state' });
+        case 'oauth_listen_for_code':
+          return Promise.resolve({ code: 'code' });
+        case 'oauth_exchange_code':
+          authenticated = true;
+          return Promise.resolve({ authenticated: true, expiresAt: '2099-01-01T00:00:00Z' });
+        default:
+          return Promise.resolve(undefined);
+      }
+    });
+    tauri.open.mockResolvedValue(undefined);
+    component = mount(SignInPrompt, { target: host, props: { onsuccess } });
+    await flush();
+
+    providerButtons()[0]?.click();
+    await flushUntil(() => onsuccess.mock.calls.length === 1);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await flush();
+
+    expect(onsuccess).toHaveBeenCalledTimes(1);
   });
 
   it('keeps a callback failure plain while recording the existing failure event', async () => {
