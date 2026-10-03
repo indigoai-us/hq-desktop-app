@@ -907,7 +907,7 @@
   });
   const addProjectMember = async (row: ConversationRow, personUid: string): Promise<ProjectMemberAddResult> => {
     const companyUid = (row.companyUid ?? "").trim();
-    const projectId = (row.projectId ?? "").trim();
+    const projectId = projectIdFor(row) ?? "";
     if (!companyUid || !projectId) throw new Error("This row is not a company project");
     return addLiveProjectMember(companyUid, projectId, personUid, workFetch);
   };

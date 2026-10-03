@@ -80,7 +80,16 @@ export async function addLiveProjectMember(
       continue;
     }
     if (response.ok) return "added";
-    if (response.status === 404) return "not-enabled";
+    if (response.status === 404) {
+      const payload: unknown = await response.json().catch(() => null);
+      if (
+        payload && typeof payload === "object" && !Array.isArray(payload) &&
+        (payload as Record<string, unknown>).code === "PROJECT_MEMBERSHIP_DISABLED"
+      ) {
+        return "not-enabled";
+      }
+      throw new Error("Could not add project member");
+    }
     if (response.status < 500 && response.status !== 429) {
       throw new Error("Could not add project member");
     }

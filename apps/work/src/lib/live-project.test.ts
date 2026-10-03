@@ -63,10 +63,33 @@ describe("live project hq-pro transport", () => {
 
   it("maps only the membership feature-off response to not-enabled", async () => {
     const fetchImpl = vi.fn(async () => new Response(
-      JSON.stringify({ message: "Not found" }),
+      JSON.stringify({
+        error: "Project member management is not enabled",
+        code: "PROJECT_MEMBERSHIP_DISABLED",
+      }),
       { status: 404, headers: { "content-type": "application/json" } },
     ));
     await expect(addLiveProjectMember("cmp_work", "project-a", "prs_member", fetchImpl)).resolves.toBe("not-enabled");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not treat a semantic project-not-found response as the feature gate", async () => {
+    const fetchImpl = vi.fn(async () => new Response(
+      JSON.stringify({ error: "Project view not found", code: "PROJECT_VIEW_NOT_FOUND" }),
+      { status: 404, headers: { "content-type": "application/json" } },
+    ));
+    await expect(addLiveProjectMember("cmp_work", "missing-project", "prs_member", fetchImpl))
+      .rejects.toThrow("Could not add project member");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not treat an unsupported-route 404 as the feature gate", async () => {
+    const fetchImpl = vi.fn(async () => new Response(
+      JSON.stringify({ error: "Not found" }),
+      { status: 404, headers: { "content-type": "application/json" } },
+    ));
+    await expect(addLiveProjectMember("cmp_work", "project-a", "prs_member", fetchImpl))
+      .rejects.toThrow("Could not add project member");
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
