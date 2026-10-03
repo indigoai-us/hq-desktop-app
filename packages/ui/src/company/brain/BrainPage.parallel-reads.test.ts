@@ -37,6 +37,8 @@ describe("BrainPage reads in parallel", () => {
         files: files as never,
         library: library as never,
         appShell: appShell as never,
+        shell: {} as never,
+        settings: {} as never,
       },
     });
     await vi.waitFor(() => expect(library.getCompany).toHaveBeenCalledWith("acme"));
