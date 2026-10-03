@@ -47,7 +47,7 @@ const connection = (over: Record<string, unknown> = {}): Record<string, unknown>
   ...over,
 });
 
-const envelope = (connections: Record<string, unknown>[] = [], over: Record<string, unknown> = {}): Record<string, unknown> => ({
+const envelope = (connections: unknown[] = [], over: Record<string, unknown> = {}): Record<string, unknown> => ({
   companyUid: "cmp_acme",
   viewer: { personUid: "prs_me", role: "owner", canManageGovernance: true, canManageIntegrations: true },
   connections,
@@ -55,7 +55,7 @@ const envelope = (connections: Record<string, unknown>[] = [], over: Record<stri
   ...over,
 });
 
-const facts = (connections: Record<string, unknown>[] = [], over: Record<string, unknown> = {}): CompanyConnections =>
+const facts = (connections: unknown[] = [], over: Record<string, unknown> = {}): CompanyConnections =>
   readCompanyConnections(envelope(connections, over))!;
 
 const LINEAR: CatalogLookup = { domain: "linear.app", name: "Linear", authClass: "oauth" };
@@ -500,7 +500,7 @@ describe("companyAppsBrief: what the bot is told about the company's apps", () =
 
   it("writes one line per connected app, most called first then newest first, with the count only when there is one", () => {
     const f = readCompanyConnections(
-      rows({ audit: Array.from({ length: 12 }, () => ({ provider: "factory:linear", connectionId: "acct_linear" })).concat([{ provider: "gmail" }]) }),
+      rows({ audit: [...Array.from({ length: 12 }, () => ({ provider: "factory:linear", connectionId: "acct_linear" })), { provider: "gmail" }] as unknown[] }),
     );
     expect(companyAppsBrief({ facts: f, record: null })).toBe(
       [

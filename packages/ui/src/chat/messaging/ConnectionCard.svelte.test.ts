@@ -444,7 +444,7 @@ describe("Not now", () => {
     const seen: ConnectionCardActionDetail[] = [];
     const onaction = (detail: ConnectionCardActionDetail): void => {
       seen.push(detail);
-      if (detail.action === "decline") record = markDeclined(record, detail.target, NOW);
+      if (detail.action === "decline" && detail.target !== "integration") record = markDeclined(record, detail.target, NOW);
       props.connections = { views: views({ record }), onaction };
     };
     const props = $state<{ content: typeof BLOCK; connections: ConnectionCards }>({
