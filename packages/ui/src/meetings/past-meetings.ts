@@ -5,6 +5,9 @@ export interface PersonalMeetingTranscript {
   botId?: string | null;
   recordingId?: string | null;
   personUid?: string | null;
+  conversationId?: string | null;
+  sourceIdStored?: boolean;
+  legacyAccountVerified?: boolean;
   provisional?: boolean;
   sessionStatus?: string | null;
   sourceLabel: 'Personal · Local' | 'Desktop recording';
@@ -46,7 +49,12 @@ export function buildPastMeetingRows<T extends ScheduledBotLike>(
   const signedInPersonUid = currentPersonUid?.trim() || null;
   const personalRows: PastMeetingRow<T>[] = transcripts
     .filter((transcript) => {
-      if (!signedInPersonUid || transcript.personUid?.trim() !== signedInPersonUid) {
+      const transcriptPersonUid = transcript.personUid?.trim();
+      const isOwnedByPerson =
+        !!signedInPersonUid && transcriptPersonUid === signedInPersonUid;
+      const isVerifiedLegacyRow =
+        !transcriptPersonUid && transcript.legacyAccountVerified === true;
+      if (!isOwnedByPerson && !isVerifiedLegacyRow) {
         return false;
       }
       const status = transcript.sessionStatus?.trim().toLowerCase();
@@ -63,6 +71,34 @@ export function buildPastMeetingRows<T extends ScheduledBotLike>(
       timestamp: dateTimestamp(transcript.createdAt),
     }));
   return [...botRows, ...personalRows].sort((a, b) => b.timestamp - a.timestamp);
+}
+
+/** Parse a local transcript and verify legacy rows against the native writer's account-bound ID. */
+export async function parsePersonalMeetingTranscriptForAccount(
+  path: string,
+  frontmatter: string,
+  accountId: string | null,
+): Promise<PersonalMeetingTranscript | null> {
+  const transcript = parsePersonalMeetingTranscript(path, frontmatter);
+  if (!transcript || transcript.personUid?.trim()) return transcript;
+  const account = accountId?.trim();
+  const conversationId = transcript.conversationId?.trim();
+  if (!account || !conversationId || !transcript.sourceIdStored) return null;
+  try {
+    const digest = await globalThis.crypto.subtle.digest(
+      'SHA-256',
+      new TextEncoder().encode(`${account}\0${conversationId}`),
+    );
+    const expectedSourceId = `native-${Array.from(new Uint8Array(digest), (byte) =>
+      byte.toString(16).padStart(2, '0'),
+    ).join('')}`;
+    return transcript.sourceId === expectedSourceId
+      ? { ...transcript, legacyAccountVerified: true }
+      : null;
+  } catch {
+    console.warn('Could not verify legacy personal meeting ownership.');
+    return null;
+  }
 }
 
 function dateTimestamp(value: string | null | undefined): number {
@@ -101,7 +137,8 @@ export function parsePersonalMeetingTranscript(
     fields.get('meeting_platform') === 'desktop-sdk' &&
     fields.get('capture_source') === 'hq-sync-desktop-sdk';
   if (fields.get('channel') !== 'meeting' || (!isPersonalLocal && !isDesktopSdk)) return null;
-  const sourceId = fields.get('source_id') || match[1];
+  const storedSourceId = fields.get('source_id')?.trim() || null;
+  const sourceId = storedSourceId || match[1];
   if (!sourceId) return null;
   return {
     sourceId,
@@ -113,6 +150,8 @@ export function parsePersonalMeetingTranscript(
       fields.get('recall_recording_id') ||
       (isDesktopSdk ? sourceId : null),
     personUid: fields.get('person_uid') || null,
+    conversationId: fields.get('conversation_id') || null,
+    sourceIdStored: storedSourceId !== null,
     provisional: fields.get('provisional') === 'true',
     sessionStatus: fields.get('session_status') || null,
     sourceLabel: isDesktopSdk ? 'Desktop recording' : 'Personal · Local',

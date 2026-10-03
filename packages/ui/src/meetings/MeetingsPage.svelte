@@ -2,14 +2,14 @@
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import { onMount, untrack } from "svelte";
   import { dismissToastByKey, pushToast } from "../shell/toast-stack.svelte.js";
-  import { hostComputerNoun } from "@hq/platform";
+  import { hostComputerNoun, PERSONAL_TRANSCRIPTS_FLAG } from "@hq/platform";
   import type {
     MeetingPermissionsSnapshot,
     PlatformAdapter,
   } from "@hq/platform";
   import {
     buildPastMeetingRows,
-    parsePersonalMeetingTranscript,
+    parsePersonalMeetingTranscriptForAccount,
     type PersonalMeetingTranscript,
   } from "./past-meetings";
   import { externalHref } from "../common/external-links";
@@ -129,7 +129,6 @@
   const fetchError = $derived(meetingsStore.fetchError);
   const refreshBlocked = $derived(meetingsStore.refreshBlocked);
   const loading = $derived(meetingsStore.loading);
-  const PERSONAL_TRANSCRIPTS_FLAG = "desktop.meetings-personal-transcripts";
   let personalTranscriptsEnabled = $state(false);
   let personalTranscripts = $state<PersonalMeetingTranscript[]>([]);
   let signedInPersonUid = $state<string | null>(null);
@@ -630,6 +629,19 @@
       return;
     }
     signedInPersonUid = uid;
+    let accountId: string | null = null;
+    if (adapter.identity.getAuthSession) {
+      try {
+        const session = await adapter.identity.getAuthSession();
+        if (generation !== personalTranscriptLoadGeneration) return;
+        if (session.ok && session.value.status === "active") {
+          accountId = session.value.accountId?.trim() || null;
+        }
+      } catch {
+        if (generation !== personalTranscriptLoadGeneration) return;
+        console.warn("Could not resolve the signed-in account for legacy meeting notes.");
+      }
+    }
     if (!adapter.files.vault) {
       console.warn("The current host does not provide local vault note reads.");
       personalTranscripts = [];
@@ -672,12 +684,16 @@
               )
               .map(async (entry) => {
                 try {
-                  const note = await adapter.files.vault!.readNote(entry.path as string);
-                  if (!note.ok) {
+                  const frontmatter = await adapter.files.vault!.readFrontmatter(entry.path as string);
+                  if (!frontmatter.ok) {
                     console.warn("Could not read a local meeting transcript.");
                     return null;
                   }
-                  return parsePersonalMeetingTranscript(entry.path as string, note.value.text);
+                  return parsePersonalMeetingTranscriptForAccount(
+                    entry.path as string,
+                    frontmatter.value,
+                    accountId,
+                  );
                 } catch (error) {
                   console.warn("Could not read a local meeting transcript.", error);
                   return null;

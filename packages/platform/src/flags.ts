@@ -94,6 +94,8 @@ export const SETUP_DEPS_TIMEOUT_RETRY_FLAG =
   "desktop.setup-deps-timeout-retry-v1";
 export const HUMAN_ONLY_CONVERSATIONS_FLAG =
   "desktop.human-only-conversations";
+export const PERSONAL_TRANSCRIPTS_FLAG =
+  "desktop.meetings-personal-transcripts";
 /**
  * New bot → Cloud creates through POST /v1/agents (desktop-agent-creation).
  * Targeted to one company, so it must be read with that company's uid:
@@ -152,6 +154,7 @@ export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
   [SETUP_DEPS_TIMEOUT_RETRY_FLAG]: SETUP_DEPS_TIMEOUT_RETRY_FLAG,
   [HUMAN_ONLY_CONVERSATIONS_FLAG]: HUMAN_ONLY_CONVERSATIONS_FLAG,
   [DESKTOP_AGENT_CREATION_FLAG]: DESKTOP_AGENT_CREATION_FLAG,
+  [PERSONAL_TRANSCRIPTS_FLAG]: PERSONAL_TRANSCRIPTS_FLAG,
   "desktop.mirror-quarantine-move-not-deletion":
     "desktop.mirror-quarantine-move-not-deletion",
   [RAIL_TELEMETRY_FLAG]: RAIL_TELEMETRY_FLAG,

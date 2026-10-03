@@ -959,6 +959,7 @@ fn main() {
             commands::vault_explorer::vault_search,
             commands::vault_explorer::vault_note_links,
             commands::vault_explorer::read_vault_note,
+            commands::vault_explorer::read_vault_note_frontmatter,
             commands::projects_local::get_local_projects,
             commands::projects_local::get_local_project_prd,
             commands::projects_local::get_local_project_readme,

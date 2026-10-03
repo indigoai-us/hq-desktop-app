@@ -7,6 +7,8 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+- Internal tests: four more desktop UI tests (desktop sidebar layout, files sidebar contrast, @here mention, emoji shortcodes) now render the components instead of searching their source text. Nothing changes in the app.
+- Internal tests: four more desktop UI tests (conversation rail ready signal, mute bell, notification focus ring, quick-react toolbar) now render the components instead of searching their source text. Nothing changes in the app.
 - Keep a company's cloud binding in `companies/manifest.yaml` when it is absent
   from the signed-in person's membership list. The app now waits for an
   authoritative deletion signal before unlinking a workspace.
@@ -16,6 +18,8 @@ The release moves it under the version it ships in.
 - New cloud bots created from the desktop New bot flow sign in with your model subscription. The API key option is no longer offered there.
 - Behind `agents.desktop-agent-creation` (Indigo only): New bot in Messages is one three-step flow (what kind, where it runs, its details). Choosing Cloud creates the bot directly, without Slack, and opens its DM. New cloud bots start on Claude, with Codex and Grok offered. Cloud stays visible when it can't be used and says why (admin role, plan, or no company). Settings › Bots › New bot closes Settings and opens the same flow. The flag is checked for the company you pick, and the cloud create code loads only when the flow opens, so startup is not slower.
 - Internal tests: four more desktop UI tests (task strip, task chip, page header, agents settings) now render the components instead of searching their source text. Nothing changes in the app.
+- Add bounded marker and refresh rejection attribution to unexpected startup diagnostics.
+- Startup diagnostics now distinguish a rejected saved session from an empty credential store.
 - Shelltest builds now report to a separate Sentry environment; release telemetry remains in production.
 - Past meetings can list local personal notes and your own desktop recordings, behind the desktop.meetings-personal-transcripts flag (off by default).
 - Desktop sign-in now records each stage from choosing a provider through the browser callback and token exchange. When it fails, HQ records only the failing stage and a safe error category, so the download-to-sign-in drop can be measured without collecting sign-in details.
@@ -23,11 +27,13 @@ The release moves it under the version it ships in.
 - The Meet native Windows test build now pins its signing and Rust toolchain actions to exact versions. Nothing changes in the app.
 - Setup failure events now fill a missing stage from the bounded component and keep error categories on the closed list.
 - CI launches of the desktop app no longer add first-run rows to the install funnel, including through the CDP mirror.
+- Past meetings can show meeting transcripts you saved privately on this computer, including older ones, when the personal transcripts feature is turned on for your account. Transcripts from another account signed in on the same computer stay hidden.
 - Internal tests: four desktop tests that only searched the source text for strings now check what the code does. Nothing changes in the app.
 - Desktop Core baseline refresh now retries GitHub timeouts before reporting a pending baseline; persistent timeouts remain reported.
 
-## [0.10.385] — 2026-10-03
+- After a Windows Core update, HQ puts its managed CLI ahead of stale CLI paths in the HQ Claude settings file so the updated version is selected.
 
+## [0.10.385] — 2026-10-03
 - The vyg CDP mirror now also records app opens (every launch), one daily-active row per day, account linking after sign-in (sha256 hashes of the person and company ids only), Claude/Codex/Grok session launches, sync start and end, teammate invites, joining a company from an invite, and the plan picked during setup. The same rows go to HQ's operational telemetry. The `desktop.cdp-mirror` flag is now re-checked every 6 hours, so turning it on or off no longer needs a relaunch.
 - Referral links now carry through desktop sign-in regardless of the signup experiment. HQ retries referral confirmation after connection failures or a restart and keeps each referral tied to the account that signed in.
 - Release builds: a daily check now fails, and opens an issue, once the release test sign-in is 25 days old, five days before it expires, so it is renewed before a release depends on it. The renewal steps no longer need AWS keys or a shared GitHub token.

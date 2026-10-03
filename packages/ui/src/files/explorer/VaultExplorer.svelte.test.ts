@@ -126,6 +126,7 @@ function makeAdapter(calls: string[], failReveal = false) {
           const text = FILES[p] ?? "";
           return ok({ text, size: text.length, truncated: false });
         }),
+        readFrontmatter: vi.fn(async (p: string) => ok(FILES[p] ?? "")),
       },
     },
   } as unknown as PlatformAdapter;

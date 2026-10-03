@@ -23,6 +23,11 @@ describe("shared message-row name→body spacing", () => {
     expect(messageRowCss).toMatch(/margin-top:\s*0/);
   });
 
+  it("styles emoji-only bodies with the shared jumbo size", () => {
+    expect(messageRowCss).toContain(".msg-body.msg-body-jumbo");
+    expect(messageRowCss).toContain("--msg-jumbo-emoji-size, 30px");
+  });
+
   it("pins the compact intra-group padding and inter-group gap tokens", () => {
     // 3px top + 3px bottom on adjacent same-author rows → ~6px stacked gap.
     expect(messageRowCss).toContain("--msg-row-pad-y: 3px");
