@@ -8,10 +8,13 @@ import {
   SLACK_TOKEN_REJECTED_SENTENCE,
   SLACK_TOKEN_RETRY_SENTENCE,
   SLACK_TOKEN_SHAPE_SENTENCE,
+  SLACK_TOKEN_SCOPE,
   checkSlackAppToken,
+  isWholeSlackAppToken,
   readSlackAttachAnswer,
   readSlackTokenAnswer,
   slackAccessPendingSentence,
+  slackApproveWhatSentence,
   slackBlockedCopy,
   slackConnectTitle,
   slackConnectView,
@@ -19,7 +22,8 @@ import {
   slackFinishingSentence,
   slackIntroLines,
   slackStatusDenied,
-  slackTokenInstructions,
+  slackTokenSteps,
+  slackTokenWhySentence,
   type SlackBlockedReason,
   type SlackConnectInput,
 } from "./slack-connect-model.js";
@@ -170,6 +174,15 @@ describe("slackConnectView: the stage", () => {
     const v = view({ status: CONNECTED_SOCKET });
     expect(stepStates(v)).toEqual(["1:approve:done", "2:token:done", "3:finishing:done"]);
     expect(v.indicator).toEqual({ labels: ["Approve in Slack", "Add the token", "Connected"], current: 2 });
+  });
+
+  it("offers the bot's place in Slack once connected, only with both ids, and never before", () => {
+    const withBot = { workspace: "acme", teamId: "T0ACME", botUserId: "U0NOVA", appId: "A0TEST", connectionMode: "socket" };
+    expect(view({ status: status(withBot, "socket-mode") }).botUrl).toBe("https://app.slack.com/client/T0ACME/U0NOVA");
+    expect(view({ status: CONNECTED_SOCKET }).botUrl).toBeNull();
+    // The ids are there before the end too, but the link is offered only at the end.
+    expect(view({ status: status({ ...withBot, appTokenPendingUrl: APP }, "socket-mode-degraded") }).botUrl).toBeNull();
+    expect(view({ status: status(withBot, "socket-mode-degraded") }).botUrl).toBeNull();
   });
 
   it("is connected over everything the modal remembers", () => {
@@ -538,13 +551,30 @@ describe("the words of the flow", () => {
     ]);
   });
 
-  it("gives the four token instructions as a person sees them on Slack's page", () => {
-    expect(slackTokenInstructions("Nova")).toEqual([
-      "Open Nova's app page in Slack.",
-      "Scroll to App-Level Tokens and click Generate Token and Scopes.",
-      "Name it anything, add the scope connections:write, and click Generate.",
-      "Copy the token (it starts with xapp-) and paste it here.",
+  it("says what the person will see once Slack opens", () => {
+    expect(slackApproveWhatSentence("Nova")).toBe("Slack asks you to allow Nova in your workspace. Click Allow.");
+  });
+
+  it("says in one line why there is a token step, then the three things to do", () => {
+    expect(slackTokenWhySentence("Nova")).toBe(
+      "Slack needs a token so Nova can listen for messages. Slack only lets a person create it.",
+    );
+    expect(slackTokenSteps("Nova")).toEqual([
+      { key: "open", text: "Open Nova's app page" },
+      { key: "scope", text: "Under App-Level Tokens, click Generate Token and Scopes. Add the scope" },
+      { key: "paste", text: "Paste the token here." },
     ]);
+    expect(SLACK_TOKEN_SCOPE).toBe("connections:write");
+  });
+
+  it("knows a whole pasted token from anything that still needs Connect", () => {
+    // Obviously fake values, long enough to count as whole.
+    for (const whole of ["xapp-test-0000-aaaa-bbbb", " xapp-test-0000-aaaa-bbbb ", "xapp-0000000000"]) {
+      expect(isWholeSlackAppToken(whole)).toBe(true);
+    }
+    for (const notYet of ["", "xapp-", "xapp-short", TOKEN, "xapp-test 0000-aaaa", "other-test-0000-aaaa-bbbb", "xapp-test_0000-aaaa", "Xapp-test-0000-aaaa-bbbb"]) {
+      expect(isWholeSlackAppToken(notYet)).toBe(false);
+    }
   });
 
   it("says the wait for access, the end, and the title", () => {
@@ -560,7 +590,9 @@ describe("the words of the flow", () => {
     const everything = [
       slackConnectTitle("Nova"),
       ...slackIntroLines("Nova"),
-      ...slackTokenInstructions("Nova"),
+      slackApproveWhatSentence("Nova"),
+      slackTokenWhySentence("Nova"),
+      ...slackTokenSteps("Nova").map((step) => step.text),
       slackAccessPendingSentence("Nova"),
       slackFinishingSentence("Nova", false),
       slackFinishingSentence("Nova", true),

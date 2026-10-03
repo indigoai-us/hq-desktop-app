@@ -20,6 +20,7 @@
 import type { CardModalStepState, CardModalSteps } from "./card-modal.js";
 import { slackFactsFromStatus } from "./connection-card-model.js";
 import {
+  slackBotUrlFromStatus,
   slackCapabilityFromStatus,
   slackRowFromAttach,
   slackRowFromStatus,
@@ -69,6 +70,10 @@ export const SLACK_APPROVE_DETAIL = "Slack opens in your browser. Come back here
 export const SLACK_APPROVE_NO_LINK_DETAIL = "Waiting for the link from Slack. This screen updates by itself.";
 export const SLACK_TOKEN_CHECKING = "Checking the token with Slack.";
 export const SLACK_STARTING = "Setting things up in Slack.";
+/** The one thing a person types on Slack's page. The modal offers it with a Copy button. */
+export const SLACK_TOKEN_SCOPE = "connections:write";
+/** How long the Copy button says "Copied" (ms). */
+export const SLACK_COPIED_MS = 2_000;
 
 function botOf(botName: string | null | undefined): string {
   return botName?.trim() || "your bot";
@@ -84,15 +89,42 @@ export function slackIntroLines(botName: string): string[] {
   return [`You approve ${bot} in your Slack workspace.`, `Then ${bot} can read and answer messages there.`];
 }
 
-/** The four things a person does on Slack's page to make the token. */
-export function slackTokenInstructions(botName: string): string[] {
+/** `approve`: what the person will see once Slack opens. */
+export function slackApproveWhatSentence(botName: string): string {
+  return `Slack asks you to allow ${botOf(botName)} in your workspace. Click Allow.`;
+}
+
+/** `token`: why there is a token step at all, in one line. */
+export function slackTokenWhySentence(botName: string): string {
+  return `Slack needs a token so ${botOf(botName)} can listen for messages. Slack only lets a person create it.`;
+}
+
+export type SlackTokenStepKey = "open" | "scope" | "paste";
+
+export interface SlackTokenStep {
+  key: SlackTokenStepKey;
+  /** One line. The `scope` step's line is followed by the scope itself, with a Copy button. */
+  text: string;
+}
+
+/** The three things a person does to make the token, as they see them on Slack's page. */
+export function slackTokenSteps(botName: string): SlackTokenStep[] {
   const bot = botOf(botName);
   return [
-    `Open ${bot}'s app page in Slack.`,
-    "Scroll to App-Level Tokens and click Generate Token and Scopes.",
-    "Name it anything, add the scope connections:write, and click Generate.",
-    "Copy the token (it starts with xapp-) and paste it here.",
+    { key: "open", text: `Open ${bot}'s app page` },
+    { key: "scope", text: "Under App-Level Tokens, click Generate Token and Scopes. Add the scope" },
+    { key: "paste", text: "Paste the token here." },
   ];
+}
+
+/**
+ * Whether a value is, after trimming, the whole of an app-level token as
+ * Slack writes them: `xapp-` and then letters, digits and dashes. A value
+ * that is can be sent the moment it is pasted. Looser values (anything else
+ * that starts with `xapp-`) still go through Connect and {@link checkSlackAppToken}.
+ */
+export function isWholeSlackAppToken(value: string): boolean {
+  return /^xapp-[A-Za-z0-9-]{10,}$/.test(value.trim());
 }
 
 export function slackAccessPendingSentence(botName: string): string {
@@ -284,6 +316,8 @@ export interface SlackConnectView {
   appPageUrl: string | null;
   /** `token`: the server is still giving the person access to that page. No field yet. */
   accessPending: boolean;
+  /** `connected`: the bot's direct message in Slack, or null when the status lacks an id. */
+  botUrl: string | null;
   /** `finishing`: it has taken more than {@link SLACK_FINISHING_SLOW_MS}. */
   slow: boolean;
   blocked: (SlackBlockedCopy & { reason: SlackBlockedReason }) | null;
@@ -380,6 +414,7 @@ export function slackConnectView(input: SlackConnectInput): SlackConnectView {
       stage === "approve" ? (row?.installUrl ?? slackRowFromAttach(input.attached)?.installUrl ?? null) : null,
     appPageUrl: stage === "token" ? (row?.appPageUrl ?? null) : null,
     accessPending: stage === "token" && Boolean(row?.accessPending),
+    botUrl: stage === "connected" ? slackBotUrlFromStatus(input.status) : null,
     slow,
     blocked: blockedReason ? { reason: blockedReason, ...slackBlockedCopy(blockedReason, input.botName) } : null,
     busy: Boolean(input.attachInFlight) || Boolean(input.tokenInFlight),

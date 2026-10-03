@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   readSlackRow,
   slackAppPageUrl,
+  slackBotUrlFromStatus,
   slackCapabilityFromStatus,
   slackInstallUrl,
   slackRowFromAttach,
@@ -159,5 +160,28 @@ describe("reading the row from the server's answers", () => {
     expect(slackCapabilityFromStatus(status({}))).toBe("");
     expect(slackCapabilityFromStatus(null)).toBe("");
     expect(slackCapabilityFromStatus({ channelDiagnostics: { slack: { inboundCapability: " ok " } } })).toBe("ok");
+  });
+});
+
+describe("the bot's place in Slack", () => {
+  it("is Slack's web client at the team and the bot user, built from the two ids", () => {
+    expect(slackBotUrlFromStatus(status({ teamId: "T0ACME", botUserId: "U0NOVA" }, "socket-mode"))).toBe(
+      "https://app.slack.com/client/T0ACME/U0NOVA",
+    );
+    expect(slackBotUrlFromStatus(status({ teamId: " T0ACME ", botUserId: "U0NOVA " }))).toBe(
+      "https://app.slack.com/client/T0ACME/U0NOVA",
+    );
+  });
+
+  it("is null without both ids, and for an id that is not shaped like Slack's", () => {
+    expect(slackBotUrlFromStatus(status({ teamId: "T0ACME" }))).toBeNull();
+    expect(slackBotUrlFromStatus(status({ botUserId: "U0NOVA" }))).toBeNull();
+    expect(slackBotUrlFromStatus(status({ teamId: "T0ACME", botUserId: "" }))).toBeNull();
+    expect(slackBotUrlFromStatus(status({ teamId: "T0ACME", botUserId: "u0nova" }))).toBeNull();
+    expect(slackBotUrlFromStatus(status({ teamId: "T0ACME/../x", botUserId: "U0NOVA" }))).toBeNull();
+    expect(slackBotUrlFromStatus(status({ teamId: "T0ACME", botUserId: "U0NOVA?x=1" }))).toBeNull();
+    expect(slackBotUrlFromStatus(status({ teamId: 1, botUserId: "U0NOVA" }))).toBeNull();
+    expect(slackBotUrlFromStatus(status(undefined))).toBeNull();
+    expect(slackBotUrlFromStatus(null)).toBeNull();
   });
 });

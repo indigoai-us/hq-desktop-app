@@ -106,6 +106,27 @@ export function slackRowFromAttach(json: unknown): SlackRow | null {
   return isRecord(json) ? readSlackRow(json.config) : null;
 }
 
+/** A Slack id as Slack writes them: capital letters and digits, e.g. T0ACME, U0NOVA. */
+const SLACK_ID = /^[A-Z0-9]{2,32}$/;
+
+/**
+ * Where a person opens the bot's direct message in Slack, once it is
+ * installed: Slack's web client, which hands over to the desktop app when it
+ * is there. Built here from the row's ids, never taken from a server link.
+ * Null until the row has both a well-formed team id and bot user id. The
+ * app opens only http(s) links, so this is never a `slack://` link.
+ */
+export function slackBotUrlFromStatus(json: unknown): string | null {
+  const agent = agentOf(json);
+  const channels = isRecord(agent?.channels) ? agent.channels : null;
+  const row = isRecord(channels?.slack) ? channels.slack : null;
+  if (!row) return null;
+  const teamId = text(row.teamId);
+  const botUserId = text(row.botUserId);
+  if (!SLACK_ID.test(teamId) || !SLACK_ID.test(botUserId)) return null;
+  return `https://app.slack.com/client/${teamId}/${botUserId}`;
+}
+
 /** What the server reports the bot can receive in Slack (`inboundCapability`). */
 export function slackCapabilityFromStatus(json: unknown): string {
   const agent = agentOf(json);
