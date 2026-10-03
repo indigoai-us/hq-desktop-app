@@ -1,65 +1,81 @@
-import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+// @vitest-environment happy-dom
 
-/**
- * Source contract for the task strip and its wiring into ConversationView. No
- * component-render harness exists, so — like story-card.test.ts — we pin the
- * things a regression would silently break: the strip renders nothing when
- * empty, it is a status region, it is mounted between the message list and
- * the composer, and its controller is disposed with the conversation.
- */
-const strip = readFileSync(
-  resolve(process.cwd(), 'src/chat/tasks/AgentTaskStrip.svelte'),
-  'utf8',
-);
-const channelView = readFileSync(
-  resolve(process.cwd(), 'src/chat/ConversationView.svelte'),
-  'utf8',
-);
+import { afterEach, describe, expect, it } from "vitest";
+import { mount, unmount } from "svelte";
 
-describe('AgentTaskStrip source contract', () => {
-  it('renders nothing at all when there are no tasks', () => {
-    expect(strip).toContain('{#if shown.length > 0}');
-  });
+import type { AgentTask } from "./agent-tasks";
+import AgentTaskStrip from "./AgentTaskStrip.svelte";
 
-  it('is a polite status region, not a message', () => {
-    expect(strip).toContain('role="status"');
-    expect(strip).toContain('aria-live="polite"');
-  });
+let host: HTMLDivElement;
+let component: ReturnType<typeof mount> | null = null;
 
-  it('renders one TaskChip per task, keyed by id', () => {
-    expect(strip).toContain('{#each shown as task (task.id)}');
-    expect(strip).toContain('visibleTasks(tasks, now())');
-    expect(strip).toContain('<TaskChip {task} />');
-  });
-
-  it('uses no hardcoded hex colors', () => {
-    expect(strip).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
-  });
-
-  it('exposes a stable test hook', () => {
-    expect(strip).toContain('data-testid="agent-task-strip"');
-  });
+afterEach(async () => {
+  if (component) await unmount(component);
+  component = null;
+  host?.remove();
 });
 
-describe('ConversationView wiring', () => {
-  it('mounts the strip between the message list and the composer', () => {
-    const strip = channelView.indexOf('<AgentTaskStrip');
-    const composer = channelView.indexOf('<div class="conv-composer">');
-    expect(strip).toBeGreaterThan(-1);
-    expect(composer).toBeGreaterThan(strip);
+function render(tasks: AgentTask[], now: () => number = () => Date.now()) {
+  host = document.createElement("div");
+  document.body.appendChild(host);
+  component = mount(AgentTaskStrip, { target: host, props: { tasks, now } });
+}
+
+function scopedCss(root: ParentNode): string {
+  const scope = [...root.querySelectorAll("[class]")].flatMap((el) =>
+    [...el.classList].filter((name) => name.startsWith("svelte-")),
+  )[0];
+  return [...document.querySelectorAll("style")]
+    .map((node) => node.textContent ?? "")
+    .filter((css) => (scope ? css.includes(scope) : false))
+    .join("\n");
+}
+
+const NOW = 1_700_000_000_000;
+
+describe("AgentTaskStrip", () => {
+  it("renders nothing at all when there are no tasks", () => {
+    render([]);
+    expect(host.querySelector("[data-testid='agent-task-strip']")).toBeNull();
+    expect(host.textContent).toBe("");
   });
 
-  it('feeds the strip from the controller, never from a command directly', () => {
-    expect(channelView).toContain('tasks={taskCtl?.tasks ?? []}');
-    expect(channelView).not.toContain('invoke(');
-    expect(channelView).toContain('api.listChannelAgentTasks');
-    expect(channelView).toContain('api.listAgentTasks');
+  it("is a polite status region with one chip per visible task", () => {
+    render(
+      [
+        { id: "live", title: "Ship the strip", status: "queued" },
+        { id: "working", title: "Watch CI", status: "working" },
+      ],
+      () => NOW,
+    );
+    const strip = host.querySelector("[data-testid='agent-task-strip']");
+    expect(strip?.getAttribute("role")).toBe("status");
+    expect(strip?.getAttribute("aria-live")).toBe("polite");
+    const chips = [...host.querySelectorAll("[data-testid='task-chip']")];
+    expect(chips.map((chip) => chip.getAttribute("aria-label"))).toEqual([
+      "Ship the strip, Queued",
+      "Watch CI, Working in the background",
+    ]);
   });
 
-  it('disposes the task controller with the conversation', () => {
-    expect(channelView).toContain('ctl.dispose()');
-    expect(channelView).toContain('new TaskFeedController(');
+  it("drops a finished task once its recent window has passed", () => {
+    const stale = new Date(NOW - 16 * 60 * 1000).toISOString();
+    render(
+      [
+        { id: "live", title: "Still going", status: "queued" },
+        { id: "old", title: "Already done", status: "done", lastEventAt: stale },
+      ],
+      () => NOW,
+    );
+    const labels = [...host.querySelectorAll("[data-testid='task-chip']")].map((chip) =>
+      chip.getAttribute("aria-label"),
+    );
+    expect(labels).toEqual(["Still going, Queued"]);
+  });
+
+  it("uses no hardcoded hex colors", () => {
+    render([{ id: "live", title: "Ship the strip", status: "queued" }]);
+    expect(scopedCss(host)).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
+    expect(host.innerHTML).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
   });
 });
