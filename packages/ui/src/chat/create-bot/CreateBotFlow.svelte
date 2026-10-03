@@ -191,7 +191,6 @@
   let claudeProviderEnabled = $state(false);
   let cloudProvisionOptions = $state<AgentProvisionOptionsView | null>(null);
   let cloudQuoteStatus = $state<"loading" | "ready" | "error">("loading");
-  let cloudApiKey = $state("");
   let quoteReloadToken = $state(0);
   let quoteGeneration = 0;
 
@@ -207,7 +206,6 @@
     claudeProviderEnabled,
     cloudProvisionOptions,
     cloudQuoteStatus,
-    cloudApiKeyPresent: cloudApiKey.trim().length > 0,
     hostNoun,
   });
 
@@ -331,21 +329,9 @@
 
   function patch(p: Partial<CreateBotDraft>): void {
     if (busy) return;
-    const oldHome = draft.home;
-    const oldCompanyUid = draft.companyUid;
-    const oldRuntime = draft.runtime;
-    const oldAuthMode = draft.authMode;
     draft = { ...draft, ...p };
     if (p.home === "cloud" && draft.runtime === "claude" && claudeProviderEnabled !== true) {
       draft = { ...draft, runtime: "codex" };
-    }
-    if (
-      oldHome !== draft.home ||
-      oldCompanyUid !== draft.companyUid ||
-      oldRuntime !== draft.runtime ||
-      oldAuthMode !== draft.authMode
-    ) {
-      cloudApiKey = "";
     }
     if (p.scope !== undefined) scopeAnswered = true;
     // A company template is a company bot for that company unless the user
@@ -393,8 +379,6 @@
           handle: botHandle(draft),
           runtime: draft.runtime,
           size: quotedSize.key,
-          authMode: draft.authMode,
-          ...(draft.authMode === "apiKey" && cloudApiKey ? { apiKey: cloudApiKey } : {}),
           ...(title ? { title } : {}),
         });
       }
@@ -521,8 +505,6 @@
           claudeProviderEnabled={claudeProviderEnabled}
           cloudProvisionOptions={cloudProvisionOptions}
           cloudQuoteStatus={cloudQuoteStatus}
-          apiKey={cloudApiKey}
-          onapikey={(value) => (cloudApiKey = value)}
           onretryquote={() => (quoteReloadToken += 1)}
           disabled={busy}
           onpatch={patch}

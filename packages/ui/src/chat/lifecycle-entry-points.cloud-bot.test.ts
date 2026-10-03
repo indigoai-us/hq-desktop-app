@@ -146,41 +146,29 @@ function server(turns = [TURN_1, TURN_2, TURN_3]) {
 const fast = { sleep: async () => {}, pollMs: 0 };
 
 describe("runCreateCloudBotEntry", () => {
-  it("opens the console authorization page only for Claude subscription auth", () => {
-    expect(claudeSubscriptionSignInUrl({ runtime: "claude", authMode: "subscription" }, "agt_123")).toBe(
+  it("opens the console authorization page only for Claude bots", () => {
+    expect(claudeSubscriptionSignInUrl({ runtime: "claude" }, "agt_123")).toBe(
       "https://hq.getindigo.ai/resolve/agents/agt_123",
     );
-    expect(claudeSubscriptionSignInUrl({ runtime: "claude", authMode: "apiKey" }, "agt_123")).toBeNull();
-    expect(claudeSubscriptionSignInUrl({ runtime: "grok", authMode: "subscription" }, "agt_123")).toBeNull();
-    expect(claudeSubscriptionSignInUrl({ runtime: "claude", authMode: "subscription" }, "  ")).toBeNull();
+    expect(claudeSubscriptionSignInUrl({ runtime: "grok" }, "agt_123")).toBeNull();
+    expect(claudeSubscriptionSignInUrl({ runtime: "claude" }, "  ")).toBeNull();
   });
 
-  it("carries the chosen runtime and write-only API-key auth on the final create action", async () => {
-    const { api, runCardAction, fetchChannel } = server();
-    const apiKey = "sk-test-cloud-api-key";
+  it("carries the chosen runtime and size, and never an auth mode or API key", async () => {
+    const { api, runCardAction } = server();
 
-    await runCreateCloudBotEntry(
-      api,
-      "cmp_acme",
-      {
-        ...DRAFT,
-        runtime: "claude",
-        size: "power",
-        authMode: "apiKey",
-        apiKey,
-      },
-      fast,
-    );
+    await runCreateCloudBotEntry(api, "cmp_acme", { ...DRAFT, runtime: "claude", size: "power" }, fast);
 
     expect(runCardAction).toHaveBeenNthCalledWith(2, expect.objectContaining({
       values: { runtime: "claude" },
     }));
     expect(runCardAction).toHaveBeenNthCalledWith(3, expect.objectContaining({
-      values: { size: "power", authMode: "apiKey", apiKey },
+      values: { size: "power" },
     }));
-    expect(runCardAction.mock.calls[0]?.[0].values).not.toHaveProperty("apiKey");
-    expect(runCardAction.mock.calls[1]?.[0].values).not.toHaveProperty("apiKey");
-    expect(JSON.stringify(await fetchChannel())).not.toContain(apiKey);
+    for (const call of runCardAction.mock.calls) {
+      expect(call[0].values).not.toHaveProperty("apiKey");
+      expect(call[0].values).not.toHaveProperty("authMode");
+    }
   });
 
   it("runs the whole server sequence and lands in the new bot's channel", async () => {
@@ -204,7 +192,7 @@ describe("runCreateCloudBotEntry", () => {
     expect(runCardAction).toHaveBeenNthCalledWith(2, expect.objectContaining({ values: { runtime: "codex" } }));
     expect(runCardAction).toHaveBeenNthCalledWith(3, expect.objectContaining({
       actionId: "create",
-      values: { size: "basic", authMode: "subscription" },
+      values: { size: "basic" },
     }));
     // Nothing is focused: no card was ever drawn. The new bot's uid rides
     // back with the target: no turn asked for the draft's title, so the

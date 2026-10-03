@@ -202,24 +202,15 @@ export interface CloudBotDraft {
   title?: string;
   runtime?: BotRuntime;
   size?: "basic" | "power" | "dev";
-  authMode?: "subscription" | "apiKey";
-  /** Write-only create input; never copied into lifecycle card state. */
-  apiKey?: string;
 }
 
 /** Console page where a newly-created Claude subscription can be authorized. */
 export function claudeSubscriptionSignInUrl(
-  draft: Pick<CloudBotDraft, "runtime" | "authMode">,
+  draft: Pick<CloudBotDraft, "runtime">,
   agentUid: string,
 ): string | null {
   const uid = agentUid.trim();
-  if (
-    draft.runtime !== "claude" ||
-    (draft.authMode ?? "subscription") !== "subscription" ||
-    !uid
-  ) {
-    return null;
-  }
+  if (draft.runtime !== "claude" || !uid) return null;
   return `https://hq.getindigo.ai/resolve/agents/${encodeURIComponent(uid)}`;
 }
 
@@ -417,14 +408,6 @@ function valuesForCard(
     else if (field.id === "size" && draft.size) value = draft.size;
     if (!value && field.required) return null;
     values[field.id] = value;
-  }
-  // Auth is carried only on the final create action. In particular, the API
-  // key never enters a lifecycle field or a card snapshot.
-  if (card.fields.some((field) => field.id === "size")) {
-    values.authMode = draft.authMode ?? "subscription";
-    if (values.authMode === "apiKey" && draft.apiKey) {
-      values.apiKey = draft.apiKey;
-    }
   }
   return values;
 }

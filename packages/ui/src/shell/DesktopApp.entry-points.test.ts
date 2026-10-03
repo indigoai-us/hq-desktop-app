@@ -449,9 +449,10 @@ describe("DesktopApp New bot: the Cloud option", () => {
       expect(runCardAction.mock.calls[2]![0]).toMatchObject({
         cardId: "card_create_agent_3",
         actionId: "create",
-        values: { size: "basic", authMode: "subscription" },
+        values: { size: "basic" },
       });
       expect(runCardAction.mock.calls[2]![0].values).not.toHaveProperty("apiKey");
+      expect(runCardAction.mock.calls[2]![0].values).not.toHaveProperty("authMode");
       expect(onopenurl).toHaveBeenCalledWith("https://hq.getindigo.ai/resolve/agents/agt_polar");
 
       // Nothing was ever drawn: the card that collects these details is a
