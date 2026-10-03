@@ -77,7 +77,9 @@
   function paintCache(active: string): void {
     const cached = readGoalsCache(storage, active);
     if (!cached) {
-      objectives = [];
+      // AUDIT-3: no cache means "still reading", not "no goals"; hold the
+      // skeleton until the board answers so the empty line never flashes.
+      objectives = null;
       links = [];
       return;
     }

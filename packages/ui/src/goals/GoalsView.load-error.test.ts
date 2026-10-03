@@ -55,3 +55,29 @@ describe("GoalsView failed read (AUDIT-3)", () => {
     expect(errorBox()).toBeNull();
   });
 });
+
+describe("GoalsView first load (AUDIT-3)", () => {
+  it("holds the skeleton until the board answers, never flashing the empty line", async () => {
+    let release: (() => void) | null = null;
+    const ipc = async (command: string): Promise<unknown> => {
+      if (command === "get_local_company_goals") {
+        await new Promise<void>((resolve) => (release = resolve));
+        return { objectives: [{ id: "o1", title: "Ship the beta", description: "", status: "on_track", timeframe: "2026", owner: "", keyResults: [], initiativeIds: [] }], initiatives: [] };
+      }
+      return [];
+    };
+    host = document.createElement("div");
+    document.body.append(host);
+    component = mount(GoalsView, {
+      target: host,
+      props: { adapter: { projects: fakeProjectsApi(ipc) } as PlatformAdapter, slug: "fresh-co" },
+    });
+    flushSync();
+    await expect.poll(() => release !== null).toBe(true);
+    expect(host.querySelector("[data-testid='goals-skeleton']")).not.toBeNull();
+    expect(host.querySelector("[data-testid='empty-goals-state']")).toBeNull();
+    release!();
+    await expect.poll(() => host?.textContent ?? "").toContain("Ship the beta");
+    expect(host.querySelector("[data-testid='goals-skeleton']")).toBeNull();
+  });
+});
