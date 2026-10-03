@@ -197,3 +197,58 @@ describe("US-034 OutpostPage", () => {
     });
   });
 });
+
+describe("QA-096 Outpost sidebar host name", () => {
+  let component: Record<string, unknown> | null = null;
+
+  afterEach(async () => {
+    if (component) await unmount(component);
+    component = null;
+  });
+
+  it("truncates a 120-character host name inside the fixed sidebar column", () => {
+    const cache = fixtureOutpost();
+    cache.host.name = "outpost-" + "x".repeat(112);
+    expect(cache.host.name.length).toBe(120);
+    writeOutpostCache("personal", cache);
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    component = mount(OutpostPage, { target, props: {} });
+    flushSync();
+
+    const page = target.querySelector<HTMLElement>("[data-testid='outpost-page']")!;
+    const pane = target.querySelector<HTMLElement>("aside.pane")!;
+    const host = target.querySelector<HTMLElement>("[data-testid='outpost-pane-host']")!;
+    const label = host.querySelector<HTMLElement>(".label")!;
+
+    // The full value stays reachable as a tooltip.
+    expect(host.getAttribute("title")).toContain(cache.host.name);
+    expect(label.textContent).toContain(cache.host.name);
+
+    // Master-detail pin: list column fixed, detail flexes.
+    expect(getComputedStyle(page).gridTemplateColumns).toBe("260px minmax(0, 1fr)");
+
+    // The sidebar clips its content, and the label truncates rather than overflowing.
+    expect(getComputedStyle(pane).overflow).toBe("hidden");
+    expect(getComputedStyle(pane).minWidth).toBe("0");
+    expect(getComputedStyle(host).minWidth).toBe("0");
+    expect(getComputedStyle(host).maxWidth).toBe("100%");
+    const ls = getComputedStyle(label);
+    expect(ls.overflow).toBe("hidden");
+    expect(ls.textOverflow).toBe("ellipsis");
+    expect(ls.whiteSpace).toBe("nowrap");
+    expect(ls.minWidth).toBe("0");
+
+    // Bounding box stays within the sidebar (happy-dom reports zero-size boxes, so this
+    // guards the relation; the computed styles above carry the real-layout contract).
+    const pr = pane.getBoundingClientRect();
+    const lr = label.getBoundingClientRect();
+    expect(lr.right).toBeLessThanOrEqual(pr.right);
+    expect(lr.left).toBeGreaterThanOrEqual(pr.left);
+
+    // Every sidebar nav row truncates the same way.
+    for (const b of pane.querySelectorAll<HTMLElement>("nav button .label")) {
+      expect(getComputedStyle(b).textOverflow).toBe("ellipsis");
+    }
+  });
+});

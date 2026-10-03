@@ -226,10 +226,10 @@
 
 <div class="page" data-testid="outpost-page" data-tab={tab} data-offline={offline ? "true" : "false"}>
   <aside class="pane" aria-label="Outpost">
-    <div class="pane-head"><span class="status"><span class="dot" class:live={!offline} class:err={offline}></span>{provisioned ? `${data.host.name} · ${offline ? "Down" : "Up"}` : "Outpost"}</span></div>
+    <div class="pane-head"><span class="status" data-testid="outpost-pane-host" title={provisioned ? `${data.host.name} · ${offline ? "Down" : "Up"}` : undefined}><span class="dot" class:live={!offline} class:err={offline}></span><span class="label">{provisioned ? `${data.host.name} · ${offline ? "Down" : "Up"}` : "Outpost"}</span></span></div>
     <nav>
       {#each [["overview", "Overview"], ["jobs", "Scheduled jobs"], ["runs", "Runs"], ["logs", "Logs"], ["settings", "Settings"]] as item (item[0])}
-        <button type="button" class:on={tab === item[0]} aria-current={tab === item[0] ? "true" : undefined} onclick={() => (tab = item[0] as OutpostTab)}>{item[1]}</button>
+        <button type="button" class:on={tab === item[0]} aria-current={tab === item[0] ? "true" : undefined} onclick={() => (tab = item[0] as OutpostTab)}><span class="label">{item[1]}</span></button>
       {/each}
     </nav>
   </aside>
@@ -419,8 +419,13 @@
      one 20px/500 title, 13px Geist everywhere else, 31px rows, status as dot plus
      text, mono only for the fingerprint, cron, commands and log lines. */
   .page { display: grid; grid-template-columns: 260px minmax(0, 1fr); height: 100%; min-height: 0; color: var(--t1, var(--v4-text-1)); background: var(--v4-ground); font: 400 13px/1.45 var(--font-ui, "Geist", -apple-system, sans-serif); position: relative; }
-  .pane { border-right: 1px solid var(--line, var(--v4-hairline)); padding: 12px 14px; }
-  .pane-head { height: 31px; display: flex; align-items: center; padding: 0 8px; color: var(--t2, var(--v4-text-2)); }
+  /* QA-096: the sidebar is a fixed 260px column; a long host name must truncate
+     inside it, never paint over the main header. */
+  .pane { border-right: 1px solid var(--line, var(--v4-hairline)); padding: 12px 14px; min-width: 0; overflow: hidden; }
+  .pane-head { height: 31px; display: flex; align-items: center; min-width: 0; padding: 0 8px; color: var(--t2, var(--v4-text-2)); }
+  .pane-head .status { min-width: 0; max-width: 100%; }
+  .pane .label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  nav button { display: flex; align-items: center; min-width: 0; }
   h1 { font-size: var(--type-title, 20px); font-weight: var(--type-title-weight, 500); line-height: var(--type-title-line, 1.25); margin: 0 4px 0 0; }
   h2 { font-size: 13px; font-weight: 500; color: var(--t2, var(--v4-text-2)); margin: 16px 0 4px; }
   nav { display: flex; flex-direction: column; gap: 1px; margin-top: 4px; }
