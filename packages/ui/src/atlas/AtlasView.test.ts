@@ -326,6 +326,10 @@ describe("Atlas chunk boundary", () => {
     expect(text).toContain("The map didn't load");
     expect(text).not.toContain("401");
     expect(text).not.toContain("raw");
+    // BLANK-2: no zero roll-up or "Nobody is working" next to the failed map.
+    const rollup = host.querySelector(sel("atlas-inspector-rollup"))?.textContent ?? "";
+    expect(rollup).not.toMatch(/\b0 (objects|projects)\b/);
+    expect(host.textContent).not.toContain("Nobody is working");
     (host.querySelector(sel("atlas-retry")) as HTMLButtonElement).click();
     await vi.waitFor(() => {
       expect(host.querySelector(sel(`atlas-node-${RAIL}`))).not.toBeNull();

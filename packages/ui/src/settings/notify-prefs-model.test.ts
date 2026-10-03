@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   PAUSE_CHOICES,
@@ -106,10 +106,28 @@ describe("prefs payloads", () => {
 
   it("treats a 404 as unavailable, other failures as errors", () => {
     expect(prefsFailureState({ code: "http-404" })).toEqual({ kind: "unavailable" });
+    // AUDIT-3c: the server text is logged; the state carries plain copy.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     expect(prefsFailureState({ code: "http-500", message: "boom" })).toEqual({
       kind: "error",
-      message: "boom",
+      message: "Couldn't load notification settings. Try again.",
     });
+    expect(warn).toHaveBeenCalledWith("[settings] notification settings load failed", "boom");
+    warn.mockRestore();
     expect(prefsSaveErrorMessage({ code: "http-404" })).toMatch(/doesn't support/);
+  });
+});
+
+describe("notify prefs raw errors (AUDIT-3c)", () => {
+  const RAW = '[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}';
+  it("load and save failures never return raw text and log it", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const load = prefsFailureState({ code: "invoke", message: RAW });
+    expect(load).toEqual({ kind: "error", message: "Couldn't load notification settings. Try again." });
+    const save = prefsSaveErrorMessage({ code: "invoke", message: RAW });
+    expect(save).toBe("Couldn't save notification settings. Try again.");
+    expect(warn).toHaveBeenCalledWith("[settings] notification settings load failed", RAW);
+    expect(warn).toHaveBeenCalledWith("[settings] notification settings save failed", RAW);
+    warn.mockRestore();
   });
 });

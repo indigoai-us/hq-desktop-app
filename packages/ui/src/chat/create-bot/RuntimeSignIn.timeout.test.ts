@@ -74,7 +74,10 @@ describe("a sign-in that never opens", () => {
 });
 
 describe("a sign-in that fails outright", () => {
-  it("surfaces the host's own reason for a thrown failure", async () => {
+  // Host text is logged, not shown (AUDIT-3c): these replace the earlier
+  // "surfaces the host's own reason" assertions.
+  it("shows plain copy for a thrown failure and logs the host's reason", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     render({
       loginStart: async () => {
         throw new Error("claude: No such file or directory (os error 2)");
@@ -82,18 +85,39 @@ describe("a sign-in that fails outright", () => {
     });
     await settle();
 
-    expect(text()).toContain("Could not open Claude Code sign-in");
-    expect(text()).toContain("No such file or directory");
+    expect(text()).toContain("Could not open Claude Code sign-in. Check that it is installed, then try again.");
+    expect(text()).not.toContain("No such file or directory");
+    expect(warn.mock.calls.some((a) => a.some((x) => String(x).includes("No such file")))).toBe(true);
+    warn.mockRestore();
   });
 
-  it("surfaces a reported error state's message", async () => {
+  it("shows plain copy for a reported error state", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     render({
       loginStart: async () => ({ state: "error", message: "Sign-in exited with status 1." }),
     });
     await settle();
 
-    expect(text()).toContain("Sign-in exited with status 1.");
+    expect(text()).toContain("Could not sign in to Claude Code. Try again.");
+    expect(text()).not.toContain("exited with status 1");
     expect(host.querySelector('[data-testid="runtime-signin-retry"]')).toBeTruthy();
+    warn.mockRestore();
+  });
+
+  it("never shows raw transport error text from the sign-in result", async () => {
+    const RAW = '[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}';
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    render({ loginStart: async () => ({ state: "error", message: RAW }) });
+    await settle();
+
+    expect(text()).toContain("Could not sign in to Claude Code. Try again.");
+    expect(text()).not.toContain("boom");
+    expect(text()).not.toContain("HTTP 500");
+    for (const el of Array.from(host.querySelectorAll("[title]"))) {
+      expect(el.getAttribute("title")).not.toContain("boom");
+    }
+    expect(warn.mock.calls.some((a) => a.some((x) => String(x).includes("boom")))).toBe(true);
+    warn.mockRestore();
   });
 });
 

@@ -102,7 +102,8 @@
       aftercreate(channel);
       onclose(created.channelId, { title: name.trim(), companyUid: companyUid || null });
     } catch (err) {
-      error = err instanceof Error ? err.message : "Could not create the channel";
+      console.warn("[new-channel] create failed", err);
+      error = "Could not create the channel. Try again.";
       creating = false;
     }
   }

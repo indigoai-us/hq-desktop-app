@@ -91,6 +91,7 @@
       pairing = candidate && ["https://auth.openai.com/codex/device", "https://auth.openai.com/device"].includes(candidate.url ?? "") && /^[A-Z0-9]{4,8}-[A-Z0-9]{4,8}$/.test(candidate.code ?? "")
         ? { url: candidate.url!, code: candidate.code! } : null;
       await onchanged?.();
+    // raw-error-ok: shown only inside the collapsed Technical details disclosure
     } catch (error) { if (bot.agentUid === uid) promotionError = error instanceof Error ? error.message : "Could not continue promotion."; }
     finally { if (bot.agentUid === uid) promoting = false; }
   }
@@ -145,7 +146,8 @@
         ...(effortValue !== savedEffort ? { effort: effortValue === DEFAULT_LOCAL_BOT_EFFORT ? null : effortValue } : {}),
       });
       if (!result.ok) {
-        actionError = result.message || `Could not change what ${bot.name} thinks with.`;
+        console.warn("[local-bot] save settings failed", result.message);
+        actionError = `Could not change what ${bot.name} thinks with. Try again.`;
         return;
       }
       await onchanged?.();
@@ -153,7 +155,8 @@
       draftEffort = null;
       settingsNote = "Saved. Applies from its next message.";
     } catch (error) {
-      actionError = error instanceof Error ? error.message : `Could not change what ${bot.name} thinks with.`;
+      console.warn("[local-bot] save settings failed", error);
+      actionError = `Could not change what ${bot.name} thinks with. Try again.`;
     } finally {
       savingSettings = false;
     }
@@ -193,13 +196,15 @@
       }
       const result = await api[verb](bot.name);
       if (!result.ok) {
-        actionError = result.message || `Could not ${verb} ${bot.name}.`;
+        console.warn(`[local-bot] ${verb} failed`, result.message);
+        actionError = `Could not ${verb} ${bot.name}. Try again.`;
         return;
       }
       await onchanged?.();
       if (verb === "remove") onclose?.();
     } catch (error) {
-      actionError = error instanceof Error ? error.message : `Could not ${verb} ${bot.name}.`;
+      console.warn(`[local-bot] ${verb} failed`, error);
+      actionError = `Could not ${verb} ${bot.name}. Try again.`;
     } finally {
       busy = null;
     }

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { withReadDeadline } from "../common/read-deadline.js";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import RailButton from "../common/button/RailButton.svelte";
   import { dismissable } from "../common/dismissable.js";
@@ -114,7 +115,8 @@
   async function refresh(force: boolean): Promise<void> {
     if (secretsState === "error") secretsState = "loading";
     try {
-      const loaded = await companyStore.loadSecrets("personal", force);
+      // BLANK-1: a read that never answers falls to the failed-read state.
+      const loaded = await withReadDeadline(companyStore.loadSecrets("personal", force), "personal secrets");
       const secrets = personalSecretsFromSource(Array.isArray(loaded) ? loaded : []);
       data = { ...data, secrets };
       writePersonalRailCache("personal", data);
@@ -149,7 +151,7 @@
   async function refreshIntegrations(): Promise<void> {
     if (integrationsState === "error") integrationsState = "loading";
     try {
-      const next = await loadPersonalIntegrations(integrationsApi);
+      const next = await withReadDeadline(loadPersonalIntegrations(integrationsApi), "personal connections");
       integrations = next;
       writeIntegrationsCache(next);
       integrationsState = "ready";
@@ -252,15 +254,15 @@
 <section class="page" data-testid="personal-rail" data-page={page} data-story="US-033">
   <aside class="pane" aria-label={page === "secrets" ? "Secrets" : "Connections"}>
     {#if page === "secrets"}
-      <button class="nav" type="button" aria-current={secretTab === "all"} onclick={() => (secretTab = "all")}>All <span>{data.secrets.length}</span></button>
+      <button class="nav" type="button" aria-current={secretTab === "all"} onclick={() => (secretTab = "all")}>All {#if secretsState !== "error"}<span>{data.secrets.length}</span>{/if}</button>
       <button class="nav" type="button" aria-current={secretTab === "standard"} onclick={() => (secretTab = "standard")}>Standard</button>
       <button class="nav" type="button" aria-current={secretTab === "proxy"} onclick={() => (secretTab = "proxy")}>Proxy-only</button>
       <p class="sec">Scopes</p>
-      <button class="nav" type="button" aria-current="true" data-testid="scope-personal">Personal <span>{data.secrets.length}</span></button>
+      <button class="nav" type="button" aria-current="true" data-testid="scope-personal">Personal {#if secretsState !== "error"}<span>{data.secrets.length}</span>{/if}</button>
       <p class="sec">Needs attention</p>
       <button class="nav" type="button" aria-current={secretTab === "stale"} onclick={() => (secretTab = "stale")}>Not rotated in 90 d</button>
     {:else if !useFixtures}
-      <button class="nav" type="button" aria-current="true" data-testid="connections-personal-nav">Personal <span>{integrations.length}</span></button>
+      <button class="nav" type="button" aria-current="true" data-testid="connections-personal-nav">Personal {#if integrationsState !== "error"}<span>{integrations.length}</span>{/if}</button>
     {:else}
       <button class="nav" type="button" aria-current={connectionTab === "connected"} onclick={() => (connectionTab = "connected")}>Connected <span>{connectedCount}</span></button>
       <button class="nav" type="button" aria-current={connectionTab === "available"} onclick={() => (connectionTab = "available")}>Available</button>
@@ -273,7 +275,8 @@
     {#if page === "secrets"}
       <header class="toolbar">
         <h1>Secrets</h1>
-        <span class="count" data-testid="personal-secrets-count">{countLabel("Secrets", secretRows.length)}</span>
+        <!-- BLANK-2: counts wait for a read that succeeded. -->
+        {#if secretsState !== "error"}<span class="count" data-testid="personal-secrets-count">{countLabel("Secrets", secretRows.length)}</span>{/if}
         <span class="sub">Values never shown</span>
         <span class="grow"></span>
         <input class="search" placeholder="Search by name" bind:value={query} />

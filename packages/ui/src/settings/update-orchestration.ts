@@ -86,12 +86,22 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-/** Native probe envelope: `{ status: "failed", message }` → error string. */
-export function probeFailure(value: unknown): string | null {
+/**
+ * Probe/check errors are rendered in the Updates rows, so they only ever hold
+ * app copy. The raw native/transport text goes to the log.
+ */
+export function plainProbeError(raw: unknown, what: string): string {
+  const detail = typeof raw === "string" ? raw.trim() : "";
+  if (detail) console.warn(`[updates] ${what} check failed`, detail);
+  if (/timed out/i.test(detail)) return `The ${what} check timed out. Try again.`;
+  return `The ${what} check didn't finish. Try again.`;
+}
+
+/** Native probe envelope: `{ status: "failed", message }` → plain error copy. */
+export function probeFailure(value: unknown, what = "version"): string | null {
   const probe = asRecord(value);
   if (probe?.status !== "failed") return null;
-  const detail = typeof probe.message === "string" ? probe.message.trim() : "";
-  return detail || "The native version probe failed.";
+  return plainProbeError(probe.message, what);
 }
 
 /**
@@ -209,11 +219,11 @@ export async function runUpdateCheck(
   const versions = await versionsPromise;
   const versionRecord = versions.ok ? asRecord(versions.value) : null;
   let coreProbeError = versions.ok
-    ? probeFailure(versionRecord?.coreProbe)
-    : versions.message ?? "The Core version probe failed.";
+    ? probeFailure(versionRecord?.coreProbe, "Core version")
+    : plainProbeError(versions.message, "Core version");
   let cliProbeError = versions.ok
-    ? probeFailure(versionRecord?.cliProbe)
-    : versions.message ?? "The CLI version probe failed.";
+    ? probeFailure(versionRecord?.cliProbe, "CLI version")
+    : plainProbeError(versions.message, "CLI version");
   const coreVersion =
     typeof versionRecord?.core === "string" && versionRecord.core
       ? (versionRecord.core as string)
@@ -234,18 +244,14 @@ export async function runUpdateCheck(
   const coreState = coreCheck.ok ? (coreCheck.value ?? null) : null;
   const coreStatus = coreStatusFrom(coreCheck, coreVersion, coreProbeError);
   if (!coreCheck.ok && !coreProbeError) {
-    coreProbeError =
-      (typeof coreCheck.message === "string" && coreCheck.message.trim()) ||
-      "The Core update check failed.";
+    coreProbeError = plainProbeError(coreCheck.message, "Core update");
   }
   options.onRow?.("core", coreStatus);
 
   const cliCheck = await cliPromise;
   const cliStatus = cliStatusFrom(cliCheck, cliVersion, cliProbeError);
   if (!cliCheck.ok && !cliProbeError) {
-    cliProbeError =
-      (typeof cliCheck.message === "string" && cliCheck.message.trim()) ||
-      "The CLI update check failed.";
+    cliProbeError = plainProbeError(cliCheck.message, "CLI update");
   }
   options.onRow?.("cli", cliStatus);
 

@@ -581,12 +581,9 @@
       emitCount(view.replyCount ?? ordered.length, ordered);
     } catch (err) {
       if (generation !== loadGeneration || rootEventId !== requested) return;
-      loadError =
-        typeof err === "string"
-          ? err
-          : err instanceof Error
-            ? err.message
-            : "Could not load replies";
+      // Thrown text is transport/server output: log it, show plain copy.
+      console.warn("[reply-panel] load replies failed", err);
+      loadError = "Could not load replies. Try again.";
     } finally {
       if (generation === loadGeneration) loading = false;
     }
@@ -697,6 +694,7 @@
       try {
         attachments = await onuploadfiles([...pendingFiles]);
       } catch (err) {
+        // raw-error-ok: formatComposerSendError maps it to plain copy
         const raw = err instanceof Error ? err.message.trim() : "";
         attachError = formatComposerSendError(raw, true);
         attachUpgradeUrl = uploadErrorUpgradeUrl(err);
@@ -773,6 +771,7 @@
     err: unknown,
     mentions: readonly MentionTarget[],
   ): { sendError: string; sendFatal: boolean } {
+    // raw-error-ok: formatComposerSendError maps it to plain copy
     const raw = err instanceof Error ? err.message.trim() : "";
     return {
       sendError: formatComposerSendError(

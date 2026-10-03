@@ -106,6 +106,7 @@ export const COMPANY_ROUTE_DECISIONS = [
   'joined_invite',
   'used_existing',
   'created_another',
+  'lookup_failed',
 ] as const;
 const SELF_HEAL_VALUES = ['triggered', 'succeeded', 'failed'] as const;
 

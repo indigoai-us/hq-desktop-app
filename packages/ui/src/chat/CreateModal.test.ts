@@ -487,6 +487,30 @@ describe("CreateModal create step", () => {
 });
 
 describe("CreateModal submit", () => {
+  it("shows plain copy, never the raw transport text, when create fails for an unknown reason", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const raw = '[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}';
+    const createChannel = vi.fn(async () => {
+      throw new Error(raw);
+    });
+    open({ api: stubApi({ createChannel }) });
+    await tick();
+    await gotoCreate("Growth");
+    $<HTMLButtonElement>('[data-testid="chat-channel-create"]')?.click();
+    await vi.waitFor(() => {
+      expect($('[data-testid="chat-channel-error"]')).toBeTruthy();
+    });
+    const error = $('[data-testid="chat-channel-error"]')!;
+    expect(error.textContent).toContain("the request did not go through");
+    expect(document.body.textContent).not.toContain("boom");
+    expect(document.body.textContent).not.toContain("HTTP 500");
+    for (const el of document.querySelectorAll("[title]")) {
+      expect(el.getAttribute("title")).not.toContain("boom");
+    }
+    expect(warn).toHaveBeenCalledWith("[create-channel] create failed", raw);
+    warn.mockRestore();
+  });
+
   it("keeps the create step and remembers the slug when the server 409s", async () => {
     const createChannel = vi.fn(async () => {
       throw new Error(
@@ -1496,7 +1520,8 @@ describe("CreateModal in-flight and summary", () => {
       expect($('[data-testid="chat-create-summary-error"]')).toBeTruthy();
     });
     const error = $('[data-testid="chat-create-summary-error"]')!;
-    expect(error.textContent).toContain("still broken");
+    expect(error.textContent).toContain("That didn't work either. Try again.");
+    expect(error.textContent).not.toContain("still broken");
     expect(error.textContent).not.toContain("cmp_");
     expect(retry().disabled).toBe(false);
     expect(addChannelMember).toHaveBeenCalledTimes(2);
@@ -1844,6 +1869,29 @@ describe("CreateModal message by email", () => {
     expect(onclose).not.toHaveBeenCalled();
   });
 
+  it("shows plain copy, never raw transport text, when an email send fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const raw = '[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}';
+    const sendDmToEmail = vi.fn().mockRejectedValueOnce(new Error(raw));
+    open({ api: stubApi({ sendDmToEmail }) });
+    await tick();
+    await typeEmail();
+    $<HTMLButtonElement>('[data-testid="chat-create-email-row"]')!.click();
+    await tick();
+    type($<HTMLTextAreaElement>('[data-testid="chat-create-email-body"]')!, "hey");
+    await tick();
+    $<HTMLButtonElement>('[data-testid="chat-create-email-send"]')!.click();
+    await vi.waitFor(() => {
+      expect($('[data-testid="chat-create-email-error"]')).toBeTruthy();
+    });
+    expect($('[data-testid="chat-create-email-error"]')!.textContent).toContain(
+      "Couldn't send. Check your connection and try again.",
+    );
+    expect(document.body.textContent).not.toContain("boom");
+    expect(warn).toHaveBeenCalledWith("[create-modal] email send failed", raw);
+    warn.mockRestore();
+  });
+
   it("shows the server's refusal inline and lets the user try again", async () => {
     const sendDmToEmail = vi
       .fn()
@@ -1862,7 +1910,10 @@ describe("CreateModal message by email", () => {
     });
     const error = $('[data-testid="chat-create-email-error"]')!;
     expect(error.getAttribute("role")).toBe("alert");
-    expect(error.textContent).toContain("Couldn't send: Daily invite cap reached");
+    expect(error.textContent).toContain(
+      "Couldn't send: you've hit the daily invite limit. Try again tomorrow.",
+    );
+    expect(error.textContent).not.toContain("Daily invite cap reached");
     expect(error.textContent).not.toContain("http-429");
     // The draft survives the failure, and the button becomes the retry.
     expect(

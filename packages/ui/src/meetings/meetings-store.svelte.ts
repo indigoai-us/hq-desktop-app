@@ -233,6 +233,10 @@ let firstRefreshSettled = $state(false);
 // in which "no accounts, no meetings" is trustworthy enough to lead with the
 // connect-a-calendar empty state (a failed first fetch must not).
 let hasLiveSnapshot = $state(false);
+// AUDIT-3-16: true when the last read of the linked calendar accounts failed
+// (or the whole refresh failed), so "no accounts" is not a real answer and
+// the page must not offer "Connect your calendar".
+let calendarReadFailed = $state(false);
 let refreshInFlight: Promise<void> | null = null;
 let forceTrailingRefresh = false;
 let mutationRevision = 0;
@@ -335,6 +339,7 @@ function refresh(forceAfterMutation = false): Promise<void> {
 async function refreshOnce(refreshRevision: number, epoch: number): Promise<void> {
   const { meetings } = requireApi();
   let nextMembershipsError = "";
+  let accountsFailed = false;
   try {
     const [evts, members, accts] = await Promise.all([
       meetings
@@ -350,8 +355,12 @@ async function refreshOnce(refreshRevision: number, epoch: number): Promise<void
         }),
       meetings
         .listAccounts()
-        .then((r) => unwrap(r) as unknown as GoogleAccount[])
-        .catch(() => [] as GoogleAccount[]),
+        .then((r) => unwrap(r) as unknown as GoogleAccount[] | null)
+        .catch((err) => {
+          console.error("meetings listAccounts failed:", err);
+          accountsFailed = true;
+          return null;
+        }),
     ]);
     const botEventIds = calendarEventIdsForBotLookup(evts ?? []);
     // The adapter exposes a single full-list bot lookup (no per-event filter
@@ -377,7 +386,7 @@ async function refreshOnce(refreshRevision: number, epoch: number): Promise<void
     // Calendar fan-out is part of the same snapshot. Holding these values
     // locally prevents a pre-mutation poll from partially repainting the UI.
     const [calendarSnapshot, recordedResult] = await Promise.all([
-      loadCalendarsForAccounts(meetings, accts ?? []),
+      loadCalendarsForAccounts(meetings, accts ?? (accountsFailed ? accounts : [])),
       loadRecordedMeetings(meetings, members ?? []),
     ]);
 
@@ -406,13 +415,17 @@ async function refreshOnce(refreshRevision: number, epoch: number): Promise<void
     }
     memberships = members ?? [];
     companyNamesByUid = buildCompanyNameMap(members ?? []);
-    accounts = accts ?? [];
-    accountEmailById = new Map(
-      (accts ?? []).map((a) => [a.accountId, a.email ?? ""]),
-    );
-    calendarsByAccount = calendarSnapshot.calendarsByAccount;
-    enabledCalIdsByAccount = calendarSnapshot.enabledCalIdsByAccount;
-    calendarSummaryByKey = calendarSnapshot.calendarSummaryByKey;
+    // A failed accounts read keeps the accounts already on screen.
+    if (!accountsFailed) {
+      accounts = accts ?? [];
+      accountEmailById = new Map(
+        (accts ?? []).map((a) => [a.accountId, a.email ?? ""]),
+      );
+      calendarsByAccount = calendarSnapshot.calendarsByAccount;
+      enabledCalIdsByAccount = calendarSnapshot.enabledCalIdsByAccount;
+      calendarSummaryByKey = calendarSnapshot.calendarSummaryByKey;
+    }
+    calendarReadFailed = accountsFailed;
     membershipsError = nextMembershipsError;
     // A failed history fetch keeps the cached rows instead of blanking them.
     if (recordedResult.rows) {
@@ -434,6 +447,7 @@ async function refreshOnce(refreshRevision: number, epoch: number): Promise<void
     // Keep the cached paint; surface the failure rather than blanking out.
     console.error("meetings refresh failed:", err);
     lastRefreshErrorRaw = String(err ?? "");
+    calendarReadFailed = true;
     const gate = meetingsRefreshGate(
       refreshFailureCount,
       err,
@@ -1254,6 +1268,7 @@ export function stopMeetingsStore(): void {
   hydratedFromCache = false;
   firstRefreshSettled = false;
   hasLiveSnapshot = false;
+  calendarReadFailed = false;
   lastSyncedAt = 0;
   lastRefreshAt = 0;
 }
@@ -1380,6 +1395,10 @@ export const meetingsStore = {
   /** US-010: a network refresh has fully succeeded at least once. */
   get hasLiveSnapshot() {
     return hasLiveSnapshot;
+  },
+  /** AUDIT-3-16: the last calendar accounts read failed. */
+  get calendarReadFailed() {
+    return calendarReadFailed;
   },
   get pendingActionsByEventId() {
     return rowPending;

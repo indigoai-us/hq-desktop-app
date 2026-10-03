@@ -411,7 +411,9 @@ export function teamTelemetryErrorMessage(err: unknown): string {
   if (lower.includes("network") || lower.includes("fetch")) {
     return "Could not reach telemetry service. Check your connection and retry.";
   }
-  return text || "Failed to load team telemetry.";
+  // AUDIT-3c: an unrecognised failure is logged; the UI shows app copy.
+  console.warn("[team-telemetry] load failed", err);
+  return "Could not load team telemetry. Try again.";
 }
 
 /** ISO date YYYY-MM-DD for range queries (UTC). */

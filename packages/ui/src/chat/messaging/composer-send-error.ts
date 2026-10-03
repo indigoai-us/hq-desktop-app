@@ -1,6 +1,7 @@
 /**
- * Soft, human copy for composer failures. Server text is kept verbatim and
- * given a friendly prefix — never dump a bare machine code.
+ * Soft, human copy for composer failures. Known server codes map to app copy;
+ * any other server or transport text is logged and replaced with plain copy —
+ * never shown verbatim, never a bare machine code.
  */
 
 /**
@@ -96,10 +97,12 @@ export function formatComposerSendError(
       : "Couldn't send — that person isn't active in this company.";
   }
   if (/INVALID_MENTIONS/i.test(text)) {
-    const stripped = text.replace(/^\[[A-Z0-9_]+\]\s*/i, "").trim();
-    return stripped
-      ? `Couldn't send — ${stripped.charAt(0).toLowerCase()}${stripped.slice(1)}`
-      : "Couldn't send — one of the @mentions isn't valid.";
+    const cap = /at most (\d+) participants/i.exec(text);
+    if (cap) {
+      return `Couldn't send — a message can tag at most ${cap[1]} people. Remove some names and send again.`;
+    }
+    console.warn("[composer] send rejected for invalid mentions", text);
+    return "Couldn't send — one of the @mentions isn't valid. Remove it and send again.";
   }
   if (
     text.startsWith("Could not upload ") ||
@@ -109,12 +112,12 @@ export function formatComposerSendError(
   ) {
     return text;
   }
-  // Strip machine codes like "[CHANNEL_NOT_FOUND] …" if a human message remains.
-  const stripped = text.replace(/^\[[A-Z0-9_]+\]\s*/i, "").trim();
-  if (stripped && !/^[A-Z0-9_]+$/.test(stripped)) {
-    return stripped.startsWith("Couldn't") || stripped.startsWith("Could not")
-      ? stripped
-      : `Couldn't send — ${stripped}`;
+  // Anything else is server or transport text: log it, show plain copy.
+  if (text) {
+    console.warn("[composer] send failed", text);
+    return hadFiles
+      ? "Could not send the attachment. Try again."
+      : "Could not send the message. Try again.";
   }
   return hadFiles
     ? "Could not send the attachment"

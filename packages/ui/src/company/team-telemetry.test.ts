@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   defaultTelemetryRange,
   displayNameFromMember,
@@ -333,9 +333,21 @@ describe("teamTelemetryErrorMessage", () => {
       /connection/i,
     );
     expect(teamTelemetryErrorMessage("fetch failed")).toMatch(/connection/i);
+    const quiet = vi.spyOn(console, "warn").mockImplementation(() => {});
     expect(teamTelemetryErrorMessage("")).toBe(
-      "Failed to load team telemetry.",
+      "Could not load team telemetry. Try again.",
     );
+    quiet.mockRestore();
+  });
+
+  it("AUDIT-3c: never returns unrecognised raw error text, and logs it", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const raw = new Error('[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}');
+    const shown = teamTelemetryErrorMessage(raw);
+    expect(shown).not.toContain("HTTP 500");
+    expect(shown).toBe("Could not load team telemetry. Try again.");
+    expect(warn).toHaveBeenCalledWith("[team-telemetry] load failed", raw);
+    warn.mockRestore();
   });
 });
 

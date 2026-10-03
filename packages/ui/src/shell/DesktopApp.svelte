@@ -1341,10 +1341,13 @@
     try {
       const res = await adapter.updates.installPendingUpdate();
       if (!res.ok) {
+        console.warn("[update] install pending update failed", res.message ?? res.reason);
         updateInstallError = res.message ?? res.reason ?? "Could not restart.";
         updateInstalling = false;
       }
     } catch (err) {
+      console.warn("[update] install pending update failed", err);
+      // raw-error-ok: update-toast plainError maps it to plain copy
       updateInstallError = err instanceof Error ? err.message : "Could not restart.";
       updateInstalling = false;
     }
@@ -1506,8 +1509,7 @@
       const result = await adapter.sync.startSync(target.slug);
       if (!result.ok) {
         console.error("membership sync failed:", result.reason, result.message);
-        membershipSyncError =
-          result.message?.trim() || "Sync could not be started.";
+        membershipSyncError = "Sync could not be started. Try again.";
         membershipSyncPending = false;
       } else if (!syncEvents) {
         // No event bridge on this platform: the run was dispatched, but this
@@ -1517,10 +1519,7 @@
       }
     } catch (err) {
       console.error("membership sync failed:", err);
-      membershipSyncError =
-        err instanceof Error && err.message.trim()
-          ? err.message
-          : "Sync could not be started.";
+      membershipSyncError = "Sync could not be started. Try again.";
       membershipSyncPending = false;
     }
   }
@@ -1733,7 +1732,10 @@
           (e) => !membershipSyncTarget || e.company === membershipSyncTarget,
         );
         membershipSyncPending = false;
-        if (mine) membershipSyncError = mine.message?.trim() || "Sync failed.";
+        if (mine) {
+          console.warn("[membership-sync] sync run failed", mine.message);
+          membershipSyncError = "Sync failed. Try again.";
+        }
       }),
     );
     // NOTE: deliberately NOT listening to `sync:error`. That event is PER FILE
@@ -3487,16 +3489,12 @@
       result = await adapter.sync.resolveConflict(path, strategy);
     } catch (err) {
       console.error("resolve_conflict threw:", err);
-      setConflictStatus(path, "error", "Could not resolve this file.");
+      setConflictStatus(path, "error", "Could not resolve this file. Try again.");
       return;
     }
     if (!result.ok) {
       console.error("resolve_conflict failed:", result.reason, result.message);
-      setConflictStatus(
-        path,
-        "error",
-        result.message?.trim() || "Could not resolve this file.",
-      );
+      setConflictStatus(path, "error", "Could not resolve this file. Try again.");
       return;
     }
     // Resolved files leave the list; the row disappearing IS the confirmation.
@@ -5352,8 +5350,10 @@
       }
       await refreshAvatarsAfterSave();
     } catch (err) {
-      agentAvatarSaveError =
-        err instanceof Error ? err.message : "Could not save the avatar.";
+      // Thrown text can be transport/server output (a failed image fetch);
+      // it is logged, and the picker shows plain copy.
+      console.warn("[avatar] agent avatar save failed", err);
+      agentAvatarSaveError = "Could not save the avatar. Try again.";
     } finally {
       agentAvatarSaving = false;
     }
@@ -5451,19 +5451,21 @@
         const fallbackMessage = isSelfLeave
           ? "Couldn't leave this channel. Refresh and try again."
           : "Couldn't remove this member. Refresh and try again.";
-        const serverMessage = res.message?.trim();
-        channelActionError = isOwnerCannotLeave(res.code, res.message)
-          ? OWNER_CANNOT_LEAVE_MESSAGE
-          : serverMessage || fallbackMessage;
+        const ownerCannotLeave = isOwnerCannotLeave(res.code, res.message);
+        if (!ownerCannotLeave) {
+          console.warn("[channel] remove member failed", res.code, res.message);
+        }
+        channelActionError = ownerCannotLeave ? OWNER_CANNOT_LEAVE_MESSAGE : fallbackMessage;
       }
     } catch (err) {
+      // raw-error-ok: classified only; the screen gets fixed copy
       const message = (err instanceof Error ? err.message : String(err)).trim();
       const fallbackMessage = isSelfLeave
         ? "Couldn't leave this channel. Refresh and try again."
         : "Couldn't remove this member. Refresh and try again.";
-      channelActionError = isOwnerCannotLeave(undefined, message)
-        ? OWNER_CANNOT_LEAVE_MESSAGE
-        : message || fallbackMessage;
+      const ownerCannotLeave = isOwnerCannotLeave(undefined, message);
+      if (!ownerCannotLeave) console.warn("[channel] remove member failed", err);
+      channelActionError = ownerCannotLeave ? OWNER_CANNOT_LEAVE_MESSAGE : fallbackMessage;
     } finally {
       removingMemberUid = null;
     }
@@ -5569,8 +5571,8 @@
     try {
       const res = await adapter.messaging.deleteChannel(channelId);
       if (!res.ok) {
-        channelActionError =
-          res.message?.trim() || `Couldn't delete #${row.title}.`;
+        console.warn("[channel] delete channel failed", res.code, res.message);
+        channelActionError = `Couldn't delete #${row.title}. Try again.`;
         return;
       }
       // Optimistic: drop the rail row now. The server fans out a directory
@@ -5590,7 +5592,8 @@
       attachTray = null;
       replyPreviewByRoot = {};
     } catch (err) {
-      channelActionError = err instanceof Error ? err.message : String(err);
+      console.warn("[channel] delete channel failed", err);
+      channelActionError = `Couldn't delete #${row.title}. Try again.`;
     } finally {
       deletingChannel = false;
     }

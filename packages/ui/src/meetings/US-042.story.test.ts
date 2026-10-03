@@ -12,6 +12,10 @@ const store = vi.hoisted(() => ({
   accounts: [] as GoogleAccount[],
   events: [] as MeetingEvent[],
   initialLoadPending: false,
+  hasLiveSnapshot: true,
+  calendarReadFailed: false,
+  loading: false,
+  refresh: vi.fn(),
   fetchError: null as string | null,
   connectPending: false,
   lastSyncedAt: 0,
@@ -49,6 +53,8 @@ beforeEach(() => {
   store.accounts = [];
   store.events = [];
   store.initialLoadPending = false;
+  store.hasLiveSnapshot = true;
+  store.calendarReadFailed = false;
   store.fetchError = null;
   store.inviteBotByUrl.mockReset().mockResolvedValue({ kind: "info", text: "Notetaker invited." });
   store.beginCalendarConnect.mockReset();

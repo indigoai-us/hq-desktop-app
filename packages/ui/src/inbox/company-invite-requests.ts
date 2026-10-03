@@ -128,13 +128,12 @@ export function inviteClaimOutcome(
 ): InviteClaimOutcome {
   if (!claim.ok) {
     const upgradeUrl = approvedPlanUpgradeUrl(claim.upgradeUrl);
-    let message = claim.message?.trim() || "Couldn't join the company. Try again.";
-    if (claim.code && isPlanLimitCode(claim.code)) {
-      message = message.split(claim.code).join(" ").replace(/\s+/g, " ").trim();
-      if (!message || message.includes("{")) {
-        message = "Your plan limit is reached.";
-      }
-    }
+    // AUDIT-3c: the server's own text is logged, never shown.
+    console.warn("[company-invite] join failed", claim.code, claim.message);
+    const message =
+      claim.code && isPlanLimitCode(claim.code)
+        ? "Your plan limit is reached."
+        : "Couldn't join the company. Try again.";
     return { ok: false, message, upgradeUrl };
   }
   const uid = companyUid.trim();

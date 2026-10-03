@@ -281,7 +281,8 @@
       const result = await oncreatecompany();
       if (!result.ok) createAnotherError = result.reason;
     } catch (err) {
-      createAnotherError = err instanceof Error ? err.message : String(err);
+      console.warn("[setup-intro] create company failed", err);
+      createAnotherError = "Could not start a new company. Try again.";
     } finally {
       createAnotherBusy = false;
     }

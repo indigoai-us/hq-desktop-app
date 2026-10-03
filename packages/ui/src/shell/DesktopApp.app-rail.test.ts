@@ -5,7 +5,7 @@
  */
 
 import { afterEach, describe, expect, it } from "vitest";
-import { mount, tick, unmount } from "svelte";
+import { flushSync, mount, tick, unmount } from "svelte";
 import { ok, type PlatformAdapter } from "@hq/platform";
 
 import DesktopApp from "./DesktopApp.svelte";
@@ -30,6 +30,11 @@ function webAdapter(): PlatformAdapter {
     meetings: {
       listAccounts: async () => ok([]),
       permissionsState: async () => ok(null),
+    },
+    identity: {
+      whoami: async () => ok({ personUid: "prs_fixture", email: "" }),
+      hasFeature: async () => ok(false),
+      subscribeFeature: () => () => {},
     },
     appShell: {
       notificationPermissionState: async () => ok("default"),
@@ -218,9 +223,15 @@ describe("DesktopApp app rail (console-rail US-003)", () => {
     expect(host.querySelector('[data-testid="rail-files-unavailable"]')).not.toBeNull();
     expect(current()).toBe("library");
     click("rail-deployments");
-    await settle();
+    // The skeleton is the first paint. Check it in the same synchronous flush:
+    // once the page chunk is in the module cache (other files in the same
+    // worker load it), the dynamic import can resolve within settle()'s
+    // macrotask and the skeleton is already replaced by the page.
+    flushSync();
     expect(host.querySelector('[data-testid="personal-deployments-host"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="personal-deployments-skeleton"]')).not.toBeNull();
+    await settle();
+    expect(host.querySelector('[data-testid="personal-deployments-host"]')).not.toBeNull();
     expect(current()).toBe("deployments");
     await lazyBodiesLoaded(() => import("../library/PersonalDeploymentsPage.svelte"));
   });

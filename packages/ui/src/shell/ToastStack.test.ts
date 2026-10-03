@@ -212,7 +212,7 @@ describe("update toast copy guard (OWNER-004)", () => {
     expect(updateToastCopy(states[3]).detail).toBe("Waiting for HQ to finish a task");
     expect(updateToastCopy(states[6]).error).toBe("Waiting for the HQ folder update to finish");
     expect(updateToastCopy(states[7])).toMatchObject({ title: "Update failed", installLabel: "Try again", installDisabled: false });
-    expect(updateToastCopy(states[8]).error).toBe("Could not reach the update server.");
+    expect(updateToastCopy(states[8]).error).toBe("Could not restart to update. Try again.");
     expect(updateToastCopy(states[9]).title).toBe("Checking for updates");
     expect(updateToastCopy(states[10])).toMatchObject({
       detail: "Downloading HQ 0.10.381 (42%)",

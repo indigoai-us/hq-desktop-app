@@ -364,8 +364,9 @@
       {related}
       presence={selectedNode ? presence : working}
       company={companyName ?? graph?.company ?? ""}
-      objectCount={graph?.nodes.length ?? 0}
-      {projectsInProgress}
+      objectCount={loadFailed ? null : (graph?.nodes.length ?? 0)}
+      projectsInProgress={loadFailed && boardInProgress == null ? null : projectsInProgress}
+      mapFailed={loadFailed}
       {nowMs}
       onselect={selectId}
       {onopenfiles}

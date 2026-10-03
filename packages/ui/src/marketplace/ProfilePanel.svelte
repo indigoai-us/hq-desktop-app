@@ -166,7 +166,8 @@
         saved = false;
       }
     } else if (picked.reason !== "unavailable") {
-      saveError = picked.message ?? "Could not open the image picker.";
+      console.warn("[marketplace] image picker failed", picked.message);
+      saveError = "Couldn't open the image picker. Try again.";
     }
     choosingAvatar = false;
   }
@@ -221,7 +222,8 @@
       // 3. Refresh the public preview from the public route.
       await loadPreview();
     } catch (err) {
-      saveError = err instanceof Error ? err.message : String(err);
+      console.warn("[marketplace] profile save failed", err);
+      saveError = "Couldn't save your profile. Try again.";
     } finally {
       saving = false;
     }
@@ -236,7 +238,12 @@
       preview = res.value;
     } else {
       preview = null;
-      previewError = res.message ?? "Preview unavailable.";
+      if (res.message === "no public profile yet") {
+        previewError = res.message;
+      } else {
+        console.warn("[marketplace] profile preview failed", res.message);
+        previewError = "Couldn't load the preview. Try again.";
+      }
     }
     previewLoading = false;
   }

@@ -23,7 +23,12 @@
   let failed = $state(false);
   let ticket = 0;
 
-  const chip = $derived(calendarChipLabel(meetingsStore.accounts));
+  // BLANK-2: a failed calendar read is not "No calendar".
+  const chip = $derived(
+    meetingsStore.calendarReadFailed && meetingsStore.accounts.length === 0
+      ? { connected: false, provider: "Calendar", count: "" }
+      : calendarChipLabel(meetingsStore.accounts),
+  );
 
   function toggle(which: "calendar" | "paste"): void {
     if (open === which) {

@@ -107,7 +107,8 @@
       }
     } else if (picked.reason !== "unavailable") {
       // A picker failure is non-fatal — surface it inline so the user can retry.
-      errorMessage = picked.message ?? "Could not open the folder picker.";
+      console.warn("[marketplace] folder picker failed", picked.message);
+      errorMessage = "Couldn't open the folder picker. Try again.";
     }
     choosing = false;
   }
@@ -149,7 +150,8 @@
         // 409 duplicate — render the calm "already pending" state, not an error.
         alreadyPending = true;
       } else {
-        requestError = res.message ?? "Could not submit the application.";
+        console.warn("[marketplace] creator access request failed", res.message);
+        requestError = "Couldn't send your request. Try again.";
       }
     }
     requesting = false;

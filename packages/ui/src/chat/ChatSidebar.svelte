@@ -1207,6 +1207,7 @@
         companyHomeEnsuring = rest;
         return;
       } catch (err) {
+        // raw-error-ok: log only
         const reason = err instanceof Error ? err.message : String(err);
         companiesLog(
           `open-failed company=${label} attempt=${attempt}/${ENSURE_HOME_CHANNEL_MAX_ATTEMPTS} reason=${reason}`,
@@ -1829,7 +1830,8 @@
       }
       scopeEntryError = result.reason;
     } catch (err) {
-      scopeEntryError = err instanceof Error ? err.message : String(err);
+      console.warn("[chat-sidebar] new company failed", err);
+      scopeEntryError = "Could not start a new company. Try again.";
     } finally {
       scopeEntryBusy = false;
     }
@@ -2157,6 +2159,7 @@
             sidebarLog("boot-error", {
               source: "list_contacts",
               timeout: err instanceof BootTimeoutError,
+              // raw-error-ok: telemetry payload only
               message: err instanceof Error ? err.message : String(err),
             });
             console.error("chat-sidebar: list_contacts failed", err);
@@ -2174,6 +2177,7 @@
           sidebarLog("boot-error", {
             source: "list_dm_requests",
             timeout: err instanceof BootTimeoutError,
+            // raw-error-ok: telemetry payload only
             message: err instanceof Error ? err.message : String(err),
           });
           console.error("chat-sidebar: list_dm_requests failed", err);
@@ -2199,6 +2203,7 @@
       loadError = "Couldn’t load conversations.";
       sidebarLog("boot-error", {
         source: "refresh",
+        // raw-error-ok: telemetry payload only
         message: err instanceof Error ? err.message : String(err),
       });
       console.error("chat-sidebar: refresh failed", err);
@@ -2273,6 +2278,7 @@
       sidebarLog("boot-error", {
         source: "list_dm_requests",
         timeout: err instanceof BootTimeoutError,
+        // raw-error-ok: telemetry payload only
         message: err instanceof Error ? err.message : String(err),
       });
       console.error("chat-sidebar: list_dm_requests failed", err);
@@ -2780,7 +2786,8 @@
       await onsignout();
       signOutConfirmOpen = false;
     } catch (error) {
-      signOutError = `Couldn’t sign out: ${String(error)}`;
+      console.warn("[chat-sidebar] sign out failed", error);
+      signOutError = "Couldn’t sign out. Try again.";
     } finally {
       signingOut = false;
     }
