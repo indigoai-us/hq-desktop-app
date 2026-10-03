@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { withReadDeadline } from "../common/read-deadline.js";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import RailButton from "../common/button/RailButton.svelte";
   import { dismissable } from "../common/dismissable.js";
@@ -114,7 +115,8 @@
   async function refresh(force: boolean): Promise<void> {
     if (secretsState === "error") secretsState = "loading";
     try {
-      const loaded = await companyStore.loadSecrets("personal", force);
+      // BLANK-1: a read that never answers falls to the failed-read state.
+      const loaded = await withReadDeadline(companyStore.loadSecrets("personal", force), "personal secrets");
       const secrets = personalSecretsFromSource(Array.isArray(loaded) ? loaded : []);
       data = { ...data, secrets };
       writePersonalRailCache("personal", data);
@@ -149,7 +151,7 @@
   async function refreshIntegrations(): Promise<void> {
     if (integrationsState === "error") integrationsState = "loading";
     try {
-      const next = await loadPersonalIntegrations(integrationsApi);
+      const next = await withReadDeadline(loadPersonalIntegrations(integrationsApi), "personal connections");
       integrations = next;
       writeIntegrationsCache(next);
       integrationsState = "ready";
