@@ -153,6 +153,30 @@ describe("New bot flow, agents.desktop-agent-creation on", () => {
     expect(first.quote).toEqual({ instanceType: "t3.medium", netMonthlyCents: 10000, catalogVersion: "catalog-7" });
   });
 
+  it("defaults the brain to Claude without the separate Claude flag, with Codex and Grok offered", async () => {
+    const onCloudCreate = vi.fn(async (_companyUid: string, _draft: Record<string, unknown>) => undefined);
+    render({
+      onCloudCreate,
+      agentTargets: COMPANIES,
+      directCloud: seam(true),
+      loadClaudeProviderFlag: async () => ok(false),
+    });
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    click('[data-testid="chat-bot-where-cloud"]');
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    expect(q<HTMLInputElement>('[data-testid="cloud-bot-runtime-claude"]')?.checked).toBe(true);
+    expect(q('[data-testid="cloud-bot-runtime-codex"]')).not.toBeNull();
+    expect(q('[data-testid="cloud-bot-runtime-grok"]')).not.toBeNull();
+    click('[data-testid="chat-bot-create"]');
+    await settle();
+    expect(onCloudCreate).toHaveBeenCalledTimes(1);
+    expect((onCloudCreate.mock.calls[0]![1] as { runtime?: string }).runtime).toBe("claude");
+  });
+
   it("a member without createAgents sees Cloud disabled with the admin to ask", async () => {
     render({
       onCloudCreate: vi.fn(),

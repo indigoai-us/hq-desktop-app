@@ -42,7 +42,9 @@
     botHandle,
     canAdvance,
     canCreate,
+    claudeAllowedForCloud,
     companyTemplates,
+    defaultCloudRuntime,
     firstBlockingStep,
     initialDraft,
     nextStep,
@@ -249,6 +251,7 @@
     ownerCompanies,
     templates,
     claudeProviderEnabled,
+    directCloudOn,
     cloudProvisionOptions,
     cloudQuoteStatus,
     hostNoun,
@@ -261,6 +264,8 @@
   let pickedAvatarSrc = $state<string | null>(null);
   /** The user answered "who is it for?" themselves; templates no longer pick for them. */
   let scopeAnswered = $state(false);
+  /** The user picked a brain themselves; the Cloud default no longer changes it. */
+  let runtimeAnswered = false;
 
   const busy = $derived(entryBusy !== null && entryBusy !== undefined);
   const steps = $derived(stepsFor(draft));
@@ -309,6 +314,13 @@
     };
   });
 
+  // The direct-create flag resolves after the draft is seeded: a Cloud bot the
+  // user has not picked a brain for moves to the Claude default then.
+  $effect(() => {
+    if (!directCloudOn || draft.home !== "cloud" || untrack(() => runtimeAnswered)) return;
+    if (draft.runtime !== "claude") draft = { ...draft, runtime: "claude" };
+  });
+
   // A company that cannot take a cloud bot is never the selected one while
   // another can.
   $effect(() => {
@@ -326,7 +338,7 @@
       .then((result) => {
         if (!active) return;
         claudeProviderEnabled = result.ok && result.value === true;
-        if (!claudeProviderEnabled && draft.home === "cloud" && draft.runtime === "claude") {
+        if (!claudeAllowedForCloud(ctx) && draft.home === "cloud" && draft.runtime === "claude") {
           draft = { ...draft, runtime: "codex" };
         }
         if (!result.ok && result.reason === "error") {
@@ -404,7 +416,10 @@
   function patch(p: Partial<CreateBotDraft>): void {
     if (busy) return;
     draft = { ...draft, ...p };
-    if (p.home === "cloud" && draft.runtime === "claude" && claudeProviderEnabled !== true) {
+    if (p.runtime !== undefined) runtimeAnswered = true;
+    if (p.home === "cloud" && !runtimeAnswered) {
+      draft = { ...draft, runtime: defaultCloudRuntime(ctx) };
+    } else if (p.home === "cloud" && draft.runtime === "claude" && !claudeAllowedForCloud(ctx)) {
       draft = { ...draft, runtime: "codex" };
     }
     if (p.scope !== undefined) scopeAnswered = true;
@@ -589,7 +604,7 @@
         <CloudDetailsStep
           {draft}
           companyLabel={cloudCompany?.label ?? "your company"}
-          claudeProviderEnabled={claudeProviderEnabled}
+          claudeProviderEnabled={claudeAllowedForCloud(ctx)}
           cloudProvisionOptions={cloudProvisionOptions}
           cloudQuoteStatus={cloudQuoteStatus}
           onretryquote={() => (quoteReloadToken += 1)}

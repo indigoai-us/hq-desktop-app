@@ -122,9 +122,18 @@ describe("initialDraft", () => {
 
   it("opens on Cloud when this Mac cannot host a bot", () => {
     expect(initialDraft(ctx({ canLocal: false })).home).toBe("cloud");
-    expect(initialDraft(ctx({ canLocal: false })).runtime).toBe("codex");
+    expect(initialDraft(ctx({ canLocal: false })).runtime).toBe("claude");
+    expect(initialDraft(ctx({ canLocal: false, claudeProviderEnabled: false })).runtime).toBe("codex");
     expect(firstReadyRuntime(null)).toBe("claude");
     expect(firstReadyRuntime({ claude: false, codex: false, grok: false })).toBe("claude");
+  });
+
+  it("starts a Cloud bot on Claude when agents.desktop-agent-creation is on, with no Claude flag", () => {
+    const on = ctx({ canLocal: false, claudeProviderEnabled: false, directCloudOn: true });
+    expect(initialDraft(on).runtime).toBe("claude");
+    expect(stepIssue("details", draft({ home: "cloud", runtime: "claude", name: "scout", handle: "scout" }, on), on)).not.toBe(
+      "Claude isn’t available for this account.",
+    );
   });
 });
 
