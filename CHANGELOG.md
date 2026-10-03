@@ -13,6 +13,7 @@ The release moves it under the version it ships in.
 ## [0.10.386] — 2026-10-03
 
 - "Restart to update" now works while a sync is running. Only a meeting recording, a transcript that is still saving, or an HQ Core update holds a restart you asked for, and the update card says which one. (This fix was listed under 0.10.379 by mistake; it ships in this release.)
+- Checking whether a desktop command is still registered, cancelled, or finished, and registering or removing one, still works after an internal error interrupts that bookkeeping.
 - Internal tests: two more desktop UI tests (message link color, touch quick-react) now render the conversation and reply panel and read the applied styles instead of searching their source text. Nothing changes in the app.
 - When company-name suggestions are enabled, new-company setup can prefill the name from a business email domain. The name remains editable.
 - Desktop setup still cancels an install and still records its failure after an internal error interrupts that bookkeeping.
