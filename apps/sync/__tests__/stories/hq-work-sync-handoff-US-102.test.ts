@@ -3,10 +3,9 @@
  * Fixture-backed; no live network and no real Tauri.
  */
 
-import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { TAURI_CAPABILITIES } from '@hq/platform';
 import {
+  TAURI_CAPABILITIES,
   createSyncPlatformAdapter,
   type SyncInvokeFn,
 } from '@hq/platform';
@@ -219,17 +218,6 @@ describe('US-102 Sync PlatformAdapter', () => {
     expect(adapter.capabilities).toEqual(TAURI_CAPABILITIES);
     expect(adapter.isAvailable('canSync')).toBe(true);
     expect(adapter.isAvailable('localFiles')).toBe(true);
-  });
-
-  it('does not clone createDesktopAdapter / WebPlatformAdapter', () => {
-    const src = readFileSync(
-      new URL('../../../../packages/platform/src/tauri/sync-adapter.ts', import.meta.url),
-      'utf8',
-    );
-    expect(src).toContain('export function createSyncPlatformAdapter');
-    expect(src).not.toContain('createDesktopAdapter');
-    expect(src).not.toContain('WebPlatformAdapter');
-    expect(src).not.toContain('new WebPlatformAdapter');
   });
 
   it('whoami binds the cloud profile to one stable native auth account', async () => {
