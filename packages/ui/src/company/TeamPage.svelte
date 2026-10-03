@@ -135,11 +135,18 @@
 
   // AUDIT-3: Try again on a failed read re-runs the load below.
   let readAttempt = $state(0);
+  // BLANK-3: with a saved team on screen, a refresh is quiet: "Refreshing…"
+  // while it runs, and a failed refresh keeps the saved team with a small
+  // "Couldn't refresh" line instead of replacing it with the failed state.
+  let refreshing = $state(false);
+  let refreshFailed = $state(false);
 
   $effect(() => {
     const key = slug;
     void readAttempt;
     const hit = readTeamCache(key);
+    refreshing = Boolean(hit);
+    refreshFailed = false;
     if (hit) {
       view = hit.view;
       invites = hit.invites;
@@ -171,7 +178,12 @@
           },
         });
         if (cancelled) return;
+        refreshing = false;
         if (read.error) {
+          if (hit) {
+            refreshFailed = true;
+            return;
+          }
           view = { ...emptyView, error: read.error };
           phase = "ready";
           return;
@@ -184,6 +196,11 @@
       } catch (err) {
         if (cancelled) return;
         console.warn("[team] read failed", err);
+        refreshing = false;
+        if (hit) {
+          refreshFailed = true;
+          return;
+        }
         view = { ...emptyView, error: "Could not read the team." };
         phase = "ready";
       }
@@ -293,6 +310,11 @@
       <i class="meta-dot dot" class:live={liveMembers > 0}></i>{liveMembers} live
     </span>
     <span class="meta-line" data-meta-line data-testid="team-seat-chip">{seatLine}</span>
+    {/if}
+    {#if refreshing}
+      <span class="meta-line" data-meta-line aria-live="polite" data-testid="team-refreshing">Refreshing…</span>
+    {:else if refreshFailed}
+      <button type="button" class="meta-line quiet-retry" data-meta-line data-testid="team-refresh-failed" onclick={() => (readAttempt += 1)}>Couldn't refresh · Try again</button>
     {/if}
     <RailButton icon="user-plus" type="button" data-testid="invite-teammate" onclick={() => (inviteOpen = true)}>
       Invite teammate
@@ -604,6 +626,8 @@
   }
   .icon:hover { background: var(--hover); color: var(--t1); }
   .meta-line { white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .quiet-retry { border: 0; background: none; padding: 0; color: inherit; font: inherit; cursor: pointer; }
+  .quiet-retry:hover { text-decoration: underline; }
   .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--t3); flex: none; }
   .dot.live { background: var(--ok); }
   .sech { margin: 20px 0 4px; padding: 0 8px; color: var(--t2); font-size: 13px; font-weight: 500; }
