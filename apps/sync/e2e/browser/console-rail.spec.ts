@@ -123,9 +123,16 @@ test.describe('console rail: full user path', () => {
     await page.getByTestId('rail-you').click();
     const menu = page.getByTestId('account-menu');
     await expect(menu).toBeVisible();
-    await expect(page.getByTestId('account-profile')).toBeFocused();
-    for (const id of ['account-profile', 'account-billing', 'account-settings', 'account-sign-out']) {
+    // OWNER-R21: the menu is the name block (opens Settings at Profile), one
+    // Settings entry and Sign out; Profile and Billing rows moved into the
+    // Settings list. Focus lands on the first item, the name block.
+    await expect(page.getByTestId('account-identity')).toBeFocused();
+    for (const id of ['account-identity', 'account-settings', 'account-sign-out']) {
       await expect(page.getByTestId(id)).toBeVisible();
+    }
+    await expect(menu.getByRole('menuitem')).toHaveCount(3);
+    for (const id of ['account-profile', 'account-billing']) {
+      await expect(page.getByTestId(id)).toHaveCount(0);
     }
     page.once('dialog', (dialog) => void dialog.accept());
     await page.getByTestId('account-sign-out').click();
