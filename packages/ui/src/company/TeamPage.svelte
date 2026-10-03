@@ -555,11 +555,12 @@
      clickable box. The ::after pad grows only the axes under 28 px, so the
      drawn size and layout stay as they are. Kept first so a later
      position rule (e.g. absolute) still wins. */
-  .tab, .icon, .row-main, .mi { position: relative; }
+  .tab, .icon, .row-main, .mi, .quiet-retry { position: relative; }
   .tab::after,
   .icon::after,
   .row-main::after,
-  .mi::after {
+  .mi::after,
+  .quiet-retry::after {
     content: "";
     position: absolute;
     inset: min(0px, calc(50% - 14px));
