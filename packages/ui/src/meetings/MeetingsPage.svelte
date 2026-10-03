@@ -25,6 +25,7 @@
   } from "./meetings-store.svelte";
   import type { MeetingsStorage } from "./meetings-cache";
   import LiveNowCard from "../common/LiveNowCard.svelte";
+  import { meetingsRailState } from "./meetings-rail-state.svelte";
   import {
     meetingDetectionNeedsSetup,
     missingMeetingPermissions,
@@ -827,8 +828,9 @@
       </section>
     {/if}
 
-    <!-- Native controls apply to desktop detections, not calendar recording bots. -->
-    {#if nativeLiveMeeting}
+    <!-- Native controls apply to desktop detections, not calendar recording bots.
+         Under the console-rail canvas host the host shows this card instead. -->
+    {#if nativeLiveMeeting && !meetingsRailState.hostOwnsLiveCard}
       <LiveNowCard
         meeting={nativeLiveMeeting}
         memberships={$recordingMemberships}

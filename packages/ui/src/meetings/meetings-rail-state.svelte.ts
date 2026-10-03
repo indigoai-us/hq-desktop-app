@@ -20,6 +20,9 @@ let localMeetings = $state<MeetingEvent[]>([]);
 let sheetLink = $state<string | null>(null);
 /** Pasted rooms attached to calendar events (US-042). In memory only. */
 let attachedLinks = $state<Map<string, string>>(new Map());
+/** Mounted canvas hosts. While one is mounted and agenda mode is off, the
+ *  host renders the desktop-detected live card; the hidden agenda must not. */
+let canvasHosts = $state(0);
 
 export const meetingsRailState = {
   get selectedId() {
@@ -36,6 +39,20 @@ export const meetingsRailState = {
   },
   get localMeetings() {
     return localMeetings;
+  },
+  /** True when the canvas host, not the agenda, owns the live card. */
+  get hostOwnsLiveCard() {
+    return canvasHosts > 0 && !agenda;
+  },
+  /** Register a mounted canvas host. Returns the unregister function. */
+  registerCanvasHost(): () => void {
+    canvasHosts += 1;
+    let done = false;
+    return () => {
+      if (done) return;
+      done = true;
+      canvasHosts -= 1;
+    };
   },
   select(id: string | null): void {
     selectedId = id;
