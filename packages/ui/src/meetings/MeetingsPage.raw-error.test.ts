@@ -70,6 +70,11 @@ function fakeAdapter(): PlatformAdapter {
     feedback: {
       submitBugReport: () => call("submitBugReport") as never,
     },
+    identity: {
+      whoami: () => Promise.resolve({ ok: true, value: { personUid: "prs_fixture", email: "" } }) as never,
+      hasFeature: () => Promise.resolve({ ok: true, value: false }) as never,
+      subscribeFeature: () => () => {},
+    },
   } as unknown as PlatformAdapter;
 }
 
