@@ -6,6 +6,7 @@ export interface PersonalMeetingTranscript {
   createdAt: string | null;
   botId?: string | null;
   recordingId?: string | null;
+  personUid?: string | null;
   sourceLabel: 'Personal · Local' | 'Desktop recording';
 }
 
@@ -18,11 +19,12 @@ export type PastMeetingRow<T extends ScheduledBotLike = ScheduledBotLike> =
       timestamp: number;
     };
 
-/** Keeps local personal transcripts out of Past meetings while the rollout flag is off. */
+/** Keeps personal transcripts and synced desktop recordings gated by the rollout flag. */
 export function buildPastMeetingRows<T extends ScheduledBotLike>(
   recordedBots: T[],
   transcripts: PersonalMeetingTranscript[],
   personalTranscriptsEnabled: boolean,
+  currentPersonUid: string | null = null,
 ): PastMeetingRow<T>[] {
   const botRows: PastMeetingRow<T>[] = recordedBots.map((bot) => ({
     kind: 'bot',
@@ -33,8 +35,14 @@ export function buildPastMeetingRows<T extends ScheduledBotLike>(
   if (!personalTranscriptsEnabled) return botRows;
 
   const botIds = new Set(recordedBots.map((bot) => bot.botId));
+  const signedInPersonUid = currentPersonUid?.trim() || null;
   const personalRows: PastMeetingRow<T>[] = transcripts
     .filter((transcript) => {
+      if (transcript.sourceLabel === 'Desktop recording') {
+        if (!signedInPersonUid || transcript.personUid?.trim() !== signedInPersonUid) {
+          return false;
+        }
+      }
       const identifiers = [transcript.botId, transcript.recordingId, transcript.sourceId];
       return !identifiers.some((identifier) => identifier && botIds.has(identifier));
     })
@@ -58,7 +66,9 @@ export function parsePersonalMeetingTranscript(
   path: string,
   text: string,
 ): PersonalMeetingTranscript | null {
-  const match = /^(?:personal|companies\/[a-z0-9_-]+)\/sources\/meetings\/([^/]+)\.md$/i.exec(path);
+  const match = /^(?:personal|companies\/[a-z0-9_-]+)\/sources\/meetings\/([^/]+)\.md$/i.exec(
+    path,
+  );
   if (!match) return null;
   const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text)?.[1];
   if (!frontmatter) return null;
@@ -94,6 +104,7 @@ export function parsePersonalMeetingTranscript(
       fields.get('recording_id') ||
       fields.get('recall_recording_id') ||
       (isDesktopSdk ? sourceId : null),
+    personUid: fields.get('person_uid') || null,
     sourceLabel: isDesktopSdk ? 'Desktop recording' : 'Personal · Local',
   };
 }

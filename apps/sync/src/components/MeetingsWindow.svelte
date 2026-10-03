@@ -192,6 +192,7 @@
   );
   let personalTranscripts = $state<ReturnType<typeof parsePersonalMeetingTranscript>[]>([]);
   let personalTranscriptsEnabled = $state(false);
+  let signedInPersonUid = $state<string | null>(null);
   let companyNamesByUid = $state<Map<string, string>>(
     new Map(cachedSnapshot?.companyNamesByUid ?? []),
   );
@@ -619,7 +620,17 @@
     personalTranscriptsEnabled = enabled;
     if (!enabled) {
       personalTranscripts = [];
+      signedInPersonUid = null;
       return;
+    }
+
+    try {
+      const identity = await invoke<{ personUid?: unknown }>('whoami');
+      signedInPersonUid =
+        typeof identity.personUid === 'string' ? identity.personUid.trim() || null : null;
+    } catch {
+      console.warn('Could not resolve the signed-in person for desktop meeting sources.');
+      signedInPersonUid = null;
     }
 
     const meetingDirectories = ['personal/sources/meetings'];
@@ -1473,6 +1484,7 @@
       recordedBots,
       personalTranscripts.filter((row) => row !== null),
       personalTranscriptsEnabled,
+      signedInPersonUid,
     ),
   );
 

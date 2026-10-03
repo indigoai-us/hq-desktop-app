@@ -72,6 +72,7 @@ describe('Past meetings rows', () => {
       createdAt: '2026-10-02T11:00:00.000Z',
       botId: null,
       recordingId: null,
+      personUid: null,
       sourceLabel: 'Personal · Local',
     });
   });
@@ -83,9 +84,10 @@ describe('Past meetings rows', () => {
       createdAt: '2026-10-02T11:00:00.000Z',
       botId: null,
       recordingId: 'sdk-recording-1',
+      personUid: 'prs_fixture',
       sourceLabel: 'Desktop recording',
     });
-    expect(buildPastMeetingRows([], [desktopSdkSource!], true)).toEqual([
+    expect(buildPastMeetingRows([], [desktopSdkSource!], true, 'prs_fixture')).toEqual([
       expect.objectContaining({ kind: 'personal', transcript: desktopSdkSource }),
     ]);
     expect(
@@ -93,6 +95,7 @@ describe('Past meetings rows', () => {
         [{ ...bot, botId: 'sdk-recording-1' }],
         [{ ...desktopSdkSource!, sourceId: 'source-alias' }],
         true,
+        'prs_fixture',
       ).map((row) => row.kind),
     ).toEqual(['bot']);
   });
@@ -101,5 +104,28 @@ describe('Past meetings rows', () => {
     expect(buildPastMeetingRows([bot], [desktopSdkSource!], false)).toEqual([
       expect.objectContaining({ kind: 'bot', bot }),
     ]);
+  });
+
+  it('shows only this person’s company desktop SDK sources and fails closed without identity', () => {
+    const colleagueSource = { ...desktopSdkSource!, personUid: 'prs_colleague' };
+    const rows = buildPastMeetingRows(
+      [],
+      [colleagueSource, desktopSdkSource!],
+      true,
+      'prs_fixture',
+    );
+
+    expect(rows).toEqual([
+      expect.objectContaining({ kind: 'personal', transcript: desktopSdkSource }),
+    ]);
+    expect(buildPastMeetingRows([], [desktopSdkSource!], true)).toEqual([]);
+    expect(
+      buildPastMeetingRows(
+        [],
+        [{ ...desktopSdkSource!, personUid: null }],
+        true,
+        'prs_fixture',
+      ),
+    ).toEqual([]);
   });
 });
