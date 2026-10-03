@@ -780,7 +780,7 @@ const handlers: Record<string, Handler> = {
   check_core_state: () => currentHarnessCoreState(),
   // Lazy HQ file tree (?view=desktop → company Knowledge tab / Files mode).
   // Serves a small knowledge subtree for any company so the inline
-  // CompanyKnowledgePanel (US-014) is drivable in the browser harness.
+  // company file tree is drivable in the browser harness.
   list_hq_dir: (args) => {
     const rel = String(args?.relPath ?? '');
     if (rel === '') {

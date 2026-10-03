@@ -45,6 +45,7 @@ function expectOpenPersistentSelection(
   baseSelector: string,
   selectedSelector: string,
   label: string,
+  selection: 'bottom-rule' | 'background' = 'bottom-rule',
 ): void {
   const base = rule(source, baseSelector);
   const selected = rule(source, selectedSelector);
@@ -58,12 +59,21 @@ function expectOpenPersistentSelection(
   );
 
   expect(selected, `${label} selected selector should exist`).not.toBe('');
-  expect(selected, `${label} selected row should not paint an opaque slab`).toContain(
-    'background: transparent',
-  );
-  expect(selected, `${label} selected row needs a neutral bottom rule`).toMatch(
-    /box-shadow:\s*inset\s+0\s+-1px\s+0\s+var\(--[^)]+\)/,
-  );
+  if (selection === 'background') {
+    // Console-rail lists mark selection with the neutral active-row highlight
+    // alone: no edge of any kind.
+    expect(selected, `${label} selected row uses the neutral row highlight`).toContain(
+      'background: var(--v4-active-row)',
+    );
+    expect(selected, `${label} selected row has no edge`).toContain('box-shadow: none');
+  } else {
+    expect(selected, `${label} selected row should not paint an opaque slab`).toContain(
+      'background: transparent',
+    );
+    expect(selected, `${label} selected row needs a neutral bottom rule`).toMatch(
+      /box-shadow:\s*inset\s+0\s+-1px\s+0\s+var\(--[^)]+\)/,
+    );
+  }
   expect(
     partialInsetSideRails(`.selected { ${selected} }`),
     `${label} selected row should not use a side rail`,
@@ -125,7 +135,7 @@ describe('DESKTOP-018: no colored edge rails', () => {
   });
 
   it('uses transparent neutral bottom rules for persistent row selection', () => {
-    for (const [path, baseSelector, selectedSelector, label] of [
+    for (const entry of [
       // The V4 sidebar went with the unreachable shell; the live primary
       // navigation is the chat sidebar.
       // The V4 sidebar this rule was written against went with the
@@ -148,6 +158,7 @@ describe('DESKTOP-018: no colored edge rails', () => {
         '.ft-row',
         '.ft-row.selected',
         'company file tree',
+        'background',
       ],
       [
         'components/NotificationRow.svelte',
@@ -166,6 +177,7 @@ describe('DESKTOP-018: no colored edge rails', () => {
         '.task-rail-row',
         '.task-rail-row.is-selected',
         'project task rail',
+        'background',
       ],
       [
         '../../../packages/ui/src/projects/CompanyGoalsPage.svelte',
@@ -186,11 +198,19 @@ describe('DESKTOP-018: no colored edge rails', () => {
         'operations navigation',
       ],
     ] as const) {
+      const [path, baseSelector, selectedSelector, label, selection] = entry as readonly [
+        string,
+        string,
+        string,
+        string,
+        ('bottom-rule' | 'background')?,
+      ];
       expectOpenPersistentSelection(
         readFileSync(join(SOURCE_ROOT, path), 'utf8'),
         baseSelector,
         selectedSelector,
         label,
+        selection,
       );
     }
 

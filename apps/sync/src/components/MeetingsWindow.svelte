@@ -2484,7 +2484,7 @@
     gap: 8px;
     min-height: 31px;
     padding: 4px 8px;
-    border-radius: 8px;
+    border-radius: 0;
   }
   .event-row:hover {
     background: var(--pop-hover);
