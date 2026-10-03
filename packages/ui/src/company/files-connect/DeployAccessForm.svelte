@@ -7,6 +7,7 @@
    * Styling follows the Messages sheet (docs/design-standard-console-rail.md).
    */
   import {
+    accessErrorCopy,
     ACCESS_MODES,
     MIN_PASSWORD,
     MODE_EXPLAINER,
@@ -57,7 +58,10 @@
   let saving = $state(false);
   let entry = $state("");
 
+  let attempt = $state(0);
+
   $effect(() => {
+    void attempt;
     const c = client;
     const id = appId;
     current = null;
@@ -76,7 +80,7 @@
         draft = draftFrom(state);
       })
       .catch((err: unknown) => {
-        if (live) loadError = err instanceof Error && err.message ? err.message : "Could not load access.";
+        if (live) loadError = accessErrorCopy(err, "load");
       });
     return () => {
       live = false;
@@ -129,7 +133,7 @@
       confirming = false;
       ondone?.(`Access for ${appName} saved: ${label}.`);
     } catch (err) {
-      saveError = err instanceof Error && err.message ? err.message : "Could not save access.";
+      saveError = accessErrorCopy(err, "save");
     } finally {
       saving = false;
     }
@@ -140,6 +144,7 @@
   <div class="fr"><span class="lb">Deployment</span><span>{appName}</span></div>
   {#if loadError}
     <p class="hint err" role="alert" data-testid="deploy-access-error">{loadError}</p>
+    {#if client}<div class="retry"><RailButton icon="refresh" data-testid="deploy-access-retry" onclick={() => (attempt += 1)}>Try again</RailButton></div>{/if}
   {:else if !current || !draft}
     <div class="skel" aria-busy="true" data-testid="deploy-access-loading">
       {#each [0, 1, 2] as row (row)}<span class="skel-row"><i class="skel-line" style:width="{70 - row * 12}%"></i></span>{/each}
@@ -241,6 +246,7 @@
   .fr.top { align-items: start; }
   .lb { color: var(--t3, var(--v4-text-3)); }
   .hint { margin: 0; padding: 10px 20px; color: var(--t3, var(--v4-text-3)); }
+  .retry { display: flex; }
   .hint.err { color: var(--red, var(--v4-error)); }
   .sf { display: flex; align-items: center; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--panel-border, var(--v4-hairline)); }
   .sf .hint { padding: 0; }

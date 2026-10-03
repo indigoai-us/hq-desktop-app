@@ -169,6 +169,9 @@ describe("QA-059 DeployAccessForm", () => {
       props: { appId: "app_1", appName: "x", scope: "indigo", request: request as never, onclose: () => {} },
     });
     await settle();
-    expect(q(target, "deploy-access-error")?.textContent).toContain("Admin or owner access required");
+    const text = q(target, "deploy-access-error")?.textContent ?? "";
+    expect(text).toContain("Only company admins and owners");
+    expect(text).not.toContain("Admin or owner access required");
+    expect(text).not.toMatch(/HTTP \d{3}/);
   });
 });

@@ -913,8 +913,9 @@
               <div class="actions">
                 <RailButton icon="external" disabled={!deployCurrent.url} onclick={() => openExternal?.(deployCurrent.url)}>Open</RailButton>
                 {#if deployActions}<RailButton icon="refresh" data-testid="redeploy" onclick={() => askRedeploy(deployCurrent)}>Redeploy</RailButton>{/if}
-                <RailButton icon="key" data-testid="deploy-access" onclick={openDeployAccess}>Access</RailButton>
+                {#if deployCurrent.appId}<RailButton icon="key" data-testid="deploy-access" onclick={openDeployAccess}>Access</RailButton>{/if}
               </div>
+              {#if !deployCurrent.appId}<p class="meta" data-testid="deploy-access-unmanaged">Access for this deployment is managed where it was deployed.</p>{/if}
             </div>
           {/if}
         </aside>
@@ -935,9 +936,9 @@
         <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M3.5 3.5l7 7M10.5 3.5l-7 7" /></svg>
       </button>
     </header>
-    {#if sheet === "deploy-access" && deployCurrent}
+    {#if sheet === "deploy-access" && deployCurrent?.appId}
       <DeployAccessForm
-        appId={deployCurrent.id}
+        appId={deployCurrent.appId}
         appName={deployCurrent.name}
         scope={slug}
         request={accessRequest}
