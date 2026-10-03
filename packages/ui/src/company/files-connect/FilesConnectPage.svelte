@@ -541,6 +541,12 @@
         : { name: file.name, dest: null, status: "skipped" as const, detail: "Skipped, name already in this folder" };
     });
     sheet = "upload-progress";
+    // Only these app-written sentences may reach the row; anything else is raw.
+    const UPLOAD_COPY = new Set([
+      "That folder is outside this company.",
+      "Could not prepare the upload.",
+      "The upload did not finish.",
+    ]);
     for (let index = 0; index < picked.length; index += 1) {
       const row = uploads[index];
       const file = picked[index];
@@ -551,18 +557,25 @@
         if (!key) throw new Error("That folder is outside this company.");
         const contentType = file.type || "application/octet-stream";
         const signed = await api.presignVaultPut(uid, key, contentType, await fileIntegrity(file));
-        if (!signed.ok) throw new Error(signed.message || "Could not prepare the upload.");
+        if (!signed.ok) {
+          // AUDIT-3c: the presign failure text is server text; log it, show app copy.
+          console.warn("[files] upload presign failed", signed.code, signed.message);
+          throw new Error("Could not prepare the upload.");
+        }
         const target = presignUrlFromResult(signed.value);
         if (!target) throw new Error("Could not prepare the upload.");
         const put = await putChatAttachmentDirect(target.url, target.headers, file);
         if (!put.ok) throw new Error("The upload did not finish.");
         uploads[index] = { ...row, status: "done", detail: "Uploaded. It appears here after the next sync." };
       } catch (err) {
-        console.error("vault upload failed:", err);
+        console.warn("[files] vault upload failed", err);
         uploads[index] = {
           ...row,
           status: "failed",
-          detail: err instanceof Error && err.message.endsWith(".") ? err.message : "Could not upload this file.",
+          detail:
+            err instanceof Error && UPLOAD_COPY.has(err.message)
+              ? err.message
+              : "Could not upload this file. Try again.",
         };
       }
     }
