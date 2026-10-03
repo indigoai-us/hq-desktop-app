@@ -8,6 +8,9 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 - Desktop setup invite telemetry now includes the company for each step outcome and the number of invitations sent. It does not include invitee details.
+- Background first-launch and sign-in telemetry flushes stay bound to the home
+  directory that scheduled them, so delayed sends cannot consume another
+  install's held rows.
 - Startup diagnostics now classify reason-suffixed refresh-rejection markers as desktop-origin markers.
 - Sign-in telemetry from a first sign-in is no longer dropped. Progress and failure rows sent before the app has a session are kept on this Mac (closed labels only, at most 20 rows, for 3 days) and sent once the user signs in, each with a stable key so a resend is stored once.
 - The welcome sign-in window now advances when you are already signed in, keeps
