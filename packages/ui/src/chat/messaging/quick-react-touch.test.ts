@@ -40,9 +40,16 @@ function hoverNoneBlocks(css: string): string[] {
   return blocks;
 }
 
+/**
+ * The class must run straight into its declaration block. A Svelte scope
+ * class (`.dm-quick-react.svelte-hash`) is part of that selector; a
+ * pseudo-class such as `:hover` is not, because touch input never reaches it.
+ */
 function touchRule(css: string, selector: string): string | undefined {
-  const needle = new RegExp(`\\.${selector}(?![\\w-])`);
-  return hoverNoneBlocks(css).find((block) => needle.test(block));
+  const ruleRe = new RegExp(
+    `(?:^|[{}])\\s*\\.${selector}(?![\\w-])(?:\\.[\\w-]+)*\\s*\\{`,
+  );
+  return hoverNoneBlocks(css).find((block) => ruleRe.test(block));
 }
 
 describe("conversation pane captures clicks on a transparent macOS window", () => {
