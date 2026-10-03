@@ -1,6 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { FlagClient, FlagSnapshot } from "@indigoai-us/hq-flags-client";
 import { TauriPlatformAdapter } from "./index.js";
 import { createSyncPlatformAdapter } from "./sync-adapter.js";
+import { PERSONAL_TRANSCRIPTS_FLAG } from "../flags.js";
 
 interface Invocation {
   cmd: string;
@@ -8,6 +10,24 @@ interface Invocation {
 }
 
 describe("TauriPlatformAdapter hasFeature", () => {
+  it("personal transcript flag fails closed when its registry is unavailable", async () => {
+    const calls: Invocation[] = [];
+    const adapter = new TauriPlatformAdapter({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args });
+        if (cmd === "hq_pro_fetch") return { status: 503, body: "down" };
+        if (cmd === "has_feature") return true;
+        throw new Error(`unexpected ${cmd}`);
+      },
+    });
+
+    await expect(adapter.identity.hasFeature(PERSONAL_TRANSCRIPTS_FLAG)).resolves.toEqual({
+      ok: true,
+      value: false,
+    });
+    expect(calls.map((call) => call.cmd)).toEqual(["hq_pro_fetch"]);
+  });
+
   it("Claude provider flag reads the signed-in user's registry value", async () => {
     const calls: Invocation[] = [];
     const adapter = new TauriPlatformAdapter({
@@ -85,6 +105,93 @@ describe("TauriPlatformAdapter hasFeature", () => {
 });
 
 describe("createSyncPlatformAdapter hasFeature", () => {
+  it("personal transcript flag reads true from the registry snapshot", async () => {
+    const calls: Invocation[] = [];
+    const adapter = createSyncPlatformAdapter({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args });
+        if (cmd === "hq_pro_fetch") {
+          return {
+            status: 200,
+            body: JSON.stringify({
+              version: 1,
+              flags: { [PERSONAL_TRANSCRIPTS_FLAG]: true },
+            }),
+          };
+        }
+        if (cmd === "has_feature") return true;
+        throw new Error(`unexpected ${cmd}`);
+      },
+    });
+
+    await expect(adapter.identity.hasFeature(PERSONAL_TRANSCRIPTS_FLAG)).resolves.toEqual({
+      ok: true,
+      value: true,
+    });
+    expect(calls.map((call) => call.cmd)).toEqual(["hq_pro_fetch"]);
+  });
+
+  it("personal transcript flag fails closed when absent or the registry errors", async () => {
+    const absent = createSyncPlatformAdapter({
+      invoke: async (cmd) => {
+        if (cmd === "hq_pro_fetch") {
+          return { status: 200, body: JSON.stringify({ version: 1, flags: {} }) };
+        }
+        if (cmd === "has_feature") return true;
+        throw new Error(`unexpected ${cmd}`);
+      },
+    });
+    await expect(absent.identity.hasFeature(PERSONAL_TRANSCRIPTS_FLAG)).resolves.toEqual({
+      ok: true,
+      value: false,
+    });
+
+    const unavailable = createSyncPlatformAdapter({
+      invoke: async (cmd) => {
+        if (cmd === "hq_pro_fetch") throw new Error("offline");
+        if (cmd === "has_feature") return true;
+        throw new Error(`unexpected ${cmd}`);
+      },
+    });
+    await expect(unavailable.identity.hasFeature(PERSONAL_TRANSCRIPTS_FLAG)).resolves.toEqual({
+      ok: true,
+      value: false,
+    });
+  });
+
+  it("personal transcript subscription emits the updated registry snapshot", async () => {
+    let snapshot: FlagSnapshot = {
+      version: 1,
+      flags: { [PERSONAL_TRANSCRIPTS_FLAG]: false },
+    };
+    const listeners = new Set<() => void>();
+    const client = {
+      ready: vi.fn(async () => {}),
+      snapshot: () => snapshot,
+      isEnabled: (key: string) => snapshot.flags[key] === true,
+      onSnapshotChange: (listener: () => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      refresh: async () => {},
+      close: () => {},
+      explain: () => ({ value: false, source: "fallback" }),
+    } as unknown as FlagClient;
+    const adapter = createSyncPlatformAdapter({
+      invoke: async () => undefined,
+      createFlagClient: () => client,
+    });
+    const seen: unknown[] = [];
+    const unsubscribe = adapter.identity.subscribeFeature?.(
+      PERSONAL_TRANSCRIPTS_FLAG,
+      (result) => seen.push(result),
+    );
+    snapshot = { version: 2, flags: { [PERSONAL_TRANSCRIPTS_FLAG]: true } };
+    for (const listener of listeners) listener();
+    await vi.waitFor(() => expect(seen).toEqual([{ ok: true, value: true }]));
+    unsubscribe?.();
+  });
+
   it("Claude provider flag fails closed when the registry is unavailable", async () => {
     const calls: Invocation[] = [];
     const adapter = createSyncPlatformAdapter({

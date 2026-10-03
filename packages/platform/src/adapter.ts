@@ -337,6 +337,13 @@ export interface SelectAgentAvatarResult {
 
 export interface IdentityApi {
   whoami(): AdapterPromise<WhoAmI>;
+  /** Native auth envelope; accountId is the Cognito subject used by local writers. */
+  getAuthSession?(): AdapterPromise<{
+    accountId: string | null;
+    generation: number;
+    status: string;
+    reason: string | null;
+  }>;
   isAdmin(): AdapterPromise<boolean>;
   hasFeature(flag: string): AdapterPromise<boolean>;
   /**
@@ -1058,6 +1065,8 @@ export interface VaultApi {
     targets: string[],
   ): AdapterPromise<VaultNoteLinks>;
   readNote(path: string): AdapterPromise<VaultNotePreview>;
+  /** Bounded frontmatter-only read for list surfaces that need note metadata. */
+  readFrontmatter(path: string): AdapterPromise<string>;
 }
 
 export interface FilesApi {
