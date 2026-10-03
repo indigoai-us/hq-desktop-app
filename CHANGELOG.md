@@ -9,6 +9,11 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - The main window no longer shows a stack of "New files are paused" notices, one per company, with other apps showing through behind them. A paused company now gets one small notice inside its own pane, personal pages show none, and Dismiss hides it for the rest of the session. The window stays solid at full opacity.
+- Setup now checks what you already have before it asks you to name a company. A paid company, or one you joined, is selected and the company step is skipped. A company you own shows "Use <name>" with "Create another" beside it. A pending invite shows "Join <company>" and never the create form; an invite sent to a different email offers to switch account, and an expired one says to ask the inviter to resend it. If your website sign-up made a company under another account, setup says which (masked email) and offers to switch before offering create.
+- A new company shows "Setting up your company…" until its cloud storage is ready, and only then sends invites and offers a plan. If a setup step fails, the screen names the step and "Try again" retries setup for the same company instead of creating a second one. A company left half set up by an earlier run resumes at that state.
+- Creating a company past the free plan's limit shows the upgrade prompt inline instead of an error.
+- When the first sync finds a company with no storage yet, setup shows "Finishing setup…" and finishes it instead of showing the raw error; "Try again" still works.
+- On first launch over an old HQ folder that is still signed in, the sign-in screen says which account is signed in and lets you continue or switch before anything is created.
 
 ## [0.10.382] — 2026-10-03
 
