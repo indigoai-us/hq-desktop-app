@@ -14,12 +14,14 @@ import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { setTheme } from '@tauri-apps/api/app';
 import { beforeSend } from "./sentry-before-send";
+import { sentryEnvironmentForVersion } from './lib/sentry-environment';
 import { installDesktopZoom } from './lib/desktopZoom';
 import { installAppearancePreferences } from './lib/appearancePreferences';
 import { signalUiBoot } from './lib/ui-hot';
 
 Sentry.init({
   dsn: import.meta.env.VITE_SENTRY_DSN,
+  environment: sentryEnvironmentForVersion(__APP_VERSION__),
   initialScope: { tags: { repo: "hq-sync-web" } },
   release: `hq-sync-web@${__APP_VERSION__}`,
   beforeSend,

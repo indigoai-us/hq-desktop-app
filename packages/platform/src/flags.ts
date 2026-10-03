@@ -77,6 +77,8 @@ export const FIRST_FOLDER_SYNC_STEP_FLAG =
   "desktop.first-folder-sync-step-v1";
 export const FIRST_LAUNCH_JOIN_KEY_FLAG =
   "desktop.first-launch-join-key-v1";
+export const COMPANY_ROUTE_LOOKUP_RETRY_FLAG =
+  "desktop.company-route-lookup-retry-v1";
 export const PERSONAL_WORKSPACE_BOARD_FLAG =
   "desktop.personal-workspace-board-v1";
 export const LOGIN_RECEIPT_DURABILITY_FLAG =
@@ -103,6 +105,7 @@ export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
   "agents.claude-provider": "agents.claude-provider",
   [FIRST_FOLDER_SYNC_STEP_FLAG]: FIRST_FOLDER_SYNC_STEP_FLAG,
   [FIRST_LAUNCH_JOIN_KEY_FLAG]: FIRST_LAUNCH_JOIN_KEY_FLAG,
+  [COMPANY_ROUTE_LOOKUP_RETRY_FLAG]: COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
   [PERSONAL_WORKSPACE_BOARD_FLAG]: PERSONAL_WORKSPACE_BOARD_FLAG,
   [LOGIN_RECEIPT_DURABILITY_FLAG]: LOGIN_RECEIPT_DURABILITY_FLAG,
   [POST_READY_ACTION_TELEMETRY_FLAG]: POST_READY_ACTION_TELEMETRY_FLAG,
