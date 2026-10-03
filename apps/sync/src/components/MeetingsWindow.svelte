@@ -622,31 +622,51 @@
       return;
     }
 
+    const meetingDirectories = ['personal/sources/meetings'];
     try {
-      const files = await invoke<Array<{ path: string; name: string; isDir: boolean }>>(
+      const companyDirectories = await invoke<Array<{ name: string; isDir: boolean }>>(
         'list_hq_dir',
-        { relPath: 'personal/sources/meetings' },
+        { relPath: 'companies' },
       );
-      const notes = await Promise.all(
-        files
-          .filter((file) => !file.isDir && file.name.toLowerCase().endsWith('.md'))
-          .map(async (file) => {
-            try {
-              const note = await invoke<{ text: string }>('read_vault_note', { path: file.path });
-              return parsePersonalMeetingTranscript(file.path, note.text);
-            } catch {
-              console.warn('Could not read a local personal meeting transcript.');
-              return null;
-            }
-          }),
-      );
-      personalTranscripts = notes.filter(
-        (note): note is NonNullable<typeof note> => note !== null,
+      meetingDirectories.push(
+        ...companyDirectories
+          .filter((entry) => entry.isDir)
+          .map((entry) => `companies/${entry.name}/sources/meetings`),
       );
     } catch {
-      console.warn('Could not list local personal meeting transcripts.');
-      personalTranscripts = [];
+      console.warn('Could not list synced company meeting sources.');
     }
+
+    const notes = await Promise.all(
+      meetingDirectories.map(async (relPath) => {
+        try {
+          const files = await invoke<Array<{ path: string; name: string; isDir: boolean }>>(
+            'list_hq_dir',
+            { relPath },
+          );
+          return Promise.all(
+            files
+              .filter((file) => !file.isDir && file.name.toLowerCase().endsWith('.md'))
+              .map(async (file) => {
+                try {
+                  const note = await invoke<{ text: string }>('read_vault_note', { path: file.path });
+                  return parsePersonalMeetingTranscript(file.path, note.text);
+                } catch {
+                  console.warn('Could not read a local meeting transcript.');
+                  return null;
+                }
+              }),
+          );
+        } catch {
+          // A personal or company vault may not have any meeting sources yet.
+          console.warn('Could not list a local meeting source directory.');
+          return [];
+        }
+      }),
+    );
+    personalTranscripts = notes.flat().filter(
+      (note): note is NonNullable<typeof note> => note !== null,
+    );
   }
 
   async function refresh() {
@@ -2198,7 +2218,7 @@
                     {row.transcript.title}
                   </span>
                 </div>
-                <span class="event-time">Personal · Local</span>
+                <span class="event-time">{row.transcript.sourceLabel}</span>
               </li>
             {/if}
           {/each}

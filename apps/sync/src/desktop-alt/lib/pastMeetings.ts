@@ -6,6 +6,7 @@ export interface PersonalMeetingTranscript {
   createdAt: string | null;
   botId?: string | null;
   recordingId?: string | null;
+  sourceLabel: 'Personal · Local' | 'Desktop recording';
 }
 
 export type PastMeetingRow<T extends ScheduledBotLike = ScheduledBotLike> =
@@ -52,12 +53,12 @@ function dateTimestamp(value: string | null | undefined): number {
   return Number.isNaN(timestamp) ? -Infinity : timestamp;
 }
 
-/** Parse the frontmatter written by the local personal transcript projector. */
+/** Parse local personal notes and synced hq-pro desktop SDK meeting sources. */
 export function parsePersonalMeetingTranscript(
   path: string,
   text: string,
 ): PersonalMeetingTranscript | null {
-  const match = /^personal\/sources\/meetings\/([^/]+)\.md$/i.exec(path);
+  const match = /^(?:personal|companies\/[a-z0-9_-]+)\/sources\/meetings\/([^/]+)\.md$/i.exec(path);
   if (!match) return null;
   const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text)?.[1];
   if (!frontmatter) return null;
@@ -76,18 +77,23 @@ export function parsePersonalMeetingTranscript(
     }
     fields.set(field[1], value);
   }
-  if (
-    fields.get('channel') !== 'meeting' ||
-    fields.get('visibility') !== 'personal' ||
-    fields.get('storage') !== 'local'
-  ) return null;
+  const isPersonalLocal =
+    fields.get('visibility') === 'personal' && fields.get('storage') === 'local';
+  const isDesktopSdk =
+    fields.get('meeting_platform') === 'desktop-sdk' &&
+    fields.get('capture_source') === 'hq-sync-desktop-sdk';
+  if (fields.get('channel') !== 'meeting' || (!isPersonalLocal && !isDesktopSdk)) return null;
   const sourceId = fields.get('source_id') || match[1];
   if (!sourceId) return null;
   return {
     sourceId,
     title: fields.get('title')?.trim() || 'Personal meeting',
     createdAt: fields.get('created_at') || fields.get('updated_at') || null,
-    botId: fields.get('bot_id') || null,
-    recordingId: fields.get('recording_id') || null,
+    botId: fields.get('bot_id') || fields.get('recall_bot_id') || null,
+    recordingId:
+      fields.get('recording_id') ||
+      fields.get('recall_recording_id') ||
+      (isDesktopSdk ? sourceId : null),
+    sourceLabel: isDesktopSdk ? 'Desktop recording' : 'Personal · Local',
   };
 }
