@@ -1,18 +1,13 @@
 <!--
   US-022 meetings states. Loaded only through meetings-states-lazy so the
-  recap, transcript, upcoming brief, empty canvas, and new-meeting sheet
+  recap, transcript, upcoming brief, and empty canvas
   stay out of the initial graph. First frame is the door skeleton.
 -->
 <script lang="ts">
-  import { dismissable } from "../common/dismissable.js";
-  import PeoplePicker from "../chat/PeoplePicker.svelte";
-  import type { PeoplePickerEntry } from "../chat/people-picker.js";
   import type { MeetingEvent, ScheduledBot } from "./meetings-model";
   import type { MeetingsRailSection } from "./meetings-rail-model";
   import { clockLabel, initialsOf, recapHeading } from "./meetings-rail-model";
   import {
-    draftToEvent,
-    emptyNewMeetingDraft,
     filterTranscript,
     joinAvailable,
     pastNotesState,
@@ -22,11 +17,8 @@
     transcriptTurns,
     venueLabel,
     whenChip,
-    type MeetingDurationMin,
-    type MeetingLinkKind,
-    type NewMeetingDraft,
   } from "./meeting-states-model";
-  import { eventStart, isPlausibleMeetingUrl } from "./meetings-model";
+  import { eventStart } from "./meetings-model";
   import { agendaItems, attendeeViews, locationLabel, meetingJoinUrl, organizerLabel } from "./meeting-details";
   import MeetingsToolbarControls from "./MeetingsToolbarControls.svelte";
   import { meetingsStore } from "./meetings-store.svelte";
@@ -41,18 +33,9 @@
     companyName?: string | null;
     sections?: readonly MeetingsRailSection[];
     now?: Date;
-    sheetOpen?: boolean;
-    people?: readonly PeoplePickerEntry[];
     openExternal?: (url: string) => void;
     oncopy?: (text: string) => void;
     onselect?: (id: string) => void;
-    oncreate?: (event: MeetingEvent) => void;
-    oncloseSheet?: () => void;
-    onopenSheet?: (link?: string) => void;
-    /** Link handed in by "New meeting with this link". */
-    sheetLink?: string | null;
-    /** Sheet only, over the live canvas. */
-    sheetOnly?: boolean;
     /** A recorded past meeting's saved notes are still loading. */
     notesLoading?: boolean;
     /** Saved notes past the first page, not read yet. */
@@ -73,16 +56,9 @@
     companyName = null,
     sections = [],
     now = new Date(),
-    sheetOpen = false,
-    people = [],
     openExternal,
     oncopy,
     onselect,
-    oncreate,
-    oncloseSheet,
-    onopenSheet,
-    sheetOnly = false,
-    sheetLink = null,
     notesLoading = false,
     notesRemaining = 0,
     notesLoadingMore = false,
@@ -110,9 +86,6 @@
   );
   let query = $state("");
   let jumped = $state<string | null>(null);
-  let draft = $state<NewMeetingDraft>(emptyNewMeetingDraft());
-  let pickerQuery = $state("");
-  let titleError = $state(false);
 
   const recap = $derived(event ? recapModel(event, bot) : null);
   // Past meetings show tabs only when real notes exist on the server.
@@ -140,7 +113,6 @@
   let firstRunLink = $state("");
   let firstRunJoining = $state(false);
   const firstRunProvider = $derived(detectMeetingProvider(firstRunLink.trim()));
-  const pastedProvider = $derived(detectMeetingProvider(draft.pastedUrl.trim()));
 
   async function joinFirstRun(): Promise<void> {
     if (!firstRunProvider || firstRunJoining) return;
@@ -153,33 +125,6 @@
     }
   }
 
-  function takePastedLink(text: string): boolean {
-    const link = text.trim();
-    if (!isPlausibleMeetingUrl(link)) return false;
-    draft.link = "paste";
-    draft.pastedUrl = link;
-    return true;
-  }
-
-  function onSheetPaste(e: ClipboardEvent): void {
-    const text = e.clipboardData?.getData("text") ?? "";
-    const target = e.target as HTMLElement | null;
-    // Only hijack pastes outside the title/agenda text, or into the link field.
-    if (target?.dataset?.field && target.dataset.field !== "link") return;
-    if (takePastedLink(text)) e.preventDefault();
-  }
-
-  let sheetSeeded: string | null = null;
-  $effect.pre(() => {
-    if (!sheetOpen) {
-      sheetSeeded = null;
-      return;
-    }
-    if (sheetLink && sheetLink !== sheetSeeded) {
-      sheetSeeded = sheetLink;
-      takePastedLink(sheetLink);
-    }
-  });
   const canJoin = $derived(event ? joinAvailable(event, now) : false);
   const today = $derived(sections.find((s) => s.id === "today")?.rows ?? []);
   const past = $derived(sections.find((s) => s.id === "past")?.rows ?? []);
@@ -196,41 +141,19 @@
     oncopy?.(recapPlainText(recap, event.summary?.trim() || "Meeting"));
   }
 
-  function setDuration(mins: MeetingDurationMin): void {
-    draft.durationMin = mins;
-  }
-
-  function setLink(kind: MeetingLinkKind): void {
-    draft.link = kind;
-  }
-
-  function create(): void {
-    const built = draftToEvent(draft, `local-${Date.now()}`);
-    if (!built) {
-      titleError = true;
-      return;
-    }
-    titleError = false;
-    oncreate?.(built);
-    draft = emptyNewMeetingDraft(now);
-  }
-
   $effect.pre(() => {
     tab = mode === "upcoming" ? "agenda" : "recap";
     query = "";
   });
 </script>
 
-<section class="canvas" class:overlay={sheetOnly} data-testid="meetings-states" data-mode={mode} aria-label={event?.summary || "Meetings"}>
-  {#if sheetOnly}
-    <!-- sheet rendered below -->
-  {:else if mode === "empty"}
+<section class="canvas" data-testid="meetings-states" data-mode={mode} aria-label={event?.summary || "Meetings"}>
+  {#if mode === "empty"}
     <div class="toolbar">
       <h1>Meetings</h1>
       {#if !calendarFailed}<span class="sub">Nothing live</span>{/if}
       <span class="grow"></span>
-      <MeetingsToolbarControls {openExternal} onnewWithLink={(link: string) => onopenSheet?.(link)} />
-      <button type="button" class="btn" data-testid="empty-new-meeting" onclick={() => onopenSheet?.()}>New meeting</button>
+      <MeetingsToolbarControls {openExternal} />
     </div>
     <div class="empty-body" data-testid="meetings-empty">
       {#if calendarFailed}
@@ -244,7 +167,7 @@
         <div class="next first-run" data-testid="meetings-no-calendar">
           <div class="kind">Get started</div>
           <h2>Connect your calendar to see meetings here</h2>
-          <div class="subline">HQ reads your events and their video links so it can brief you before a call, send a notetaker, and file the recap. Nothing is written to your calendar unless you create a meeting here.</div>
+          <div class="subline">HQ reads your events and their video links so it can brief you before a call, send a notetaker, and file the recap. HQ never writes to your calendar.</div>
           <div class="actions">
             <button type="button" class="btn primary" data-testid="no-calendar-connect-google" disabled={meetingsStore.connectPending} aria-busy={meetingsStore.connectPending} onclick={() => void connectGoogleCalendar(openExternal)}>{meetingsStore.connectPending ? "Finish in your browser…" : "Connect Google"}</button>
             <button type="button" class="btn" data-testid="no-calendar-connect-microsoft" disabled title="Microsoft calendar connect is not available yet">Connect Microsoft</button>
@@ -272,10 +195,7 @@
         <div class="next">
           <div class="kind">Next</div>
           <h2>Nothing scheduled</h2>
-          <div class="subline">Create a meeting to put one on today.</div>
-          <div class="actions">
-            <button type="button" class="btn primary" onclick={() => onopenSheet?.()}>New meeting</button>
-          </div>
+          <div class="subline">Meetings on your calendar show here.</div>
         </div>
       {/if}
       {#if later.length}
@@ -460,74 +380,11 @@
     </div>
   {/if}
 
-  {#if sheetOpen}
-    <div class="scrim" data-testid="new-meeting-scrim" onclick={() => oncloseSheet?.()} role="presentation"></div>
-    <div class="sheet" role="dialog" aria-label="New meeting" data-testid="new-meeting-sheet" tabindex="-1" use:dismissable={{ onclose: () => oncloseSheet?.() }} onpaste={onSheetPaste}>
-      <div class="sh-row">New meeting<span class="grow"></span><button type="button" class="icon-btn" aria-label="Close" onclick={() => oncloseSheet?.()}><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" aria-hidden="true"><path d="M3.5 3.5l7 7M10.5 3.5l-7 7" /></svg></button></div>
-      <div class="sb">
-        <label class="fr"><span class="lb">Title</span>
-          <input class="field" data-field="title" bind:value={draft.title} aria-invalid={titleError} placeholder="Meeting title" />
-        </label>
-        <div class="fr"><span class="lb">When</span>
-          <div class="inl">
-            <input class="field" type="date" bind:value={draft.date} aria-label="Date" />
-            <input class="field time" type="time" bind:value={draft.time} aria-label="Time" />
-            <div class="tabs" data-testid="duration-tabs">
-              {#each [30, 45, 60] as mins (mins)}
-                <button type="button" class="tab" aria-pressed={draft.durationMin === mins} onclick={() => setDuration(mins as MeetingDurationMin)}>{mins}</button>
-              {/each}
-            </div>
-          </div>
-        </div>
-        <div class="fr"><span class="lb">Attendees</span>
-          <PeoplePicker entries={people} selected={draft.attendeeIds} bind:query={pickerQuery} onToggle={(entry) => {
-            draft.attendeeIds = draft.attendeeIds.includes(entry.id)
-              ? draft.attendeeIds.filter((id) => id !== entry.id)
-              : [...draft.attendeeIds, entry.id];
-          }} />
-          <label class="inl tog-row">
-            <input type="checkbox" role="switch" bind:checked={draft.notetaker} /> Notetaker bot
-          </label>
-        </div>
-        <div class="fr"><span class="lb">Link</span>
-          <div>
-            <div class="tabs" data-testid="link-tabs">
-              {#each ["zoom", "meet", "paste", "none"] as kind (kind)}
-                <button type="button" class="tab" aria-pressed={draft.link === kind} onclick={() => setLink(kind as MeetingLinkKind)}>{kind === "zoom" ? "New Zoom" : kind === "meet" ? "New Meet" : kind === "paste" ? "Paste link" : "None"}</button>
-              {/each}
-            </div>
-            {#if draft.link === "paste"}
-              <div class="inl">
-                <input class="field" data-field="link" data-testid="sheet-paste-input" placeholder="Paste a Zoom, Meet, or Teams link" aria-label="Meeting link" bind:value={draft.pastedUrl} />
-                {#if draft.pastedUrl}<button type="button" class="btn" onclick={() => (draft.pastedUrl = "")}>Clear</button>{/if}
-              </div>
-              {#if pastedProvider}
-                <p class="muted" data-testid="sheet-paste-provider"><span class="chip">{PROVIDER_LABEL[pastedProvider]}</span> Detected from the link</p>
-              {/if}
-              <p class="muted">Uses this room as is. Zoom, Meet, and Teams links are recognized.</p>
-            {:else}
-              <p class="muted">{draft.link === "none" ? "No link is created." : `A ${draft.link === "zoom" ? "Zoom" : "Meet"} link is created when calendar save is connected.`}</p>
-            {/if}
-          </div>
-        </div>
-        <label class="fr"><span class="lb">Agenda</span>
-          <textarea class="field area" data-field="agenda" bind:value={draft.agenda} aria-label="Agenda" placeholder="1. …"></textarea>
-        </label>
-      </div>
-      <div class="sf">
-        <span class="hint">Saved on this Mac until calendar write ships.</span>
-        <button type="button" class="btn" onclick={() => oncloseSheet?.()}>Cancel</button>
-        <button type="button" class="btn primary" data-testid="create-meeting" onclick={create}>Create meeting</button>
-      </div>
-    </div>
-  {/if}
 </section>
 
 <style>
   .canvas { position: relative; display: flex; flex-direction: column; min-height: 0; height: 100%; color: var(--t1); font: 400 13px/1.45 var(--font-ui, var(--font-sans)); background: var(--v4-ground, var(--side-bg)); }
-  .canvas.overlay { position: absolute; inset: 0; height: auto; background: transparent; pointer-events: none; z-index: 3; }
-  .canvas.overlay .scrim, .canvas.overlay .sheet { pointer-events: auto; }
-  .toolbar, .sh-row, .sf, .inl, .actions, .att, .who { display: flex; align-items: center; gap: 8px; }
+  .toolbar, .actions, .att, .who { display: flex; align-items: center; gap: 8px; }
   .toolbar { height: 44px; padding: 0 16px; border-bottom: 1px solid var(--line); }
   .toolbar h1, .crumb b { margin: 0; font-size: var(--type-title, 20px); font-weight: 500; line-height: 1.25; }
   .crumb b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -542,8 +399,6 @@
   .btn.primary { border-color: transparent; background: var(--v4-primary-bg, var(--t1)); color: var(--v4-primary-fg, var(--side-bg)); }
   .btn:disabled { color: var(--t3); cursor: default; }
   .btn.primary:disabled { background: var(--btn-bg, var(--hover)); color: var(--t3); }
-  .icon-btn { display: inline-grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--t2); cursor: pointer; }
-  .icon-btn:hover { background: var(--hover); color: var(--t1); }
   .empty-body { padding: 28px 24px; overflow: auto; }
   .kind { font-size: 13px; font-weight: 500; color: var(--t2); margin: 0 0 4px; }
   /* One 20px title per page (the toolbar); the hero line is 13px like a Messages row title. */
@@ -596,17 +451,6 @@
   .sk-lines i { display: block; height: 10px; border-radius: 4px; background: var(--v4-control-bg, var(--hover)); }
   .sk-lines i:nth-child(2) { width: 70%; }
   .sk-lines i:nth-child(3) { width: 45%; }
-  .scrim { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.45); }
-  .sheet { position: absolute; left: 50%; top: 48px; transform: translateX(-50%); width: 480px; max-height: calc(100% - 72px); display: flex; flex-direction: column; background: var(--v4-popover, var(--side-bg)); border: 1px solid var(--panel-border, var(--line)); border-radius: 8px; z-index: 2; }
-  .sh-row, .sf { padding: 12px 20px; border-bottom: 1px solid var(--line); font-weight: 500; }
-  .sh-row { height: 52px; box-sizing: border-box; padding: 0 10px 0 20px; }
-  .sf { border-bottom: 0; border-top: 1px solid var(--line); font-weight: 400; }
-  .sb { overflow: auto; min-height: 0; }
-  .fr { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 12px; padding: 10px 20px; }
-  .lb { color: var(--t2); font-size: 13px; padding-top: 5px; }
-  .field.time { width: 108px; }
-  .field.area { height: auto; min-height: 60px; padding: 6px 8px; }
-  .tog-row { margin-top: 8px; font-size: 13px; }
   .att .meta { margin-left: auto; }
   .field.inline { margin: 0; flex: 1; max-width: 360px; }
   .next .actions { margin-top: 12px; }

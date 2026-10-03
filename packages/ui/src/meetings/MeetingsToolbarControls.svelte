@@ -12,11 +12,9 @@
 
   interface Props {
     openExternal?: OpenExternal;
-    /** "New meeting with this link" from the paste box. */
-    onnewWithLink?: (url: string) => void;
   }
 
-  let { openExternal, onnewWithLink }: Props = $props();
+  let { openExternal }: Props = $props();
 
   let open = $state<"calendar" | "paste" | null>(null);
   let Body = $state<Component<Record<string, unknown>> | null>(null);
@@ -93,7 +91,7 @@
     <div class="scrim" role="presentation" onclick={close}></div>
     <div class="pop" class:wide={open === "paste"} role="dialog" aria-label={open === "calendar" ? "Calendars" : "Meeting link"} data-testid={open === "calendar" ? "meetings-calendar-panel" : "meetings-paste-box"}>
       {#if Body}
-        <Body {openExternal} onclose={close} {onnewWithLink} />
+        <Body {openExternal} onclose={close} />
       {:else}
         <div class="sk" data-testid="meetings-toolbar-skeleton" aria-busy="true">
           <div class="bar"></div>

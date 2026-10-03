@@ -13,15 +13,14 @@
 
   interface Props {
     memory?: SidepaneScrollMemory;
-    onnewmeeting?: () => void;
   }
 
-  let { memory, onnewmeeting }: Props = $props();
+  let { memory }: Props = $props();
 
   // Recomputed when the snapshot changes; the minute clock lives in the store refresh.
   const events = $derived(
     withRecordedEvents(
-      [...meetingsRailState.localMeetings, ...meetingsStore.events],
+      meetingsStore.events,
       meetingsStore.recorded,
     ),
   );
@@ -51,6 +50,5 @@
   {memory}
   onselect={(id) => meetingsRailState.select(id)}
   onfilter={(next) => meetingsRailState.setFilter(next)}
-  onnewmeeting={() => (onnewmeeting ? onnewmeeting() : meetingsRailState.openSheet(true))}
   onearlier={() => meetingsRailState.showAgenda()}
 />

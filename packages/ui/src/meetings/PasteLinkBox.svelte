@@ -20,10 +20,9 @@
   interface Props {
     openExternal?: OpenExternal;
     onclose?: () => void;
-    onnewWithLink?: (url: string) => void;
   }
 
-  let { openExternal, onclose, onnewWithLink }: Props = $props();
+  let { openExternal, onclose }: Props = $props();
 
   let url = $state("");
   let attaching = $state(false);
@@ -32,7 +31,7 @@
 
   const trimmed = $derived(url.trim());
   const provider = $derived(detectMeetingProvider(trimmed));
-  const events = $derived([...meetingsRailState.localMeetings, ...meetingsStore.events]);
+  const events = $derived(meetingsStore.events);
   const match = $derived(provider ? matchUpcomingMeeting(trimmed, events, now) : null);
   const upcoming = $derived(upcomingMeetings(events, now));
   const ordered = $derived(match ? [match, ...upcoming.filter((e) => e.id !== match.id)] : upcoming);
@@ -59,10 +58,6 @@
     onclose?.();
   }
 
-  function newWithLink(): void {
-    onnewWithLink?.(trimmed);
-    onclose?.();
-  }
 </script>
 
 <div class="lbl">Meeting link</div>
@@ -98,7 +93,6 @@
     {:else}
       <p class="mm">No upcoming meetings.</p>
     {/each}
-    <button type="button" class="opt" data-testid="paste-link-new-meeting" onclick={newWithLink}><span class="tm">+</span><span class="tt">New meeting with this link</span></button>
   </div>
 {/if}
 

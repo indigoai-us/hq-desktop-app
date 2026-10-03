@@ -63,7 +63,7 @@ describe("US-021 Meetings sidepane and live canvas", () => {
     now,
   });
 
-  it("lists the live meeting under Live with filter and new-meeting controls", () => {
+  it("lists the live meeting under Live with the filter control", () => {
     const onselect = vi.fn();
     const el = render(MeetingsSidepane, {
       sections,
@@ -79,7 +79,6 @@ describe("US-021 Meetings sidepane and live canvas", () => {
     expect(liveRow.dataset.live).toBe("true");
     expect(liveRow.getAttribute("aria-current")).toBe("page");
     expect(el.querySelector('[aria-label="Filter"]')).not.toBeNull();
-    expect(el.querySelector('[aria-label="New meeting"]')).not.toBeNull();
     (el.querySelector('[data-row-id="pricing"]') as HTMLButtonElement).click();
     expect(onselect).toHaveBeenCalledWith("pricing");
   });
