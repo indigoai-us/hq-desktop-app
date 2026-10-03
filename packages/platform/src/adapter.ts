@@ -1018,6 +1018,12 @@ export interface CreatorProfileUpdate {
 export interface CompanyApi {
   getDeployments(slug: string): AdapterPromise<Json[]>;
   /**
+   * The company's connected apps from hq-pro `GET /v1/integrations/admin`:
+   * `{ companyUid, viewer, connections: [{ id, provider, status, scopes,
+   * createdByName, updatedAt, … }], audit }`. Desktop only.
+   */
+  listIntegrations?(companyUid: string): AdapterPromise<Json>;
+  /**
    * Raw hq-deploy `/api/apps` rows for one scope (company slug or
    * `personal`): `{ scope, callerSub, apps }`. Desktop only.
    */
@@ -1276,6 +1282,12 @@ export const AGENT_PATHS = {
     `/v1/telemetry/company?companyUid=${encodeURIComponent(companyUid)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
   myTelemetry: (from: string, to: string) =>
     `/v1/telemetry/me?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+} as const;
+
+/** One company's connected apps (hq-pro integrations-admin; any member may read). */
+export const COMPANY_INTEGRATION_PATHS = {
+  list: (companyUid: string) =>
+    `/v1/integrations/admin?companyUid=${encodeURIComponent(companyUid)}`,
 } as const;
 
 /** The caller's personal integrations, as read by the console's Personal Integrations page. */

@@ -1682,7 +1682,19 @@ This final paragraph verifies spacing after a thematic break.
       { name: 'Figma', description: 'Inspect product designs in Figma.', scope: 'package', tags: ['design'], invoke: '/figma' },
     ],
   }),
-  hq_pro_fetch: () => ({
+  hq_pro_fetch: (args) => String(args?.url ?? '').startsWith('/v1/integrations/admin') ? ({
+    status: 200,
+    // Company connected apps, shaped like hq-pro readAdminSurface.
+    body: JSON.stringify({
+      companyUid: 'cmp_preview',
+      viewer: { personUid: 'prs_preview', role: 'member', canManageGovernance: false, canManageIntegrations: false },
+      connections: [
+        { id: 'conn_slack', provider: 'slack', status: 'connected', scopes: ['channels:read', 'chat:write'], createdBy: 'prs_a', createdByName: 'Ada Park', createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-30T00:00:00Z' },
+        { id: 'conn_linear', provider: 'linear', status: 'needs-reauth', scopes: [], createdBy: 'prs_b', createdByName: 'Bo Chen', createdAt: '2026-09-02T00:00:00Z', updatedAt: '2026-09-29T00:00:00Z' },
+      ],
+      audit: [],
+    }),
+  }) : ({
     status: 200,
     body: JSON.stringify({ grouped: {
       companyWide: [{ skillUid: 'skl_signal', name: 'Capture signal', tags: ['knowledge', 'company'] }],

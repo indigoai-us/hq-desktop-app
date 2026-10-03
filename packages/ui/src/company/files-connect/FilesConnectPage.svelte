@@ -41,6 +41,7 @@
     isEmail,
     memberOptions,
     filterIntegrations,
+    companyIntegrationRows,
     filterSecrets,
     filterVault,
     readFilesConnectCache,
@@ -62,6 +63,7 @@
     type DeploySourceScan,
     type FilesConnectCache,
     type FilesConnectPageId,
+    type IntegrationRow,
     type MemberOption,
     type SecretRow,
   } from "./files-connect-model.js";
@@ -105,6 +107,10 @@
   let secrets = $state<SecretRow[] | null>(null);
   let deployments = $state<DeploymentRowModel[] | null>(null);
   let secretsError = $state<string | null>(null);
+  // Connected apps from hq-pro; null = not loaded yet. The catalog in
+  // data.integrations is only the list of apps that can be connected.
+  let connectedApps = $state<IntegrationRow[] | null>(null);
+  let integrationsError = $state<string | null>(null);
   let deploymentsError = $state<string | null>(null);
   let query = $state("");
   let vaultTab = $state<"all" | "new">("all");
@@ -135,6 +141,8 @@
     membersFor = "";
     secrets = cachedSecrets(s);
     deployments = cachedDeployments(s);
+    connectedApps = null;
+    integrationsError = null;
     let live = true;
     queueMicrotask(() => {
       if (live) void refresh(s, () => live);
@@ -146,7 +154,7 @@
 
   async function refresh(s: string, alive: () => boolean): Promise<void> {
     // BLANK-1: the two reads run side by side so each settles within the bound.
-    await Promise.all([refreshSecrets(s, alive), refreshDeployments(s, alive)]);
+    await Promise.all([refreshSecrets(s, alive), refreshDeployments(s, alive), refreshIntegrations(s, alive)]);
     writeFilesConnectCache(s, data);
   }
 
@@ -186,6 +194,30 @@
       if (!alive()) return;
       deploymentsError = "Could not load deployments.";
       deployments = deployments ?? [];
+    }
+  }
+
+  async function refreshIntegrations(s: string, alive: () => boolean): Promise<void> {
+    const list = adapter?.company?.listIntegrations;
+    // No cloud company (or no desktop read): nothing is connected in the cloud.
+    if (!list || !companyUid) {
+      if (!alive()) return;
+      connectedApps = [];
+      integrationsError = null;
+      return;
+    }
+    try {
+      const res = await withReadDeadline(list(companyUid), "company integrations");
+      if (!res.ok) throw new Error(res.message ?? res.reason);
+      const rows = companyIntegrationRows(res.value);
+      if (!alive()) return;
+      connectedApps = rows;
+      integrationsError = null;
+    } catch (err) {
+      console.error("integrations load failed:", err);
+      if (!alive() || slug !== s) return;
+      integrationsError = "Could not load connected apps.";
+      connectedApps = connectedApps ?? [];
     }
   }
 
@@ -339,10 +371,19 @@
     };
   });
 
-  const integrationRows = $derived(filterIntegrations(data.integrations, integrationTab, query));
+  const allIntegrations = $derived([
+    ...(connectedApps ?? []),
+    ...data.integrations.filter((row) => row.kind !== "connected"),
+  ]);
+  const integrationRows = $derived(filterIntegrations(allIntegrations, integrationTab, query));
+  // Only the Connected tab reads the server; Available is the local catalog.
+  const connectedLoading = $derived(integrationTab === "connected" && connectedApps === null);
+  const connectedFailed = $derived(
+    integrationTab === "connected" && !!integrationsError && (connectedApps?.length ?? 0) === 0,
+  );
   const secretRows = $derived(filterSecrets(secrets ?? [], secretTab, query));
   // Rows in the current Integrations tab before the search, for the no-match total.
-  const integrationTabTotal = $derived(filterIntegrations(data.integrations, integrationTab, "").length);
+  const integrationTabTotal = $derived(filterIntegrations(allIntegrations, integrationTab, "").length);
   const vaultPage = $derived(pageRows(vaultRows, vaultPages));
   const integrationPage = $derived(pageRows(integrationRows, integrationPages));
   const secretPage = $derived(pageRows(secretRows, secretPages));
@@ -783,7 +824,8 @@
   {:else if page === "integrations"}
     <header class="toolbar">
       <h1>Integrations</h1>
-      <span class="count" data-testid="integrations-count">{countLabel("Integrations", integrationRows.length)}</span>
+      <!-- No count while connected apps load, or beside a failed read with nothing loaded. -->
+      {#if !connectedLoading && !connectedFailed}<span class="count" data-testid="integrations-count">{countLabel("Integrations", integrationRows.length)}</span>{/if}
       <span class="grow"></span>
       <div class="fc-seg" role="tablist" aria-label="Integrations view">
         <button class="fc-seg-tab" role="tab" aria-selected={integrationTab === "connected"} onclick={() => (integrationTab = "connected")}>Connected</button>
@@ -794,7 +836,15 @@
       <RailButton icon="plug" variant="primary" data-testid="connect-app" onclick={() => (sheet = "connect")}>Connect app</RailButton>
     </header>
     <div class="split">
-      <div class="list">
+      <div class="list" data-testid="integrations-list">
+        {#if connectedLoading}
+          {@render skeletonRows()}
+        {:else if connectedFailed}
+          <div class="empty" role="alert" data-testid="integrations-empty">
+            <span class="empty-title">{integrationsError}</span>
+            <RailButton icon="refresh" data-testid="integrations-retry" onclick={retryRefresh}>Try again</RailButton>
+          </div>
+        {:else}
         {#each integrationPage.rows as row (row.id)}
           <button class="row" type="button" aria-current={row.id === integrationCurrent?.id} onclick={() => (selectedIntegration = row.id)}>
             <span class="mark" aria-hidden="true">{row.mark}</span>
@@ -821,9 +871,10 @@
         {#if integrationPage.remaining > 0}
           <ShowMoreRow shown={integrationPage.rows.length} total={integrationPage.total} next={integrationPage.next} noun="integrations" testid="integrations-show-more" onmore={() => (integrationPages += 1)} />
         {/if}
+        {/if}
       </div>
       <aside class="pane">
-        {#if integrationCurrent}
+        {#if integrationCurrent && !connectedLoading && !connectedFailed}
           <header class="pane-h"><span class="pane-kind">{integrationCurrent.kind === "mcp" ? "Agents & MCP" : integrationCurrent.kind === "available" ? "Available" : "Connected"}</span></header>
           <div class="pane-b">
             <h2>{integrationCurrent.name}</h2>

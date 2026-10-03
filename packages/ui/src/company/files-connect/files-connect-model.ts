@@ -426,6 +426,68 @@ export function emptyCompanyCache(): FilesConnectCache {
   };
 }
 
+const PROVIDER_NAMES: Record<string, string> = {
+  slack: "Slack",
+  "managed-slack": "Slack",
+  linear: "Linear",
+  gmail: "Gmail",
+  google: "Google",
+  notion: "Notion",
+  github: "GitHub",
+  quickbooks: "QuickBooks",
+  hubspot: "HubSpot",
+};
+
+function providerName(provider: string): string {
+  const known = PROVIDER_NAMES[provider.toLowerCase()];
+  if (known) return known;
+  return provider
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+function connectionStatus(status: unknown): IntegrationRow["status"] {
+  if (status === "connected") return "active";
+  if (status === "needs-reauth" || status === "needs-attention") return "needs-sign-in";
+  return "disconnected";
+}
+
+/**
+ * The company's connected apps from hq-pro `GET /v1/integrations/admin`
+ * (`{ connections: [{ id, provider, status, scopes, createdByName }] }`).
+ * Revoked connections are gone from the company, so they are left out. A body
+ * without a `connections` list is a failed read, not an empty company.
+ */
+export function companyIntegrationRows(body: unknown): IntegrationRow[] {
+  const list = (body as { connections?: unknown } | null)?.connections;
+  if (!Array.isArray(list)) throw new Error("integrations response has no connections list");
+  const rows: IntegrationRow[] = [];
+  for (const item of list) {
+    if (!item || typeof item !== "object") continue;
+    const c = item as Record<string, unknown>;
+    const id = typeof c.id === "string" ? c.id : "";
+    const provider = typeof c.provider === "string" ? c.provider.trim() : "";
+    if (!id || !provider || c.status === "revoked") continue;
+    const name = providerName(provider);
+    const owner = typeof c.createdByName === "string" ? c.createdByName.trim() : "";
+    const scopes = Array.isArray(c.scopes) ? c.scopes.filter((v): v is string => typeof v === "string") : [];
+    rows.push({
+      id,
+      name,
+      mark: name.replace(/[^A-Za-z0-9]/g, "").slice(0, 2).toUpperCase() || name.slice(0, 2),
+      detail: scopes.length ? scopes.join(", ") : owner ? `Connected by ${owner}` : "Connected",
+      status: connectionStatus(c.status),
+      owner,
+      audience: "",
+      synced: "",
+      kind: "connected",
+    });
+  }
+  return rows;
+}
+
 /** The connectable app catalog. Company-neutral: no workspace, owner or scope. */
 export function availableIntegrations(): IntegrationRow[] {
   return [

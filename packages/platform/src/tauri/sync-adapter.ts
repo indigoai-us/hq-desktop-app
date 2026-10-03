@@ -20,6 +20,7 @@ import {
   AGENT_PATHS,
   OUTPOST_PATHS,
   PERSONAL_INTEGRATION_PATHS,
+  COMPANY_INTEGRATION_PATHS,
   buildSendReplyRequest,
   failure,
   normalizeReplyThreadValue,
@@ -1135,6 +1136,8 @@ export function createSyncPlatformAdapter(
 
     company: {
       getDeployments: (slug) => call('get_company_deployments', { slug }),
+      listIntegrations: (companyUid) =>
+        hqProJson('GET', COMPANY_INTEGRATION_PATHS.list(companyUid)),
       listDeployApps: (scope) => call('list_deploy_apps', { scope }),
       deployAccessRequest: (scope, method, path, body) =>
         call('deploy_access_request', { scope, method, path, body: body ?? null }),
