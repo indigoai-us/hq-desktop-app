@@ -915,30 +915,15 @@ export function rowButtonLabel(kind: RowButtonKind, pending: boolean): string {
 }
 
 /**
- * Map a raw invoke rejection to friendly, recoverable copy. Tries to parse a
- * JSON `{ error | message }` payload first, then falls back to HTTP-status
+ * Map a raw invoke rejection to friendly, recoverable copy. Uses HTTP-status
  * heuristics (409 already-scheduled, 401 re-auth, 403 forbidden, 5xx server),
  * else the caller-supplied fallback. Mirrors the classic MeetingsWindow.
  */
 export function friendlyError(err: unknown, fallback: string): string {
   const raw = String(err ?? "").trim();
-  const jsonStart = raw.indexOf("{");
-  if (jsonStart >= 0) {
-    try {
-      const parsed = JSON.parse(raw.slice(jsonStart)) as {
-        error?: string;
-        message?: string;
-      };
-      if (typeof parsed.error === "string" && parsed.error.length > 0) {
-        return parsed.error;
-      }
-      if (typeof parsed.message === "string" && parsed.message.length > 0) {
-        return parsed.message;
-      }
-    } catch {
-      // Not JSON — fall through to HTTP-status heuristics below.
-    }
-  }
+  // The raw rejection (including any server JSON body) is logged, never
+  // shown: only the fixed copy below reaches the screen.
+  if (raw) console.warn("[meetings] request failed", raw);
   if (/\b409\b/.test(raw))
     return "A bot is already scheduled for this meeting.";
   if (/\b401\b/.test(raw)) return "You need to sign in again.";

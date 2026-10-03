@@ -515,7 +515,8 @@
     try {
       await openExternal("https://calendar.google.com");
     } catch (err) {
-      flashToast("warn", `Couldn't open Calendar: ${String(err)}`);
+      console.warn("[meetings] open Google Calendar failed", err);
+      flashToast("warn", "Couldn't open Calendar. Try again.");
     } finally {
       calendarOpening = false;
     }
@@ -529,7 +530,8 @@
     try {
       await openExternal(url);
     } catch (err) {
-      flashToast("warn", `Couldn't open the meeting: ${String(err)}`);
+      console.warn("[meetings] open meeting link failed", err);
+      flashToast("warn", "Couldn't open the meeting. Try again.");
     } finally {
       upNextJoining = false;
     }
@@ -547,7 +549,8 @@
           await openExternal(result.url);
         } catch (err) {
           meetingsStore.stopCalendarConnectWatch();
-          flashToast("warn", `Couldn't open the browser: ${String(err)}`);
+          console.warn("[meetings] open calendar connect URL failed", err);
+          flashToast("warn", "Couldn't open the browser. Try again.");
         }
       }
     } finally {
@@ -572,7 +575,8 @@
     try {
       await openExternal(HQ_CONSOLE_INTEGRATIONS_URL);
     } catch (err) {
-      flashToast("warn", `Couldn't open HQ Console: ${String(err)}`);
+      console.warn("[meetings] open HQ Console failed", err);
+      flashToast("warn", "Couldn't open HQ Console. Try again.");
     }
   }
 
