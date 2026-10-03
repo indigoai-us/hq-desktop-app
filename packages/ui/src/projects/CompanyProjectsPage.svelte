@@ -591,20 +591,23 @@
 
     void (async () => {
       try {
-        const [goals, allProjects] = await Promise.all([
-          // A goals read failure keeps the cached goals; it never blanks the board.
-          loadCompanyGoals(activeSlug).catch((err: unknown) => {
-            console.warn(`loadCompanyGoals(${activeSlug}) failed:`, err);
-            return null;
-          }),
-          loadLocalProjects(),
-        ]);
+        // A goals read failure keeps the cached goals; it never blanks the board.
+        const goalsRead = loadCompanyGoals(activeSlug).catch((err: unknown) => {
+          console.warn(`loadCompanyGoals(${activeSlug}) failed:`, err);
+          return null;
+        });
+        const allProjects = await loadLocalProjects();
         if (cancelled) return;
         const cachedGoals = readGoalsCache(goalsStorage, activeSlug);
-        objectives = goals
-          ? mergeGoalsWithCache(goals.objectives, cachedGoals)
-          : (cachedGoals?.objectives ?? []);
+        // BLANK-3: the board shows as soon as the projects answer; a slow goals
+        // read fills its links in afterwards instead of holding the board.
+        objectives = cachedGoals?.objectives ?? objectives;
         projects = allProjects;
+        loading = false;
+        void goalsRead.then((goals) => {
+          if (cancelled || !goals) return;
+          objectives = mergeGoalsWithCache(goals.objectives, readGoalsCache(goalsStorage, activeSlug));
+        });
         if (!companyChanged && selected) {
           const selectedIdentity = projectIdentity(selected);
           const refreshed =
