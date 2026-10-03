@@ -311,6 +311,9 @@
                 <div class="it"><span class="mk"></span><span>{item.title}</span><span class="own">{item.owner}</span><span class="chip">{item.status}</span></div>
               {/each}
             {/if}
+            {#if !recapFailed && notesRemaining === 0 && !recap.summary && !recap.decisions.length && !recap.actions.length && !recap.questions.length}
+              <p class="muted" data-testid="meeting-recap-none">There is no recap for this meeting yet.</p>
+            {/if}
             {#if notesRemaining > 0}
               <div class="more" data-testid="recap-more">
                 <span class="muted" data-testid="recap-more-count">{notesRemaining} more {notesRemaining === 1 ? "note" : "notes"}</span>

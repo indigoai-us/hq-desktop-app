@@ -61,13 +61,17 @@ export function parseRecordedMeetings(raw: unknown): RecordedMeeting[] {
     const meetingId = str(m.meetingId) ?? str(m.id);
     const startTime = validTime(m.startTime) ?? validTime(m.ingested_at) ?? validTime(m.createdAt);
     if (!meetingId || !startTime) continue;
-    const company = str(m.companyId);
+    // OWNER-R2: the cache stores parsed rows (`companyUid`, `durationSec`),
+    // not the wire fields. Reading only `companyId` dropped every cached
+    // meeting's company, so its detail was requested unscoped and hq-pro
+    // answered 404 meeting-not-found ("Couldn't load the notes").
+    const company = str(m.companyId) ?? str(m.companyUid);
     out.push({
       meetingId,
       title: str(m.title) ?? "Untitled meeting",
       startTime,
       endTime: validTime(m.endTime),
-      durationSec: num(m.duration),
+      durationSec: num(m.duration) ?? num(m.durationSec),
       companyUid: company && company !== "unknown" ? company : null,
       hasSignals: m.hasSignals === true,
     });

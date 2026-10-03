@@ -218,6 +218,8 @@ export interface RecordedNotesEntry {
   document?: RecordedDocument | null;
   /** Some saved notes could not be read; the recap shows Try again. */
   recapFailed?: boolean;
+  /** Company scope the detail was read with. */
+  companyUid?: string | null;
 }
 let recordedNotes = $state<Record<string, RecordedNotesEntry>>({});
 let membershipsError = $state("");
@@ -508,9 +510,12 @@ async function loadRecordedNotes(
 ): Promise<void> {
   const existing = recordedNotes[meetingId];
   // Try again refetches the detail, so every presigned link is fresh.
-  if (existing && !(opts.retry && (existing.status === "error" || existing.recapFailed))) return;
+  // A failed read under a different company scope (a row that only now
+  // knows its company) is read again.
+  const rescoped = existing?.status === "error" && (existing.companyUid ?? null) !== companyUid;
+  if (existing && !rescoped && !(opts.retry && (existing.status === "error" || existing.recapFailed))) return;
   const epoch = sessionEpoch;
-  recordedNotes = { ...recordedNotes, [meetingId]: { status: "loading" } };
+  recordedNotes = { ...recordedNotes, [meetingId]: { status: "loading", companyUid } };
   try {
     const detail = unwrap(await requireApi().meetings.getRecorded(meetingId, companyUid));
     const refs = parseRecordedDetail(detail);
@@ -522,11 +527,11 @@ async function loadRecordedNotes(
       docRef ? readSignalBody(docRef.url).then(parseRecordedDocument) : Promise.resolve(null),
     ]);
     if (epoch !== sessionEpoch) return;
-    recordedNotes = { ...recordedNotes, [meetingId]: { ...notesEntryFor(pages), document } };
+    recordedNotes = { ...recordedNotes, [meetingId]: { ...notesEntryFor(pages), document, companyUid } };
   } catch (err) {
     console.error(`meetings getRecorded failed for ${meetingId}:`, err);
     if (epoch !== sessionEpoch) return;
-    recordedNotes = { ...recordedNotes, [meetingId]: { status: "error" } };
+    recordedNotes = { ...recordedNotes, [meetingId]: { status: "error", companyUid } };
   }
 }
 
