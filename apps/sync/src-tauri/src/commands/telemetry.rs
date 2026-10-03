@@ -3291,6 +3291,8 @@ mod codex_telemetry_tests {
                 "requiredGitVersion",
                 "detectedGitVersion",
                 "found",
+                "companyUidMissing",
+                "invitesSent",
                 "existingCompanies",
                 "paidCompany",
                 "pendingInvites",
