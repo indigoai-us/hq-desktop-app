@@ -70,7 +70,7 @@ const seedRow: ChannelDirectoryRow = {
 
 const ROSTER_ERROR = "Couldn’t load conversations.";
 
-function stubApi(fail: boolean): ChatSidebarApi {
+function stubApi(fail: boolean, rosterGate?: Promise<void>): ChatSidebarApi {
   const cursor = "a".repeat(32);
   const feed = {
     snapshot: true,
@@ -80,10 +80,12 @@ function stubApi(fail: boolean): ChatSidebarApi {
   };
   return {
     fetchChannelDirectory: async () => {
+      await rosterGate;
       if (fail) throw new Error("directory down");
       return feed;
     },
     listContacts: async () => {
+      await rosterGate;
       if (fail) throw new Error("contacts down");
       return { contacts: [] };
     },
@@ -122,11 +124,12 @@ async function mountRail(opts: {
   onShellReady: () => void;
   seed?: ChannelDirectoryRow[];
   fail?: boolean;
+  rosterGate?: Promise<void>;
 }): Promise<void> {
   component = mount(ChatSidebar, {
     target: host,
     props: {
-      api: stubApi(opts.fail ?? false),
+      api: stubApi(opts.fail ?? false, opts.rosterGate),
       seedDirectory: opts.seed ?? null,
       tenantAccountId: "acct_shell_ready",
       tenantCompanyId: "all",
@@ -148,7 +151,14 @@ describe("ChatSidebar reports shell ready through shouldReportShellReady", () =>
 
   it("calls onShellReady for an empty roster after the first fetch settles", async () => {
     const onShellReady = vi.fn();
-    await mountRail({ onShellReady });
+    let releaseRoster!: () => void;
+    const rosterGate = new Promise<void>((resolve) => {
+      releaseRoster = resolve;
+    });
+    await mountRail({ onShellReady, rosterGate });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(onShellReady).not.toHaveBeenCalled();
+    releaseRoster();
     await vi.waitFor(() => expect(onShellReady).toHaveBeenCalledTimes(1));
     expect(host.textContent).not.toContain(ROSTER_ERROR);
   });

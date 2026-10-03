@@ -47,6 +47,15 @@ function blocks(css: string): string[] {
   return [...css.matchAll(/\.dm-quick-react[^{]*\{([^}]*)\}/g)].map((match) => match[1]);
 }
 
+// Rules outside the touch-only fallback, which shows the toolbar at all times.
+function desktopRules(css: string): { selector: string; body: string }[] {
+  const desktop = css.replace(/@media\s*\(hover:\s*none\)\s*\{(?:[^{}]*\{[^}]*\})*[^{}]*\}/g, "");
+  return [...desktop.matchAll(/([^{}]+)\{([^}]*)\}/g)].map((match) => ({
+    selector: match[1].trim(),
+    body: match[2],
+  }));
+}
+
 describe("quick-react toolbar keyboard reachability", () => {
   it("does not remove the resting toolbar from the tab order", async () => {
     const rest = blocks(await injected()).find(
@@ -57,14 +66,17 @@ describe("quick-react toolbar keyboard reachability", () => {
   });
 
   it("avoids the resting shadow raster with box-shadow instead", async () => {
-    const found = blocks(await injected());
-    const rest = found.find(
+    const css = await injected();
+    const rest = blocks(css).find(
       (body) => /opacity:\s*0/.test(body) && /box-shadow:\s*none/.test(body),
     );
-    const reveal = found.find(
-      (body) => /opacity:\s*1/.test(body) && /box-shadow:\s*var\(/.test(body),
+    const reveal = desktopRules(css).find(
+      ({ selector, body }) =>
+        /\.dm-msg[^,]*:focus-within[^,]*\.dm-quick-react/.test(selector) &&
+        /opacity:\s*1/.test(body) &&
+        /box-shadow:\s*var\(/.test(body),
     );
     expect(rest).toBeDefined();
-    expect(reveal, "hover or focus rule must restore the shadow").toBeDefined();
+    expect(reveal, "keyboard focus rule must reveal the toolbar and restore the shadow").toBeDefined();
   });
 });
