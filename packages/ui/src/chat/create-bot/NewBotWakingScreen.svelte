@@ -6,6 +6,9 @@
     recordWakingCheckFailure,
     recordWakingHello,
     recordWakingHelloAsked,
+    SIGN_IN_CONFIRM_LATE_MS,
+    SIGN_IN_CONFIRM_SLOW_MS,
+    signInConfirmMessage,
     WAKING_NUDGE_MS,
     WAKING_POLL_MS,
     wakingStatusLine,
@@ -127,15 +130,23 @@
 
   function confirmSignedIn(): void {
     if (!approval) return;
-    actionMessage = "Checking your sign-in.";
+    actionMessage = signInConfirmMessage(0, brainApprovalLabel(approval.provider));
     void nudge(true);
     if (signInCheckTimer) clearTimeout(signInCheckTimer);
-    signInCheckTimer = setTimeout(() => {
+    // The machine's next heartbeat carries the sign-in, up to a minute or two
+    // later: keep "checking" that long before asking the person to look again.
+    const slow = () => {
       signInCheckTimer = null;
-      if (session.approval) {
-        actionMessage = `We don't see it yet. Finish signing in on the ${brainApprovalLabel(session.approval.provider)} page, then check again.`;
-      }
-    }, 20_000);
+      if (!session.approval) return;
+      actionMessage = signInConfirmMessage(SIGN_IN_CONFIRM_SLOW_MS, brainApprovalLabel(session.approval.provider));
+      signInCheckTimer = setTimeout(() => {
+        signInCheckTimer = null;
+        if (session.approval) {
+          actionMessage = signInConfirmMessage(SIGN_IN_CONFIRM_LATE_MS, brainApprovalLabel(session.approval.provider));
+        }
+      }, SIGN_IN_CONFIRM_LATE_MS - SIGN_IN_CONFIRM_SLOW_MS);
+    };
+    signInCheckTimer = setTimeout(slow, SIGN_IN_CONFIRM_SLOW_MS);
   }
 
   async function copyCode(): Promise<void> {

@@ -38,6 +38,28 @@ export const WAKING_POLL_MS = 3_000;
  * the same, so a finished sign-in is noticed in seconds.
  */
 export const WAKING_NUDGE_MS = 12_000;
+
+/**
+ * After "I've signed in": the bot's machine reports the sign-in on its next
+ * heartbeat, up to a minute or two later. Until {@link SIGN_IN_CONFIRM_SLOW_MS}
+ * the screen says it is checking; after {@link SIGN_IN_CONFIRM_LATE_MS} it
+ * asks the person to make sure the sign-in finished. Saying "we don't see it"
+ * at twenty seconds read as a failure to a person who had just signed in
+ * (owner, 2026-10-03).
+ */
+export const SIGN_IN_CONFIRM_SLOW_MS = 20_000;
+export const SIGN_IN_CONFIRM_LATE_MS = 120_000;
+
+/** What the screen says `elapsedMs` after the person said they signed in. */
+export function signInConfirmMessage(elapsedMs: number, brainLabel: string): string {
+  if (elapsedMs >= SIGN_IN_CONFIRM_LATE_MS) {
+    return `We still don't see it. Make sure you finished on the ${brainLabel} page, then check again.`;
+  }
+  if (elapsedMs >= SIGN_IN_CONFIRM_SLOW_MS) {
+    return "Checking your sign-in. The bot's machine reports it within a minute or two.";
+  }
+  return "Checking your sign-in.";
+}
 export const WAKING_RECONNECT_AFTER_FAILURES = 3;
 
 export type WakingPhase = "waking" | "ready" | "failed";

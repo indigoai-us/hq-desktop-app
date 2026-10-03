@@ -8,6 +8,9 @@ import {
   recordWakingHello,
   recordWakingHelloAsked,
   resumeWakingSession,
+  SIGN_IN_CONFIRM_LATE_MS,
+  SIGN_IN_CONFIRM_SLOW_MS,
+  signInConfirmMessage,
   US001_MEDIAN_WAKING_ESTIMATE_MS,
   WAKING_ESTIMATE_MS,
   wakingStatusLine,
@@ -72,6 +75,21 @@ describe("waking model", () => {
       pairing: CODEX_PAIRING,
     };
     expect(applyWakingStatus(asked, notYet, STARTED + 200_000).signedInAt ?? null).toBeNull();
+  });
+
+  it("keeps saying it is checking for two minutes after 'I've signed in' before asking the person to look again", () => {
+    // Live (owner, 2026-10-03, "Big Nuts"): the machine reports the sign-in
+    // on its next heartbeat, 60 to 90 seconds later; "We don't see it yet" at
+    // twenty seconds read as a failure.
+    expect(signInConfirmMessage(0, "Codex")).toBe("Checking your sign-in.");
+    expect(signInConfirmMessage(SIGN_IN_CONFIRM_SLOW_MS, "Codex")).toBe(
+      "Checking your sign-in. The bot's machine reports it within a minute or two.",
+    );
+    expect(signInConfirmMessage(SIGN_IN_CONFIRM_LATE_MS - 1, "Codex")).toMatch(/^Checking your sign-in\./);
+    expect(signInConfirmMessage(SIGN_IN_CONFIRM_LATE_MS, "Codex")).toBe(
+      "We still don't see it. Make sure you finished on the Codex page, then check again.",
+    );
+    expect(SIGN_IN_CONFIRM_LATE_MS).toBeGreaterThanOrEqual(90_000);
   });
 
   it("says the sign-in worked and starts a fresh estimate for the rest", () => {
