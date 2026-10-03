@@ -292,8 +292,10 @@ function chord(target: EventTarget, key: string, code: string): KeyboardEvent {
 }
 
 describe("DesktopApp: the Slack card opens the Connect Slack modal", () => {
-  it("opens the modal from Connect Slack, on the intro, and asks the server for nothing new", async () => {
+  it("opens the modal from Connect Slack straight into the steps, and sets the bot up in Slack once", async () => {
     const w = world();
+    let finish: (value: unknown) => void = () => {};
+    w.attachSlack.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)));
     await mountNewBotDm(w);
     expect(primary("slack").textContent?.trim()).toBe("Connect Slack");
     expect(primary("slack").getAttribute("aria-haspopup")).toBe("dialog");
@@ -302,13 +304,21 @@ describe("DesktopApp: the Slack card opens the Connect Slack modal", () => {
     expect(dialog()!.dataset.icon).toBe("slack");
     const cardArt = card("slack").querySelector<HTMLElement>(".connection-card-art")!.style.backgroundImage;
     expect(dialog()!.querySelector<HTMLElement>(".card-modal-art")!.style.backgroundImage).toBe(cardArt);
-    expect(stage()).toBe("intro");
-    expect(dialog()!.textContent).toContain("You approve Nova in your Slack workspace.");
-    // Opening is not starting: no Slack app is made, no page opens, the card does not move.
-    expect(w.attachSlack).not.toHaveBeenCalled();
+    // No first screen: step 1 is current with its spinner, and the press on the card was the intent.
+    expect(stage()).toBe("approve");
+    expect(inModal("slack-connect-intro")).toBeNull();
+    expect(inModal("slack-connect-start")).toBeNull();
+    expect(steps()).toEqual(["current:Approve Nova in Slack", "todo:Create a token for Nova", "todo:HQ finishes the setup"]);
+    expect(inModal("slack-connect-starting")).not.toBeNull();
+    expect(w.attachSlack).toHaveBeenCalledTimes(1);
+    expect(w.attachSlack).toHaveBeenCalledWith(NOVA);
+    // Nothing opens by itself, and the card does not move until the server answers.
     expect(w.openUrl).not.toHaveBeenCalled();
     expect(card("slack").dataset.state).toBe("offered");
     expect(hiddenNotices(w)).toHaveLength(0);
+    finish(ok({ config: PENDING_INSTALL, followUpUrl: INSTALL }));
+    await vi.waitFor(() => expect(inModal("slack-connect-open-slack")).not.toBeNull());
+    expect(w.attachSlack).toHaveBeenCalledTimes(1);
   });
 
   it("runs the whole flow: approve, token, connected card, one notice to the bot, and no token left anywhere", async () => {
@@ -317,8 +327,7 @@ describe("DesktopApp: the Slack card opens the Connect Slack modal", () => {
     await mountNewBotDm(w);
     await openModal();
 
-    // Start: the one press that sets the bot up in Slack.
-    inModal<HTMLButtonElement>("slack-connect-start")!.click();
+    // Opening the modal sets the bot up in Slack.
     await vi.waitFor(() => expect(stage()).toBe("approve"));
     expect(w.attachSlack).toHaveBeenCalledTimes(1);
     expect(w.attachSlack).toHaveBeenCalledWith(NOVA);
@@ -397,9 +406,8 @@ describe("DesktopApp: the Slack card opens the Connect Slack modal", () => {
     });
     await mountNewBotDm(w);
     await openModal();
-    inModal<HTMLButtonElement>("slack-connect-start")!.click();
-    await vi.waitFor(() => expect(stage()).toBe("approve"));
-    expect(steps()).toEqual(["current:Approve Nova in Slack", "todo:HQ finishes the setup"]);
+    await vi.waitFor(() => expect(steps()).toEqual(["current:Approve Nova in Slack", "todo:HQ finishes the setup"]));
+    expect(stage()).toBe("approve");
     inModal<HTMLButtonElement>("slack-connect-open-slack")!.click();
     expect(w.openUrl).toHaveBeenCalledWith(INSTALL);
 
@@ -424,17 +432,18 @@ describe("DesktopApp: the Slack card opens the Connect Slack modal", () => {
     const w = world();
     await mountNewBotDm(w);
     await openModal();
-    inModal<HTMLButtonElement>("slack-connect-start")!.click();
-    await vi.waitFor(() => expect(stage()).toBe("approve"));
+    await vi.waitFor(() => expect(inModal("slack-connect-open-slack")).not.toBeNull());
+    expect(stage()).toBe("approve");
     await closeModal();
     expect(card("slack").dataset.state).toBe("connecting");
     expect(primary("slack").textContent?.trim()).toBe("Continue");
 
-    // Opened again from Continue: the approve step, straight from the status.
+    // Opened again from Continue: the approve step, straight from the status, with no second setup.
     await openModal();
     expect(stage()).toBe("approve");
-    expect(inModal("slack-connect-start")).toBeNull();
+    expect(inModal("slack-connect-starting")).toBeNull();
     expect(inModal("slack-connect-open-slack")).not.toBeNull();
+    expect(w.attachSlack).toHaveBeenCalledTimes(1);
     await closeModal();
 
     // Approved while the modal was closed: the card keeps asking and moves on.
@@ -478,20 +487,25 @@ describe("DesktopApp: the Slack card opens the Connect Slack modal", () => {
     expectTokenNowhere(w);
   });
 
-  it("keeps asking the server while the modal is open, before anything was started", async () => {
+  it("keeps asking the server while the modal is open, and never sets Slack up over a setup that exists", async () => {
     const w = world();
-    await mountNewBotDm(w);
-    await openModal();
-    expect(stage()).toBe("intro");
-    expect(card("slack").dataset.state).toBe("offered");
-    // Someone set Slack up on the web in the meantime.
+    // Someone set Slack up on the web before the modal opened.
     w.slack = { ...PENDING_INSTALL };
     w.capability = "pending-install";
+    await mountNewBotDm(w);
+    expect(card("slack").dataset.state).toBe("connecting");
+    await openModal();
+    expect(stage()).toBe("approve");
+    expect(inModal("slack-connect-starting")).toBeNull();
+    expect(inModal("slack-connect-open-slack")).not.toBeNull();
     const asked = w.getStatus.mock.calls.length;
     await refocus();
     expect(w.getStatus.mock.calls.length).toBeGreaterThan(asked);
-    await vi.waitFor(() => expect(stage()).toBe("approve"));
-    expect(inModal("slack-connect-start")).toBeNull();
+    // Approved in the meantime: the open modal moves on by itself.
+    w.slack = { ...INSTALLED };
+    w.capability = "socket-mode-degraded";
+    await refocus();
+    await vi.waitFor(() => expect(stage()).toBe("token"));
     expect(w.attachSlack).not.toHaveBeenCalled();
   });
 
@@ -500,7 +514,6 @@ describe("DesktopApp: the Slack card opens the Connect Slack modal", () => {
     w.attachSlack.mockResolvedValue({ ok: false, reason: "error", code: "http-404", message: "Not found", status: 404 });
     await mountNewBotDm(w);
     await openModal();
-    inModal<HTMLButtonElement>("slack-connect-start")!.click();
     await vi.waitFor(() => expect(stage()).toBe("blocked"));
     expect(dialog()!.textContent).toContain("Only a company owner or admin can connect a bot to Slack.");
     expect(inModal("slack-connect-start")).toBeNull();
@@ -534,7 +547,6 @@ describe("DesktopApp: the Slack card opens the Connect Slack modal", () => {
     w.attachSlack.mockResolvedValue({ ok: false, reason: "error", code: "FACTORY_ROOT_MISSING", message: "x", status: 400 });
     await mountNewBotDm(w);
     await openModal();
-    inModal<HTMLButtonElement>("slack-connect-start")!.click();
     await vi.waitFor(() => expect(stage()).toBe("blocked"));
     expect(dialog()!.textContent).toContain("Your company's Slack is not connected to HQ yet.");
     inModal<HTMLButtonElement>("slack-connect-blocked-action")!.click();
@@ -551,7 +563,6 @@ describe("DesktopApp: the Slack card opens the Connect Slack modal", () => {
       w.attachSlack.mockResolvedValue({ ok: false, reason: "error", code: "SLACK_PASTE_REQUIRED", message: "x", status: 409 });
       await mountNewBotDm(w);
       await openModal();
-      inModal<HTMLButtonElement>("slack-connect-start")!.click();
       await vi.waitFor(() => expect(stage()).toBe("blocked"));
       expect(inModal("slack-connect-blocked-action")!.textContent?.trim()).toBe("Open Slack setup");
       inModal<HTMLButtonElement>("slack-connect-blocked-action")!.click();
@@ -571,8 +582,7 @@ describe("DesktopApp: the Slack card while a setup is not finished", () => {
     const w = world();
     await mountNewBotDm(w);
     await openModal();
-    inModal<HTMLButtonElement>("slack-connect-start")!.click();
-    await vi.waitFor(() => expect(stage()).toBe("approve"));
+    await vi.waitFor(() => expect(inModal("slack-connect-open-slack")).not.toBeNull());
     await closeModal();
     expect(card("slack").dataset.state).toBe("connecting");
 

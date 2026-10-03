@@ -4,11 +4,14 @@
  * It turns what the server says about the bot's Slack, plus what the modal
  * has done so far, into the step the person is on. No Svelte, no network.
  *
- * THE FLOW. The person presses Start, which asks the server to set the bot up
- * in Slack (this creates a real Slack app, so it happens only on that press).
- * The person approves the bot in Slack. For most bots Slack then needs one
- * token that only a person can make on Slack's site; the server says when it
- * wants it. Then the bot's computer connects, which takes a minute or two.
+ * THE FLOW. Pressing Connect Slack on the card opens the modal, and that
+ * press is the intent: the modal asks the server at once to set the bot up
+ * in Slack (this creates a real Slack app, so it is asked once per bot). The
+ * person approves the bot in Slack. For most bots Slack then needs one token
+ * that only a person can make on Slack's site; the server says when it wants
+ * it. Then the server finishes the setup on the bot's computer, which takes
+ * a minute or two, or longer when the bot is still downloading the company's
+ * files.
  *
  * WHAT IS TRUE comes from the server every time: the bot's status answer.
  * "Connected" is the same test the Slack card uses (`slackFactsFromStatus`),
@@ -17,6 +20,7 @@
  * Every sentence a person reads in the flow is in this file.
  */
 
+import { advanceBotSync, botSyncView, observeBotSync } from "../bot-sync-model.js";
 import type { CardModalStepState, CardModalSteps } from "./card-modal.js";
 import { slackFactsFromStatus } from "./connection-card-model.js";
 import {
@@ -25,10 +29,12 @@ import {
   slackRowFromAttach,
   slackRowFromStatus,
   slackRowStage,
+  slackSetupWaitWithSync,
   type SlackRow,
+  type SlackSetupWait,
 } from "./slack-status.js";
 
-export type SlackConnectStage = "intro" | "approve" | "token" | "finishing" | "connected" | "blocked";
+export type SlackConnectStage = "approve" | "token" | "finishing" | "connected" | "blocked";
 
 /** Why the modal cannot move the connection forward by itself. */
 export type SlackBlockedReason = "not-admin" | "company-not-connected" | "own-app" | "config-dead" | "app-switch";
@@ -66,10 +72,12 @@ export const SLACK_TOKEN_REJECTED_SENTENCE =
   "Slack did not accept that token. Check that it starts with xapp- and has the connections:write scope.";
 export const SLACK_TOKEN_RETRY_SENTENCE = "Could not check the token with Slack. Try again.";
 export const SLACK_TOKEN_SHAPE_SENTENCE = "That does not look like the right token. It starts with xapp-.";
-export const SLACK_APPROVE_DETAIL = "Slack opens in your browser. Come back here when you have approved.";
+export const SLACK_APPROVE_DETAIL = "Slack opens in your browser. Click Allow, then come back here.";
 export const SLACK_APPROVE_NO_LINK_DETAIL = "Waiting for the link from Slack. This screen updates by itself.";
 export const SLACK_TOKEN_CHECKING = "Checking the token with Slack.";
 export const SLACK_STARTING = "Setting things up in Slack.";
+/** The last step while the setup's audit has stopped on something other than the file sync. */
+export const SLACK_AUDIT_WAIT_SENTENCE = "HQ is finishing the setup on the bot's machine. This can take a few minutes.";
 /** The one thing a person types on Slack's page. The modal offers it with a Copy button. */
 export const SLACK_TOKEN_SCOPE = "connections:write";
 /** How long the Copy button says "Copied" (ms). */
@@ -81,17 +89,6 @@ function botOf(botName: string | null | undefined): string {
 
 export function slackConnectTitle(botName: string): string {
   return `Connect ${botOf(botName)} to Slack`;
-}
-
-/** What will happen, said before anything is created. */
-export function slackIntroLines(botName: string): string[] {
-  const bot = botOf(botName);
-  return [`You approve ${bot} in your Slack workspace.`, `Then ${bot} can read and answer messages there.`];
-}
-
-/** `approve`: what the person will see once Slack opens. */
-export function slackApproveWhatSentence(botName: string): string {
-  return `Slack asks you to allow ${botOf(botName)} in your workspace. Click Allow.`;
 }
 
 /** `token`: why there is a token step at all, in one line. */
@@ -136,6 +133,22 @@ export function slackFinishingSentence(botName: string, slow: boolean): string {
   return slow
     ? `Still connecting. You can close this. The Slack card updates when ${bot} is in Slack.`
     : `Connecting ${bot} to Slack. This usually takes a minute or two.`;
+}
+
+/** The last step while the bot's computer is still downloading the company's files. */
+export function slackSyncWaitSentence(percent: number | null): string {
+  const amount = typeof percent === "number" && Number.isFinite(percent) ? ` (${Math.round(percent)}%)` : "";
+  return `Slack connects after your company's files finish syncing${amount}. You can close this; the Slack card updates on its own.`;
+}
+
+/**
+ * The line under the last step: what the server is waiting on when the
+ * status says, else the ordinary line for how long it has been.
+ */
+export function slackLastStepSentence(botName: string, wait: SlackSetupWait | null, slow: boolean): string {
+  if (wait?.kind === "sync") return slackSyncWaitSentence(wait.percent);
+  if (wait?.kind === "audit") return SLACK_AUDIT_WAIT_SENTENCE;
+  return slackFinishingSentence(botName, slow);
 }
 
 export function slackConnectedSentence(botName: string): string {
@@ -304,9 +317,14 @@ export interface SlackConnectStep {
 export interface SlackConnectView {
   stage: SlackConnectStage;
   title: string;
-  /** Nothing has been created and the app does not know yet whether Slack is set up. */
+  /** The app has a status answer for this bot. */
   statusKnown: boolean;
-  /** The step rows. Empty before the server has set anything up, and when blocked. */
+  /**
+   * `approve` with nothing created yet: neither the status nor an attach
+   * answer shows Slack for this bot. The modal asks the server to set it up.
+   */
+  needsAttach: boolean;
+  /** The step rows. Empty when blocked. */
   steps: SlackConnectStep[];
   /** The small indicator under the title, or null when there are no steps. */
   indicator: CardModalSteps | null;
@@ -320,6 +338,10 @@ export interface SlackConnectView {
   botUrl: string | null;
   /** `finishing`: it has taken more than {@link SLACK_FINISHING_SLOW_MS}. */
   slow: boolean;
+  /** `finishing`: what the server is waiting on, when the status says. */
+  wait: SlackSetupWait | null;
+  /** `finishing`: the line under the last step. */
+  finishingSentence: string | null;
   blocked: (SlackBlockedCopy & { reason: SlackBlockedReason }) | null;
   /** A request is on its way: the modal must not be closed under it. */
   busy: boolean;
@@ -340,7 +362,7 @@ const STEP_LABEL: Record<SlackConnectStepKey, string> = {
 };
 
 function stepsFor(stage: SlackConnectStage, withToken: boolean, bot: string): SlackConnectStep[] {
-  if (stage === "intro" || stage === "blocked") return [];
+  if (stage === "blocked") return [];
   const keys: SlackConnectStepKey[] = withToken ? ["approve", "token", "finishing"] : ["approve", "finishing"];
   const at = stage === "connected" ? keys.length : keys.indexOf(stage as SlackConnectStepKey);
   return keys.map((key, index) => ({
@@ -351,19 +373,37 @@ function stepsFor(stage: SlackConnectStage, withToken: boolean, bot: string): Sl
   }));
 }
 
+/**
+ * The bot's file sync as the sync strip reads it: whether the first download
+ * is live now, and its percent when the strip would show one. The strip's
+ * own functions do the reading, so the two surfaces cannot disagree.
+ */
+function syncFromStatus(status: unknown, now: number): { live: boolean; percent: number | null } {
+  const observation = observeBotSync(status, now);
+  const strip = botSyncView(advanceBotSync(null, observation, now), { now });
+  return {
+    live: observation.state === "syncing",
+    percent: strip.visible && strip.state === "syncing" && strip.amount !== null ? strip.progress : null,
+  };
+}
+
 /** Build what the modal draws. Pure: same input, same view. */
 export function slackConnectView(input: SlackConnectInput): SlackConnectView {
   const bot = botOf(input.botName);
   const facts = slackFactsFromStatus(input.status);
   const fromStatus = slackRowFromStatus(input.status);
+  const fromAttach = slackRowFromAttach(input.attached);
   // The status is the truth. The attach answer stands in only until the
   // status shows the row it made.
-  const row: SlackRow | null = fromStatus ?? slackRowFromAttach(input.attached);
+  const row: SlackRow | null = fromStatus ?? fromAttach;
   const accepted = typeof input.tokenAcceptedAt === "number" ? input.tokenAcceptedAt : null;
   const acceptedJustNow = accepted !== null && input.now - accepted < SLACK_TOKEN_ACCEPT_GRACE_MS;
 
   let stage: SlackConnectStage;
   let blockedReason: SlackBlockedReason | null = null;
+  // Nothing created yet, as far as the app knows: the first step, and the
+  // modal asks the server to set Slack up.
+  let needsAttach = false;
   if (facts.state === "connected") {
     stage = "connected";
   } else if (input.blocked) {
@@ -379,13 +419,17 @@ export function slackConnectView(input: SlackConnectInput): SlackConnectView {
     stage = "blocked";
     blockedReason = "not-admin";
   } else {
-    stage = "intro";
+    stage = "approve";
+    needsAttach = true;
   }
 
   const capability = slackCapabilityFromStatus(input.status);
+  // Until the server has said which kind of Slack connection this bot gets,
+  // the list shows the path most bots take, with the token step.
   const withToken =
+    needsAttach ||
     Boolean(row?.usesToken) ||
-    Boolean(slackRowFromAttach(input.attached)?.usesToken) ||
+    Boolean(fromAttach?.usesToken) ||
     accepted !== null ||
     capability.startsWith("socket-mode");
   const steps = stepsFor(stage, withToken, bot);
@@ -402,23 +446,26 @@ export function slackConnectView(input: SlackConnectInput): SlackConnectView {
 
   const since = input.waitingSince ?? accepted;
   const slow = stage === "finishing" && typeof since === "number" && input.now - since > SLACK_FINISHING_SLOW_MS;
+  const wait = stage === "finishing" ? slackSetupWaitWithSync(input.status, syncFromStatus(input.status, input.now)) : null;
 
   return {
     stage,
     title: slackConnectTitle(input.botName),
     statusKnown: input.status != null,
+    needsAttach,
     steps,
     indicator,
     // A fresher link in the status wins; the attach answer's link is the fallback.
-    installUrl:
-      stage === "approve" ? (row?.installUrl ?? slackRowFromAttach(input.attached)?.installUrl ?? null) : null,
+    installUrl: stage === "approve" ? (row?.installUrl ?? fromAttach?.installUrl ?? null) : null,
     appPageUrl: stage === "token" ? (row?.appPageUrl ?? null) : null,
     accessPending: stage === "token" && Boolean(row?.accessPending),
     botUrl: stage === "connected" ? slackBotUrlFromStatus(input.status) : null,
     slow,
+    wait,
+    finishingSentence: stage === "finishing" ? slackLastStepSentence(input.botName, wait, slow) : null,
     blocked: blockedReason ? { reason: blockedReason, ...slackBlockedCopy(blockedReason, input.botName) } : null,
     busy: Boolean(input.attachInFlight) || Boolean(input.tokenInFlight),
-    attachError: stage === "intro" ? (input.attachError?.trim() || null) : null,
+    attachError: stage === "approve" ? (input.attachError?.trim() || null) : null,
     tokenError: stage === "token" ? (input.tokenError?.trim() || null) : null,
   };
 }

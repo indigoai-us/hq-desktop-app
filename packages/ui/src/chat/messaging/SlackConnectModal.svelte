@@ -1,16 +1,54 @@
+<script module lang="ts">
+  import type { PlatformAdapter } from "@hq/platform";
+
+  /**
+   * Attach requests on their way, by bot. Module-wide on purpose: it outlives
+   * one instance of this modal, so a modal taken down (the conversation
+   * changed) and opened again while the server is still answering waits for
+   * that answer instead of asking for a second Slack app. An entry is removed
+   * the moment its request settles; a settled request is never reused.
+   */
+  const attachesInFlight = new Map<string, Promise<unknown>>();
+
+  /** The one attach request for this bot: the one on its way, or a new one. Never throws. */
+  function attachOnce(adapter: PlatformAdapter, agentUid: string): Promise<unknown> {
+    const pending = attachesInFlight.get(agentUid);
+    if (pending) return pending;
+    // A request that throws, now or later, is an answer of null: read as
+    // "Slack did not answer", never as a crash.
+    let request: Promise<unknown>;
+    try {
+      request = Promise.resolve(adapter.agents.attachSlack(agentUid)).then(
+        (result) => result,
+        () => null,
+      );
+    } catch {
+      request = Promise.resolve(null);
+    }
+    attachesInFlight.set(agentUid, request);
+    void request.then(() => {
+      if (attachesInFlight.get(agentUid) === request) attachesInFlight.delete(agentUid);
+    });
+    return request;
+  }
+</script>
+
 <script lang="ts">
   /**
    * Connect a cloud bot to Slack, inside the Slack card's modal.
    *
-   * One guided flow: Start, approve the bot in Slack, make one token on
-   * Slack's site when the server asks for it, wait for the bot to connect.
-   * What step a person is on is worked out in slack-connect-model.ts from the
-   * bot's status, which the shell keeps asking for while this is open. This
-   * file is the markup and the two requests.
+   * One guided flow: approve the bot in Slack, make one token on Slack's
+   * site when the server asks for it, wait for the bot to connect. What step
+   * a person is on is worked out in slack-connect-model.ts from the bot's
+   * status, which the shell keeps asking for while this is open. This file
+   * is the markup and the two requests.
    *
-   * ATTACH CREATES A REAL SLACK APP. It is sent from exactly one place, the
-   * Start button, and only while the status says the bot has no Slack. It is
-   * never sent when the modal opens.
+   * ATTACH CREATES A REAL SLACK APP. The press on the card's Connect Slack
+   * button is the intent, so the modal sends it as it opens, once, and only
+   * while the status says the bot has no Slack. Try again sends it again
+   * after a failure. A request on its way is shared across instances of this
+   * modal for the same bot (`attachesInFlight`): a modal taken down and put
+   * back while the server is still answering does not ask a second time.
    *
    * THE TOKEN IS A SECRET. It lives in `token` below and in the field, and
    * nowhere else: not in storage, a link, a log or an error. It is cleared
@@ -39,11 +77,8 @@
     readSlackAttachAnswer,
     readSlackTokenAnswer,
     slackAccessPendingSentence,
-    slackApproveWhatSentence,
     slackConnectView,
     slackConnectedSentence,
-    slackFinishingSentence,
-    slackIntroLines,
     slackTokenSteps,
     slackTokenWhySentence,
     type SlackBlockedReason,
@@ -108,14 +143,14 @@
       now,
     }),
   );
-  const introLines = $derived(slackIntroLines(botName));
   const tokenWhy = $derived(slackTokenWhySentence(botName));
   const tokenSteps = $derived(slackTokenSteps(botName));
-  const approveWhat = $derived(slackApproveWhatSentence(botName));
   const tokenEmpty = $derived(token.trim() === "");
   /** Steps where there is nothing to press but Close: focus goes there. */
   const closeTakesFocus = $derived(
-    view.stage === "finishing" || (view.stage === "approve" && !view.installUrl) || view.accessPending,
+    view.stage === "finishing" ||
+      (view.stage === "approve" && !view.installUrl && !attachInFlight && !view.attachError) ||
+      view.accessPending,
   );
 
   const autofocus = { [CARD_MODAL_AUTOFOCUS]: "" };
@@ -185,9 +220,12 @@
     void focusStageControl();
   });
 
-  /** Start: ask the server to set the bot up in Slack. The only place attach is sent. */
+  /**
+   * Ask the server to set the bot up in Slack. Sent once as the modal opens
+   * (the press on the card was the intent), and again from Try again.
+   */
   async function start(): Promise<void> {
-    if (attachInFlight || view.stage !== "intro") return;
+    if (attachInFlight || !view.needsAttach) return;
     attachInFlight = true;
     attachError = null;
     touch();
@@ -203,14 +241,9 @@
           if (!statusDenied) attachError = SLACK_ATTACH_RETRY_SENTENCE;
           return;
         }
-        if (view.stage !== "intro") return;
+        if (!view.needsAttach) return;
       }
-      let result: unknown = null;
-      try {
-        result = await adapter.agents.attachSlack(agentUid);
-      } catch {
-        result = null;
-      }
+      const result = await attachOnce(adapter, agentUid);
       if (gone) return;
       const answer = readSlackAttachAnswer(result);
       if (answer.kind === "attached") {
@@ -222,7 +255,7 @@
         await refresh();
         await tick();
         // The server says Slack is there and the status does not show it yet.
-        if (!gone && view.stage === "intro") attachError = SLACK_ATTACH_RETRY_SENTENCE;
+        if (!gone && view.needsAttach) attachError = SLACK_ATTACH_RETRY_SENTENCE;
       } else if (answer.kind === "retry") {
         attachError = answer.sentence;
       } else {
@@ -231,10 +264,22 @@
     } finally {
       attachInFlight = false;
       touch();
-      // Still on the intro (Try again), or on whatever step came next.
+      // Open Slack, Try again, or whatever step came next.
       void focusStageControl();
     }
   }
+
+  // The modal opens straight into the first step and sends the attach by
+  // itself, once per instance. After that only Try again sends it again.
+  let autoStarted = false;
+  $effect(() => {
+    const needs = view.needsAttach;
+    untrack(() => {
+      if (!needs || autoStarted) return;
+      autoStarted = true;
+      void start();
+    });
+  });
 
   function openSlack(): void {
     const url = view.installUrl;
@@ -384,18 +429,7 @@
 <CardModal {...frame} title={view.title} onclose={close} busy={view.busy} steps={view.indicator}>
   {#snippet body()}
     <div class="slack-connect" data-testid="slack-connect" data-stage={view.stage} bind:this={root}>
-      {#if view.stage === "intro"}
-        <div class="slack-connect-intro" data-testid="slack-connect-intro">
-          {#each introLines as line (line)}
-            <p class="card-modal-copy">{line}</p>
-          {/each}
-        </div>
-        {#if attachInFlight}
-          <CardModalStatus kind="working" text={SLACK_STARTING} />
-        {:else if view.attachError}
-          <CardModalStatus kind="problem" text={view.attachError} />
-        {/if}
-      {:else if view.stage === "blocked" && view.blocked}
+      {#if view.stage === "blocked" && view.blocked}
         <div class="slack-connect-blocked" data-testid="slack-connect-blocked" data-reason={view.blocked.reason}>
           <CardModalStatus kind="problem" text={view.blocked.sentence} />
         </div>
@@ -403,15 +437,27 @@
         <ol class="card-modal-step-list" data-testid="slack-connect-steps">
           {#each view.steps as step (step.key)}
             {#if step.key === "approve" && step.state === "current"}
-              {#snippet approveWhatLine()}
-                <p class="slack-connect-what" data-testid="slack-connect-approve-what">{approveWhat}</p>
+              {#snippet attachStatus()}
+                {#if attachInFlight}
+                  <div data-testid="slack-connect-starting">
+                    <CardModalStatus kind="working" text={SLACK_STARTING} />
+                  </div>
+                {:else if view.attachError}
+                  <div data-testid="slack-connect-attach-error">
+                    <CardModalStatus kind="problem" text={view.attachError} />
+                  </div>
+                {/if}
               {/snippet}
               <CardModalStep
                 number={step.number}
                 state={step.state}
                 text={step.text}
-                detail={view.installUrl ? SLACK_APPROVE_DETAIL : SLACK_APPROVE_NO_LINK_DETAIL}
-                more={view.installUrl ? approveWhatLine : undefined}
+                detail={view.installUrl
+                  ? SLACK_APPROVE_DETAIL
+                  : attachInFlight || view.attachError
+                    ? null
+                    : SLACK_APPROVE_NO_LINK_DETAIL}
+                more={attachInFlight || view.attachError ? attachStatus : undefined}
               >
                 {#snippet action()}
                   {#if view.installUrl}
@@ -423,6 +469,16 @@
                       {...autofocus}
                     >
                       Open Slack
+                    </button>
+                  {:else if view.attachError && !attachInFlight}
+                    <button
+                      type="button"
+                      class="card-modal-btn is-primary is-small"
+                      data-testid="slack-connect-start"
+                      onclick={() => void start()}
+                      {...autofocus}
+                    >
+                      Try again
                     </button>
                   {/if}
                 {/snippet}
@@ -495,8 +551,8 @@
             {:else if step.key === "finishing" && step.state === "current"}
               <CardModalStep number={step.number} state={step.state} text={step.text}>
                 {#snippet more()}
-                  <div data-testid="slack-connect-waiting" data-slow={view.slow ? "true" : "false"}>
-                    <CardModalStatus kind="working" text={slackFinishingSentence(botName, view.slow)} />
+                  <div data-testid="slack-connect-waiting" data-slow={view.slow ? "true" : "false"} data-wait={view.wait?.kind ?? undefined}>
+                    <CardModalStatus kind="working" text={view.finishingSentence ?? ""} />
                   </div>
                 {/snippet}
               </CardModalStep>
@@ -514,18 +570,7 @@
     </div>
   {/snippet}
   {#snippet footer()}
-    {#if view.stage === "intro"}
-      <button
-        type="button"
-        class="card-modal-btn is-primary"
-        data-testid="slack-connect-start"
-        disabled={attachInFlight}
-        onclick={() => void start()}
-        {...autofocus}
-      >
-        {view.attachError ? "Try again" : "Start"}
-      </button>
-    {:else if view.stage === "token" && !view.accessPending}
+    {#if view.stage === "token" && !view.accessPending}
       <button
         type="button"
         class="card-modal-btn is-primary"
@@ -595,27 +640,17 @@
     min-width: 0;
   }
 
-  .slack-connect-intro {
-    display: grid;
-    gap: 2px;
-  }
-
   /* A blocked state is not a failure: the mark warns, the sentence reads as copy. */
   .slack-connect-blocked :global(.card-modal-status-text) {
     color: var(--cm-ink);
   }
 
-  /* What the person will see in Slack, and why there is a token step. Quiet. */
-  .slack-connect-what,
+  /* Why there is a token step. Quiet. */
   .slack-connect-why {
     margin: 0;
     color: var(--cm-faint);
     font-size: 12px;
     line-height: 1.5;
-  }
-
-  .slack-connect-what {
-    margin-top: -4px;
   }
 
   /* The three things to do on Slack's page: a number, one line, and the

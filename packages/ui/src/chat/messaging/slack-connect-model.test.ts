@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import { slackFactsFromStatus } from "./connection-card-model.js";
 import {
+  SLACK_APPROVE_DETAIL,
   SLACK_ATTACH_RETRY_SENTENCE,
+  SLACK_AUDIT_WAIT_SENTENCE,
   SLACK_FINISHING_SLOW_MS,
   SLACK_TOKEN_ACCEPT_GRACE_MS,
   SLACK_TOKEN_REJECTED_SENTENCE,
@@ -14,14 +16,14 @@ import {
   readSlackAttachAnswer,
   readSlackTokenAnswer,
   slackAccessPendingSentence,
-  slackApproveWhatSentence,
   slackBlockedCopy,
   slackConnectTitle,
   slackConnectView,
   slackConnectedSentence,
   slackFinishingSentence,
-  slackIntroLines,
+  slackLastStepSentence,
   slackStatusDenied,
+  slackSyncWaitSentence,
   slackTokenSteps,
   slackTokenWhySentence,
   type SlackBlockedReason,
@@ -98,28 +100,44 @@ function view(over: Partial<SlackConnectInput> = {}) {
 const stepStates = (v: ReturnType<typeof view>) => v.steps.map((step) => `${step.number}:${step.key}:${step.state}`);
 
 describe("slackConnectView: the stage", () => {
-  it("is intro while the bot has no Slack: nothing has been created", () => {
+  it("opens on the first step while the bot has no Slack, and says the attach is needed", () => {
     const v = view();
-    expect(v.stage).toBe("intro");
+    expect(v.stage).toBe("approve");
+    expect(v.needsAttach).toBe(true);
     expect(v.title).toBe("Connect Nova to Slack");
-    expect(v.steps).toEqual([]);
-    expect(v.indicator).toBeNull();
+    // The list is there from the start, with the path most bots take.
+    expect(stepStates(v)).toEqual(["1:approve:current", "2:token:todo", "3:finishing:todo"]);
+    expect(v.indicator).toEqual({ labels: ["Approve in Slack", "Add the token", "Connecting"], current: 0 });
     expect(v.statusKnown).toBe(true);
     expect(v.busy).toBe(false);
+    // No link to open until the server has answered.
     expect(v.installUrl).toBeNull();
     expect(v.appPageUrl).toBeNull();
     expect(v.blocked).toBeNull();
   });
 
-  it("is intro, and says it does not know, before any status answer", () => {
+  it("opens on the first step, and says it does not know, before any status answer", () => {
     const v = view({ status: null });
-    expect(v.stage).toBe("intro");
+    expect(v.stage).toBe("approve");
+    expect(v.needsAttach).toBe(true);
     expect(v.statusKnown).toBe(false);
+    expect(stepStates(v)).toEqual(["1:approve:current", "2:token:todo", "3:finishing:todo"]);
+  });
+
+  it("needs no attach once the status or an attach answer shows Slack for the bot", () => {
+    for (const json of [WAITING_FOR_APPROVAL, WAITING_FOR_TOKEN, WAITING_FOR_ACCESS, TOKEN_STORED, CONNECTED_SOCKET, EVENTS_INSTALLED]) {
+      expect(view({ status: json }).needsAttach).toBe(false);
+    }
+    expect(view({ attached: ATTACHED_SOCKET }).needsAttach).toBe(false);
+    expect(view({ status: null, attached: ATTACHED_SOCKET }).needsAttach).toBe(false);
+    expect(view({ blocked: "not-admin" }).needsAttach).toBe(false);
+    expect(view({ status: null, statusDenied: true }).needsAttach).toBe(false);
   });
 
   it("is approve while the app waits to be approved in Slack", () => {
     const v = view({ status: WAITING_FOR_APPROVAL });
     expect(v.stage).toBe("approve");
+    expect(v.needsAttach).toBe(false);
     expect(v.installUrl).toBe(INSTALL);
     expect(stepStates(v)).toEqual(["1:approve:current", "2:token:todo", "3:finishing:todo"]);
     expect(v.steps.map((step) => step.text)).toEqual([
@@ -208,9 +226,12 @@ describe("slackConnectView: the stage", () => {
 });
 
 describe("slackConnectView: two steps or three", () => {
-  it("shows no steps before the server has answered an attach", () => {
-    expect(view().steps).toEqual([]);
-    expect(view({ attachInFlight: true }).steps).toEqual([]);
+  it("shows three steps, the first current, while the attach is on its way", () => {
+    const v = view({ attachInFlight: true });
+    expect(v.stage).toBe("approve");
+    expect(v.busy).toBe(true);
+    expect(stepStates(v)).toEqual(["1:approve:current", "2:token:todo", "3:finishing:todo"]);
+    expect(v.installUrl).toBeNull();
   });
 
   it("has three steps when the attach answer asks for a token", () => {
@@ -306,11 +327,16 @@ describe("slackConnectView: what the modal has done", () => {
     expect(view({ status: WAITING_FOR_TOKEN }).busy).toBe(false);
   });
 
-  it("shows an attach that can be tried again on the intro, and nowhere else", () => {
+  it("shows an attach that can be tried again under the first step, with the list still there", () => {
     const v = view({ attachError: SLACK_ATTACH_RETRY_SENTENCE });
-    expect(v.stage).toBe("intro");
+    expect(v.stage).toBe("approve");
+    expect(v.needsAttach).toBe(true);
     expect(v.attachError).toBe("Slack did not answer. Try again.");
-    expect(view({ status: WAITING_FOR_APPROVAL, attachError: SLACK_ATTACH_RETRY_SENTENCE }).attachError).toBeNull();
+    expect(stepStates(v)).toEqual(["1:approve:current", "2:token:todo", "3:finishing:todo"]);
+    expect(v.installUrl).toBeNull();
+    // Never once a later step is reached.
+    expect(view({ status: WAITING_FOR_TOKEN, attachError: SLACK_ATTACH_RETRY_SENTENCE }).attachError).toBeNull();
+    expect(view({ status: TOKEN_STORED, attachError: SLACK_ATTACH_RETRY_SENTENCE }).attachError).toBeNull();
   });
 
   it("shows the token's sentence on the token step, and nowhere else", () => {
@@ -360,7 +386,12 @@ describe("slackConnectView: a long wait in the last step", () => {
     const v = view({ status: TOKEN_STORED, waitingSince: NOW - SLACK_FINISHING_SLOW_MS });
     expect(v.stage).toBe("finishing");
     expect(v.slow).toBe(false);
-    expect(slackFinishingSentence("Nova", v.slow)).toBe("Connecting Nova to Slack. This usually takes a minute or two.");
+    expect(v.wait).toBeNull();
+    expect(v.finishingSentence).toBe("Connecting Nova to Slack. This usually takes a minute or two.");
+    expect(slackFinishingSentence("Nova", v.slow)).toBe(v.finishingSentence);
+    // The line belongs to the last step only.
+    expect(view({ status: WAITING_FOR_TOKEN }).finishingSentence).toBeNull();
+    expect(view({ status: CONNECTED_SOCKET }).finishingSentence).toBeNull();
   });
 
   it("says the calmer line after three minutes, and stays in the same stage", () => {
@@ -369,9 +400,8 @@ describe("slackConnectView: a long wait in the last step", () => {
     expect(v.slow).toBe(true);
     expect(v.blocked).toBeNull();
     expect(stepStates(v)).toEqual(["1:approve:done", "2:token:done", "3:finishing:current"]);
-    expect(slackFinishingSentence("Nova", v.slow)).toBe(
-      "Still connecting. You can close this. The Slack card updates when Nova is in Slack.",
-    );
+    expect(v.finishingSentence).toBe("Still connecting. You can close this. The Slack card updates when Nova is in Slack.");
+    expect(slackFinishingSentence("Nova", v.slow)).toBe(v.finishingSentence);
     expect(SLACK_FINISHING_SLOW_MS).toBe(180_000);
   });
 
@@ -384,6 +414,100 @@ describe("slackConnectView: a long wait in the last step", () => {
     expect(view({ status: TOKEN_STORED }).slow).toBe(false);
     expect(view({ status: WAITING_FOR_TOKEN, waitingSince: NOW - 10 * SLACK_FINISHING_SLOW_MS }).slow).toBe(false);
     expect(view({ status: CONNECTED_SOCKET, waitingSince: NOW - 10 * SLACK_FINISHING_SLOW_MS }).slow).toBe(false);
+  });
+});
+
+describe("slackConnectView: what the server waits on at the last step", () => {
+  const STORED = { workspace: "acme", teamId: "T0ACME", appId: "A0TEST", connectionMode: "socket" };
+  const FRESH = new Date(NOW - 30_000).toISOString();
+  const SYNC_ERROR = "NEW_BOX_AUDIT_PENDING: box blueprint failed: component-sync";
+
+  /** A status at the last step, with the setup steps and runtime a live bot reports. */
+  function finishing(over: { steps?: unknown[]; runtime?: Record<string, unknown>; capability?: string }) {
+    return {
+      setupState: { phase: "ready", steps: over.steps ?? [] },
+      agent: {
+        uid: "agt_nova",
+        companyUid: "cmp_acme",
+        runtime: over.runtime ?? {},
+        channels: { slack: STORED },
+        channelDiagnostics: { slack: { inboundCapability: over.capability ?? "socket-mode-degraded" } },
+      },
+    };
+  }
+  const WAITING_ON_SYNC_STEPS = [
+    { name: "channels", status: "done" },
+    { name: "audit", status: "waiting", lastError: SYNC_ERROR },
+    { name: "runtime-install", status: "pending" },
+  ];
+  const LIVE_SYNC = {
+    firstSync: { phase: "pull", filesTotal: 68042, filesDone: 60268, startedAt: new Date(NOW - 600_000).toISOString(), updatedAt: FRESH },
+    lastHeartbeat: { at: FRESH, components: { sync: "degraded", slack: "ok" } },
+  };
+
+  it("says Slack waits on the file sync, with the live percent, when the install waits on the audit", () => {
+    const v = view({ status: finishing({ steps: WAITING_ON_SYNC_STEPS, runtime: LIVE_SYNC }) });
+    expect(v.stage).toBe("finishing");
+    expect(v.wait).toEqual({ kind: "sync", percent: 88 });
+    expect(v.finishingSentence).toBe(
+      "Slack connects after your company's files finish syncing (88%). You can close this; the Slack card updates on its own.",
+    );
+  });
+
+  it("says the same without a number when the status has no live count", () => {
+    const v = view({ status: finishing({ steps: WAITING_ON_SYNC_STEPS }) });
+    expect(v.wait).toEqual({ kind: "sync", percent: null });
+    expect(v.finishingSentence).toBe(
+      "Slack connects after your company's files finish syncing. You can close this; the Slack card updates on its own.",
+    );
+    // A snapshot nobody has refreshed is not a live count.
+    const stale = { ...LIVE_SYNC, firstSync: { ...LIVE_SYNC.firstSync, updatedAt: new Date(NOW - 20 * 60_000).toISOString() } };
+    expect(view({ status: finishing({ steps: WAITING_ON_SYNC_STEPS, runtime: stale }) }).wait).toEqual({ kind: "sync", percent: null });
+  });
+
+  it("reads the sync wait from a live first download alone, when the steps say nothing", () => {
+    const v = view({ status: finishing({ runtime: LIVE_SYNC }) });
+    expect(v.wait).toEqual({ kind: "sync", percent: 88 });
+    // Once a sync has finished well the download is not what the server waits on.
+    const synced = { ...LIVE_SYNC, syncOkAt: FRESH };
+    expect(view({ status: finishing({ runtime: synced }) }).wait).toBeNull();
+    // A snapshot that has gone quiet is not live.
+    const quiet = { firstSync: LIVE_SYNC.firstSync, lastHeartbeat: { at: new Date(NOW - 10 * 60_000).toISOString(), components: {} } };
+    expect(view({ status: finishing({ runtime: quiet }) }).wait).toBeNull();
+  });
+
+  it("says HQ is finishing the setup when the audit has stopped on something other than the sync", () => {
+    const steps = [
+      { name: "audit", status: "waiting", lastError: "NEW_BOX_AUDIT_PENDING: box blueprint failed: component-brain" },
+      { name: "runtime-install", status: "pending" },
+    ];
+    const v = view({ status: finishing({ steps, runtime: LIVE_SYNC }) });
+    expect(v.wait).toEqual({ kind: "audit" });
+    expect(v.finishingSentence).toBe("HQ is finishing the setup on the bot's machine. This can take a few minutes.");
+    expect(SLACK_AUDIT_WAIT_SENTENCE).toBe(v.finishingSentence);
+  });
+
+  it("wins over the calmer long-wait line, and is never shown outside the last step", () => {
+    const long = view({ status: finishing({ steps: WAITING_ON_SYNC_STEPS }), waitingSince: NOW - SLACK_FINISHING_SLOW_MS - 1 });
+    expect(long.slow).toBe(true);
+    expect(long.finishingSentence).toBe(slackSyncWaitSentence(null));
+    const connected = view({ status: finishing({ steps: WAITING_ON_SYNC_STEPS, capability: "socket-mode" }) });
+    expect(connected.stage).toBe("connected");
+    expect(connected.wait).toBeNull();
+    const atToken = finishing({ steps: WAITING_ON_SYNC_STEPS });
+    const token = { ...atToken, agent: { ...atToken.agent, channels: { slack: { ...STORED, appTokenPendingUrl: APP } } } };
+    expect(view({ status: token }).stage).toBe("token");
+    expect(view({ status: token }).wait).toBeNull();
+  });
+
+  it("says the ordinary line when the steps say nothing of the kind", () => {
+    const steps = [{ name: "audit", status: "done" }, { name: "runtime-install", status: "running" }];
+    const v = view({ status: finishing({ steps }) });
+    expect(v.wait).toBeNull();
+    expect(v.finishingSentence).toBe("Connecting Nova to Slack. This usually takes a minute or two.");
+    expect(slackLastStepSentence("Nova", null, false)).toBe(v.finishingSentence);
+    expect(slackLastStepSentence("Nova", { kind: "sync", percent: 12.6 }, true)).toBe(slackSyncWaitSentence(13));
+    expect(slackLastStepSentence("Nova", { kind: "audit" }, true)).toBe(SLACK_AUDIT_WAIT_SENTENCE);
   });
 });
 
@@ -544,15 +668,8 @@ describe("slackStatusDenied", () => {
 });
 
 describe("the words of the flow", () => {
-  it("says what will happen before anything is created", () => {
-    expect(slackIntroLines("Nova")).toEqual([
-      "You approve Nova in your Slack workspace.",
-      "Then Nova can read and answer messages there.",
-    ]);
-  });
-
-  it("says what the person will see once Slack opens", () => {
-    expect(slackApproveWhatSentence("Nova")).toBe("Slack asks you to allow Nova in your workspace. Click Allow.");
+  it("says under Open Slack what to click, once, and nothing that repeats it", () => {
+    expect(SLACK_APPROVE_DETAIL).toBe("Slack opens in your browser. Click Allow, then come back here.");
   });
 
   it("says in one line why there is a token step, then the three things to do", () => {
@@ -589,8 +706,10 @@ describe("the words of the flow", () => {
     const reasons: SlackBlockedReason[] = ["not-admin", "company-not-connected", "own-app", "config-dead", "app-switch"];
     const everything = [
       slackConnectTitle("Nova"),
-      ...slackIntroLines("Nova"),
-      slackApproveWhatSentence("Nova"),
+      SLACK_APPROVE_DETAIL,
+      slackSyncWaitSentence(42),
+      slackSyncWaitSentence(null),
+      SLACK_AUDIT_WAIT_SENTENCE,
       slackTokenWhySentence("Nova"),
       ...slackTokenSteps("Nova").map((step) => step.text),
       slackAccessPendingSentence("Nova"),

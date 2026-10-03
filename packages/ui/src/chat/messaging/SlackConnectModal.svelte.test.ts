@@ -1,8 +1,9 @@
 // @vitest-environment happy-dom
 
 // The Connect Slack flow inside the Slack card's modal: one stage at a time,
-// read from the bot's status. Attach is sent only from Start. The pasted
-// token never leaves the field and the one request that carries it.
+// read from the bot's status. Attach is sent as the modal opens, once per
+// bot, and again only from Try again. The pasted token never leaves the
+// field and the one request that carries it.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, tick, unmount } from "svelte";
@@ -172,6 +173,7 @@ const statusLines = () =>
 const indicator = () => byId("card-modal-steps-text")?.textContent ?? null;
 const footerButtons = () =>
   [...byId("card-modal-footer")!.querySelectorAll<HTMLButtonElement>("button")].map((el) => el.textContent!.trim());
+/** The Try again button under step 1, after an attach that did not work. */
 const startButton = () => byId<HTMLButtonElement>("slack-connect-start")!;
 const tokenField = () => byId("slack-connect-token")?.querySelector<HTMLInputElement>("input") ?? null;
 const submitButton = () => byId<HTMLButtonElement>("slack-connect-submit")!;
@@ -215,32 +217,55 @@ function expectTokenNowhere(): void {
 }
 
 describe("the Connect Slack modal: each stage", () => {
-  it("opens on the intro: two lines, a Start button, no steps, and nothing asked of the server", () => {
+  it("opens straight into the list with step 1 current and its spinner, and calls attach once", async () => {
+    let finish: (value: unknown) => void = () => {};
+    attachSlack.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)));
+    serverStatus = WAITING_FOR_APPROVAL;
     render();
-    expect(stage()).toBe("intro");
+    await settle();
+    expect(stage()).toBe("approve");
     expect(title()).toBe("Connect Nova to Slack");
     expect(dialog().dataset.icon).toBe("slack");
-    expect(byId("slack-connect-intro")!.textContent).toContain("You approve Nova in your Slack workspace.");
-    expect(byId("slack-connect-intro")!.textContent).toContain("Then Nova can read and answer messages there.");
-    expect(steps()).toEqual([]);
-    expect(indicator()).toBeNull();
-    expect(footerButtons()).toEqual(["Start"]);
-    expect(document.activeElement).toBe(startButton());
-    expect(attachSlack).not.toHaveBeenCalled();
+    // No first screen: the steps are there at once, nothing to press.
+    expect(byId("slack-connect-intro")).toBeNull();
+    expect(byId("slack-connect-start")).toBeNull();
+    expect(steps()).toEqual(["current:Approve Nova in Slack", "todo:Create a token for Nova", "todo:HQ finishes the setup"]);
+    expect(indicator()).toBe("Step 1 of 3: Approve in Slack");
+    expect(footerButtons()).toEqual(["Close"]);
+    // The spinner sits under step 1 until the link arrives.
+    const first = document.querySelector<HTMLElement>('[data-testid="card-modal-step"][data-state="current"]')!;
+    expect(first.contains(byId("slack-connect-starting"))).toBe(true);
+    expect(statusLines()).toEqual(["working:Setting things up in Slack."]);
+    expect(byId("slack-connect-open-slack")).toBeNull();
+    expect(attachSlack).toHaveBeenCalledTimes(1);
+    expect(attachSlack).toHaveBeenCalledWith(NOVA);
     expect(submitSlackAppToken).not.toHaveBeenCalled();
     expect(started).not.toHaveBeenCalled();
+
+    finish(ok({ config: SOCKET_ROW, followUpUrl: INSTALL }));
+    await settle();
+    expect(attachSlack).toHaveBeenCalledTimes(1);
+    expect(byId("slack-connect-starting")).toBeNull();
+    expect(byId("slack-connect-open-slack")!.textContent!.trim()).toBe("Open Slack");
+    expect(dialog().textContent).toContain("Slack opens in your browser. Click Allow, then come back here.");
+    expect(started).toHaveBeenCalledTimes(1);
   });
 
-  it("shows approve: step 1 current with Open Slack, the rest to do", () => {
+  it("shows approve: step 1 current with Open Slack, one line under it, the rest to do", async () => {
     render({ status: WAITING_FOR_APPROVAL });
+    await settle();
     expect(stage()).toBe("approve");
     expect(steps()).toEqual(["current:Approve Nova in Slack", "todo:Create a token for Nova", "todo:HQ finishes the setup"]);
     expect(indicator()).toBe("Step 1 of 3: Approve in Slack");
-    expect(dialog().textContent).toContain("Slack opens in your browser. Come back here when you have approved.");
+    expect(dialog().textContent).toContain("Slack opens in your browser. Click Allow, then come back here.");
+    // Said once: no second line that repeats it.
+    expect(dialog().textContent!.match(/Click Allow/g)).toHaveLength(1);
+    expect(dialog().textContent).not.toContain("Come back here when you have approved");
     expect(byId("slack-connect-open-slack")!.textContent!.trim()).toBe("Open Slack");
     expect(document.activeElement).toBe(byId("slack-connect-open-slack"));
     expect(footerButtons()).toEqual(["Close"]);
     expect(tokenField()).toBeNull();
+    expect(attachSlack).not.toHaveBeenCalled();
   });
 
   it("shows token: step 2 current with one line of why, three things to do, and a password field under the third", () => {
@@ -277,18 +302,15 @@ describe("the Connect Slack modal: each stage", () => {
     expect(submitButton().disabled).toBe(true);
   });
 
-  it("shows under Open Slack what the person will see, only while there is a link to open", () => {
+  it("keeps Open Slack in step 1's row, and says nothing about Allow while Slack has sent no link", async () => {
     render({ status: WAITING_FOR_APPROVAL });
-    expect(byId("slack-connect-approve-what")!.textContent).toBe("Slack asks you to allow Nova in your workspace. Click Allow.");
     const step = document.querySelector<HTMLElement>('[data-testid="card-modal-step"][data-state="current"]')!;
-    expect(step.contains(byId("slack-connect-approve-what"))).toBe(true);
     expect(step.contains(byId("slack-connect-open-slack"))).toBe(true);
-  });
-
-  it("says nothing about Allow while Slack has sent no link", () => {
+    expect(step.dataset.more).toBeUndefined();
+    await takeDown();
     render({ status: status({ ...SOCKET_ROW, installUrl: "https://example.com/phish" }, "pending-install") });
-    expect(byId("slack-connect-approve-what")).toBeNull();
-    expect(document.querySelector<HTMLElement>('[data-testid="card-modal-step"][data-state="current"]')!.dataset.more).toBeUndefined();
+    expect(dialog().textContent).not.toContain("Click Allow");
+    expect(dialog().textContent).toContain("Waiting for the link from Slack. This screen updates by itself.");
   });
 
   it("shows token with access pending: the waiting sentence, no instructions and no field", () => {
@@ -337,6 +359,68 @@ describe("the Connect Slack modal: each stage", () => {
     // And it still ends by itself.
     await check(CONNECTED);
     expect(stage()).toBe("connected");
+  });
+
+  it("says in the last step that Slack waits on the file sync, with the live percent, and lets the person close", async () => {
+    const fresh = new Date(clock - 30_000).toISOString();
+    const waitingOnSync = {
+      setupState: {
+        phase: "ready",
+        steps: [
+          { name: "channels", status: "done" },
+          { name: "audit", status: "waiting", lastError: "NEW_BOX_AUDIT_PENDING: box blueprint failed: component-sync" },
+          { name: "runtime-install", status: "pending" },
+        ],
+      },
+      agent: {
+        ...TOKEN_STORED.agent,
+        runtime: {
+          firstSync: { phase: "pull", filesTotal: 68042, filesDone: 60268, startedAt: new Date(clock - 600_000).toISOString(), updatedAt: fresh },
+          lastHeartbeat: { at: fresh, components: { sync: "degraded", slack: "ok" } },
+        },
+      },
+    };
+    render({ status: waitingOnSync });
+    expect(stage()).toBe("finishing");
+    expect(byId("slack-connect-waiting")!.dataset.wait).toBe("sync");
+    expect(statusLines()).toEqual([
+      "working:Slack connects after your company's files finish syncing (88%). You can close this; the Slack card updates on its own.",
+    ]);
+    expect(footerButtons()).toEqual(["Close"]);
+    expect(closeX().disabled).toBe(false);
+    // The number follows the status.
+    const further = { ...waitingOnSync, agent: { ...waitingOnSync.agent, runtime: { ...waitingOnSync.agent.runtime, firstSync: { ...waitingOnSync.agent.runtime.firstSync, filesDone: 68000 } } } };
+    await check(further);
+    expect(statusLines()[0]).toContain("(99%)");
+    // Even after a long wait this line stays: it says more than the calmer one.
+    clock += SLACK_FINISHING_SLOW_MS + 1_000;
+    await check(further);
+    expect(byId("slack-connect-waiting")!.dataset.slow).toBe("true");
+    expect(statusLines()[0]).toContain("finish syncing (99%)");
+    // And it ends by itself.
+    await check(CONNECTED);
+    expect(stage()).toBe("connected");
+  });
+
+  it("says in the last step that HQ is finishing the setup when the audit has stopped on something else", async () => {
+    const auditStuck = {
+      setupState: {
+        phase: "ready",
+        steps: [
+          { name: "audit", status: "waiting", lastError: "NEW_BOX_AUDIT_PENDING: box blueprint failed: component-brain" },
+          { name: "runtime-install", status: "pending" },
+        ],
+      },
+      agent: TOKEN_STORED.agent,
+    };
+    render({ status: auditStuck });
+    expect(stage()).toBe("finishing");
+    expect(byId("slack-connect-waiting")!.dataset.wait).toBe("audit");
+    expect(statusLines()).toEqual(["working:HQ is finishing the setup on the bot's machine. This can take a few minutes."]);
+    expect(document.querySelector('[data-testid="card-modal-status"][data-kind="problem"]')).toBeNull();
+    await check(TOKEN_STORED);
+    expect(byId("slack-connect-waiting")!.dataset.wait).toBeUndefined();
+    expect(statusLines()).toEqual(["working:Connecting Nova to Slack. This usually takes a minute or two."]);
   });
 
   it("shows connected: every step done, the sentence, and Done closes", () => {
@@ -392,7 +476,6 @@ describe("the Connect Slack modal: each stage", () => {
     attachSlack.mockResolvedValueOnce(ok({ config: EVENTS_ROW, followUpUrl: INSTALL }));
     serverStatus = status(EVENTS_ROW, "pending-install");
     render();
-    startButton().click();
     await settle();
     expect(steps()).toEqual(["current:Approve Nova in Slack", "todo:HQ finishes the setup"]);
     expect(indicator()).toBe("Step 1 of 2: Approve in Slack");
@@ -421,12 +504,13 @@ describe("the Connect Slack modal: each stage", () => {
   });
 });
 
-describe("the Connect Slack modal: Start and attach", () => {
-  it("never calls attach when it opens, at any stage", async () => {
-    for (const json of [NO_SLACK, null, WAITING_FOR_APPROVAL, WAITING_FOR_TOKEN, WAITING_FOR_ACCESS, TOKEN_STORED, CONNECTED]) {
+describe("the Connect Slack modal: the attach", () => {
+  it("never calls attach when it opens on a bot that already has Slack", async () => {
+    for (const json of [WAITING_FOR_APPROVAL, WAITING_FOR_TOKEN, WAITING_FOR_ACCESS, TOKEN_STORED, CONNECTED]) {
       render({ status: json });
       await settle();
       expect(attachSlack).not.toHaveBeenCalled();
+      expect(refresh).not.toHaveBeenCalled();
       await takeDown();
     }
   });
@@ -445,25 +529,20 @@ describe("the Connect Slack modal: Start and attach", () => {
     }
   });
 
-  it("calls attach once from Start, even on a double click, and holds the modal while it is on its way", async () => {
+  it("holds the modal while the attach is on its way, then puts focus on Open Slack", async () => {
     let finish: (value: unknown) => void = () => {};
     attachSlack.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)));
     serverStatus = WAITING_FOR_APPROVAL;
     render();
-    startButton().click();
-    startButton().click();
-    await settle();
-    startButton().click();
     await settle();
     expect(attachSlack).toHaveBeenCalledTimes(1);
     expect(attachSlack).toHaveBeenCalledWith(NOVA);
-    expect(startButton().disabled).toBe(true);
     expect(statusLines()).toEqual(["working:Setting things up in Slack."]);
     // Busy: the modal cannot be closed under the request.
     expect(closeX().disabled).toBe(true);
     expect(dialog().getAttribute("aria-busy")).toBe("true");
     expect(started).not.toHaveBeenCalled();
-    // The disabled button does not drop the keyboard out of the dialog.
+    // Nothing to press yet: the keyboard stays in the dialog.
     expect(document.activeElement).toBe(dialog());
 
     finish(ok({ config: SOCKET_ROW, followUpUrl: INSTALL }));
@@ -477,11 +556,39 @@ describe("the Connect Slack modal: Start and attach", () => {
     expect(document.activeElement).toBe(byId("slack-connect-open-slack"));
   });
 
+  it("does not attach twice when the modal is taken down and opened again while the attach is on its way", async () => {
+    let finish: (value: unknown) => void = () => {};
+    attachSlack.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)));
+    serverStatus = WAITING_FOR_APPROVAL;
+    render();
+    await settle();
+    expect(attachSlack).toHaveBeenCalledTimes(1);
+    // The conversation changes: the modal goes, the request does not.
+    await takeDown();
+    render();
+    await settle();
+    expect(attachSlack).toHaveBeenCalledTimes(1);
+    expect(stage()).toBe("approve");
+    expect(statusLines()).toEqual(["working:Setting things up in Slack."]);
+    expect(closeX().disabled).toBe(true);
+    // The answer reaches the modal that is open now.
+    finish(ok({ config: SOCKET_ROW, followUpUrl: INSTALL }));
+    await settle();
+    expect(attachSlack).toHaveBeenCalledTimes(1);
+    expect(started).toHaveBeenCalledTimes(1);
+    expect(byId("slack-connect-open-slack")).not.toBeNull();
+    expect(closeX().disabled).toBe(false);
+    // A later modal, once the answer is in, asks again only if the bot still has no Slack.
+    await takeDown();
+    render({ status: WAITING_FOR_APPROVAL });
+    await settle();
+    expect(attachSlack).toHaveBeenCalledTimes(1);
+  });
+
   it("shows the step list from the attach answer before the status catches up", async () => {
     // The status read after the attach fails: the modal still knows what it made.
     refresh.mockImplementationOnce(async () => {});
     render();
-    startButton().click();
     await settle();
     expect(stage()).toBe("approve");
     expect(steps()).toHaveLength(3);
@@ -492,8 +599,6 @@ describe("the Connect Slack modal: Start and attach", () => {
   it("reads the status first when it is not known, and does not attach over a setup that exists", async () => {
     serverStatus = WAITING_FOR_TOKEN;
     render({ status: null });
-    expect(stage()).toBe("intro");
-    startButton().click();
     await settle();
     expect(refresh).toHaveBeenCalledTimes(1);
     expect(attachSlack).not.toHaveBeenCalled();
@@ -507,46 +612,52 @@ describe("the Connect Slack modal: Start and attach", () => {
       props.status = asked === 1 ? NO_SLACK : WAITING_FOR_APPROVAL;
     });
     render({ status: null });
-    startButton().click();
     await settle();
     expect(attachSlack).toHaveBeenCalledTimes(1);
     expect(stage()).toBe("approve");
   });
 
-  it("does not attach while the status cannot be read, and says to try again", async () => {
+  it("does not attach while the status cannot be read, and says to try again under step 1", async () => {
     refresh.mockImplementation(async () => {});
     render({ status: null });
-    startButton().click();
     await settle();
     expect(attachSlack).not.toHaveBeenCalled();
-    expect(stage()).toBe("intro");
+    expect(stage()).toBe("approve");
+    expect(steps()).toEqual(["current:Approve Nova in Slack", "todo:Create a token for Nova", "todo:HQ finishes the setup"]);
     expect(statusLines()).toEqual(["problem:Slack did not answer. Try again."]);
-    expect(footerButtons()).toEqual(["Try again"]);
+    expect(startButton().textContent!.trim()).toBe("Try again");
+    expect(footerButtons()).toEqual(["Close"]);
   });
 
   it("goes on from the status when the server says Slack is already connected", async () => {
     attachSlack.mockResolvedValueOnce(refusal("SLACK_ATTACH_ALREADY_CONNECTED", 409));
     serverStatus = CONNECTED;
     render();
-    startButton().click();
     await settle();
     expect(stage()).toBe("connected");
     expect(document.querySelector('[data-testid="card-modal-status"][data-kind="problem"]')).toBeNull();
     expect(started).toHaveBeenCalledTimes(1);
   });
 
-  it("stays on the intro with Try again when Slack did not answer", async () => {
+  it("shows the failure under step 1 with Try again when Slack did not answer, and the list stays", async () => {
     for (const failure of [refusal("SLACK_FACTORY_ROTATE_UNAVAILABLE", 409), refusal("CHANNEL_ATTACH_FAILED", 502), refusal("network")]) {
       attachSlack.mockReset();
       attachSlack.mockResolvedValueOnce(failure);
       render();
-      startButton().click();
       await settle();
-      expect(stage()).toBe("intro");
+      expect(stage()).toBe("approve");
+      expect(steps()).toEqual(["current:Approve Nova in Slack", "todo:Create a token for Nova", "todo:HQ finishes the setup"]);
+      expect(indicator()).toBe("Step 1 of 3: Approve in Slack");
+      const first = document.querySelector<HTMLElement>('[data-testid="card-modal-step"][data-state="current"]')!;
+      expect(first.contains(byId("slack-connect-attach-error"))).toBe(true);
+      expect(first.contains(startButton())).toBe(true);
       expect(statusLines()).toEqual(["problem:Slack did not answer. Try again."]);
-      expect(footerButtons()).toEqual(["Try again"]);
+      expect(startButton().textContent!.trim()).toBe("Try again");
+      expect(footerButtons()).toEqual(["Close"]);
+      expect(byId("slack-connect-open-slack")).toBeNull();
+      expect(closeX().disabled).toBe(false);
       expect(started).not.toHaveBeenCalled();
-      // Focus is back on the button, ready for the retry.
+      // Focus is on the button, ready for the retry.
       expect(document.activeElement).toBe(startButton());
       // Try again asks once more, and works.
       attachSlack.mockResolvedValueOnce(ok({ config: SOCKET_ROW, followUpUrl: INSTALL }));
@@ -555,6 +666,9 @@ describe("the Connect Slack modal: Start and attach", () => {
       await settle();
       expect(attachSlack).toHaveBeenCalledTimes(2);
       expect(stage()).toBe("approve");
+      expect(byId("slack-connect-attach-error")).toBeNull();
+      expect(byId("slack-connect-start")).toBeNull();
+      expect(document.activeElement).toBe(byId("slack-connect-open-slack"));
       await takeDown();
       serverStatus = NO_SLACK;
       started.mockClear();
@@ -564,10 +678,10 @@ describe("the Connect Slack modal: Start and attach", () => {
   it("treats a request that throws as Slack not answering", async () => {
     attachSlack.mockRejectedValueOnce(new Error("offline"));
     render();
-    startButton().click();
     await settle();
-    expect(stage()).toBe("intro");
+    expect(stage()).toBe("approve");
     expect(statusLines()).toEqual(["problem:Slack did not answer. Try again."]);
+    expect(startButton().textContent!.trim()).toBe("Try again");
   });
 });
 
@@ -972,7 +1086,6 @@ describe("the Connect Slack modal: the token", () => {
     );
     serverStatus = WAITING_FOR_APPROVAL;
     render();
-    startButton().click();
     await settle();
     byId<HTMLButtonElement>("slack-connect-open-slack")!.click();
     await check(WAITING_FOR_TOKEN);
@@ -1056,7 +1169,6 @@ describe("the Connect Slack modal: blocked", () => {
     it(`shows the sentence and its one button for ${c.name}`, async () => {
       attachSlack.mockResolvedValueOnce(c.failure);
       render();
-      startButton().click();
       await settle();
       expect(stage()).toBe("blocked");
       expect(byId("slack-connect-blocked")!.dataset.reason).toBe(c.reason);
@@ -1086,7 +1198,6 @@ describe("the Connect Slack modal: blocked", () => {
     ] as const) {
       attachSlack.mockResolvedValueOnce(failure);
       render({ companySlug: slug });
-      startButton().click();
       await settle();
       byId<HTMLButtonElement>("slack-connect-blocked-action")!.click();
       expect(openUrl).toHaveBeenLastCalledWith("https://hq.computer");
@@ -1095,7 +1206,7 @@ describe("the Connect Slack modal: blocked", () => {
     expect(JSON.stringify(openUrl.mock.calls)).not.toContain("cmp_");
   });
 
-  it("is blocked from the start, with no Start button, for a person who may not read the bot's status", async () => {
+  it("is blocked from the start, with no attach sent, for a person who may not read the bot's status", async () => {
     render({ status: null, statusDenied: true });
     expect(stage()).toBe("blocked");
     expect(statusLines()).toEqual(["problem:Only a company owner or admin can connect a bot to Slack."]);
