@@ -52,6 +52,9 @@
   let selectedId = $state<string | null>(null);
   let limit = $state(PAGE);
   let notice = $state("");
+  // AUDIT-3: a read that loaded nothing shows the failed-read line, not "No deployments yet."
+  let loadFailed = $state(false);
+  let loadAttempt = $state(0);
 
   const scopes = $derived<DeployScope[]>([
     { id: "personal", label: "Personal" },
@@ -65,6 +68,7 @@
     const account = accountId;
     const list = listDeployApps;
     void scopeKey;
+    void loadAttempt;
     const wanted = scopes;
     cache = readPersonalDeploymentsCache(account);
     if (!list) {
@@ -74,6 +78,7 @@
     unavailable = false;
     let live = true;
     refreshing = true;
+    loadFailed = false;
     const fetchScope = async (scope: string): Promise<DeployAppsPage> => {
       const result = await list(scope);
       if (!result.ok) throw new Error(`deploy apps ${scope} ${result.reason}`);
@@ -84,14 +89,20 @@
         if (!live) return;
         refreshing = false;
         failedScopes = next.failed;
-        // Keep the cached list when every scope failed (offline, signed out).
-        if (next.failed.length === wanted.length && cache) return;
+        if (next.failed.length > 0 && next.failed.length === wanted.length) {
+          // Keep the cached list when every scope failed (offline, signed out).
+          if (cache) return;
+          loadFailed = true;
+          return;
+        }
         cache = next.cache;
         writePersonalDeploymentsCache(account, next.cache);
       },
       (err) => {
         console.error("[deployments] refresh failed", err);
-        if (live) refreshing = false;
+        if (!live) return;
+        refreshing = false;
+        if (!cache) loadFailed = true;
       },
     );
     return () => {
@@ -177,14 +188,19 @@
       <span class="grow"></span>
       <input class="search" type="search" placeholder="Search subdomains" aria-label="Search subdomains" bind:value={query} oninput={() => (limit = PAGE)} />
     </div>
-    {#if failedLabels}
+    {#if failedLabels && !loadFailed}
       <p class="warn" data-testid="deploy-failed-scopes">Couldn't load {failedLabels} right now. Showing the rest.</p>
     {/if}
     <div class="deploys">
       <div class="table">
         <div class="drow hd"><span>App</span><span>Scope</span><span>Status</span><span>Access</span><span>30d views</span><span>Last visit</span></div>
         {#if !cache}
-          {#if unavailable}
+          {#if loadFailed}
+            <div class="load-error" role="alert" data-testid="deploy-load-error">
+              <p>Couldn't read your deployments.</p>
+              <RailButton icon="refresh" data-testid="deploy-retry" onclick={() => (loadAttempt += 1)}>Try again</RailButton>
+            </div>
+          {:else if unavailable}
             <p class="empty" data-testid="deploy-unavailable">Deployments load in the desktop app once you're signed in.</p>
           {:else}
             <div data-testid="deploy-skeleton" aria-busy="true">
@@ -351,6 +367,8 @@
   .foot { padding: 8px; white-space: normal; }
   .n { font-variant-numeric: tabular-nums; color: var(--t2); text-align: right; }
   .st.live { color: var(--ok-ink); }
+  .load-error { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 12px 0; }
+  .load-error p { margin: 0; }
   .st.err { color: var(--v4-error); }
   .st.off { color: var(--t3); }
   .skel { height: 31px; margin: 1px 0; border-radius: 8px; background: var(--raised); }
