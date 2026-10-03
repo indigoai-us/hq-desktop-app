@@ -7,6 +7,8 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+- Desktop setup still cancels an install and still records its failure after an internal error interrupts that bookkeeping.
+- On first launch, onboarding step telemetry can share the persisted install attempt id with the anonymous launch receipt when its hq-flags gate is enabled.
 - Workspace refresh no longer clears a company cloud link when an entity lookup is missing; only a confirmed deletion removes it.
 - Internal tests: four more desktop UI tests (desktop sidebar layout, files sidebar contrast, @here mention, emoji shortcodes) now render the components instead of searching their source text. Nothing changes in the app.
 - Internal tests: four more desktop UI tests (conversation rail ready signal, mute bell, notification focus ring, quick-react toolbar) now render the components instead of searching their source text. Nothing changes in the app.
@@ -19,6 +21,8 @@ The release moves it under the version it ships in.
 - New cloud bots created from the desktop New bot flow sign in with your model subscription. The API key option is no longer offered there.
 - Behind `agents.desktop-agent-creation` (Indigo only): New bot in Messages is one three-step flow (what kind, where it runs, its details). Choosing Cloud creates the bot directly, without Slack, and opens its DM. New cloud bots start on Claude, with Codex and Grok offered. Cloud stays visible when it can't be used and says why (admin role, plan, or no company). Settings › Bots › New bot closes Settings and opens the same flow. The flag is checked for the company you pick, and the cloud create code loads only when the flow opens, so startup is not slower.
 - Internal tests: four more desktop UI tests (task strip, task chip, page header, agents settings) now render the components instead of searching their source text. Nothing changes in the app.
+- Internal: CLI update failure reports now record which CLI version was running when the update failed, as a SemVer value or the word unknown, with no file path.
+- Release builds: the macOS release check now confirms its test sign-in is still valid before it opens the app. An expired test sign-in failed v0.10.383 with a message that looked like the app was stuck loading; it now says the test sign-in expired and how to renew it.
 - Add bounded marker and refresh rejection attribution to unexpected startup diagnostics.
 - Startup diagnostics now distinguish a rejected saved session from an empty credential store.
 - Shelltest builds now report to a separate Sentry environment; release telemetry remains in production.
@@ -76,6 +80,9 @@ The release moves it under the version it ships in.
 ## [0.10.379] — 2026-10-02
 
 - Closing the main window no longer logs an error.
+
+- Settings › Updates now shows what is holding a requested restart (a recording, a transcript that is still saving, or an HQ Core update) under the Desktop app row, and the update notice says the same instead of always mentioning a recording.
+- "Restart to update" works again while sync is running. Only a meeting recording, a transcript that is still saving, or an HQ Core update holds a restart you asked for, and the update card now says which one instead of always mentioning a recording.
 
 - When hq-flags enables `desktop.setup-deps-timeout-retry-v1`, a dependency setup timeout gets one automatic retry before setup is marked passed with that step skipped.
 

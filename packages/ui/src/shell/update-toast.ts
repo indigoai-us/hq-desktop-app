@@ -1,3 +1,5 @@
+import { isRecordingRestartDeferral } from "../settings/update-presentation";
+
 /**
  * Plain copy for the app-update toast (OWNER-003 / OWNER-004).
  *
@@ -46,7 +48,6 @@ const HOLD_TEXT: Record<string, string> = {
   coreupdateinprogress: "Waiting for the HQ folder update to finish",
 };
 
-const RECORDING_DEFER = "HQ will restart to update after your recording finishes";
 
 /** True for text that looks like an internal key rather than a sentence. */
 export function looksLikeStateKey(text: string): boolean {
@@ -77,13 +78,15 @@ function plainError(raw: string | null): string | null {
 export function updateToastCopy(input: UpdateToastInput): UpdateToastCopy {
   const version = input.version.trim();
   const ready = version ? `HQ ${version} is ready to install` : "An update is ready to install";
-  if (input.installError?.includes(RECORDING_DEFER)) {
+  // The host's deferral sentence names what holds the restart (a recording,
+  // a transcript still saving, or an HQ Core update), so it is shown as-is.
+  if (input.installError && isRecordingRestartDeferral(input.installError)) {
     return {
       phase: "deferred",
       title: "Update scheduled",
-      detail: "HQ will restart after your recording finishes",
+      detail: input.installError.trim(),
       error: null,
-      installLabel: "Will restart after recording",
+      installLabel: "Waiting to restart",
       installDisabled: true,
       installTitle: null,
       progress: null,

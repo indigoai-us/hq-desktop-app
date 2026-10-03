@@ -4,6 +4,7 @@
     appRowActions,
     appRowIdleHint,
     appRowStatusLabel,
+    isRecordingRestartDeferral,
   } from "./update-presentation";
   import {
     checkDesktopUpdates,
@@ -285,6 +286,15 @@
     }),
   );
   const appIdleHint = $derived(appRowIdleHint(updateStore.idleWaitRemainingSecs));
+  // #1237: the host's deferral sentence names what holds a requested restart
+  // (a recording, a transcript still saving, or an HQ Core update).
+  const appDeferralReason = $derived(
+    updateStore.installPhase === "deferred" &&
+      updateStore.installError &&
+      isRecordingRestartDeferral(updateStore.installError)
+      ? updateStore.installError
+      : null,
+  );
   // Release channel (Stable / Beta / Alpha). The native host owns the
   // semantics — this is the persisted `releaseChannel` pref in menubar.json
   // that release_channel.rs `effective_channel` already resolves.
@@ -1671,6 +1681,11 @@
         {#if appUpdateStatus === "failed"}
           <div class="sd" data-testid="settings-app-check-failed">
             The update check didn’t finish. Check for updates again.
+          </div>
+        {/if}
+        {#if appDeferralReason}
+          <div class="sd" data-testid="settings-app-deferred-reason">
+            {appDeferralReason}
           </div>
         {/if}
         {#if appIdleHint}

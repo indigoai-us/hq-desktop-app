@@ -49,6 +49,7 @@ vi.mock('@hq/platform', async (importOriginal) => ({
   ),
   hostComputerNoun: () => 'computer',
   FIRST_FOLDER_SYNC_STEP_FLAG: 'desktop.first-folder-sync-step-v1',
+  FIRST_LAUNCH_JOIN_KEY_FLAG: 'desktop.first-launch-join-key-v1',
   COMPANY_ROUTE_LOOKUP_RETRY_FLAG: 'desktop.company-route-lookup-retry-v1',
   SETUP_DEPS_TIMEOUT_RETRY_FLAG: 'desktop.setup-deps-timeout-retry-v1',
   retryThrottled: async <T>(
@@ -69,7 +70,10 @@ vi.mock('@hq/platform', async (importOriginal) => ({
         if (flag === 'desktop.first-folder-sync-step-v1') {
           return onboardingFlags.hasFeature(flag);
         }
-        if (flag === 'desktop.company-route-lookup-retry-v1') {
+        if (
+          flag === 'desktop.first-launch-join-key-v1' ||
+          flag === 'desktop.company-route-lookup-retry-v1'
+        ) {
           return onboardingFlags.hasFeature(flag);
         }
         return Promise.resolve({ ok: true, value: false });
@@ -1844,9 +1848,23 @@ describe('onboarding connector telemetry', () => {
       props: { initialStep: CONNECTOR_IMPORT_STEP_INDEX },
     });
 
-    await flush();
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { step?: string } }).properties?.step === 'connector-import',
+      ),
+    );
     host.querySelector<HTMLButtonElement>('[data-testid="connector-import-import"]')?.click();
-    await flush();
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { step?: string; action?: string } }).properties?.step ===
+            'connector-import' &&
+          (args as { properties?: { action?: string } }).properties?.action === 'failed',
+      ),
+    );
 
     const connectorEvents = tauri.invoke.mock.calls
       .filter(
@@ -1884,7 +1902,13 @@ describe('onboarding connector telemetry', () => {
       props: { initialStep: CONNECTOR_IMPORT_STEP_INDEX },
     });
 
-    await flush();
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.filter(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { step?: string } }).properties?.step === 'connector-import',
+      ).length >= 2,
+    );
 
     const connectorActions = tauri.invoke.mock.calls
       .filter(
@@ -1986,6 +2010,183 @@ describe('anonymous installer step pings', () => {
     expect(envelope.sessionId).toBe(body.installSessionId);
     expect(envelope.properties.step).toBe('welcome-signin');
     expect(envelope.properties.action).toBe('entered');
+  });
+
+  it('uses the persisted install id for the anonymous ping and onboarding session when the first-launch flag is on', async () => {
+    const installAttemptId = '22222222-2222-4222-8222-222222222222';
+    onboardingFlags.hasFeature.mockResolvedValue({ ok: true, value: true });
+    stubOnboardingInvoke({
+      is_first_run: () => true,
+      desktop_install_attempt_id: () => installAttemptId,
+    });
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 0 },
+    });
+
+    await flushUntil(() => httpFetch.mock.calls.length > 0);
+
+    const init = (httpFetch.mock.calls[0] as unknown as [string, RequestInit])[1];
+    const body = JSON.parse(String(init.body)) as { installSessionId: string };
+    const onboardingEvent = tauri.invoke.mock.calls
+      .filter(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { eventName?: string }).eventName === 'desktop_onboarding_step',
+      )
+      .map(([, args]) => args as { sessionId: string })[0];
+    expect(body.installSessionId).toBe(installAttemptId);
+    expect(onboardingEvent?.sessionId).toBe(installAttemptId);
+    const welcomeEntries = tauri.invoke.mock.calls.filter(
+      ([command, args]) =>
+        command === 'emit_desktop_operational_telemetry' &&
+        (args as {
+          eventName?: string;
+          properties?: { step?: string; action?: string };
+        }).eventName === 'desktop_onboarding_step' &&
+        (args as {
+          properties?: { step?: string; action?: string };
+        }).properties?.step === 'welcome-signin' &&
+        (args as {
+          properties?: { step?: string; action?: string };
+        }).properties?.action === 'entered',
+    );
+    expect(welcomeEntries).toHaveLength(1);
+    expect(onboardingFlags.hasFeature).toHaveBeenCalledWith(
+      'desktop.first-launch-join-key-v1',
+    );
+  });
+
+  it('keeps both welcome-signin entered rows on first launch when the join-key flag is off', async () => {
+    onboardingFlags.hasFeature.mockResolvedValue({ ok: true, value: false });
+    stubContinuationInvoke();
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 0 },
+    });
+
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.filter(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as {
+            eventName?: string;
+            properties?: { step?: string; action?: string };
+          }).eventName === 'desktop_onboarding_step' &&
+          (args as {
+            properties?: { step?: string; action?: string };
+          }).properties?.step === 'welcome-signin' &&
+          (args as {
+            properties?: { step?: string; action?: string };
+          }).properties?.action === 'entered',
+      ).length === 2,
+    );
+
+    const welcomeEntries = tauri.invoke.mock.calls
+      .filter(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as {
+            eventName?: string;
+            properties?: { step?: string; action?: string };
+          }).eventName === 'desktop_onboarding_step' &&
+          (args as {
+            properties?: { step?: string; action?: string };
+          }).properties?.step === 'welcome-signin' &&
+          (args as {
+            properties?: { step?: string; action?: string };
+          }).properties?.action === 'entered',
+      )
+      .map(([, args]) => args as { properties: { flow?: string } });
+    expect(welcomeEntries.map((entry) => entry.properties.flow)).toEqual([
+      'first_install',
+      'first_launch',
+    ]);
+  });
+
+  it('emits the flag-off welcome step before continuation identity preparation finishes', async () => {
+    onboardingFlags.hasFeature.mockResolvedValue({ ok: true, value: false });
+    stubContinuationInvoke();
+    let resolveContinuationContext!: (context: typeof CONTINUATION_CONTEXT) => void;
+    const unresolvedContext = new Promise<typeof CONTINUATION_CONTEXT>((resolve) => {
+      resolveContinuationContext = resolve;
+    });
+    const invoke = tauri.invoke.getMockImplementation();
+    if (!invoke) throw new Error('Expected the continuation invoke stub to be installed.');
+    tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) =>
+      command === 'desktop_continuation_context'
+        ? unresolvedContext
+        : invoke(command, args),
+    );
+
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 0 },
+    });
+
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as {
+            eventName?: string;
+            properties?: { step?: string; action?: string };
+          }).eventName === 'desktop_onboarding_step' &&
+          (args as {
+            properties?: { step?: string; action?: string };
+          }).properties?.step === 'welcome-signin' &&
+          (args as {
+            properties?: { step?: string; action?: string };
+          }).properties?.action === 'entered',
+      ),
+    );
+    expect(
+      tauri.invoke.mock.calls.filter(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { flow?: string } }).properties?.flow !== 'first_launch',
+      ),
+    ).toHaveLength(1);
+
+    resolveContinuationContext(CONTINUATION_CONTEXT);
+  });
+
+  it('persists queued step telemetry synchronously on pagehide while identity is unresolved', async () => {
+    const unresolvedIdentity = new Promise<unknown>(() => undefined);
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'is_first_run':
+          return unresolvedIdentity;
+        case 'emit_desktop_operational_telemetry':
+          return unresolvedIdentity;
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        default:
+          return undefined;
+      }
+    });
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 0 },
+    });
+
+    await flush();
+    window.dispatchEvent(new PageTransitionEvent('pagehide'));
+    await flush();
+
+    const stored = JSON.parse(localStorage.getItem(__INTERNALS__.STORAGE_KEY) ?? '{}') as {
+      pending?: Array<{ properties: { step: string; action: string } }>;
+    };
+    expect(stored.pending).toContainEqual(
+      expect.objectContaining({
+        properties: expect.objectContaining({
+          step: 'welcome-signin',
+          action: 'entered',
+        }),
+      }),
+    );
   });
 
   it('leaves the wizard usable when the ping network call fails', async () => {
