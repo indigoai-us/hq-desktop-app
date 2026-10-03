@@ -789,5 +789,22 @@ describe('invite-teammate failure telemetry', () => {
     expect(odd.selfHeal).toBe('failed');
     expect(odd.companyUid).toBe('cmp_b');
     expect(odd.existingCompanies).toBeUndefined();
+
+    const lookupFailed = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-10-02T10:00:00.000Z',
+      properties: {
+        step: 'company',
+        action: 'started',
+        decision: 'lookup_failed',
+        outcome: 'route_lookup_failed',
+        surface: 'desktop_installer',
+        platform: 'macos',
+      },
+    });
+    expect(lookupFailed).toMatchObject({
+      decision: 'lookup_failed',
+      outcome: 'route_lookup_failed',
+    });
   });
 });
