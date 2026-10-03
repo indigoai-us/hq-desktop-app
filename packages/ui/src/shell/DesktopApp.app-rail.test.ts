@@ -228,7 +228,7 @@ describe("DesktopApp app rail (console-rail US-003)", () => {
     click("rail-secrets");
     await settle();
     expect(host.querySelector('[data-testid="personal-rail-host"]')?.getAttribute("data-page")).toBe("secrets");
-    expect(host.querySelector('[data-testid="personal-rail-skeleton"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="personal-rail-loading"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="rail-placeholder"]')).toBeNull();
     expect(current()).toBe("secrets");
     await lazyBodiesLoaded(loadPersonalRail);
@@ -253,7 +253,7 @@ describe("DesktopApp app rail (console-rail US-003)", () => {
     // macrotask and the skeleton is already replaced by the page.
     flushSync();
     expect(host.querySelector('[data-testid="personal-deployments-host"]')).not.toBeNull();
-    expect(host.querySelector('[data-testid="personal-deployments-skeleton"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="personal-deployments-loading"]')).not.toBeNull();
     await settle();
     expect(host.querySelector('[data-testid="personal-deployments-host"]')).not.toBeNull();
     expect(current()).toBe("deployments");
@@ -284,7 +284,7 @@ describe("DesktopApp app rail (console-rail US-003)", () => {
     click("rail-telemetry");
     await settle();
     expect(host.querySelector('[data-testid="telemetry-host"]')).not.toBeNull();
-    expect(host.querySelector('[data-testid="telemetry-skeleton"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="telemetry-loading"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="rail-placeholder"]')).toBeNull();
     expect(current()).toBe("telemetry");
     await lazyBodiesLoaded(loadTelemetry);

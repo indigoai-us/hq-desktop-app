@@ -34,7 +34,7 @@ describe("TeamPage pending read (BLANK-3)", () => {
     const logged = vi.spyOn(console, "warn").mockImplementation(() => {});
     component = mount(TeamPage, { target: document.body, props: { slug: "blank-1-team", company: {} } as never });
     flushSync();
-    expect(document.querySelector("[data-testid='team-shimmer']")).toBeTruthy();
+    expect(document.querySelector("[data-testid='team-loader']")).toBeTruthy();
     await expectPendingRead(document, "team-loader");
   });
 

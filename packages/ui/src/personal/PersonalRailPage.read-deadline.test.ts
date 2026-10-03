@@ -35,7 +35,7 @@ describe("PersonalRailPage pending read (BLANK-3)", () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     component = mount(PersonalRailPage, { target: document.body, props: { page: "secrets" } });
     flushSync();
-    expect(document.querySelector("[data-testid='personal-secrets-skeleton']")).toBeTruthy();
+    expect(document.querySelector("[data-testid='personal-secrets-loader']")).toBeTruthy();
     await expectPendingRead(document, "personal-secrets-loader");
     expect(document.querySelector("[data-testid='personal-secrets-error']")).toBeNull();
     // BLANK-2: no zero counts next to the failed read.
@@ -52,7 +52,7 @@ describe("PersonalRailPage pending read (BLANK-3)", () => {
       props: { page: "connections", integrationsApi: { listMyGoogleAccounts: vi.fn(never), listMySlackAccounts: vi.fn(never) } } as never,
     });
     flushSync();
-    expect(document.querySelector("[data-testid='personal-integrations-skeleton']")).toBeTruthy();
+    expect(document.querySelector("[data-testid='personal-integrations-loader']")).toBeTruthy();
     await expectPendingRead(document, "personal-integrations-loader");
     expect(document.querySelector("[data-testid='personal-integrations-error']")).toBeNull();
     expect(document.querySelector("[data-testid='connections-personal-nav']")?.textContent?.trim()).toBe("Personal");

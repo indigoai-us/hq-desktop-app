@@ -57,14 +57,14 @@ describe("CompanySidepane (console-rail US-007)", () => {
     });
     mounted.push(mount(CompanySidepane, { target, props }));
     flushSync();
-    // Loading: real nav rows plus a skeleton roster, no spinner.
+    // Loading: real nav rows plus the roster loader.
     expect(target.querySelectorAll("[data-testid='sidepane-body'] [data-testid='sidepane-row']")).toHaveLength(14);
-    expect(target.querySelector("[data-testid='company-sidepane-roster-skeleton']")).not.toBeNull();
+    expect(target.querySelector("[data-testid='company-sidepane-roster-loading']")).not.toBeNull();
     expect(target.textContent).not.toContain("Live now");
 
     props.rosterLoading = false;
     flushSync();
-    expect(target.querySelector("[data-testid='company-sidepane-roster-skeleton']")).toBeNull();
+    expect(target.querySelector("[data-testid='company-sidepane-roster-loading']")).toBeNull();
     expect(target.textContent).toContain("Live now");
     expect(target.textContent).toContain("Idle");
     expect(target.querySelector("[data-row-id='person:u_zed']")).not.toBeNull();

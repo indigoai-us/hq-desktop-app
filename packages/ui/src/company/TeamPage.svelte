@@ -327,11 +327,6 @@
   <div class="body">
   <div class="canvas">
     {#if phase === "shimmer"}
-      <div class="shimmer" data-testid="team-shimmer" aria-hidden="true">
-        {#each [0, 1, 2, 3] as row (row)}
-          <div class="shimmer-row"><span class="sk sk-av"></span><span class="sk"></span></div>
-        {/each}
-      </div>
       <ReadLoader testid="team-loader" surface="team" onretry={() => (readAttempt += 1)} />
     {:else}
       {#if view.error}
@@ -422,7 +417,7 @@
         }}
       >
         {#snippet skeleton()}
-          <div class="profile-skeleton" data-testid="team-profile-skeleton" aria-busy="true"></div>
+          <div class="profile-loading" aria-busy="true"><ReadLoader testid="team-profile-loading" /></div>
         {/snippet}
       </LazyDoor>
     </div>
@@ -667,7 +662,7 @@
   .body { flex: 1; min-height: 0; display: flex; }
   .canvas { flex: 1; min-width: 0; min-height: 0; overflow: auto; padding: 16px 12px 24px; }
   .profile { flex: 0 0 340px; width: 340px; min-height: 0; border-left: 1px solid var(--line); display: flex; flex-direction: column; }
-  .profile-skeleton { height: 100%; }
+  .profile-loading { height: 100%; }
   .cols, .row-main {
     display: grid;
     grid-template-columns: minmax(180px, 2fr) minmax(90px, 1fr) minmax(120px, 2fr) 96px;
@@ -759,7 +754,4 @@
   .inv li:hover { background: var(--hover); }
   .inv li .meta { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .inv li.empty:hover { background: transparent; }
-  .shimmer-row { display: flex; align-items: center; gap: 8px; height: 31px; padding: 0 8px; }
-  .sk { display: inline-block; width: 160px; height: 10px; border-radius: 4px; background: var(--line); }
-  .sk-av { width: 20px; height: 20px; border-radius: 50%; }
 </style>

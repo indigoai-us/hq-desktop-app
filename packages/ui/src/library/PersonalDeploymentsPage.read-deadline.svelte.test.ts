@@ -30,7 +30,7 @@ describe("PersonalDeploymentsPage pending read (BLANK-3)", () => {
       props: { accountId: "blank-1", listDeployApps: () => new Promise(() => {}) } as never,
     });
     flushSync();
-    expect(document.querySelector("[data-testid='deploy-skeleton']")).toBeTruthy();
+    expect(document.querySelector("[data-testid='deploy-loader']")).toBeTruthy();
     await expectPendingRead(document, "deploy-loader");
   });
 });

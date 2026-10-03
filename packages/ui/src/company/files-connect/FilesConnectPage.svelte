@@ -4,7 +4,7 @@
   import RailButton from "../../common/button/RailButton.svelte";
   /**
    * Vault, Integrations, Secrets, Deployments (US-029).
-   * First frame is the cache or a skeleton. Refresh runs after paint.
+   * First frame is the cache or a loader. Refresh runs after paint.
    * Secret values are never written into the DOM or this window: creating
    * and rotating hand off to `hq secrets set`, which prompts in a terminal.
    * Styling follows the shipped Messages surfaces (chat/), not a new scale.
@@ -102,7 +102,7 @@
   }
 
   let data = $state<FilesConnectCache>(emptyCompanyCache());
-  // Real lists only. null = not loaded yet (skeleton), never sample rows.
+  // Real lists only. null = not loaded yet (loader), never sample rows.
   let secrets = $state<SecretRow[] | null>(null);
   let deployments = $state<DeploymentRowModel[] | null>(null);
   let secretsError = $state<string | null>(null);
@@ -474,7 +474,7 @@
   }
 
   // ---- deploy sources (QA-044) ----------------------------------------------
-  // null = scanning (skeleton). Real project folders only, never samples.
+  // null = scanning (loader). Real project folders only, never samples.
   let deployScan = $state<DeploySourceScan | null>(null);
   let deployScanFor = "";
   let deploySource = $state<string>("");
@@ -671,14 +671,6 @@
   <span class="st" data-status={value}><i class="dot" aria-hidden="true"></i>{statusLabel(value)}</span>
 {/snippet}
 
-{#snippet skeletonRows()}
-  <div class="skel" aria-busy="true" data-testid="files-connect-skeleton">
-    {#each [0, 1, 2, 3, 4] as row (row)}
-      <span class="skel-row"><i class="skel-icon"></i><i class="skel-line" style:width="{70 - row * 8}%"></i></span>
-    {/each}
-  </div>
-{/snippet}
-
 <section class="page" data-testid="files-connect" data-page={page}>
   {#if page === "vault"}
     <header class="toolbar">
@@ -702,7 +694,7 @@
               <RailButton icon="refresh" onclick={() => (recentNonce += 1)}>Try again</RailButton>
             </div>
           {:else if recentObjects === null}
-            <div data-testid="vault-recent-loading">{@render skeletonRows()}</div>
+            <div data-testid="vault-recent-loading"><ReadLoader testid="vault-recent-loader" onretry={() => (recentNonce += 1)} /></div>
           {:else if recentRows.length === 0}
             <div class="empty" data-testid="vault-recent-empty">
               <span class="empty-title">{query.trim() ? "No recent files match this search" : "No files changed in the last 7 days"}</span>
@@ -821,7 +813,6 @@
     <div class="split">
       <div class="list" data-testid="integrations-list">
         {#if connectedLoading}
-          {@render skeletonRows()}
           <ReadLoader testid="integrations-loader" onretry={retryRefresh} />
         {:else if connectedFailed}
           <div class="empty" role="alert" data-testid="integrations-empty">
@@ -888,7 +879,6 @@
     <div class="split">
       <div class="list" data-testid="secrets-list">
         {#if secrets === null}
-          {@render skeletonRows()}
           <ReadLoader testid="secrets-loader" onretry={retryRefresh} />
         {:else if secretRows.length === 0}
           {#if secretsError}
@@ -951,8 +941,7 @@
       <RailButton icon="send" variant="primary" data-testid="deploy-from-project" onclick={openDeploy}>Deploy</RailButton>
     </header>
     {#if deployments === null}
-      <div class="list" data-testid="deployments-skeleton" aria-busy="true">{@render skeletonRows()}</div>
-      <ReadLoader testid="deployments-loader" onretry={retryRefresh} />
+      <div class="list" aria-busy="true"><ReadLoader testid="deployments-loader" onretry={retryRefresh} /></div>
     {:else if deployments.length === 0}
       <div class="empty" data-testid="deployments-empty">
         {#if deploymentsError}
@@ -1067,7 +1056,7 @@
         <p class="hint">The binding stores the name, not the value.</p>
       {:else if sheet === "deploy"}
         {#if deployScan === null}
-          <div data-testid="deploy-sources-skeleton">{@render skeletonRows()}</div>
+          <ReadLoader testid="deploy-sources-loading" />
         {:else if deployScan.sources.length === 0}
           <div class="empty" data-testid="deploy-sources-empty">
             <span class="empty-title">Nothing to deploy yet</span>
@@ -1221,10 +1210,6 @@
   .sheet .empty { padding: 24px 20px; }
   .empty-title { color: var(--t2, var(--v4-text-2)); }
   .empty-line { margin: 0; padding: 48px 16px; text-align: center; color: var(--t3, var(--v4-text-3)); }
-  .skel { display: flex; flex-direction: column; padding: 6px 8px; }
-  .skel-row { display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 8px; }
-  .skel-icon { width: 20px; height: 20px; border-radius: 5px; background: var(--line, var(--v4-control-faint)); }
-  .skel-line { height: 10px; border-radius: 4px; background: var(--line, var(--v4-control-faint)); }
   .status { margin: 0; padding: 8px 16px; color: var(--t3, var(--v4-text-3)); border-top: 1px solid var(--line, var(--v4-rowline)); }
   /* Sheet: chat/NewChannelSheet.svelte. */
   .scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45); z-index: 70; }

@@ -2,6 +2,7 @@
   import { compactNumber } from "../common/compact-number.js";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import RailButton from "../common/button/RailButton.svelte";
+  import ReadLoader from "../common/ReadLoader.svelte";
   /**
    * My Telemetry (US-032). Paints the cached snapshot on the first frame,
    * then refreshes in the background. Charts are CSS bars in text-1 opacities.
@@ -259,12 +260,8 @@
         <RailButton icon="refresh" data-testid="telemetry-retry" onclick={() => refresh()}>Retry</RailButton>
       </div>
     {:else if !snapshot}
-      <div class="canvas" data-testid="telemetry-skeleton" aria-busy="true">
-        <div class="statline">
-          {#each [0, 1, 2, 3, 4, 5] as i (i)}
-            <div class="stat"><div class="n shimmer">&nbsp;</div><div class="l shimmer">&nbsp;</div></div>
-          {/each}
-        </div>
+      <div class="canvas" aria-busy="true">
+        <ReadLoader testid="telemetry-loading" onretry={() => refresh()} />
       </div>
     {:else if !snapshot.optedOut && hasNoTelemetryActivity(snapshot)}
       <div class="canvas">
@@ -273,8 +270,8 @@
     {:else if page === "overview"}
       <div class="canvas">
         <div class="statline">
-          <div class="stat"><div class="n" class:shimmer={refreshing}>{snapshot.sessions}<small>{snapshot.sessionsDelta}</small></div><div class="l">sessions</div></div>
-          <div class="stat"><div class="n" class:shimmer={refreshing}>{snapshot.tokensLabel}<small>tokens</small></div><div class="l">{snapshot.modelMix}</div></div>
+          <div class="stat"><div class="n">{snapshot.sessions}<small>{snapshot.sessionsDelta}</small></div><div class="l">sessions</div></div>
+          <div class="stat"><div class="n">{snapshot.tokensLabel}<small>tokens</small></div><div class="l">{snapshot.modelMix}</div></div>
           <div class="stat"><div class="n">{snapshot.storiesShipped}</div><div class="l">stories shipped</div></div>
           <div class="stat"><div class="n">{snapshot.deploys}</div><div class="l">deploys</div></div>
           <div class="stat"><div class="n">{snapshot.distinctSkills}</div><div class="l">distinct skills</div></div>
@@ -687,15 +684,6 @@
   .cards { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
   .card { text-align: left; border-radius: 8px; padding: 10px 12px; background: var(--raised, transparent); display: flex; flex-direction: column; gap: 2px; }
   .card .n { font-weight: 500; text-align: left; }
-  .shimmer {
-    background: linear-gradient(90deg, var(--btn-bg, var(--v4-control-faint)), var(--hover, var(--v4-hover)), var(--btn-bg, var(--v4-control-faint)));
-    background-size: 200% 100%;
-    animation: telem-shimmer 1.1s linear infinite;
-    border-radius: 4px;
-    min-width: 48px;
-    min-height: 1em;
-  }
-  @keyframes telem-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
   .co { display: flex; align-items: center; gap: 6px; }
   .nm { display: flex; align-items: center; gap: 6px; color: var(--t1, var(--v4-text-1)); }
   .nm i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }

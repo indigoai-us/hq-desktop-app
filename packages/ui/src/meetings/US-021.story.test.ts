@@ -105,7 +105,7 @@ describe("US-021 Meetings sidepane and live canvas", () => {
       filter: EMPTY_MEETINGS_FILTER,
       loading: true,
     });
-    expect(el.querySelector('[data-testid="meetings-sidepane-skeleton"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="meetings-loader"]')).not.toBeNull();
   });
 
   it("rings the speaker in the room strip and lays out three columns", () => {

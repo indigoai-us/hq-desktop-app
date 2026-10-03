@@ -2,6 +2,7 @@
   import { compactNumber } from "../common/compact-number.js";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import RailButton from "../common/button/RailButton.svelte";
+  import ReadLoader from "../common/ReadLoader.svelte";
   /**
    * Atlas inspector (340 px). With a selection: kind, title, vault path,
    * chips, Here now, PRD goal, stories, related, actions, Born/Touched/Inside.
@@ -123,9 +124,7 @@
     {:else if detailLoading}
       <div class="kind spaced">Stories</div>
       <div class="stories" aria-busy="true">
-        <div class="shimmer"></div>
-        <div class="shimmer short"></div>
-        <div class="shimmer"></div>
+        <ReadLoader testid="atlas-stories-loading" surface="atlas" />
       </div>
     {/if}
 
@@ -384,20 +383,6 @@
   }
   .st i.done {
     background: var(--v4-text-3);
-  }
-  .shimmer {
-    height: 10px;
-    border-radius: 4px;
-    background: var(--v4-control-faint);
-    animation: atlas-shimmer 1.2s ease-in-out infinite;
-  }
-  .shimmer.short {
-    width: 60%;
-  }
-  @keyframes atlas-shimmer {
-    50% {
-      opacity: 0.5;
-    }
   }
   .actions {
     display: flex;

@@ -198,11 +198,6 @@
   {:else}
     <div class="split">
       <div class="roster" role="list">
-        {#if cloudPhase === "shimmer" && rows.length === 0}
-          <div class="shimmer" data-testid="bots-shimmer" aria-hidden="true">
-            {#each [0, 1, 2] as i (i)}<div class="shimmer-row"><span class="sk sk-av"></span><span class="sk"></span></div>{/each}
-          </div>
-        {/if}
         {#if cloudPhase === "shimmer"}<ReadLoader testid="bots-loader" onretry={() => void loadCloud()} />{/if}
         {#if filteredOut}
           <ListEmptyState total={totalBots} shown={0} filtered noun={["bot", "bots"]} scope="in this company" clearLabel="Show all bots" onclear={() => (filter = "all")} testid="bots-filter-empty" />
@@ -253,7 +248,7 @@
               }}
             >
               {#snippet skeleton()}
-                <div class="profile-skeleton" data-testid="bot-profile-skeleton" aria-busy="true"></div>
+                <div class="profile-loading"><ReadLoader testid="bot-profile-loading" /></div>
               {/snippet}
             </LazyDoor>
           {/key}
@@ -364,7 +359,7 @@
   .split { display: flex; min-height: 0; flex: 1; }
   .roster { flex: 1; min-width: 0; min-height: 0; overflow: auto; padding: 12px; display: flex; flex-direction: column; }
   .inspector { flex: 0 0 340px; width: 340px; min-height: 0; border-left: 1px solid var(--line); display: flex; flex-direction: column; }
-  .profile-skeleton { height: 100%; }
+  .profile-loading { height: 100%; padding: 12px; box-sizing: border-box; }
   .bot-row {
     display: grid;
     grid-template-columns: 20px minmax(120px, 2fr) 56px minmax(80px, 2fr) minmax(70px, 1fr);
@@ -399,7 +394,4 @@
   }
   .nm { color: var(--t1); }
   .state { display: inline-flex; align-items: center; gap: 6px; color: var(--t2); justify-content: flex-end; }
-  .shimmer-row { display: flex; align-items: center; gap: 8px; height: 31px; padding: 0 8px; }
-  .sk { display: inline-block; width: 160px; height: 10px; border-radius: 4px; background: var(--line); }
-  .sk-av { width: 20px; height: 20px; border-radius: 5px; }
 </style>

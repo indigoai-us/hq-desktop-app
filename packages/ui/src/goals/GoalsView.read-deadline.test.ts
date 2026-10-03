@@ -36,7 +36,7 @@ describe("GoalsView pending read (BLANK-3)", () => {
       props: { adapter: { projects: fakeProjectsApi(ipc) } as PlatformAdapter, slug: "blank-1-goals" },
     });
     flushSync();
-    expect(host.querySelector("[data-testid='goals-skeleton']")).toBeTruthy();
+    expect(host.querySelector("[data-testid='goals-loader']")).toBeTruthy();
     await expectPendingRead(host, "goals-loader");
   });
 });

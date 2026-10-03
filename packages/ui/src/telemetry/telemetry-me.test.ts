@@ -166,7 +166,7 @@ describe("TelemetryView on the real source", () => {
     document.body.appendChild(target);
     component = mount(TelemetryView, { target, props: { cache } });
     flushSync();
-    expect(target.querySelector("[data-testid='telemetry-skeleton']")).not.toBeNull();
+    expect(target.querySelector("[data-testid='telemetry-loading']")).not.toBeNull();
     await settle();
     expect(target.querySelector(".stat .n")?.textContent).toContain("42");
     expect(target.textContent).not.toContain("128");

@@ -115,7 +115,7 @@ describe("GoalsView", () => {
     });
     flushSync();
     await expect.poll(() => host?.querySelector("[data-testid='link-project']")).toBeTruthy();
-    await expect.poll(() => host?.querySelector(".shimmer")).toBeNull();
+    await expect.poll(() => host?.querySelector("[data-testid='goals-loader']")).toBeNull();
 
     (host?.querySelector("[data-testid='link-project']") as HTMLButtonElement).click();
     flushSync();
@@ -151,7 +151,7 @@ describe("GoalsView", () => {
       props: { adapter: { projects: fakeProjectsApi(ipc) } as PlatformAdapter, slug: "indigo" },
     });
     flushSync();
-    await expect.poll(() => host?.querySelector(".shimmer")).toBeNull();
+    await expect.poll(() => host?.querySelector("[data-testid='goals-loader']")).toBeNull();
     (host?.querySelector("[data-testid='link-project']") as HTMLButtonElement).click();
     flushSync();
     await expect.poll(() => host?.querySelectorAll("[data-testid='link-picker'] .row").length).toBe(2);
@@ -184,7 +184,7 @@ describe("GoalsView", () => {
       props: { adapter: { projects: fakeProjectsApi(ipc) } as PlatformAdapter, slug: "indigo" },
     });
     flushSync();
-    await expect.poll(() => host?.querySelector(".shimmer")).toBeNull();
+    await expect.poll(() => host?.querySelector("[data-testid='goals-loader']")).toBeNull();
     // OWNER-D 9: Goals shows only goals and their linked projects; the
     // unlinked list lives on the Projects page filter.
     for (let i = 0; i < 4; i += 1) await new Promise((r) => setTimeout(r, 0));

@@ -1,9 +1,10 @@
 <script lang="ts">
   /**
    * Rail mount for Profile, Billing, and Settings (US-035).
-   * The skeleton is the first frame. The body loads through the lazy door.
+   * The loader is the first frame. The body loads through the lazy door.
    */
   import { onMount } from "svelte";
+  import ReadLoader from "../common/ReadLoader.svelte";
   import { loadAccountPages } from "./account-lazy.js";
   import type { AccountPageId, AccountRoleRow } from "./account-menu.js";
 
@@ -61,39 +62,13 @@
       {shortcutEditing}
     />
   {:else}
-    <div class="skeleton" data-testid="account-skeleton" aria-busy="true">
-      <aside>
-        <div class="bar"></div>
-        <div class="bar"></div>
-        <div class="bar"></div>
-      </aside>
-      <main>
-        <div class="title"></div>
-        <div class="row"></div>
-        <div class="row"></div>
-        <div class="row"></div>
-      </main>
+    <div class="loading">
+      <ReadLoader testid="account-loading" />
     </div>
   {/if}
 </div>
 
 <style>
   .host { height: 100%; min-height: 0; }
-  .skeleton {
-    display: grid;
-    grid-template-columns: 260px minmax(0, 1fr);
-    height: 100%;
-    gap: 16px;
-    padding: 16px;
-  }
-  .bar, .title, .row {
-    border-radius: 6px;
-    background: linear-gradient(90deg, var(--v4-control-faint), var(--v4-hover), var(--v4-control-faint));
-    background-size: 200% 100%;
-    animation: account-skel 1.1s linear infinite;
-  }
-  .bar { height: 28px; margin-bottom: 8px; }
-  .title { height: 22px; width: 160px; }
-  .row { height: 36px; margin-top: 8px; }
-  @keyframes account-skel { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+  .loading { padding: 16px; }
 </style>

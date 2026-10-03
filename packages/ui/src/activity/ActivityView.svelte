@@ -190,7 +190,7 @@
       <RailButton icon="refresh" data-testid="activity-retry" onclick={() => (readNonce += 1)}>Try again</RailButton>
     </div>
   {:else if !snapshot}
-    <div class="canvas" data-testid="activity-skeleton" aria-busy="true">
+    <div class="canvas" data-testid="activity-loading" aria-busy="true">
       <ReadLoader testid="activity-loader" onretry={() => (readNonce += 1)} />
     </div>
   {:else if tab === "team"}
@@ -287,7 +287,7 @@
       {#if chart}
         <chart.default bars={bars} />
       {:else}
-        <div class="at-days shimmer" data-testid="token-day-skeleton" aria-busy="true"></div>
+        <div class="at-days" aria-busy="true"><ReadLoader testid="token-day-loading" /></div>
       {/if}
       <div class="axis" data-testid="token-axis">
         <span>{bars[0]?.label ?? ""}</span>
@@ -399,12 +399,4 @@
   .ev { display: grid; grid-template-columns: 52px 1fr; gap: 10px; padding: 7px 0; line-height: 17px; font-size: 13px; color: var(--t2); }
   .ev b { font-weight: 500; color: var(--t1); }
   .tm { font-variant-numeric: tabular-nums; color: var(--t3); }
-  .shimmer, .at-days.shimmer {
-    height: 28px;
-    margin-bottom: 8px;
-    border-radius: 6px;
-    background: linear-gradient(90deg, var(--v4-control-faint), var(--v4-hover), var(--v4-control-faint));
-    background-size: 200% 100%;
-  }
-  .at-days.shimmer { height: 48px; }
 </style>

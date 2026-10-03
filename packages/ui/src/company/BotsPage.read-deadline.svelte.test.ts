@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-// BLANK-1: a cloud-bots read that never answers must not hold the shimmer
+// BLANK-1: a cloud-bots read that never answers must not hold the loader
 // forever; after the shared read deadline the page shows plain copy and
 // Try again.
 
@@ -31,7 +31,6 @@ describe("BotsPage pending read (BLANK-3)", () => {
     } as Record<string, unknown>, { get: (t, k) => (k in t ? t[k as string] : k === "isAvailable" ? () => false : api({})) });
     component = mount(BotsPage, { target: document.body, props: { companyUid: "cmp_blank1", adapter, localBots: [], companies: [] } as never });
     flushSync();
-    expect(document.querySelector("[data-testid='bots-shimmer']")).toBeTruthy();
     await expectPendingRead(document, "bots-loader");
     // BLANK-2: the failed read with nothing loaded shows no zero count.
     expect(document.querySelector("[data-testid='bots-count']")).toBeNull();

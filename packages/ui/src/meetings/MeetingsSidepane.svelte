@@ -7,7 +7,7 @@
   company mark, and a notes mark on past rows with a recap. Sections derive
   from the meetings-store snapshot, which hydrates from meetings-cache before
   the first refresh, so the pane paints from cache in the first frame and
-  shows shimmer rows only on a true cold start.
+  shows the loader only on a true cold start.
 -->
 <script lang="ts">
   import ReadLoader from "../common/ReadLoader.svelte";
@@ -135,13 +135,9 @@
   {/snippet}
 
   {#if loading && sections.length === 0}
-    <div class="skeleton" data-testid="meetings-sidepane-skeleton" aria-hidden="true">
-      {#each [40, 0, 0, 40, 0, 0, 0] as label, i (i)}
-        {#if label}<div class="sk-label"><span class="sk" style:width="40%"></span></div>
-        {:else}<div class="sk-row"><span class="sk" style:width="34px"></span><span class="sk" style:width={`${110 + ((i * 37) % 60)}px`}></span></div>{/if}
-      {/each}
+    <div aria-busy="true">
+      <ReadLoader testid="meetings-loader" surface="meetings" onretry={onretry ? () => onretry() : null} />
     </div>
-    <ReadLoader testid="meetings-loader" surface="meetings" onretry={onretry ? () => onretry() : null} />
   {:else if sections.length === 0 && error}
     <div class="empty" data-testid="meetings-sidepane-error">
       <span>Past meetings could not load.</span>
@@ -470,41 +466,4 @@
     cursor: pointer;
   }
 
-  .sk-label {
-    height: 30px;
-    box-sizing: border-box;
-    padding: 14px 8px 4px;
-  }
-
-  .sk-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    height: 30px;
-    padding: 0 8px;
-  }
-
-  .sk {
-    display: inline-block;
-    height: 10px;
-    border-radius: 4px;
-    background: var(--line);
-    animation: meetings-sk 1.8s ease-in-out infinite;
-  }
-
-  @keyframes meetings-sk {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.45;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .sk {
-      animation: none;
-    }
-  }
 </style>

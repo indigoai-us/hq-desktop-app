@@ -8,6 +8,7 @@
 -->
 <script lang="ts">
   import Sidepane from "./Sidepane.svelte";
+  import ReadLoader from "../common/ReadLoader.svelte";
   import SidepaneList from "./SidepaneList.svelte";
   import {
     COMPANY_SETTINGS_ROW,
@@ -34,7 +35,7 @@
     companyApi?: CompanyApi | null;
     /** Atlas (US-009): Live now and Idle rosters follow the sections. */
     roster?: readonly SidepaneRosterEntry[];
-    /** Atlas (US-009): names still loading; draw skeleton roster rows. */
+    /** Atlas (US-009): names still loading; show the loader under the roster label. */
     rosterLoading?: boolean;
     /** Atlas (US-013): roster person filtering the map; highlighted instead of Atlas. */
     rosterSelected?: string | null;
@@ -140,11 +141,9 @@
     onselect={(row) => onselect?.(row.id)}
   />
   {#if atlasActive && rosterLoading}
-    <div class="roster-skeleton" data-testid="company-sidepane-roster-skeleton" aria-hidden="true">
-      <div class="sk-label">People</div>
-      {#each [78, 64, 58, 84, 60, 70] as width, i (i)}
-        <div class="sk-row"><span class="sk sk-mark"></span><span class="sk" style:width={`${width}px`}></span></div>
-      {/each}
+    <div class="roster-loading">
+      <div class="roster-label">People</div>
+      <ReadLoader testid="company-sidepane-roster-loading" />
     </div>
   {/if}
 </Sidepane>
@@ -208,7 +207,7 @@
     background: var(--ok);
   }
 
-  .sk-label {
+  .roster-label {
     height: 30px;
     box-sizing: border-box;
     padding: 12px 8px 4px;
@@ -217,45 +216,6 @@
     font-size: 10px;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-  }
-
-  .sk-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    height: 31px;
-    padding: 0 8px;
-  }
-
-  .sk {
-    display: inline-block;
-    height: 10px;
-    border-radius: 4px;
-    background: var(--line);
-    animation: sidepane-sk 1.8s ease-in-out infinite;
-  }
-
-  .sk-mark {
-    flex: none;
-    width: 16px;
-    height: 16px;
-    border-radius: 50%;
-  }
-
-  @keyframes sidepane-sk {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.45;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .sk {
-      animation: none;
-    }
   }
 
   .footer-row {

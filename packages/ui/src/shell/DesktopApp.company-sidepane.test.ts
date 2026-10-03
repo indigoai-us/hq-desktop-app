@@ -149,9 +149,9 @@ describe("DesktopApp company sidepane (console-rail US-007)", () => {
     host.querySelector<HTMLButtonElement>('[data-row-id="workers"]')!.click();
     await settle();
     // US-028 Brain pages replaced the placeholder; the lazy door paints its
-    // skeleton with the row title in the first frame.
-    const skeleton = host.querySelector('[data-testid="brain-door-skeleton"]');
-    expect(skeleton?.querySelector("h1")?.textContent).toBe("Workers");
+    // loading frame (row title plus the shared loader) in the first frame.
+    const loading = host.querySelector('[data-testid="brain-door-loading"]')?.closest(".rail-placeholder");
+    expect(loading?.querySelector("h1")?.textContent).toBe("Workers");
     expect(host.querySelector('[data-row-id="workers"]')?.getAttribute("aria-current")).toBe("page");
     expect(
       host.querySelector('[data-testid="rail-company"]')?.getAttribute("aria-current"),
@@ -206,7 +206,7 @@ describe("DesktopApp company sidepane (console-rail US-007)", () => {
 
   function meetingsPaneShown(): boolean {
     return (
-      host.querySelector('[data-testid="meetings-sidepane-door-skeleton"]') != null ||
+      host.querySelector('[data-testid="meetings-sidepane-door-loading"]') != null ||
       host.querySelector('[data-sidepane-key="meetings"], [aria-label="Meetings"]') != null
     );
   }

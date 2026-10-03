@@ -51,8 +51,6 @@ const ALLOWLIST: Record<string, string> = {
     "Sentence: \"{name} is not connected to HQ cloud\".",
   "meetings/MeetingsStatesBody.svelte::companyName":
     "Sentence: \"Join opens 10 min before \u00b7 {name}\".",
-  "shell/AtlasLandingHost.svelte::companyLabel":
-    "Loading status sentence: \"Loading {name}\".",
 };
 
 /**

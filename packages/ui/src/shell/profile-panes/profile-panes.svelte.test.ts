@@ -23,7 +23,7 @@ describe("ProfilePaneHost", () => {
     });
     await tick();
     expect(host.querySelector('[data-testid="bot-profile-pane"]')?.getAttribute("data-phase")).toBe("ready");
-    expect(host.querySelector('[data-testid="bot-profile-shimmer"]')).toBeNull();
+    expect(host.querySelector('[data-testid="bot-profile-loading"]')).toBeNull();
     (host.querySelector('[data-testid="bot-profile-edit"]') as HTMLButtonElement).click();
     await tick();
     expect(host.querySelector('[data-testid="edit-bot-sheet"]')).not.toBeNull();
@@ -33,12 +33,12 @@ describe("ProfilePaneHost", () => {
     expect(host.textContent).toContain("heartbeat");
   });
 
-  it("opens a person profile with a shimmer when the name is empty", async () => {
+  it("opens a person profile with the loader when the name is empty", async () => {
     host = document.createElement("div");
     document.body.appendChild(host);
     mount(ProfilePaneHost, { target: host, props: { kind: "person", name: "" } });
     await tick();
-    expect(host.querySelector('[data-testid="user-profile-shimmer"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="user-profile-loading"]')).not.toBeNull();
   });
 
   it("person profile wires View in Atlas and Manage access", async () => {

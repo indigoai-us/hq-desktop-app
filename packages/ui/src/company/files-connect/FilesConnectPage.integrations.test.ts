@@ -97,10 +97,10 @@ describe("OWNER-D 2 company Integrations reads connected apps", () => {
     expect(target.querySelector("[data-testid='integrations-count']")?.textContent).toContain("2");
   });
 
-  it("shows a skeleton while the read is in flight", async () => {
+  it("shows the loader while the read is in flight", async () => {
     const target = mountWith(() => new Promise(() => {}));
     await settle();
-    expect(target.querySelector("[data-testid='files-connect-skeleton']")).toBeTruthy();
+    expect(target.querySelector("[data-testid='integrations-loader']")).toBeTruthy();
     expect(target.querySelector("[data-testid='integrations-empty']")).toBeNull();
     expect(target.querySelector("[data-testid='integrations-count']")).toBeNull();
   });

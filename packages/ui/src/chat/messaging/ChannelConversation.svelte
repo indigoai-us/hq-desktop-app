@@ -11,6 +11,7 @@
    * are optimistic-local and bubble out through `onsend`; reaction toggles bubble
    * through `ontogglereaction`. This is a display component — the host owns data.
    */
+  import ReadLoader from "../../common/ReadLoader.svelte";
   import { onDestroy, tick, untrack, type Snippet } from "svelte";
   import { observeConversationRead } from "./observe-conversation-read";
   import { RevealTracker, revealLines, smoothFollow } from "./message-reveal";
@@ -659,17 +660,6 @@
   let dragActive = $state(false);
   let dragDepth = 0;
   let pasteCounter = 0;
-  /**
-   * Placeholder rows for a cold open. Widths are irregular on purpose — five
-   * identical bars read as a progress bar, not as a conversation.
-   */
-  const THREAD_SKELETON_ROWS = [
-    { name: 84, lines: [220, 320] },
-    { name: 64, lines: [280] },
-    { name: 96, lines: [180, 340, 240] },
-    { name: 72, lines: [260] },
-    { name: 88, lines: [300, 200] },
-  ];
   let scroller = $state<HTMLDivElement | null>(null);
   /** The single box holding everything that scrolls — see the template note. */
   let threadContent = $state<HTMLDivElement | null>(null);
@@ -1714,27 +1704,7 @@
           </div>
         {/if}
         {#if timeline.length === 0 && loading}
-          <!--
-            Cold open: this conversation has nothing cached, so the pane would
-            otherwise be blank until the fetch lands. These placeholder rows
-            carry the real row geometry (32px avatar, name line, body lines) and
-            sit at the bottom like real messages, so the switch from placeholder
-            to message moves nothing. Aria-hidden: a reader is told the state by
-            the thread's own busy flag, not by five empty rows.
-          -->
-          <div class="thread-skeleton" data-testid="conversation-skeleton" aria-hidden="true">
-            {#each THREAD_SKELETON_ROWS as row, i (i)}
-              <div class="thread-skeleton-row">
-                <span class="thread-skeleton-avatar"></span>
-                <span class="thread-skeleton-column">
-                  <span class="thread-skeleton-name" style={`width:${row.name}px`}></span>
-                  {#each row.lines as width, j (j)}
-                    <span class="thread-skeleton-line" style={`width:${width}px`}></span>
-                  {/each}
-                </span>
-              </div>
-            {/each}
-          </div>
+          <ReadLoader testid="conversation-loading" />
         {/if}
         {#if loadingEarlier || (serverScanEmpty && !serverViewAutoStarted)}
           <div
@@ -2544,51 +2514,6 @@
     width: 4px;
   }
 
-  /* ── Cold-open placeholder ───────────────────────────────────────────────
-     Geometry mirrors a real message row so replacing one with the other is a
-     paint, not a relayout: 32px avatar, 12px gutter, name line then body
-     lines on the same rhythm as `.dm-msg`. */
-  .thread-skeleton {
-    display: flex;
-    flex-direction: column;
-    gap: 22px;
-    padding: 8px 0 4px;
-  }
-
-  .thread-skeleton-row {
-    display: flex;
-    gap: 12px;
-  }
-
-  .thread-skeleton-avatar,
-  .thread-skeleton-name,
-  .thread-skeleton-line {
-    display: inline-block;
-    border-radius: 6px;
-    background: color-mix(in srgb, var(--t1, #fff) 6%, transparent);
-  }
-
-  .thread-skeleton-avatar {
-    flex: 0 0 auto;
-    width: 32px;
-    height: 32px;
-    border-radius: 50%;
-  }
-
-  .thread-skeleton-column {
-    display: flex;
-    flex-direction: column;
-    gap: 7px;
-    padding-top: 2px;
-  }
-
-  .thread-skeleton-name {
-    height: 11px;
-  }
-
-  .thread-skeleton-line {
-    height: 10px;
-  }
   .dm-thread::-webkit-scrollbar-thumb {
     background: var(--line);
     border-radius: 999px;

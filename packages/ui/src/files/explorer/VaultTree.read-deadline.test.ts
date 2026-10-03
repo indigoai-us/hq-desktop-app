@@ -38,7 +38,6 @@ describe("VaultTree pending read (BLANK-3)", () => {
       },
     });
     flushSync();
-    expect(document.querySelector(".vt-skeleton")).toBeTruthy();
     await expectPendingRead(document, "vault-tree-loader");
   });
 });

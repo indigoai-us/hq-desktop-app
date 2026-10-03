@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ReadLoader from "../common/ReadLoader.svelte";
   /**
    * ProjectListView — the Board project list (US-007).
    *
@@ -159,11 +160,7 @@
 
   <div class="list-body">
     {#if loading && projects.length === 0}
-      <div class="list-loading" aria-busy="true">
-        {#each [0, 1, 2] as row (row)}
-          <div class="skeleton-row"></div>
-        {/each}
-      </div>
+      <ReadLoader testid="project-list-loading" />
     {:else if !hasProjects && !error}
       <div class="list-empty">
         <p class="empty-title">No projects found</p>
@@ -475,25 +472,6 @@
     outline-offset: -2px;
   }
 
-  .list-loading {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2);
-  }
-
-  .skeleton-row {
-    height: 64px;
-    border: 0;
-    border-bottom: 1px solid var(--border);
-    border-radius: 0;
-    background:
-      linear-gradient(var(--row-active), var(--row-active)) 0 16px / 42% 10px
-        no-repeat,
-      linear-gradient(var(--row-active), var(--row-active)) 0 36px / 68% 8px
-        no-repeat;
-    animation: skeleton-pulse 1.3s ease-in-out infinite;
-  }
-
   .list-empty {
     display: flex;
     flex-direction: column;
@@ -525,16 +503,6 @@
     cursor: pointer;
   }
 
-  @keyframes skeleton-pulse {
-    0%,
-    100% {
-      opacity: 0.5;
-    }
-    50% {
-      opacity: 1;
-    }
-  }
-
   @media (prefers-reduced-motion: reduce) {
     .status-pill,
     .group-segment,
@@ -542,10 +510,6 @@
     .chevron,
     .search-input {
       transition: none;
-    }
-
-    .skeleton-row {
-      animation: none;
     }
   }
 </style>

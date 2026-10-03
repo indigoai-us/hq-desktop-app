@@ -13,7 +13,7 @@
   import RailButton from "../common/button/RailButton.svelte";
   /**
    * Personal Deployments (US-031). Real hq-deploy apps across the personal
-   * scope and every cloud company. Paints the cached list first (skeleton on
+   * scope and every cloud company. Paints the cached list first (loader on
    * the first ever load), then refreshes. A deploying row keeps its previous
    * build serving until swap.
    */
@@ -248,10 +248,9 @@
           {:else if unavailable}
             <p class="empty" data-testid="deploy-unavailable">Deployments load in the desktop app once you're signed in.</p>
           {:else}
-            <div data-testid="deploy-skeleton" aria-busy="true">
-              {#each [0, 1, 2, 3, 4, 5] as i (i)}<div class="skel"></div>{/each}
+            <div aria-busy="true">
+              <ReadLoader testid="deploy-loader" onretry={() => (loadAttempt += 1)} />
             </div>
-            <ReadLoader testid="deploy-loader" onretry={() => (loadAttempt += 1)} />
           {/if}
         {:else if rows.length === 0}
           <ListEmptyState
@@ -430,7 +429,6 @@
   .load-error p { margin: 0; }
   .st.err { color: var(--v4-error); }
   .st.off { color: var(--t3); }
-  .skel { height: 31px; margin: 1px 0; border-radius: 8px; background: var(--raised); }
   .more {
     margin: 8px; height: 28px; padding: 0 10px; border: none; border-radius: 8px;
     background: var(--btn-bg); color: var(--t2); font: inherit; cursor: pointer;

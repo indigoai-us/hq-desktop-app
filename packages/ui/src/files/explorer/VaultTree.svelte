@@ -265,11 +265,6 @@
       {/if}
     </div>
   {:else if loading[vault.root] && !children[vault.root]}
-    <div class="vt-skeleton" aria-hidden="true">
-      {#each [72, 54, 64, 40, 58] as w, i (i)}
-        <span style={`width:${w}%`}></span>
-      {/each}
-    </div>
     <ReadLoader testid="vault-tree-loader" onretry={() => { if (onretry) onretry(); else void load(vault.root); }} />
   {:else if rows.length === 0}
     <p class="vt-note">This vault is empty.</p>
@@ -434,16 +429,6 @@
     margin: 12px 10px;
     color: var(--v4-text-3);
     font-size: 13px;
-  }
-  .vt-skeleton {
-    display: grid;
-    gap: 10px;
-    padding: 10px;
-  }
-  .vt-skeleton span {
-    height: 10px;
-    border-radius: 4px;
-    background: var(--v4-control-faint);
   }
   @media (prefers-reduced-motion: reduce) {
     .vt-chevron,

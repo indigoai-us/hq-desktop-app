@@ -567,7 +567,7 @@ describe("US-029 FilesConnectPage", () => {
     const target = mountPage("deployments", files, { listDeployApps });
     (target.querySelector("[data-testid='deploy-from-project']") as HTMLButtonElement).click();
     flushSync();
-    expect(target.querySelector("[data-testid='deploy-sources-skeleton']")).not.toBeNull();
+    expect(target.querySelector("[data-testid='deploy-sources-loading']")).not.toBeNull();
     expect((target.querySelector("[data-testid='run-deploy']") as HTMLButtonElement).disabled).toBe(true);
     release();
     await vi.waitFor(() => expect(target.querySelector("[data-testid='deploy-source']")).not.toBeNull());

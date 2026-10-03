@@ -34,7 +34,7 @@
     type UpdateGateStatus,
 } from "@hq/platform";
   import V4TitleBar from "../home/V4TitleBar.svelte";
-  import ChannelSkeleton from "./ChannelSkeleton.svelte";
+  import ReadLoader from "../common/ReadLoader.svelte";
   import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
   import AppRail from "./AppRail.svelte";
   import LazyDoor from "./LazyDoor.svelte";
@@ -951,7 +951,7 @@
     /**
      * Bound for first-paint optional fetches (directory, contacts, DM
      * threads). Tests pass a short value so a hung/404 call cannot leave the
-     * conversation pane on a skeleton.
+     * conversation pane on its loader.
      */
     bootTimeoutMs?: number;
     /** First successful conversation/empty paint — host reports `shell_ready`. */
@@ -2411,7 +2411,7 @@
     }
   }
   // Lazy surfaces (profile panes, popovers, create sheets) warm once the first
-  // frame is up, so the first click rarely shows their skeleton.
+  // frame is up, so the first click rarely shows their loader.
   onMount(() => preloadDoorsWhenIdle());
   // Markdown previews route http(s) links through the host opener (QA-094).
   onMount(() => {
@@ -5265,7 +5265,7 @@
    * The bot's name for a profile opened from a DM header, resolved from its
    * UID: the local bot record, then the channel roster, then the rail row's
    * own title. Never the conversation placeholder (QA-087); an unknown name
-   * stays empty so the pane shimmers until its status refresh names it.
+   * stays empty so the pane shows its loader until its status refresh names it.
    */
   function headerAgentName(uid: string): string {
     const bot = localBots.find((b) => b.agentUid === uid);
@@ -10197,9 +10197,10 @@
           <div
             role="dialog"
             aria-label="New company"
-            data-testid="new-company-skeleton"
-            style="position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:480px;height:240px;background:var(--v4-popover);border:1px solid var(--v4-hairline);border-radius:8px;z-index:71"
-          ></div>
+            style="position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:480px;padding:16px;box-sizing:border-box;background:var(--v4-popover);border:1px solid var(--v4-hairline);border-radius:8px;z-index:71"
+          >
+            <ReadLoader testid="new-company-loading" />
+          </div>
         {/snippet}
       </LazyDoor>
     {/if}
@@ -10414,13 +10415,13 @@
           />
         {:else if view === "meetings"}
           <!-- US-021: Meetings owns the shared 260 px sidepane while it is the
-               destination. The host body loads behind a door; the skeleton
-               paints the click frame. -->
+               destination. The host body loads behind a door; the shared
+               loader paints the click frame. -->
           <LazyDoor door={meetingsSidepaneDoor} props={{ memory: sidepaneScrollMemory }}>
             {#snippet skeleton()}
               <Sidepane modelKey="meetings" memory={sidepaneScrollMemory} label="Meetings">
-                <div class="meetings-door-skeleton" data-testid="meetings-sidepane-door-skeleton" aria-busy="true">
-                  <span></span><span></span><span></span>
+                <div class="meetings-door-loading">
+                  <ReadLoader testid="meetings-sidepane-door-loading" />
                 </div>
               </Sidepane>
             {/snippet}
@@ -10678,9 +10679,10 @@
             }}
           >
             {#snippet skeleton()}
-              <div class="rail-placeholder" data-testid="brain-door-skeleton" aria-busy="true">
+              <div class="rail-placeholder" aria-busy="true">
                 <h1>{railPlaceholder.title}</h1>
                 <p>{railPlaceholder.summary}</p>
+                <ReadLoader testid="brain-door-loading" />
               </div>
             {/snippet}
           </LazyDoor>
@@ -10730,9 +10732,10 @@
             }}
           >
             {#snippet skeleton()}
-              <div class="rail-placeholder" data-testid="files-connect-door-skeleton" aria-busy="true">
+              <div class="rail-placeholder" aria-busy="true">
                 <h1>{railPlaceholder.title}</h1>
                 <p>{railPlaceholder.summary}</p>
+                <ReadLoader testid="files-connect-door-loading" />
               </div>
             {/snippet}
           </LazyDoor>
@@ -10836,8 +10839,8 @@
             }}
           >
             {#snippet skeleton()}
-              <div class="meetings-door-skeleton canvas" data-testid="meetings-canvas-door-skeleton" aria-busy="true">
-                <span></span><span></span><span></span>
+              <div class="meetings-door-loading canvas">
+                <ReadLoader testid="meetings-canvas-door-loading" />
               </div>
               <div style:display="none">{@render meetingsAgenda()}</div>
             {/snippet}
@@ -11730,7 +11733,7 @@
                     }}
                   >
                     {#snippet skeleton()}
-                      <div class="profile-pane-skeleton" data-testid="profile-pane-skeleton" aria-busy="true"></div>
+                      <div class="profile-pane-loading"><ReadLoader testid="profile-pane-loading" /></div>
                     {/snippet}
                   </LazyDoor>
                   <div class="legacy-detail" inert aria-hidden="true">
@@ -11773,7 +11776,7 @@
                     }}
                   >
                     {#snippet skeleton()}
-                      <div class="profile-pane-skeleton" data-testid="profile-pane-skeleton" aria-busy="true"></div>
+                      <div class="profile-pane-loading"><ReadLoader testid="profile-pane-loading" /></div>
                     {/snippet}
                   </LazyDoor>
                   <div class="legacy-detail" inert aria-hidden="true">
@@ -11827,7 +11830,7 @@
                     }}
                   >
                     {#snippet skeleton()}
-                      <div class="profile-pane-skeleton" data-testid="profile-pane-skeleton" aria-busy="true"></div>
+                      <div class="profile-pane-loading"><ReadLoader testid="profile-pane-loading" /></div>
                     {/snippet}
                   </LazyDoor>
                   <div class="legacy-detail" inert aria-hidden="true">
@@ -11940,8 +11943,10 @@
             Couldn’t load conversations.
           </div>
         {:else}
-          <!-- Pre-selection boot state: skeleton, not a "No data" flash. -->
-          <ChannelSkeleton />
+          <!-- Pre-selection boot state: the shared loader, not a "No data" flash. -->
+          <div class="channel-loading chat-shell">
+            <ReadLoader testid="channel-loading" />
+          </div>
         {/if}
       </main>
     </div>
@@ -12086,29 +12091,16 @@
     overflow: hidden;
   }
 
-  .meetings-door-skeleton {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
+  .meetings-door-loading {
     padding: 16px 12px;
   }
 
-  .meetings-door-skeleton.canvas {
+  .meetings-door-loading.canvas {
     padding: 24px;
   }
 
-  .meetings-door-skeleton span {
-    height: 12px;
-    border-radius: 6px;
-    background: var(--v4-control-bg);
-  }
-
-  .meetings-door-skeleton span:nth-child(2) {
-    width: 70%;
-  }
-
-  .meetings-door-skeleton span:nth-child(3) {
-    width: 45%;
+  .channel-loading {
+    padding: 16px 24px;
   }
 
   .rail-placeholder {
@@ -12351,9 +12343,11 @@
   }
 
   /* First frame of a profile pane while its chunk loads (lazy-doors.ts). */
-  .profile-pane-skeleton {
+  .profile-pane-loading {
     flex: 1 1 auto;
     min-height: 0;
+    padding: 16px;
+    box-sizing: border-box;
     background: var(--v4-secondary-sidebar, var(--side-bg));
   }
 

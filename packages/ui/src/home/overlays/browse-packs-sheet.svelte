@@ -1,5 +1,6 @@
 <script lang="ts">
   import { dismissable } from "../../common/dismissable.js";
+  import ReadLoader from "../../common/ReadLoader.svelte";
   /**
    * Browse packs sheet (US-036). Installed rows paint from the Core popover
    * cache on the first frame. The marketplace catalog refreshes after.
@@ -118,8 +119,7 @@
     {#if tab === "all"}
       <div class="sec">Available</div>
       {#if catalogState === "loading" && visibleCatalog.length === 0}
-        <div class="shimmer" data-testid="browse-packs-loading"></div>
-        <div class="shimmer"></div>
+        <ReadLoader testid="browse-packs-loading" />
       {:else if catalogState === "error"}
         <p class="empty">Catalog could not refresh. Installed packs above are from this machine.</p>
       {:else if visibleCatalog.length === 0}
@@ -205,7 +205,6 @@
   .vr { font-family: var(--font-mono, ui-monospace, monospace); font-size: 11px; color: var(--v4-text-3); }
   .ok { font-size: 12px; color: var(--v4-text-3); }
   .empty { padding: 8px 16px 12px; color: var(--v4-text-3); font-size: 12px; }
-  .shimmer { height: 36px; margin: 8px 16px; border-radius: 6px; background: var(--v4-control-faint, var(--v4-hover)); }
   .bp-f { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--v4-hairline); }
   .hint { flex: 1; font-size: 12px; color: var(--v4-text-3); }
   .btn {

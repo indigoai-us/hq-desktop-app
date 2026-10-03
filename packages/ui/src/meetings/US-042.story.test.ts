@@ -103,7 +103,7 @@ describe("US-042 calendar chip", () => {
     const el = render(MeetingsToolbarControls, {});
     (el.querySelector('[data-testid="meetings-calendar-chip"]') as HTMLButtonElement).click();
     flushSync();
-    expect(el.querySelector('[data-testid="meetings-toolbar-skeleton"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="meetings-toolbar-loading"]')).not.toBeNull();
     await opened(el, "calendar-connect-google");
     const panel = el.querySelector('[data-testid="meetings-calendar-panel"]')!;
     expect(panel.textContent).toContain("corey@getindigo.ai");
@@ -154,7 +154,7 @@ describe("US-042 paste detection", () => {
     const el = render(MeetingsToolbarControls, { openExternal });
     (el.querySelector('[data-testid="meetings-paste-link"]') as HTMLButtonElement).click();
     flushSync();
-    expect(el.querySelector('[data-testid="meetings-toolbar-skeleton"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="meetings-toolbar-loading"]')).not.toBeNull();
     await opened(el, "paste-link-input");
     const input = el.querySelector('[data-testid="paste-link-input"]') as HTMLInputElement;
     input.value = zoom;

@@ -514,9 +514,8 @@
           {:else if c?.error}
             <p class="vx-empty">{c.error}</p>
           {:else}
-            <div class="vx-note-skeleton" aria-hidden="true">
-              <span style="width:46%;height:26px"></span>
-              <span style="width:92%"></span><span style="width:86%"></span><span style="width:64%"></span>
+            <div class="vx-note-loading">
+              <ReadLoader testid="vault-note-loading" />
             </div>
           {/if}
         {:else}
@@ -952,17 +951,10 @@
     color: var(--v4-text-3);
     text-align: center;
   }
-  .vx-note-skeleton {
-    display: grid;
-    gap: 14px;
+  .vx-note-loading {
     max-width: 740px;
     margin: 0 auto;
     padding: 48px;
-  }
-  .vx-note-skeleton span {
-    height: 12px;
-    border-radius: 6px;
-    background: var(--v4-control-faint);
   }
 
   /* ---- vault home ---- */

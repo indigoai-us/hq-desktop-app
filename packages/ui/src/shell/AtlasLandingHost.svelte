@@ -2,13 +2,14 @@
   Atlas landing (console-rail US-009). A company tile lands here.
 
   The Atlas chunk loads through the lazy door; the first frame is the
-  atlas-loading skeleton so the click never paints a blank or spinner-only
+  atlas loader so the click never paints a blank or spinner-only
   pane. When the chunk resolves (US-013) the map mounts with the company's
   cached graph and refreshes it in the background; live halos, docked actor
   chips and the people filter come from the shell's presence stores.
 -->
 <script lang="ts">
   import { onMount } from "svelte";
+  import ReadLoader from "../common/ReadLoader.svelte";
   import { loadAtlas } from "./atlas-lazy.js";
   import type { AtlasLiveActor, AtlasWorkingNow } from "./atlas-landing.js";
   import { HQ_CONSOLE_BASE } from "../common/hq-console.js";
@@ -173,6 +174,7 @@
   <header class="toolbar">
     <h1>Atlas</h1>
   </header>
+  {#if !mod && !chunkFailed}<ReadLoader testid="atlas-landing-loading" surface="atlas" onretry={loadChunk} />{/if}
   <div class="body">
     <div class="stage" aria-hidden="true">
       <svg viewBox="0 0 900 640" preserveAspectRatio="xMidYMid meet">
@@ -184,8 +186,7 @@
           The map didn't load.
           <button type="button" data-testid="atlas-landing-retry" onclick={loadChunk}>Retry</button>
         </div>
-      {:else if !mod}<div class="note">Loading {companyLabel}</div>
-      {:else if !companyUid}<div class="note" data-testid="atlas-landing-unlinked">This company isn't linked to HQ cloud yet, so there is no map to show.</div>{/if}
+      {:else if mod && !companyUid}<div class="note" data-testid="atlas-landing-unlinked">This company isn't linked to HQ cloud yet, so there is no map to show.</div>{/if}
     </div>
     {#if mod}
       <mod.AtlasInspector
@@ -200,19 +201,6 @@
         nowMs={Date.now()}
         onselect={selectWho}
       />
-    {:else}
-      <aside class="inspector-skeleton" data-testid="atlas-landing-skeleton" aria-hidden="true">
-        <span class="sk" style="width:64px;height:8px"></span>
-        <span class="sk" style="width:140px;height:14px"></span>
-        <div class="chips">
-          <span class="sk pill" style="width:96px"></span>
-          <span class="sk pill" style="width:72px"></span>
-        </div>
-        <div class="hr"></div>
-        <span class="sk" style="width:54px;height:8px"></span>
-        <div class="who"><span class="sk dot"></span><span class="sk" style="width:90px;height:10px"></span></div>
-        <div class="who"><span class="sk dot sq"></span><span class="sk" style="width:120px;height:10px"></span></div>
-      </aside>
     {/if}
   </div>
   {/if}
@@ -269,59 +257,5 @@
     letter-spacing: 0.1em;
     text-transform: uppercase;
     color: var(--v4-text-3);
-  }
-  .inspector-skeleton {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    width: 340px;
-    box-sizing: border-box;
-    padding: var(--v4-space-4);
-    border-left: 1px solid var(--v4-rowline);
-    background: var(--v4-secondary-sidebar);
-  }
-  .chips,
-  .who {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-  .hr {
-    height: 1px;
-    margin: 6px 0;
-    background: var(--v4-rowline);
-  }
-  .sk {
-    display: inline-block;
-    border-radius: 4px;
-    background: var(--v4-control-bg);
-    animation: atlas-landing-pulse 1.8s ease-in-out infinite;
-  }
-  .sk.pill {
-    height: 16px;
-    border-radius: var(--v4-radius-pill);
-  }
-  .sk.dot {
-    flex: none;
-    width: 16px;
-    height: 16px;
-    border-radius: 50%;
-  }
-  .sk.dot.sq {
-    border-radius: 5px;
-  }
-  @keyframes atlas-landing-pulse {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.45;
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .sk {
-      animation: none;
-    }
   }
 </style>

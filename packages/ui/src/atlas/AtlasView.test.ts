@@ -122,10 +122,10 @@ describe("AtlasView", () => {
 
   it("shows a skeleton in the first frame with no cache, then paints the graph", async () => {
     mountView();
-    expect(host.querySelector(sel("atlas-skeleton"))).not.toBeNull();
+    expect(host.querySelector(sel("atlas-loader"))).not.toBeNull();
     expect(host.querySelector(sel("atlas-inspector"))).not.toBeNull();
     await settle();
-    expect(host.querySelector(sel("atlas-skeleton"))).toBeNull();
+    expect(host.querySelector(sel("atlas-loader"))).toBeNull();
     expect(host.querySelectorAll('[data-testid^="atlas-node-"]').length).toBe(
       smokeAtlasGraph().nodes.length,
     );
@@ -136,7 +136,7 @@ describe("AtlasView", () => {
     const cache = createAtlasCache({ fetcher: async () => smokeAtlasGraph() });
     await cache.refresh("cmp_indigo");
     mountView(cache);
-    expect(host.querySelector(sel("atlas-skeleton"))).toBeNull();
+    expect(host.querySelector(sel("atlas-loader"))).toBeNull();
     expect(host.querySelector(sel(`atlas-node-${RAIL}`))).not.toBeNull();
   });
 
@@ -322,7 +322,7 @@ describe("Atlas chunk boundary", () => {
     await vi.waitFor(() => {
       expect(host.querySelector(sel("atlas-error"))).not.toBeNull();
     });
-    expect(host.querySelector(sel("atlas-skeleton"))).toBeNull();
+    expect(host.querySelector(sel("atlas-loader"))).toBeNull();
     const text = host.querySelector(sel("atlas-error"))?.textContent ?? "";
     expect(text).toContain("The map didn't load");
     expect(text).not.toContain("401");
@@ -363,7 +363,7 @@ describe("Atlas chunk boundary", () => {
       mountView(cache);
       await expectPendingRead(host, "atlas-loader");
       expect(host.querySelector(sel("atlas-error"))).toBeNull();
-      expect(host.querySelector(sel("atlas-skeleton"))).not.toBeNull();
+      expect(host.querySelector(sel("atlas-loader"))).not.toBeNull();
     } finally {
       vi.useRealTimers();
     }
@@ -375,11 +375,11 @@ describe("Atlas chunk boundary", () => {
       timeoutMs: 20,
     });
     mountView(cache);
-    expect(host.querySelector(sel("atlas-skeleton"))).not.toBeNull();
+    expect(host.querySelector(sel("atlas-loader"))).not.toBeNull();
     await vi.waitFor(() => {
       expect(host.querySelector(sel("atlas-error"))).not.toBeNull();
     });
-    expect(host.querySelector(sel("atlas-skeleton"))).toBeNull();
+    expect(host.querySelector(sel("atlas-loader"))).toBeNull();
     expect(host.querySelector(sel("atlas-retry"))).not.toBeNull();
   });
 });

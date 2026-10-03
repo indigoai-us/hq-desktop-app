@@ -1,5 +1,6 @@
 <script lang="ts">
   import Dropdown from "../common/LazyDropdown.svelte";
+  import ReadLoader from "../common/ReadLoader.svelte";
   /**
    * MarketplacePanel — the desktop-alt **Marketplace** tab body (US-008).
    *
@@ -350,11 +351,7 @@
       {error}
     </div>
   {:else if loading}
-    <div class="grid-skeleton" aria-busy="true">
-      {#each [0, 1, 2, 3, 4, 5] as cell (cell)}
-        <div class="card-skeleton"></div>
-      {/each}
-    </div>
+    <ReadLoader testid="marketplace-loading" />
   {:else if visible.length === 0}
     <div class="state-empty" data-testid="marketplace-empty">
       <p>No listings</p>
@@ -694,8 +691,7 @@
     min-height: 0;
   }
 
-  .grid,
-  .grid-skeleton {
+  .grid {
     padding-bottom: 12px;
   }
 
@@ -1121,30 +1117,6 @@
     font-size: var(--text-base);
   }
 
-  .grid-skeleton {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(272px, 1fr));
-    gap: var(--v4-space-3);
-  }
-
-  .card-skeleton {
-    height: 212px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-card);
-    background: var(--v4-raised);
-    animation: mk-skeleton-pulse 1.3s ease-in-out infinite;
-  }
-
-  @keyframes mk-skeleton-pulse {
-    0%,
-    100% {
-      opacity: 0.5;
-    }
-    50% {
-      opacity: 1;
-    }
-  }
-
   /* ---- detail slide-over (mirrors LibraryDetailPanel) ------------------- */
   .detail-backdrop {
     position: fixed;
@@ -1507,7 +1479,6 @@
     .card:hover .cover-img {
       transform: none;
     }
-    .card-skeleton,
     .detail-backdrop,
     .detail-panel {
       animation: none;

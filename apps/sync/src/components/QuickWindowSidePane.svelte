@@ -381,17 +381,7 @@
       </button>
     </nav>
     {#if (loading || loadingChannels) && railEntries.length === 0}
-      <div class="qw-skeleton-list" aria-label="Loading conversations" role="status">
-        {#each Array(5) as _}
-          <div class="qw-skeleton-row">
-            <span class="qw-skeleton-avatar"></span>
-            <span class="qw-skeleton-copy">
-              <span></span>
-              <span></span>
-            </span>
-          </div>
-        {/each}
-      </div>
+      <p class="qw-side-status" role="status" data-testid="quick-conversations-loading">Loading conversations…</p>
     {:else if railEntries.length > 0}
       <div class="qw-side-list">
         {#if filteredDirectEntries.length > 0}
@@ -758,8 +748,7 @@
     color: var(--pop-muted);
   }
 
-  .qw-side-list,
-  .qw-skeleton-list {
+  .qw-side-list {
     display: flex;
     flex-direction: column;
     min-height: 0;
@@ -838,55 +827,6 @@
     font-variant-numeric: tabular-nums;
   }
 
-  .qw-skeleton-copy {
-    min-width: 0;
-    flex: 1;
-    display: grid;
-    gap: 4px;
-  }
-
-  .qw-skeleton-row {
-    min-height: 28px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 4px 8px;
-    border-bottom: 1px solid var(--pop-divider);
-    box-sizing: border-box;
-  }
-
-  .qw-skeleton-avatar,
-  .qw-skeleton-copy span {
-    display: block;
-    background: var(--pop-hover);
-    animation: quick-pulse 1s linear infinite alternate;
-  }
-
-  .qw-skeleton-avatar {
-    width: 22px;
-    height: 22px;
-    flex: 0 0 22px;
-    border-radius: 50%;
-  }
-
-  .qw-skeleton-copy span {
-    height: 7px;
-    border-radius: 2px;
-  }
-
-  .qw-skeleton-copy span:first-child {
-    width: 62%;
-  }
-
-  .qw-skeleton-copy span:last-child {
-    width: 86%;
-  }
-
-  @keyframes quick-pulse {
-    from { opacity: 0.42; }
-    to { opacity: 0.9; }
-  }
-
   .qw-load-error {
     display: flex;
     align-items: baseline;
@@ -954,8 +894,6 @@
       transition: none;
     }
 
-    .qw-skeleton-avatar,
-    .qw-skeleton-copy span,
     .qw-retry-spinner {
       animation: none;
       opacity: 0.66;

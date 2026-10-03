@@ -169,7 +169,7 @@
     const cached = readGoalsCache(storage, active);
     if (!cached) {
       // AUDIT-3: no cache means "still reading", not "no goals"; hold the
-      // skeleton until the board answers so the empty line never flashes.
+      // loader until the board answers so the empty line never flashes.
       objectives = null;
       links = [];
       return;
@@ -351,10 +351,9 @@
   </header>
 
   {#if !objectives}
-    <div class="canvas" aria-busy="true" data-testid="goals-skeleton">
-      {#each [0, 1, 2] as i (i)}<div class="shimmer"></div>{/each}
+    <div class="canvas" aria-busy="true">
+      <ReadLoader testid="goals-loader" onretry={() => void refresh(slug)} />
     </div>
-    <ReadLoader testid="goals-loader" onretry={() => void refresh(slug)} />
   {:else}
     <div class="body">
     <div class="canvas" bind:this={canvasEl}>
@@ -576,8 +575,4 @@
   .load-error { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
   .load-error p { margin: 0; }
   .glegend { display: flex; gap: 14px; margin-top: 16px; padding: 0 8px; }
-  .shimmer {
-    height: 48px; margin: 8px 0; border-radius: 6px;
-    background: linear-gradient(90deg, var(--v4-control-faint), var(--v4-hover), var(--v4-control-faint));
-  }
 </style>

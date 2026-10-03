@@ -1,5 +1,6 @@
 <script lang="ts">
   import { dismissable } from "../common/dismissable.js";
+  import ReadLoader from "../common/ReadLoader.svelte";
   /**
    * Titlebar notifications popover (console-rail US-011).
    * Paints from the cached inbox. Tabs and grant buttons do not fetch.
@@ -173,8 +174,8 @@
 
   <div class="list">
     {#if !snap.ready}
-      <div class="skel" data-testid="notifications-skeleton" aria-hidden="true">
-        <span></span><span></span><span></span>
+      <div class="loading" aria-busy="true">
+        <ReadLoader testid="notifications-loading" />
       </div>
     {:else if rows.length === 0}
       <div class="empty" data-testid="notifications-empty">
@@ -425,17 +426,7 @@
     max-width: 270px;
   }
 
-  .skel {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
+  .loading {
     padding: 8px;
-  }
-
-  .skel span {
-    display: block;
-    height: 36px;
-    border-radius: 8px;
-    background: var(--v4-control-faint);
   }
 </style>

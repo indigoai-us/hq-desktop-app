@@ -130,7 +130,7 @@ describe("pending reads through the real desktop adapter (BLANK-3)", () => {
           onopenpage: () => {},
         },
       });
-      await until("[data-testid='brain-shimmer']");
+      await until("[data-testid='brain-loading']");
       expect(commands).toContain("set_desktop_active_company");
       await expectPendingRead(document, "brain-loader");
     },
@@ -158,7 +158,7 @@ describe("pending reads through the real desktop adapter (BLANK-3)", () => {
       preferredSlug: ACME.slug,
       onslugchange: () => {},
     });
-    await until(".board-loading");
+    await until("[data-testid='projects-loader']");
     expect(commands).toContain("get_local_projects");
     await expectPendingRead(document, "projects-loader");
   });
@@ -219,7 +219,7 @@ describe("pending reads through the real desktop adapter (BLANK-3)", () => {
           deployActions: true,
         },
       });
-      await until("[data-testid='files-connect-skeleton']");
+      await until(`[data-testid='${page}-loader']`);
       expect(commands).toContain(command);
       await expectPendingRead(document, `${page}-loader`);
     },
@@ -240,7 +240,7 @@ describe("pending reads through the real desktop adapter (BLANK-3)", () => {
       onaddagent: () => {},
       onmessage: () => {},
     });
-    await until("[data-testid='team-shimmer']");
+    await until("[data-testid='team-loader']");
     expect(commands).toContain("get_company_team_telemetry");
     await expectPendingRead(document, "team-loader");
   });
@@ -259,7 +259,7 @@ describe("pending reads through the real desktop adapter (BLANK-3)", () => {
       onmessage: () => {},
       onaddbot: () => {},
     });
-    await until("[data-testid='bots-shimmer']");
+    await until("[data-testid='bots-loader']");
     expect(commands.some((c) => c.startsWith("hq_pro_fetch") && c.includes("cmp_real_bots"))).toBe(true);
     await expectPendingRead(document, "bots-loader");
   });
@@ -276,7 +276,6 @@ describe("pending reads through the real desktop adapter (BLANK-3)", () => {
       onlocationchange: () => {},
     });
     await until(() => commands.includes("vault_summary") && commands.includes("list_hq_dir"));
-    expect(document.querySelector(".vt-skeleton")).toBeTruthy();
     await expectPendingRead(document, "vault-tree-loader");
     expect(document.querySelector("[data-testid='vault-home-loader']")).toBeTruthy();
     expect(document.querySelector("[data-testid='vault-home-loader-retry']")).toBeTruthy();
@@ -294,7 +293,7 @@ describe("pending reads through the real desktop adapter (BLANK-3)", () => {
       openExternal: () => {},
       actions: true,
     });
-    await until("[data-testid='deploy-skeleton']");
+    await until("[data-testid='deploy-loader']");
     expect(commands).toContain("list_deploy_apps");
     await expectPendingRead(document, "deploy-loader");
   });
@@ -313,7 +312,7 @@ describe("pending reads through the real desktop adapter (BLANK-3)", () => {
       integrationsApi: a.agents ?? null,
       openExternal: () => {},
     });
-    await until("[data-testid='personal-secrets-skeleton']");
+    await until("[data-testid='personal-secrets-loader']");
     expect(commands).toContain("get_company_secrets");
     await expectPendingRead(document, "personal-secrets-loader");
   });
@@ -332,7 +331,7 @@ describe("pending reads through the real desktop adapter (BLANK-3)", () => {
       integrationsApi: a.agents ?? null,
       openExternal: () => {},
     });
-    await until("[data-testid='personal-integrations-skeleton']");
+    await until("[data-testid='personal-integrations-loader']");
     await until(() => commands.includes("hq_pro_fetch /v1/google/accounts"));
     expect(commands).toContain("hq_pro_fetch /v1/slack/personal/accounts");
     await expectPendingRead(document, "personal-integrations-loader");

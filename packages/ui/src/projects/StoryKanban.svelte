@@ -23,6 +23,7 @@
     type TaskColumn,
   } from "./projects-model.js";
   import StoryCard from "./StoryCard.svelte";
+  import ReadLoader from "../common/ReadLoader.svelte";
   import StoryList from "./StoryList.svelte";
 
   interface Props {
@@ -33,7 +34,7 @@
      * awaiting_input signals matched to a story id place a card in Active.
      */
     sessions?: readonly PortfolioSessionRef[];
-    /** When true, render the loading skeleton instead of content. */
+    /** When true, render the loader instead of content. */
     loading?: boolean;
     /** Compact relative "now" for live elapsed / last-signal labels. */
     now?: number;
@@ -108,13 +109,7 @@
 
   {#if loading}
     <div class="board-loading" aria-busy="true" aria-label="Loading tasks">
-      {#each TASK_COLUMNS as column (column)}
-        <div class="skeleton-column">
-          <div class="skeleton-header"></div>
-          <div class="skeleton-card"></div>
-          <div class="skeleton-card"></div>
-        </div>
-      {/each}
+      <ReadLoader testid="board-loading" />
     </div>
   {:else if viewMode === "board"}
     <div class="board-scroll" data-testid="task-kanban">
@@ -437,55 +432,10 @@
     min-width: 0;
   }
 
-  .board-loading {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 10px;
-  }
-
-  .skeleton-column {
-    display: flex;
-    flex-direction: column;
-    gap: var(--v4-space-2);
-  }
-
-  .skeleton-header {
-    height: 36px;
-    border-radius: 0;
-    background: var(--v4-control-faint);
-  }
-
-  .skeleton-card {
-    height: 84px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: 8px;
-    background: var(--v4-control-faint);
-  }
-
-  .skeleton-header,
-  .skeleton-card {
-    animation: skeleton-pulse 1.3s ease-in-out infinite;
-  }
-
-  @keyframes skeleton-pulse {
-    0%,
-    100% {
-      opacity: 0.5;
-    }
-    50% {
-      opacity: 1;
-    }
-  }
-
   @media (prefers-reduced-motion: reduce) {
     .toggle-segment,
     .chevron {
       transition: none;
-    }
-
-    .skeleton-header,
-    .skeleton-card {
-      animation: none;
     }
   }
 

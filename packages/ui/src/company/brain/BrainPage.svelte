@@ -4,7 +4,7 @@
   import { dismissable } from "../../common/dismissable.js";
   /**
    * Company Brain (US-028): Knowledge, Policies, Skills, Workers.
-   * First frame is the cache or a shimmer. Refresh runs after paint.
+   * First frame is the cache or a loader. Refresh runs after paint.
    * Heavy enough to stay behind a lazy door.
    */
   import type { AppShellApi, FilesApi, LibraryApi, PlatformAdapter, SettingsApi, ShellApi } from "@hq/platform";
@@ -543,8 +543,7 @@
   </header>
 
   {#if listView.body === "skeleton"}
-    <div class="shimmer" data-testid="brain-shimmer" aria-busy="true">
-      <div class="bar"></div><div class="bar"></div><div class="bar short"></div>
+    <div class="loading" data-testid="brain-loading" aria-busy="true">
       <p class="reading" role="status">Reading {listNoun[1]}…</p>
       <ReadLoader testid="brain-loader" onretry={() => (readAttempt += 1)} />
     </div>
@@ -941,18 +940,8 @@
   .skill-usage dt { color: var(--v4-text-2, inherit); }
   .skill-usage dd { margin: 0; }
   .head { color: var(--t3, var(--v4-text-3)); border-bottom: 1px solid var(--line, var(--v4-rowline)); }
-  .shimmer { padding: 20px; display: grid; gap: 8px; }
-  .bar {
-    height: 14px;
-    border-radius: 6px;
-    background: linear-gradient(90deg, var(--v4-hover), var(--v4-control-faint), var(--v4-hover));
-    background-size: 200% 100%;
-    animation: shine 1.2s linear infinite;
-  }
-  .bar.short { width: 40%; }
+  .loading { padding: 20px; display: grid; gap: 8px; }
   .reading { margin: 4px 0 0; color: var(--t3, var(--v4-text-3)); }
-  @media (prefers-reduced-motion: reduce) { .bar { animation: none; } }
-  @keyframes shine { from { background-position: 100% 0; } to { background-position: -100% 0; } }
   .scrim { position: absolute; inset: 0; background: var(--v4-scrim, rgba(0, 0, 0, 0.35)); }
   .sheet {
     position: absolute;

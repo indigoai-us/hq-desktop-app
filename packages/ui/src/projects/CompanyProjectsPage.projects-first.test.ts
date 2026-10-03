@@ -37,7 +37,6 @@ describe("CompanyProjectsPage projects first (BLANK-3)", () => {
     });
     flushSync();
     await expect.poll(() => host?.textContent ?? "").toContain("beta-launch");
-    expect(host?.querySelector(".board-loading")).toBeNull();
     expect(host?.querySelector("[data-testid='projects-loader']")).toBeNull();
   });
 });

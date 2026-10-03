@@ -10,6 +10,7 @@
   import type { PlatformAdapter } from "@hq/platform";
   import type { Workspace } from "../chat/workspaces.js";
   import EmptyState from "../common/EmptyState.svelte";
+  import ReadLoader from "../common/ReadLoader.svelte";
   import { HQ_CONSOLE_BASE } from "../common/hq-console.js";
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
   import PageHeader from "../shell/PageHeader.svelte";
@@ -643,16 +644,7 @@
           </div>
         {:else if phase === "loading"}
           {#if skeletonVisible}
-            <div
-              class="ss-profile-skeleton"
-              data-testid="settings-profile-skeleton"
-              aria-hidden="true"
-            >
-              <div class="ss-skel-row ss-skel-identity"></div>
-              <div class="ss-skel-row"></div>
-              <div class="ss-skel-row"></div>
-              <div class="ss-skel-row"></div>
-            </div>
+            <ReadLoader testid="settings-profile-loading" onretry={() => void loadProfile()} />
           {/if}
         {:else if phase === "error"}
           <div
@@ -1054,45 +1046,6 @@
 
   .ss-btn.danger {
     color: var(--warn-ink, #d9584a);
-  }
-
-  .ss-profile-skeleton {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    max-width: 640px;
-  }
-
-  .ss-skel-row {
-    height: 56px;
-    border-radius: 10px;
-    background: color-mix(in srgb, var(--t1, #fff) 8%, transparent);
-  }
-
-  .ss-skel-identity {
-    height: 76px;
-  }
-
-  @media (prefers-reduced-motion: no-preference) {
-    .ss-skel-row {
-      background: linear-gradient(
-        100deg,
-        color-mix(in srgb, var(--t1, #fff) 6%, transparent) 40%,
-        color-mix(in srgb, var(--t1, #fff) 11%, transparent) 50%,
-        color-mix(in srgb, var(--t1, #fff) 6%, transparent) 60%
-      );
-      background-size: 200% 100%;
-      animation: ss-skel-shimmer 1.4s ease-in-out infinite;
-    }
-  }
-
-  @keyframes ss-skel-shimmer {
-    from {
-      background-position: 120% 0;
-    }
-    to {
-      background-position: -80% 0;
-    }
   }
 
   .ss-profile-retry {

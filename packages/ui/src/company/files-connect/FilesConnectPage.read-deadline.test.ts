@@ -49,7 +49,7 @@ describe("FilesConnectPage pending read (BLANK-3)", () => {
       } as never,
     });
     flushSync();
-    expect(document.querySelector("[data-testid='files-connect-skeleton']")).toBeTruthy();
+    expect(document.querySelector(`[data-testid='${page}-loader']`)).toBeTruthy();
     await expectPendingRead(document, `${page}-loader`);
     expect(document.body.textContent).not.toContain(copy);
     expect(logged).not.toHaveBeenCalled();

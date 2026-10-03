@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ReadLoader from "../../common/ReadLoader.svelte";
   import { PROFILE_PANE_WIDTH, profilePhase, type UserProfileSnapshot } from "./profile-pane-model.js";
 
   interface Props {
@@ -28,10 +29,8 @@
     <button type="button" class="icon" data-testid="user-profile-close" aria-label="Close profile" onclick={() => onclose?.()}>×</button>
   </header>
   {#if phase === "shimmer" || !snapshot}
-    <div class="body" data-testid="user-profile-shimmer" aria-busy="true">
-      <div class="shimmer id"></div>
-      <div class="shimmer row"></div>
-      <div class="shimmer block"></div>
+    <div class="body" aria-busy="true">
+      <ReadLoader testid="user-profile-loading" />
     </div>
   {:else}
     <div class="body">
@@ -141,8 +140,4 @@
   .manage { margin-top: 20px; padding-top: 12px; border-top: 1px solid var(--v4-rowline, var(--line)); display: flex; align-items: baseline; gap: 8px; color: var(--v4-text-3); }
   .link { flex: none; margin-left: auto; padding: 0; border: 0; background: none; font: inherit; color: var(--v4-text-2); white-space: nowrap; cursor: pointer; }
   .link:hover { color: var(--v4-text-1); text-decoration: underline; text-underline-offset: 3px; }
-  .shimmer { border-radius: 6px; background: var(--v4-control-faint, var(--line)); margin-bottom: 8px; }
-  .shimmer.id { height: 48px; }
-  .shimmer.row { height: 14px; }
-  .shimmer.block { height: 64px; }
 </style>

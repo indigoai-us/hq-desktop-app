@@ -37,7 +37,7 @@ describe("CompanyProjectsPage pending read (BLANK-3)", () => {
       props: { adapter: { projects: fakeProjectsApi(ipc) } as PlatformAdapter, slug: "blank-1-projects" },
     });
     flushSync();
-    expect(host.querySelector(".board-loading")).toBeTruthy();
+    expect(host.querySelector("[data-testid='projects-loader']")).toBeTruthy();
     await expectPendingRead(host, "projects-loader");
     // BLANK-2: no zero count or empty board next to the failed read.
     expect(host.querySelector("[data-testid='projects-count']")).toBeNull();

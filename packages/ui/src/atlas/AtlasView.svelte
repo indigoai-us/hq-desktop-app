@@ -202,10 +202,10 @@
     });
   });
 
-  // BLANK-3: no timer ends a pending refresh. While it runs the skeleton keeps
+  // BLANK-3: no timer ends a pending refresh. While it runs the loader keeps
   // the shared loader (waiting lines, then Try again); a real failure replaces
   // it with the failed state. Without a cached map a failure must never leave
-  // the skeleton up.
+  // the loader up.
   let retrying = $state(false);
   const loadFailed = $derived(refreshError !== null && !graph);
 
@@ -223,7 +223,7 @@
     partial = false;
     cache
       .refresh(uid, (first) => {
-        // A partial map only replaces the skeleton, never a saved full map.
+        // A partial map only replaces the loader, never a saved full map.
         if (uid !== companyUid || graph) return;
         graph = first;
         partial = true;
@@ -389,10 +389,7 @@
           </div>
         </div>
       {:else}
-        <div class="skeleton" data-testid="atlas-skeleton" aria-busy="true" aria-label="Loading Atlas">
-          {#each [0, 1, 2, 3, 4, 5] as i (i)}
-            <span class="blob" style={`--a:${i * 60 - 90}deg`}></span>
-          {/each}
+        <div class="loading" aria-busy="true" aria-label="Loading Atlas">
           <ReadLoader testid="atlas-loader" surface="atlas" onretry={retry} />
         </div>
       {/if}
@@ -598,33 +595,8 @@
     border-radius: 50%;
     background: var(--v4-idle);
   }
-  .skeleton :global(.read-loader) {
-    position: absolute;
-    left: 50%;
-    top: 50%;
-    transform: translate(-50%, -50%);
-    z-index: 1;
-    flex-direction: column;
-  }
-  .skeleton {
+  .loading {
     position: absolute;
     inset: 0;
-  }
-  .blob {
-    position: absolute;
-    left: 50%;
-    top: 50%;
-    width: 72px;
-    height: 72px;
-    margin: -36px;
-    border-radius: 50%;
-    background: var(--v4-control-faint);
-    transform: rotate(var(--a)) translateX(170px);
-    animation: atlas-pulse 1.2s ease-in-out infinite;
-  }
-  @keyframes atlas-pulse {
-    50% {
-      opacity: 0.5;
-    }
   }
 </style>

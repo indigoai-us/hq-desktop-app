@@ -85,7 +85,7 @@
       ? fixturePersonalRail()
       : cachedAtOpen ?? emptyPersonalRail(),
   );
-  // "loading" paints the skeleton; it only shows when nothing is cached yet.
+  // "loading" paints the loader; it only shows when nothing is cached yet.
   let secretsState = $state<"loading" | "ready" | "error">(
     useFixtures || cachedAtOpen ? "ready" : "loading",
   );
@@ -295,10 +295,9 @@
           {/if}
           <p class="sec">Personal</p>
           {#if secretsState === "loading"}
-            <div data-testid="personal-secrets-skeleton" aria-busy="true">
-              {#each [0, 1, 2, 3] as i (i)}<div class="skel"></div>{/each}
+            <div aria-busy="true">
+              <ReadLoader testid="personal-secrets-loader" onretry={() => void refresh(true)} />
             </div>
-            <ReadLoader testid="personal-secrets-loader" onretry={() => void refresh(true)} />
           {:else if secretsState === "error"}
             <div class="state" role="alert" data-testid="personal-secrets-error">
               <p>{secretsError}</p>
@@ -374,10 +373,9 @@
             </p>
           {/if}
           {#if integrationsState === "loading"}
-            <div data-testid="personal-integrations-skeleton" aria-busy="true">
-              {#each [0, 1, 2] as i (i)}<div class="skel"></div>{/each}
+            <div aria-busy="true">
+              <ReadLoader testid="personal-integrations-loader" onretry={() => void refreshIntegrations()} />
             </div>
-            <ReadLoader testid="personal-integrations-loader" onretry={() => void refreshIntegrations()} />
           {:else if integrationsState === "error"}
             <div class="state" role="alert" data-testid="personal-integrations-error">
               <p>{integrationsError}</p>
@@ -665,6 +663,4 @@
   .state { padding: 16px 8px; color: var(--t2, var(--v4-text-2)); }
   .state p { margin: 0 0 8px; }
   .state :global([data-rail-btn]) { margin: 0 8px 8px 0; }
-  .skel { height: 31px; margin: 0 0 2px; border-radius: 8px; background: linear-gradient(90deg, var(--btn-bg, var(--v4-control-faint)), var(--hover, var(--v4-hover)), var(--btn-bg, var(--v4-control-faint))); background-size: 200% 100%; animation: personal-row-skel 1.1s linear infinite; }
-  @keyframes personal-row-skel { from { background-position: 100% 0; } to { background-position: -100% 0; } }
 </style>

@@ -1131,19 +1131,6 @@
           testid="projects-unavailable"
         />
       {:else if loading}
-        <div
-          class="board-loading"
-          aria-busy="true"
-          aria-label="Loading projects"
-        >
-          {#each PORTFOLIO_COLUMNS as column (column)}
-            <div class="skeleton-column">
-              <div class="skeleton-header"></div>
-              <div class="skeleton-card"></div>
-              <div class="skeleton-card"></div>
-            </div>
-          {/each}
-        </div>
         <ReadLoader testid="projects-loader" onretry={() => (loadAttempt += 1)} />
       {:else if failedEmpty}
         <!-- BLANK-2: the failed line above stands in for the empty board. -->
@@ -2123,34 +2110,6 @@
     margin: 4px 0 0;
     color: var(--v4-text-3);
     font-size: 13px;
-  }
-
-  .board-loading {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 10px;
-    min-width: 0;
-  }
-
-  .skeleton-column {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-
-  .skeleton-header {
-    height: 36px;
-    border-radius: 0;
-    background: var(--v4-control-faint);
-    opacity: 0.48;
-  }
-
-  .skeleton-card {
-    height: 96px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: 8px;
-    background: var(--v4-control-faint);
-    opacity: 0.48;
   }
 
   @media (prefers-reduced-motion: reduce) {

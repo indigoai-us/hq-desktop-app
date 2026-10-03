@@ -67,7 +67,7 @@ describe("US-028 BrainPage", () => {
     expect(calls[0]?.[1]).toBe("/standup-brief");
   });
 
-  it("paints a shimmer before the listing arrives", () => {
+  it("paints the loader before the listing arrives", () => {
     const library = { getCompany: vi.fn(() => new Promise(() => undefined)) };
     component = mount(BrainPage, {
       target: document.body,
@@ -80,7 +80,7 @@ describe("US-028 BrainPage", () => {
         settings: null,
       },
     });
-    expect(document.querySelector("[data-testid='brain-shimmer']")).toBeTruthy();
+    expect(document.querySelector("[data-testid='brain-loading']")).toBeTruthy();
   });
 
   it("QA-009: binds the company read scope before listing policies, and counts every real policy", async () => {
@@ -320,9 +320,9 @@ describe("US-028 BrainPage", () => {
     const count = () => document.querySelector("[data-testid='brain-knowledge-count']")?.textContent ?? null;
     const pending = { listDir: vi.fn(() => new Promise(() => undefined)), getFileContent: vi.fn(() => new Promise(() => undefined)) };
 
-    it("loading with no cache shows a skeleton with a reading line and no count", () => {
+    it("loading with no cache shows the loader with a reading line and no count", () => {
       mountKnowledge("qa100-cold", pending);
-      expect(document.querySelector("[data-testid='brain-shimmer']")).toBeTruthy();
+      expect(document.querySelector("[data-testid='brain-loading']")).toBeTruthy();
       expect(document.body.textContent).toContain("Reading files…");
       expect(count()).toBeNull();
       expect(document.body.textContent).not.toContain("0 files");
@@ -333,7 +333,7 @@ describe("US-028 BrainPage", () => {
       cached.knowledge = [knowledgeFromFile(`${root("qa100-warm")}/a.md`, "# Alpha"), knowledgeFromFile(`${root("qa100-warm")}/b.md`, "# Beta")];
       writeBrainCache("qa100-warm", cached);
       mountKnowledge("qa100-warm", pending);
-      expect(document.querySelector("[data-testid='brain-shimmer']")).toBeNull();
+      expect(document.querySelector("[data-testid='brain-loading']")).toBeNull();
       expect(count()).toBe("2 files");
       await vi.waitFor(() => expect(document.querySelectorAll("[data-testid='vault-tree-row']")).toHaveLength(2));
     });
@@ -342,7 +342,7 @@ describe("US-028 BrainPage", () => {
       mountKnowledge("qa100-empty", { listDir: vi.fn(async () => ok([])), getFileContent: vi.fn(async () => ok("")) });
       await vi.waitFor(() => expect(count()).toBe("0 files"));
       expect(document.body.textContent).toContain("No knowledge files yet.");
-      expect(document.querySelector("[data-testid='brain-shimmer']")).toBeNull();
+      expect(document.querySelector("[data-testid='brain-loading']")).toBeNull();
     });
 
     it("loaded shows the rows", async () => {

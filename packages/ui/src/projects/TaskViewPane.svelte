@@ -7,6 +7,7 @@
 -->
 <script lang="ts">
   import RailButton from "../common/button/RailButton.svelte";
+  import ReadLoader from "../common/ReadLoader.svelte";
   import type { PortfolioSessionRef } from "../chat/portfolio-session.js";
   import BoardFaces from "./BoardFaces.svelte";
   import { boardFaces, facesCaption } from "./board-faces.js";
@@ -148,10 +149,8 @@
 
     {#if stories.length === 0 && loading}
       <div class="kind">Tasks</div>
-      <div class="sk" aria-busy="true" aria-label="Loading tasks" data-testid="task-view-skeleton">
-        <div class="sk-row"></div>
-        <div class="sk-row"></div>
-        <div class="sk-row short"></div>
+      <div aria-busy="true">
+        <ReadLoader testid="task-view-loading" />
       </div>
     {:else if error && stories.length === 0}
       <p class="note" role="alert">{error}</p>
@@ -496,17 +495,6 @@
   }
 
 
-
-  .sk-row {
-    height: 12px;
-    margin: 9px 6px;
-    border-radius: 6px;
-    background: var(--v4-control-faint);
-  }
-
-  .sk-row.short {
-    width: 55%;
-  }
 
   @keyframes dot-pulse {
     0%,

@@ -327,13 +327,11 @@
     <div
       class="ft-status"
       aria-label="Loading files"
+      aria-busy="true"
       data-testid="file-tree-loading"
     >
-      {#each [0, 1, 2, 3] as row (row)}
-        <span class="ft-skel" style={`width:${78 - row * 8}%`}></span>
-      {/each}
+      <ReadLoader testid="file-tree-loader" onretry={() => (rootRetryNonce += 1)} />
     </div>
-    <ReadLoader testid="file-tree-loader" onretry={() => (rootRetryNonce += 1)} />
   {:else if rootError}
     <div
       class="ft-status ft-root-error"
@@ -549,14 +547,6 @@
     height: 6px;
     border-radius: 50%;
     background: var(--v4-ok);
-  }
-
-  .ft-skel {
-    display: block;
-    height: 12px;
-    margin: 6px 8px;
-    border-radius: 4px;
-    background: var(--v4-control-faint);
   }
 
   .ft-copy {

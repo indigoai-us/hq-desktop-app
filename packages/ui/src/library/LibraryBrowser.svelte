@@ -19,6 +19,7 @@
   } from "./library.js";
   import type { LibraryApi, PlatformAdapter } from "@hq/platform";
   import UnavailableNote from "../common/UnavailableNote.svelte";
+  import ReadLoader from "../common/ReadLoader.svelte";
   import LibraryList from "./LibraryList.svelte";
   import LibraryDetailPanel from "./LibraryDetailPanel.svelte";
   import MarketplacePanel from "../marketplace/MarketplacePanel.svelte";
@@ -309,10 +310,8 @@
     {/if}
 
     {#if loading}
-      <div class="browser-loading" aria-busy="true">
-        {#each [0, 1, 2, 3, 4, 5] as cell (cell)}
-          <div class="card-skeleton"></div>
-        {/each}
+      <div aria-busy="true">
+        <ReadLoader testid="library-loading" />
       </div>
     {:else}
       <LibraryList items={scopedItems} {query} onselect={selectItem} onclear={() => (query = "")} />
@@ -600,38 +599,10 @@
     font-size: var(--text-base);
   }
 
-  .browser-loading {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(296px, 1fr));
-    gap: var(--v4-space-2);
-  }
-
-  .card-skeleton {
-    height: 104px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-card);
-    background: var(--v4-control-faint);
-    box-shadow: var(--v4-shadow-card);
-    animation: lib-skeleton-pulse 1.3s ease-in-out infinite;
-  }
-
-  @keyframes lib-skeleton-pulse {
-    0%,
-    100% {
-      opacity: 0.5;
-    }
-    50% {
-      opacity: 1;
-    }
-  }
-
   @media (prefers-reduced-motion: reduce) {
     .segmented button,
     .scope-trigger {
       transition: none;
-    }
-    .card-skeleton {
-      animation: none;
     }
   }
 </style>

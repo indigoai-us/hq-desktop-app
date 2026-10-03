@@ -109,7 +109,7 @@ describe("US-033 PersonalRailPage", () => {
       { env: "ALIVE", count: 1, items: [{ key: "DATABASE_URL", upd: "", rot: "" }] },
     ] as never);
     const target = mountPage("secrets");
-    expect(target.querySelector("[data-testid='personal-secrets-skeleton']")).not.toBeNull();
+    expect(target.querySelector("[data-testid='personal-secrets-loader']")).not.toBeNull();
     await settle();
     expect(vi.mocked(companyStore.loadSecrets)).toHaveBeenCalledWith("personal", false);
     const list = target.querySelector("[data-testid='personal-secrets-list']") as HTMLElement;
@@ -119,7 +119,7 @@ describe("US-033 PersonalRailPage", () => {
     // No design-fixture rows in the running app.
     expect(list.textContent).not.toContain("GITHUB_TOKEN");
     expect(list.textContent).not.toContain("SCREENPIPE_TOKEN");
-    expect(target.querySelector("[data-testid='personal-secrets-skeleton']")).toBeNull();
+    expect(target.querySelector("[data-testid='personal-secrets-loader']")).toBeNull();
   });
 
   it("shows the real reason and a Retry that reloads when the vault cannot be reached", async () => {
@@ -189,7 +189,7 @@ describe("US-033 PersonalRailPage", () => {
     });
     const target = mountPage("connections", { integrationsApi: slow });
     expect(target.querySelectorAll("[data-testid^='integration-row-']")).toHaveLength(2);
-    expect(target.querySelector("[data-testid='personal-integrations-skeleton']")).toBeNull();
+    expect(target.querySelector("[data-testid='personal-integrations-loader']")).toBeNull();
     expect(target.querySelector("[data-testid='personal-integrations-empty']")).toBeNull();
     resolve({ ok: true, value: GOOGLE_BODY });
     await settle();

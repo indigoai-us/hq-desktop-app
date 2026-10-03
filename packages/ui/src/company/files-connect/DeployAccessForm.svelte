@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ReadLoader from "../../common/ReadLoader.svelte";
   import RailButton from "../../common/button/RailButton.svelte";
   /**
    * Who can open one deployment (QA-059). Reads the app's hq-deploy access
@@ -146,8 +147,8 @@
     <p class="hint err" role="alert" data-testid="deploy-access-error">{loadError}</p>
     {#if client}<div class="retry"><RailButton icon="refresh" data-testid="deploy-access-retry" onclick={() => (attempt += 1)}>Try again</RailButton></div>{/if}
   {:else if !current || !draft}
-    <div class="skel" aria-busy="true" data-testid="deploy-access-loading">
-      {#each [0, 1, 2] as row (row)}<span class="skel-row"><i class="skel-line" style:width="{70 - row * 12}%"></i></span>{/each}
+    <div class="loading" aria-busy="true" data-testid="deploy-access-loading">
+      <ReadLoader testid="deploy-access-loader" onretry={client ? () => (attempt += 1) : null} />
     </div>
   {:else if confirming && plan}
     <div class="confirm" data-testid="deploy-access-confirm">
@@ -270,7 +271,5 @@
   .confirm { padding: 10px 20px; }
   .confirm .sec { margin: 0 0 6px; font-weight: 500; }
   .confirm ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
-  .skel { display: flex; flex-direction: column; padding: 6px 20px; }
-  .skel-row { display: flex; align-items: center; height: 32px; }
-  .skel-line { height: 10px; border-radius: 4px; background: var(--line, var(--v4-control-faint)); }
+  .loading { padding: 6px 12px; }
 </style>

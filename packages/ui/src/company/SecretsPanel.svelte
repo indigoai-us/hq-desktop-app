@@ -11,6 +11,7 @@
   } from "./SecretEnvRow.svelte";
   import UnavailableNote from "../common/UnavailableNote.svelte";
   import ListEmptyState from "../common/ListEmptyState.svelte";
+  import ReadLoader from "../common/ReadLoader.svelte";
 
   interface Props {
     slug: string;
@@ -332,11 +333,7 @@
     </header>
 
     {#if loading}
-      <div class="secrets-skeleton" aria-label="Loading secrets">
-        {#each Array(3) as _, index (index)}
-          <span style={`width: ${88 - index * 10}%`}></span>
-        {/each}
-      </div>
+      <ReadLoader testid="secrets-loading" onretry={retry} />
     {:else if secrets.length > 0}
       <div class="secrets-list">
         {#each secrets as secretEnv, index (`${secretEnv.env}:${index}`)}
@@ -524,49 +521,14 @@
     display: grid;
   }
 
-  .secrets-skeleton {
-    display: grid;
-    gap: 10px;
-    padding: 14px 13px;
-  }
-
-  .secrets-skeleton span {
-    height: 18px;
-    border-radius: var(--v4-radius-button);
-    background: linear-gradient(
-      90deg,
-      var(--v4-control-faint),
-      var(--v4-hairline),
-      var(--v4-control-faint)
-    );
-    background-size: 200% 100%;
-    animation: skeleton 1.2s ease-in-out infinite;
-  }
-
   .empty-state {
     padding: 26px 13px;
     text-align: center;
   }
 
-  @keyframes skeleton {
-    from {
-      background-position: 0 0;
-    }
-
-    to {
-      background-position: -200% 0;
-    }
-  }
-
   @media (max-width: 760px) {
     .secrets-toolbar {
       flex-wrap: wrap;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .secrets-skeleton span {
-      animation: none;
     }
   }
 

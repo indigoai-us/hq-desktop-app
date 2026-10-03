@@ -1,6 +1,7 @@
 <script lang="ts">
   import { dismissable } from "../../common/dismissable.js";
-  /** First-frame door. Skeleton paints before the browse-packs chunk loads. */
+  import ReadLoader from "../../common/ReadLoader.svelte";
+  /** First-frame door. A loader paints before the browse-packs chunk loads. */
   import { onMount } from "svelte";
   import type { Component } from "svelte";
   import type { MarketplaceApi } from "@hq/platform";
@@ -33,8 +34,7 @@
   <div class="bp-scrim" role="presentation"></div>
   <div class="bp-sheet" role="dialog" aria-label="Browse packs" aria-busy="true" data-testid="browse-packs-sheet" use:dismissable={{ onclose }}>
     <header>Browse packs</header>
-    <div class="shimmer"></div>
-    <div class="shimmer"></div>
+    <ReadLoader testid="browse-packs-loading" />
   </div>
 {/if}
 
@@ -47,5 +47,4 @@
     color: var(--v4-text-1); display: flex; flex-direction: column; gap: 8px;
   }
   header { font-size: 15px; font-weight: 600; }
-  .shimmer { height: 36px; border-radius: 6px; background: var(--v4-control-faint, var(--v4-hover)); }
 </style>

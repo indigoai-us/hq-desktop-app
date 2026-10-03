@@ -1,7 +1,7 @@
 <!--
   US-022 meetings states. Loaded only through meetings-states-lazy so the
   recap, transcript, upcoming brief, and empty canvas
-  stay out of the initial graph. First frame is the door skeleton.
+  stay out of the initial graph. First frame is the door loader.
 -->
 <script lang="ts">
   import type { MeetingEvent, ScheduledBot } from "./meetings-model";
@@ -24,6 +24,7 @@
   import { decisionParts, normalizeRecapMarkdown } from "./recap-markdown";
   import { agendaItems, attendeeViews, locationLabel, meetingJoinUrl, organizerLabel } from "./meeting-details";
   import MeetingsToolbarControls from "./MeetingsToolbarControls.svelte";
+  import ReadLoader from "../common/ReadLoader.svelte";
   import NotetakerControl from "./NotetakerControl.svelte";
   import { meetingsStore } from "./meetings-store.svelte";
   import { meetingsRailState } from "./meetings-rail-state.svelte";
@@ -78,7 +79,7 @@
   const organizer = $derived(event ? organizerLabel(event) : "");
   const place = $derived(event ? locationLabel(event) : "");
   // A cached event from before the host passed details through has no
-  // attendees field; hold a skeleton while the first refresh is in flight.
+  // attendees field; hold a loader while the first refresh is in flight.
   // Recorded meetings never get attendees from a calendar refresh: they wait
   // only for their own notes load, then show names or "Attendees unavailable".
   const detailsPending = $derived(
@@ -252,7 +253,7 @@
         {#if !hasNotes}
           <div class="no-notes" data-testid="meeting-no-notes" data-state={notesState}>
             {#if notesState === "loading"}
-              <div class="sk-lines" aria-busy="true" aria-label="Loading notes"><i></i><i></i></div>
+              <div aria-busy="true" aria-label="Loading notes"><ReadLoader testid="meeting-notes-loading" surface="meetings" onretry={onretrynotes ? () => onretrynotes() : null} /></div>
             {:else if notesState === "failed"}
               <div role="alert" data-testid="meeting-notes-failed">
                 <p class="sum">Couldn't load the notes.</p>
@@ -357,7 +358,7 @@
         {:else if tab === "agenda"}
           <h2 class="sh">Agenda <span class="n">{agenda.length}</span></h2>
           {#if detailsPending}
-            <div class="sk-lines" data-testid="meeting-agenda-skeleton" aria-busy="true"><i></i><i></i><i></i></div>
+            <div aria-busy="true"><ReadLoader testid="meeting-agenda-loading" surface="meetings" /></div>
           {:else}
             <ol class="ag" data-testid="meeting-agenda">
               {#each agenda as item, i (item.id ?? i)}
@@ -377,7 +378,7 @@
       <aside class="side" data-testid="meeting-side">
         <h2 class="sh">Attendees{#if attendees.length}<span class="n">{attendees.length}</span>{/if}</h2>
         {#if detailsPending}
-          <div class="sk-lines" data-testid="meeting-attendees-skeleton" aria-busy="true"><i></i><i></i></div>
+          <div aria-busy="true"><ReadLoader testid="meeting-attendees-loading" surface="meetings" /></div>
         {:else}
           {#each attendees as person (person.key)}
             <div class="att" data-testid="meeting-attendee" title={person.email || undefined}><span class="mini">{initialsOf(person.name || "?")}</span><span class="an">{person.name}{#if person.organizer}<span class="q">Organizer</span>{/if}</span><span class="meta">{person.response}</span></div>
@@ -475,10 +476,6 @@
     padding-top: 8px;
   }
 
-  .sk-lines { display: grid; gap: 8px; padding: 8px 0; }
-  .sk-lines i { display: block; height: 10px; border-radius: 4px; background: var(--v4-control-bg, var(--hover)); }
-  .sk-lines i:nth-child(2) { width: 70%; }
-  .sk-lines i:nth-child(3) { width: 45%; }
   .att .meta { margin-left: auto; }
   .field.inline { margin: 0; flex: 1; max-width: 360px; }
   .next .actions { margin-top: 12px; }

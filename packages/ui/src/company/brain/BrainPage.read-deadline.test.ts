@@ -33,7 +33,7 @@ describe("BrainPage pending read (BLANK-3)", () => {
         props: { page, slug: `blank-1-${page}`, files: files as never, library: library as never, shell: null, settings: null },
       });
       flushSync();
-      expect(document.querySelector("[data-testid='brain-shimmer']")).toBeTruthy();
+      expect(document.querySelector("[data-testid='brain-loading']")).toBeTruthy();
       await expectPendingRead(document, "brain-loader");
       // BLANK-2: no zero count next to the failed read.
       expect(document.querySelector(".toolbar")?.textContent).not.toMatch(/\b0 (files|skills|workers|hard)\b/);

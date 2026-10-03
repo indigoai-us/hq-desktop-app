@@ -88,7 +88,7 @@ describe("US-031 personal library and deployments", () => {
       },
     });
     flushSync();
-    expect(host.querySelector('[data-testid="deploy-skeleton"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="deploy-loader"]')).not.toBeNull();
     await vi.waitFor(() => expect(host.querySelector('[data-testid="deploy-count"]')?.textContent).toBe("251 apps"));
     expect(calls.sort()).toEqual(["broken-co", "indigo", "personal"]);
     expect(host.textContent).not.toContain("hq-desktop-console-rail-storyboard");
@@ -133,7 +133,7 @@ describe("US-031 personal library and deployments", () => {
     document.body.appendChild(host);
     component = mount(PersonalDeploymentsPage, { target: host, props: { accountId: "acct-cache", listDeployApps } });
     flushSync();
-    expect(host.querySelector('[data-testid="deploy-skeleton"]')).toBeNull();
+    expect(host.querySelector('[data-testid="deploy-loader"]')).toBeNull();
     expect(host.querySelector('[data-testid="deploy-row"]')?.textContent).toContain("cached-app");
     expect(host.querySelector('[data-testid="deploy-live-until-swap"]')?.textContent).toContain("v1");
     host.querySelector<HTMLButtonElement>('[data-testid="deploy-redeploy"]')!.click();
