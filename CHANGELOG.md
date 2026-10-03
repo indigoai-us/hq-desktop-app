@@ -7,6 +7,7 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+- Desktop funnel telemetry fixes: the daily-active row is stamped with the time it was sent (it was stamped midnight, so daytime reports showed none) and is re-sent every 6 hours; a new install's first app-opened row is held until sign-in instead of being dropped; account-linked rows now carry the company hash after the first sync or first company push; and every desktop funnel row carries the app version.
 - On first launch, onboarding step telemetry can share the persisted install attempt id with the anonymous launch receipt when its hq-flags gate is enabled.
 - Workspace refresh no longer clears a company cloud link when an entity lookup is missing; only a confirmed deletion removes it.
 - Internal tests: four more desktop UI tests (desktop sidebar layout, files sidebar contrast, @here mention, emoji shortcodes) now render the components instead of searching their source text. Nothing changes in the app.

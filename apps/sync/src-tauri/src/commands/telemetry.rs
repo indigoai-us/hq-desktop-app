@@ -1252,7 +1252,8 @@ fn build_desktop_telemetry_event(
     if matches!(
         event_name.as_str(),
         "desktop_onboarding_step" | "desktop_setup_completed" | "desktop_post_ready_action"
-    ) {
+    ) || crate::commands::cdp_mirror::is_funnel_operational_row(&event_name)
+    {
         properties["appVersion"] = Value::String(crate::app_version::current().to_string());
     }
     if is_post_ready_action {
@@ -1419,6 +1420,24 @@ pub async fn emit_desktop_operational_telemetry(
     .await
 }
 
+/// hq-pro only, for a row whose CDP copy was queued earlier.
+pub async fn emit_desktop_operational_telemetry_unmirrored(
+    event_name: &str,
+    properties: Value,
+) -> Result<(), String> {
+    let access_token = crate::commands::cognito::get_valid_access_token().await?;
+    let api_url = resolve_vault_api_url()?;
+    let vault = VaultClient::new(&api_url, &access_token);
+    emit_desktop_operational_telemetry_with_vault(
+        &vault,
+        event_name.to_string(),
+        Some(properties),
+        None,
+        None,
+    )
+    .await
+}
+
 /// Queue consent-free updater outcome telemetry without delaying installation.
 pub fn emit_desktop_operational_telemetry_best_effort(event_name: &'static str, properties: Value) {
     tauri::async_runtime::spawn(async move {
@@ -1452,13 +1471,12 @@ pub fn emit_desktop_telemetry_best_effort(event_name: &'static str, properties: 
     });
 }
 
-fn build_daily_active_event(utc_day: chrono::NaiveDate) -> RawTelemetryEvent {
-    let day = utc_day.format("%Y-%m-%d");
-    let occurred_at = utc_day
-        .and_hms_opt(0, 0, 0)
-        .expect("midnight is a valid UTC time")
-        .and_utc()
-        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+/// `occurredAt` is the send time. The once-per-day guarantee comes from the
+/// day in `idempotencyKey` (hq-pro keeps one row per subject, event and key);
+/// a midnight timestamp would put every row outside any daytime query window.
+fn build_daily_active_event(now: chrono::DateTime<chrono::Utc>) -> RawTelemetryEvent {
+    let day = now.date_naive().format("%Y-%m-%d");
+    let occurred_at = now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
 
     RawTelemetryEvent {
         event_name: "desktop_app_daily_active".to_string(),
@@ -1480,10 +1498,10 @@ fn build_daily_active_event(utc_day: chrono::NaiveDate) -> RawTelemetryEvent {
 
 async fn emit_daily_active_with_vault(
     vault: &VaultClient,
-    utc_day: chrono::NaiveDate,
+    now: chrono::DateTime<chrono::Utc>,
 ) -> Result<(), String> {
     let batch = TelemetryEventsBatch {
-        events: vec![build_daily_active_event(utc_day)],
+        events: vec![build_daily_active_event(now)],
     };
     vault
         .post_telemetry_events(&batch)
@@ -1491,12 +1509,12 @@ async fn emit_daily_active_with_vault(
         .map_err(|e| e.to_string())
 }
 
-async fn emit_daily_active_for_utc_day(utc_day: chrono::NaiveDate) {
+async fn emit_daily_active_at(now: chrono::DateTime<chrono::Utc>) {
     let result = async {
         let access_token = crate::commands::cognito::get_valid_access_token().await?;
         let api_url = resolve_vault_api_url()?;
         let vault = VaultClient::new(&api_url, &access_token);
-        emit_daily_active_with_vault(&vault, utc_day).await
+        emit_daily_active_with_vault(&vault, now).await
     }
     .await;
 
@@ -1505,11 +1523,18 @@ async fn emit_daily_active_for_utc_day(utc_day: chrono::NaiveDate) {
     }
 }
 
-/// Start a best-effort daily-active emit without delaying application startup.
+/// How often a running app re-sends daily-active. hq-pro keeps the first row
+/// per UTC day, so repeats cost one request and cover a launch that had no
+/// session yet and an app left running past midnight.
+const DAILY_ACTIVE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+
+/// Start best-effort daily-active emits without delaying application startup.
 pub fn setup_daily_active_emit() {
-    let utc_day = chrono::Utc::now().date_naive();
     tauri::async_runtime::spawn(async move {
-        emit_daily_active_for_utc_day(utc_day).await;
+        loop {
+            emit_daily_active_at(chrono::Utc::now()).await;
+            tokio::time::sleep(DAILY_ACTIVE_INTERVAL).await;
+        }
     });
 }
 
@@ -3964,13 +3989,107 @@ mod codex_telemetry_tests {
     }
 
     #[test]
+    fn funnel_operational_rows_carry_the_trusted_app_version() {
+        // Regression: the PR 1264 funnel rows reached hq-pro with no version.
+        for (op, _, _) in crate::commands::cdp_mirror::OPERATIONAL_MIRRORS {
+            let event = build_desktop_telemetry_event(
+                op.to_string(),
+                Some(json!({ "appVersion": "renderer-controlled-version" })),
+                None,
+                None,
+                "no-consent",
+            );
+            assert_eq!(
+                event.properties["appVersion"],
+                crate::app_version::current(),
+                "{op} must carry the build's app version"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn first_launch_app_opened_is_held_until_a_session_exists() {
+        // Regression: the first launch has no session, so its
+        // `desktop_app_opened isFirstLaunch=true` row was dropped and only
+        // signed-in relaunches (`false`) ever reached hq-pro.
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/telemetry/events"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .mount(&server)
+            .await;
+        let home = setup_home();
+        write_menubar(home.path(), "{}");
+        let _home = scoped_home(home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        // What `cdp_mirror::init` does on a first launch.
+        crate::commands::cdp_mirror::hold_first_open();
+
+        let without_session = crate::commands::cdp_mirror::flush_pending_first_open_now().await;
+        assert!(!without_session, "no session: the row stays held");
+        write_valid_access_token(home.path());
+        // Other tests' sign-in hooks spawn the same flush in the background,
+        // so retry briefly instead of relying on this call winning the guard.
+        let menubar = home.path().join(".hq/menubar.json");
+        let held = || {
+            hq_desktop_core::first_run::read_menubar_obj(&menubar)
+                .get(crate::commands::cdp_mirror::FIRST_OPEN_PENDING_KEY)
+                .and_then(Value::as_bool)
+                == Some(true)
+        };
+        for _ in 0..50 {
+            if !held() {
+                break;
+            }
+            crate::commands::cdp_mirror::flush_pending_first_open_now().await;
+            if held() {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        }
+        assert!(!held(), "the held row is sent once a session exists");
+        assert!(
+            !crate::commands::cdp_mirror::flush_pending_first_open_now().await,
+            "sent once"
+        );
+        std::env::remove_var("HQ_VAULT_API_URL");
+
+        let posts: Vec<Value> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|request| request.method == wiremock::http::Method::POST)
+            .map(|request| serde_json::from_slice(&request.body).unwrap())
+            .collect();
+        assert_eq!(posts.len(), 1);
+        let event = &posts[0]["events"][0];
+        assert_eq!(event["eventName"], "desktop_app_opened");
+        assert_eq!(event["properties"]["isFirstLaunch"], true);
+        assert_eq!(
+            event["properties"]["appVersion"],
+            crate::app_version::current()
+        );
+    }
+
+    #[test]
     fn test_daily_active_event_uses_stable_utc_day_values() {
-        let utc_day = chrono::NaiveDate::from_ymd_opt(2026, 7, 15).unwrap();
+        let now = chrono::DateTime::parse_from_rfc3339("2026-07-15T14:30:05.250Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
 
-        let first = build_daily_active_event(utc_day);
-        let retry = build_daily_active_event(utc_day);
+        let first = build_daily_active_event(now);
+        let retry = build_daily_active_event(now);
 
-        assert_eq!(first.occurred_at, "2026-07-15T00:00:00.000Z");
+        // Regression: the row used to be stamped 00:00:00Z, so every daytime
+        // read of hq-pro telemetry returned no daily-active rows.
+        assert_eq!(first.occurred_at, "2026-07-15T14:30:05.250Z");
+        let later_same_day = build_daily_active_event(now + chrono::Duration::hours(6));
+        assert_eq!(
+            later_same_day.idempotency_key, first.idempotency_key,
+            "re-sends on the same UTC day share one idempotency key"
+        );
         assert_eq!(
             first.idempotency_key.as_deref(),
             Some("hq-desktop-app:daily-active:2026-07-15")
@@ -4016,9 +4135,9 @@ mod codex_telemetry_tests {
             .await;
 
         let vault = VaultClient::new(server.uri(), "test-jwt");
-        let utc_day = chrono::NaiveDate::from_ymd_opt(2026, 7, 15).unwrap();
+        let now = chrono::Utc::now();
 
-        let result = emit_daily_active_with_vault(&vault, utc_day).await;
+        let result = emit_daily_active_with_vault(&vault, now).await;
 
         assert!(result.is_ok());
         let reqs = server.received_requests().await.unwrap();
@@ -4041,7 +4160,7 @@ mod codex_telemetry_tests {
     async fn test_daily_active_missing_or_invalid_token_does_not_fail_startup() {
         let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let server = MockServer::start().await;
-        let utc_day = chrono::NaiveDate::from_ymd_opt(2026, 7, 15).unwrap();
+        let now = chrono::Utc::now();
 
         for token_contents in [None, Some("{not valid json")] {
             let home = setup_home();
@@ -4051,7 +4170,7 @@ mod codex_telemetry_tests {
 
             std::env::set_var("HQ_TEST_HOME", home.path());
             std::env::set_var("HQ_VAULT_API_URL", server.uri());
-            emit_daily_active_for_utc_day(utc_day).await;
+            emit_daily_active_at(now).await;
             std::env::remove_var("HQ_TEST_HOME");
             std::env::remove_var("HQ_VAULT_API_URL");
         }
@@ -4079,8 +4198,8 @@ mod codex_telemetry_tests {
         std::env::set_var("HQ_TEST_HOME", home.path());
         std::env::set_var("HQ_VAULT_API_URL", server.uri());
 
-        let utc_day = chrono::NaiveDate::from_ymd_opt(2026, 7, 15).unwrap();
-        emit_daily_active_for_utc_day(utc_day).await;
+        let now = chrono::Utc::now();
+        emit_daily_active_at(now).await;
 
         std::env::remove_var("HQ_TEST_HOME");
         std::env::remove_var("HQ_VAULT_API_URL");
