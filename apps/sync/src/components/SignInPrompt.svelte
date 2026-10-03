@@ -36,6 +36,8 @@
      * copy, one primary button. The compact popover keeps the default card.
      */
     layout?: "card" | "column";
+    /** Column layout: one short line under the heading saying why sign-in is needed. */
+    note?: string;
     version?: string;
     /**
      * Re-check the saved session without signing in again. The desktop
@@ -45,7 +47,7 @@
     onretry?: () => void;
   }
 
-  let { reauth = false, onsuccess, bringMainToFront = true, layout = "card", version = "", onretry }: Props = $props();
+  let { reauth = false, onsuccess, bringMainToFront = true, layout = "card", version = "", onretry, note }: Props = $props();
 
   const providers: { key: SignInProvider; label: string }[] = [
     { key: 'Google', label: 'Google' },
@@ -372,9 +374,11 @@
       </svg>
     </div>
 
-    <h1>{reauth ? 'Keep sync moving' : 'Sign in to HQ'}</h1>
-    <p class="description">
-      {layout === "column" && !reauth
+    <h1>{reauth && layout !== "column" ? 'Keep sync moving' : 'Sign in to HQ'}</h1>
+    <p class="description" data-testid="sign-in-description">
+      {layout === "column" && note
+        ? note
+        : layout === "column" && !reauth
         ? 'Your companies, files, and bots follow your account.'
         : reauth
         ? 'Your files are safe. Continue with your provider and HQ will resume syncing.'

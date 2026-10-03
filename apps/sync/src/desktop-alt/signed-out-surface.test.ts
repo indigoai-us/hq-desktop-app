@@ -75,3 +75,14 @@ describe('signed-out page copy (AUDIT-3)', () => {
     expect(block).not.toMatch(/fleet agent/);
   });
 });
+
+describe('signed-out page heading (OWNER-D 5, AUDIT-3-20)', () => {
+  it('has no page heading of its own; the sign-in card carries the one title', () => {
+    const start = shell.indexOf('data-testid="hq-work-signed-out"');
+    const block = shell.slice(start, shell.indexOf('</section>', start));
+    expect(block).not.toMatch(/<h[1-6]\b/);
+    expect(block).not.toContain('You are signed out');
+    expect(block).toContain('<SignInPrompt');
+    expect(prompt).toContain("'Sign in to HQ'");
+  });
+});
