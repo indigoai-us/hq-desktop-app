@@ -12,8 +12,8 @@ test('names a company, picks Workforce, opens checkout, and finishes on the retu
   await page.goto(base);
 
   await page.getByTestId('onboarding-company-field-name').fill('Acme Studio');
-  await expect(page.getByTestId('onboarding-company-field-slug')).toHaveValue('acme-studio');
-  await expect(page.getByText('acme-studio is available.')).toBeVisible();
+  await expect(page.getByTestId('onboarding-company-field-slug')).toHaveCount(0);
+  await expect(page.getByText('Company handle')).toHaveCount(0);
   await page.getByTestId('onboarding-company-invites').fill('pat@acme.com');
   await page.getByTestId('onboarding-company-create').click();
 
@@ -29,12 +29,53 @@ test('names a company, picks Workforce, opens checkout, and finishes on the retu
   expect(errors).toEqual([]);
 });
 
-test('offers a suggestion when the handle is taken', async ({ page }) => {
+type HarnessWindow = Window & { __companyStepCalls?: Array<{ command: string; args?: Record<string, unknown> }> };
+
+test('takes the suggested handle by itself when the name is taken', async ({ page }) => {
   await page.goto(base);
   await page.getByTestId('onboarding-company-field-name').fill('Acme');
-  await expect(page.getByRole('button', { name: 'Use acme-hq' })).toBeVisible();
-  await page.getByRole('button', { name: 'Use acme-hq' }).click();
-  await expect(page.getByTestId('onboarding-company-field-slug')).toHaveValue('acme-hq');
+  await expect(page.getByTestId('onboarding-company-create')).toBeEnabled();
+  await page.getByTestId('onboarding-company-create').click();
+  await expect(page.getByTestId('onboarding-plan-starter')).toBeVisible();
+  const values = await page.evaluate(() =>
+    (window as HarnessWindow).__companyStepCalls?.find(
+      (call) => call.command === 'run_card_action' && call.args?.cardId === 'card_create_company',
+    )?.args?.values,
+  );
+  expect(values).toMatchObject({ name: 'Acme', slug: 'acme-hq' });
+});
+
+test('centers the company form, plan cards and buttons under the heading', async ({ page }) => {
+  await page.goto(base);
+  const centerOf = async (selector: string) => {
+    const box = await page.locator(selector).first().boundingBox();
+    if (!box) throw new Error(`${selector} has no box`);
+    return box.x + box.width / 2;
+  };
+  await page.getByTestId('onboarding-company-field-name').fill('Acme Studio');
+  const heading = await centerOf('[data-scene-heading]');
+  expect(Math.abs((await centerOf('form.company-form')) - heading)).toBeLessThanOrEqual(1);
+  const actions = page.getByTestId('onboarding-company-actions');
+  const first = await actions.locator('.btn').first().boundingBox();
+  const last = await actions.locator('.btn').last().boundingBox();
+  // The button pair is centered as a group.
+  expect(Math.abs((first!.x + last!.x + last!.width) / 2 - heading)).toBeLessThanOrEqual(1);
+
+  await page.getByTestId('onboarding-company-create').click();
+  await expect(page.getByTestId('onboarding-plan-starter')).toBeVisible();
+  const planHeading = await centerOf('[data-scene-heading]');
+  const formWidth = (await page.locator('[data-testid="onboarding-plan-options"]').boundingBox())!.width;
+  expect(formWidth).toBeLessThanOrEqual(360);
+  expect(Math.abs((await centerOf('[data-testid="onboarding-plan-options"]')) - planHeading)).toBeLessThanOrEqual(1);
+  expect(Math.abs((await centerOf('[data-testid="onboarding-plan-continue"]')) - planHeading)).toBeLessThanOrEqual(1);
+});
+
+test('skips "Choose a plan" when a plan was already picked on the website', async ({ page }) => {
+  await page.goto(`${base}&plan=starter`);
+  await page.getByTestId('onboarding-company-field-name').fill('Acme Studio');
+  await page.getByTestId('onboarding-company-create').click();
+  await expect(page.getByTestId('company-preview-result')).toContainText('"plan":"starter"');
+  await expect(page.getByText('Choose a plan')).toHaveCount(0);
 });
 
 test('lets an invited person join', async ({ page }) => {

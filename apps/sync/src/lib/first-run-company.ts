@@ -16,9 +16,11 @@
  * Everything here is headless so each branch is unit-testable.
  */
 import {
+  localSlugProblem,
   normalizeConversationMessages,
   timelinePageFromPayload,
   type CreateCompanyApi,
+  type SlugConstraints,
 } from '@hq/ui';
 import { pendingInviteWorkspaces, type Workspace, type WorkspacesResult } from './workspaces';
 import {
@@ -26,11 +28,13 @@ import {
   decideCompanyRoute,
   inviteOffers,
   otherIdentityFromLookup,
+  priorPlanFromPayload,
   provisioningStateFromEntity,
   summarizeRoute,
   type CompanyRoute,
   type CompanyRouteSummary,
   type OtherIdentityCompany,
+  type PriorPlanChoice,
   type ProvisioningState,
 } from './onboarding-company-route';
 
@@ -76,6 +80,11 @@ export function invitesFromWorkspaces(workspaces: readonly Workspace[]): FirstRu
 export interface ResolvedCompanyRoute {
   route: CompanyRoute;
   summary: CompanyRouteSummary;
+  /**
+   * The plan the person already picked on the website, when hq-pro says so
+   * (`priorPlanFromPayload`). Null means unknown: the step asks.
+   */
+  priorPlan: PriorPlanChoice | null;
 }
 
 /**
@@ -159,18 +168,20 @@ export async function resolveFirstRunCompanyRoute(deps: {
   }
   const invites = inviteOffers(inviteRows, now);
   let otherIdentity: OtherIdentityCompany | null = null;
+  let priorPlan = priorPlanFromPayload(me);
   if (companies.length === 0 && deps.anonId) {
     // Different sign-in identity: the website visitor may have made a company
     // under another account. hq-pro resolves it via marketing_identity_linked.
     try {
       const lookup = await deps.hqProJson('GET', `/membership/me?anonId=${encodeURIComponent(deps.anonId)}`);
       otherIdentity = otherIdentityFromLookup(lookup, signedInEmail);
+      priorPlan = priorPlan ?? priorPlanFromPayload(lookup);
     } catch (error) {
       console.warn('onboarding: visitor identity lookup failed', error);
     }
   }
   const route = decideCompanyRoute({ companies, invites, signedInEmail, otherIdentity });
-  return { route, summary: summarizeRoute(route, companies, invites) };
+  return { route, summary: summarizeRoute(route, companies, invites), priorPlan };
 }
 
 /** Back-compat wrapper: just the route. */
@@ -531,3 +542,61 @@ export function isCheckoutReturnFor(payload: unknown, companyUid: string): boole
   if (!isRecord(payload)) return false;
   return payload.companyUid === companyUid && payload.checkout === 'done';
 }
+
+/** Longest handle HQ derives when the server publishes no rule. */
+export const COMPANY_HANDLE_MAX_LENGTH = 40;
+
+/** Lowercase letters, numbers and single dashes, from a company name. */
+export function slugifyCompanyName(name: string, maxLength: number = COMPANY_HANDLE_MAX_LENGTH): string {
+  return name
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, Math.max(1, maxLength))
+    .replace(/-+$/g, '');
+}
+
+function handleWithSuffix(base: string, suffix: string, maxLength: number): string {
+  const room = Math.max(1, maxLength - suffix.length);
+  return `${base.slice(0, room).replace(/-+$/g, '')}${suffix}`;
+}
+
+/**
+ * The company handle (slug) HQ uses for a name. People do not type it.
+ *
+ * `attempt` 0 is the plain slug; each later attempt adds a number
+ * (`acme-2`, `acme-3`, …) for a handle that was taken with no server
+ * suggestion. When the plain slug breaks the server's published rule (too
+ * short, starts with a number), `-hq` / `hq-` are tried so a name like "3M"
+ * still gets a handle. Null when the name has no letters or numbers to work
+ * with: the form then asks for a different name.
+ */
+export function deriveCompanyHandle(
+  name: string,
+  constraints: SlugConstraints | null,
+  attempt: number = 0,
+): string | null {
+  const maxLength = constraints?.maxLength && constraints.maxLength > 0 ? constraints.maxLength : COMPANY_HANDLE_MAX_LENGTH;
+  const base = slugifyCompanyName(name, maxLength);
+  if (!base) return null;
+  const suffix = attempt > 0 ? `-${attempt + 1}` : '';
+  const candidates = [
+    suffix ? handleWithSuffix(base, suffix, maxLength) : base,
+    handleWithSuffix(base, `-hq${suffix}`, maxLength),
+    `hq-${suffix ? handleWithSuffix(base, suffix, maxLength - 3) : base.slice(0, maxLength - 3)}`.replace(/-+$/g, ''),
+  ];
+  const minLength = constraints?.minLength ?? 0;
+  for (const candidate of candidates) {
+    if (candidate.length < minLength) continue;
+    if (localSlugProblem(candidate, constraints) === null) return candidate;
+  }
+  return null;
+}
+
+/** Shown under the company name when no handle can be made from it. */
+export const COMPANY_NAME_NEEDS_LETTERS =
+  'Use a name with at least one letter or number (a to z, 0 to 9).';
+/** Shown under the company name when the server will not take any handle made from it. */
+export const COMPANY_NAME_UNUSABLE = 'HQ could not use that name. Try a different company name.';

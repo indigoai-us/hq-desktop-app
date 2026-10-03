@@ -169,6 +169,7 @@
     resolveFirstRunCompanyRoute,
     waitForProvisioning,
     type FirstRunCompanyPath,
+    type FirstRunPlan,
   } from '../../lib/first-run-company';
   import {
     createSyncPlatformAdapter,
@@ -397,6 +398,8 @@
    * `existing` or null (lookup failed) to skip it.
    */
   let companyPath = $state<FirstRunCompanyPath | null>(null);
+  /** The plan already picked on the website, when hq-pro says so; skips "Choose a plan". */
+  let companyPriorPlan = $state<FirstRunPlan | null>(null);
   /** Signed-in email, read once for the signed-in-as notice and invite matching. */
   let signedInEmail = $state<string | null>(null);
   /** A session already on this machine when onboarding opened (old ~/.hq). */
@@ -1221,6 +1224,7 @@
     signedInEmail = null;
     if (from === 'company') {
       companyPath = null;
+      companyPriorPlan = null;
       companyStepVisited = false;
       postSetupStepsResolved = false;
       resumeAfterAccountSwitch = true;
@@ -2286,6 +2290,7 @@
     ]);
     if (!stillCurrent()) return;
     companyPath = firstRunCompanyPath?.route ?? null;
+    companyPriorPlan = firstRunCompanyPath?.priorPlan ?? null;
     if (firstRunCompanyPath) recordCompanyRoute(firstRunCompanyPath.route, firstRunCompanyPath.summary);
     showFirstFolderSyncStep = firstFolderEnabled;
     inviteTeammateContext = inviteContext;
@@ -3727,6 +3732,7 @@
         {#if currentStep === COMPANY_STEP_INDEX && companyPath && companyPath.kind !== 'skip'}
           <CompanyStep
             path={companyPath}
+            priorPlan={companyPriorPlan}
             invoke={invokeCommand}
             onswitchaccount={() => void switchAccount('company')}
             openUrl={(url) => openExternal(url)}

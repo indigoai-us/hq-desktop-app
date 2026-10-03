@@ -3583,6 +3583,10 @@ describe('company onboarding step', () => {
     anonLookup?: Record<string, unknown>;
     createError?: string;
     signedInEmail?: string;
+    /** Extra top-level fields on GET /membership/me (e.g. a plan picked on the website). */
+    membershipExtra?: Record<string, unknown>;
+    /** Answer for check_company_slug; defaults to every handle free. */
+    slugAnswer?: (slug: string) => Record<string, unknown>;
   } = {}): Promise<void> {
     onboardingFlags.firstFolderSyncEnabled = false;
     let entityPolls = 0;
@@ -3639,12 +3643,23 @@ describe('company onboarding step', () => {
             ],
           };
         case 'check_company_slug':
-          return { valid: true, available: true, normalized: args?.slug, suggestion: null, reasons: [] };
+          return (
+            options.slugAnswer?.(String(args?.slug ?? '')) ?? {
+              valid: true,
+              available: true,
+              normalized: args?.slug,
+              suggestion: null,
+              reasons: [],
+            }
+          );
         case 'run_company_tab_action':
           return { state: 'done' };
         case 'hq_pro_fetch': {
           if (args?.url === '/membership/me') {
-            return { status: 200, body: JSON.stringify({ memberships: options.memberships ?? [] }) };
+            return {
+              status: 200,
+              body: JSON.stringify({ ...(options.membershipExtra ?? {}), memberships: options.memberships ?? [] }),
+            };
           }
           if (typeof args?.url === 'string' && args.url.startsWith('/membership/me?anonId=')) {
             return { status: 200, body: JSON.stringify(options.anonLookup ?? { memberships: [] }) };
@@ -3931,9 +3946,11 @@ describe('company onboarding step', () => {
     typeInto('onboarding-company-field-name', 'Acme Studio');
     typeInto('onboarding-company-invites', 'pat@acme.com');
     await settle();
-    expect(
-      host.querySelector<HTMLInputElement>('[data-testid="onboarding-company-field-slug"]')?.value,
-    ).toBe('acme-studio');
+    // No handle field: the handle is made from the name and checked quietly.
+    expect(host.querySelector('[data-testid="onboarding-company-field-slug"]')).toBeNull();
+    expect(host.querySelector('label[for="onboarding-company-slug"]')).toBeNull();
+    expect(host.textContent).not.toContain('Company handle');
+    expect(host.textContent).not.toContain('is available');
     expect(tauri.invoke).toHaveBeenCalledWith('check_company_slug', { slug: 'acme-studio' });
 
     click('onboarding-company-create');
@@ -3976,6 +3993,147 @@ describe('company onboarding step', () => {
       expect(JSON.stringify(row)).not.toContain('pat@acme.com');
       expect(JSON.stringify(row)).not.toContain('Acme Studio');
     }
+  });
+
+  it('moves to the suggested handle by itself when the name is taken', async () => {
+    await reachCompanyScenario({
+      slugAnswer: (slug) =>
+        slug === 'acme'
+          ? { valid: true, available: false, normalized: 'acme', suggestion: 'acme-hq', reasons: ['taken'] }
+          : { valid: true, available: true, normalized: slug, suggestion: null, reasons: [] },
+    });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')));
+    typeInto('onboarding-company-field-name', 'Acme');
+    await settle();
+    await settle(); // the taken answer starts a second debounced check
+    expect(tauri.invoke).toHaveBeenCalledWith('check_company_slug', { slug: 'acme' });
+    expect(tauri.invoke).toHaveBeenCalledWith('check_company_slug', { slug: 'acme-hq' });
+    expect(host.textContent).not.toContain('taken');
+    expect(host.querySelector('[data-testid="onboarding-company-name-problem"]')).toBeNull();
+
+    click('onboarding-company-create');
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-plan-starter"]')));
+    const submit = tauri.invoke.mock.calls.find(
+      ([command, args]) =>
+        command === 'run_card_action' && (args as { cardId?: string }).cardId === 'card_create_company',
+    );
+    expect((submit?.[1] as { values: Record<string, string> }).values.slug).toBe('acme-hq');
+  });
+
+  it('adds a number to a taken handle when the server offers no suggestion', async () => {
+    await reachCompanyScenario({
+      slugAnswer: (slug) =>
+        slug === 'acme'
+          ? { valid: true, available: false, normalized: 'acme', suggestion: null, reasons: ['taken'] }
+          : { valid: true, available: true, normalized: slug, suggestion: null, reasons: [] },
+    });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')));
+    typeInto('onboarding-company-field-name', 'Acme');
+    await settle();
+    await settle(); // the taken answer starts a second debounced check
+    expect(tauri.invoke).toHaveBeenCalledWith('check_company_slug', { slug: 'acme-2' });
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="onboarding-company-create"]')?.disabled).toBe(false);
+  });
+
+  it('asks for a different name, not a handle, when no handle can be made from it', async () => {
+    await reachCompanyScenario();
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')));
+    typeInto('onboarding-company-field-name', '!!!');
+    await settle();
+    expect(host.querySelector('[data-testid="onboarding-company-name-problem"]')?.textContent).toContain(
+      'at least one letter or number',
+    );
+    expect(host.querySelector('[data-testid="onboarding-company-field-name"]')?.getAttribute('aria-invalid')).toBe('true');
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="onboarding-company-create"]')?.disabled).toBe(true);
+
+    typeInto('onboarding-company-field-name', 'Acme');
+    await settle();
+    expect(host.querySelector('[data-testid="onboarding-company-name-problem"]')).toBeNull();
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="onboarding-company-create"]')?.disabled).toBe(false);
+  });
+
+  it('keeps the form, plan cards and buttons on one centered column', async () => {
+    await reachCompanyScenario();
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')));
+    const actions = host.querySelector('[data-testid="onboarding-company-actions"]');
+    expect(actions?.classList.contains('company-actions')).toBe(true);
+    expect(actions?.classList.contains('split')).toBe(false);
+    expect(host.querySelector('form.company-form')).not.toBeNull();
+
+    typeInto('onboarding-company-field-name', 'Acme');
+    await settle();
+    click('onboarding-company-create');
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-plan-starter"]')));
+    const planActions = host.querySelector('[data-testid="onboarding-plan-actions"]');
+    expect(planActions?.classList.contains('company-actions')).toBe(true);
+    expect(planActions?.classList.contains('split')).toBe(false);
+    for (const option of host.querySelectorAll('.plan-option')) {
+      // Radio first, then one left-aligned text block beside it.
+      expect(option.children[0]?.tagName).toBe('INPUT');
+      expect(option.children[1]?.classList.contains('plan-text')).toBe(true);
+    }
+  });
+
+  it('shows "Choose a plan" when no plan was picked on the website', async () => {
+    await reachCompanyScenario();
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')));
+    typeInto('onboarding-company-field-name', 'Acme');
+    await settle();
+    click('onboarding-company-create');
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-plan-starter"]')));
+    expect(host.textContent).toContain('Choose a plan');
+  });
+
+  it('skips "Choose a plan" and starts on Starter when Starter was picked on the website', async () => {
+    await reachCompanyScenario({ membershipExtra: { planIntent: 'free' } });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')));
+    typeInto('onboarding-company-field-name', 'Acme');
+    await settle();
+    click('onboarding-company-create');
+    await flushUntil(() => host.querySelector('[data-testid="onboarding-company"]') === null);
+    await settle();
+    expect(host.textContent).not.toContain('Choose a plan');
+    expect(
+      tauri.invoke.mock.calls.some(
+        ([command, args]) =>
+          command === 'hq_pro_fetch' && (args as { url?: string }).url === '/v1/billing/checkout/team',
+      ),
+    ).toBe(false);
+    const rows = companyRows();
+    expect(rows.some((row) => row.outcome === 'plan_starter')).toBe(true);
+    expect(rows.some((row) => row.action === 'completed' && row.outcome === 'created_starter')).toBe(true);
+  });
+
+  it('skips "Choose a plan" and opens checkout when Workforce was picked on the website', async () => {
+    await reachCompanyScenario({
+      anonId: 'anon_123',
+      anonLookup: { memberships: [], webIdentity: { samePerson: true, plan: 'team' } },
+    });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')));
+    typeInto('onboarding-company-field-name', 'Acme');
+    await settle();
+    click('onboarding-company-create');
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-checkout-done"]')));
+    expect(host.querySelector('[data-testid="onboarding-plan-starter"]')).toBeNull();
+    expect(tauri.open).toHaveBeenCalledWith('https://checkout.stripe.com/c/pay/cs_test');
+  });
+
+  it('falls back to the plan screen when checkout for a website-picked Workforce plan fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await reachCompanyScenario({
+      membershipExtra: { planIntent: 'workforce' },
+      checkout: { status: 503, body: { code: 'team_signup_disabled' } },
+    });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')));
+    typeInto('onboarding-company-field-name', 'Acme');
+    await settle();
+    click('onboarding-company-create');
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-error"]')));
+    expect(host.querySelector('[data-testid="onboarding-plan-starter"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="onboarding-company-error"]')?.textContent).toContain(
+      'Workforce sign-up is paused',
+    );
+    warn.mockRestore();
   });
 
   it('opens Workforce checkout in the browser and finishes on the checkout return', async () => {

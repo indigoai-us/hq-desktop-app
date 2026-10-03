@@ -1,8 +1,11 @@
 <script lang="ts">
   /**
    * First-run company step. Shown once the install is done to a person with no
-   * active company: join a pending invite, or name a company (handle, optional
-   * website, teammates), then pick Starter or Workforce. Workforce opens the
+   * active company: join a pending invite, or name a company (optional website,
+   * teammates), then pick Starter or Workforce. The company handle (slug) is
+   * made from the name and checked in the background; nobody types it. When
+   * the person already picked a plan on the website (`priorPlan`), the plan
+   * screen is skipped and that plan is used. Workforce opens the
    * Stripe checkout in the browser; the `hq-desktop://setup` return comes back
    * through the deep-link handler as `messages:open-setup`.
    *
@@ -22,7 +25,10 @@
     type SlugWatcher,
   } from '@hq/ui';
   import {
+    COMPANY_NAME_NEEDS_LETTERS,
+    COMPANY_NAME_UNUSABLE,
     createFirstRunCompanyApi,
+    deriveCompanyHandle,
     isCheckoutReturnFor,
     requestCompanyProvisioning,
     waitForProvisioning,
@@ -79,9 +85,14 @@
     listen: (event: string, handler: (payload: unknown) => void) => Promise<() => void>;
     onTelemetry?: (event: CompanyStepEvent) => void;
     oncomplete: (result: CompanyStepResult) => void;
+    /**
+     * The plan the person already picked on the website. When set, the plan
+     * screen is skipped: Starter finishes, Workforce opens checkout.
+     */
+    priorPlan?: FirstRunPlan | null;
   }
 
-  let { path, invoke, onswitchaccount, provisioningPoll, openUrl, listen, onTelemetry, oncomplete }: Props = $props();
+  let { path, invoke, onswitchaccount, provisioningPoll, openUrl, listen, onTelemetry, oncomplete, priorPlan = null }: Props = $props();
 
   type Phase = 'other-identity' | 'existing' | 'join' | 'loading' | 'details' | 'provisioning' | 'provision-failed' | 'plan' | 'checkout';
 
@@ -121,8 +132,12 @@
 
   let form = $state<CompanyDraftForm | null>(null);
   let values = $state<Record<string, string>>({});
-  let slugEdited = false;
   let slugFieldId = $state<string | null>(null);
+  /** The name cannot give a usable handle; shown under the name field. */
+  let nameProblem = $state<string | null>(null);
+  /** Automatic retries (server suggestion, numbered suffix) for the current name. */
+  let handleRetries = 0;
+  const MAX_HANDLE_RETRIES = 5;
   let slugState = $state<SlugState>(SLUG_IDLE);
   let slugWatcher: SlugWatcher | null = null;
   let inviteText = $state('');
@@ -134,11 +149,18 @@
   let stopCheckoutListen: (() => void) | null = null;
 
   const invites = $derived(parseInviteEmails(inviteText));
+  /** The handle is derived from the name, so its field is never shown. */
+  const visibleFields = $derived((form?.fields ?? []).filter((field) => field.id !== slugFieldId));
   const missing = $derived(
     (form?.fields ?? []).filter((field) => field.required && !(values[field.id] ?? '').trim()),
   );
   const canCreate = $derived(
-    !busy && form !== null && missing.length === 0 && !slugBlocksSubmit(slugState) && invites.invalid.length === 0,
+    !busy &&
+      form !== null &&
+      missing.length === 0 &&
+      nameProblem === null &&
+      !slugBlocksSubmit(slugState) &&
+      invites.invalid.length === 0,
   );
 
   function browserStorage(): Storage | null {
@@ -147,15 +169,6 @@
     } catch {
       return null;
     }
-  }
-
-  function toHandle(name: string): string {
-    return name
-      .toLowerCase()
-      .normalize('NFKD')
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 40);
   }
 
   async function loadForm(): Promise<void> {
@@ -175,7 +188,7 @@
       ? createSlugWatcher({
           check: (slug) => invoke<unknown>('check_company_slug', { slug }),
           constraints: draft.form.fields.find((field) => field.id === slugFieldId)?.constraints ?? null,
-          onstate: (next) => (slugState = next),
+          onstate: onHandleState,
           onerror: (err) => console.warn('onboarding: company handle check failed', err),
         })
       : null;
@@ -184,21 +197,55 @@
 
   function setValue(fieldId: string, value: string): void {
     values = { ...values, [fieldId]: value };
-    if (fieldId === slugFieldId) {
-      slugEdited = true;
-      slugWatcher?.input(value);
-    } else if (fieldId === form?.nameFieldId && slugFieldId && !slugEdited) {
-      const handle = toHandle(value);
-      values = { ...values, [slugFieldId]: handle };
-      slugWatcher?.input(handle);
-    }
+    if (fieldId === form?.nameFieldId) deriveHandle(value, 0);
   }
 
-  function takeSuggestion(): void {
-    if (!slugFieldId || !slugState.suggestion) return;
-    slugEdited = true;
-    values = { ...values, [slugFieldId]: slugState.suggestion };
-    slugWatcher?.input(slugState.suggestion);
+  function useHandle(handle: string): void {
+    if (!slugFieldId) return;
+    values = { ...values, [slugFieldId]: handle };
+    slugWatcher?.input(handle);
+  }
+
+  /** Make the handle from the company name; `attempt` > 0 adds a number. */
+  function deriveHandle(name: string, attempt: number): void {
+    if (!slugFieldId) return;
+    if (attempt === 0) handleRetries = 0;
+    nameProblem = null;
+    if (!name.trim()) {
+      values = { ...values, [slugFieldId]: '' };
+      slugWatcher?.input('');
+      return;
+    }
+    const handle = deriveCompanyHandle(name, slugWatcher?.constraints() ?? null, attempt);
+    if (!handle) {
+      values = { ...values, [slugFieldId]: '' };
+      slugWatcher?.cancel();
+      slugState = SLUG_IDLE;
+      nameProblem = attempt === 0 ? COMPANY_NAME_NEEDS_LETTERS : COMPANY_NAME_UNUSABLE;
+      return;
+    }
+    useHandle(handle);
+  }
+
+  /**
+   * A taken handle moves on by itself: the server's suggestion first, else the
+   * next numbered handle. Nothing about the handle is shown unless no handle
+   * works, and then the message is about the name.
+   */
+  function onHandleState(next: SlugState): void {
+    slugState = next;
+    if (next.status !== 'taken' && next.status !== 'invalid') return;
+    const name = form?.nameFieldId ? (values[form.nameFieldId] ?? '') : '';
+    if (handleRetries >= MAX_HANDLE_RETRIES) {
+      nameProblem = COMPANY_NAME_UNUSABLE;
+      return;
+    }
+    handleRetries += 1;
+    if (next.status === 'taken' && next.suggestion && next.suggestion !== next.value) {
+      useHandle(next.suggestion);
+      return;
+    }
+    deriveHandle(name, handleRetries);
   }
 
   async function createCompany(): Promise<void> {
@@ -293,6 +340,12 @@
     } else {
       await sendHeldInvites(uid);
     }
+    if (priorPlan) {
+      // Already picked on the website: use it, never ask twice.
+      plan = priorPlan;
+      await confirmPlan();
+      return;
+    }
     phase = 'plan';
   }
 
@@ -377,6 +430,8 @@
       busy = false;
       error = result.reason;
       onTelemetry?.({ action: 'checkout_failed', companyUid });
+      // A skipped plan screen comes back so Starter is still one click away.
+      phase = 'plan';
       return;
     }
     checkoutUrl = result.url;
@@ -626,7 +681,8 @@
           void createCompany();
         }}
       >
-        {#each form.fields as field (field.id)}
+        {#each visibleFields as field (field.id)}
+          {@const isName = field.id === form.nameFieldId}
           <label for={`onboarding-company-${field.id}`}>
             {fieldLabel(field)}
           </label>
@@ -638,16 +694,16 @@
             oninput={(event) => setValue(field.id, event.currentTarget.value)}
             required={field.required}
             disabled={busy}
-            aria-invalid={field.id === slugFieldId && (slugState.status === 'taken' || slugState.status === 'invalid')}
-            aria-describedby={field.id === slugFieldId ? 'onboarding-company-slug-status' : undefined}
+            aria-invalid={isName && nameProblem !== null}
+            aria-describedby={isName && nameProblem ? 'onboarding-company-name-problem' : undefined}
           />
-          {#if field.id === slugFieldId && slugState.message}
-            <p class="note inline-note" id="onboarding-company-slug-status" role="status" aria-live="polite">
-              {slugState.message}
-              {#if slugState.suggestion}
-                <button class="link" type="button" onclick={takeSuggestion}>Use {slugState.suggestion}</button>
-              {/if}
-            </p>
+          {#if isName && nameProblem}
+            <p
+              class="note inline-note warning"
+              id="onboarding-company-name-problem"
+              role="alert"
+              data-testid="onboarding-company-name-problem"
+            >{nameProblem}</p>
           {:else if field.error}
             <p class="note inline-note warning">{field.error}</p>
           {/if}
@@ -665,7 +721,7 @@
         {#if invites.invalid.length > 0}
           <p class="note inline-note warning" role="alert">Check these addresses: {invites.invalid.join(', ')}</p>
         {/if}
-        <div class="btns split">
+        <div class="btns company-actions" data-testid="onboarding-company-actions">
           <button
             class="btn btn-primary"
             type="submit"
@@ -698,20 +754,24 @@
     <p class="body">Your company is ready. Pick how you want to start. You can change plans later.</p>
     {#if note}<p class="note inline-note" role="status">{note}</p>{/if}
     {#if error}<p class="note inline-note warning" role="alert" data-testid="onboarding-company-error">{error}</p>{/if}
-    <fieldset class="plan-options" disabled={busy}>
+    <fieldset class="plan-options" data-testid="onboarding-plan-options" disabled={busy}>
       <legend class="sr-only">Plan</legend>
       <label class="plan-option" class:selected={plan === 'starter'}>
         <input type="radio" name="onboarding-plan" value="starter" bind:group={plan} data-testid="onboarding-plan-starter" />
-        <span class="plan-name">Starter</span>
-        <span class="plan-detail">Free. Shared files and HQ for a small team.</span>
+        <span class="plan-text">
+          <span class="plan-name">Starter</span>
+          <span class="plan-detail">Free. Shared files and HQ for a small team.</span>
+        </span>
       </label>
       <label class="plan-option" class:selected={plan === 'workforce'}>
         <input type="radio" name="onboarding-plan" value="workforce" bind:group={plan} data-testid="onboarding-plan-workforce" />
-        <span class="plan-name">Workforce · {WORKFORCE_PRICE_LABEL}</span>
-        <span class="plan-detail">Hosted agents, Slack bots and meeting recording for the whole team.</span>
+        <span class="plan-text">
+          <span class="plan-name">Workforce · {WORKFORCE_PRICE_LABEL}</span>
+          <span class="plan-detail">Hosted agents, Slack bots and meeting recording for the whole team.</span>
+        </span>
       </label>
     </fieldset>
-    <div class="btns split">
+    <div class="btns company-actions" data-testid="onboarding-plan-actions">
       <button
         class="btn btn-primary"
         type="button"
@@ -748,18 +808,37 @@
 </div>
 
 <style>
+  /*
+   * One centered column, the same width as the other onboarding forms
+   * (welcome.css .invite-form, 360px): the company form, the plan cards and
+   * the buttons all sit on the heading's center line.
+   */
+  .company-form,
+  .plan-options {
+    box-sizing: border-box;
+    width: min(360px, 100%);
+    margin-left: auto;
+    margin-right: auto;
+  }
+  .company-actions {
+    justify-content: center;
+  }
   .plan-options {
     border: 0;
-    margin: 0 0 16px;
+    margin-top: 24px;
+    margin-bottom: 0;
     padding: 0;
+    min-inline-size: 0;
     display: grid;
     gap: 8px;
+    text-align: left;
   }
   .plan-option {
     display: grid;
     grid-template-columns: auto 1fr;
-    column-gap: 10px;
-    padding: 12px;
+    align-items: center;
+    column-gap: 12px;
+    padding: 12px 14px;
     border: 1px solid var(--hairline, rgba(255, 255, 255, 0.16));
     border-radius: 10px;
     cursor: pointer;
@@ -768,8 +847,11 @@
     border-color: var(--accent, currentColor);
   }
   .plan-option input {
-    grid-row: span 2;
-    align-self: center;
+    margin: 0;
+  }
+  .plan-text {
+    display: grid;
+    gap: 2px;
   }
   .plan-name {
     font-weight: 600;

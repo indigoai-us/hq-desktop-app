@@ -7,6 +7,7 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+- First-run setup: "Name your company" no longer asks for a company handle. HQ makes it from the company name and, if it is taken, picks a free one by itself; a name it cannot use gets a plain message under the name field. The company form and the plan cards now line up under the heading, and the buttons are centered like the other setup screens. "Choose a plan" is skipped when hq-pro reports a plan already picked on the website; hq-pro does not send that yet, so the screen still shows until it does.
 - Desktop Core baseline refresh now retries GitHub timeouts before reporting a pending baseline; persistent timeouts remain reported.
 
 - Shelltest builds now report to a separate Sentry environment; release telemetry remains in production.
