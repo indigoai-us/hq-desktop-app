@@ -226,3 +226,79 @@ describe("a failed read is not an empty meeting", () => {
     expect(meetingsStore.recordedNotes["m-4"]?.document?.transcript).toHaveLength(2);
   });
 });
+
+/**
+ * OWNER-019 part 2 (round 29): the Oct 1 company standup still failed while
+ * the Oct 2 personal meeting loaded. Its detail call (company scope, three
+ * signals) answers in 14-16 s and the shared native bound was 15 s, so the
+ * detail read timed out. These cover what the store does with that shape.
+ */
+describe("OWNER-019 part 2: partial reads and fresh links", () => {
+  it("a failed signal read still shows the transcript, with its own Try again", async () => {
+    const read = vi.fn(async (u: string) =>
+      keyOf(u).startsWith("signals/") ? failure("network", "meeting notes HTTP 403") : ok(bodies[keyOf(u)] ?? ""),
+    );
+    wire(standupDetail, read as never);
+    await meetingsStore.loadRecordedNotes("m-5", "cmp_EXAMPLE");
+    const entry = meetingsStore.recordedNotes["m-5"];
+    expect(entry?.status).toBe("ready");
+    expect(entry?.recapFailed).toBe(true);
+    expect(entry?.document?.transcript).toHaveLength(2);
+    const onretrynotes = vi.fn();
+    const el = render({ mode: "recap", event: shown("m-5"), now, recapFailed: entry?.recapFailed, onretrynotes });
+    expect(el.querySelector('[data-testid="meeting-tabs"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="meeting-notes-failed"]')).toBeNull();
+    expect(el.querySelector('[data-testid="meeting-recap-failed"]')?.textContent).toContain("Couldn't load part of the recap.");
+    expect(el.textContent).not.toContain("403");
+    (el.querySelector('[data-testid="meeting-recap-retry"]') as HTMLButtonElement).click();
+    expect(onretrynotes).toHaveBeenCalledTimes(1);
+  });
+
+  it("Try again refetches the detail and reads the fresh links, not the stale ones", async () => {
+    let generation = 0;
+    const getRecorded = vi.fn(async () => {
+      generation += 1;
+      const g = generation;
+      const fresh = (key: string) => `${signed(key)}&gen=${g}`;
+      return ok({
+        ...standupDetail,
+        source: { ...standupDetail.source, presigned_url: fresh("sources/meetings/m-1.md") },
+        signals: { summary: [{ slug: "s1", path: "signals/s1.md", presigned_url: fresh("signals/s1.md") }] },
+      });
+    });
+    const seen: string[] = [];
+    const read = vi.fn(async (u: string) => {
+      seen.push(new URL(u).searchParams.get("gen") ?? "");
+      // Links from the first detail have expired.
+      return new URL(u).searchParams.get("gen") === "1" ? failure("network", "meeting notes HTTP 403") : ok(bodies[keyOf(u)] ?? "");
+    });
+    configureMeetingsApi({
+      accountId: "acct",
+      sessionGeneration: 1,
+      storage: null,
+      meetings: { getRecorded, readRecordedBody: read } as never,
+      feedback: {} as never,
+    });
+    await meetingsStore.loadRecordedNotes("m-6", "cmp_EXAMPLE");
+    expect(meetingsStore.recordedNotes["m-6"]?.status).toBe("error");
+    await meetingsStore.loadRecordedNotes("m-6", "cmp_EXAMPLE", { retry: true });
+    expect(getRecorded).toHaveBeenCalledTimes(2);
+    expect(seen.slice(-2)).toEqual(["2", "2"]);
+    expect(meetingsStore.recordedNotes["m-6"]?.status).toBe("ready");
+    expect(meetingsStore.recordedNotes["m-6"]?.signals?.summary).toBe("Placeholder recap.");
+  });
+
+  it("Try again after a partial recap failure reads the meeting again", async () => {
+    let fail = true;
+    const read = vi.fn(async (u: string) =>
+      fail && keyOf(u).startsWith("signals/") ? failure("network", "offline") : ok(bodies[keyOf(u)] ?? ""),
+    );
+    wire(standupDetail, read as never);
+    await meetingsStore.loadRecordedNotes("m-7", "cmp_EXAMPLE");
+    expect(meetingsStore.recordedNotes["m-7"]?.recapFailed).toBe(true);
+    fail = false;
+    await meetingsStore.loadRecordedNotes("m-7", "cmp_EXAMPLE", { retry: true });
+    expect(meetingsStore.recordedNotes["m-7"]?.recapFailed).toBe(false);
+    expect(meetingsStore.recordedNotes["m-7"]?.signals?.decisions).toHaveLength(2);
+  });
+});

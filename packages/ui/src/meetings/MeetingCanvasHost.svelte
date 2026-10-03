@@ -145,6 +145,7 @@
     notesLoadingMore={notesEntry?.loadingMore ?? false}
     onloadmore={() => recordedId && void meetingsStore.loadMoreRecordedNotes(recordedId)}
     {notesFailed}
+    recapFailed={notesEntry?.recapFailed ?? false}
     onretrynotes={() =>
       recordedId && void meetingsStore.loadRecordedNotes(recordedId, event?.sourceCompanyUid ?? null, { retry: true })}
     {bot}

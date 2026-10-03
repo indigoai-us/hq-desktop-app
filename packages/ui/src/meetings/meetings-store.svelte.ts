@@ -216,6 +216,8 @@ export interface RecordedNotesEntry {
   pages?: RecordedSignalPages;
   /** Document-shaped meetings: the parsed markdown document. */
   document?: RecordedDocument | null;
+  /** Some saved notes could not be read; the recap shows Try again. */
+  recapFailed?: boolean;
 }
 let recordedNotes = $state<Record<string, RecordedNotesEntry>>({});
 let membershipsError = $state("");
@@ -505,7 +507,8 @@ async function loadRecordedNotes(
   opts: { retry?: boolean } = {},
 ): Promise<void> {
   const existing = recordedNotes[meetingId];
-  if (existing && !(opts.retry && existing.status === "error")) return;
+  // Try again refetches the detail, so every presigned link is fresh.
+  if (existing && !(opts.retry && (existing.status === "error" || existing.recapFailed))) return;
   const epoch = sessionEpoch;
   recordedNotes = { ...recordedNotes, [meetingId]: { status: "loading" } };
   try {
@@ -533,6 +536,7 @@ function notesEntryFor(pages: RecordedSignalPages): RecordedNotesEntry {
     signals: recordedSignalsFromPages(pages),
     remaining: recordedSignalsRemaining(pages),
     pages,
+    recapFailed: (pages.failed ?? 0) > 0,
   };
 }
 

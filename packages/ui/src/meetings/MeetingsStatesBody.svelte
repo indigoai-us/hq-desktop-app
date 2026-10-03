@@ -61,6 +61,8 @@
     onloadmore?: () => void;
     /** The saved-notes read failed; show Try again, never "No notes". */
     notesFailed?: boolean;
+    /** Some saved notes (summary, decisions) failed to read; the transcript still shows. */
+    recapFailed?: boolean;
     onretrynotes?: () => void;
   }
 
@@ -86,6 +88,7 @@
     notesLoadingMore = false,
     onloadmore,
     notesFailed = false,
+    recapFailed = false,
     onretrynotes,
   }: Props = $props();
 
@@ -358,6 +361,14 @@
 
         {#if tab === "recap" && recap}
           <div data-testid="meeting-recap">
+            {#if recapFailed}
+              <div role="alert" data-testid="meeting-recap-failed">
+                <p class="sum">Couldn't load part of the recap.</p>
+                <div class="actions">
+                  <button type="button" class="btn" data-testid="meeting-recap-retry" onclick={() => onretrynotes?.()}>Try again</button>
+                </div>
+              </div>
+            {/if}
             {#if recap.summary}
               <h2 class="sh">Summary</h2>
               <p class="sum">{recap.summary}</p>

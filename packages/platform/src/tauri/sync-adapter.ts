@@ -89,6 +89,9 @@ export interface SyncPlatformAdapterConfig {
   requestPolicy?: RequestPolicyOptions;
 }
 
+/** Request bound for one recorded-meeting detail read (native side clamps to 60 s). */
+export const RECORDED_DETAIL_TIMEOUT_SECS = 45;
+
 const NOT_MAPPED = unavailable(
   'not-yet-mapped',
   'This capability is not yet mapped on the Sync host.',
@@ -385,6 +388,7 @@ export function createSyncPlatformAdapter(
     method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
     path: string,
     body?: unknown,
+    timeoutSecs?: number,
   ): Promise<{
     result: AdapterResult<T>;
     status: number | null;
@@ -394,6 +398,7 @@ export function createSyncPlatformAdapter(
       url: path,
       method,
       body: body === undefined ? null : JSON.stringify(body),
+      ...(timeoutSecs === undefined ? {} : { timeoutSecs }),
     });
     if (!raw.ok) return { result: scrubTransportFailure(raw), status: null };
     const rec = asRecord(raw.value);
@@ -443,9 +448,10 @@ export function createSyncPlatformAdapter(
     method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
     path: string,
     body?: unknown,
+    timeoutSecs?: number,
   ): AdapterPromise<T> {
     const attempted = await retryThrottled(
-      () => hqProAttempt<T>(method, path, body),
+      () => hqProAttempt<T>(method, path, body, timeoutSecs),
       (outcome) => ({ status: outcome.status, retryAfter: outcome.retryAfter }),
       requestPolicy,
     );
@@ -979,12 +985,16 @@ export function createSyncPlatformAdapter(
             limit: 50,
           }),
         ),
+      // OWNER-019: a company meeting detail with signals answers in 14-16 s
+      // (hq-pro presigns every signal), past the shared 15 s bound.
       getRecorded: (meetingId, companyId) =>
         hqProJson(
           'GET',
           withQuery(`${WEB_PATHS.meetingsList}/${encodeURIComponent(meetingId)}`, {
             companyId: companyId || undefined,
           }),
+          undefined,
+          RECORDED_DETAIL_TIMEOUT_SECS,
         ),
       readRecordedBody: (url) => call('meetings_read_recorded_body', { url }),
       fetchLiveTranscript: (req) =>

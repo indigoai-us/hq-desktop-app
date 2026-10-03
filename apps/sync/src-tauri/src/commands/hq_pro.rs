@@ -100,12 +100,23 @@ pub fn resolve_request_url(url: &str, vault_base: &str) -> Result<String, String
     Err("hq-pro fetch URL must be a /path or https URL".to_string())
 }
 
+/// Longest per-request bound a caller may ask `hq_pro_fetch` for.
+const HQ_PRO_FETCH_MAX_TIMEOUT_SECS: u64 = 60;
+
+/// OWNER-019: a caller-requested request bound, clamped to 1..=60 s. `None`
+/// keeps the shared client's 15 s bound. Some hq-pro reads (a company
+/// meeting detail with signals) answer in 14-16 s, so 15 s cut them off.
+pub fn fetch_timeout(timeout_secs: Option<u64>) -> Option<std::time::Duration> {
+    timeout_secs.map(|s| std::time::Duration::from_secs(s.clamp(1, HQ_PRO_FETCH_MAX_TIMEOUT_SECS)))
+}
+
 /// Authenticated hq-pro request. Token is attached here and never returned.
 #[tauri::command]
 pub async fn hq_pro_fetch(
     url: String,
     method: String,
     body: Option<String>,
+    timeout_secs: Option<u64>,
 ) -> Result<HqProHttpResponse, String> {
     let method = normalize_method(&method)?;
     let token = cognito::get_valid_access_token().await.map_err(|e| {
@@ -124,6 +135,9 @@ pub async fn hq_pro_fetch(
         .request(method.clone(), &full)
         .header("authorization", format!("Bearer {token}"))
         .header("accept", "application/json");
+    if let Some(bound) = fetch_timeout(timeout_secs) {
+        req = req.timeout(bound);
+    }
     if method != Method::GET {
         if let Some(payload) = body.as_deref() {
             req = req
@@ -162,7 +176,7 @@ pub async fn hq_pro_fetch(
 /// authenticated scope instead of reusing a process-global cached snapshot.
 pub(crate) async fn feature_flag_enabled(flag: &str) -> bool {
     feature_flag_enabled_with_fetch(flag, || {
-        hq_pro_fetch("/v1/flags/resolve".to_string(), "GET".to_string(), None)
+        hq_pro_fetch("/v1/flags/resolve".to_string(), "GET".to_string(), None, None)
     })
     .await
 }
@@ -186,7 +200,7 @@ where
 /// outage keeps the shipped default.
 pub(crate) async fn feature_flag_value(flag: &str) -> Option<bool> {
     feature_flag_value_with_fetch(flag, || {
-        hq_pro_fetch("/v1/flags/resolve".to_string(), "GET".to_string(), None)
+        hq_pro_fetch("/v1/flags/resolve".to_string(), "GET".to_string(), None, None)
     })
     .await
 }
@@ -196,7 +210,7 @@ pub(crate) async fn feature_flag_value(flag: &str) -> Option<bool> {
 /// key; `Err(())` means the request or response could not be trusted.
 pub(crate) async fn feature_flag_read(flag: &str) -> Result<Option<bool>, ()> {
     feature_flag_read_with_fetch(flag, || {
-        hq_pro_fetch("/v1/flags/resolve".to_string(), "GET".to_string(), None)
+        hq_pro_fetch("/v1/flags/resolve".to_string(), "GET".to_string(), None, None)
     })
     .await
 }
@@ -271,6 +285,15 @@ fn parse_feature_flag_response(status: u16, body: &str) -> Option<HashMap<String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fetch_timeout_keeps_default_and_clamps_caller_bounds() {
+        use std::time::Duration;
+        assert_eq!(fetch_timeout(None), None);
+        assert_eq!(fetch_timeout(Some(45)), Some(Duration::from_secs(45)));
+        assert_eq!(fetch_timeout(Some(0)), Some(Duration::from_secs(1)));
+        assert_eq!(fetch_timeout(Some(3600)), Some(Duration::from_secs(60)));
+    }
 
     #[test]
     fn joins_relative_path_onto_vault_base() {
