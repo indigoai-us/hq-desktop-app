@@ -5728,6 +5728,9 @@ exit 1
     #[tokio::test]
     async fn cli_package_update_waits_for_shared_cli_lease_before_starting_npm() {
         let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
