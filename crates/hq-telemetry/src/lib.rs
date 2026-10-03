@@ -2930,7 +2930,10 @@ pub fn init_with_identity(
     let guard = sentry::init(sentry::ClientOptions {
         dsn,
         release: Some(format!("{}@{release_version}", identity.release_prefix).into()),
-        environment: Some(environment.unwrap_or("production").to_string().into()),
+        environment: Some(
+            resolve_sentry_environment(release_version, environment)
+                .into(),
+        ),
         sample_rate: std::env::var("SENTRY_SAMPLE_RATE")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -2943,6 +2946,22 @@ pub fn init_with_identity(
     });
     configure_identity_scope(identity);
     Some(guard)
+}
+
+fn resolve_sentry_environment(release_version: &str, configured: Option<&str>) -> String {
+    if is_shelltest_release_version(release_version) {
+        "shelltest".to_string()
+    } else {
+        configured.unwrap_or("production").to_string()
+    }
+}
+
+fn is_shelltest_release_version(release_version: &str) -> bool {
+    let Some(run_number) = release_version.strip_prefix("0.0.0-shelltest.") else {
+        return false;
+    };
+    matches!(run_number.as_bytes().first(), Some(b'1'..=b'9'))
+        && run_number.as_bytes()[1..].iter().all(u8::is_ascii_digit)
 }
 
 /// Bind the process-wide attribution tags onto the current Sentry scope.
@@ -2980,6 +2999,23 @@ fn resolve_build_commit(value: Option<&'static str>) -> &'static str {
 mod tests {
     use super::*;
     use sentry::protocol::{AppContext, Breadcrumb, Request, RuntimeContext};
+
+    #[test]
+    fn shelltest_release_uses_nonproduction_sentry_environment() {
+        assert_eq!(
+            resolve_sentry_environment("0.0.0-shelltest.483", None),
+            "shelltest"
+        );
+        assert_eq!(resolve_sentry_environment("0.10.382", None), "production");
+        assert_eq!(
+            resolve_sentry_environment("0.0.0-shelltest.bad", None),
+            "production"
+        );
+        assert_eq!(
+            resolve_sentry_environment("0.10.382", Some("staging")),
+            "staging"
+        );
+    }
 
     // Most scrubber tests are intentionally independent of the process-global
     // native diagnostics. Keep their existing assertions deterministic while
