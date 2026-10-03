@@ -9,6 +9,15 @@ import { expect, test, type Browser, type Page } from '@playwright/test';
  * bound each content region must show text or a control, and no loading
  * placeholder may remain.
  *
+ * BLANK-2: under denied, failed and hanging reads, a surface that shows its
+ * failed-read line must not also show its true-empty copy or a zero count
+ * ("No people yet", "0 objectives", "Connect your calendar"), which would
+ * make a failed read look like an empty company.
+ *
+ * Time: settled conditions reuse one page per condition and walk the
+ * destinations on it; only the hanging case needs a fresh page per
+ * destination (each waits out the bound), and it runs in one browser.
+ *
  * Bound: pages fall to their failed state after READ_DEADLINE_MS (12 s,
  * packages/ui/src/common/read-deadline.ts); the company map has its own 15 s
  * refresh bound (ATLAS_REFRESH_TIMEOUT_MS). The poll allows a little more.
@@ -32,6 +41,8 @@ interface ContentState {
   controls: number;
   loading: string[];
   sample: string;
+  /** Failed-read line shown together with true-empty copy or a zero count. */
+  emptyBesideError: string | null;
 }
 
 function measure(): ContentState {
@@ -51,7 +62,15 @@ function measure(): ContentState {
     .filter(visible)
     .map((el) => el.getAttribute('data-testid') || el.className.toString().slice(0, 40));
   if (/\bLoading\b|Reading [a-z]+…|Indexing…/.test(text)) loading.push(`text:${text.match(/\bLoading\b|Reading [a-z]+…|Indexing…/)![0]}`);
-  return { text: text.length, controls, loading, sample: text.slice(0, 120) };
+  const failedLine = [...main.querySelectorAll('[role="alert"]')].some(visible)
+    || /\b(Couldn't|Could not|could not) (read|load|reach)\b|didn't load/.test(text);
+  // True-empty copy and zero counts: "No people yet", "0 objectives",
+  // "Secrets · 0", "Personal 0", "Nothing yet", "Connect your calendar".
+  const empty = text.match(
+    /\bNo (?!report\b)[a-z ]{2,40}\byet\b|\bNo calendar\b|\b0 (?!of\b)[a-z]+\b|· 0\b|\b[A-Z][a-z]+ 0\b|\bNothing (yet|live|deployed yet|scheduled)\b|Nobody is working|Connect your calendar/,
+  );
+  const emptyBesideError = failedLine && empty ? empty[0] : null;
+  return { text: text.length, controls, loading, sample: text.slice(0, 120), emptyBesideError };
 }
 
 async function boot(page: Page, condition: string): Promise<void> {
@@ -95,13 +114,16 @@ async function expectSettled(page: Page, label: string): Promise<void> {
       async () => {
         last = await page.evaluate(measure);
         const blank = last.text < 20 && last.controls === 0;
-        return blank || last.loading.length > 0 ? 'unsettled' : 'settled';
+        return blank || last.loading.length > 0 || last.emptyBesideError ? 'unsettled' : 'settled';
       },
       { timeout: SETTLE_MS, intervals: [250, 500, 1000] },
     )
     .toBe('settled')
     .catch(() => {
-      throw new Error(`${label} is blank or still loading after the bound: ${JSON.stringify(last)}`);
+      const why = last?.emptyBesideError
+        ? `shows "${last.emptyBesideError}" next to its failed-read line`
+        : 'is blank or still loading after the bound';
+      throw new Error(`${label} ${why}: ${JSON.stringify(last)}`);
     });
 }
 
@@ -116,16 +138,29 @@ async function checkOne(browser: Browser, condition: string, dest: string): Prom
   }
 }
 
-test.describe('BLANK-1: no blank screens and no endless loading', () => {
+test.describe('BLANK-1/2: no blank screens, no endless loading, no empty copy beside a failed read', () => {
   for (const condition of CONDITIONS) {
-    test(condition, async ({ browser, page }) => {
+    const hanging = condition.includes('reads=hang');
+    test(condition, async ({ browser, page, browserName }) => {
+      // The hanging case waits out the bound per destination; the bound is a
+      // product timer, not an engine behavior, so one browser covers it.
+      test.skip(hanging && browserName !== 'chromium', 'hanging reads are checked in Chromium');
       test.setTimeout(240_000);
       await boot(page, condition);
       const dests = await destinations(page);
       expect(dests.length, 'destinations found').toBeGreaterThan(3);
-      // Hanging reads each wait out the bound, so they run side by side.
-      const width = condition.includes('reads=hang') ? 6 : 1;
       const failures: string[] = [];
+      if (!hanging) {
+        // Settled reads answer at once, so one page walks every destination.
+        for (const dest of dests) {
+          await open(page, dest);
+          await expectSettled(page, `${dest} under ${condition}`).catch((err) => failures.push(String(err?.message ?? err)));
+        }
+        expect(failures, failures.join('\n')).toEqual([]);
+        return;
+      }
+      // Hanging reads each wait out the bound from a fresh page, side by side.
+      const width = 6;
       for (let i = 0; i < dests.length; i += width) {
         const batch = dests.slice(i, i + width);
         const results = await Promise.allSettled(batch.map((dest) => checkOne(browser, condition, dest)));
