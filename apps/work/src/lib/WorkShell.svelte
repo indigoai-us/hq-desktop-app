@@ -909,7 +909,7 @@
     const companyUid = (row.companyUid ?? "").trim();
     const projectId = (row.projectId ?? "").trim();
     if (!companyUid || !projectId) throw new Error("This row is not a company project");
-    await addLiveProjectMember(companyUid, projectId, personUid, workFetch);
+    return addLiveProjectMember(companyUid, projectId, personUid, workFetch);
   };
   const filesByRow = $derived(
     (row: ConversationRow): ChannelFileItemModel[] => {
