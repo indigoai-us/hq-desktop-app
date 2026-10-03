@@ -181,7 +181,6 @@ Each key is also an hq-flags registry row (`packages/platform/src/flags.ts`). A 
 | `desktop.rail-telemetry-v1` | Personal Telemetry page and its data calls | Hidden (OWNER-D 3) for people who are not Indigo members: no rail item and no palette entry; a deep link or open page falls back to the open company's landing, or Home with no company open | Company-scoped telemetry read in hq-pro and the QA-068 fixes |
 | `desktop.rail-outpost-v1` | Read-only Scheduled jobs and Runs on Outpost (OWNER-R19: managing, including job editing, happens in the web console via Open console) | Status view only, no sub-nav | Nothing; the lists read hq-pro `/outpost/jobs/status` |
 | `desktop.rail-deployments-actions-v1` | Redeploy (personal and company Deployments), the "Your bots" filter, the Selected people access mode | Controls hidden; list, links and the other access modes stay | Desktop redeploy route, bot-owner attribution and selected-people grants in hq-deploy |
-| `desktop.rail-shortcut-editing-v1` | Edit shortcuts sheet in Settings | Read-only shortcut list | Persist edited shortcuts and apply them to the key handler |
 | `desktop.rail-workforce-limits-v1` | Plan seat-limit line on the Workforce card ("of N" and the limits-unavailable note) | Seat count from Team stays | Plan limits read from hq-billing for every plan |
 | `desktop.rail-atlas-v1` | Atlas company landing (on for everyone by default) | Company Activity | hq-pro Atlas endpoint for large companies; then delete the key |
 

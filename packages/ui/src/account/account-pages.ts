@@ -51,7 +51,6 @@ export interface AccountCache {
   handle: string;
   email: string;
   timezone: string;
-  pronouns: string;
   bio: string;
   botAddress: string;
   companies: AccountCompany[];
@@ -75,7 +74,6 @@ export function fixtureAccount(name = "You", email = ""): AccountCache {
     handle,
     email,
     timezone: "America/New_York",
-    pronouns: "",
     bio: "",
     botAddress: "",
     companies: [],
@@ -89,7 +87,9 @@ export function readAccountCache(): AccountCache | null {
   try {
     const raw = localStorage.getItem(CACHE_KEY);
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as AccountCache;
+    const parsed = JSON.parse(raw) as AccountCache & { pronouns?: unknown };
+    // OWNER-R20: pronouns are gone from the profile; an older cache drops them.
+    delete parsed.pronouns;
     if (!parsed || typeof parsed.displayName !== "string" || !Array.isArray(parsed.invoices)) return null;
     // Rows come from the advertised table, not the cache: an older cache
     // could list a chord the shell no longer binds (QA-077).

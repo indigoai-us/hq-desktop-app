@@ -12,7 +12,6 @@ import {
   type IndigoOnlyGateKey,
 } from "./indigo-only-gates.js";
 import OutpostPage from "../outpost/OutpostPage.svelte";
-import AccountPages from "../account/AccountPages.svelte";
 import { clearOutpostCache, writeOutpostCache } from "../outpost/outpost-model.js";
 import { fixtureOutpost } from "../outpost/outpost.fixture.js";
 
@@ -71,7 +70,7 @@ describe("RELEASE-001 isIndigoOnlySurface", () => {
 
   it("every gate key is read at a call site in the shell", () => {
     const shell = read("./DesktopApp.svelte");
-    const names = ["RAIL_TELEMETRY_FLAG", "RAIL_OUTPOST_FLAG", "RAIL_DEPLOYMENTS_ACTIONS_FLAG", "RAIL_SHORTCUT_EDITING_FLAG", "RAIL_WORKFORCE_LIMITS_FLAG", "RAIL_ATLAS_FLAG"];
+    const names = ["RAIL_TELEMETRY_FLAG", "RAIL_OUTPOST_FLAG", "RAIL_DEPLOYMENTS_ACTIONS_FLAG", "RAIL_WORKFORCE_LIMITS_FLAG", "RAIL_ATLAS_FLAG"];
     expect(names).toHaveLength(INDIGO_ONLY_GATE_KEYS.length);
     for (const name of names) expect(shell).toContain(`railGate(${name})`);
   });
@@ -138,14 +137,4 @@ describe("RELEASE-001 fallbacks are finished states", () => {
     expect(target.querySelector("[data-testid='new-job']")).toBeNull();
   });
 
-  it.each([
-    [true, true],
-    [false, false],
-  ])("Edit shortcuts shows only when the gate is open (open=%s)", (open, visible) => {
-    const target = document.createElement("div");
-    document.body.appendChild(target);
-    component = mount(AccountPages, { target, props: { page: "settings", name: "Ada", roles: [], shortcutEditing: open } });
-    flushSync();
-    expect(target.querySelector("[data-testid='edit-shortcuts']") !== null).toBe(visible);
-  });
 });

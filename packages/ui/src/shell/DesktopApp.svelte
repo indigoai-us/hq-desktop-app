@@ -59,7 +59,6 @@
     RAIL_ATLAS_FLAG,
     RAIL_DEPLOYMENTS_ACTIONS_FLAG,
     RAIL_OUTPOST_FLAG,
-    RAIL_SHORTCUT_EDITING_FLAG,
     RAIL_TELEMETRY_FLAG,
     RAIL_WORKFORCE_LIMITS_FLAG,
     isIndigoCompany,
@@ -79,7 +78,6 @@
   import BotsPage from "../company/BotsPage.svelte";
   import { botSubjectName, profileViewingCompanyUid } from "./profile-panes/bot-subject-name.js";
   import CompanySettingsHost from "./CompanySettingsHost.svelte";
-  import AccountHost from "./AccountHost.svelte";
   import {
     atlasLiveActors,
     atlasRoster,
@@ -9098,53 +9096,21 @@
         railPlaceholder?.id === "connections" ||
         railPlaceholder?.id === "outpost"),
   );
-  // QA-048: Profile reads the signed-in person's role from each company's
-  // member roster, the same source Team lists, so the two views agree. The
-  // last roster read paints first; every member company is then re-read. A
-  // company with no roster role shows a dash, never the cached membership role.
-  let accountRosterRoles = $state<Record<string, string | null>>({});
-  const accountProfileOpen = $derived(
-    view === "extra" && accountPlaceholderForPage(extraPageId)?.id === "profile",
-  );
+  // OWNER-R20: Profile's Companies and roles read the caller's role from each
+  // company's membership roster (GET /membership/company/{uid}); the contacts
+  // read used before carries no role and leaves the caller out, so every row
+  // was a dash. Owner rows first, then by name.
+  const profileOpen = $derived(view === "settings" && (settingsSection == null || settingsSection === "profile"));
   $effect(() => {
-    if (!accountProfileOpen) return;
-    const selfUid = self?.uid?.trim() ?? "";
-    const selfEmail = self?.email?.trim() ?? "";
-    const uids = railCompanyRoster.map((company) => company.uid);
-    if (!selfUid || uids.length === 0) return;
-    accountRosterRoles = readRosterRolesCache(selfUid);
-    let cancelled = false;
-    for (const companyUid of uids) {
-      void adapter.messaging
-        .listContacts({ companyUid })
-        .then((res) => {
-          if (cancelled) return;
-          if (!res.ok) {
-            console.warn("[account] company roster read failed", companyUid, res.message ?? res.reason);
-            return;
-          }
-          const role = selfRoleFromRoster(res.value, selfUid, selfEmail);
-          if (accountRosterRoles[companyUid] === role) return;
-          accountRosterRoles = { ...accountRosterRoles, [companyUid]: role };
-          writeRosterRolesCache(selfUid, accountRosterRoles);
-        })
-        .catch((err: unknown) => {
-          console.warn("[account] company roster read failed", companyUid, err);
-        });
+    if (!profileOpen) return;
+    for (const company of railCompanyRoster) {
+      loadCallerRole({ companyUid: company.uid, selfUid: self?.uid ?? null, selfEmail: self?.email ?? null, company: adapter.company ?? null });
     }
-    return () => {
-      cancelled = true;
-    };
   });
-  const accountRoles = $derived(
-    accountRoleRows(
-      railCompanyRoster.map((company) => ({
-        uid: company.uid,
-        label: company.label,
-        role: null,
-      })),
-      accountRosterRoles,
-    ),
+  const profileCompanies = $derived(
+    railCompanyRoster
+      .map((company) => ({ uid: company.uid, label: company.label, role: callerRole(company.uid) ?? null }))
+      .sort((x, y) => (x.role === "Owner") === (y.role === "Owner") ? x.label.localeCompare(y.label) : x.role === "Owner" ? -1 : 1),
   );
   const youPresence = $derived(
     ownLiveWork(
@@ -9301,7 +9267,8 @@
 
   function openAccountPage(page: AccountPageId): void {
     accountMenuOpen = false;
-    void navigate({ kind: "extra", page: accountPageId(page) });
+    // OWNER-R21: Profile and Billing are items in the one Settings list.
+    void navigate({ kind: "settings", section: page === "billing" ? "billing" : "profile" });
   }
 
   function toggleMoreCompanies(): void {
@@ -10387,6 +10354,13 @@
           {version}
           initialSection={settingsSection}
           onsectionchange={(section) => openSettings(section)}
+          openExternal={onopenurl}
+          {profileCompanies}
+          oncompany={(uid) => {
+            companyPaneOpen = true;
+            changeTenantCompany(uid);
+            void navigate(companyRowDestination("general", uid));
+          }}
           onback={closeSettings}
           onsignout={onsignout ? signOutWithImageCleanup : undefined}
           onopenconsole={onOpenConsole
@@ -10705,7 +10679,7 @@
           <GoalsRailHost
             {adapter}
             slug={companyPaneCompany.slug ?? ""}
-            canEdit={canEditGoals(accountRosterRoles[companyPaneCompany.uid])}
+            canEdit={canEditGoals(companyPaneRole)}
             onopenproject={(project) => {
               void navigate({ kind: "projects", company: companyPaneCompany?.slug ?? null, project });
             }}
@@ -10796,37 +10770,6 @@
               </div>
             {/snippet}
           </LazyDoor>
-        {:else if view === "extra" && accountPlaceholderForPage(extraPageId)}
-          <AccountHost
-            page={accountPlaceholderForPage(extraPageId)!.id}
-            name={resolvedAccountLabel ?? "You"}
-            email={self?.email ?? ""}
-            initials={resolvedAccountInitials ?? ""}
-            live={youPresence.live}
-            roles={accountRoles}
-            openExternal={onopenurl}
-            shortcutEditing={railGate(RAIL_SHORTCUT_EDITING_FLAG)}
-            onsignout={() => {
-              void onsignout?.();
-            }}
-            oncompany={(uid) => {
-              companyPaneOpen = true;
-              changeTenantCompany(uid);
-              void navigate(companyRowDestination("company-settings", uid));
-            }}
-            onsettingssection={(section) => {
-              if (
-                section === "sync" ||
-                section === "notifications" ||
-                section === "updates" ||
-                section === "general" ||
-                section === "appearance" ||
-                section === "meetings"
-              ) {
-                openSettings(section);
-              }
-            }}
-          />
         {:else if railPlaceholder?.id === "telemetry"}
           {#if telemetryVisible}
             <TelemetryRailHost agents={adapter.agents ?? null} />

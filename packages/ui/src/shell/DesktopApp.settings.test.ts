@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import { ok, type PlatformAdapter } from "@hq/platform";
 
@@ -97,11 +97,10 @@ describe("DesktopApp settings on web", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     await tick();
 
-    // US-035 replaced the placeholder with the account host.
-    const account = host.querySelector('[data-testid="account-host"]');
-    expect(account?.getAttribute("data-page")).toBe("settings");
+    // OWNER-R21: Settings opens the one Settings list (Profile first).
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="settings-host"]')).not.toBeNull());
+    expect(host.querySelector('[data-testid="account-host"]')).toBeNull();
     expect(host.querySelector('[data-testid="rail-placeholder"]')).toBeNull();
-    expect(host.querySelector('[data-testid="settings-host"]')).toBeNull();
   });
 
   it("keeps the selected company scope when the tenant-keyed sidebar remounts", async () => {

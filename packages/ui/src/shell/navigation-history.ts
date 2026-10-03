@@ -329,6 +329,10 @@ export function canonicalizeDestination(
       const companyUid =
         trimId(destination.companyUid) ?? extraParamCompanyKey(destination.param);
       const page = requireId(destination.page, "page");
+      // OWNER-R21: Profile, Billing and the old account Settings page live in
+      // the one Settings list; their old routes redirect there.
+      if (page === "account-profile" || page === "account-settings") return { kind: "settings", section: "profile" };
+      if (page === "account-billing") return { kind: "settings", section: "billing" };
       return {
         kind: "extra",
         // US-009: Overview is gone; Atlas is the company landing page.

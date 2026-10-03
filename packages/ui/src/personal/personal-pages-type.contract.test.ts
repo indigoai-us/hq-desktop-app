@@ -17,7 +17,6 @@ const PAGES = [
   "shell/TelemetryRailHost.svelte",
   "library/PersonalDeploymentsPage.svelte",
   "outpost/OutpostPage.svelte",
-  "account/AccountPages.svelte",
 ];
 
 function read(file: string): string {
@@ -62,7 +61,6 @@ describe("personal pages type scale contract", () => {
       "telemetry/TelemetryView.svelte",
       "library/PersonalDeploymentsPage.svelte",
       "outpost/OutpostPage.svelte",
-      "account/AccountPages.svelte",
     ]) {
       expect(styleOf(file)).toMatch(/h1 \{[^}]*font-size: var\(--type-title, 20px\)/);
       // The side pane no longer repeats the page title above the nav.
@@ -71,7 +69,7 @@ describe("personal pages type scale contract", () => {
   });
 
   it("draws status as a dot plus text, not a bordered pill", () => {
-    for (const file of ["personal/PersonalRailPage.svelte", "telemetry/TelemetryView.svelte", "outpost/OutpostPage.svelte", "account/AccountPages.svelte"]) {
+    for (const file of ["personal/PersonalRailPage.svelte", "telemetry/TelemetryView.svelte", "outpost/OutpostPage.svelte"]) {
       expect(read(file)).not.toMatch(/class="chip[ "]/);
       expect(styleOf(file)).toMatch(/\.dot \{[^}]*width: 6px; height: 6px/);
     }

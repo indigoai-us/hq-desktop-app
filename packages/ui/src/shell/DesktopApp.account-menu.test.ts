@@ -136,7 +136,9 @@ describe("DesktopApp account menu (US-010)", () => {
     expect(menu?.textContent).not.toContain("Working in Indigo");
   });
 
-  it("shows a live dot, hides the sidepane account footer, and opens cached pages", async () => {
+  // OWNER-R21: the menu has the identity block, one Settings entry and Sign
+  // out; the identity block opens Settings at Profile.
+  it("shows a live dot, hides the sidepane account footer, and opens Settings at Profile", async () => {
     await mountShell();
     expect(host.querySelector('[data-testid="chat-user-card"]')).toBeNull();
     const you = host.querySelector<HTMLButtonElement>('[data-testid="rail-you"]');
@@ -152,21 +154,20 @@ describe("DesktopApp account menu (US-010)", () => {
     expect(menu?.textContent).not.toMatch(/companies/i);
     expect(menu?.textContent).not.toContain("owner");
 
-    host.querySelector<HTMLButtonElement>('[data-testid="account-profile"]')?.click();
-    await settle();
-    const profile = host.querySelector('[data-testid="account-host"]');
-    expect(profile?.getAttribute("data-story")).toBe("US-035");
-    expect(profile?.getAttribute("data-page")).toBe("profile");
-    expect(host.querySelector('[data-testid="account-menu"]')).toBeNull();
+    const items = [...menu!.querySelectorAll('[role="menuitem"]')].map((el) => el.getAttribute("data-testid"));
+    expect(items).toEqual(["account-identity", "account-settings", "account-sign-out"]);
+    expect(menu?.querySelector('[data-testid="account-profile"]')).toBeNull();
+    expect(menu?.querySelector('[data-testid="account-billing"]')).toBeNull();
 
+    host.querySelector<HTMLButtonElement>('[data-testid="account-identity"]')?.click();
+    await settle();
+    expect(host.querySelector('[data-testid="account-menu"]')).toBeNull();
     await vi.waitFor(() =>
-      expect(host.querySelector('[data-testid="account-pages"]')).not.toBeNull(),
+      expect(host.querySelector('[data-testid="settings-nav-profile"]')?.getAttribute("aria-current")).toBe("page"),
     );
-    const pane = host.querySelector('aside[aria-label="Account"]');
-    expect(pane?.querySelector('[data-testid="account-company"]')).toBeNull();
-    expect(pane?.textContent).not.toMatch(/companies/i);
-    expect(pane?.querySelector('[data-testid="nav-settings"]')).not.toBeNull();
-    expect(pane?.querySelector('[data-testid="account-pane-sign-out"]')).not.toBeNull();
+    const nav = [...host.querySelectorAll('[data-testid^="settings-nav-"]')].map((el) => el.getAttribute("data-testid"));
+    expect(nav.slice(0, 2)).toEqual(["settings-nav-profile", "settings-nav-billing"]);
+    expect(host.querySelector('[data-testid="account-host"]')).toBeNull();
   });
 
   it("confirms sign out and asks the host to end the session", async () => {

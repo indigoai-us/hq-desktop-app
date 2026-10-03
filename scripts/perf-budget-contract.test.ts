@@ -900,7 +900,11 @@ describe("first-frame-of-Home budget: lazy doors stay lazy", () => {
     "packages/ui/src/library/PersonalDeploymentsPage.svelte",
     "packages/ui/src/outpost/OutpostPage.svelte",
     "packages/ui/src/personal/PersonalRailPage.svelte",
-    "packages/ui/src/account/AccountPages.svelte",
+    // OWNER-R21: the old account pages were removed (Profile and Billing
+    // live in Settings). OWNER-R9: Team and its access section load on demand.
+    "packages/ui/src/company/TeamPage.svelte",
+    "packages/ui/src/company/MemberAccessSection.svelte",
+    "packages/ui/src/common/Dropdown.svelte",
   ];
 
   it("keeps every lazy body out of the shell's static import graph", () => {

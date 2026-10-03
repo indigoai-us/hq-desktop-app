@@ -14,6 +14,7 @@ export const EMBEDDED_NAVIGATION_EVENT = 'hq:embedded-navigation';
 
 export const EMBEDDED_SETTINGS_SECTIONS = [
   'profile',
+  'billing',
   'companies',
   'general',
   'agents',

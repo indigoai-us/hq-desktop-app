@@ -213,13 +213,16 @@ describe("US-002 pending console-rail contracts", () => {
     expect(rail).not.toMatch(/notifications/i);
   });
 
-  it("US-010: the avatar menu sits at the bottom of the rail with Profile, Billing, Settings, and Sign out", async () => {
+  // OWNER-R21: Profile and Billing moved into the one Settings list.
+  it("US-010: the avatar menu sits at the bottom of the rail with the identity block, Settings, and Sign out", async () => {
     const { readFileSync } = await import("node:fs");
     const { railItems } = await import("./app-rail.js");
     const items = railItems([], "You");
     expect(items.at(-1)?.kind).toBe("you");
     const menu = readFileSync(join(REPO_ROOT, "packages/ui/src/shell/AccountMenu.svelte"), "utf8");
-    const order = ["account-profile", "account-billing", "account-settings", "account-sign-out"].map(
+    expect(menu).not.toContain('data-testid="account-profile"');
+    expect(menu).not.toContain('data-testid="account-billing"');
+    const order = ["account-identity", "account-settings", "account-sign-out"].map(
       (id) => menu.indexOf(`data-testid="${id}"`),
     );
     for (const index of order) expect(index).toBeGreaterThan(-1);
