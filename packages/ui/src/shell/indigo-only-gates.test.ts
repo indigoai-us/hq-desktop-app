@@ -120,25 +120,22 @@ describe("RELEASE-001 fallbacks are finished states", () => {
     return target;
   }
 
-  it("Outpost fallback keeps the status card and hides jobs, runs, logs and editing", () => {
+  it("Outpost fallback keeps the status card and hides jobs and runs", () => {
     const target = mountOutpost(false);
-    const tabs = [...target.querySelectorAll("nav button")].map((b) => b.textContent?.trim());
-    expect(tabs).toEqual(["Overview", "Settings"]);
-    expect(target.querySelector("[data-testid='outpost-pane-host']")).not.toBeNull();
+    // OWNER-R19: with Overview the only section, the sub-nav is dropped.
+    expect(target.querySelectorAll("nav button")).toHaveLength(0);
     expect(target.querySelector("[data-testid='outpost-online']")).not.toBeNull();
+    expect(target.querySelector("[data-testid='outpost-open-console']")).not.toBeNull();
     expect(target.querySelector("[data-testid='new-job']")).toBeNull();
     expect(target.querySelector("[data-testid='outpost-runs']")).toBeNull();
-    expect(target.querySelector("[data-testid='outpost-coming-soon']")?.textContent).toBe(
-      "Coming soon. Scheduled jobs, runs and logs are on their way.",
-    );
   });
 
-  it("Outpost full version keeps every tab for Indigo", () => {
+  it("Outpost full version keeps the read-only Scheduled jobs and Runs for Indigo", () => {
     const target = mountOutpost(true);
     const tabs = [...target.querySelectorAll("nav button")].map((b) => b.textContent?.trim());
-    expect(tabs).toEqual(["Overview", "Scheduled jobs", "Runs", "Logs", "Settings"]);
-    expect(target.querySelector("[data-testid='new-job']")).not.toBeNull();
-    expect(target.querySelector("[data-testid='outpost-coming-soon']")).toBeNull();
+    expect(tabs).toEqual(["Overview", "Scheduled jobs", "Runs"]);
+    expect(target.querySelector("[data-testid='outpost-runs']")).not.toBeNull();
+    expect(target.querySelector("[data-testid='new-job']")).toBeNull();
   });
 
   it.each([

@@ -30,24 +30,18 @@ describe("US-034 OutpostPage", () => {
     flushSync();
   }
 
-  it("Logs shows the no-logs empty state at once; a hung read is never turned into a failure (QA-084, BLANK-3)", async () => {
+  it("a hung read keeps the shared loader and is never turned into a failure (QA-084, BLANK-3)", async () => {
     vi.useFakeTimers();
     clearOutpostCache("personal");
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
     const target = mountPage(() => new Promise(() => {}));
-    openTab(target, "Logs");
-    expect(target.querySelector("[data-testid='outpost-no-logs']")?.textContent).toBe("No logs from the Outpost yet");
-    expect(target.querySelector("[data-testid='outpost-loading']")).toBeNull();
     expect(target.querySelector("[data-testid='outpost-freshness']")?.textContent).toBe("Refreshing…");
+    await expectPendingRead(target, "outpost-loader");
     await vi.advanceTimersByTimeAsync(LOADING_RETRY_AFTER_MS + 1);
     flushSync();
-    expect(target.querySelector("[data-testid='outpost-no-logs']")).not.toBeNull();
     expect(errors).not.toHaveBeenCalled();
     expect(target.querySelector("[data-testid='outpost-load-error']")).toBeNull();
     expect(target.textContent).not.toMatch(/Couldn't/);
-    // Overview keeps the shared loader with a waiting line and Try again.
-    openTab(target, "Overview");
-    await expectPendingRead(target, "outpost-loader");
   });
 
   it("reads on open even when the window reports hidden, so loading always ends (QA-084)", async () => {
@@ -87,7 +81,7 @@ describe("US-034 OutpostPage", () => {
     await vi.waitFor(() => expect(calls).toBe(2));
   });
 
-  it("disables actions and shows the retry banner when the host is unreachable", () => {
+  it("shows one state and the retry banner when the host is unreachable (OWNER-R19)", () => {
     const cache = fixtureOutpost();
     cache.unreachable = true;
     cache.host.online = false;
@@ -95,10 +89,42 @@ describe("US-034 OutpostPage", () => {
     writeOutpostCache("personal", cache);
     const target = mountPage();
     const banner = target.querySelector("[data-testid='outpost-offline-banner']");
-    expect(banner?.textContent).toContain("No report since 14 minutes ago.");
+    expect(banner?.textContent).toContain("No report for 14 minutes.");
+    expect(banner?.textContent).not.toContain("since");
     expect(banner?.getAttribute("title")).toBeTruthy();
-    const terminal = [...target.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Open terminal");
-    expect(terminal?.hasAttribute("disabled")).toBe(true);
+    const state = target.querySelector("[data-testid='outpost-online']")?.textContent ?? "";
+    expect(state).toMatch(/^Unreachable since /);
+    expect(target.textContent).not.toMatch(/\b(running|Offline)\b/);
+  });
+
+  it("is a status view: Open console opens the web console's Outpost page; no management control remains (OWNER-R19)", () => {
+    writeOutpostCache("personal", fixtureOutpost());
+    const openExternal = vi.fn();
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    component = mount(OutpostPage, { target, props: { openExternal } });
+    flushSync();
+    const open = target.querySelector<HTMLButtonElement>("[data-testid='outpost-open-console']");
+    expect(open?.textContent?.trim()).toBe("Open console");
+    open!.click();
+    expect(openExternal).toHaveBeenCalledWith("https://hq.computer/personal/outpost");
+    const labels = [...target.querySelectorAll("button")].map((b) => b.textContent?.trim());
+    for (const gone of ["Open terminal", "Self-update", "Restart", "New job", "Edit", "Pause", "Resume", "Logs", "Settings"]) {
+      expect(labels, gone).not.toContain(gone);
+    }
+    expect(target.querySelector("[data-testid='new-job']")).toBeNull();
+  });
+
+  it("titles the Outpost by name, never by its raw id; the id is muted with a copy control (OWNER-R19)", () => {
+    const cache = fixtureOutpost();
+    cache.host.name = "outpost-54388428-90a1-7067-0000-000000000000";
+    cache.host.region = "us-east-1";
+    writeOutpostCache("personal", cache);
+    const target = mountPage();
+    expect(target.querySelector("[data-testid='outpost-title']")?.textContent).toBe("Outpost · us-east-1");
+    expect(target.querySelector("[data-testid='outpost-pane-host']")?.textContent).not.toContain("outpost-5438");
+    expect(target.querySelector("[data-testid='outpost-id']")?.textContent).toContain("outpost-54388428");
+    expect(target.querySelector("[data-testid='outpost-copy-id']")).not.toBeNull();
   });
 
   it("says no report has been received when the report time is missing (QA-097)", () => {
@@ -128,62 +154,6 @@ describe("US-034 OutpostPage", () => {
       expect(cell.getAttribute("title")).toBe(label);
       expect(cell.classList.contains("result")).toBe(true);
     });
-  });
-
-  it("New job opens a blank sheet and Edit keeps the job's values (QA-053)", () => {
-    const cache = fixtureOutpost();
-    writeOutpostCache("personal", cache);
-    const target = mountPage();
-    (target.querySelector("[data-testid='new-job']") as HTMLButtonElement).click();
-    flushSync();
-    const sheet = target.querySelector("[data-testid='edit-job-sheet']");
-    expect(sheet?.querySelector("[role='dialog']")?.getAttribute("aria-label")).toBe("New job");
-    const name = target.querySelector("[data-testid='job-name-input']") as HTMLInputElement;
-    expect(name.value).toBe("");
-    expect(sheet?.textContent).not.toContain(cache.jobs[0].name);
-    const prompt = sheet?.querySelector("textarea") as HTMLTextAreaElement | null;
-    if (prompt) expect(prompt.value).toBe("");
-    // Saving without a name is refused; with a name it adds a new job.
-    const save = () => [...target.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Save")?.click();
-    save();
-    flushSync();
-    expect(target.querySelector("[data-testid='edit-job-sheet']")).not.toBeNull();
-    name.value = "Weekly digest";
-    name.dispatchEvent(new Event("input", { bubbles: true }));
-    flushSync();
-    save();
-    flushSync();
-    expect(target.querySelector("[data-testid='edit-job-sheet']")).toBeNull();
-    expect(target.textContent).toContain("Weekly digest");
-    expect(target.textContent).toContain(cache.jobs[0].name);
-
-    const edit = [...target.querySelectorAll("button")].find((b) => b.textContent === "Edit");
-    edit?.click();
-    flushSync();
-    const editSheet = target.querySelector("[data-testid='edit-job-sheet']");
-    expect(editSheet?.querySelector("[role='dialog']")?.getAttribute("aria-label")).toBe("Edit job");
-    expect(editSheet?.textContent).toContain(cache.jobs[0].name);
-    expect(target.querySelector("[data-testid='job-name-input']")).toBeNull();
-  });
-
-  it("rejects a bad custom cron and lists five runs for a valid one", () => {
-    writeOutpostCache("personal", fixtureOutpost());
-    const target = mountPage();
-    const edit = [...target.querySelectorAll("button")].find((b) => b.textContent === "Edit");
-    edit?.click();
-    flushSync();
-    const custom = [...target.querySelectorAll("button")].find((b) => b.textContent === "custom");
-    custom?.click();
-    flushSync();
-    const input = target.querySelector("[data-testid='cron-input']") as HTMLInputElement;
-    input.value = "nope";
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    flushSync();
-    expect(target.querySelector("[data-testid='cron-error']")?.textContent).toContain("five fields");
-    input.value = "0 * * * *";
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    flushSync();
-    expect(target.querySelectorAll("[data-testid='cron-next'] li")).toHaveLength(5);
   });
 
   describe("QA-069 freshness", () => {

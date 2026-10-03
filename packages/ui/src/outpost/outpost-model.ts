@@ -285,7 +285,9 @@ function longAgo(at: number, now: number): string {
 export function lastReportCopy(iso: string | undefined, now: number): LastReportCopy {
   const at = iso ? Date.parse(iso) : Number.NaN;
   if (Number.isNaN(at)) return { text: "Host unreachable. No report received yet." };
-  return { text: `Host unreachable. No report since ${longAgo(at, now)}.`, title: new Date(at).toLocaleString() };
+  // OWNER-R19: "No report for 24 days.", never "No report since 24 days ago."
+  const span = longAgo(at, now).replace(/ ago$/, "");
+  return { text: `Host unreachable. No report for ${span}.`, title: new Date(at).toLocaleString() };
 }
 
 export function offlineBanner(cache: OutpostCache, now: number = Date.now()): string {

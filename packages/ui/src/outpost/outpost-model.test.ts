@@ -55,7 +55,7 @@ describe("US-034 outpost model", () => {
     cache.retryInSec = 22;
     cache.retryAttempt = 6;
     expect(formatRetry(22)).toBe("0:22");
-    expect(offlineBanner(cache)).toContain("No report since 14 minutes ago.");
+    expect(offlineBanner(cache)).toContain("No report for 14 minutes.");
     expect(offlineBanner(cache)).toContain("0:22");
     expect(offlineBanner(cache)).toContain("attempt 6");
   });
@@ -64,7 +64,7 @@ describe("US-034 outpost model", () => {
     const now = Date.parse("2026-10-03T12:00:00Z");
     it("shows a relative time with the absolute time as a tooltip", () => {
       const copy = lastReportCopy("2026-10-03T11:46:00Z", now);
-      expect(copy.text).toBe("Host unreachable. No report since 14 minutes ago.");
+      expect(copy.text).toBe("Host unreachable. No report for 14 minutes.");
       expect(copy.title).toBe(new Date("2026-10-03T11:46:00Z").toLocaleString());
       expect(copy.text).not.toMatch(EMPTY_INTERPOLATION);
     });
