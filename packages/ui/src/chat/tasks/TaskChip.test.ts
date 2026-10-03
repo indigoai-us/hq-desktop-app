@@ -94,8 +94,10 @@ describe("TaskChip", () => {
     for (const token of ["--v4-ok", "--v4-warn", "--v4-error", "--v4-unread", "--v4-idle"]) {
       expect(css).toContain(token);
     }
-    expect(css).toContain(":hover");
-    expect(css).toContain(":focus-within");
+    // The tooltip card is shown on row hover and focus; the selector must reach the card.
+    expect(css).toMatch(/\.task-chip-row[^{}]*:hover[^{}]*\.card[^{}]*\{[^}]*display:\s*flex/);
+    expect(css).toMatch(/\.task-chip-row[^{}]*:focus-within[^{}]*\.card[^{}]*\{[^}]*display:\s*flex/);
     expect(css).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
+    expect(host.innerHTML).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
   });
 });
