@@ -8,7 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
-- Cognito refresh failures now log the status and sanitized provider error details. HTTP 401, invalid client or grant responses, and Cognito NotAuthorizedException responses require sign-in; other failures retry and keep the session. The shared token lock uses the CLI-compatible PID-file protocol.
+- Cognito refresh failures now log the status and sanitized provider error details. HTTP 401, invalid_grant, and Cognito NotAuthorizedException responses require sign-in; invalid_client keeps the session and parks retries for 15 minutes. Other failures retry with bounded backoff. The shared token lock uses the CLI-compatible PID-file protocol.
 - Creating a company from the desktop app now sets up its cloud storage right away. Before, the app created the company but never provisioned its vault, so the first sync failed with "has no bucket provisioned. Run VLT-2 bucket provisioning first" and teammate invites could not go out. The New company form shows "Setting up cloud storage..." while this runs, its Try again button re-runs only the setup step, and the sync banner's Try again now repairs companies created by earlier builds.
 - Core update failures now report the available snapshot disk space instead of the required snapshot size.
 
