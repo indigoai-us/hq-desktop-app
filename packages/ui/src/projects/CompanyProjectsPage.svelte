@@ -67,7 +67,7 @@
   import ProjectRow from "./ProjectRow.svelte";
   import BoardFaces from "./BoardFaces.svelte";
   import NewProjectSheet from "./NewProjectSheet.svelte";
-  import { mergeGoalsWithCache, readGoalsCache } from "../goals/goals-model.js";
+  import { linkedProjectIds, mergeGoalsWithCache, readGoalsCache } from "../goals/goals-model.js";
   import TaskViewDoor from "./TaskViewDoor.svelte";
   import { setStoryPasses } from "./projects-store.svelte.js";
   import { pushToast } from "../shell/toast-stack.svelte.js";
@@ -421,7 +421,16 @@
     return projectTokens(project).some((token) => ids.has(token));
   }
 
+  // OWNER-D 9: key-result links the Goals page keeps for this company also
+  // count, so "No goal" lists exactly what Goals used to call unlinked.
+  const goalLinkedIds = $derived.by(() => {
+    void projectFilter;
+    const storage = typeof localStorage === "undefined" ? null : localStorage;
+    return linkedProjectIds(readGoalsCache(storage, slug)?.links ?? []);
+  });
+
   function projectLinkedToAnyGoal(project: Project): boolean {
+    if (goalLinkedIds.has(project.id)) return true;
     return objectives.some((objective) =>
       projectMatchesObjective(project, objective),
     );
@@ -457,7 +466,7 @@
 
   function filterLabel(filter: ProjectFilter): string {
     if (filter === "active") return "Active";
-    if (filter === "needs-link") return "Needs link";
+    if (filter === "needs-link") return "No goal";
     return "All";
   }
 
@@ -1071,7 +1080,7 @@
         class="tool-button"
         class:is-set={projectFilter !== "all"}
         data-testid="portfolio-legacy-filter"
-        title="Cycle: All, Active, Needs link"
+        title="Cycle: All, Active, No goal"
         onclick={cycleFilter}
       >
         <span>Filter: {filterLabel(projectFilter)}</span>
