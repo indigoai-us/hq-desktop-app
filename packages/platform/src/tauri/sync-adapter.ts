@@ -34,6 +34,7 @@ import {
   CLAUDE_PROVIDER_FLAG,
   DESKTOP_LIMIT_STATUS_PUSH_FLAG,
   FIRST_FOLDER_SYNC_STEP_FLAG,
+  FIRST_LAUNCH_JOIN_KEY_FLAG,
   HUMAN_ONLY_CONVERSATIONS_FLAG,
   HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT,
   LOGIN_RECEIPT_DURABILITY_FLAG,
@@ -208,6 +209,10 @@ export function createSyncPlatformAdapter(
     if (flag === FIRST_FOLDER_SYNC_STEP_FLAG) {
       // The first-folder onboarding step is a rollout; fail closed until
       // a manager explicitly enables its hq-flags value.
+      return Promise.resolve(ok(false));
+    }
+    if (flag === FIRST_LAUNCH_JOIN_KEY_FLAG) {
+      // Missing or unreadable registry data leaves the new join-key behavior off.
       return Promise.resolve(ok(false));
     }
     if (flag === PERSONAL_WORKSPACE_BOARD_FLAG) {
