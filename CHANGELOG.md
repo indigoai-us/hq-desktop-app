@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- The Meet native Windows test build now pins its signing and Rust toolchain actions to exact versions. Nothing changes in the app.
 - Internal tests: four desktop tests that only searched the source text for strings now check what the code does. Nothing changes in the app.
 
 ## [0.10.385] — 2026-10-03

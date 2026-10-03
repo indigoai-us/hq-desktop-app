@@ -47,7 +47,7 @@ jobs:
           node-version: 22
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
           targets: x86_64-pc-windows-msvc
       - uses: Swatinem/rust-cache@v2
@@ -72,13 +72,13 @@ jobs:
       - name: Build native test executable
         run: pnpm tauri build --no-bundle --target x86_64-pc-windows-msvc --features meet-native-webdriver --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json --config src-tauri/tauri.meet-test.generated.json
       - name: Azure login using existing company OIDC configuration
-        uses: azure/login@v3
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - name: Sign the test executable with the existing Indigo certificate profile
-        uses: azure/trusted-signing-action@v2.0.0
+        uses: azure/trusted-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           endpoint: https://eus.codesigning.azure.net/
           signing-account-name: indigosigning
@@ -92,7 +92,7 @@ jobs:
       - name: Package the already signed executable
         run: pnpm tauri bundle --target x86_64-pc-windows-msvc --features meet-native-webdriver --bundles nsis --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json --config src-tauri/tauri.meet-test.generated.json
       - name: Sign the isolated test installer
-        uses: azure/trusted-signing-action@v2.0.0
+        uses: azure/trusted-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           endpoint: https://eus.codesigning.azure.net/
           signing-account-name: indigosigning
