@@ -41,6 +41,15 @@ export interface UpdateToastCopy {
 
 const FINISHING = "Finishing download";
 
+/**
+ * What the Restart button does while HQ holds the update (OWNER leftover):
+ * nothing yet, so it is disabled and says when it will work. The toast and
+ * Settings > Updates share this sentence.
+ */
+export function heldRestartTitle(hold: string): string {
+  return `${hold}. Restart becomes available when it finishes.`;
+}
+
 const HOLD_TEXT: Record<string, string> = {
   meetingrecording: "Waiting for your recording to finish",
   transcriptfinishing: "Waiting for a transcript to finish",
@@ -118,7 +127,7 @@ export function updateToastCopy(input: UpdateToastInput): UpdateToastCopy {
   }
   const hold = holdReasonText(input.reasons);
   if (hold) {
-    return { phase: "held", title: "Update available", detail: hold, error: null, installLabel: "Restart to update", installDisabled: true, installTitle: hold, progress: null };
+    return { phase: "held", title: "Update available", detail: hold, error: null, installLabel: "Restart to update", installDisabled: true, installTitle: heldRestartTitle(hold), progress: null };
   }
   return { phase: "ready", title: "Update available", detail: ready, error: null, installLabel: "Restart to update", installDisabled: false, installTitle: null, progress: null };
 }

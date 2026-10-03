@@ -496,6 +496,32 @@ describe("shared store keeps pane and popover in lockstep", () => {
     expect(updates.checkForUpdates.mock.calls.length).toBeGreaterThan(0);
   });
 
+  it("while an upload holds a ready update, Settings disables Restart with the toast's wording", async () => {
+    const adapter = updatesAdapter();
+    const { paneHost } = mountBoth(adapter);
+    await vi.waitFor(() => {
+      flushSync();
+      expect(paneHost.textContent).toContain("UPDATE AVAILABLE");
+    });
+    markDownloaded(updateStore.availableVersion);
+    setUpdateHoldReasons(["uploadInFlight"]);
+    flushSync();
+    const restart = paneHost.querySelector<HTMLButtonElement>('[data-testid="settings-app-restart"]')!;
+    const toast = updateToastCopy({
+      version: updateStore.availableVersion ?? "",
+      reasons: [...updateStore.holdReasons],
+      installing: false,
+      installError: null,
+    });
+    expect(restart.disabled).toBe(true);
+    expect(toast.installDisabled).toBe(true);
+    expect(restart.getAttribute("title")).toBe(toast.installTitle);
+    expect(restart.getAttribute("title")).toBe("Waiting for an upload to finish. Restart becomes available when it finishes.");
+    setUpdateHoldReasons([]);
+    flushSync();
+    expect(restart.disabled).toBe(false);
+  });
+
   it("names the same hold reason as the update toast while an upload holds the update (item 8)", async () => {
     // Tester's state on f174dccd8: an update is available, not downloaded, and
     // the native gate holds it for an upload in flight.

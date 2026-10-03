@@ -1403,7 +1403,8 @@
       actions: [
         {
           label: copy.installLabel,
-          primary: true,
+          // A disabled action is never drawn as the filled primary button.
+          primary: !copy.installDisabled,
           disabled: copy.installDisabled,
           keepOpen: true,
           testId: "update-install",

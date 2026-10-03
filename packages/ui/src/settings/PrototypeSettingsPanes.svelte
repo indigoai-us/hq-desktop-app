@@ -7,7 +7,7 @@
     appRowStatusLabel,
     isRecordingRestartDeferral,
   } from "./update-presentation";
-  import { holdReasonText } from "../shell/update-toast";
+  import { heldRestartTitle, holdReasonText } from "../shell/update-toast";
   import {
     checkDesktopUpdates,
     downloadDesktopUpdate,
@@ -1710,7 +1710,8 @@
             type="button"
             class="chip"
             data-testid="settings-app-restart"
-            title={updateStore.installError ?? undefined}
+            disabled={!!appDeferralReason}
+            title={appDeferralReason ? heldRestartTitle(appDeferralReason) : (updateStore.installError ?? undefined)}
             onclick={() => void restartDesktopUpdate()}
           >Restart to update</button>
         {/if}
