@@ -113,7 +113,38 @@ function fencedBlockExample(block: Record<string, unknown>): string {
 }
 
 const SUGGESTIONS_EXAMPLE = fencedBlockExample({ kind: "suggestions", items: ["...", "..."] });
-const CONNECT_EXAMPLE = fencedBlockExample({ kind: "connect", targets: ["slack"] });
+const CONNECT_EXAMPLE = fencedBlockExample({
+  kind: "connect",
+  items: [{ app: "slack" }, { domain: "linear.app", why: "Your team's issues live here" }],
+});
+
+/** The whole hello request stays under this many characters. */
+export const AGENT_HELLO_REQUEST_MAX_CHARS = 4_000;
+/** The apps section of a request stays under this many characters (see `companyAppsBrief`). */
+export const AGENT_REQUEST_APPS_MAX_CHARS = 1_400;
+
+/**
+ * How the bot is told to choose the apps for the cards. Shared by the hello
+ * request and the request behind "Connect more tools".
+ *
+ * `companyApps` is the apps brief the app wrote from the company's
+ * connection list (integration-cards-model.ts, `companyAppsBrief`): null
+ * when the list could not be read (no section), "" when nothing is
+ * connected, else one line per app.
+ */
+function appPickingInstructions(person: string, companyApps: string | null | undefined): string {
+  const apps = companyApps == null ? null : companyApps.replace(/```/g, "'''").slice(0, AGENT_REQUEST_APPS_MAX_CHARS).trim();
+  const section =
+    apps === null ? "" : apps === "" ? "The company has no connected apps yet.\n" : `The company's connected apps:\n${apps}\n`;
+  return (
+    `The app draws one card under your message for each app you name in a connect block, with the app's logo, ` +
+    `so ${person} can connect it or let you use it. Pick up to four apps: first the company's connected apps that you cannot use yet ` +
+    `and that matter most for your work, then the apps this company would get the most from, judged from the company's files and work. ` +
+    `Always include Slack unless the list says Slack is connected. ` +
+    `Name each app by its website domain (for example linear.app or notion.so) and give a reason under 60 characters.\n` +
+    section
+  );
+}
 
 /** A name or id written into a request: one line, no code marks, bounded. */
 function inlineText(value: string | null | undefined, max = 80): string {
@@ -133,14 +164,17 @@ function personOrFallback(name: string | null | undefined): string {
  * bot can chat. The person never sees it; they see the bot's answer, which is
  * the bot's first message in their conversation.
  *
- * The app draws two connection cards (Slack, Connect your tools) under that
- * first message, so the bot is told to point at them, to offer two first jobs
- * that need nothing connected, how to show the cards again later, and that
- * the app shows them by itself when the person asks to connect more.
+ * The app draws one connection card under that first message for each app
+ * the bot names in a connect block, so the bot is told what the company has
+ * connected (`companyApps`), how to pick up to four apps, to offer two first
+ * jobs that need nothing connected, and to end with the suggestions block and
+ * exactly one connect block.
  */
 export function buildAgentHelloRequest(input: {
   personName?: string | null;
   filesStillDownloading: boolean;
+  /** The apps brief, "" when nothing is connected, null or absent when the list could not be read. */
+  companyApps?: string | null;
 }): string {
   const person = personOrFallback(input.personName);
   const files = input.filesStillDownloading
@@ -150,17 +184,36 @@ export function buildAgentHelloRequest(input: {
     `${AGENT_HELLO_REQUEST_OPENING} and ${person} is about to open this conversation. ` +
     `${person} cannot see this message. Write your first message to ${person} now: say hello in one or two short sentences ` +
     `and ask what you can help with first.${files} ` +
-    `Then say in one short sentence that ${person} can connect Slack or their tools with the cards under this message, or skip that for now. ` +
-    `The app shows those cards under your message by itself. ` +
+    `Then say in one short sentence that ${person} can connect apps with the cards under this message, or skip that for now. ` +
+    appPickingInstructions(person, input.companyApps) +
     `End your message with a suggestions block of exactly two first jobs that need only the company files in HQ, ` +
     `each written as ${person}'s request and under 80 characters, exactly in this form:\n` +
     `${SUGGESTIONS_EXAMPLE}\n` +
-    `Later, when a task needs Slack or a tool that is not connected, you can show the cards again by ending a message with:\n` +
+    `followed by exactly one connect block, exactly in this form:\n` +
     `${CONNECT_EXAMPLE}\n` +
-    `The targets can be "slack", "tools" or both. ` +
-    `When ${person} writes "${CONNECT_MORE_REQUEST}", answer in one short sentence: the app shows the connection cards under your answer by itself. ` +
+    `Later, when a task needs an app that is not connected, you can show cards again by ending a message with a connect block. ` +
+    `When ${person} writes "${CONNECT_MORE_REQUEST}", answer in one short sentence and end with a connect block chosen the same way. ` +
     `Never ask for a password or a token in chat. ` +
     `Do not mention this message or that you were asked to write.`
+  );
+}
+
+/**
+ * The request the app sends a cloud bot, on the bot-only lane, when the
+ * person asks to connect more apps (the "Connect more tools" message, from
+ * the chip or typed). It carries the apps brief and the same picking
+ * instructions as the hello, and asks for one short sentence and the connect
+ * block. The bot's visible answer to the person then carries the block.
+ */
+export function buildAgentConnectMoreRequest(input: { personName?: string | null; companyApps?: string | null }): string {
+  const person = personOrFallback(input.personName);
+  return (
+    `${AGENT_HELLO_REQUEST_LEAD} ${person} just asked to connect more apps (their message "${CONNECT_MORE_REQUEST}"). ` +
+    `${person} cannot see this message. Answer ${person} in one short sentence and end your message with exactly one connect block, ` +
+    `exactly in this form:\n` +
+    `${CONNECT_EXAMPLE}\n` +
+    appPickingInstructions(person, input.companyApps) +
+    `Do not mention this message.`
   );
 }
 
