@@ -531,6 +531,10 @@ pub(crate) fn capture_background_flush_path() -> Option<std::path::PathBuf> {
     paths::menubar_json_path().ok()
 }
 
+pub(crate) fn flush_path_matches_current_home(path: &std::path::Path) -> bool {
+    paths::menubar_json_path().is_ok_and(|current| current == path)
+}
+
 pub(crate) fn pending_first_open_flush_task() -> impl std::future::Future<Output = bool> + Send {
     let path = capture_background_flush_path();
     async move {
@@ -543,6 +547,11 @@ pub(crate) fn pending_first_open_flush_task() -> impl std::future::Future<Output
 
 async fn flush_pending_first_open_at(path: std::path::PathBuf) -> bool {
     use std::sync::atomic::Ordering;
+    // Do not send one installation's held row with another installation's
+    // access token if HOME changed before this background task was polled.
+    if !flush_path_matches_current_home(&path) {
+        return false;
+    }
     let pending = || {
         read_menubar_obj(&path)
             .get(FIRST_OPEN_PENDING_KEY)
@@ -704,6 +713,11 @@ pub(crate) fn held_auth_flush_task() -> impl std::future::Future<Output = usize>
 
 async fn flush_held_auth_rows_at(path: std::path::PathBuf) -> usize {
     use std::sync::atomic::Ordering;
+    // The access-token resolver follows current HOME, so leave rows in place
+    // rather than sending them under a different profile's identity.
+    if !flush_path_matches_current_home(&path) {
+        return 0;
+    }
     if held_auth_rows_at(&path, now_ms()).is_empty()
         || AUTH_HELD_FLUSHING.swap(true, Ordering::SeqCst)
     {

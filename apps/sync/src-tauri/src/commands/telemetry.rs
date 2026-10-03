@@ -4185,17 +4185,21 @@ mod codex_telemetry_tests {
 
         let _scheduled_home = scoped_home(scheduled_home.path());
         let scheduled_path = crate::commands::cdp_mirror::capture_background_flush_path();
+        let scheduled_path = scheduled_path.expect("HOME A has a menubar path");
+        assert!(crate::commands::cdp_mirror::flush_path_matches_current_home(
+            &scheduled_path
+        ));
         let _later_home = scoped_home(later_home.path());
 
         assert_eq!(
             scheduled_path,
-            Some(scheduled_home.path().join(".hq/menubar.json")),
+            scheduled_home.path().join(".hq/menubar.json"),
             "the path is captured synchronously before a background task is polled"
         );
-        assert_ne!(
-            scheduled_path,
-            Some(later_home.path().join(".hq/menubar.json"))
-        );
+        assert!(!crate::commands::cdp_mirror::flush_path_matches_current_home(
+            &scheduled_path
+        ));
+        assert_ne!(scheduled_path, later_home.path().join(".hq/menubar.json"));
     }
 
     #[test]
