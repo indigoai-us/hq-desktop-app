@@ -66,6 +66,7 @@
     flushReceipts,
     launchReceipt,
     recordReceipt,
+    shouldSendFirstLaunchReceipt,
   } from '../../lib/desktop-session-continuation';
   import {
     NO_AI_TOOLS,
@@ -122,6 +123,7 @@
   } from '../../lib/onboarding-platform';
   import { postOptIn, markConsentRepromptShown } from '../../lib/onboarding-telemetry';
   import { emitDesktopOperationalTelemetry } from '../../lib/desktop-telemetry';
+  import { inviteFailedEvent, inviteSentEvent, planSelectedEvent } from '../../lib/cdp-funnel-events';
   import {
     createOnboardingStepTelemetry,
     type OnboardingAction,
@@ -998,7 +1000,10 @@
     // `firstLaunchRecorded` is the existing durable first-installation gate.
     // It survives re-renders and a resumed wizard, while recordReceipt keeps
     // an undelivered receipt's event id and timestamp stable for retry.
-    if (firstLaunch && onboardingTelemetry.recordFirstLaunch()) {
+    if (
+      shouldSendFirstLaunchReceipt(firstLaunch, context.suppressFirstLaunchTelemetry) &&
+      onboardingTelemetry.recordFirstLaunch()
+    ) {
       void recordReceipt(deps, launchReceipt(deps)).catch(() => undefined);
     }
   }
@@ -1277,6 +1282,7 @@
 
   function recordInviteFailure(failure: InviteFailure): void {
     inviteErrorKind = failure.kind;
+    void emitDesktopOperationalTelemetry(inviteFailedEvent(failure.kind));
     recordStep(INVITE_TEAMMATE_STEP_INDEX, 'failed', {
       errorKind: failure.kind,
       errorCategory: failure.kind === 'network' ? 'network' : 'unknown',
@@ -1334,6 +1340,7 @@
       }
       inviteSent = true;
       inviteResent = alreadyInvited;
+      void emitDesktopOperationalTelemetry(inviteSentEvent());
       recordStep(INVITE_TEAMMATE_STEP_INDEX, 'completed', {
         outcome: alreadyInvited ? 'resent' : 'ok',
       });
@@ -3170,6 +3177,7 @@
   /** Telemetry for the company step. Never carries names, handles or emails. */
   function recordCompanyStep(event: CompanyStepEvent): void {
     if ('companyUid' in event) companyStepCompanyUid = event.companyUid;
+    if (event.action === 'plan_chosen') void emitDesktopOperationalTelemetry(planSelectedEvent(event.plan));
     const failed =
       event.action === 'company_create_failed' ||
       event.action === 'invite_join_failed' ||
