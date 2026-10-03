@@ -166,10 +166,12 @@
     gap: 8px;
     align-items: start;
     padding: 10px 8px 10px 14px;
-    background: var(--v4-surface-solid, #1e1e24);
-    border: 1px solid var(--v4-hairline, rgba(255, 255, 255, 0.12));
+    /* OWNER-017: the overlay token set the Library popout and every other
+       overlay paint (OWNER-006); --v4-surface-solid read blue-grey. */
+    background: var(--overlay-bg);
+    border: 1px solid var(--overlay-border);
     border-radius: 10px;
-    box-shadow: var(--v4-shadow-popover, 0 8px 24px rgba(0, 0, 0, 0.28));
+    box-shadow: var(--overlay-shadow);
     color: var(--v4-text-1);
     font: 400 13px/1.45 var(--ts-font);
   }
@@ -283,25 +285,32 @@
     margin-top: 8px;
   }
 
+  /* OWNER-007 labelled button, compact size: secondary is a 1px line on the
+     button fill, primary is a text-colour fill with overlay-surface ink. The
+     layer is portaled outside .chat-shell, so each token has a v4 fallback. */
   .ts-act {
-    height: 26px;
-    padding: 0 10px;
-    border: 1px solid var(--v4-control-border, var(--v4-hairline));
-    border-radius: 6px;
-    background: transparent;
-    color: var(--v4-text-1);
-    font: 500 13px/1 var(--ts-font);
+    height: 28px;
+    padding: 0 12px;
+    border: 1px solid var(--line2, var(--v4-control-border));
+    border-radius: 8px;
+    background: var(--btn-bg, transparent);
+    color: var(--t1, var(--v4-text-1));
+    font: 500 12px/16px var(--ts-font);
     cursor: default;
   }
 
   .ts-act.primary {
     border-color: transparent;
-    background: var(--v4-text-1);
-    color: var(--v4-surface-solid, #1e1e24);
+    background: var(--t1, var(--v4-text-1));
+    color: var(--overlay-bg);
+  }
+
+  .ts-act.primary:not(:disabled):hover {
+    opacity: 0.88;
   }
 
   .ts-act:disabled {
-    opacity: 0.45;
+    opacity: 0.5;
   }
 
   .ts-x {
@@ -318,7 +327,7 @@
 
   .ts-act:not(.primary):not(:disabled):hover,
   .ts-x:hover {
-    background: var(--v4-hover, var(--v4-active-row));
+    background: var(--overlay-hover);
   }
 
   .ts-more {
