@@ -294,9 +294,13 @@
       }>
     | null = null;
   let onboardingIdentityPrepared = false;
+  let firstLaunchStatusKnown: boolean | null = null;
+  let firstLaunchJoinKeyEnabled: boolean | null = null;
+  let firstLaunchJoinKeyFlagPromise: Promise<boolean> | null = null;
   const queuedOnboardingStepRecords: Array<{
     step: number;
     action: OnboardingAction;
+    occurredAt: string;
     record: () => void;
   }> = [];
 
@@ -533,12 +537,20 @@
     flow?: OnboardingFlow,
   ): void {
     if (consentOnly || replay) return;
-    if (!onboardingIdentityPrepared) {
+    // Hold records only until first-launch eligibility is known. A disabled
+    // flag or a non-first launch drains them without waiting for native context.
+    if (
+      !onboardingIdentityPrepared &&
+      firstLaunchStatusKnown !== false &&
+      firstLaunchJoinKeyEnabled !== false
+    ) {
       const queuedDetails = { ...details };
+      const occurredAt = new Date().toISOString();
       queuedOnboardingStepRecords.push({
         step,
         action,
-        record: () => recordStepNow(step, action, queuedDetails, flow),
+        occurredAt,
+        record: () => recordStepNow(step, action, queuedDetails, flow, occurredAt),
       });
       return;
     }
@@ -550,6 +562,7 @@
     action: OnboardingAction,
     details: StepTelemetryDetails = {},
     flow?: OnboardingFlow,
+    occurredAt?: string,
   ): void {
     if (consentOnly || replay) return;
     const stepId = stepIdFor(step);
@@ -568,6 +581,7 @@
         appVersion: onboardingAppVersion,
         flow: flow ?? onboardingFlow,
       },
+      ...(occurredAt ? { occurredAt } : {}),
     });
   }
 
@@ -598,6 +612,7 @@
     for (const queued of queuedOnboardingStepRecords.splice(0)) {
       if (
         suppressFirstLaunchWelcomeEntry &&
+        firstLaunchJoinKeyEnabled === true &&
         queued.step === WELCOME_SIGNIN_STEP_INDEX &&
         queued.action === 'entered'
       ) {
@@ -1072,44 +1087,74 @@
     }
   }
 
+  function resolveFirstLaunchJoinKeyEnabled(): Promise<boolean> {
+    if (!firstLaunchJoinKeyFlagPromise) {
+      const flag = onboardingFeatureFlags.identity.hasFeature(FIRST_LAUNCH_JOIN_KEY_FLAG).then(
+        (result) => {
+          if (!result.ok) {
+            console.warn(
+              'onboarding: first-launch join-key flag unavailable; leaving fallback off',
+              result.reason,
+              result.code,
+            );
+            return false;
+          }
+          return result.value === true;
+        },
+        (error) => {
+          console.warn(
+            'onboarding: first-launch join-key flag failed; leaving fallback off',
+            error,
+          );
+          return false;
+        },
+      );
+      firstLaunchJoinKeyFlagPromise = resolveFlagWithTimeout(flag, 2_000).then(
+        (enabled) => {
+          firstLaunchJoinKeyEnabled = enabled;
+          if (!enabled) flushQueuedOnboardingStepRecords();
+          return enabled;
+        },
+        (error) => {
+          console.warn(
+            'onboarding: first-launch join-key flag resolution failed; leaving fallback off',
+            error,
+          );
+          firstLaunchJoinKeyEnabled = false;
+          flushQueuedOnboardingStepRecords();
+          return false;
+        },
+      );
+    }
+    return firstLaunchJoinKeyFlagPromise;
+  }
+
   function prepareOnboardingTelemetryIdentity(): Promise<{
     context: ContinuationContext | null;
     firstLaunchReceiptRecorded: boolean;
   }> {
     if (!onboardingIdentityPromise) {
       onboardingIdentityPromise = (async () => {
-        const [firstLaunch, context] = await Promise.all([
-          invokeCommand<boolean>('is_first_run').catch(() => false),
-          loadContinuationContext(),
+        const firstLaunchPromise = invokeCommand<boolean>('is_first_run')
+          .catch(() => false)
+          .then((firstLaunch) => {
+            firstLaunchStatusKnown = firstLaunch;
+            if (!firstLaunch) flushQueuedOnboardingStepRecords();
+            return firstLaunch;
+          });
+        const contextPromise = loadContinuationContext();
+        const firstLaunchJoinKeyEnabledPromise = firstLaunchPromise.then((firstLaunch) =>
+          firstLaunch ? resolveFirstLaunchJoinKeyEnabled() : false,
+        );
+        const [firstLaunch, context, joinKeyEnabled] = await Promise.all([
+          firstLaunchPromise,
+          contextPromise,
+          firstLaunchJoinKeyEnabledPromise,
         ]);
         const installAttemptId = await resolveFirstLaunchJoinKey({
           firstLaunch,
           continuationInstallAttemptId: context?.installAttemptId ?? null,
-          isEnabled: async () => {
-            const flag = onboardingFeatureFlags.identity.hasFeature(
-              FIRST_LAUNCH_JOIN_KEY_FLAG,
-            ).then(
-              (result) => {
-                if (!result.ok) {
-                  console.warn(
-                    'onboarding: first-launch join-key flag unavailable; leaving fallback off',
-                    result.reason,
-                    result.code,
-                  );
-                  return false;
-                }
-                return result.value === true;
-              },
-              (error) => {
-                console.warn(
-                  'onboarding: first-launch join-key flag failed; leaving fallback off',
-                  error,
-                );
-                return false;
-              },
-            );
-            return resolveFlagWithTimeout(flag, 2_000);
-          },
+          isEnabled: async () => joinKeyEnabled,
           readNativeId: loadInstallAttemptId,
         });
         if (installAttemptId) onboardingTelemetry.setInstallAttemptId(installAttemptId);
@@ -1117,7 +1162,7 @@
           ? shouldSendFirstLaunchReceipt(firstLaunch, context.suppressFirstLaunchTelemetry) &&
             onboardingTelemetry.recordFirstLaunch()
           : firstLaunch && onboardingTelemetry.recordFirstLaunch();
-        return { context, firstLaunchReceiptRecorded };
+        return { context, firstLaunchReceiptRecorded, installAttemptId };
       })()
         .catch((error) => {
           console.warn(
@@ -1130,7 +1175,12 @@
           };
         })
         .then((result) => {
-          flushQueuedOnboardingStepRecords(result.firstLaunchReceiptRecorded);
+          flushQueuedOnboardingStepRecords(
+            result.firstLaunchReceiptRecorded &&
+              firstLaunchJoinKeyEnabled === true &&
+              'installAttemptId' in result &&
+              Boolean(result.installAttemptId),
+          );
           return result;
         });
     }

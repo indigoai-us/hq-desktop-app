@@ -2051,6 +2051,100 @@ describe('anonymous installer step pings', () => {
     );
   });
 
+  it('keeps both welcome-signin entered rows on first launch when the join-key flag is off', async () => {
+    onboardingFlags.hasFeature.mockResolvedValue({ ok: true, value: false });
+    stubContinuationInvoke();
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 0 },
+    });
+
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.filter(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as {
+            eventName?: string;
+            properties?: { step?: string; action?: string };
+          }).eventName === 'desktop_onboarding_step' &&
+          (args as {
+            properties?: { step?: string; action?: string };
+          }).properties?.step === 'welcome-signin' &&
+          (args as {
+            properties?: { step?: string; action?: string };
+          }).properties?.action === 'entered',
+      ).length === 2,
+    );
+
+    const welcomeEntries = tauri.invoke.mock.calls
+      .filter(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as {
+            eventName?: string;
+            properties?: { step?: string; action?: string };
+          }).eventName === 'desktop_onboarding_step' &&
+          (args as {
+            properties?: { step?: string; action?: string };
+          }).properties?.step === 'welcome-signin' &&
+          (args as {
+            properties?: { step?: string; action?: string };
+          }).properties?.action === 'entered',
+      )
+      .map(([, args]) => args as { properties: { flow?: string } });
+    expect(welcomeEntries.map((entry) => entry.properties.flow)).toEqual([
+      'first_install',
+      'first_launch',
+    ]);
+  });
+
+  it('emits the flag-off welcome step before continuation identity preparation finishes', async () => {
+    onboardingFlags.hasFeature.mockResolvedValue({ ok: true, value: false });
+    stubContinuationInvoke();
+    let resolveContinuationContext!: (context: typeof CONTINUATION_CONTEXT) => void;
+    const unresolvedContext = new Promise<typeof CONTINUATION_CONTEXT>((resolve) => {
+      resolveContinuationContext = resolve;
+    });
+    const invoke = tauri.invoke.getMockImplementation();
+    if (!invoke) throw new Error('Expected the continuation invoke stub to be installed.');
+    tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) =>
+      command === 'desktop_continuation_context'
+        ? unresolvedContext
+        : invoke(command, args),
+    );
+
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 0 },
+    });
+
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as {
+            eventName?: string;
+            properties?: { step?: string; action?: string };
+          }).eventName === 'desktop_onboarding_step' &&
+          (args as {
+            properties?: { step?: string; action?: string };
+          }).properties?.step === 'welcome-signin' &&
+          (args as {
+            properties?: { step?: string; action?: string };
+          }).properties?.action === 'entered',
+      ),
+    );
+    expect(
+      tauri.invoke.mock.calls.filter(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { flow?: string } }).properties?.flow !== 'first_launch',
+      ),
+    ).toHaveLength(1);
+
+    resolveContinuationContext(CONTINUATION_CONTEXT);
+  });
+
   it('persists queued step telemetry synchronously on pagehide while identity is unresolved', async () => {
     const unresolvedIdentity = new Promise<unknown>(() => undefined);
     tauri.invoke.mockImplementation(async (command: string) => {
