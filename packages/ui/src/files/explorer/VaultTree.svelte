@@ -62,10 +62,10 @@
     const gen = generation;
     loading = { ...loading, [path]: true };
     // BLANK-1: a read that never answers falls to the failed-read state.
-    const res = await withReadDeadline(listDir(path), "vault folder").catch((err: unknown) => ({
-      ok: false as const,
-      message: err instanceof Error ? err.message : String(err),
-    }));
+    const res = await withReadDeadline(listDir(path), "vault folder").catch((err: unknown) => {
+      console.warn("VaultTree: folder read did not finish:", path, err);
+      return { ok: false as const, message: "folder read did not finish" };
+    });
     if (gen !== generation) return;
     loading = { ...loading, [path]: false };
     if (!res.ok) {

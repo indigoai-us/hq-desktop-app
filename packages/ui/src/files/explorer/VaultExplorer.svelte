@@ -124,7 +124,10 @@
     const res = await withReadDeadline(
       ensureScope(v).then(() => api.summary(v.root, includeSystem)),
       "vault summary",
-    ).catch((err: unknown) => ({ ok: false as const, message: err instanceof Error ? err.message : String(err) }));
+    ).catch((err: unknown) => {
+      console.warn("VaultExplorer: vault summary did not finish:", err);
+      return { ok: false as const, message: "vault summary did not finish" };
+    });
     if (gen !== summaryGeneration) return;
     summaryLoading = false;
     if (res.ok) summary = res.value;
