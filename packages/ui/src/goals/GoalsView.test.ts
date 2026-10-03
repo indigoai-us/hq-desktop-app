@@ -309,3 +309,36 @@ describe("GoalsView", () => {
     });
   });
 });
+
+describe("GoalsView period empty state (QA-067)", () => {
+  it("says no goals match the period instead of claiming the board is empty", async () => {
+    const ipc = async (command: string): Promise<unknown> => {
+      if (command === "get_local_company_goals") {
+        return {
+          objectives: [
+            { id: "band", title: "Band Launch", description: "", status: "on_track", timeframe: "2026 H1", owner: "", keyResults: [], initiativeIds: [] },
+          ],
+          initiatives: [],
+        };
+      }
+      if (command === "get_local_projects") return [];
+      if (command === "get_company_project_creators") return [];
+      throw new Error(`Unexpected IPC command: ${command}`);
+    };
+    host = document.createElement("div");
+    document.body.append(host);
+    component = mount(GoalsView, {
+      target: host,
+      props: { adapter: { projects: fakeProjectsApi(ipc) } as PlatformAdapter, slug: "golden-thread" },
+    });
+    flushSync();
+    await expect.poll(() => host?.textContent).toContain("Band Launch");
+    const tab = [...host!.querySelectorAll<HTMLButtonElement>("[role='tab']")].find((b) => b.textContent === "H2")!;
+    tab.click();
+    flushSync();
+    expect(host?.querySelector("[data-testid='empty-goals-state']")).toBeNull();
+    expect(host?.querySelector("[data-testid='empty-period-state']")?.textContent).toBe(
+      "No goals match H2. Choose All time to see all 1 objective.",
+    );
+  });
+});

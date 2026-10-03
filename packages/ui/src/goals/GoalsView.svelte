@@ -262,8 +262,11 @@
     <div class="canvas">
       <div class="sech">Objectives · {period} <span class="grow"></span><span class="plain">Progress averages each objective's KRs</span></div>
       {#if error}<p class="empty">{error}</p>{/if}
-      {#if visible.length === 0}
+      {#if objectives.length === 0}
         <p class="empty" data-testid="empty-goals-state">No goals are available from this company's local board yet.</p>
+      {:else if visible.length === 0}
+        <!-- QA-067: a period with no goals is not an empty board. -->
+        <p class="empty" data-testid="empty-period-state">No goals match {period}. Choose All time to see all {objectives.length} {objectives.length === 1 ? "objective" : "objectives"}.</p>
       {/if}
       {#each visible as objective (objective.id || objective.title)}
         {@const glyph = goalGlyph(objective.status)}
