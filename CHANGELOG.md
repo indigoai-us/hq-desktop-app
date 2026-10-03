@@ -9,6 +9,9 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - When a plan limit pauses new files for a company, the app now adds a notification to the notifications panel instead of a banner across the top of the window. Before, someone in many paused companies got one banner per company stacked over the window. Each company gets one notification per pause, a refresh or a reopened window does not repeat it, opening it goes to that company's upgrade page, and the system banner follows your notification settings and is sent once per sync pass however many companies were paused.
+
+## [0.10.382] — 2026-10-03
+
 - Creating a company from the desktop app now sets up its cloud storage right away. Before, the app created the company but never provisioned its vault, so the first sync failed with "has no bucket provisioned. Run VLT-2 bucket provisioning first" and teammate invites could not go out. The New company form shows "Setting up cloud storage..." while this runs, its Try again button re-runs only the setup step, and the sync banner's Try again now repairs companies created by earlier builds.
 - Core update failures now report the available snapshot disk space instead of the required snapshot size.
 
