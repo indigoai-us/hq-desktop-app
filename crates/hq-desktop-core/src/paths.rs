@@ -213,17 +213,34 @@ pub fn managed_npm_prefix_in(root: &Path) -> PathBuf {
     }
 }
 
-/// Managed Windows directories which must lead the settings PATH for the
-/// desktop's own resolver and child processes. Put npm's flat global prefix
-/// before `node` so its `hq.cmd` wins over a stale shim in the Node directory;
-/// `node` remains next so the selected shim can find its runtime.
+/// Managed Windows directories in hq-installer's `extended_search_path()`
+/// order: Node runtime, npm's flat global prefix, then HQ wrappers and Git.
+/// The desktop's fallback search directories use this order.
 pub fn managed_windows_path_dirs_for_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
+    managed_windows_dirs_for_roots(roots, false)
+}
+
+/// Managed Windows directories which lead the HQ settings PATH written by the
+/// settings-PATH repair. npm's flat global prefix comes before `node` so the
+/// delivered `hq.cmd` wins over a stale shim left in the Node directory; `node`
+/// follows so the selected shim still finds its runtime. Only the settings
+/// PATH uses this order; the installer-aligned search order is unchanged.
+pub fn managed_windows_settings_path_dirs_for_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
+    managed_windows_dirs_for_roots(roots, true)
+}
+
+fn managed_windows_dirs_for_roots(roots: &[PathBuf], npm_prefix_first: bool) -> Vec<PathBuf> {
     let mut dirs = Vec::with_capacity(roots.len() * 5);
     for root in roots {
         // This function models the Windows layout independent of the host
         // running its tests; `managed_npm_prefix_in` follows host cfgs.
-        dirs.push(root.join("npm-prefix"));
-        dirs.push(managed_node_dir_in(root));
+        if npm_prefix_first {
+            dirs.push(root.join("npm-prefix"));
+            dirs.push(managed_node_dir_in(root));
+        } else {
+            dirs.push(managed_node_dir_in(root));
+            dirs.push(root.join("npm-prefix"));
+        }
         dirs.push(root.join("bin"));
         dirs.push(root.join("git").join("cmd"));
         dirs.push(root.join("git").join("mingw64").join("bin"));
@@ -271,7 +288,7 @@ pub fn compose_windows_settings_env_path(
         }
     }
 
-    let managed_dirs = managed_windows_path_dirs_for_roots(toolchain_roots);
+    let managed_dirs = managed_windows_settings_path_dirs_for_roots(toolchain_roots);
     let mut managed_keys = std::collections::HashSet::new();
     let mut entries = Vec::with_capacity(managed_dirs.len());
     for dir in managed_dirs {
@@ -1598,9 +1615,9 @@ fn extended_search_dirs_raw() -> Vec<PathBuf> {
         .into_iter()
         .flatten()
         .collect();
-    // Keep this order aligned with hq-installer's `extended_search_path()`. The
-    // same list leads the HQ settings PATH repair so its resolver sees the
-    // managed `.cmd` shim and Node runtime before a stale user install.
+    // Keep this order aligned with hq-installer's `extended_search_path()`.
+    // The settings PATH repair uses the same directories with npm's prefix
+    // first (`managed_windows_settings_path_dirs_for_roots`).
     dirs.extend(managed_windows_path_dirs_for_roots(&managed_roots));
 
     if let Some(home) = home_dir() {
@@ -2818,10 +2835,25 @@ mod tests {
     #[test]
     fn windows_settings_path_puts_npm_prefix_before_node() {
         let root = PathBuf::from(r"C:\ProgramData\IndigoHQ\toolchain");
-        let dirs = managed_windows_path_dirs_for_roots(&[root.clone()]);
+        let dirs = managed_windows_settings_path_dirs_for_roots(&[root.clone()]);
 
         assert_eq!(dirs[0], root.join("npm-prefix"));
         assert_eq!(dirs[1], root.join("node"));
+        assert_eq!(dirs[2], root.join("bin"));
+    }
+
+    #[test]
+    fn windows_search_dirs_keep_installer_node_npm_bin_order() {
+        // The fallback search order stays aligned with hq-installer (node,
+        // npm-prefix, bin); only the settings PATH puts npm-prefix first.
+        // Runs on every host; the Windows-only extended_search_dirs test
+        // checks the same order through the real resolver path.
+        let root = PathBuf::from(r"C:\ProgramData\IndigoHQ\toolchain");
+        let dirs = managed_windows_path_dirs_for_roots(&[root.clone()]);
+
+        assert_eq!(dirs[0], root.join("node"));
+        assert_eq!(dirs[1], root.join("npm-prefix"));
+        assert_eq!(dirs[2], root.join("bin"));
     }
 
     #[test]
