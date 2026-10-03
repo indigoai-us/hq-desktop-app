@@ -1265,6 +1265,11 @@ mod tests {
         // Clean-room run 2026-09-27 (defect 6): after desktop sign-in the
         // browser tab stayed open on /callback?code=… with the authorization
         // code visible in the address bar and in session history.
+        let _serialize = STORE_TEST_LOCK.lock().unwrap();
+        {
+            let mut guard = pkce_store().lock().unwrap();
+            *guard = None;
+        }
         let response = callback_response(
             b"GET /callback?code=test-code&state=test-state HTTP/1.1\r\nHost: localhost\r\n\r\n",
             "test-state",
