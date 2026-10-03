@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 - Workspace refresh no longer clears a company cloud link when an entity lookup is missing; only a confirmed deletion removes it.
+- Internal tests: four more desktop UI tests (conversation rail ready signal, mute bell, notification focus ring, quick-react toolbar) now render the components instead of searching their source text. Nothing changes in the app.
 - Keep a company's cloud binding in `companies/manifest.yaml` when it is absent
   from the signed-in person's membership list. The app now waits for an
   authoritative deletion signal before unlinking a workspace.

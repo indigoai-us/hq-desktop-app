@@ -1,59 +1,82 @@
-import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
-
+// @vitest-environment happy-dom
 /**
- * Regression: keyboard reachability of the message quick-react / reply toolbar.
+ * Keyboard reachability of the message quick-react toolbar.
  *
- * The perf branch hid `.dm-quick-react` with `visibility: hidden` at rest so the
- * large `box-shadow` would not be rasterized on every row. `visibility: hidden`
- * also removes every descendant from the tab order, so keyboard-only and
- * screen-reader users could no longer reach react/reply on rows that have no
- * other focusable descendant (plain-text messages, burst-continuation rows) —
- * `:focus-within` could never fire there.
- *
- * The rest state must stay `opacity: 0` only (which keeps the buttons
- * focusable); the paint cost is avoided with `box-shadow: none` at rest instead.
+ * The rest state must stay opacity 0 (the buttons stay in the tab order) and
+ * drop the resting shadow. `visibility: hidden` would remove those buttons
+ * from the tab order, so a plain-text row could never reach :focus-within.
+ * happy-dom does not compute scoped styles, so this reads the stylesheet the
+ * mounted conversation injects.
  */
+import { afterEach, describe, expect, it } from "vitest";
+import { mount, tick, unmount } from "svelte";
 
-const channelConversation = readFileSync(
-  new URL("./ChannelConversation.svelte", import.meta.url),
-  "utf8",
-);
+import ChannelConversation from "./ChannelConversation.svelte";
 
-/** The top-level (rest state) declarations for `.<selector> { … }`. */
-function restRuleFor(source: string, selector: string): string | undefined {
-  const match = source.match(
-    new RegExp(`\\n {2}\\.${selector} \\{([\\s\\S]*?)\\n {2}\\}`),
-  );
-  return match?.[1] === undefined ? undefined : stripComments(match[1]);
+let host: HTMLDivElement | null = null;
+let component: ReturnType<typeof mount> | null = null;
+
+afterEach(async () => {
+  if (component) await unmount(component);
+  component = null;
+  host?.remove();
+  host = null;
+});
+
+async function injected(): Promise<string> {
+  host = document.createElement("div");
+  document.body.appendChild(host);
+  component = mount(ChannelConversation, {
+    target: host,
+    props: {
+      messages: [],
+      mentionCandidates: [],
+      allowHereMention: false,
+      onsend: () => {},
+    },
+  });
+  await tick();
+  return [...document.querySelectorAll("style")]
+    .map((node) => node.textContent ?? "")
+    .filter((css) => css.includes("dm-quick-react"))
+    .join("\n")
+    .replace(/\/\*[\s\S]*?\*\//g, "");
 }
 
-/** Assert on declarations only — prose in a comment is not a style. */
-function stripComments(css: string): string {
-  return css.replace(/\/\*[\s\S]*?\*\//g, "");
+function blocks(css: string): string[] {
+  return [...css.matchAll(/\.dm-quick-react[^{]*\{([^}]*)\}/g)].map((match) => match[1]);
 }
 
-/** The reveal rule keyed on `.dm-msg:hover` / `.dm-msg:focus-within`. */
-function revealRule(source: string): string | undefined {
-  const match = source.match(
-    /\n {2}\.dm-msg:hover \.dm-quick-react,[\s\S]*?\{([\s\S]*?)\n {2}\}/,
-  );
-  return match?.[1] === undefined ? undefined : stripComments(match[1]);
+// Rules outside the touch-only fallback, which shows the toolbar at all times.
+function desktopRules(css: string): { selector: string; body: string }[] {
+  const desktop = css.replace(/@media\s*\(hover:\s*none\)\s*\{(?:[^{}]*\{[^}]*\})*[^{}]*\}/g, "");
+  return [...desktop.matchAll(/([^{}]+)\{([^}]*)\}/g)].map((match) => ({
+    selector: match[1].trim(),
+    body: match[2],
+  }));
 }
 
 describe("quick-react toolbar keyboard reachability", () => {
-  it("does not remove the resting toolbar from the tab order", () => {
-    const rest = restRuleFor(channelConversation, "dm-quick-react");
-    expect(rest).toBeDefined();
-    // `visibility: hidden` (and `collapse`) strip descendants from the tab
-    // order — the buttons inside become keyboard-unreachable.
+  it("does not remove the resting toolbar from the tab order", async () => {
+    const rest = blocks(await injected()).find(
+      (body) => /opacity:\s*0/.test(body) && /box-shadow:\s*none/.test(body),
+    );
+    expect(rest, "resting .dm-quick-react rule").toBeDefined();
     expect(rest).not.toMatch(/visibility:\s*(hidden|collapse)/);
   });
 
-  it("avoids the resting shadow raster with box-shadow instead", () => {
-    const rest = restRuleFor(channelConversation, "dm-quick-react");
-    expect(rest).toMatch(/box-shadow:\s*none/);
-    // …and restores the floating-bar shadow when the row is hovered/focused.
-    expect(revealRule(channelConversation)).toMatch(/box-shadow:\s*var\(/);
+  it("avoids the resting shadow raster with box-shadow instead", async () => {
+    const css = await injected();
+    const rest = blocks(css).find(
+      (body) => /opacity:\s*0/.test(body) && /box-shadow:\s*none/.test(body),
+    );
+    const reveal = desktopRules(css).find(
+      ({ selector, body }) =>
+        /\.dm-msg[^,]*:focus-within[^,]*\.dm-quick-react/.test(selector) &&
+        /opacity:\s*1/.test(body) &&
+        /box-shadow:\s*var\(/.test(body),
+    );
+    expect(rest).toBeDefined();
+    expect(reveal, "keyboard focus rule must reveal the toolbar and restore the shadow").toBeDefined();
   });
 });
