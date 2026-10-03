@@ -44,7 +44,7 @@ function bodyFor(u: string): string {
   return `---\ntype: decision\n---\nDecision ${u.split("/d").pop()}`;
 }
 
-let fetchMock: ReturnType<typeof vi.fn>;
+let fetchMock: ReturnType<typeof vi.fn<(u: string) => Promise<Response>>>;
 
 function wire(decisions: number): void {
   configureMeetingsApi({
@@ -53,6 +53,7 @@ function wire(decisions: number): void {
     storage: null,
     meetings: {
       getRecorded: () => Promise.resolve(ok(detail(decisions))),
+      readRecordedBody: async (u: string) => ok(await (await fetchMock(u)).text()),
     } as never,
     feedback: {} as never,
   });

@@ -481,10 +481,10 @@ async function reportRefreshProblem(): Promise<ToastDescriptor> {
   }
 }
 
+// OWNER-019: read through the adapter. The vault buckets send no CORS
+// headers, so a webview `fetch` of a presigned URL fails on desktop.
 async function readSignalBody(url: string): Promise<string> {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`signal body ${res.status}`);
-  return res.text();
+  return unwrap(await requireApi().meetings.readRecordedBody(url));
 }
 
 /**
@@ -493,8 +493,13 @@ async function readSignalBody(url: string): Promise<string> {
  * meeting. A failure leaves an "error" entry so the canvas does not retry in
  * a loop; the next session (or refresh of the app) tries again.
  */
-async function loadRecordedNotes(meetingId: string, companyUid: string | null): Promise<void> {
-  if (recordedNotes[meetingId]) return;
+async function loadRecordedNotes(
+  meetingId: string,
+  companyUid: string | null,
+  opts: { retry?: boolean } = {},
+): Promise<void> {
+  const existing = recordedNotes[meetingId];
+  if (existing && !(opts.retry && existing.status === "error")) return;
   const epoch = sessionEpoch;
   recordedNotes = { ...recordedNotes, [meetingId]: { status: "loading" } };
   try {

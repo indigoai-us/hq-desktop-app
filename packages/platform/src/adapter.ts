@@ -910,6 +910,12 @@ export interface MeetingsApi {
    * envelope; callers coerce it.
    */
   getRecorded(meetingId: string, companyId?: string | null): AdapterPromise<Json>;
+  /**
+   * Text behind a presigned vault URL from `getRecorded` (the meeting
+   * document or a signal body). On desktop the native side reads it: the
+   * vault buckets send no CORS headers, so a webview fetch is blocked.
+   */
+  readRecordedBody(url: string): AdapterPromise<string>;
   inviteBot(payload: Json): AdapterPromise<Json>;
   cancelBot(id: string): AdapterPromise<void>;
   /** Same payload as inviteBot — hq-pro `POST /v1/bot/join-now`. */

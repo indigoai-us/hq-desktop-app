@@ -998,6 +998,7 @@ fn main() {
             commands::meetings::meetings_list_upcoming,
             commands::meetings::meetings_list_scheduled_bots,
             commands::meetings::meetings_fetch_live_transcript,
+            commands::meetings::meetings_read_recorded_body,
             commands::meetings::meetings_list_memberships,
             commands::meetings::meetings_list_accounts,
             commands::meetings::meetings_list_calendars_for_account,

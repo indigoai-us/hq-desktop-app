@@ -986,6 +986,7 @@ export function createSyncPlatformAdapter(
             companyId: companyId || undefined,
           }),
         ),
+      readRecordedBody: (url) => call('meetings_read_recorded_body', { url }),
       fetchLiveTranscript: (req) =>
         call('meetings_fetch_live_transcript', {
           recallBotId: req.recallBotId,
