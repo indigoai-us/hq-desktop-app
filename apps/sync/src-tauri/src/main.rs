@@ -929,6 +929,7 @@ fn main() {
             commands::agency::list_agency_chat,
             commands::agency::send_agency_message,
             commands::meetings::meetings_feature_enabled,
+            commands::meetings::meetings_personal_transcripts_enabled,
             commands::desktop_alt::desktop_alt_enabled,
             commands::desktop_alt::desktop_alt_is_admin,
             commands::desktop_alt::set_desktop_active_company,
