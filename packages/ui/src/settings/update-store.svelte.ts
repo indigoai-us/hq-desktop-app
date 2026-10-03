@@ -71,6 +71,10 @@ let backgroundUpdatesOff = $state(false);
 let installError = $state<string | null>(INITIAL.installError);
 let idleWaitRemainingSecs = $state<number | null>(INITIAL.idleWaitRemainingSecs);
 let recommendBanner = $state<RecommendBanner | null>(INITIAL.recommendBanner);
+// What holds a ready update back (an upload, a recording), from the native
+// update gate. The update toast and Settings > Updates both read it, so they
+// always name the same reason.
+let holdReasons = $state<string[]>([]);
 
 let runner = createUpdateCheckRunner();
 let downloadInFlight: Promise<void> | null = null;
@@ -400,6 +404,11 @@ export function setBackgroundUpdatesOff(off: boolean): void {
   backgroundUpdatesOff = off;
 }
 
+export function setUpdateHoldReasons(reasons: readonly string[] | null | undefined): void {
+  const next = (reasons ?? []).filter((r): r is string => typeof r === "string");
+  if (next.join("\n") !== holdReasons.join("\n")) holdReasons = next;
+}
+
 export function applyAvailableUpdate(version: string | null): void {
   if (version && version.trim()) {
     availableVersion = version.trim();
@@ -432,12 +441,16 @@ export function resetUpdateStore(): void {
   clearIdleWait();
   idleWaitRemainingSecs = INITIAL.idleWaitRemainingSecs;
   recommendBanner = INITIAL.recommendBanner;
+  holdReasons = [];
   installInFlight = null;
   downloadInFlight = null;
   runner = createUpdateCheckRunner();
 }
 
 export const updateStore = {
+  get holdReasons(): readonly string[] {
+    return holdReasons;
+  },
   get appStatus() {
     return appStatus;
   },

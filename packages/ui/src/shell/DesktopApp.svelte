@@ -313,6 +313,7 @@
     dismissRecommendBanner,
     installRecommendedUpdate,
     orchestrationAdapterFrom,
+    setUpdateHoldReasons,
     updateStore,
     type UpdateStoreAdapter,
   } from "../settings/update-store.svelte";
@@ -1259,7 +1260,6 @@
   const UPDATE_TOAST_KEY = "app-update";
 
   let updatePendingVersion = $state<string | null>(null);
-  let updateHoldReasons = $state<string[]>([]);
   let updateInstalling = $state(false);
   let updateInstallError = $state<string | null>(null);
 
@@ -1277,9 +1277,11 @@
     // QA-051: Settings → About reads the update store, so the version the
     // Home banner offers must land there too, dismissed or not.
     applyAvailableUpdate(v);
+    // Item 8: the hold reasons live in the shared update store so Settings >
+    // Updates names the same reason as this toast, snoozed or not.
+    setUpdateHoldReasons(status.reasons);
     if (isDismissed(v)) return;
     const isNew = v !== updatePendingVersion;
-    updateHoldReasons = status.reasons ?? [];
     if (isNew) {
       // Version changed: update and allow aria-live to announce.
       updatePendingVersion = v;
@@ -1363,7 +1365,6 @@
     }
     snoozedUpdateVersion = version;
     updatePendingVersion = null;
-    updateHoldReasons = [];
     updateInstallError = null;
   }
 
@@ -1382,7 +1383,7 @@
     }
     const copy = updateToastCopy({
       version,
-      reasons: updateHoldReasons,
+      reasons: [...updateStore.holdReasons],
       installing: updateInstalling,
       installError: updateInstallError,
       phase: storeBusy ? phase : undefined,

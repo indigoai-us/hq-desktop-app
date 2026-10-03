@@ -6,6 +6,7 @@ import { ok, type PlatformAdapter } from "@hq/platform";
 
 import PrototypeSettingsPanes from "./PrototypeSettingsPanes.svelte";
 import CorePopover from "../home/CorePopover.svelte";
+import { updateToastCopy } from "../shell/update-toast";
 import {
   appRowActions,
   appRowIdleHint,
@@ -30,6 +31,7 @@ import {
   restartToUpdate,
   setAutoUpdateEnabled,
   updateStore,
+  setUpdateHoldReasons,
 } from "./update-store.svelte";
 
 afterEach(() => {
@@ -492,6 +494,33 @@ describe("shared store keeps pane and popover in lockstep", () => {
       checkForUpdates: ReturnType<typeof vi.fn>;
     };
     expect(updates.checkForUpdates.mock.calls.length).toBeGreaterThan(0);
+  });
+
+  it("names the same hold reason as the update toast while an upload holds the update (item 8)", async () => {
+    // Tester's state on f174dccd8: an update is available, not downloaded, and
+    // the native gate holds it for an upload in flight.
+    const adapter = updatesAdapter();
+    const { paneHost } = mountBoth(adapter);
+    await vi.waitFor(() => {
+      flushSync();
+      expect(paneHost.textContent).toContain("UPDATE AVAILABLE");
+    });
+    setUpdateHoldReasons(["uploadInFlight"]);
+    flushSync();
+    const toast = updateToastCopy({
+      version: updateStore.availableVersion ?? "",
+      reasons: [...updateStore.holdReasons],
+      installing: false,
+      installError: updateStore.installError,
+      downloadPercent: updateStore.downloadPercent,
+    });
+    expect(toast.phase).toBe("held");
+    const reason = paneHost.querySelector('[data-testid="settings-app-deferred-reason"]')?.textContent?.trim();
+    expect(reason).toBe(toast.detail);
+    expect(reason).toBe("Waiting for an upload to finish");
+    setUpdateHoldReasons([]);
+    flushSync();
+    expect(paneHost.querySelector('[data-testid="settings-app-deferred-reason"]')).toBeNull();
   });
 
   it("Check from the popover drives in-flight then result on the pane", async () => {
