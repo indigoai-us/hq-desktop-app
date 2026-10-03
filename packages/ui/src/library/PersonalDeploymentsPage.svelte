@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { withReadDeadline } from "../common/read-deadline.js";
   import RailButton from "../common/button/RailButton.svelte";
   /**
    * Personal Deployments (US-031). Real hq-deploy apps across the personal
@@ -80,7 +81,8 @@
     refreshing = true;
     loadFailed = false;
     const fetchScope = async (scope: string): Promise<DeployAppsPage> => {
-      const result = await list(scope);
+      // BLANK-1: a read that never answers counts as a failed scope.
+      const result = await withReadDeadline(list(scope), `deploy apps ${scope}`);
       if (!result.ok) throw new Error(`deploy apps ${scope} ${result.reason}`);
       return result.value as DeployAppsPage;
     };
