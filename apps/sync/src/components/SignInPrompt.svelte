@@ -21,10 +21,12 @@
     type ContinuationDeps,
     type ContinuationState,
   } from '../lib/desktop-session-continuation';
-  import type { SignInProvider } from '../lib/onboarding-signin';
+  import { mapSignInError, type SignInProvider } from '../lib/onboarding-signin';
 
   const AUTH_RECHECK_INTERVAL_MS = 2_000;
   const CALLBACK_TIMEOUT_MS = 3 * 60 * 1_000;
+  const WEB_AUTHORIZE_FALLBACK =
+    'That sign-in did not finish. Choose your provider and try once more.';
 
   interface Props {
     reauth?: boolean;
@@ -59,6 +61,7 @@
   let continuationDepsRef: ContinuationDeps | null = null;
   let continuationBusy = $state(false);
   let webAuthorizeEnabled = $state(false);
+  let webAuthorizeResolved = $state(false);
   let webAuthorizeBusy = $state(false);
 
   /**
@@ -72,21 +75,24 @@
 
   $effect(() => {
     void prepareContinuation();
+    void loadWebAuthorizeFlag();
   });
 
   async function loadWebAuthorizeFlag() {
+    let enabled = false;
     try {
-      webAuthorizeEnabled = (await invoke('web_authorize_enabled')) === true;
+      enabled = (await invoke('web_authorize_enabled')) === true;
     } catch {
-      webAuthorizeEnabled = false;
+      enabled = false;
     }
+    // Flag only chooses which buttons to render. An already-armed continuation
+    // keeps running; if we are still idle, skip starting one.
+    webAuthorizeEnabled = enabled;
+    webAuthorizeResolved = true;
   }
 
   async function prepareContinuation() {
-    const flagPromise = loadWebAuthorizeFlag();
     const context = await loadContinuationContext();
-    await flagPromise;
-    if (webAuthorizeEnabled) return;
     if (!context) return;
     const deps = continuationDeps(context);
     continuationDepsRef = deps;
@@ -107,6 +113,9 @@
 
     const decision = await resolveRollout(deps);
     if (!decision.enabled || manualSignInStarted) return;
+    // Flag resolved true while we were still idle: show Sign in, do not arm
+    // continuation. If continuation already left idle, leave it running.
+    if (webAuthorizeEnabled && continuation.phase === 'idle') return;
 
     await beginContinuation(
       deps,
@@ -186,6 +195,25 @@
     authorizeUrl = null;
   }
 
+  function errorMessage(err: unknown): string {
+    if (err instanceof Error) return err.message;
+    if (typeof err === 'string') return err;
+    try {
+      return JSON.stringify(err);
+    } catch {
+      return String(err);
+    }
+  }
+
+  function copyForWebAuthorizeFailure(cause: unknown): string {
+    const message = errorMessage(cause).trim();
+    if (message.startsWith('{')) {
+      const mapped = mapSignInError(message);
+      if (mapped !== message && mapped !== 'Sign-in failed') return mapped;
+    }
+    return WEB_AUTHORIZE_FALLBACK;
+  }
+
   function failSignIn(provider: SignInProvider, step: DesktopAuthProgressStep, cause: unknown) {
     void emitDesktopAuthFailure({
       provider: provider === 'Google' ? 'google' : 'microsoft',
@@ -193,6 +221,16 @@
       error: cause,
     });
     error = 'We couldn’t finish sign-in. Try again.';
+  }
+
+  function failWebAuthorize(step: DesktopAuthProgressStep, cause: unknown) {
+    void emitDesktopAuthFailure({
+      provider: 'web',
+      step,
+      error: cause,
+    });
+    webAuthorizeEnabled = false;
+    error = copyForWebAuthorizeFailure(cause);
   }
 
   function isCurrentSignInRun(run: number): boolean {
@@ -285,12 +323,7 @@
         ++signInRun;
         resetManualSignInState();
         if (pending) void cancelPendingSignIn(pending);
-        void emitDesktopAuthFailure({
-          provider: 'web',
-          step: 'provider_page_opened',
-          error: new Error('sign-in timed out'),
-        });
-        error = 'We couldn’t finish sign-in. Try again.';
+        failWebAuthorize('provider_page_opened', new Error('sign-in timed out'));
       }, CALLBACK_TIMEOUT_MS);
       const { code } = await invoke<{ code: string }>('oauth_listen_for_code', { state });
       clearCallbackTimeout();
@@ -318,22 +351,12 @@
         });
         onsuccess?.(result);
       } else {
-        void emitDesktopAuthFailure({
-          provider: 'web',
-          step: authStep,
-          error: 'authentication rejected',
-        });
-        error = 'We couldn’t finish sign-in. Try again.';
+        failWebAuthorize(authStep, 'authentication rejected');
       }
     } catch (err) {
       if (!isCurrentSignInRun(run)) return;
       clearCallbackTimeout();
-      void emitDesktopAuthFailure({
-        provider: 'web',
-        step: authStep,
-        error: err,
-      });
-      error = 'We couldn’t finish sign-in. Try again.';
+      failWebAuthorize(authStep, err);
       await cancelPendingSignIn();
     } finally {
       if (isCurrentSignInRun(run)) {
@@ -484,12 +507,7 @@
       if (provider) {
         failSignIn(provider, 'provider_page_opened', err);
       } else {
-        void emitDesktopAuthFailure({
-          provider: 'web',
-          step: 'provider_page_opened',
-          error: err,
-        });
-        error = 'We couldn’t finish sign-in. Try again.';
+        failWebAuthorize('provider_page_opened', err);
       }
     }
   }
@@ -578,6 +596,7 @@
 
     <div
       class="sign-in-actions"
+      data-testid="sign-in-actions"
       class:secondary={continuation.phase === 'confirming'}
       hidden={
         continuation.phase === 'opening' ||
@@ -586,7 +605,9 @@
         webAuthorizeBusy
       }
     >
-      {#if webAuthorizeEnabled}
+      {#if !webAuthorizeResolved}
+        <div class="sign-in-actions-placeholder" aria-hidden="true"></div>
+      {:else if webAuthorizeEnabled}
         <button
           class="sign-in-btn"
           data-testid="web-authorize-signin"
@@ -819,6 +840,13 @@
     display: grid;
     gap: 0.625rem;
     width: 100%;
+    /* Two provider buttons + gap. Hold this height while the flag resolves
+       so the layout does not flash providers then swap to Sign in. */
+    min-height: 5.5rem;
+  }
+
+  .sign-in-actions-placeholder {
+    min-height: 5.5rem;
   }
 
   /* Demoted, not hidden. When continuation has an account to offer, the

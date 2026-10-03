@@ -45,6 +45,7 @@ use hq_desktop_core::oauth::{
     bind_loopback_listeners, build_authorize_url_from_redirect, cognito_client_id,
     cognito_token_url, compute_code_challenge, generate_code_verifier, parse_callback,
     AuthorizeRequest, CallbackOutcome, CallbackRejection, REDIRECT_URI,
+    REGISTERED_LOOPBACK_PORTS,
 };
 use hq_desktop_core::web_authorize;
 use serde::{Deserialize, Serialize};
@@ -70,11 +71,10 @@ fn set_oauth_flow_active(active: bool) {
     OAUTH_FLOW_ACTIVE.store(active, Ordering::SeqCst);
 }
 
-// Keep these exact ports in sync with the callback URLs registered for the
-// static Cognito client. Never choose an unregistered ephemeral redirect URI.
-const REGISTERED_LOOPBACK_PORTS: [u16; 3] = [53682, 8765, 3000];
 const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
+const LOGIN_METHOD_MANUAL_OAUTH: &str = "manual_oauth";
+const LOGIN_METHOD_WEB_AUTHORIZE: &str = "web_authorize";
 
 // ── PKCE verifier storage ──────────────────────────────────────────────
 
@@ -85,6 +85,8 @@ struct PendingPkce {
     identity_provider: Option<String>,
     redirect_uri: String,
     referral_nonce: Option<String>,
+    oidc_nonce: Option<String>,
+    login_method: &'static str,
 }
 
 struct ReferralFailureCleanup(Option<String>);
@@ -244,7 +246,7 @@ fn receive_loopback_callback(
                                 }
                                 CallbackOutcome::Code(code) => {
                                     eprintln!("[oauth] callback accepted");
-                                    write_response(&mut stream, "200 OK", SUCCESS_HTML);
+                                    write_response(&mut stream, "200 OK", success_html_for_pending_flow());
                                     return Ok(OAuthResult { code });
                                 }
                             }
@@ -376,8 +378,8 @@ const SUCCESS_HTML: &str = r#"<!doctype html>
 <body>
 <div class="wrap"><div class="card">
   <div class="check">&check;</div>
-  <h1>You're signed in</h1>
-  <p>You can close this tab and return to HQ Desktop.</p>
+  <h1>You are signed in</h1>
+  <p>You can close this tab and return to HQ.</p>
 </div></div>
 <script>
   // The authorization code is single-use and the app has already taken it
@@ -388,6 +390,45 @@ const SUCCESS_HTML: &str = r#"<!doctype html>
 </script>
 </body>
 </html>"#;
+
+const WEB_AUTHORIZE_SUCCESS_HTML: &str = r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Signed in — HQ</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #0a0a0a; color: #fafafa;
+    font-family: -apple-system, BlinkMacSystemFont, "Geist", sans-serif; }
+  .wrap { height: 100%; display: flex; align-items: center; justify-content: center; }
+  .card { max-width: 420px; padding: 32px 28px; text-align: center; }
+  .check { width: 56px; height: 56px; border-radius: 28px; background: rgba(34,197,94,0.15);
+    color: #22c55e; font-size: 28px; line-height: 56px; margin: 0 auto 16px; }
+  h1 { font-size: 20px; font-weight: 500; margin: 0 0 8px; }
+  p { font-size: 14px; color: #a1a1aa; margin: 0; }
+</style>
+</head>
+<body>
+<div class="wrap"><div class="card">
+  <div class="check">&check;</div>
+  <h1>You are signed in</h1>
+  <p>You can close this tab and return to HQ Desktop.</p>
+</div></div>
+<script>
+  try { history.replaceState(null, "", "/"); } catch (_) {}
+  setTimeout(function () { try { window.close(); } catch (_) {} }, 300);
+</script>
+</body>
+</html>"#;
+
+fn success_html_for_pending_flow() -> &'static str {
+    let guard = pkce_store().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    match guard.as_ref() {
+        Some(pending) if pending.login_method == LOGIN_METHOD_WEB_AUTHORIZE => {
+            WEB_AUTHORIZE_SUCCESS_HTML
+        }
+        _ => SUCCESS_HTML,
+    }
+}
 
 fn error_html(reason: &str) -> String {
     format!(
@@ -502,6 +543,13 @@ pub async fn web_authorize_enabled() -> bool {
 pub async fn start_web_authorize(app: AppHandle) -> Result<OAuthFlowInit, String> {
     let nonce = hq_desktop_core::oauth::generate_nonce();
     let armed = arm_oauth_flow(&app, None, Some(&nonce))?;
+    if let Err(_error) = set_pending_login_method(&armed.state, LOGIN_METHOD_WEB_AUTHORIZE) {
+        let _ = oauth_cancel_listen(Some(armed.state.clone()));
+        return Err(structured_error(
+            "WEB_AUTHORIZE_URL_INVALID",
+            "Sign-in could not open the HQ authorize page. Try another way to sign in.",
+        ));
+    }
     let Some(page_url) = web_authorize::build_authorize_page_url(&armed.authorize_url) else {
         let _ = oauth_cancel_listen(Some(armed.state.clone()));
         return Err(structured_error(
@@ -509,8 +557,28 @@ pub async fn start_web_authorize(app: AppHandle) -> Result<OAuthFlowInit, String
             "Sign-in could not open the HQ authorize page. Try another way to sign in.",
         ));
     };
+    let (authorize_url, referral_nonce) =
+        match crate::commands::desktop_auth::prepare_desktop_referral_start_url(&page_url).await
+        {
+            Ok(result) => result,
+            Err(()) => {
+                let _ = oauth_cancel_listen(Some(armed.state.clone()));
+                return Err(structured_error(
+                    "OAUTH_REFERRAL_PERSIST_FAILED",
+                    "Sign-in could not prepare the secure browser handoff. Retry in a moment.",
+                ));
+            }
+        };
+    if let Err(_error) = set_pending_referral_nonce(&armed.state, &referral_nonce) {
+        crate::commands::desktop_auth::discard_unbound_desktop_referral_nonce(referral_nonce);
+        let _ = oauth_cancel_listen(Some(armed.state.clone()));
+        return Err(structured_error(
+            "OAUTH_REFERRAL_PERSIST_FAILED",
+            "Sign-in could not prepare the secure browser handoff. Retry in a moment.",
+        ));
+    }
     Ok(OAuthFlowInit {
-        authorize_url: page_url,
+        authorize_url,
         state: armed.state,
     })
 }
@@ -533,6 +601,7 @@ pub(crate) struct ExchangedOAuthCode {
     pub tokens: CognitoTokens,
     pub identity_provider: Option<String>,
     pub referral_nonce: Option<String>,
+    pub login_method: &'static str,
 }
 
 /// Bind the loopback listener, stash a fresh PKCE verifier, and build the
@@ -618,6 +687,8 @@ pub(crate) fn arm_oauth_flow(
             identity_provider: selected_identity_provider,
             redirect_uri: redirect_uri.clone(),
             referral_nonce: None,
+            oidc_nonce: nonce.map(str::to_owned),
+            login_method: LOGIN_METHOD_MANUAL_OAUTH,
         });
     }
 
@@ -648,6 +719,20 @@ pub(crate) fn set_pending_referral_nonce(state: &str, referral_nonce: &str) -> R
         return Err("PKCE state does not match the referral binding attempt.".to_string());
     }
     pending.referral_nonce = Some(referral_nonce.to_string());
+    Ok(())
+}
+
+fn set_pending_login_method(state: &str, login_method: &'static str) -> Result<(), String> {
+    let mut guard = pkce_store()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let pending = guard
+        .as_mut()
+        .ok_or_else(|| "No PKCE verifier found for login method binding.".to_string())?;
+    if pending.state != state {
+        return Err("PKCE state does not match the login method binding attempt.".to_string());
+    }
+    pending.login_method = login_method;
     Ok(())
 }
 
@@ -702,6 +787,8 @@ pub(crate) async fn exchange_code_for_tokens(code: &str) -> Result<ExchangedOAut
         identity_provider,
         redirect_uri,
         referral_nonce,
+        oidc_nonce,
+        login_method,
     } = pending_pkce;
     let mut referral_cleanup = ReferralFailureCleanup::new(referral_nonce.clone());
 
@@ -758,11 +845,19 @@ pub(crate) async fn exchange_code_for_tokens(code: &str) -> Result<ExchangedOAut
         expires_at,
     };
 
+    if let Err(error) = hq_desktop_core::cognito::verify_optional_oidc_nonce(
+        tokens.id_token.as_deref(),
+        oidc_nonce.as_deref(),
+    ) {
+        return Err(structured_error("OAUTH_NONCE_MISMATCH", &error));
+    }
+
     referral_cleanup.disarm();
     Ok(ExchangedOAuthCode {
         tokens,
         identity_provider,
         referral_nonce,
+        login_method,
     })
 }
 
@@ -777,6 +872,7 @@ pub async fn oauth_exchange_code(app: AppHandle, code: String) -> Result<AuthSta
     let tokens = exchanged.tokens;
     let identity_provider = exchanged.identity_provider;
     let referral_nonce = exchanged.referral_nonce;
+    let login_method = exchanged.login_method;
 
     // The person just chose an account with a provider button. Any continuation
     // still waiting for confirmation is about a different account and a question
@@ -820,11 +916,16 @@ pub async fn oauth_exchange_code(app: AppHandle, code: String) -> Result<AuthSta
     // continuation cohort. The flag-gated path waits for its local queue write
     // before returning to the wizard; network delivery remains asynchronous.
     if let Some(account_id) = state.account_id.as_deref() {
+        let (flow, variant) = if login_method == LOGIN_METHOD_WEB_AUTHORIZE {
+            ("web_authorize", "web_authorize")
+        } else {
+            ("manual_oauth", "control")
+        };
         crate::commands::desktop_auth::record_desktop_login_completed_gated(
             &app,
             account_id,
-            "manual_oauth",
-            "control",
+            flow,
+            variant,
             identity_provider.as_deref(),
         )
         .await;
@@ -957,6 +1058,7 @@ mod tests {
 
     #[test]
     fn pkce_store_roundtrip() {
+        let _serialize = STORE_TEST_LOCK.lock().unwrap();
         // Store a verifier, then take it out
         {
             let mut guard = pkce_store().lock().unwrap();
@@ -966,6 +1068,8 @@ mod tests {
                 identity_provider: Some("Google".to_string()),
                 redirect_uri: REDIRECT_URI.to_string(),
                 referral_nonce: None,
+                oidc_nonce: Some("oidc-nonce".to_string()),
+                login_method: LOGIN_METHOD_MANUAL_OAUTH,
             });
         }
         {
@@ -979,6 +1083,8 @@ mod tests {
                     identity_provider: Some("Google".to_string()),
                     redirect_uri: REDIRECT_URI.to_string(),
                     referral_nonce: None,
+                    oidc_nonce: Some("oidc-nonce".to_string()),
+                    login_method: LOGIN_METHOD_MANUAL_OAUTH,
                 })
             );
         }
@@ -1168,8 +1274,65 @@ mod tests {
         assert!(response.contains("Referrer-Policy: no-referrer\r\n"));
         assert!(response.contains(r#"history.replaceState(null, "", "/")"#));
         assert!(response.contains("window.close()"));
-        assert!(response.contains("You can close this tab"));
+        assert!(response.contains("You can close this tab and return to HQ."));
+        assert!(!response.contains("HQ Desktop"));
         assert!(!response.contains("test-code"));
+    }
+
+    #[test]
+    fn web_authorize_success_page_uses_desktop_copy() {
+        let _serialize = STORE_TEST_LOCK.lock().unwrap();
+        {
+            let mut guard = pkce_store().lock().unwrap();
+            *guard = Some(PendingPkce {
+                state: "test-state".to_string(),
+                verifier: "test-verifier".to_string(),
+                identity_provider: None,
+                redirect_uri: REDIRECT_URI.to_string(),
+                referral_nonce: None,
+                oidc_nonce: Some("oidc-nonce".to_string()),
+                login_method: LOGIN_METHOD_WEB_AUTHORIZE,
+            });
+        }
+        let response = callback_response(
+            b"GET /callback?code=test-code&state=test-state HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            "test-state",
+        );
+        {
+            let mut guard = pkce_store().lock().unwrap();
+            *guard = None;
+        }
+        assert!(response.contains("You can close this tab and return to HQ Desktop."));
+    }
+
+    #[test]
+    fn oidc_nonce_is_verified_against_the_id_token() {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+        let token = |nonce: Option<&str>| {
+            let payload = match nonce {
+                Some(value) => format!(r#"{{"sub":"person-a","nonce":"{value}"}}"#),
+                None => r#"{"sub":"person-a"}"#.to_string(),
+            };
+            format!(
+                "header.{}.sig",
+                URL_SAFE_NO_PAD.encode(payload.as_bytes())
+            )
+        };
+        assert!(hq_desktop_core::cognito::verify_optional_oidc_nonce(
+            Some(&token(Some("nonce-1"))),
+            Some("nonce-1"),
+        )
+        .is_ok());
+        assert!(hq_desktop_core::cognito::verify_optional_oidc_nonce(
+            Some(&token(Some("nonce-2"))),
+            Some("nonce-1"),
+        )
+        .is_err());
+        assert!(hq_desktop_core::cognito::verify_optional_oidc_nonce(
+            Some(&token(None)),
+            Some("nonce-1"),
+        )
+        .is_err());
     }
 
     #[test]
