@@ -44,10 +44,37 @@ function darkGroundAlpha(factor: number): number {
 }
 
 describe('window transparency layer stack', () => {
-  it('does not paint a second window backing on .hq-work-embedded', () => {
+  it('paints .hq-work-embedded only as a solid floor gated on 100% opacity', () => {
     const backgrounds = backgroundsFor(styleBlock(shell), '.hq-work-embedded');
     expect(backgrounds.length).toBeGreaterThan(0);
-    for (const bg of backgrounds) expect(bg).toBe('transparent');
+    for (const bg of backgrounds) {
+      expect(bg.replace(/\s+/g, ' ')).toBe(
+        'color-mix( in srgb, var(--v4-reading-surface, #111111) var(--hq-work-solid-floor-alpha), transparent )',
+      );
+    }
+  });
+
+  // OWNER-002: with the New bot sheet open over the old stacked plan-limit
+  // notices, host regions the shell ground did not cover were see-through and
+  // other apps showed behind the text. At 100% opacity (also the unset value)
+  // the host floor must be solid; below 100% it must vanish so it never stacks.
+  it('keeps the host floor solid at 100% or unset opacity and clear below', () => {
+    const css = styleBlock(shell);
+    const m = css.match(
+      /--hq-work-solid-floor-alpha:\s*clamp\(\s*0%,\s*calc\(100% - var\(--hq-window-transparency-factor, ([\d.]+)\) \* ([\d.]+)%\),\s*100%\s*\)/,
+    );
+    if (!m) throw new Error('solid floor alpha not found');
+    const unsetFactor = Number(m[1]);
+    const gain = Number(m[2]);
+    const floor = (factor: number) => Math.min(100, Math.max(0, 100 - factor * gain));
+    expect(floor(unsetFactor)).toBe(100);
+    expect(floor(0)).toBe(100);
+    expect(floor(0.01)).toBe(0);
+    expect(floor(0.65)).toBe(0);
+    const tokens = read('./v4/tokens.css');
+    for (const value of tokens.matchAll(/--v4-reading-surface:\s*([^;]+);/g)) {
+      expect(value[1].trim()).toMatch(/^#[0-9a-f]{6}$/i);
+    }
   });
 
   it('does not repaint the ground on the Settings surface', () => {

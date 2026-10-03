@@ -63,6 +63,7 @@ pub mod desktop_alt;
 pub mod desktop_signin_link;
 pub mod routes;
 pub mod dm_notify;
+pub mod download_tag;
 pub mod drift_scope;
 pub mod events;
 pub mod feature_gate;

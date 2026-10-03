@@ -153,7 +153,14 @@
   import ConnectorImportStep from './ConnectorImportStep.svelte';
   import CompanyStep, { type CompanyStepEvent, type CompanyStepResult } from './CompanyStep.svelte';
   import {
-    resolveFirstRunCompanyPath,
+    companyUidFromMissingBucket,
+    isMissingBucketMessage,
+    type CompanyRouteSummary,
+  } from '../../lib/onboarding-company-route';
+  import {
+    requestCompanyProvisioning,
+    resolveFirstRunCompanyRoute,
+    waitForProvisioning,
     type FirstRunCompanyPath,
   } from '../../lib/first-run-company';
   import {
@@ -164,6 +171,15 @@
     retryThrottled,
   } from '@hq/platform';
   import { markPostReadyActionReady } from '../../lib/post-ready-action-telemetry';
+  import {
+    classifyInviteError,
+    hqProErrorCode,
+    HqProRequestError,
+    inviteErrorMessage,
+    isAlreadyExists,
+    type InviteErrorKind,
+    type InviteFailure,
+  } from '../../lib/onboarding-invite';
 
   interface Props {
     initialStep: number;
@@ -211,8 +227,6 @@
     tone: 'error' | 'warning';
     text: string;
   };
-
-  type InviteTeammateErrorKind = 'request_failed' | 'email_delivery_failed';
 
   type InstallProgressPayload = {
     handle?: string;
@@ -376,6 +390,18 @@
    * `existing` or null (lookup failed) to skip it.
    */
   let companyPath = $state<FirstRunCompanyPath | null>(null);
+  /** Signed-in email, read once for the signed-in-as notice and invite matching. */
+  let signedInEmail = $state<string | null>(null);
+  /** A session already on this machine when onboarding opened (old ~/.hq). */
+  let existingSessionEmail = $state<string | null>(null);
+  let switchingAccount = $state(false);
+  let resumeAfterAccountSwitch = false;
+  /** First-sync self-heal: "Finishing setup…" while hq-pro provisions a bucket. */
+  let firstFolderSelfHealing = $state(false);
+  let firstFolderMissingBucketUids = new Set<string>();
+  let firstFolderSelfHealAttempted = false;
+  const firstFolderSelfHealTimeoutMs = 90_000;
+  const firstFolderSelfHealIntervalMs = 2_000;
   let companyStepVisited = false;
   let companyStepCompanyUid: string | null = null;
   let inviteTeammateContext: { companyUid: string; personUid: string } | null = null;
@@ -383,7 +409,9 @@
   let inviteEmail = $state('');
   let inviteSending = $state(false);
   let inviteSent = $state(false);
-  let inviteErrorKind = $state<InviteTeammateErrorKind | null>(null);
+  let inviteErrorKind = $state<InviteErrorKind | null>(null);
+  /** Set when the address was already invited and HQ resent that invite. */
+  let inviteResent = $state(false);
   let firstFolderSyncFlagResolution: Promise<boolean> | null = null;
   let firstFolderSyncBusy = $state(false);
   let firstFolderSyncError = $state(false);
@@ -751,6 +779,7 @@
           }
         })
         .catch(() => {});
+      if (currentStep === WELCOME_SIGNIN_STEP_INDEX) void checkExistingSession();
     }
 
     const media = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -806,8 +835,11 @@
         firstFolderSyncObservedFailure = true;
       }
     });
-    subscribeFirstFolderSyncEvent('sync:error', () => {
-      if (firstFolderSyncAwaitingCompletion) firstFolderSyncObservedFailure = true;
+    subscribeFirstFolderSyncEvent<{ message?: unknown }>('sync:error', (payload) => {
+      if (!firstFolderSyncAwaitingCompletion) return;
+      const uid = companyUidFromMissingBucket(payload?.message);
+      if (uid) firstFolderMissingBucketUids.add(uid);
+      else firstFolderSyncObservedFailure = true;
     });
     subscribeFirstFolderSyncEvent('sync:auth-error', handleFirstFolderSyncAuthError);
 
@@ -879,6 +911,7 @@
       return;
     }
 
+    existingSessionEmail = null;
     const call = ++currentSignInCall;
     loadingProvider = provider;
     signInError = '';
@@ -986,6 +1019,13 @@
     void resolveInstallerPersonUid();
     await refocusWindow();
     if (!isCurrentSignInCall(call)) return;
+    if (resumeAfterAccountSwitch && setupCompleted) {
+      // Setup already ran on this machine; look again for the new account.
+      resumeAfterAccountSwitch = false;
+      advanceTo(READY_STEP_INDEX, 'completed', { ...details, outcome: 'authenticated' }, 'ready');
+      void resolvePostSetupSteps(() => mounted);
+      return;
+    }
     // The consent question is asked later as its own step after setup.
     // Operational setup telemetry is emitted independently; skill usage
     // remains governed by that choice.
@@ -1080,7 +1120,7 @@
       throw new Error('hq-pro returned an invalid response');
     }
     if (response.status < 200 || response.status >= 300) {
-      throw new Error(`hq-pro request failed with status ${response.status}`);
+      throw new HqProRequestError(response.status, hqProErrorCode(response.body));
     }
     const payload =
       typeof response.body === 'string' && response.body.trim()
@@ -1102,6 +1142,68 @@
       membershipMeRead.catch(() => (membershipMeRead = null));
     }
     return membershipMeRead;
+  }
+
+  /** The signed-in account's email (from the local token), or null. */
+  async function resolveSignedInEmail(): Promise<string | null> {
+    try {
+      const auth = await invokeCommand<{ authenticated?: boolean; email?: string | null }>('get_auth_state');
+      const email = auth?.authenticated && typeof auth.email === 'string' && auth.email.trim() ? auth.email.trim() : null;
+      signedInEmail = email;
+      return email;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Signed-in-as guard: a token already on this machine when onboarding opens
+   * (a reinstall over an old ~/.hq) may be someone else's. Show it on the
+   * sign-in screen before anything is created.
+   */
+  async function checkExistingSession(): Promise<void> {
+    try {
+      const firstLaunch = await invokeCommand<boolean>('is_first_run').catch(() => false);
+      if (!firstLaunch) return;
+      const email = await resolveSignedInEmail();
+      if (email && currentStep === WELCOME_SIGNIN_STEP_INDEX) {
+        existingSessionEmail = email;
+        recordStep(WELCOME_SIGNIN_STEP_INDEX, 'started', { outcome: 'existing_session_shown' });
+      }
+    } catch (error) {
+      console.warn('onboarding: existing session check failed', error);
+    }
+  }
+
+  /** Keep the session that was already here. */
+  function continueExistingSession(): void {
+    if (!existingSessionEmail) return;
+    existingSessionEmail = null;
+    void completeAuthenticatedSignIn(++currentSignInCall, { outcome: 'existing_session_continued' });
+  }
+
+  /** Sign out and go back to the sign-in buttons. Used by the guard and by the invite mismatch. */
+  async function switchAccount(from: 'welcome' | 'company'): Promise<void> {
+    if (switchingAccount) return;
+    switchingAccount = true;
+    try {
+      await invokeCommand('sign_out');
+    } catch (error) {
+      console.warn('onboarding: sign out for account switch failed', error);
+    } finally {
+      switchingAccount = false;
+    }
+    existingSessionEmail = null;
+    signedInEmail = null;
+    if (from === 'company') {
+      companyPath = null;
+      companyStepVisited = false;
+      postSetupStepsResolved = false;
+      resumeAfterAccountSwitch = true;
+      advanceTo(WELCOME_SIGNIN_STEP_INDEX, 'completed', { outcome: 'switch_account' }, 'welcome');
+    } else {
+      recordStep(WELCOME_SIGNIN_STEP_INDEX, 'started', { outcome: 'existing_session_switched' });
+    }
   }
 
   function companyStepHqProJson(
@@ -1173,6 +1275,29 @@
     }
   }
 
+  function recordInviteFailure(failure: InviteFailure): void {
+    inviteErrorKind = failure.kind;
+    recordStep(INVITE_TEAMMATE_STEP_INDEX, 'failed', {
+      errorKind: failure.kind,
+      errorCategory: failure.kind === 'network' ? 'network' : 'unknown',
+      ...(failure.httpStatus === undefined ? {} : { statusCode: failure.httpStatus }),
+    });
+  }
+
+  function postInvite(
+    context: { companyUid: string; personUid: string },
+    inviteeEmail: string,
+    resend: boolean,
+  ): Promise<Record<string, unknown>> {
+    return onboardingHqProJson('POST', '/membership/invite', {
+      companyUid: context.companyUid,
+      role: 'member',
+      invitedBy: context.personUid,
+      inviteeEmail,
+      ...(resend ? { resend: true } : { sendEmail: true }),
+    });
+  }
+
   async function sendTeammateInvite(): Promise<void> {
     const context = inviteTeammateContext;
     const inviteeEmail = inviteEmail.trim();
@@ -1180,40 +1305,41 @@
 
     inviteSending = true;
     inviteErrorKind = null;
+    inviteResent = false;
     try {
-      const resend = inviteCreatedForEmail === inviteeEmail;
-      const response = await onboardingHqProJson('POST', '/membership/invite', {
-        companyUid: context.companyUid,
-        role: 'member',
-        invitedBy: context.personUid,
-        inviteeEmail,
-        ...(resend ? { resend: true } : { sendEmail: true }),
-      });
+      let resend = inviteCreatedForEmail === inviteeEmail;
+      let alreadyInvited = false;
+      let response: Record<string, unknown>;
+      try {
+        response = await postInvite(context, inviteeEmail, resend);
+      } catch (error) {
+        // A resumed session (or a second click after a lost answer) meets the
+        // invite the first attempt made. hq-pro answers 409; resend it.
+        if (resend || !isAlreadyExists(error)) throw error;
+        resend = true;
+        alreadyInvited = true;
+        inviteCreatedForEmail = inviteeEmail;
+        response = await postInvite(context, inviteeEmail, true);
+      }
       const inviteExists =
         isRecord(response.membership) || (resend && response.resent === true);
       if (!inviteExists) {
-        inviteErrorKind = 'request_failed';
-        recordStep(INVITE_TEAMMATE_STEP_INDEX, 'failed', {
-          inviteErrorKind,
-        });
+        recordInviteFailure({ kind: 'request_failed' });
         return;
       }
       inviteCreatedForEmail = inviteeEmail;
       if (response.emailSent !== true) {
-        inviteErrorKind = 'email_delivery_failed';
-        recordStep(INVITE_TEAMMATE_STEP_INDEX, 'failed', {
-          inviteErrorKind,
-        });
+        recordInviteFailure({ kind: 'email_delivery_failed' });
         return;
       }
       inviteSent = true;
-      recordStep(INVITE_TEAMMATE_STEP_INDEX, 'completed', { outcome: 'ok' });
+      inviteResent = alreadyInvited;
+      recordStep(INVITE_TEAMMATE_STEP_INDEX, 'completed', {
+        outcome: alreadyInvited ? 'resent' : 'ok',
+      });
     } catch (error) {
       console.warn('onboarding: invite teammate request failed', error);
-      inviteErrorKind = 'request_failed';
-      recordStep(INVITE_TEAMMATE_STEP_INDEX, 'failed', {
-        inviteErrorKind,
-      });
+      recordInviteFailure(classifyInviteError(error));
     } finally {
       inviteSending = false;
     }
@@ -1933,13 +2059,19 @@
   function handleFirstFolderSyncComplete(payload: unknown): void {
     if (!firstFolderSyncAwaitingCompletion || firstFolderSyncCompleted) return;
     const result = payload as { errors?: unknown } | null;
-    if (
-      !result ||
-      !Array.isArray(result.errors) ||
-      result.errors.length > 0 ||
-      firstFolderSyncObservedFailure
-    ) {
+    const errors = result && Array.isArray(result.errors) ? result.errors : null;
+    const otherErrors = (errors ?? []).filter((entry) => {
+      const message = isRecord(entry) ? entry.message : entry;
+      const uid = companyUidFromMissingBucket(message);
+      if (uid) firstFolderMissingBucketUids.add(uid);
+      return !isMissingBucketMessage(message) || !uid;
+    });
+    if (!errors || otherErrors.length > 0 || firstFolderSyncObservedFailure) {
       failFirstFolderSyncAttempt();
+      return;
+    }
+    if (firstFolderMissingBucketUids.size > 0) {
+      void selfHealMissingBuckets([...firstFolderMissingBucketUids]);
       return;
     }
 
@@ -1959,8 +2091,60 @@
     failFirstFolderSyncAttempt();
   }
 
-  async function startFirstFolderSync(): Promise<void> {
+  /**
+   * Self-heal: the first sync found a company with no bucket ("has no bucket
+   * provisioned"). Ask hq-pro to finish provisioning, show "Finishing setup…",
+   * then sync again. Once per attempt; "Try again" starts a fresh attempt.
+   */
+  async function selfHealMissingBuckets(uids: string[]): Promise<void> {
+    if (firstFolderSelfHealAttempted) {
+      failFirstFolderSyncAttempt();
+      return;
+    }
+    firstFolderSelfHealAttempted = true;
+    firstFolderSelfHealing = true;
+    firstFolderSyncBusy = true;
+    let failedStep: string | null = null;
+    for (const companyUid of uids) {
+      recordStep(FIRST_FOLDER_SYNC_STEP_INDEX, 'started', { selfHeal: 'triggered', companyUid });
+      let state = await requestCompanyProvisioning(invokeCommand, companyUid);
+      if (state.status === 'pending') {
+        state = await waitForProvisioning({
+          invoke: invokeCommand,
+          companyUid,
+          timeoutMs: firstFolderSelfHealTimeoutMs,
+          intervalMs: firstFolderSelfHealIntervalMs,
+          cancelled: () => !mounted,
+        });
+      }
+      if (!mounted) return;
+      if (state.status !== 'ready') {
+        failedStep = state.status === 'failed' ? state.step : 'timeout';
+        recordStep(FIRST_FOLDER_SYNC_STEP_INDEX, 'failed', {
+          selfHeal: 'failed',
+          companyUid,
+          provisioningStep: failedStep,
+        });
+        break;
+      }
+      recordStep(FIRST_FOLDER_SYNC_STEP_INDEX, 'started', { selfHeal: 'succeeded', companyUid });
+    }
+    firstFolderSelfHealing = false;
+    firstFolderMissingBucketUids.clear();
+    if (failedStep !== null) {
+      failFirstFolderSyncAttempt();
+      return;
+    }
+    firstFolderSyncBusy = false;
+    firstFolderSyncAwaitingCompletion = false;
+    firstFolderSyncStarted = false;
+    await startFirstFolderSync(true);
+  }
+
+  async function startFirstFolderSync(fromSelfHeal = false): Promise<void> {
     if (firstFolderSyncBusy || firstFolderSyncStarted || firstFolderSyncCompleted) return;
+    if (!fromSelfHeal) firstFolderSelfHealAttempted = false;
+    firstFolderMissingBucketUids.clear();
     firstFolderSyncStarted = true;
     firstFolderSyncAwaitingCompletion = true;
     firstFolderSyncObservedFailure = false;
@@ -2053,18 +2237,34 @@
       });
       // Both follow-on steps are optional. The invite path appears only for a
       // company with one active member; every membership lookup fails closed.
-      const [firstFolderEnabled, inviteContext, firstRunCompanyPath] = await Promise.all([
-        resolveFirstFolderSyncStepFlag(),
-        resolveInviteTeammateContext(),
-        resolveFirstRunCompanyPath({ hqProJson: companyStepHqProJson, invoke: invokeCommand }),
-      ]);
-      if (!isCurrentRun(runId) || !mounted) return;
-      companyPath = firstRunCompanyPath;
-      showFirstFolderSyncStep = firstFolderEnabled;
-      inviteTeammateContext = inviteContext;
-      showInviteTeammateStep = inviteContext !== null;
-      postSetupStepsResolved = true;
+      await resolvePostSetupSteps(() => isCurrentRun(runId) && mounted);
     }
+  }
+
+  /** The optional follow-on steps after setup; re-run after an account switch. */
+  async function resolvePostSetupSteps(stillCurrent: () => boolean): Promise<void> {
+    const [firstFolderEnabled, inviteContext, firstRunCompanyPath] = await Promise.all([
+      resolveFirstFolderSyncStepFlag(),
+      resolveInviteTeammateContext(),
+      Promise.all([
+        resolveSignedInEmail(),
+        invokeCommand<string | null>('web_visitor_anon_id').catch(() => null),
+      ]).then(([email, anonId]) =>
+        resolveFirstRunCompanyRoute({
+          hqProJson: companyStepHqProJson,
+          invoke: invokeCommand,
+          signedInEmail: email,
+          anonId,
+        }),
+      ),
+    ]);
+    if (!stillCurrent()) return;
+    companyPath = firstRunCompanyPath?.route ?? null;
+    if (firstRunCompanyPath) recordCompanyRoute(firstRunCompanyPath.route, firstRunCompanyPath.summary);
+    showFirstFolderSyncStep = firstFolderEnabled;
+    inviteTeammateContext = inviteContext;
+    showInviteTeammateStep = inviteContext !== null;
+    postSetupStepsResolved = true;
   }
 
   interface SetupCompletionMetrics {
@@ -2951,7 +3151,7 @@
   $effect(() => {
     if (consentOnly || replay || !setupCompleted || !postSetupStepsResolved) return;
     if (currentStep !== READY_STEP_INDEX) return;
-    if (companyPath && companyPath.kind !== 'existing' && !companyStepVisited) {
+    if (companyPath && companyPath.kind !== 'skip' && !companyStepVisited) {
       advanceTo(COMPANY_STEP_INDEX, null);
       return;
     }
@@ -2973,23 +3173,71 @@
     const failed =
       event.action === 'company_create_failed' ||
       event.action === 'invite_join_failed' ||
-      event.action === 'checkout_failed';
-    const outcome = event.action === 'plan_chosen' ? `plan_${event.plan}` : event.action;
-    recordStep(COMPANY_STEP_INDEX, failed ? 'failed' : 'started', { outcome });
+      event.action === 'checkout_failed' ||
+      event.action === 'provisioning_failed';
+    const outcome =
+      event.action === 'plan_chosen'
+        ? `plan_${event.plan}`
+        : event.action === 'company_created' && event.inviteQueuedCount > 0
+          ? 'company_created_invites_queued'
+          : event.action === 'provisioning_wait' && event.retry
+            ? 'provisioning_retry'
+            : event.action;
+    const details: StepTelemetryDetails = { outcome };
+    if (event.action === 'provisioning_failed') details.provisioningStep = event.step;
+    if (event.action === 'provisioning_ready') details.attemptCount = event.attemptCount;
+    if (event.action === 'create_another') details.decision = 'created_another';
+    if (event.action === 'existing_used') details.decision = 'used_existing';
+    recordStep(COMPANY_STEP_INDEX, failed ? 'failed' : 'started', details);
   }
 
-  /** Leave the company step: made, joined, or skipped. Back to ready for the rest. */
+  /** One row per run: what the company step found and which way it went. */
+  function recordCompanyRoute(route: FirstRunCompanyPath, summary: CompanyRouteSummary): void {
+    if (route.kind === 'skip') companyStepCompanyUid = route.company.companyUid;
+    recordStep(COMPANY_STEP_INDEX, route.kind === 'skip' ? 'skipped' : 'started', {
+      outcome: `route_${route.decision}`,
+      decision: route.decision,
+      existingCompanies: summary.existingCompanies,
+      paidCompany: summary.paidCompany,
+      pendingInvites: summary.pendingInvites,
+    });
+    if (route.kind === 'skip') void selectCompany(route.company.slug);
+  }
+
+  /** Make the chosen company the app's active one. Best effort. */
+  async function selectCompany(slug: string | null): Promise<void> {
+    if (!slug) return;
+    try {
+      await invokeCommand('set_desktop_active_company', { companySlug: slug });
+    } catch (error) {
+      console.warn('onboarding: could not select the company', error);
+    }
+  }
+
+  /** Leave the company step: made, joined, used, or skipped. Back to ready for the rest. */
   function leaveCompanyStep(result: CompanyStepResult): void {
     const outcome =
       result.outcome === 'created'
         ? result.paid
           ? 'workforce_paid'
           : `created_${result.plan}`
-        : result.outcome;
+        : result.outcome === 'joined'
+          ? 'joined_invite'
+          : result.outcome;
+    const details: StepTelemetryDetails = { outcome };
+    if (result.outcome === 'joined') {
+      details.decision = 'joined_invite';
+      if (result.companyUid) companyStepCompanyUid = result.companyUid;
+      void selectCompany(result.slugs[0] ?? null);
+    } else if (result.outcome === 'used_existing') {
+      details.decision = 'used_existing';
+      companyStepCompanyUid = result.companyUid;
+      void selectCompany(result.slug);
+    }
     advanceTo(
       READY_STEP_INDEX,
       result.outcome === 'skipped' ? 'skipped' : 'completed',
-      { outcome },
+      details,
       'ready',
     );
   }
@@ -3098,6 +3346,14 @@
               {/if}
             {/if}
           </div>
+          {#if existingSessionEmail}
+            <p class="status inline-note" role="status" data-testid="onboarding-signed-in-as">
+              You're signed in as {existingSessionEmail}.
+              <button class="link-inline" type="button" data-testid="onboarding-signed-in-as-continue" disabled={switchingAccount} onclick={continueExistingSession}>Continue</button>
+              or
+              <button class="link-inline" type="button" data-testid="onboarding-signed-in-as-switch" disabled={switchingAccount} onclick={() => void switchAccount('welcome')}>switch account</button>?
+            </p>
+          {/if}
           {#if signInError}
             <p class="status error inline-note" role="alert">{signInError}</p>
           {:else}
@@ -3441,10 +3697,11 @@
       aria-labelledby="onboarding-title-company"
     >
       <div class="panel-block" bind:this={refs['panel:company']}>
-        {#if currentStep === COMPANY_STEP_INDEX && companyPath && companyPath.kind !== 'existing'}
+        {#if currentStep === COMPANY_STEP_INDEX && companyPath && companyPath.kind !== 'skip'}
           <CompanyStep
             path={companyPath}
             invoke={invokeCommand}
+            onswitchaccount={() => void switchAccount('company')}
             openUrl={(url) => openExternal(url)}
             listen={(event, handler) => listen(event, (message) => handler(message.payload))}
             onTelemetry={recordCompanyStep}
@@ -3472,7 +3729,9 @@
           >
             <h2 class="h" id="onboarding-title-first-folder-sync" tabindex="-1" data-scene-heading>Sync your first folder</h2>
             <p class="body">Start syncing {installDisplayPath} so it is available across your HQ devices.</p>
-            {#if firstFolderSyncBusy}
+            {#if firstFolderSelfHealing}
+              <p class="note inline-note" role="status" aria-live="polite" data-testid="onboarding-first-folder-finishing-setup">Finishing setup…</p>
+            {:else if firstFolderSyncBusy}
               <p class="note inline-note" role="status" aria-live="polite">Syncing your first folder…</p>
             {:else if firstFolderSyncError}
               <p class="note inline-note warning" role="alert">HQ could not sync this folder. Try again or skip for now.</p>
@@ -3519,19 +3778,16 @@
               invite people later.
             </p>
             {#if inviteSent}
-              <p class="note inline-note" role="status" aria-live="polite">Invitation sent.</p>
-            {:else if inviteErrorKind === 'email_delivery_failed'}
+              <p class="note inline-note" role="status" aria-live="polite">{inviteResent
+                  ? 'This person was already invited. HQ sent the invitation again.'
+                  : 'Invitation sent.'}</p>
+            {:else if inviteErrorKind}
               <p
                 class="note inline-note"
                 data-testid="onboarding-invite-error"
+                data-error-kind={inviteErrorKind}
                 role="alert"
-              >HQ could not confirm that the invitation email was sent. You can try again or skip for now.</p>
-            {:else if inviteErrorKind === 'request_failed'}
-              <p
-                class="note inline-note"
-                data-testid="onboarding-invite-error"
-                role="alert"
-              >HQ could not send the invitation. You can try again or skip for now.</p>
+              >{inviteErrorMessage(inviteErrorKind)}</p>
             {/if}
             <form
               class="invite-form"
@@ -4105,6 +4361,15 @@
 {/snippet}
 
 <style>
+  .link-inline {
+    background: none;
+    border: 0;
+    padding: 0;
+    font: inherit;
+    color: inherit;
+    text-decoration: underline;
+    cursor: pointer;
+  }
   /* The welcome flow's own styles live in ./welcome/welcome.css (plain CSS,
      because its motion engines add classes Svelte cannot see). What stays
      here is scoped to the post-ready walkthrough's product mockups. */

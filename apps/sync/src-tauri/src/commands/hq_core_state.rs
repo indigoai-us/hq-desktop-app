@@ -1223,6 +1223,15 @@ fn core_update_redact_snapshot_capacity_values(raw: &str) -> String {
 }
 
 fn core_update_disk_free_bucket(raw: &str) -> &'static str {
+    // Rescue's snapshot-capacity diagnostic prints `have` as a bare byte
+    // count. Handle that field directly before the generic parser can mistake
+    // the preceding `need ... bytes` estimate for free disk space.
+    for line in raw.lines() {
+        if core_update_is_disk_full_diagnostic_line(line) {
+            return core_update_snapshot_available_disk_bucket(line).unwrap_or("unknown");
+        }
+    }
+
     for line in raw.lines() {
         let lower = line.to_ascii_lowercase();
         if let Some(bucket) = core_update_explicit_disk_bucket(&lower) {
@@ -1251,6 +1260,26 @@ fn core_update_disk_free_bucket(raw: &str) -> &'static str {
         }
     }
     "unknown"
+}
+
+fn core_update_snapshot_available_disk_bucket(line: &str) -> Option<&'static str> {
+    let lower = line.to_ascii_lowercase();
+    let value_start = lower.split_once("have ")?.1;
+    let value_end = value_start
+        .find(|character: char| character.is_ascii_whitespace() || character == ')')
+        .unwrap_or(value_start.len());
+    let value =
+        value_start[..value_end].trim_end_matches(|character| matches!(character, '.' | ','));
+    let amount = value.replace(',', "").parse::<f64>().ok()?;
+    let suffix = value_start[value_end..].trim_start();
+    let gib = if suffix.starts_with("gib") || suffix.starts_with("gb") {
+        amount
+    } else if suffix.starts_with("bytes") || suffix.starts_with(')') || suffix.is_empty() {
+        amount / 1024.0 / 1024.0 / 1024.0
+    } else {
+        return None;
+    };
+    core_update_disk_bucket_from_gib(gib)
 }
 
 fn core_update_explicit_disk_bucket(line: &str) -> Option<&'static str> {
@@ -7256,6 +7285,22 @@ mod tests {
             ),
             ("5-10G", "5-10G")
         );
+    }
+
+    #[test]
+    fn disk_free_bucket_uses_available_bytes_from_snapshot_capacity_error() {
+        // hq-cloud emits the `have` byte count without a unit suffix. The
+        // required snapshot estimate must never be reported as free space.
+        let raw = concat!(
+            "error: insufficient free space for safety snapshot ",
+            "(need 34359738368 bytes, have 3221225472).\n",
+        );
+
+        assert_eq!(core_update_disk_free_bucket(raw), "1-5G");
+        let telemetry = CoreUpdateRescueTelemetry::from_raw(raw, 1);
+        assert_eq!(telemetry.snapshot_required_gib_bucket, "20G+");
+        assert_eq!(telemetry.snapshot_available_gib_bucket, "<5G");
+        assert_eq!(telemetry.disk_free_bucket, "1-5G");
     }
 
     #[test]

@@ -24,19 +24,39 @@
   import {
     createFirstRunCompanyApi,
     isCheckoutReturnFor,
+    requestCompanyProvisioning,
+    waitForProvisioning,
     parseInviteEmails,
     startWorkforceCheckout,
     WORKFORCE_PRICE_LABEL,
     type FirstRunCompanyPath,
     type FirstRunPlan,
     type InvokeFn,
+    type PlanLimitRefusal,
   } from '../../lib/first-run-company';
+  import PlanUpgradeAction from '../PlanUpgradeAction.svelte';
+  import { flushPendingCompanyInvites, queuePendingCompanyInvites } from '../../lib/pending-company-invites';
+  import type { ProvisioningState } from '../../lib/onboarding-company-route';
 
   export type CompanyStepEvent =
-    | { action: 'company_created'; companyUid: string; inviteCount: number; inviteFailureCount: number }
+    | {
+        action: 'company_created';
+        companyUid: string;
+        inviteCount: number;
+        inviteFailureCount: number;
+        inviteQueuedCount: number;
+      }
     | { action: 'company_create_failed'; blocked: boolean }
+    | { action: 'existing_used'; companyUid: string }
+    | { action: 'create_another' }
+    | { action: 'company_create_plan_limit' }
+    | { action: 'provisioning_wait'; companyUid: string; retry: boolean }
+    | { action: 'provisioning_ready'; companyUid: string; attemptCount: number; retry: boolean }
+    | { action: 'provisioning_failed'; companyUid: string; step: string; retry: boolean }
     | { action: 'invite_joined'; inviteCount: number }
     | { action: 'invite_join_failed' }
+    | { action: 'invite_other_email' }
+    | { action: 'switch_account' }
     | { action: 'plan_chosen'; companyUid: string; plan: FirstRunPlan }
     | { action: 'checkout_opened'; companyUid: string }
     | { action: 'checkout_failed'; companyUid: string }
@@ -44,28 +64,57 @@
 
   export type CompanyStepResult =
     | { outcome: 'created'; companyUid: string; plan: FirstRunPlan; paid: boolean }
-    | { outcome: 'joined' }
+    | { outcome: 'joined'; slugs: string[]; companyUid: string | null }
+    | { outcome: 'used_existing'; companyUid: string; slug: string | null }
     | { outcome: 'skipped' };
 
   interface Props {
-    path: Exclude<FirstRunCompanyPath, { kind: 'existing' }>;
+    path: Exclude<FirstRunCompanyPath, { kind: 'skip' }>;
     invoke: InvokeFn;
+    /** Sign out and go back to sign-in (invite sent to another email). */
+    onswitchaccount?: () => void;
+    /** Test seam: provisioning poll timing. */
+    provisioningPoll?: { intervalMs?: number; timeoutMs?: number };
     openUrl: (url: string) => Promise<void>;
     listen: (event: string, handler: (payload: unknown) => void) => Promise<() => void>;
     onTelemetry?: (event: CompanyStepEvent) => void;
     oncomplete: (result: CompanyStepResult) => void;
   }
 
-  let { path, invoke, openUrl, listen, onTelemetry, oncomplete }: Props = $props();
+  let { path, invoke, onswitchaccount, provisioningPoll, openUrl, listen, onTelemetry, oncomplete }: Props = $props();
 
-  type Phase = 'join' | 'loading' | 'details' | 'plan' | 'checkout';
+  type Phase = 'other-identity' | 'existing' | 'join' | 'loading' | 'details' | 'provisioning' | 'provision-failed' | 'plan' | 'checkout';
 
   // svelte-ignore state_referenced_locally
-  const api = createFirstRunCompanyApi(invoke);
+  const api = createFirstRunCompanyApi(invoke, { onPlanLimit: (refusal) => (planLimit = refusal) });
   const idempotencyKey = `first-run-company-${crypto.randomUUID()}`;
 
   // svelte-ignore state_referenced_locally
-  let phase = $state<Phase>(path.kind === 'join' ? 'join' : 'loading');
+  let phase = $state<Phase>(
+    path.kind === 'join'
+      ? 'join'
+      : path.kind === 'existing'
+        ? 'existing'
+        : path.kind === 'other-identity'
+          ? 'other-identity'
+          : path.kind === 'resume'
+            ? path.state === 'failed'
+              ? 'provision-failed'
+              : 'provisioning'
+            : 'loading',
+  );
+  // svelte-ignore state_referenced_locally
+  const resumed = path.kind === 'resume';
+  // svelte-ignore state_referenced_locally
+  let inviteOtherEmail = $state(path.kind === 'join' && path.decision === 'invite_other_email');
+  // svelte-ignore state_referenced_locally
+  let provisioningFailedStep = $state<string | null>(path.kind === 'resume' ? path.step : null);
+  let provisioningRetrying = $state(false);
+  /** Invites typed on the form; sent only once the company is ready. */
+  let heldInvites: Array<{ email: string; role: string }> = [];
+  let destroyed = false;
+  /** Create refused for the free plan's limit: show the upgrade prompt inline, not an error. */
+  let planLimit = $state<PlanLimitRefusal | null>(null);
   let busy = $state(false);
   let error = $state<string | null>(null);
   let note = $state<string | null>(null);
@@ -78,7 +127,8 @@
   let slugWatcher: SlugWatcher | null = null;
   let inviteText = $state('');
 
-  let companyUid = $state<string | null>(null);
+  // svelte-ignore state_referenced_locally
+  let companyUid = $state<string | null>(path.kind === 'resume' ? path.company.companyUid : null);
   let plan = $state<FirstRunPlan>('starter');
   let checkoutUrl = $state<string | null>(null);
   let stopCheckoutListen: (() => void) | null = null;
@@ -90,6 +140,14 @@
   const canCreate = $derived(
     !busy && form !== null && missing.length === 0 && !slugBlocksSubmit(slugState) && invites.invalid.length === 0,
   );
+
+  function browserStorage(): Storage | null {
+    try {
+      return typeof localStorage === 'undefined' ? null : localStorage;
+    } catch {
+      return null;
+    }
+  }
 
   function toHandle(name: string): string {
     return name
@@ -147,15 +205,27 @@
     if (!form || !canCreate) return;
     busy = true;
     error = null;
+    planLimit = null;
     const result = await submitCreateCompany(
       api,
       form,
       Object.fromEntries(Object.entries(values).map(([key, value]) => [key, value.trim()])),
-      invites.valid.map((email) => ({ email, role: 'member' })),
-      { idempotencyKey: `${idempotencyKey}-submit` },
+      // Invites wait until the company is ready (below); never sent mid-provisioning.
+      [],
+      {
+        idempotencyKey: `${idempotencyKey}-submit`,
+        // The create flow provisions the vault itself (activate-cloud); show it.
+        onPhase: (next) => {
+          if (next === 'provisioning') phase = 'provisioning';
+        },
+      },
     );
     busy = false;
     if (!result.ok) {
+      if (planLimit) {
+        onTelemetry?.({ action: 'company_create_plan_limit' });
+        return;
+      }
       error = result.reason;
       onTelemetry?.({ action: 'company_create_failed', blocked: result.blocked });
       return;
@@ -169,17 +239,123 @@
     }
     slugWatcher?.cancel();
     companyUid = result.company.companyUid;
+    heldInvites = invites.valid.map((email) => ({ email, role: 'member' }));
+    if (result.company.cloudError) {
+      // Created, but the vault setup did not finish: offer the retry, never a second create.
+      provisioningFailedStep = 'activate-cloud';
+      onTelemetry?.({ action: 'provisioning_failed', companyUid, step: 'activate-cloud', retry: false });
+      phase = 'provision-failed';
+      return;
+    }
+    await awaitProvisioning(false);
+  }
+
+  /**
+   * "Setting up your company…": poll until hq-pro says the vault is ready. A
+   * retry asks hq-pro to provision again (idempotent for the same company);
+   * it never creates a second company.
+   */
+  async function awaitProvisioning(retry: boolean): Promise<void> {
+    if (!companyUid) return;
+    const uid = companyUid;
+    phase = 'provisioning';
+    error = null;
+    provisioningFailedStep = null;
+    provisioningRetrying = retry;
+    onTelemetry?.({ action: 'provisioning_wait', companyUid: uid, retry });
+    let state: ProvisioningState = { status: 'pending' };
+    if (retry) state = await requestCompanyProvisioning(invoke, uid);
+    let attempts = 0;
+    if (state.status === 'pending') {
+      state = await waitForProvisioning({
+        invoke,
+        companyUid: uid,
+        intervalMs: provisioningPoll?.intervalMs,
+        timeoutMs: provisioningPoll?.timeoutMs,
+        cancelled: () => destroyed,
+        onPoll: (_state, attempt) => (attempts = attempt),
+      });
+    }
+    if (destroyed) return;
+    if (state.status !== 'ready') {
+      const step = state.status === 'failed' ? state.step : 'timeout';
+      provisioningFailedStep = step;
+      onTelemetry?.({ action: 'provisioning_failed', companyUid: uid, step, retry });
+      phase = 'provision-failed';
+      return;
+    }
+    onTelemetry?.({ action: 'provisioning_ready', companyUid: uid, attemptCount: attempts, retry });
+    if (resumed) {
+      // Invites queued by an earlier run go out now that the company is ready.
+      void flushPendingCompanyInvites(browserStorage(), api).catch((err) =>
+        console.warn('onboarding: sending queued invites failed', err),
+      );
+    } else {
+      await sendHeldInvites(uid);
+    }
+    phase = 'plan';
+  }
+
+  async function sendHeldInvites(uid: string): Promise<void> {
+    const queued = heldInvites;
+    heldInvites = [];
+    const failedEmails: string[] = [];
+    let sent = 0;
+    if (queued.length > 0) {
+      if (!queuePendingCompanyInvites(browserStorage(), uid, queued)) {
+        failedEmails.push(...queued.map((invite) => invite.email));
+      } else {
+        try {
+          const report = await flushPendingCompanyInvites(browserStorage(), api);
+          sent = report.sent.filter((entry) => entry.companyUid === uid).reduce((sum, entry) => sum + entry.count, 0);
+          failedEmails.push(...report.failed.filter((entry) => entry.companyUid === uid).map((entry) => entry.email));
+        } catch (err) {
+          console.warn('onboarding: sending invites failed', err);
+          failedEmails.push(...queued.map((invite) => invite.email));
+        }
+      }
+    }
+    const stillQueued = Math.max(0, queued.length - sent - failedEmails.length);
     onTelemetry?.({
       action: 'company_created',
-      companyUid,
-      inviteCount: invites.valid.length,
-      inviteFailureCount: result.company.inviteFailures.length,
+      companyUid: uid,
+      inviteCount: queued.length,
+      inviteFailureCount: failedEmails.length,
+      inviteQueuedCount: stillQueued,
     });
-    note =
-      result.company.inviteFailures.length > 0
-        ? `Some invites did not go out: ${result.company.inviteFailures.map((failure) => failure.email).join(', ')}. You can invite them again from the Team tab.`
-        : null;
-    phase = 'plan';
+    const notes: string[] = [];
+    if (stillQueued > 0) {
+      notes.push('HQ will send the rest of your invites shortly.');
+    }
+    if (failedEmails.length > 0) {
+      notes.push(
+        `Some invites did not go out: ${failedEmails.join(', ')}. You can invite them again from the Team tab.`,
+      );
+    }
+    note = notes.length > 0 ? notes.join(' ') : null;
+  }
+
+  /** Leave before the company is ready: the app sends the held invites once it is. */
+  function skipWhileProvisioning(): void {
+    if (companyUid && heldInvites.length > 0) queuePendingCompanyInvites(browserStorage(), companyUid, heldInvites);
+    heldInvites = [];
+    oncomplete({ outcome: 'skipped' });
+  }
+
+  function useExisting(): void {
+    if (path.kind !== 'existing') return;
+    onTelemetry?.({ action: 'existing_used', companyUid: path.company.companyUid });
+    oncomplete({ outcome: 'used_existing', companyUid: path.company.companyUid, slug: path.company.slug });
+  }
+
+  function createAnother(): void {
+    onTelemetry?.({ action: 'create_another' });
+    void loadForm();
+  }
+
+  function switchAccount(): void {
+    onTelemetry?.({ action: 'switch_account' });
+    onswitchaccount?.();
   }
 
   async function confirmPlan(): Promise<void> {
@@ -251,8 +427,19 @@
         onTelemetry?.({ action: 'invite_join_failed' });
         return;
       }
+      if (result.claimedSlugs.length === 0 && /^No email-keyed pending invite/.test(result.message ?? '')) {
+        // The server holds no invite for this address: it went to another one.
+        inviteOtherEmail = true;
+        onTelemetry?.({ action: 'invite_other_email' });
+        return;
+      }
       onTelemetry?.({ action: 'invite_joined', inviteCount: result.claimedSlugs.length });
-      oncomplete({ outcome: 'joined' });
+      const joinedInvite =
+        path.kind === 'join'
+          ? (path.invites.find((invite) => invite.slug !== null && result.claimedSlugs.includes(invite.slug)) ??
+            (path.invites.length === 1 ? path.invites[0] : undefined))
+          : undefined;
+      oncomplete({ outcome: 'joined', slugs: result.claimedSlugs, companyUid: joinedInvite?.companyUid ?? null });
     } catch (err) {
       console.warn('onboarding: accepting the invite failed', err);
       error = typeof err === 'string' ? err : 'HQ could not accept the invite. Try again or skip for now.';
@@ -266,7 +453,18 @@
     if (path.kind === 'create' && phase === 'loading' && !form) void loadForm();
   });
 
+  let resumeStarted = false;
+  $effect(() => {
+    if (path.kind === 'resume' && path.state === 'pending' && !resumeStarted) {
+      resumeStarted = true;
+      // A company left by an older build may never have been provisioned:
+      // ask again (idempotent), then wait.
+      void awaitProvisioning(true);
+    }
+  });
+
   onDestroy(() => {
+    destroyed = true;
     slugWatcher?.cancel();
     stopCheckoutListen?.();
   });
@@ -280,32 +478,126 @@
 </script>
 
 <div class="follow-on on" data-testid="onboarding-company">
-  {#if phase === 'join' && path.kind === 'join'}
-    <h2 class="h" id="onboarding-title-company" tabindex="-1" data-scene-heading>You have an invite</h2>
-    <p class="body">
-      {#if path.invites.length === 1}
-        You were invited to {path.invites[0]!.displayName}. Join to see their files and work with the team.
-      {:else}
-        You were invited to {path.invites.length} companies. Join them to see their files and work with each team.
-      {/if}
+  {#if phase === 'other-identity' && path.kind === 'other-identity'}
+    <h2 class="h" id="onboarding-title-company" tabindex="-1" data-scene-heading>You may already have a company</h2>
+    <p class="body" data-testid="onboarding-company-other-account">
+      Your company{path.other.companyName ? ` ${path.other.companyName}` : ''} is on {path.other.maskedEmail}.{#if path.signedInEmail} You're signed in as {path.signedInEmail}.{/if} Switch account?
     </p>
-    {#if error}<p class="note inline-note warning" role="alert" data-testid="onboarding-company-error">{error}</p>{/if}
     <div class="btns split">
       <button
         class="btn btn-primary"
         type="button"
-        data-testid="onboarding-company-join"
-        disabled={busy}
-        aria-busy={busy}
-        onclick={() => void joinInvite(path.invites.length === 1 ? path.invites[0]!.slug : null)}
-      >{busy ? 'Joining…' : path.invites.length === 1 ? `Join ${path.invites[0]!.displayName}` : 'Join all'}</button>
+        data-testid="onboarding-company-switch-account"
+        onclick={switchAccount}
+      >Switch account</button>
       <button
         class="btn btn-secondary"
         type="button"
-        data-testid="onboarding-company-create-instead"
-        disabled={busy}
-        onclick={() => void loadForm()}
-      >Make my own company</button>
+        data-testid="onboarding-company-create-here"
+        onclick={createAnother}
+      >Create a new company here</button>
+    </div>
+  {:else if phase === 'existing' && path.kind === 'existing'}
+    <h2 class="h" id="onboarding-title-company" tabindex="-1" data-scene-heading>You already have a company</h2>
+    <p class="body">
+      {path.company.name} is ready in HQ. Keep working there, or make a separate company.
+    </p>
+    <div class="btns split">
+      <button
+        class="btn btn-primary"
+        type="button"
+        data-testid="onboarding-company-use-existing"
+        onclick={useExisting}
+      >Use {path.company.name}</button>
+      <button
+        class="btn btn-secondary"
+        type="button"
+        data-testid="onboarding-company-create-another"
+        onclick={createAnother}
+      >Create another</button>
+    </div>
+  {:else if phase === 'join' && path.kind === 'join'}
+    <h2 class="h" id="onboarding-title-company" tabindex="-1" data-scene-heading>You have an invite</h2>
+    {#if inviteOtherEmail}
+      <p class="body" data-testid="onboarding-company-invite-other-email">
+        Your invite was sent to a different email.{#if path.signedInEmail} You're signed in as {path.signedInEmail}.{/if} Switch account?
+      </p>
+      <div class="btns split">
+        <button
+          class="btn btn-primary"
+          type="button"
+          data-testid="onboarding-company-switch-account"
+          onclick={switchAccount}
+        >Switch account</button>
+        <button
+          class="btn btn-secondary"
+          type="button"
+          data-testid="onboarding-company-skip"
+          onclick={() => oncomplete({ outcome: 'skipped' })}
+        >Skip for now</button>
+      </div>
+    {:else if path.decision === 'invite_expired'}
+      <p class="body" data-testid="onboarding-company-invite-expired">
+        Your invite to {path.invites[0]!.name} has expired. Ask {path.invites[0]!.inviter ?? 'the person who invited you'} to resend it, then come back here.
+      </p>
+      <div class="btns split">
+        <button
+          class="btn btn-secondary"
+          type="button"
+          data-testid="onboarding-company-skip"
+          onclick={() => oncomplete({ outcome: 'skipped' })}
+        >Skip for now</button>
+      </div>
+    {:else}
+      <p class="body">
+        {#if path.invites.length === 1}
+          You were invited to {path.invites[0]!.name}. Join to see their files and work with the team.
+        {:else}
+          You were invited to {path.invites.length} companies. Join them to see their files and work with each team.
+        {/if}
+      </p>
+      {#if error}<p class="note inline-note warning" role="alert" data-testid="onboarding-company-error">{error}</p>{/if}
+      <div class="btns split">
+        <button
+          class="btn btn-primary"
+          type="button"
+          data-testid="onboarding-company-join"
+          disabled={busy}
+          aria-busy={busy}
+          onclick={() => void joinInvite(path.invites.length === 1 ? path.invites[0]!.slug : null)}
+        >{busy ? 'Joining…' : path.invites.length === 1 ? `Join ${path.invites[0]!.name}` : 'Join all'}</button>
+        <button
+          class="btn btn-secondary"
+          type="button"
+          data-testid="onboarding-company-skip"
+          disabled={busy}
+          onclick={() => oncomplete({ outcome: 'skipped' })}
+        >Skip for now</button>
+      </div>
+    {/if}
+  {:else if phase === 'provisioning'}
+    <h2 class="h" id="onboarding-title-company" tabindex="-1" data-scene-heading>Setting up your company…</h2>
+    <p class="note inline-note" role="status" aria-live="polite" data-testid="onboarding-company-provisioning">
+      {provisioningRetrying ? 'Trying setup again. This can take a minute.' : 'HQ is creating your company’s storage. This can take a minute.'}
+    </p>
+  {:else if phase === 'provision-failed'}
+    <h2 class="h" id="onboarding-title-company" tabindex="-1" data-scene-heading>Setting up your company…</h2>
+    <p class="note inline-note warning" role="alert" data-testid="onboarding-company-provisioning-failed">
+      Setup did not finish{provisioningFailedStep && provisioningFailedStep !== 'unknown' ? ` (step: ${provisioningFailedStep})` : ''}. Your company is saved; try setup again.
+    </p>
+    <div class="btns split">
+      <button
+        class="btn btn-primary"
+        type="button"
+        data-testid="onboarding-company-provisioning-retry"
+        onclick={() => void awaitProvisioning(true)}
+      >Try again</button>
+      <button
+        class="btn btn-secondary"
+        type="button"
+        data-testid="onboarding-company-skip"
+        onclick={skipWhileProvisioning}
+      >Skip for now</button>
     </div>
   {:else if phase === 'loading'}
     <h2 class="h" id="onboarding-title-company" tabindex="-1" data-scene-heading>Name your company</h2>
@@ -314,6 +606,18 @@
     <h2 class="h" id="onboarding-title-company" tabindex="-1" data-scene-heading>Name your company</h2>
     <p class="body">Your company is where your team shares files, agents and work in HQ.</p>
     {#if error}<p class="note inline-note warning" role="alert" data-testid="onboarding-company-error">{error}</p>{/if}
+    {#if planLimit}
+      <p class="note inline-note" role="status" data-testid="onboarding-company-plan-limit">
+        {planLimit.message}
+        {#if planLimit.upgradeUrl}
+          <PlanUpgradeAction
+            upgradeUrl={planLimit.upgradeUrl}
+            onUpgrade={(url) => openUrl(url)}
+            testId="onboarding-company-plan-upgrade"
+          />
+        {/if}
+      </p>
+    {/if}
     {#if form}
       <form
         class="invite-form company-form"

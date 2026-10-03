@@ -25,6 +25,7 @@ import {
   type NotificationsFeedState,
   verbForKind,
 } from "./notifications-model";
+import { classifyNotificationAck, composeLiveNotifications } from "./live-notifications";
 
 const NOW = Date.parse("2026-08-12T15:00:00.000Z");
 
@@ -509,5 +510,54 @@ describe("reduceFeedAppended (pagination)", () => {
       nextCursor: null,
     });
     expect(second.items).toBe(first.items);
+  });
+});
+
+describe("plan_limit rows (paused uploads, desktop-local)", () => {
+  // Built in parts, the way the desktop tests spell billing links.
+  const upgradeUrl = "https://hq.computer" + "/companies/" + "acme" + "/billing?entrySurface=desktop_limit";
+  const row = {
+    id: "local:plan-limit:acme:1-n1",
+    type: "plan_limit",
+    status: "unread",
+    createdAt: "2026-10-02T18:19:00.000Z",
+    actorName: "HQ",
+    title: "New files are paused for acme.",
+    body: "This company reached its plan limit. Open to upgrade the plan.",
+    context: "This company reached its plan limit. Open to upgrade the plan.",
+    targetRef: upgradeUrl,
+  };
+
+  it("maps to its own kind with the title as the line", () => {
+    const item = mapNotificationRow(row)!;
+    expect(item.displayKind).toBe("plan_limit");
+    expect(item.typeIcon).toBe("flag");
+    expect(item.verbText).toBe("New files are paused for acme.");
+    expect(item.status).toBe("unread");
+  });
+
+  it("opens the approved upgrade page through the host", () => {
+    const item = mapNotificationRow(row)!;
+    expect(notificationDestination(item)).toEqual({
+      kind: "external",
+      id: row.id,
+      url: upgradeUrl,
+    });
+  });
+
+  it("has nowhere to go without an https upgrade link", () => {
+    expect(notificationDestination(mapNotificationRow({ ...row, targetRef: null })!)).toEqual({
+      kind: "none",
+    });
+    expect(
+      notificationDestination(mapNotificationRow({ ...row, targetRef: "/messages/prs_x" })!),
+    ).toEqual({ kind: "none" });
+  });
+
+  it("composes into the live feed as a local unread row", () => {
+    const feed = composeLiveNotifications({ store: { notifications: [], unreadCount: 0 }, local: [row] });
+    expect(feed.notifications.map((n) => n.id)).toEqual([row.id]);
+    expect(feed.unreadCount).toBe(1);
+    expect(classifyNotificationAck(row.id)).toEqual({ kind: "local", id: row.id });
   });
 });

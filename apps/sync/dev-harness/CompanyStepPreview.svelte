@@ -1,7 +1,8 @@
 <script lang="ts">
   /**
    * Preview of the first-run company step (?view=onboarding-company).
-   * ?scenario=create (default) | join | paused. Uses its own in-page answers
+   * ?scenario=create (default) | join | paused | existing | other-email |
+   * expired | slow | provisioning-failed | resume | other-account | plan-limit. Uses its own in-page answers
    * for the server so every screen of the step can be reached in a browser:
    * name the company, pick a plan, open checkout, and the checkout return
    * (the harness emits `messages:open-setup` for "Simulate checkout return").
@@ -44,6 +45,9 @@
   };
 
   const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
+  let entityPolls = 0;
+  let provisioned = false;
+  let activations = 0;
   (window as Window & { __companyStepCalls?: typeof calls }).__companyStepCalls = calls;
 
   const invoke = (async (command: string, args?: Record<string, unknown>) => {
@@ -51,6 +55,9 @@
     switch (command) {
       case 'run_card_action':
         if (args?.cardId === 'companies_summary') throw new Error('[not_found] Request failed (status 404)');
+        if (scenario === 'plan-limit' && args?.cardId === 'card_create_company') {
+          throw new Error('[plan-limit url=https://hq.computer/billing/upgrade] Starter includes one company.');
+        }
         return { state: 'done', companyUid: 'cmp_preview', companyChannelId: 'ch_preview' };
       case 'fetch_channel':
         return {
@@ -71,8 +78,31 @@
       case 'run_company_tab_action':
         return { state: 'done' };
       case 'claim_pending_company_invite':
-        return { ok: true, claimedSlugs: ['northwind'], message: 'Joined' };
+        return scenario === 'other-email'
+          ? { ok: true, claimedSlugs: [], message: 'No email-keyed pending invite for northwind.' }
+          : { ok: true, claimedSlugs: ['northwind'], message: 'Joined' };
+      case 'activate_company_cloud':
+        activations += 1;
+        // The create flow activates once; a retry is the second call.
+        if (scenario !== 'provisioning-failed' || activations > 1) provisioned = activations > 1;
+        return { activated: true };
       case 'hq_pro_fetch':
+        if (typeof args?.url === 'string' && args.url.startsWith('/entity/')) {
+          entityPolls += 1;
+          if (scenario === 'provisioning-failed' && !provisioned) {
+            return {
+              status: 200,
+              body: JSON.stringify({ entity: { uid: 'cmp_preview', provisioningStatus: 'failed', provisioningFailedStep: 'kms-create' } }),
+            };
+          }
+          if ((scenario === 'slow' || scenario === 'resume') && entityPolls < 4 && !provisioned) {
+            return { status: 200, body: JSON.stringify({ entity: { uid: 'cmp_preview', status: 'provisioning' } }) };
+          }
+          return {
+            status: 200,
+            body: JSON.stringify({ entity: { status: 'active', bucketName: 'hq-vault-preview' } }),
+          };
+        }
         if (scenario === 'paused') {
           return { status: 503, body: JSON.stringify({ code: 'team_signup_disabled' }) };
         }
@@ -82,10 +112,41 @@
     }
   }) as unknown as InvokeFn;
 
-  const path: Exclude<FirstRunCompanyPath, { kind: 'existing' }> =
-    scenario === 'join'
-      ? { kind: 'join', invites: [{ slug: 'northwind', displayName: 'Northwind' }] }
-      : { kind: 'create' };
+  const northwind = {
+    companyUid: 'cmp_northwind',
+    slug: 'northwind',
+    name: 'Northwind',
+    inviter: 'Pat',
+    inviteeEmail: null,
+    expired: scenario === 'expired',
+  };
+  const mine = {
+    companyUid: 'cmp_preview',
+    name: 'Preview Co',
+    slug: 'preview',
+    role: 'owner',
+    paid: false,
+    bucketName: null,
+    provisioning: 'pending' as const,
+    provisioningFailedStep: null,
+  };
+  const path: Exclude<FirstRunCompanyPath, { kind: 'skip' }> =
+    scenario === 'join' || scenario === 'other-email'
+      ? { kind: 'join', decision: 'join_invite', invites: [northwind], signedInEmail: 'me@preview.test' }
+      : scenario === 'expired'
+        ? { kind: 'join', decision: 'invite_expired', invites: [northwind], signedInEmail: 'me@preview.test' }
+        : scenario === 'existing'
+          ? { kind: 'existing', decision: 'offer_existing', company: { ...mine, bucketName: 'b', provisioning: null }, companies: [] }
+          : scenario === 'resume'
+            ? { kind: 'resume', decision: 'resume_setup', company: mine, state: 'pending', step: null }
+            : scenario === 'other-account'
+              ? {
+                  kind: 'other-identity',
+                  decision: 'company_other_account',
+                  other: { maskedEmail: 'c•••@acme.com', companyName: 'Acme' },
+                  signedInEmail: 'me@preview.test',
+                }
+              : { kind: 'create', decision: 'create' };
 
   let events = $state<CompanyStepEvent[]>([]);
   let result = $state<CompanyStepResult | null>(null);
@@ -100,6 +161,8 @@
         <CompanyStep
           {path}
           {invoke}
+          provisioningPoll={{ intervalMs: 150, timeoutMs: 5_000 }}
+          onswitchaccount={() => (result = { outcome: 'skipped' })}
           openUrl={(url) => open(url)}
           listen={(event, handler) => listen(event, (message) => handler(message.payload))}
           onTelemetry={(event) => (events = [...events, event])}

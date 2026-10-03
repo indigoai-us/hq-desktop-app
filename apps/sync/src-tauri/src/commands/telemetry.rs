@@ -855,12 +855,21 @@ const ALLOWED_DESKTOP_PROPERTY_KEYS: &[&str] = &[
     "errorOperation",
     "errorIoKind",
     "errorCode",
+    "statusCode",
     "deferralCount",
     "firstDeferralAgeSeconds",
     "lockTimeoutSeconds",
     "holdReason",
     "requiredGitVersion",
     "detectedGitVersion",
+    "found",
+    // Company step route decision + provisioning + self-heal (look before create).
+    "existingCompanies",
+    "paidCompany",
+    "pendingInvites",
+    "decision",
+    "provisioningStep",
+    "selfHeal",
 ];
 
 const SYMLINK_ERROR_OPERATION_VALUES: &[&str] = &[
@@ -1055,6 +1064,11 @@ fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
                     .as_u64()
                     .filter(|code| *code <= 65_535)
                     .map(|_| Value::Number(number.clone())),
+                ("statusCode", Value::Number(number)) => number
+                    .as_u64()
+                    .filter(|status| (100..=599).contains(status))
+                    .map(|_| Value::Number(number.clone())),
+                ("statusCode", _) => None,
                 ("detectedSourceSet", Value::String(value)) => Some(Value::String(
                     normalize_closed_label(&value, CONNECTOR_IMPORT_SOURCE_SET_VALUES),
                 )),
@@ -1066,7 +1080,13 @@ fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
                 }
                 (_, Value::Bool(_)) => matches!(
                     key.as_str(),
-                    "enabled" | "autoUpdateEnabled" | "eligible" | "versionBehind" | "npxResolved"
+                    "enabled"
+                        | "autoUpdateEnabled"
+                        | "eligible"
+                        | "versionBehind"
+                        | "npxResolved"
+                        | "found"
+                        | "paidCompany"
                 )
                 .then_some(value),
                 (_, Value::Number(n)) => {
@@ -1081,6 +1101,16 @@ fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
     }
 
     Value::Object(out)
+}
+
+/// Onboarding rows that may name their company: the company step, and the
+/// missing-bucket self-heal (any step).
+fn properties_company_scoped(input: Option<&Map<String, Value>>) -> bool {
+    let Some(input) = input else {
+        return false;
+    };
+    input.get("step").and_then(Value::as_str) == Some("company")
+        || input.get("selfHeal").and_then(Value::as_str).is_some()
 }
 
 fn sanitize_post_ready_action_properties(properties: Option<Value>) -> Value {
@@ -1115,6 +1145,19 @@ fn sanitize_post_ready_action_properties(properties: Option<Value>) -> Value {
     Value::Object(out)
 }
 
+/// Tag every hq-pro desktop row with the website visitor id the CDP mirror
+/// uses, so the web→desktop funnel joins on one id. Only a safe label is
+/// attached; a caller-supplied `anonId` is never trusted.
+fn attach_anon_id(properties: &mut Value, anon_id: Option<String>) {
+    let Some(object) = properties.as_object_mut() else {
+        return;
+    };
+    object.remove("anonId");
+    if let Some(anon) = anon_id.filter(|id| is_safe_label_value(id)) {
+        object.insert("anonId".to_string(), Value::String(anon));
+    }
+}
+
 fn build_desktop_telemetry_event(
     event_name: String,
     properties: Option<Value>,
@@ -1133,16 +1176,31 @@ fn build_desktop_telemetry_event(
             })
             .unwrap_or(false);
     let is_post_ready_action = event_name == "desktop_post_ready_action";
+    let raw_company_scope = properties.as_ref().and_then(Value::as_object).cloned();
     let mut properties = if is_post_ready_action {
         sanitize_post_ready_action_properties(properties)
     } else {
         sanitize_desktop_properties(properties)
     };
+    // The company step (route decision, provisioning, join) and the first-sync
+    // self-heal carry the company they are about; hq-pro takes it as the
+    // event-level `companyUid` (and checks the caller is a member).
+    let company_scoped_onboarding_row = event_name == "desktop_onboarding_step"
+        && properties_company_scoped(raw_company_scope.as_ref());
     let company_uid = if is_post_ready_action {
         properties
             .get("companyUid")
             .and_then(Value::as_str)
             .filter(|value| value.starts_with("cmp_") && value.len() <= 128)
+            .map(str::to_string)
+    } else if company_scoped_onboarding_row {
+        raw_company_scope
+            .as_ref()
+            .and_then(|input| input.get("companyUid"))
+            .and_then(Value::as_str)
+            .filter(|value| {
+                value.starts_with("cmp_") && value.len() <= 128 && is_safe_label_value(value)
+            })
             .map(str::to_string)
     } else {
         None
@@ -1187,9 +1245,16 @@ fn build_desktop_telemetry_event(
     if is_post_ready_action {
         properties["os"] = Value::String(std::env::consts::OS.to_string());
     }
-    let install_attempt_id = (event_name == "desktop_setup_completed")
-        .then(crate::commands::first_run::install_attempt_id)
-        .flatten();
+    attach_anon_id(
+        &mut properties,
+        crate::commands::cdp_mirror::current_anon_id(),
+    );
+    let install_attempt_id = matches!(
+        event_name.as_str(),
+        "desktop_setup_completed" | "desktop_onboarding_step"
+    )
+    .then(crate::commands::first_run::install_attempt_id)
+    .flatten();
     RawTelemetryEvent {
         event_name,
         app: "hq-desktop-app".to_string(),
@@ -1297,6 +1362,7 @@ const OPERATIONAL_DESKTOP_EVENT_NAMES: &[&str] = &[
     "desktop_auto_update_post_cap_outcome",
     "oauth_signin_succeeded",
     "telemetry_preference_changed",
+    "install_tag_read",
 ];
 
 fn is_operational_desktop_event_name(event_name: &str) -> bool {
@@ -2755,6 +2821,61 @@ mod codex_telemetry_tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
+    fn company_step_route_row_keeps_decision_counts_and_lifts_company_uid() {
+        let event = build_desktop_telemetry_event(
+            "desktop_onboarding_step".to_string(),
+            Some(json!({
+                "step": "company",
+                "action": "started",
+                "outcome": "joined_invite",
+                "decision": "joined_invite",
+                "existingCompanies": 0,
+                "paidCompany": false,
+                "pendingInvites": 1,
+                "companyUid": "cmp_company-1",
+                "email": "ada@example.com",
+            })),
+            Some("session-1".to_string()),
+            None,
+            "no-consent",
+        );
+        assert_eq!(event.company_uid.as_deref(), Some("cmp_company-1"));
+        assert_eq!(event.properties["decision"], "joined_invite");
+        assert_eq!(event.properties["existingCompanies"], 0);
+        assert_eq!(event.properties["paidCompany"], false);
+        assert_eq!(event.properties["pendingInvites"], 1);
+        assert!(event.properties.get("email").is_none());
+        assert!(event.properties.get("companyUid").is_none());
+    }
+
+    #[test]
+    fn self_heal_row_lifts_company_uid_but_other_steps_do_not() {
+        let heal = build_desktop_telemetry_event(
+            "desktop_onboarding_step".to_string(),
+            Some(json!({
+                "step": "first-folder-sync",
+                "action": "started",
+                "selfHeal": "triggered",
+                "companyUid": "cmp_company-2",
+            })),
+            None,
+            None,
+            "no-consent",
+        );
+        assert_eq!(heal.company_uid.as_deref(), Some("cmp_company-2"));
+        assert_eq!(heal.properties["selfHeal"], "triggered");
+
+        let other = build_desktop_telemetry_event(
+            "desktop_onboarding_step".to_string(),
+            Some(json!({"step": "welcome-signin", "action": "entered", "companyUid": "cmp_x"})),
+            None,
+            None,
+            "no-consent",
+        );
+        assert!(other.company_uid.is_none());
+    }
+
+    #[test]
     fn post_ready_action_event_keeps_only_join_fields_and_server_environment() {
         let event = build_desktop_telemetry_event(
             "desktop_post_ready_action".to_string(),
@@ -2868,6 +2989,28 @@ mod codex_telemetry_tests {
         assert!(unsafe_values.get("errorOperation").is_none());
         assert!(unsafe_values.get("errorIoKind").is_none());
         assert!(unsafe_values.get("errorCode").is_none());
+    }
+
+    #[test]
+    fn invite_step_failure_keeps_error_kind_and_bounded_http_status() {
+        let sanitized = sanitize_desktop_properties(Some(json!({
+            "step": "invite-teammate",
+            "action": "failed",
+            "errorKind": "plan_limit",
+            "statusCode": 402,
+            "inviteeEmail": "person@example.com"
+        })));
+        assert_eq!(sanitized["errorKind"], "plan_limit");
+        assert_eq!(sanitized["statusCode"], 402);
+        assert!(sanitized.get("inviteeEmail").is_none());
+
+        for bad in [json!(99), json!(600), json!(-1), json!("409")] {
+            let sanitized = sanitize_desktop_properties(Some(json!({
+                "step": "invite-teammate",
+                "statusCode": bad
+            })));
+            assert!(sanitized.get("statusCode").is_none());
+        }
     }
 
     #[test]
@@ -3019,12 +3162,20 @@ mod codex_telemetry_tests {
                 "errorOperation",
                 "errorIoKind",
                 "errorCode",
+                "statusCode",
                 "deferralCount",
                 "firstDeferralAgeSeconds",
                 "lockTimeoutSeconds",
                 "holdReason",
                 "requiredGitVersion",
                 "detectedGitVersion",
+                "found",
+                "existingCompanies",
+                "paidCompany",
+                "pendingInvites",
+                "decision",
+                "provisioningStep",
+                "selfHeal",
             ]
         );
         for key in ALLOWED_DESKTOP_PROPERTY_KEYS {
@@ -3096,6 +3247,10 @@ mod codex_telemetry_tests {
             crate::app_version::current()
         );
         assert_eq!(event.properties["step"], "connector-import");
+        assert_eq!(
+            serde_json::to_value(&event).unwrap()["installAttemptId"],
+            install_attempt_id
+        );
 
         let completed = build_desktop_telemetry_event(
             "desktop_setup_completed".to_string(),
@@ -3534,6 +3689,8 @@ mod codex_telemetry_tests {
         let home = setup_home();
         write_menubar(home.path(), r#"{"machineId":"mid-desktop-on"}"#);
         std::env::set_var("HOME", home.path());
+        let install_attempt_id = crate::commands::first_run::install_attempt_id()
+            .expect("the persisted install attempt id is available");
 
         let vault = VaultClient::new(server.uri(), "test-jwt");
         let result = emit_desktop_operational_telemetry_with_vault(
@@ -3574,6 +3731,7 @@ mod codex_telemetry_tests {
         assert_eq!(event["schemaVersion"], 1);
         assert_eq!(event["occurredAt"], "2026-08-31T10:00:00.000Z");
         assert_eq!(event["sessionId"], "11111111-1111-4111-8111-111111111111");
+        assert_eq!(event["installAttemptId"], install_attempt_id);
 
         let allowed_event_keys = [
             "eventName",
@@ -3584,6 +3742,7 @@ mod codex_telemetry_tests {
             "schemaVersion",
             "idempotencyKey",
             "sessionId",
+            "installAttemptId",
             "properties",
         ];
         let event_keys = event.as_object().unwrap();
@@ -6962,5 +7121,37 @@ mod codex_telemetry_tests {
         let (row, offset, _) = scanner.next_bounded(record.len() as u64).unwrap();
         assert_eq!(row.unwrap()["model"], "final-model");
         assert_eq!(offset, record.len() as u64);
+    }
+
+    #[test]
+    fn anon_id_is_attached_only_as_a_safe_label() {
+        let mut props = serde_json::json!({ "step": "x", "anonId": "spoofed" });
+        attach_anon_id(&mut props, Some("vyg-abc".into()));
+        assert_eq!(props["anonId"], "vyg-abc");
+        let mut props = serde_json::json!({ "anonId": "spoofed" });
+        attach_anon_id(&mut props, Some("bad id/with?url".into()));
+        assert!(props.get("anonId").is_none());
+        let mut props = serde_json::json!({});
+        attach_anon_id(&mut props, None);
+        assert!(props.get("anonId").is_none());
+    }
+
+    #[test]
+    fn install_tag_read_is_operational_and_keeps_only_labels() {
+        assert!(is_operational_desktop_event_name("install_tag_read"));
+        let event = build_desktop_telemetry_event(
+            "install_tag_read".into(),
+            Some(serde_json::json!({
+                "found": true,
+                "source": "whereFroms",
+                "url": "https://x.com/HQ.dmg?aid=vyg-1&secret=1"
+            })),
+            None,
+            None,
+            "no-consent",
+        );
+        assert_eq!(event.properties["found"], true);
+        assert_eq!(event.properties["source"], "whereFroms");
+        assert!(event.properties.get("url").is_none());
     }
 }
