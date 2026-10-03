@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  brainListView,
   filterPolicies,
   filterSkills,
   filterWorkers,
@@ -109,5 +110,21 @@ describe("US-028 brain model", () => {
       },
     ];
     expect(filterPolicies(policies, "hard", "")).toHaveLength(0);
+  });
+});
+
+describe("QA-100 brain list load states", () => {
+  it("shows a skeleton and no count while loading without cached rows", () => {
+    expect(brainListView("not-loaded", 0)).toEqual({ body: "skeleton", count: null });
+    expect(brainListView("loading", 0)).toEqual({ body: "skeleton", count: null });
+  });
+
+  it("shows cached rows and their count while loading", () => {
+    expect(brainListView("loading", 825)).toEqual({ body: "rows", count: 825 });
+  });
+
+  it("shows the empty state with a zero only once loaded", () => {
+    expect(brainListView("loaded", 0)).toEqual({ body: "empty", count: 0 });
+    expect(brainListView("loaded", 3)).toEqual({ body: "rows", count: 3 });
   });
 });
