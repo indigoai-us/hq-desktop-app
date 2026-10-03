@@ -192,6 +192,10 @@ jobs:
       - name: Install JS deps
         run: pnpm install --no-frozen-lockfile
 
+      - name: Desktop referral core tests
+        working-directory: apps/sync/src-tauri
+        run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml desktop_referral::tests
+
       # HQ-DESKTOP-4X. The pure fault-attribution core: the faulting-binary
       # allow-list, the WER Application Error 1000 XML parse, the pid/window/
       # no_record/unavailable provenance decision, and the unmatched-stderr shape
