@@ -11,7 +11,6 @@ import type { AdapterPromise, Json } from "@hq/platform";
 import {
   OTHER_BAND,
   dayTotal,
-  formatTokens,
   listRateUsd,
   type DayStack,
   type ModelId,
@@ -19,6 +18,7 @@ import {
   type TelemetryRange,
   type TelemetrySnapshot,
 } from "./telemetry-model.js";
+import { compactNumber } from "../common/compact-number.js";
 
 export interface MyTelemetryApi {
   getMyTelemetry?(from: string, to: string): AdapterPromise<Json>;
@@ -133,7 +133,7 @@ function unattributedNote(hiddenModels: string[], noModelTokens: number): string
     const noun = hiddenModels.length === 1 ? "model" : "models";
     parts.push(`Includes ${hiddenModels.length} ${noun} not shown above: ${hiddenModels.join(", ")}.`);
   }
-  if (noModelTokens > 0) parts.push(`${formatTokens(noModelTokens)} tokens were recorded without a model.`);
+  if (noModelTokens > 0) parts.push(`${compactNumber(noModelTokens)} tokens were recorded without a model.`);
   return parts.join(" ");
 }
 
@@ -271,18 +271,18 @@ export function snapshotFromMe(body: unknown, range: TelemetryRange): TelemetryS
     subtitle: "you, across every company",
     sessions,
     sessionsDelta: "",
-    tokensLabel: formatTokens(tokenSum),
+    tokensLabel: compactNumber(tokenSum),
     tokensDelta: "",
     modelMix,
     storiesShipped: shipped,
     deploys,
     distinctSkills: skillEntries.length,
     medianGap: "—",
-    perDay: formatTokens(Math.round(tokenSum / Math.max(1, dayCount))),
+    perDay: compactNumber(Math.round(tokenSum / Math.max(1, dayCount))),
     perSession: "—",
     cacheReadShare: `${pct(sum.cacheReadTokens, tokenSum)}%`,
     listCostUsd,
-    peakLabel: peak > 0 ? `peak ${formatTokens(peak)}` : "",
+    peakLabel: peak > 0 ? `peak ${compactNumber(peak)}` : "",
     days,
     dayLabels,
     sessionsRows: [],
@@ -294,10 +294,10 @@ export function snapshotFromMe(body: unknown, range: TelemetryRange): TelemetryS
     unattributed,
     stackBands,
     io: {
-      input: formatTokens(sum.inputTokens),
-      cacheRead: formatTokens(sum.cacheReadTokens),
-      cacheWrite: formatTokens(sum.cacheCreationTokens),
-      output: formatTokens(sum.outputTokens),
+      input: compactNumber(sum.inputTokens),
+      cacheRead: compactNumber(sum.cacheReadTokens),
+      cacheWrite: compactNumber(sum.cacheCreationTokens),
+      output: compactNumber(sum.outputTokens),
     },
     outcomeCounts: {
       all: sessions,

@@ -57,7 +57,7 @@ describe("My Telemetry from /v1/telemetry/me", () => {
   it("maps real totals and leaves unknown parts empty instead of inventing them", () => {
     const snap = snapshotFromMe(meBody("2026-09-03", "2026-10-02", 42), "30d");
     expect(snap.sessions).toBe(42);
-    expect(snap.tokensLabel).toBe("3k");
+    expect(snap.tokensLabel).toBe("2.5K");
     expect(snap.deploys).toBe(4);
     expect(snap.storiesShipped).toBe(6);
     expect(snap.distinctSkills).toBe(2);

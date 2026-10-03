@@ -9,6 +9,8 @@
  * companies; the column label says so. The two reads fail independently.
  */
 
+import { compactNumber } from "../../common/compact-number.js";
+
 export interface TeamSkillUsage {
   runs: number;
   people: number;
@@ -133,7 +135,7 @@ export function skillUsageRows(
 
 /** A count cell: a dash for no runs or no data. */
 export function runsCell(n: number | null): string {
-  return n == null || n === 0 ? "—" : String(n);
+  return n == null || n === 0 ? "—" : compactNumber(n);
 }
 
 /** "Oct 2" from YYYY-MM-DD; a dash when there was no run. */

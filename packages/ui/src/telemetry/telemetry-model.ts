@@ -1,3 +1,4 @@
+import { compactNumber } from "../common/compact-number.js";
 /**
  * Personal telemetry model (US-032).
  *
@@ -198,14 +199,6 @@ export function formatUsd(amount: number): string {
   return `$${amount.toFixed(2)}`;
 }
 
-export function formatTokens(n: number): string {
-  if (n >= 1_000_000) {
-    const m = n / 1_000_000;
-    return `${m >= 10 ? m.toFixed(1) : m.toFixed(2).replace(/0$/, "")}M`.replace(".0M", "M");
-  }
-  if (n >= 1000) return `${Math.round(n / 1000)}k`;
-  return String(n);
-}
 
 export function sessionsForFilter(
   rows: readonly TelemetrySession[],
@@ -257,8 +250,8 @@ export function dayBands(day: DayStack, labels: readonly string[]): ChartBand[] 
 export function dayTooltip(day: DayStack, labels: readonly string[]): string {
   const parts = dayBands(day, labels)
     .filter((band) => band.tokens > 0)
-    .map((band) => `${band.label} ${formatTokens(band.tokens)}`);
-  return [`${day.label}: ${formatTokens(dayTotal(day))} tokens`, ...parts].join(" · ");
+    .map((band) => `${band.label} ${compactNumber(band.tokens)}`);
+  return [`${day.label}: ${compactNumber(dayTotal(day))} tokens`, ...parts].join(" · ");
 }
 
 export function bandPercent(tokens: number, max: number): number {
@@ -362,13 +355,13 @@ export function snapshotForRange(base: TelemetrySnapshot, range: TelemetryRange)
     rangeLabel: `${shortDate(start)} – ${shortDate(shiftDate(end, 0))}`,
     sessions,
     sessionsDelta: "",
-    tokensLabel: formatTokens(tokens),
+    tokensLabel: compactNumber(tokens),
     tokensDelta: "",
     storiesShipped: scale(base.storiesShipped, f),
     deploys: scale(base.deploys, f),
-    perDay: formatTokens(Math.round(tokens / Math.max(1, days.length))),
+    perDay: compactNumber(Math.round(tokens / Math.max(1, days.length))),
     listCostUsd: models.reduce((sum, m) => sum + listRateUsd(m), 0),
-    peakLabel: `peak ${formatTokens(Math.round((dayTotal(days[peak] ?? { label: "", opus: 0, sonnet: 0, haiku: 0 }) / Math.max(1, windowTokens)) * tokens))} · ${shortDate(shiftDate(end, days.length - 1 - peak))}`,
+    peakLabel: `peak ${compactNumber(Math.round((dayTotal(days[peak] ?? { label: "", opus: 0, sonnet: 0, haiku: 0 }) / Math.max(1, windowTokens)) * tokens))} · ${shortDate(shiftDate(end, days.length - 1 - peak))}`,
     days,
     dayLabels,
     sessionsRows,

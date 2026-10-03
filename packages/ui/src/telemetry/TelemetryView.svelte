@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { compactNumber } from "../common/compact-number.js";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import RailButton from "../common/button/RailButton.svelte";
   /**
@@ -16,7 +17,6 @@
     chartBandLabels,
     dayBands,
     dayTooltip,
-    formatTokens,
     formatUsd,
     hasListRate,
     hasNoTelemetryActivity,
@@ -471,7 +471,7 @@
               {@const tokens = model.input + model.output + model.cacheWrite + model.cacheRead}
               <div class="trow">
                 <span class="nm"><i class={model.family ?? ""}></i>{model.label}<span class="m">{model.hint}</span></span>
-                <span class="n">{formatTokens(tokens)}</span>
+                <span class="n">{compactNumber(tokens)}</span>
                 <span class="bar"><i style:width="{sharePercent(tokens, tokenTotal)}%"></i></span>
                 <span class="n">{sharePercent(tokens, tokenTotal)}%</span>
                 <span class="n">{hasListRate(model) ? formatUsd(listRateUsd(model)) : "—"}</span>
@@ -480,13 +480,13 @@
             {#if snapshot.unattributed}
               <div class="trow" data-testid="telemetry-model-other">
                 <span class="nm"><i></i>Other / unattributed</span>
-                <span class="n">{formatTokens(snapshot.unattributed.tokens)}</span>
+                <span class="n">{compactNumber(snapshot.unattributed.tokens)}</span>
                 <span class="bar"><i style:width="{sharePercent(snapshot.unattributed.tokens, tokenTotal)}%"></i></span>
                 <span class="n">{sharePercent(snapshot.unattributed.tokens, tokenTotal)}%</span>
                 <span class="n">—</span>
               </div>
             {/if}
-            <div class="trow tot" data-testid="telemetry-model-total"><span>Total</span><span class="n">{formatTokens(tokenTotal)}</span><span></span><span class="n">100%</span><span class="n">{formatUsd(snapshot.listCostUsd)}</span></div>
+            <div class="trow tot" data-testid="telemetry-model-total"><span>Total</span><span class="n">{compactNumber(tokenTotal)}</span><span></span><span class="n">100%</span><span class="n">{formatUsd(snapshot.listCostUsd)}</span></div>
             {#if snapshot.unattributed?.note}<p class="foot" data-testid="telemetry-model-other-note">{snapshot.unattributed.note}</p>{/if}
             <div class="sech gap">Input, output, cache</div>
             <div class="statline">
@@ -501,7 +501,7 @@
             {#each snapshot.byCompany as row (row.id)}
               <div class="trow">
                 <span class="nm"><CompanyLabel name={row.label} companyUid={row.id} /><span class="m">{row.meta}</span></span>
-                <span class="n">{formatTokens(row.tokens)}</span>
+                <span class="n">{compactNumber(row.tokens)}</span>
                 <span class="bar"><i style:width="{sharePercent(row.tokens, tokenTotal)}%"></i></span>
                 <span class="n">{sharePercent(row.tokens, tokenTotal)}%</span>
                 <span class="n">{formatUsd(row.costUsd)}</span>
@@ -511,7 +511,7 @@
             {#each snapshot.byActor as row (row.id)}
               <div class="trow">
                 <span class="nm"><span class="mini" class:sq={row.bot}>{row.mark}</span>{row.label}<span class="m">{row.meta}</span></span>
-                <span class="n">{formatTokens(row.tokens)}</span>
+                <span class="n">{compactNumber(row.tokens)}</span>
                 <span class="bar"><i style:width="{sharePercent(row.tokens, tokenTotal)}%"></i></span>
                 <span class="n">{sharePercent(row.tokens, tokenTotal)}%</span>
                 <span class="n">{formatUsd(row.costUsd)}</span>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { compactNumber } from "../common/compact-number.js";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import RailButton from "../common/button/RailButton.svelte";
   /**
@@ -14,7 +15,7 @@
     type AtlasNode,
     type AtlasPresence,
   } from "./atlas-model.js";
-  import { ATLAS_PEOPLE_DAYS, compactTokens, type AtlasPeopleState } from "./atlas-people.js";
+  import { ATLAS_PEOPLE_DAYS, type AtlasPeopleState } from "./atlas-people.js";
 
   interface Props {
     node: AtlasNode | null;
@@ -201,7 +202,7 @@
               onclick={() => onperson?.(person.id)}
             >
               <div class="pmain">
-                <div class="tt">{person.name}{#if person.bot}<span class="tag">agent</span>{/if}<span class="grow"></span><span class="mm tok">{person.tokens > 0 ? compactTokens(person.tokens) : "—"}</span></div>
+                <div class="tt">{person.name}{#if person.bot}<span class="tag">agent</span>{/if}<span class="grow"></span><span class="mm tok">{person.tokens > 0 ? compactNumber(person.tokens) : "—"}</span></div>
                 <div class="mm prow">
                   {#if !person.bot && person.trend.length > 1}<svg class="spark" width="48" height="12" viewBox="0 0 48 12" aria-hidden="true"><path d={sparkPath(person.trend)} /></svg>{/if}
                   <span>{person.sessions} sess · {person.stories} stories</span>

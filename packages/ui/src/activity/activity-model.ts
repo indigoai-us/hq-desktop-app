@@ -127,12 +127,6 @@ export function dayBars(
   return bars;
 }
 
-export function formatTokens(n: number): string {
-  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(2).replace(/\.?0+$/, "")}B`;
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
-  return String(n);
-}
 
 /** Outcomes per 1M tokens, as the web formats it; a dash when unranked. */
 export function formatEfficiency(value: number | null | undefined): string {

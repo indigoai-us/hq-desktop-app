@@ -5,7 +5,8 @@ import TelemetryView from "./TelemetryView.svelte";
 import { createTelemetryCache } from "./telemetry-cache.js";
 import { TELEMETRY_SMOKE } from "./telemetry-smoke.js";
 import { snapshotFromMe } from "./telemetry-me.js";
-import { formatTokens, type TelemetrySnapshot } from "./telemetry-model.js";
+import { type TelemetrySnapshot } from "./telemetry-model.js";
+import { compactNumber as formatTokens } from "../common/compact-number.js";
 
 describe("Telemetry Tokens page (QA-081)", () => {
   let component: Record<string, unknown> | null = null;
@@ -142,6 +143,6 @@ describe("Telemetry daily chart stacks every By-model row (QA-086)", () => {
     expect(byBand("mystery-9")).toBe(100);
     expect(byBand("Other")).toBe(200);
     const days = [...target.querySelectorAll("[data-testid='telemetry-bars'] .d")];
-    expect(days[0]?.getAttribute("title")).toMatch(/^Oct 1: 2k tokens · Fable 2k · System 100 · Other 50$/);
+    expect(days[0]?.getAttribute("title")).toMatch(/^Oct 1: 2.15K tokens · Fable 2K · System 100 · Other 50$/);
   });
 });

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { compactNumber } from "../../common/compact-number.js";
   /**
    * Name-click destination: bot or person profile, with the session pane and
    * edit sheet layered on the bot. The first frame uses the roster snapshot.
@@ -10,7 +11,6 @@
   import type { AgentsApi } from "@hq/platform";
   import {
     defaultTelemetryRange,
-    formatTokenCount,
     jobsFromPayload,
     unavailableMessage,
     usageFromCompanyTelemetry,
@@ -138,7 +138,7 @@
           const view = usageFromCompanyTelemetry(usageRes.value, uid);
           usage = {
             status: "ready",
-            tokens: formatTokenCount(view?.tokens ?? 0),
+            tokens: compactNumber(view?.tokens ?? 0),
             sessions: view?.sessions ?? 0,
             daily: view?.dailyTokens ?? [],
           };

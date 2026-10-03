@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { compactNumber, exactNumber } from "../common/compact-number.js";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import RailButton from "../common/button/RailButton.svelte";
   /**
@@ -24,7 +25,6 @@
     activityToCsv,
     dayBars,
     EMPTY_ACTIVITY,
-    formatTokens,
     formatEfficiency,
     activityFromCompanyTelemetry,
     rangeDays,
@@ -220,7 +220,7 @@
                 >
                   <td>{member.name}</td>
                   <td><svg class="spark" width="56" height="14" viewBox="0 0 56 14" aria-hidden="true"><path d={sparkPath(member.trend, 56, 14)} /></svg></td>
-                  <td class="r">{formatTokens(member.tokens)}</td>
+                  <td class="r" title={exactNumber(member.tokens)}>{compactNumber(member.tokens)}</td>
                   <td class="r">{member.sessions}</td>
                   <td class="r">{member.stories}</td>
                   <td class="r">{member.prs ?? "—"}</td>
@@ -251,7 +251,7 @@
           <button class="x" aria-label="Close" data-testid="activity-member-close" onclick={() => (selectedId = null)}>×</button>
         </div>
         <dl class="tot">
-          <div><dt>Tokens</dt><dd>{formatTokens(selected.tokens)}</dd></div>
+          <div><dt>Tokens</dt><dd>{compactNumber(selected.tokens)}</dd></div>
           <div><dt>Sessions</dt><dd>{selected.sessions}</dd></div>
           <div><dt>Stories</dt><dd>{selected.stories}</dd></div>
           <div><dt>PRs</dt><dd>{selected.prs ?? "—"}</dd></div>
@@ -266,7 +266,7 @@
         {/if}
         <div class="sech">Tokens by model</div>
         {#each selected.tokensByModel ?? [] as row (row.model)}
-          <div class="who"><span>{row.model}</span><span class="r">{formatTokens(row.total)}</span></div>
+          <div class="who"><span>{row.model}</span><span class="r">{compactNumber(row.total)}</span></div>
         {:else}<p class="empty">None in this range.</p>{/each}
         <div class="sech">Top skills</div>
         {#each selected.skills ?? [] as row (row.skill)}
@@ -304,7 +304,7 @@
         {#each snapshot.members as member (member.id)}
           <div class="who hq-contain-row">
             <span>{member.name}</span>
-            <span class="r">{formatTokens(member.tokens)}</span>
+            <span class="r">{compactNumber(member.tokens)}</span>
           </div>
         {/each}
       {/if}
