@@ -3872,6 +3872,7 @@ mod tests {
             branding_enabled: false,
             brand: None,
             home_channel_id: None,
+            icon_url: None,
         }
     }
 
@@ -4588,6 +4589,7 @@ mod tests {
                 branding_enabled: false,
                 brand: None,
                 home_channel_id: None,
+                icon_url: None,
             }
         }
 
@@ -4619,6 +4621,7 @@ mod tests {
                 branding_enabled: false,
                 brand: None,
                 home_channel_id: None,
+                icon_url: None,
             };
             let workspaces = vec![personal];
 
@@ -4659,6 +4662,7 @@ mod tests {
                 branding_enabled: false,
                 brand: None,
                 home_channel_id: None,
+                icon_url: None,
             };
             assert!(workspace_grants_company_file_access(
                 &[personal.clone()],

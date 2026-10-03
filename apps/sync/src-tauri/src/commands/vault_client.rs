@@ -194,6 +194,11 @@ pub struct MembershipInfo {
     /// responses while the server rolls this field out.
     #[serde(default)]
     pub home_channel_id: Option<String>,
+    /// Presigned company website favicon on the assets host. Every plan;
+    /// absent when the company has no website. Without this field serde
+    /// dropped the server's value and the rail fell back to initials.
+    #[serde(default)]
+    pub icon_url: Option<String>,
 }
 
 impl MembershipInfo {

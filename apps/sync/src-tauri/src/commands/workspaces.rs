@@ -325,6 +325,8 @@ where
             None
         };
         let home_channel_id = membership_for_slug.and_then(|m| m.home_channel_id.clone());
+        // Website favicon (presigned). Every plan; not gated on branding.
+        let icon_url = membership_for_slug.and_then(|m| m.icon_url.clone());
 
         let (state, cloud_uid, bucket_name, broken_reason) = match (&entry.cloud_uid, cloud_entity_for_slug, cloud_reachable) {
             // Manifest says connected, cloud confirms (UIDs match) → Synced.
@@ -397,6 +399,7 @@ where
                 branding_enabled,
                 brand,
                 home_channel_id,
+                icon_url,
             },
         );
     }
@@ -446,6 +449,7 @@ where
             None
         };
         let home_channel_id = mem.home_channel_id.clone();
+        let icon_url = mem.icon_url.clone();
         by_slug.insert(
             entity.slug.clone(),
             Workspace {
@@ -467,6 +471,7 @@ where
                 branding_enabled,
                 brand,
                 home_channel_id,
+                icon_url,
             },
         );
     }
@@ -508,6 +513,7 @@ where
         branding_enabled: false,
         brand: None,
         home_channel_id: None,
+        icon_url: None,
     });
 
     ordered.extend(by_slug.into_values());
@@ -613,6 +619,7 @@ pub(crate) async fn fetch_cloud_roster(
             branding_enabled: false,
             brand: None,
             home_channel_id: None,
+            icon_url: None,
         });
     }
 
@@ -1935,6 +1942,7 @@ mod tests {
             branding_enabled: false,
             brand: None,
             home_channel_id: None,
+            icon_url: None,
         }
     }
 
@@ -2505,6 +2513,46 @@ mod tests {
             result[1].home_channel_id.as_deref(),
             Some("chn_home_newco")
         );
+    }
+
+    /// Regression (OWNER-010): `/membership/me` sends `iconUrl` on each row,
+    /// but `MembershipInfo` had no field for it, so serde dropped it and every
+    /// rail tile fell back to initials. Parse the live payload shape and check
+    /// the icon reaches the serialized workspace row on both branches.
+    #[test]
+    fn membership_icon_url_reaches_the_workspace_row() {
+        let wire = serde_json::json!({
+            "uid": "mem_1",
+            "personUid": "prs_x",
+            "companyUid": "cmp_b",
+            "status": "active",
+            "companyName": "Amass",
+            "brandingEnabled": false,
+            "brand": {},
+            "iconUrl": "https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com/icons/cmp_b.png?X-Amz-Signature=abc"
+        });
+        let mem: MembershipInfo = serde_json::from_value(wire).expect("live row shape parses");
+        assert!(mem.icon_url.as_deref().unwrap_or("").contains("hq-marketplace-assets"));
+
+        let tmp = TempDir::new().unwrap();
+        let p = person("prs_x", None);
+        let mut entities = BTreeMap::new();
+        entities.insert("cmp_b".to_string(), company_entity("cmp_b", "amass", None));
+        // Cloud-only branch.
+        let result = assemble_workspaces(
+            tmp.path(), Some(&p), &[mem.clone()], &entities, &[], true, |_| None,
+        );
+        assert_eq!(result[1].icon_url, mem.icon_url);
+        let json = serde_json::to_value(&result[1]).unwrap();
+        assert_eq!(json["iconUrl"].as_str(), mem.icon_url.as_deref());
+
+        // Membership without an icon serializes no key (initials fallback).
+        let mut bare = mem.clone();
+        bare.icon_url = None;
+        let result = assemble_workspaces(
+            tmp.path(), Some(&p), &[bare], &entities, &[], true, |_| None,
+        );
+        assert!(serde_json::to_value(&result[1]).unwrap().get("iconUrl").is_none());
     }
 
     /// Regression: a website-created company whose entity carries no name

@@ -67,3 +67,58 @@ describe("rail company icon", () => {
     );
   });
 });
+
+/**
+ * OWNER-010: the packaged app builds its roster from the native
+ * `list_syncable_workspaces` command, whose rows are serialized Rust
+ * `Workspace` structs. That struct had no `iconUrl`, so every tile showed
+ * initials even though `/membership/me` carried the icon. These cases use the
+ * native row shape and a cold roster.
+ */
+describe("rail icon from the native workspace row (OWNER-010)", () => {
+  const nativeRow = (iconUrl?: string) => ({
+    slug: "amass",
+    displayName: "Amass",
+    kind: "company",
+    state: "cloud-only",
+    cloudUid: "cmp_amass",
+    bucketName: null,
+    hasLocalFolder: false,
+    localPath: null,
+    membershipStatus: "active",
+    role: "owner",
+    syncEnabled: true,
+    lastSyncedAt: null,
+    brokenReason: null,
+    invitedBy: null,
+    invitedAt: null,
+    brandingEnabled: false,
+    ...(iconUrl ? { iconUrl } : {}),
+  });
+
+  it("carries iconUrl from a native row through to the rail tile", async () => {
+    const { workspacesFromMembershipRows } = await import("../company/company-display-map.js");
+    const roster = workspacesFromMembershipRows({ workspaces: [nativeRow(ICON)] });
+    const icons = buildCompanyIconMap(roster);
+    expect(companyIconUrl("cmp_amass", icons)).toBe(ICON);
+    const [tile] = companyTiles([
+      { uid: "cmp_amass", label: "Amass", iconUrl: companyIconUrl("cmp_amass", icons) },
+    ]);
+    expect(tile).toMatchObject({ iconUrl: ICON });
+  });
+
+  it("a refreshed roster replaces a stale icon-less one", async () => {
+    const { workspacesFromMembershipRows } = await import("../company/company-display-map.js");
+    const stale = buildCompanyIconMap(workspacesFromMembershipRows([nativeRow()]));
+    expect(companyIconUrl("cmp_amass", stale)).toBeNull();
+    const fresh = buildCompanyIconMap(workspacesFromMembershipRows([nativeRow(ICON)]));
+    expect(companyIconUrl("cmp_amass", fresh)).toBe(ICON);
+  });
+
+  it("re-reads the roster on every company switch", () => {
+    const src = readFileSync(join(here, "DesktopApp.svelte"), "utf8");
+    const body = src.slice(src.indexOf("function setTenantScope("));
+    const end = body.indexOf("\n  }\n");
+    expect(body.slice(0, end)).toContain("onrefreshroster?.()");
+  });
+});

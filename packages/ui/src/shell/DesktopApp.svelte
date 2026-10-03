@@ -7757,6 +7757,10 @@
         companyRecentIds: rememberCompanyId(prefs.companyRecentIds, companyUid),
       });
     }
+    // Re-read the roster on every company switch so a company icon the
+    // server gained since launch replaces the initials (the icon map is
+    // derived from `companies`, which the refresh replaces wholesale).
+    void onrefreshroster?.();
     selectedRow = null;
     liveTimeline = [];
     liveTimelineId = null;
