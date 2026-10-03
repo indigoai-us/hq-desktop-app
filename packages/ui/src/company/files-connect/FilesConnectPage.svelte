@@ -841,7 +841,8 @@
   {:else if page === "secrets"}
     <header class="toolbar">
       <h1>Secrets</h1>
-      {#if secrets}<span class="count" data-testid="secrets-count">{countLabel("Secrets", secretRows.length)}{secretsFiltered ? ` of ${secrets.length.toLocaleString()}` : ""}</span>{/if}
+      <!-- BLANK-2: no "Secrets · 0" next to a failed read with nothing loaded. -->
+      {#if secrets && !(secretsError && secrets.length === 0)}<span class="count" data-testid="secrets-count">{countLabel("Secrets", secretRows.length)}{secretsFiltered ? ` of ${secrets.length.toLocaleString()}` : ""}</span>{/if}
       <span class="grow"></span>
       <div class="fc-seg" role="tablist" aria-label="Secret kind">
         <button class="fc-seg-tab" role="tab" aria-selected={secretTab === "all"} onclick={() => (secretTab = "all")}>All</button>
@@ -911,7 +912,7 @@
   {:else}
     <header class="toolbar">
       <h1>Deployments</h1>
-      {#if deployments}<span class="count" data-testid="deployments-count">{countLabel("Deployments", deployments.length)}</span>{/if}
+      {#if deployments && !(deploymentsError && deployments.length === 0)}<span class="count" data-testid="deployments-count">{countLabel("Deployments", deployments.length)}</span>{/if}
       <span class="grow"></span>
       <RailButton icon="send" variant="primary" data-testid="deploy-from-project" onclick={openDeploy}>Deploy</RailButton>
     </header>

@@ -56,6 +56,9 @@ describe("FilesConnectPage read deadline (BLANK-1)", () => {
     expect(document.body.textContent).toContain(copy);
     expect([...document.querySelectorAll("button")].some((b) => /Try again/.test(b.textContent ?? ""))).toBe(true);
     expect(logged).toHaveBeenCalled();
+    // BLANK-2: no zero count next to the failed read.
+    expect(document.querySelector("[data-testid='secrets-count'],[data-testid='deployments-count']")).toBeNull();
+    expect(document.body.textContent).not.toMatch(/(Secrets|Deployments) · 0\b/);
   });
 });
 
