@@ -269,11 +269,11 @@
           <div class="who"><span>{row.model}</span><span class="r">{formatTokens(row.total)}</span></div>
         {:else}<p class="empty">None in this range.</p>{/each}
         <div class="sech">Top skills</div>
-        {#each (selected.skills ?? []).slice(0, 8) as row (row.skill)}
+        {#each selected.skills ?? [] as row (row.skill)}
           <div class="who"><span class="sk">{row.skill}</span><span class="r">{row.count}</span></div>
         {:else}<p class="empty">None in this range.</p>{/each}
         <div class="sech">Recent tools</div>
-        {#each (selected.services ?? []).slice(0, 8) as row (row.service)}
+        {#each selected.services ?? [] as row (row.service)}
           <div class="who"><span>{row.service}</span><span class="r">{row.count}</span></div>
         {:else}<p class="empty">None in this range.</p>{/each}
         <div class="sech">Projects, repos and key files</div>

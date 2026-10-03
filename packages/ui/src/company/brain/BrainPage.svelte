@@ -140,7 +140,7 @@
   let myUsage = $state<UsageRead<Map<string, number>>>({ state: "idle", data: null });
   let usageNonce = $state(0);
   const usageDays = { "7d": 7, "30d": 30, "90d": 90 } as const;
-  const isoDay = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+  const isoDay = (ms: number) => new Date(ms).toISOString().split("T")[0]!;
 
   async function readUsage<T>(
     run: (() => AdapterPromise<Json>) | null,
