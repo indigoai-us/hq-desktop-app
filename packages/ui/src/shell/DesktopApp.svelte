@@ -5450,19 +5450,20 @@
         const fallbackMessage = isSelfLeave
           ? "Couldn't leave this channel. Refresh and try again."
           : "Couldn't remove this member. Refresh and try again.";
-        const serverMessage = res.message?.trim();
-        channelActionError = isOwnerCannotLeave(res.code, res.message)
-          ? OWNER_CANNOT_LEAVE_MESSAGE
-          : serverMessage || fallbackMessage;
+        const ownerCannotLeave = isOwnerCannotLeave(res.code, res.message);
+        if (!ownerCannotLeave) {
+          console.warn("[channel] remove member failed", res.code, res.message);
+        }
+        channelActionError = ownerCannotLeave ? OWNER_CANNOT_LEAVE_MESSAGE : fallbackMessage;
       }
     } catch (err) {
       const message = (err instanceof Error ? err.message : String(err)).trim();
       const fallbackMessage = isSelfLeave
         ? "Couldn't leave this channel. Refresh and try again."
         : "Couldn't remove this member. Refresh and try again.";
-      channelActionError = isOwnerCannotLeave(undefined, message)
-        ? OWNER_CANNOT_LEAVE_MESSAGE
-        : message || fallbackMessage;
+      const ownerCannotLeave = isOwnerCannotLeave(undefined, message);
+      if (!ownerCannotLeave) console.warn("[channel] remove member failed", err);
+      channelActionError = ownerCannotLeave ? OWNER_CANNOT_LEAVE_MESSAGE : fallbackMessage;
     } finally {
       removingMemberUid = null;
     }
@@ -5568,8 +5569,8 @@
     try {
       const res = await adapter.messaging.deleteChannel(channelId);
       if (!res.ok) {
-        channelActionError =
-          res.message?.trim() || `Couldn't delete #${row.title}.`;
+        console.warn("[channel] delete channel failed", res.code, res.message);
+        channelActionError = `Couldn't delete #${row.title}. Try again.`;
         return;
       }
       // Optimistic: drop the rail row now. The server fans out a directory
@@ -5589,7 +5590,8 @@
       attachTray = null;
       replyPreviewByRoot = {};
     } catch (err) {
-      channelActionError = err instanceof Error ? err.message : String(err);
+      console.warn("[channel] delete channel failed", err);
+      channelActionError = `Couldn't delete #${row.title}. Try again.`;
     } finally {
       deletingChannel = false;
     }
