@@ -75,7 +75,6 @@
     parseCreateChannelError,
     rosterFromMembers,
     slugInputValue,
-    stripRawUids,
     suggestFreeSlug,
     type CompanyRoster,
     type FindRow,
@@ -299,7 +298,8 @@
       entryError = result.reason;
       entryFix = "fix" in result ? (result.fix ?? null) : null;
     } catch (err) {
-      entryError = err instanceof Error ? err.message : String(err);
+      console.warn("[create-modal] entry failed", err);
+      entryError = "That didn't work. Try again.";
     } finally {
       entryBusy = null;
     }
@@ -440,7 +440,8 @@
       companyValues = seeded;
       startCompanySlugWatch(result.form, seeded);
     } catch (err) {
-      companyError = err instanceof Error ? err.message : String(err);
+      console.warn("[create-modal] company step failed", err);
+      companyError = "That didn't work. Try again.";
     } finally {
       companyOpening = false;
     }
@@ -523,7 +524,8 @@
       }
       onclose();
     } catch (err) {
-      companyError = err instanceof Error ? err.message : String(err);
+      console.warn("[create-modal] company step failed", err);
+      companyError = "That didn't work. Try again.";
     } finally {
       companyCreating = false;
     }
@@ -545,7 +547,8 @@
       companyUnprovisionedUid = null;
       if (companyInviteFailures.length === 0) onclose();
     } catch (err) {
-      companyError = err instanceof Error ? err.message : String(err);
+      console.warn("[create-modal] company step failed", err);
+      companyError = "That didn't work. Try again.";
     } finally {
       companyCreating = false;
     }
@@ -1357,11 +1360,9 @@
       };
     } catch (err) {
       const raw = err instanceof Error ? err.message : String(err ?? "");
-      // Bridges prefix the machine code (`[http-429] …`); the person reading
-      // this wants the sentence, not the code.
-      const cleaned = stripRawUids(raw.replace(/^\[[^\]]+\]\s*/, "")).trim();
-      emailError = cleaned
-        ? `Couldn't send: ${cleaned}`
+      console.warn("[create-modal] email send failed", raw);
+      emailError = /\[http-429\]|\b429\b/.test(raw)
+        ? "Couldn't send: you've hit the daily invite limit. Try again tomorrow."
         : "Couldn't send. Check your connection and try again.";
     } finally {
       emailSending = false;
@@ -1876,7 +1877,10 @@
         const exists = await createdChannelAlreadyExists(name);
         createUnconfirmed = exists;
         createError = unconfirmedCreateMessage({
-          detail: failure.message.replace(/\.$/, ""),
+          detail:
+            failure.code === "unknown"
+              ? "the request did not go through"
+              : failure.message.replace(/\.$/, ""),
           name,
           exists,
         });
@@ -2012,11 +2016,10 @@
    * in-flight guard every impatient click fired another request.
    */
   function markRetryFailed(key: string, err: unknown): void {
-    const raw = err instanceof Error ? err.message : String(err ?? "");
-    const cleaned = stripRawUids(raw);
+    console.warn("[create-modal] retry failed", err);
     patchIssue(key, {
       pending: false,
-      error: cleaned ? `Still failing: ${cleaned}` : "That didn't work either.",
+      error: "That didn't work either. Try again.",
     });
   }
 
