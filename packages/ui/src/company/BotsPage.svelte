@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { withReadDeadline } from "../common/read-deadline.js";
+  import ReadLoader from "../common/ReadLoader.svelte";
   import RailButton from "../common/button/RailButton.svelte";
   /**
    * Company Bots page (console-rail US-027).
@@ -104,8 +104,7 @@
     cloudFailed = false;
     cloudPhase = "shimmer";
     try {
-      // BLANK-1: a read that never answers falls to the failed-read state.
-      const result = await withReadDeadline(agents.listMobileRoster(companyUid), "cloud bots");
+      const result = await agents.listMobileRoster(companyUid);
       if (cancelled) return;
       if (result.ok) {
         cloud = cloudBotsFromRoster(result.value, { companies }).map((bot) => ({
@@ -176,8 +175,9 @@
       {/each}
     </div>
     <span class="grow"></span>
-    <!-- BLANK-2: no "0 bots" next to a failed read with nothing loaded. -->
-    {#if !(cloudFailed && rows.length === 0)}
+    <!-- BLANK-2: no "0 bots" next to a failed read with nothing loaded.
+         BLANK-3: nor while the first read is still loading. -->
+    {#if !(cloudFailed && rows.length === 0) && !(cloudPhase === "shimmer" && rows.length === 0)}
       <span class="meta-line" data-meta-line data-testid="bots-count">{rows.length === 1 ? "1 bot" : `${rows.length} bots`}</span>
     {/if}
     <RailButton icon="plus" variant="primary" type="button" data-testid="bots-new" onclick={() => onaddbot?.()}>New bot</RailButton>
@@ -199,6 +199,7 @@
             {#each [0, 1, 2] as i (i)}<div class="shimmer-row"><span class="sk sk-av"></span><span class="sk"></span></div>{/each}
           </div>
         {/if}
+        {#if cloudPhase === "shimmer"}<ReadLoader testid="bots-loader" onretry={() => void loadCloud()} />{/if}
         {#each page.rows as row (row.uid)}
           <button
             type="button"

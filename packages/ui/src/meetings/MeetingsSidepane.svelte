@@ -10,6 +10,7 @@
   shows shimmer rows only on a true cold start.
 -->
 <script lang="ts">
+  import ReadLoader from "../common/ReadLoader.svelte";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import DayGroupHeader from "../chat/DayGroupHeader.svelte";
   import Sidepane from "../shell/Sidepane.svelte";
@@ -136,6 +137,7 @@
         {:else}<div class="sk-row"><span class="sk" style:width="34px"></span><span class="sk" style:width={`${110 + ((i * 37) % 60)}px`}></span></div>{/if}
       {/each}
     </div>
+    <ReadLoader testid="meetings-loader" surface="meetings" onretry={onretry ? () => onretry() : null} />
   {:else if sections.length === 0 && error}
     <div class="empty" data-testid="meetings-sidepane-error">
       <span>Past meetings could not load.</span>

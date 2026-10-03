@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { withReadDeadline } from "../common/read-deadline.js";
+  import ReadLoader from "../common/ReadLoader.svelte";
   import RailButton from "../common/button/RailButton.svelte";
   import { dismissable } from "../common/dismissable.js";
   import { publishCompanyPageCount } from "../shell/company-page-counts.svelte.js";
@@ -156,8 +156,7 @@
     let cancelled = false;
     void (async () => {
       try {
-        // BLANK-1: a read that never answers falls to the failed-read state.
-        const read = await withReadDeadline(readCompanyTeam({ slug: key, companyUid, company, messaging }), "company team");
+        const read = await readCompanyTeam({ slug: key, companyUid, company, messaging });
         if (cancelled) return;
         if (read.error) {
           view = { ...emptyView, error: read.error };
@@ -298,6 +297,7 @@
           <div class="shimmer-row"><span class="sk sk-av"></span><span class="sk"></span></div>
         {/each}
       </div>
+      <ReadLoader testid="team-loader" surface="team" onretry={() => (readAttempt += 1)} />
     {:else}
       {#if view.error}
         <div class="note load-error" role="alert" data-testid="team-load-error">

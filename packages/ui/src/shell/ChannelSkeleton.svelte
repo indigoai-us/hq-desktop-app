@@ -3,8 +3,10 @@
    * ChannelSkeleton — shimmer placeholder for the conversation pane while the
    * mesh overlay / channel list is still loading (no row selected yet).
    * Replaces the jarring "No data / Nothing to show yet" flash on startup.
-   * Pure presentation; honors prefers-reduced-motion.
+   * Pure presentation; honors prefers-reduced-motion. BLANK-3: carries the
+   * shared loader so a slow boot is never a still grey block.
    */
+  import ReadLoader from "../common/ReadLoader.svelte";
   const ROWS = [
     { name: 84, lines: [220, 320] },
     { name: 64, lines: [280] },
@@ -17,7 +19,6 @@
 <div
   class="skeleton chat-shell"
   data-testid="channel-skeleton"
-  aria-hidden="true"
 >
   <div class="sk-header">
     <span class="sk sk-title"></span>
@@ -36,6 +37,7 @@
       </div>
     {/each}
   </div>
+  <ReadLoader testid="channel-loader" />
   <div class="sk-composer">
     <span class="sk sk-input"></span>
   </div>

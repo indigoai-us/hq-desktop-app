@@ -374,6 +374,14 @@ const SESSIONS_HIDDEN_POLL_FLOOR_SECS = 120;
  */
 const FAST_POLLER_ALLOWLIST = new Map<string, string>([
   [
+    "packages/ui/src/common/ReadLoader.svelte",
+    "4s rotation of the waiting line in the shared loader (BLANK-3, owner " +
+      "2026-10-03). Not a long-lived poller: it starts only after a read has " +
+      "been pending 3s, lives only while that loading placeholder is mounted, " +
+      "is cleared the moment the read answers, writes one string per tick, " +
+      "and skips ticks while the window is hidden.",
+  ],
+  [
     "packages/ui/src/tour/GuidedTour.svelte",
     "250ms re-measure of the spotlight target while the guided tour is on " +
       "screen, so the cutout follows layout shifts that fire no resize or " +

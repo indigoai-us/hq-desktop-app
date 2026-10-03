@@ -6,7 +6,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, unmount } from "svelte";
-import { READ_DEADLINE_MS } from "../common/read-deadline.js";
+import { expectPendingRead } from "../common/read-loader.test-support.js";
 import PersonalDeploymentsPage from "./PersonalDeploymentsPage.svelte";
 
 let component: ReturnType<typeof mount> | null = null;
@@ -20,8 +20,8 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-describe("PersonalDeploymentsPage read deadline (BLANK-1)", () => {
-  it("reads that never answer end in the failed-read state", async () => {
+describe("PersonalDeploymentsPage pending read (BLANK-3)", () => {
+  it("reads that never answer keep loading with a waiting line and Try again, never a failed state", async () => {
     vi.useFakeTimers();
     vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
@@ -31,10 +31,6 @@ describe("PersonalDeploymentsPage read deadline (BLANK-1)", () => {
     });
     flushSync();
     expect(document.querySelector("[data-testid='deploy-skeleton']")).toBeTruthy();
-    await vi.advanceTimersByTimeAsync(READ_DEADLINE_MS + 10);
-    flushSync();
-    expect(document.querySelector("[data-testid='deploy-skeleton']")).toBeNull();
-    expect(document.querySelector("[data-testid='deploy-load-error']")?.textContent).toContain("Couldn't read your deployments.");
-    expect(document.querySelector("[data-testid='deploy-retry']")).toBeTruthy();
+    await expectPendingRead(document, "deploy-loader");
   });
 });

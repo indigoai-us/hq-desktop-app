@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ReadLoader from "../common/ReadLoader.svelte";
   import RailButton from "../common/button/RailButton.svelte";
   import "../common/button/rail-type.css";
   /**
@@ -154,9 +155,10 @@
     });
   });
 
-  // The cache bounds every refresh with a timeout, so this always settles:
-  // either a graph arrives or the failed state (with Retry) replaces the
-  // skeleton. Without a cached map a failure must never leave the skeleton up.
+  // BLANK-3: no timer ends a pending refresh. While it runs the skeleton keeps
+  // the shared loader (waiting lines, then Try again); a real failure replaces
+  // it with the failed state. Without a cached map a failure must never leave
+  // the skeleton up.
   let retrying = $state(false);
   const loadFailed = $derived(refreshError !== null && !graph);
 
@@ -344,6 +346,7 @@
           {#each [0, 1, 2, 3, 4, 5] as i (i)}
             <span class="blob" style={`--a:${i * 60 - 90}deg`}></span>
           {/each}
+          <ReadLoader testid="atlas-loader" surface="atlas" onretry={retry} />
         </div>
       {/if}
     </div>
@@ -542,6 +545,14 @@
     height: 6px;
     border-radius: 50%;
     background: var(--v4-idle);
+  }
+  .skeleton :global(.read-loader) {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 1;
+    flex-direction: column;
   }
   .skeleton {
     position: absolute;

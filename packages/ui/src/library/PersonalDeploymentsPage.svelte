@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { withReadDeadline } from "../common/read-deadline.js";
+  import ReadLoader from "../common/ReadLoader.svelte";
   import RailButton from "../common/button/RailButton.svelte";
   /**
    * Personal Deployments (US-031). Real hq-deploy apps across the personal
@@ -81,8 +81,7 @@
     refreshing = true;
     loadFailed = false;
     const fetchScope = async (scope: string): Promise<DeployAppsPage> => {
-      // BLANK-1: a read that never answers counts as a failed scope.
-      const result = await withReadDeadline(list(scope), `deploy apps ${scope}`);
+      const result = await list(scope);
       if (!result.ok) throw new Error(`deploy apps ${scope} ${result.reason}`);
       return result.value as DeployAppsPage;
     };
@@ -208,6 +207,7 @@
             <div data-testid="deploy-skeleton" aria-busy="true">
               {#each [0, 1, 2, 3, 4, 5] as i (i)}<div class="skel"></div>{/each}
             </div>
+            <ReadLoader testid="deploy-loader" onretry={() => (loadAttempt += 1)} />
           {/if}
         {:else if rows.length === 0}
           <ListEmptyState

@@ -1,6 +1,6 @@
 <script lang="ts">
+  import ReadLoader from "../../common/ReadLoader.svelte";
   import RailButton from "../../common/button/RailButton.svelte";
-  import { withReadDeadline } from "../../common/read-deadline.js";
   import { dismissable } from "../../common/dismissable.js";
   /**
    * Company Brain (US-028): Knowledge, Policies, Skills, Workers.
@@ -224,8 +224,7 @@
       phase = "shimmer";
     }
     let live = true;
-    // BLANK-1: a read that never answers falls to the failed-read state.
-    void withReadDeadline(refresh(key), "company files")
+    void refresh(key)
       .catch((err) => {
         console.warn("[brain] company files read did not finish", err);
         if (!live || slug !== key) return;
@@ -405,28 +404,28 @@
   <header class="toolbar">
     <h1>{title}</h1>
     {#if page === "policies"}
-      <!-- BLANK-2: counts wait for a read that succeeded. -->
-      {#if !listReadFailed}<span class="meta-line" data-meta-line>{policyGroups.hard.length} hard · {policyGroups.soft.length} soft</span>{/if}
+      <!-- BLANK-2: counts wait for a read that succeeded (BLANK-3: not while loading). -->
+      {#if !listReadFailed && listView.body !== "skeleton"}<span class="meta-line" data-meta-line>{policyGroups.hard.length} hard · {policyGroups.soft.length} soft</span>{/if}
       <div class="tabs" role="tablist">
         {#each ["all", "hard", "soft"] as id (id)}
           <button type="button" role="tab" class="tab" aria-selected={policyFilter === id} onclick={() => (policyFilter = id as PolicyFilter)}>{id === "all" ? "All" : id === "hard" ? "Hard" : "Soft"}</button>
         {/each}
       </div>
     {:else if page === "skills"}
-      {#if listView.count !== null && !listReadFailed}<span class="meta-line" data-meta-line>{listView.count} skills</span>{/if}
+      {#if listView.count !== null && !listReadFailed && listView.body !== "skeleton"}<span class="meta-line" data-meta-line>{listView.count} skills</span>{/if}
       <div class="tabs" role="tablist">
         <button type="button" role="tab" class="tab" aria-selected={skillTab === "library"} onclick={() => (skillTab = "library")}>Library</button>
         <button type="button" role="tab" class="tab" aria-selected={skillTab === "usage"} onclick={() => (skillTab = "usage")}>Usage</button>
       </div>
     {:else if page === "workers"}
-      {#if !listReadFailed}<span class="meta-line" data-meta-line data-testid="brain-worker-count">{workerRows.length} workers</span>{/if}
+      {#if !listReadFailed && listView.body !== "skeleton"}<span class="meta-line" data-meta-line data-testid="brain-worker-count">{workerRows.length} workers</span>{/if}
       <div class="tabs" role="tablist">
         {#each [["all", "All"], ["company", "Company"], ["personal", "Personal overlay"]] as [id, label] (id)}
           <button type="button" role="tab" class="tab" aria-selected={workerScope === id} onclick={() => (workerScope = id as WorkerScopeFilter)}>{label}</button>
         {/each}
       </div>
     {:else}
-      {#if listView.count !== null && !listReadFailed}<span class="meta-line" data-meta-line data-testid="brain-knowledge-count">{listView.count} {listView.count === 1 ? "file" : "files"}</span>{/if}
+      {#if listView.count !== null && !listReadFailed && listView.body !== "skeleton"}<span class="meta-line" data-meta-line data-testid="brain-knowledge-count">{listView.count} {listView.count === 1 ? "file" : "files"}</span>{/if}
       <div class="tabs" role="tablist">
         <button type="button" role="tab" class="tab" aria-selected={lens === "fresh"} onclick={() => (lens = "fresh")}>What's fresh</button>
         <button type="button" role="tab" class="tab" aria-selected={lens === "tree"} onclick={() => (lens = "tree")}>Browse tree</button>
@@ -450,6 +449,7 @@
     <div class="shimmer" data-testid="brain-shimmer" aria-busy="true">
       <div class="bar"></div><div class="bar"></div><div class="bar short"></div>
       <p class="reading" role="status">Reading {listNoun[1]}…</p>
+      <ReadLoader testid="brain-loader" onretry={() => (readAttempt += 1)} />
     </div>
   {:else if page === "skills" && skillTab === "usage"}
     <div class="usage" data-testid="skills-usage">

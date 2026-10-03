@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ReadLoader from "../common/ReadLoader.svelte";
   import RailButton from "../common/button/RailButton.svelte";
   /**
    * Company Goals (US-026). Paints the cached board objectives on the first
@@ -7,7 +8,6 @@
    * session cache because board.json is read-only from this app.
    */
   import { onMount } from "svelte";
-  import { withReadDeadline } from "../common/read-deadline.js";
   import type { PlatformAdapter } from "@hq/platform";
   import "../home/tokens.css";
   import "../common/button/rail-type.css";
@@ -113,7 +113,7 @@
     projectsError = null;
     try {
       configureProjectsApi(adapter.projects);
-      const allProjects = await withReadDeadline(loadLocalProjects(), "company projects");
+      const allProjects = await loadLocalProjects();
       if (slug !== active) return;
       projects = allProjects;
       projectsLoaded = true;
@@ -138,8 +138,7 @@
     error = null;
     try {
       configureProjectsApi(adapter.projects);
-      // BLANK-1: a read that never answers falls to the failed-read state.
-      const goals = await withReadDeadline(loadCompanyGoals(active), "company goals");
+      const goals = await loadCompanyGoals(active);
       if (slug !== active) return;
       const cached = readGoalsCache(storage, active);
       // Key results added in this app stay on their board objective after a refresh.
@@ -265,6 +264,7 @@
     <div class="canvas" aria-busy="true" data-testid="goals-skeleton">
       {#each [0, 1, 2] as i (i)}<div class="shimmer"></div>{/each}
     </div>
+    <ReadLoader testid="goals-loader" onretry={() => void refresh(slug)} />
   {:else}
     <div class="canvas">
       {#if !failedEmpty}<div class="sech">Objectives · {period} <span class="grow"></span><span class="plain">Progress averages each objective's KRs</span></div>{/if}

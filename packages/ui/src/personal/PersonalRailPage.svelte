@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { withReadDeadline } from "../common/read-deadline.js";
+  import ReadLoader from "../common/ReadLoader.svelte";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import RailButton from "../common/button/RailButton.svelte";
   import { dismissable } from "../common/dismissable.js";
@@ -115,8 +115,7 @@
   async function refresh(force: boolean): Promise<void> {
     if (secretsState === "error") secretsState = "loading";
     try {
-      // BLANK-1: a read that never answers falls to the failed-read state.
-      const loaded = await withReadDeadline(companyStore.loadSecrets("personal", force), "personal secrets");
+      const loaded = await companyStore.loadSecrets("personal", force);
       const secrets = personalSecretsFromSource(Array.isArray(loaded) ? loaded : []);
       data = { ...data, secrets };
       writePersonalRailCache("personal", data);
@@ -151,7 +150,7 @@
   async function refreshIntegrations(): Promise<void> {
     if (integrationsState === "error") integrationsState = "loading";
     try {
-      const next = await withReadDeadline(loadPersonalIntegrations(integrationsApi), "personal connections");
+      const next = await loadPersonalIntegrations(integrationsApi);
       integrations = next;
       writeIntegrationsCache(next);
       integrationsState = "ready";
@@ -258,11 +257,11 @@
       <button class="nav" type="button" aria-current={secretTab === "standard"} onclick={() => (secretTab = "standard")}>Standard</button>
       <button class="nav" type="button" aria-current={secretTab === "proxy"} onclick={() => (secretTab = "proxy")}>Proxy-only</button>
       <p class="sec">Scopes</p>
-      <button class="nav" type="button" aria-current="true" data-testid="scope-personal">Personal {#if secretsState !== "error"}<span>{data.secrets.length}</span>{/if}</button>
+      <button class="nav" type="button" aria-current="true" data-testid="scope-personal">Personal {#if secretsState === "ready"}<span>{data.secrets.length}</span>{/if}</button>
       <p class="sec">Needs attention</p>
       <button class="nav" type="button" aria-current={secretTab === "stale"} onclick={() => (secretTab = "stale")}>Not rotated in 90 d</button>
     {:else if !useFixtures}
-      <button class="nav" type="button" aria-current="true" data-testid="connections-personal-nav">Personal {#if integrationsState !== "error"}<span>{integrations.length}</span>{/if}</button>
+      <button class="nav" type="button" aria-current="true" data-testid="connections-personal-nav">Personal {#if integrationsState === "ready"}<span>{integrations.length}</span>{/if}</button>
     {:else}
       <button class="nav" type="button" aria-current={connectionTab === "connected"} onclick={() => (connectionTab = "connected")}>Connected <span>{connectedCount}</span></button>
       <button class="nav" type="button" aria-current={connectionTab === "available"} onclick={() => (connectionTab = "available")}>Available</button>
@@ -276,7 +275,7 @@
       <header class="toolbar">
         <h1>Secrets</h1>
         <!-- BLANK-2: counts wait for a read that succeeded. -->
-        {#if secretsState !== "error"}<span class="count" data-testid="personal-secrets-count">{countLabel("Secrets", secretRows.length)}</span>{/if}
+        {#if secretsState === "ready"}<span class="count" data-testid="personal-secrets-count">{countLabel("Secrets", secretRows.length)}</span>{/if}
         <span class="sub">Values never shown</span>
         <span class="grow"></span>
         <input class="search" placeholder="Search by name" bind:value={query} />
@@ -299,6 +298,7 @@
             <div data-testid="personal-secrets-skeleton" aria-busy="true">
               {#each [0, 1, 2, 3] as i (i)}<div class="skel"></div>{/each}
             </div>
+            <ReadLoader testid="personal-secrets-loader" onretry={() => void refresh(true)} />
           {:else if secretsState === "error"}
             <div class="state" role="alert" data-testid="personal-secrets-error">
               <p>{secretsError}</p>
@@ -377,6 +377,7 @@
             <div data-testid="personal-integrations-skeleton" aria-busy="true">
               {#each [0, 1, 2] as i (i)}<div class="skel"></div>{/each}
             </div>
+            <ReadLoader testid="personal-integrations-loader" onretry={() => void refreshIntegrations()} />
           {:else if integrationsState === "error"}
             <div class="state" role="alert" data-testid="personal-integrations-error">
               <p>{integrationsError}</p>

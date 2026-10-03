@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ReadLoader from "../common/ReadLoader.svelte";
   /**
    * Company Projects — portfolio Kanban (DESKTOP-004).
    *
@@ -8,7 +9,6 @@
    * filter share one control row; New project remains the primary action.
    */
   import { onMount } from "svelte";
-  import { withReadDeadline } from "../common/read-deadline.js";
   import RailButton from "../common/button/RailButton.svelte";
   import { publishCompanyPageCount } from "../shell/company-page-counts.svelte.js";
   import type { PlatformAdapter } from "@hq/platform";
@@ -591,15 +591,14 @@
 
     void (async () => {
       try {
-        // BLANK-1: a read that never answers falls to the failed-read state.
-        const [goals, allProjects] = await withReadDeadline(Promise.all([
+        const [goals, allProjects] = await Promise.all([
           // A goals read failure keeps the cached goals; it never blanks the board.
           loadCompanyGoals(activeSlug).catch((err: unknown) => {
             console.warn(`loadCompanyGoals(${activeSlug}) failed:`, err);
             return null;
           }),
           loadLocalProjects(),
-        ]), "company projects");
+        ]);
         if (cancelled) return;
         const cachedGoals = readGoalsCache(goalsStorage, activeSlug);
         objectives = goals
@@ -987,7 +986,7 @@
     <header class="projects-header">
       <div class="projects-heading">
         <h2 id="company-projects-title">Projects</h2>
-        {#if !failedEmpty}
+        {#if !failedEmpty && !loading}
         <span
           class="projects-count meta-line"
           data-meta-line
@@ -1141,6 +1140,7 @@
             </div>
           {/each}
         </div>
+        <ReadLoader testid="projects-loader" onretry={() => (loadAttempt += 1)} />
       {:else if failedEmpty}
         <!-- BLANK-2: the failed line above stands in for the empty board. -->
       {:else if companyProjects.length === 0}

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { withReadDeadline } from "../../common/read-deadline.js";
+  import ReadLoader from "../../common/ReadLoader.svelte";
   /**
    * VaultExplorer: the Files page. An Obsidian-style, read-only explorer over
    * the local HQ folder, one vault at a time: Personal, or a company the
@@ -120,11 +120,7 @@
     const api = vaultApi;
     if (!api) return;
     summaryLoading = true;
-    // BLANK-1: a summary that never answers falls to the failed-read state.
-    const res = await withReadDeadline(
-      ensureScope(v).then(() => api.summary(v.root, includeSystem)),
-      "vault summary",
-    ).catch((err: unknown) => {
+    const res = await ensureScope(v).then(() => api.summary(v.root, includeSystem)).catch((err: unknown) => {
       console.warn("VaultExplorer: vault summary did not finish:", err);
       return { ok: false as const, message: "vault summary did not finish" };
     });
@@ -372,7 +368,7 @@
         </label>
       {/if}
       <span class="vx-count">
-        {#if summaryLoading}Indexing…{:else if summary}{plural(summary.notes, "note")} · {plural(summary.files, "file")}{summary.truncated ? "+" : ""}{/if}
+        {#if summaryLoading}{:else if summary}{plural(summary.notes, "note")} · {plural(summary.files, "file")}{summary.truncated ? "+" : ""}{/if}
       </span>
     </footer>
   </aside>
@@ -446,7 +442,7 @@
                 <div><strong>{summary.links.toLocaleString()}</strong><span>{summary.links === 1 ? "link" : "links"}</span></div>
               </div>
             {:else if summaryLoading}
-              <p class="vx-muted">Reading the vault…</p>
+              <ReadLoader testid="vault-home-loader" onretry={retryVault} />
             {:else if summaryError}
               <div class="vx-load-error" role="alert" data-testid="vault-home-error">
                 <p class="vx-muted">{summaryError}</p>

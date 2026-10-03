@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ReadLoader from "../common/ReadLoader.svelte";
   import RailButton from "../common/button/RailButton.svelte";
   import { dismissable } from "../common/dismissable.js";
   /**
@@ -30,9 +31,7 @@
     previewCron,
     readOutpostCache,
     visibleLogWindow,
-    withReadTimeout,
     writeOutpostCache,
-    OUTPOST_READ_TIMEOUT_MS,
     type JobAlert,
     type JobCadence,
     type JobRunMode,
@@ -97,14 +96,18 @@
       if (cached) data = cached;
     });
     let live = true;
-    let settled = false;
+    // BLANK-3: no timer ends a pending read. One read at a time: a background
+    // refresh skips while a read is still out; Try again starts a fresh one.
+    let inflight = false;
     // The visibility gate only skips background refreshes. The first read always
     // runs: a window macOS reports hidden (occluded, behind another app) must
     // still leave "Reading your Outpost…" (QA-084).
     const run = async (background = false): Promise<void> => {
       if (background && typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      if (background && inflight) return;
+      inflight = true;
       try {
-        const next = await withReadTimeout(read());
+        const next = await read();
         if (!live) return;
         const merged = { ...next, fetchedAt: next.fetchedAt ?? new Date().toISOString() };
         writeOutpostCache("personal", merged);
@@ -114,20 +117,13 @@
         console.error("[outpost] refresh failed", err);
         if (live) refreshFailed = true;
       } finally {
-        settled = true;
+        inflight = false;
         if (live) now = Date.now();
       }
     };
     void run();
     retry = () => void run();
     const timer = setInterval(() => void run(true), OUTPOST_REFRESH_MS);
-    // Backstop: whatever happens to the read, loading ends within the bound.
-    const deadline = setTimeout(() => {
-      if (live && !settled && data.provisioned === null) {
-        console.error("[outpost] first read did not settle in time");
-        refreshFailed = true;
-      }
-    }, OUTPOST_READ_TIMEOUT_MS + 1_000);
     const onVisible = () => {
       if (document.visibilityState === "visible") void run(true);
     };
@@ -136,7 +132,6 @@
     return () => {
       live = false;
       clearInterval(timer);
-      clearTimeout(deadline);
       if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVisible);
       stopTick();
     };
@@ -286,7 +281,7 @@
         <RailButton icon="refresh" type="button" data-testid="outpost-try-again" onclick={() => retry()}>Try again</RailButton>
       </div>
     {:else if data.provisioned === null && tab !== "logs"}
-      <div class="empty sub" data-testid="outpost-loading">Reading your Outpost…</div>
+      <div class="empty sub" data-testid="outpost-loading"><ReadLoader testid="outpost-loader" onretry={() => retry()} /></div>
     {:else if offline}
       <div class="banner" role="alert" data-testid="outpost-offline-banner" title={lastReport.title}>
         {lastReport.text}

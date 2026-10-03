@@ -387,7 +387,13 @@ async function refreshOnce(refreshRevision: number, epoch: number): Promise<void
     // locally prevents a pre-mutation poll from partially repainting the UI.
     const [calendarSnapshot, recordedResult] = await Promise.all([
       loadCalendarsForAccounts(meetings, accts ?? (accountsFailed ? accounts : [])),
-      loadRecordedMeetings(meetings, members ?? []),
+      loadRecordedMeetings(meetings, members ?? [], (rows) => {
+        // BLANK-3: a scope that answered paints at once; a slow scope never
+        // holds the rows that already arrived. The full pass below still owns
+        // the final list.
+        if (epoch !== sessionEpoch || refreshRevision !== mutationRevision) return;
+        if (rows.length >= recorded.length) recorded = onlyOwnMeetings(rows, fullBots ?? allBots, evts ?? []);
+      }),
     ]);
 
     // A mutation committed while this pass was in flight. Its forced trailing
@@ -582,6 +588,8 @@ function onlyOwnMeetings(
 async function loadRecordedMeetings(
   meetings: MeetingsApi,
   members: CompanyMembership[],
+  /** BLANK-3: rows from the scopes that have answered so far, as each answers. */
+  onPartial?: (rows: RecordedMeeting[]) => void,
 ): Promise<{ rows: RecordedMeeting[] | null; error: string }> {
   const companyIds = Array.from(
     new Set(
@@ -592,10 +600,14 @@ async function loadRecordedMeetings(
   );
   const scopes: Array<string | null> = [null, ...companyIds];
   let failed = 0;
+  const answered: RecordedMeeting[][] = [];
   const lists = await Promise.all(
     scopes.map(async (companyId) => {
       try {
-        return parseRecordedMeetings(unwrap(await meetings.listRecorded(companyId)));
+        const list = parseRecordedMeetings(unwrap(await meetings.listRecorded(companyId)));
+        answered.push(list);
+        if (onPartial && list.length > 0) onPartial(mergeRecordedMeetings(answered));
+        return list;
       } catch (err) {
         failed += 1;
         console.error(`meetings listRecorded failed for ${companyId ?? "personal"}:`, err);

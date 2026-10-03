@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { withReadDeadline } from "../../common/read-deadline.js";
+  import ReadLoader from "../../common/ReadLoader.svelte";
   /**
    * VaultTree: the lazy folder tree for one vault in the Files explorer.
    *
@@ -61,8 +61,7 @@
   async function load(path: string): Promise<void> {
     const gen = generation;
     loading = { ...loading, [path]: true };
-    // BLANK-1: a read that never answers falls to the failed-read state.
-    const res = await withReadDeadline(listDir(path), "vault folder").catch((err: unknown) => {
+    const res = await listDir(path).catch((err: unknown) => {
       console.warn("VaultTree: folder read did not finish:", path, err);
       return { ok: false as const, message: "folder read did not finish" };
     });
@@ -260,6 +259,7 @@
         <span style={`width:${w}%`}></span>
       {/each}
     </div>
+    <ReadLoader testid="vault-tree-loader" onretry={() => { if (onretry) onretry(); else void load(vault.root); }} />
   {:else if rows.length === 0}
     <p class="vt-note">This vault is empty.</p>
   {:else}

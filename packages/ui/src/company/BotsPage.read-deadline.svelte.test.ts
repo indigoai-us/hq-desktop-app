@@ -6,7 +6,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, unmount } from "svelte";
-import { READ_DEADLINE_MS } from "../common/read-deadline.js";
+import { expectPendingRead } from "../common/read-loader.test-support.js";
 import BotsPage from "./BotsPage.svelte";
 
 let component: ReturnType<typeof mount> | null = null;
@@ -19,8 +19,8 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-describe("BotsPage read deadline (BLANK-1)", () => {
-  it("a roster read that never answers ends in the failed-read state", async () => {
+describe("BotsPage pending read (BLANK-3)", () => {
+  it("a roster read that never answers keeps loading with a waiting line and Try again, never a failed state", async () => {
     vi.useFakeTimers();
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     const okEmpty = async () => ({ ok: true, value: [] });
@@ -32,12 +32,7 @@ describe("BotsPage read deadline (BLANK-1)", () => {
     component = mount(BotsPage, { target: document.body, props: { companyUid: "cmp_blank1", adapter, localBots: [], companies: [] } as never });
     flushSync();
     expect(document.querySelector("[data-testid='bots-shimmer']")).toBeTruthy();
-    await vi.advanceTimersByTimeAsync(READ_DEADLINE_MS + 10);
-    flushSync();
-    expect(document.querySelector("[data-testid='bots-shimmer']")).toBeNull();
-    expect(document.querySelector("[data-testid='bots-load-error']")?.textContent).toContain("Couldn't read this company's cloud bots.");
-    expect(document.querySelector("[data-testid='bots-retry']")).toBeTruthy();
-    expect(logged).toHaveBeenCalled();
+    await expectPendingRead(document, "bots-loader");
     // BLANK-2: the failed read with nothing loaded shows no zero count.
     expect(document.querySelector("[data-testid='bots-count']")).toBeNull();
     expect(document.body.textContent).not.toMatch(/\b0 bots\b/);

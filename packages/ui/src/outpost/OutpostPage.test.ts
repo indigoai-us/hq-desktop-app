@@ -2,7 +2,9 @@
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import OutpostPage from "./OutpostPage.svelte";
-import { clearOutpostCache, EMPTY_INTERPOLATION, OUTPOST_READ_TIMEOUT_MS, writeOutpostCache, lastResultLabel, type OutpostRefresher } from "./outpost-model.js";
+import { LOADING_RETRY_AFTER_MS } from "../common/read-deadline.js";
+import { expectPendingRead } from "../common/read-loader.test-support.js";
+import { clearOutpostCache, EMPTY_INTERPOLATION, writeOutpostCache, lastResultLabel, type OutpostRefresher } from "./outpost-model.js";
 import { fixtureOutpost } from "./outpost.fixture.js";
 
 describe("US-034 OutpostPage", () => {
@@ -28,7 +30,7 @@ describe("US-034 OutpostPage", () => {
     flushSync();
   }
 
-  it("Logs shows the no-logs empty state at once, and a hung read clears Refreshing within the timeout (QA-084)", async () => {
+  it("Logs shows the no-logs empty state at once; a hung read is never turned into a failure (QA-084, BLANK-3)", async () => {
     vi.useFakeTimers();
     clearOutpostCache("personal");
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -37,11 +39,15 @@ describe("US-034 OutpostPage", () => {
     expect(target.querySelector("[data-testid='outpost-no-logs']")?.textContent).toBe("No logs from the Outpost yet");
     expect(target.querySelector("[data-testid='outpost-loading']")).toBeNull();
     expect(target.querySelector("[data-testid='outpost-freshness']")?.textContent).toBe("Refreshing…");
-    await vi.advanceTimersByTimeAsync(OUTPOST_READ_TIMEOUT_MS + 1);
+    await vi.advanceTimersByTimeAsync(LOADING_RETRY_AFTER_MS + 1);
     flushSync();
-    expect(target.querySelector("[data-testid='outpost-freshness']")?.textContent).not.toBe("Refreshing…");
-    expect(errors).toHaveBeenCalledWith("[outpost] refresh failed", expect.any(Error));
-    expect(target.querySelector("[data-testid='outpost-try-again']")).not.toBeNull();
+    expect(target.querySelector("[data-testid='outpost-no-logs']")).not.toBeNull();
+    expect(errors).not.toHaveBeenCalled();
+    expect(target.querySelector("[data-testid='outpost-load-error']")).toBeNull();
+    expect(target.textContent).not.toMatch(/Couldn't/);
+    // Overview keeps the shared loader with a waiting line and Try again.
+    openTab(target, "Overview");
+    await expectPendingRead(target, "outpost-loader");
   });
 
   it("reads on open even when the window reports hidden, so loading always ends (QA-084)", async () => {

@@ -4,7 +4,7 @@
 // plain copy and Retry.
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { READ_DEADLINE_MS } from "../common/read-deadline.js";
+import { expectPendingRead } from "../common/read-loader.test-support.js";
 import PersonalRailPage from "./PersonalRailPage.svelte";
 import { clearPersonalRailCache } from "./personal-rail-model.js";
 import { clearIntegrationsCache } from "./personal-integrations.js";
@@ -29,24 +29,21 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-describe("PersonalRailPage read deadline (BLANK-1)", () => {
-  it("a secrets read that never answers ends in the failed-read state", async () => {
+describe("PersonalRailPage pending read (BLANK-3)", () => {
+  it("a secrets read that never answers keeps loading with a waiting line and Try again, never a failed state", async () => {
     vi.useFakeTimers();
     vi.spyOn(console, "warn").mockImplementation(() => {});
     component = mount(PersonalRailPage, { target: document.body, props: { page: "secrets" } });
     flushSync();
     expect(document.querySelector("[data-testid='personal-secrets-skeleton']")).toBeTruthy();
-    await vi.advanceTimersByTimeAsync(READ_DEADLINE_MS + 10);
-    flushSync();
-    expect(document.querySelector("[data-testid='personal-secrets-skeleton']")).toBeNull();
-    expect(document.querySelector("[data-testid='personal-secrets-error']")?.textContent).toContain("Could not reach your vault.");
-    expect(document.querySelector("[data-testid='personal-secrets-retry']")).toBeTruthy();
+    await expectPendingRead(document, "personal-secrets-loader");
+    expect(document.querySelector("[data-testid='personal-secrets-error']")).toBeNull();
     // BLANK-2: no zero counts next to the failed read.
     expect(document.querySelector("[data-testid='personal-secrets-count']")).toBeNull();
     expect(document.querySelector("[data-testid='scope-personal']")?.textContent?.trim()).toBe("Personal");
   });
 
-  it("a connections read that never answers ends in the failed-read state", async () => {
+  it("a connections read that never answers keeps loading with a waiting line and Try again, never a failed state", async () => {
     vi.useFakeTimers();
     const logged = vi.spyOn(console, "warn").mockImplementation(() => {});
     const never = () => new Promise(() => {});
@@ -56,12 +53,9 @@ describe("PersonalRailPage read deadline (BLANK-1)", () => {
     });
     flushSync();
     expect(document.querySelector("[data-testid='personal-integrations-skeleton']")).toBeTruthy();
-    await vi.advanceTimersByTimeAsync(READ_DEADLINE_MS + 10);
-    flushSync();
-    expect(document.querySelector("[data-testid='personal-integrations-skeleton']")).toBeNull();
-    expect(document.querySelector("[data-testid='personal-integrations-error']")?.textContent).toContain("Could not load your connections.");
-    expect(document.querySelector("[data-testid='personal-integrations-retry']")).toBeTruthy();
+    await expectPendingRead(document, "personal-integrations-loader");
+    expect(document.querySelector("[data-testid='personal-integrations-error']")).toBeNull();
     expect(document.querySelector("[data-testid='connections-personal-nav']")?.textContent?.trim()).toBe("Personal");
-    expect(logged).toHaveBeenCalled();
+    expect(logged).not.toHaveBeenCalled();
   });
 });

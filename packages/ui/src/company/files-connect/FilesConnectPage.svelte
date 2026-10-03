@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { withReadDeadline } from "../../common/read-deadline.js";
+  import ReadLoader from "../../common/ReadLoader.svelte";
   import RailButton from "../../common/button/RailButton.svelte";
   /**
    * Vault, Integrations, Secrets, Deployments (US-029).
@@ -153,15 +153,13 @@
   });
 
   async function refresh(s: string, alive: () => boolean): Promise<void> {
-    // BLANK-1: the two reads run side by side so each settles within the bound.
     await Promise.all([refreshSecrets(s, alive), refreshDeployments(s, alive), refreshIntegrations(s, alive)]);
     writeFilesConnectCache(s, data);
   }
 
   async function refreshSecrets(s: string, alive: () => boolean): Promise<void> {
     try {
-      // BLANK-1: a read that never answers falls to the failed-read state.
-      const loaded = await withReadDeadline(companyStore.loadSecrets(s, false), "company secrets");
+      const loaded = await companyStore.loadSecrets(s, false);
       if (!alive()) return;
       secrets = secretRowsFromSource(Array.isArray(loaded) ? loaded : []);
       secretsError = null;
@@ -179,11 +177,11 @@
       const list = listDeployApps ?? adapter?.company?.listDeployApps;
       let rows: DeploymentRowModel[];
       if (list) {
-        const res = await withReadDeadline(list(s), "company deployments");
+        const res = await list(s);
         if (!res.ok) throw new Error(res.message ?? res.reason);
         rows = companyDeploymentRows(res.value as DeployAppsPage, s);
       } else {
-        const loaded = await withReadDeadline(companyStore.loadDeployments(s, false), "company deployments");
+        const loaded = await companyStore.loadDeployments(s, false);
         rows = deploymentRowsFromSource(Array.isArray(loaded) ? loaded : [], s);
       }
       if (!alive()) return;
@@ -207,7 +205,7 @@
       return;
     }
     try {
-      const res = await withReadDeadline(list(companyUid), "company integrations");
+      const res = await list(companyUid);
       if (!res.ok) throw new Error(res.message ?? res.reason);
       const rows = companyIntegrationRows(res.value);
       if (!alive()) return;
@@ -289,8 +287,7 @@
     vaultRootSummary = cached ? folderSummary(cached) : null;
     if (!files) return;
     let alive = true;
-    // BLANK-1: the folder summary line settles within the shared bound.
-    withReadDeadline(loadVaultChildren(root), "vault folder summary")
+    loadVaultChildren(root)
       .then((entries) => {
         if (alive) vaultRootSummary = folderSummary(entries);
       })
@@ -784,7 +781,7 @@
               <span class="empty-title">Select a file</span>
               {#if showVaultTree}
                 <p class="mono" title={vaultRoot}>{vaultRoot}</p>
-                <p data-testid="vault-summary">{vaultRootSummary ?? "Reading folder…"}</p>
+                {#if vaultRootSummary === null}<ReadLoader testid="vault-summary-loader" onretry={() => (treeNonce += 1)} />{:else}<p data-testid="vault-summary">{vaultRootSummary}</p>{/if}
               {:else}
                 <p>Pick a recently changed file to preview it.</p>
               {/if}
@@ -839,6 +836,7 @@
       <div class="list" data-testid="integrations-list">
         {#if connectedLoading}
           {@render skeletonRows()}
+          <ReadLoader testid="integrations-loader" onretry={retryRefresh} />
         {:else if connectedFailed}
           <div class="empty" role="alert" data-testid="integrations-empty">
             <span class="empty-title">{integrationsError}</span>
@@ -907,6 +905,7 @@
       <div class="list" data-testid="secrets-list">
         {#if secrets === null}
           {@render skeletonRows()}
+          <ReadLoader testid="secrets-loader" onretry={retryRefresh} />
         {:else if secretRows.length === 0}
           {#if secretsError}
             <div class="empty" role="alert" data-testid="secrets-empty">
@@ -969,6 +968,7 @@
     </header>
     {#if deployments === null}
       <div class="list" data-testid="deployments-skeleton" aria-busy="true">{@render skeletonRows()}</div>
+      <ReadLoader testid="deployments-loader" onretry={retryRefresh} />
     {:else if deployments.length === 0}
       <div class="empty" data-testid="deployments-empty">
         {#if deploymentsError}
