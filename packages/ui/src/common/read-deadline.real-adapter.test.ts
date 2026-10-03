@@ -184,11 +184,11 @@ describe("pending reads through the real desktop adapter (BLANK-3)", () => {
         deployActions: true,
       },
     });
-    await until("[data-testid='file-tree-loading']");
+    // OWNER-R13: the Vault is the Files explorer; its tree read owns the loader.
+    await until("[data-testid='vault-tree-loader']");
     expect(commands).toContain("set_desktop_active_company");
-    await expectPendingRead(document, "file-tree-loader");
-    expect(document.querySelector("[data-testid='vault-summary-loader']")).toBeTruthy();
-    expect(document.querySelector("[data-testid='vault-summary-loader-retry']")).toBeTruthy();
+    await expectPendingRead(document, "vault-tree-loader");
+    expect(document.querySelector("[data-testid='vault-tree-loader-retry']")).toBeTruthy();
   });
 
   it.each([

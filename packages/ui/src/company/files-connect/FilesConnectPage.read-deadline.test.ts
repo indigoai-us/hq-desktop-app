@@ -60,7 +60,7 @@ describe("FilesConnectPage pending read (BLANK-3)", () => {
 });
 
 describe("FilesConnectPage vault summary pending read (BLANK-3)", () => {
-  it("the folder summary shows the loader, not a bare Reading folder… line", async () => {
+  it("a pending vault read shows the loader, not a bare Reading folder… line", async () => {
     vi.useFakeTimers();
     vi.spyOn(console, "error").mockImplementation(() => {});
     const never = () => new Promise(() => {});
@@ -77,7 +77,8 @@ describe("FilesConnectPage vault summary pending read (BLANK-3)", () => {
       } as never,
     });
     flushSync();
-    await expectPendingRead(document, "vault-summary-loader");
+    // OWNER-R13: the Vault is the Files explorer; its tree read owns the loader.
+    await expectPendingRead(document, "vault-tree-loader");
     expect(document.body.textContent ?? "").not.toContain("Reading folder…");
   });
 });
