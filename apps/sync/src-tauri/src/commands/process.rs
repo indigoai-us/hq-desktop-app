@@ -506,6 +506,17 @@ fn process_registry() -> &'static Arc<Mutex<ProcessRegistry>> {
     PROCESS_REGISTRY.get_or_init(|| Arc::new(Mutex::new(ProcessRegistry::default())))
 }
 
+/// Take a registry whose data is still a valid map after the previous holder
+/// panicked. Callers use this only for a read or a single insert, remove, or
+/// flag write.
+fn recover_registry(
+    registry: &Mutex<ProcessRegistry>,
+) -> std::sync::MutexGuard<'_, ProcessRegistry> {
+    registry
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn cancellation_records() -> &'static Arc<(Mutex<CancellationRecordsState>, Condvar)> {
     CANCELLATION_RECORDS.get_or_init(|| {
         Arc::new((
@@ -616,8 +627,15 @@ fn cancellation_requested_for_generation(handle: &str, generation: u64) -> bool 
     if is_cancelled_for_generation(handle, generation) {
         return true;
     }
-    cancellation_records()
-        .0
+    cancellation_record_present(&cancellation_records().0, handle, generation)
+}
+
+fn cancellation_record_present(
+    records: &Mutex<CancellationRecordsState>,
+    handle: &str,
+    generation: u64,
+) -> bool {
+    records
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .records
@@ -673,10 +691,12 @@ fn next_process_generation() -> u64 {
 /// signature. This intentionally retains `pre_register_handle`'s overwrite
 /// semantics for its small set of pre-spawn callers.
 pub fn pre_register_handle_gen(handle: &str) -> u64 {
+    pre_register_handle_gen_in(process_registry(), handle)
+}
+
+fn pre_register_handle_gen_in(registry: &Mutex<ProcessRegistry>, handle: &str) -> u64 {
     let generation = next_process_generation();
-    process_registry()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+    recover_registry(registry)
         .active
         .insert(handle.to_string(), ProcessEntry::new(generation));
     generation
@@ -690,10 +710,22 @@ pub fn pre_register_handle(handle: &str) {
 /// acquired it. Deferred cleanup must retain this value rather than looking a
 /// handle up after it might have been reused.
 pub fn try_register_handle_gen(handle: &str) -> Option<u64> {
+    try_register_handle_gen_in(process_registry(), handle)
+}
+
+/// Reserve a generation. A poisoned registry still panics here.
+///
+/// `spawn_process` reserves, then `Command::spawn`s, then attaches. Attach
+/// writes the pid and then either the cancelled flag or a job handle.
+/// `deregister_generation` moves that entry between the active and retired
+/// maps. Those steps are not single updates, so recovering them could continue
+/// from a half-written entry. Recovering only this reservation is worse: the
+/// child is already alive when attach panics, Unix `Child`'s drop neither
+/// kills nor reaps it, and the reservation stays registered. Panicking before
+/// the spawn is the same behavior as main.
+fn try_register_handle_gen_in(registry: &Mutex<ProcessRegistry>, handle: &str) -> Option<u64> {
     use std::collections::hash_map::Entry;
-    let mut reg = process_registry()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut reg = registry.lock().unwrap();
     if UPDATE_QUIESCE_REQUESTED.load(Ordering::Acquire) {
         return None;
     }
@@ -722,9 +754,11 @@ pub fn try_register_handle(handle: &str) -> bool {
 /// snapshot only; any actor that mutates state must pass the returned value
 /// back to a generation-checked operation.
 pub fn generation_for_handle(handle: &str) -> Option<u64> {
-    process_registry()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+    generation_for_handle_in(process_registry(), handle)
+}
+
+fn generation_for_handle_in(registry: &Mutex<ProcessRegistry>, handle: &str) -> Option<u64> {
+    recover_registry(registry)
         .active
         .get(handle)
         .map(|entry| entry.generation)
@@ -794,9 +828,25 @@ fn register_process_for_generation_with_containment(
     pid: u32,
     containment: &mut ChildContainment,
 ) -> ProcessAttachOutcome {
+    register_process_for_generation_with_containment_in(
+        process_registry(),
+        handle,
+        generation,
+        pid,
+        containment,
+    )
+}
+
+fn register_process_for_generation_with_containment_in(
+    registry: &Mutex<ProcessRegistry>,
+    handle: &str,
+    generation: u64,
+    pid: u32,
+    containment: &mut ChildContainment,
+) -> ProcessAttachOutcome {
     #[cfg(target_os = "windows")]
     let process_start_time = windows_process_creation_time(pid);
-    let mut registry = process_registry().lock().unwrap();
+    let mut registry = registry.lock().unwrap();
     let Some(entry) = registry
         .active
         .get_mut(handle)
@@ -927,11 +977,11 @@ fn close_process_entry(entry: ProcessEntry) {
 fn close_process_entry(_entry: ProcessEntry) {}
 
 pub fn deregister_process(handle: &str) {
-    let removed = process_registry()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .active
-        .remove(handle);
+    deregister_process_in(process_registry(), handle);
+}
+
+fn deregister_process_in(registry: &Mutex<ProcessRegistry>, handle: &str) {
+    let removed = recover_registry(registry).active.remove(handle);
     if let Some(entry) = removed {
         close_process_entry(entry);
     }
@@ -942,8 +992,16 @@ pub fn deregister_process(handle: &str) {
 /// owner completes. This lets a delayed escalation kill the old child without
 /// ever resolving through a replacement generation's handle.
 pub fn deregister_generation(handle: &str, generation: u64) -> bool {
+    deregister_generation_in(process_registry(), handle, generation)
+}
+
+fn deregister_generation_in(
+    registry: &Mutex<ProcessRegistry>,
+    handle: &str,
+    generation: u64,
+) -> bool {
     let (removed, matched) = {
-        let mut reg = process_registry().lock().unwrap();
+        let mut reg = registry.lock().unwrap();
         let active_matches = reg
             .active
             .get(handle)
@@ -997,20 +1055,22 @@ pub fn abandon_process_generation(handle: &str, generation: u64) -> bool {
 }
 
 pub fn lookup_pid(handle: &str) -> Option<u32> {
-    process_registry()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+    lookup_pid_in(process_registry(), handle)
+}
+
+fn lookup_pid_in(registry: &Mutex<ProcessRegistry>, handle: &str) -> Option<u32> {
+    recover_registry(registry)
         .active
         .get(handle)
         .and_then(|e| e.pid)
 }
 
 pub fn is_registered(handle: &str) -> bool {
-    process_registry()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .active
-        .contains_key(handle)
+    is_registered_in(process_registry(), handle)
+}
+
+fn is_registered_in(registry: &Mutex<ProcessRegistry>, handle: &str) -> bool {
+    recover_registry(registry).active.contains_key(handle)
 }
 
 /// Content-neutral accounting read from a watcher's retained Job Object at the
@@ -1766,9 +1826,11 @@ fn to_wide(value: &str) -> Vec<u16> {
 /// `recording:error` events on an *unexpected* sidecar death, not when the app
 /// is intentionally tearing the SDK down.
 pub fn is_cancelled(handle: &str) -> bool {
-    process_registry()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+    is_cancelled_in(process_registry(), handle)
+}
+
+fn is_cancelled_in(registry: &Mutex<ProcessRegistry>, handle: &str) -> bool {
+    recover_registry(registry)
         .active
         .get(handle)
         .map(|e| e.cancelled)
@@ -1778,9 +1840,15 @@ pub fn is_cancelled(handle: &str) -> bool {
 /// Generation-aware cancellation lookup for owners that can outlive a handle
 /// reuse (notably the daemon watcher callback).
 pub fn is_cancelled_for_generation(handle: &str, generation: u64) -> bool {
-    let registry = process_registry()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    is_cancelled_for_generation_in(process_registry(), handle, generation)
+}
+
+fn is_cancelled_for_generation_in(
+    registry: &Mutex<ProcessRegistry>,
+    handle: &str,
+    generation: u64,
+) -> bool {
+    let registry = recover_registry(registry);
     entry_for_generation(&registry, handle, generation)
         .map(|entry| entry.cancelled)
         .unwrap_or(false)
@@ -1826,9 +1894,15 @@ pub(crate) fn clear_cancellation_record_for_test(handle: &str, generation: u64) 
 }
 
 fn revoke_signal_authority_for_generation(handle: &str, generation: u64) -> bool {
-    let mut reg = process_registry()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    revoke_signal_authority_for_generation_in(process_registry(), handle, generation)
+}
+
+fn revoke_signal_authority_for_generation_in(
+    registry: &Mutex<ProcessRegistry>,
+    handle: &str,
+    generation: u64,
+) -> bool {
+    let mut reg = recover_registry(registry);
     entry_for_generation_mut(&mut reg, handle, generation)
         .map(|entry| revoke_signal_authority_locked(entry, generation))
         .unwrap_or(false)
@@ -4397,9 +4471,11 @@ pub fn registered_pids() -> Vec<(String, u32)> {
 }
 
 fn registered_processes() -> Vec<RegisteredProcess> {
-    process_registry()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+    registered_processes_in(process_registry())
+}
+
+fn registered_processes_in(registry: &Mutex<ProcessRegistry>) -> Vec<RegisteredProcess> {
+    recover_registry(registry)
         .active
         .iter()
         .filter_map(|(handle, entry)| {
@@ -4417,9 +4493,13 @@ fn registered_processes() -> Vec<RegisteredProcess> {
 }
 
 fn registered_processes_including_retired() -> Vec<RegisteredProcess> {
-    let registry = process_registry()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    registered_processes_including_retired_in(process_registry())
+}
+
+fn registered_processes_including_retired_in(
+    registry: &Mutex<ProcessRegistry>,
+) -> Vec<RegisteredProcess> {
+    let registry = recover_registry(registry);
     let mut processes: Vec<_> = registry
         .active
         .iter()
@@ -4453,9 +4533,15 @@ fn registered_processes_including_retired() -> Vec<RegisteredProcess> {
 /// the registry lock. Mismatched PIDs are stale and are intentionally never
 /// signalled during app exit.
 fn registered_process_for(handle: &str, pid: u32) -> Option<RegisteredProcess> {
-    process_registry()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+    registered_process_for_in(process_registry(), handle, pid)
+}
+
+fn registered_process_for_in(
+    registry: &Mutex<ProcessRegistry>,
+    handle: &str,
+    pid: u32,
+) -> Option<RegisteredProcess> {
+    recover_registry(registry)
         .active
         .get(handle)
         .filter(|entry| entry.pid == Some(pid))
@@ -8288,78 +8374,101 @@ mod process_output_backpressure_tests;
 #[cfg(test)]
 mod lock_poison_recovery_tests {
     use super::*;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
 
-    /// Clears the poison this test leaves behind. `into_inner` recovers the
-    /// guard but does not clear the flag, so without this the skipped sites
-    /// that still unwrap would panic in later tests.
-    struct ClearPoison;
-
-    impl Drop for ClearPoison {
-        fn drop(&mut self) {
-            process_registry().clear_poison();
-            cancellation_records().0.clear_poison();
-        }
-    }
-
-    fn poison_mutex<T: Send + 'static>(mutex: Arc<Mutex<T>>) {
-        let panicked = thread::spawn(move || {
+    fn poison_mutex<T>(mutex: &Mutex<T>) {
+        let panicked = catch_unwind(AssertUnwindSafe(|| {
             let _guard = mutex
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             panic!("poison process bookkeeping mutex");
-        })
-        .join();
+        }));
         assert!(panicked.is_err(), "the fixture panic must poison the mutex");
     }
 
     #[test]
     fn registry_bookkeeping_recovers_a_poisoned_mutex() {
-        let _clear = ClearPoison;
-        let handle = format!("poison-registry-{}", Uuid::new_v4());
+        let registry = Mutex::new(ProcessRegistry::default());
+        let handle = "poison-registry";
+        poison_mutex(&registry);
 
-        poison_mutex(Arc::clone(process_registry()));
-
-        let generation = pre_register_handle_gen(&handle);
+        let generation = pre_register_handle_gen_in(&registry, handle);
         assert!(generation > 0);
-        assert!(is_registered(&handle));
-        assert_eq!(lookup_pid(&handle), None);
-        assert!(!is_cancelled(&handle));
-        assert_eq!(generation_for_handle(&handle), Some(generation));
-        assert!(!is_cancelled_for_generation(&handle, generation));
+        assert!(is_registered_in(&registry, handle));
+        assert_eq!(lookup_pid_in(&registry, handle), None);
+        assert!(!is_cancelled_in(&registry, handle));
+        assert_eq!(
+            generation_for_handle_in(&registry, handle),
+            Some(generation)
+        );
+        assert!(!is_cancelled_for_generation_in(
+            &registry, handle, generation
+        ));
         assert!(
-            !registered_pids()
+            registered_processes_in(&registry)
                 .iter()
-                .any(|(registered, _)| registered == &handle),
+                .all(|process| process.handle != handle),
             "a registration with no pid is not a running child"
         );
-        assert!(!registered_processes_including_retired()
+        assert!(registered_processes_including_retired_in(&registry)
             .iter()
-            .any(|process| process.handle == handle));
-        assert!(registered_process_for(&handle, 1).is_none());
-        assert!(revoke_signal_authority_for_generation(&handle, generation));
+            .all(|process| process.handle != handle));
+        assert!(registered_process_for_in(&registry, handle, 1).is_none());
+        assert!(revoke_signal_authority_for_generation_in(
+            &registry, handle, generation
+        ));
 
-        let second = format!("poison-registry-{}", Uuid::new_v4());
-        if try_register_handle(&second) {
-            assert!(is_registered(&second));
-            deregister_process(&second);
-            assert!(!is_registered(&second));
-        }
+        deregister_process_in(&registry, handle);
+        assert!(!is_registered_in(&registry, handle));
+        assert!(generation_for_handle_in(&registry, handle).is_none());
+        assert!(!revoke_signal_authority_for_generation_in(
+            &registry, handle, generation
+        ));
 
-        deregister_process(&handle);
-        assert!(!is_registered(&handle));
-        assert!(generation_for_handle(&handle).is_none());
-        assert!(!revoke_signal_authority_for_generation(&handle, generation));
+        let records = Mutex::new(CancellationRecordsState::default());
+        poison_mutex(&records);
+        assert!(!cancellation_record_present(&records, handle, generation));
+    }
 
-        let panicked = thread::spawn(|| {
-            let _guard = cancellation_records()
-                .0
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            panic!("poison cancellation records");
-        })
-        .join();
-        assert!(panicked.is_err(), "the fixture panic must poison the mutex");
-        assert!(!cancellation_requested_for_generation(&handle, generation));
+    #[test]
+    fn poisoned_reserve_does_not_spawn_or_leave_a_registration() {
+        let registry = Mutex::new(ProcessRegistry::default());
+        let handle = "poison-spawn";
+        poison_mutex(&registry);
+
+        let mut spawned = false;
+        let panicked = catch_unwind(AssertUnwindSafe(|| {
+            let Some(generation) = try_register_handle_gen_in(&registry, handle) else {
+                return;
+            };
+            spawned = true;
+            let mut containment = ChildContainment::default();
+            let _attached = register_process_for_generation_with_containment_in(
+                &registry,
+                handle,
+                generation,
+                1,
+                &mut containment,
+            );
+            let _removed = deregister_generation_in(&registry, handle, generation);
+        }));
+
+        assert!(
+            panicked.is_err(),
+            "reserve must panic while attach and cleanup still refuse a poisoned registry"
+        );
+        assert!(!spawned, "no child is spawned when the reservation panics");
+        let guard = registry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(
+            !guard.active.contains_key(handle),
+            "a panicked reservation must not leave an active entry"
+        );
+        assert!(
+            guard.retired.is_empty(),
+            "a panicked reservation must not leave a retired entry"
+        );
     }
 }
 
