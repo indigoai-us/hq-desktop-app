@@ -329,13 +329,15 @@
       return;
     }
     const res = await shell.openInEditor(path);
-    status = res.ok ? `Opened ${path}` : res.message ?? "Could not open the file.";
+    if (!res.ok) console.warn("[brain] open in editor failed", res.code, res.message);
+    status = res.ok ? `Opened ${path}` : "Could not open the file. Try again.";
   }
 
   async function openInClaude(path: string): Promise<void> {
     if (!shell) return;
     const res = await shell.openFileInClaude(path);
-    status = res.ok ? "Opened in Claude Code." : res.message ?? "Could not open Claude Code.";
+    if (!res.ok) console.warn("[brain] open in Claude Code failed", res.code, res.message);
+    status = res.ok ? "Opened in Claude Code." : "Could not open Claude Code. Try again.";
   }
 
   async function copyPath(path: string): Promise<void> {
