@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Release builds: a daily check now fails, and opens an issue, once the release test sign-in is 25 days old, five days before it expires, so it is renewed before a release depends on it. The renewal steps no longer need AWS keys or a shared GitHub token.
 - Release builds: the macOS release check now confirms its test sign-in is still valid before it opens the app. An expired test sign-in failed v0.10.383 with a message that looked like the app was stuck loading; it now says the test sign-in expired and how to renew it.
 - The updater now refuses a beta or alpha build unless you chose that release channel in Settings. People on the stable channel stay on stable releases even if a test build is ever published by mistake.
 - Desktop onboarding step telemetry now includes the install-attempt identifier so sign-in progress can be joined to that installation’s first launch.
