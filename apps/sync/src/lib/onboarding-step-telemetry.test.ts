@@ -391,6 +391,48 @@ describe('onboarding step telemetry', () => {
     expect(invalid).not.toHaveProperty('namePrefill');
   });
 
+  it('keeps invite company scope, explicit missing-scope marker, and a bounded sent count', () => {
+    const completed = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-10-03T10:00:00.000Z',
+      properties: {
+        step: 'invite-teammate',
+        action: 'completed',
+        companyUid: 'cmp_test',
+        invitesSent: 20,
+        surface: 'desktop_installer',
+        platform: 'windows',
+      } as never,
+    });
+    expect(completed).toMatchObject({ companyUid: 'cmp_test', invitesSent: 20 });
+
+    const missing = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-10-03T10:00:00.000Z',
+      properties: {
+        step: 'invite-teammate',
+        action: 'entered',
+        companyUidMissing: true,
+        surface: 'desktop_installer',
+        platform: 'windows',
+      } as never,
+    });
+    expect(missing).toMatchObject({ companyUidMissing: true });
+
+    const invalidCount = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-10-03T10:00:00.000Z',
+      properties: {
+        step: 'invite-teammate',
+        action: 'completed',
+        invitesSent: 21,
+        surface: 'desktop_installer',
+        platform: 'windows',
+      } as never,
+    });
+    expect(invalidCount).not.toHaveProperty('invitesSent');
+  });
+
   it('keeps an opaque setup run identifier across its events and changes it for a new run', async () => {
     const telemetry = createTelemetry({
       newSessionId: () => '11111111-1111-4111-8111-111111111111',
