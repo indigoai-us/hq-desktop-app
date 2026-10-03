@@ -67,6 +67,8 @@
 
   let listings = $state<MarketplaceListing[]>([]);
   let loading = $state(true);
+  /** Bumped by the loader's Try again to start a fresh read (BLANK-3). */
+  let reloadKey = $state(0);
   let error = $state<string | null>(null);
   let query = $state("");
   let selected = $state<MarketplaceListing | null>(null);
@@ -226,6 +228,7 @@
   // out-of-order completion when queries change quickly.
   $effect(() => {
     const q = serverQuery;
+    void reloadKey;
     loading = true;
     error = null;
     let cancelled = false;
@@ -318,9 +321,9 @@
 <div class="marketplace" data-testid="marketplace-panel">
   <div class="toolbar">
     <p class="count" aria-live="polite">
-      {#if loading}
-        Loading…
-      {:else}
+      <!-- BLANK-2: no count while the read is pending or failed; a zero
+           beside the failed-read line would read as an empty marketplace. -->
+      {#if !loading && !error}
         {visible.length}
         {visible.length === 1 ? "listing" : "listings"}
       {/if}
@@ -343,7 +346,7 @@
         attribution.
       </p>
     </div>
-    <span>{listings.length} available</span>
+    {#if !loading && !error}<span>{listings.length} available</span>{/if}
   </section>
 
   {#if error}
@@ -351,7 +354,7 @@
       {error}
     </div>
   {:else if loading}
-    <ReadLoader testid="marketplace-loading" />
+    <ReadLoader testid="marketplace-loading" onretry={() => (reloadKey += 1)} />
   {:else if visible.length === 0}
     <div class="state-empty" data-testid="marketplace-empty">
       <p>No listings</p>
