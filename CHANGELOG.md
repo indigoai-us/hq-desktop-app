@@ -8,8 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- The Meet native Windows test build now pins its signing and Rust toolchain actions to exact versions. Nothing changes in the app.
 - Setup failure events now fill a missing stage from the bounded component and keep error categories on the closed list.
-
 - CI launches of the desktop app no longer add first-run rows to the install funnel, including through the CDP mirror.
 - Internal tests: four desktop tests that only searched the source text for strings now check what the code does. Nothing changes in the app.
 
