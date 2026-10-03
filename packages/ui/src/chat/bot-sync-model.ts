@@ -1,40 +1,58 @@
 /**
- * The sync widget in a cloud bot's direct message: the pure model.
+ * The sync strip in a cloud bot's direct message: the pure model.
  *
  * A cloud bot keeps a copy of the company's files on its own computer. While
- * that copy is being brought up to date the conversation shows a slim bar
- * above the message box. This module decides what the bar says. It has two
+ * that copy is being brought up to date the conversation shows a slim strip
+ * under its header. This module decides what the strip says. It has two
  * halves:
  *
  *   1. {@link botSyncView} turns a plain "sync facts" object into what the
- *      bar draws. Any source can build those facts: the first download after
+ *      strip draws. Any source can build those facts: the first download after
  *      a bot is created, a later sync the server reports, or a sync the app
  *      itself asked for.
  *   2. {@link observeBotSync} and {@link advanceBotSync} build the facts from
  *      the one source that exists today, the bot's status answer
  *      (`GET /v1/agents/{uid}/status`).
  *
- * WHAT THE SERVER REPORTS (hq-pro-agents, read 2026-10-02):
+ * WHAT THE SERVER REPORTS (hq-pro-agents, read 2026-10-03):
  *   - `agent.runtime.firstSync`: `{ phase: "pull" | "push", filesTotal,
- *     filesDone, bytesTotal?, bytesDone?, startedAt, updatedAt }`. Present
- *     while the bot's computer is doing its full download. The computer sends
- *     it once a minute until its own "first sync finished" marker exists; the
- *     server removes it on the first healthy sync report.
+ *     filesDone, bytesTotal?, bytesDone?, startedAt, updatedAt }`. The bot's
+ *     computer puts it in its heartbeat only while its sync engine reports
+ *     "syncing". When a heartbeat leaves the block out, the server KEEPS the
+ *     last copy it had; it only removes the block, and sets `syncOkAt`, on a
+ *     heartbeat whose `components.sync` is "ok". So a block whose `updatedAt`
+ *     is old is a frozen snapshot, not a sync that is running now. Its counts
+ *     must never be shown as live progress.
+ *   - `agent.runtime.firstSyncFinalized`: `{ totalObjects, startedAt,
+ *     finishedAt }`, written once on the first healthy heartbeat that carries
+ *     first-sync evidence. Present means the first download finished.
  *   - `agent.runtime.syncOkAt`: set once a sync has finished well, refreshed
  *     on every healthy report after that.
  *   - `agent.runtime.firstSyncStartedAt`: when the first download started.
- *   - `agent.runtime.lastHeartbeat.components.sync`: "ok", "degraded",
- *     "failed" or "unknown". The outcome of the last sync run. There is no
- *     "running" value.
+ *   - `agent.runtime.lastHeartbeat.at` and `.components.sync`: when the bot's
+ *     computer last reported, and the outcome of its last sync run: "ok",
+ *     "degraded", "failed" or "unknown". There is no "running" value.
  *   - `setupState.steps[]` has a `sync` step: "pending", "running",
- *     "waiting", "failed" or "done".
- * So the bar has real file counts during a full download, and nothing at all
- * for an ordinary later sync on a computer that already has the files.
+ *     "waiting", "failed" or "done". Under background first sync "done" only
+ *     means the sync started, so it says nothing about progress.
+ * So the strip has real counts only while the block is fresh and the computer
+ * is heartbeating, an estimate before the first snapshot, and no number at all
+ * for a block that has gone quiet.
  */
 
 import { agentChatReadiness } from "./agent-channel.js";
 
-export type BotSyncState = "syncing" | "done" | "failed";
+/**
+ * - syncing: the sync is running, with real counts, or an estimate before the
+ *   first snapshot.
+ * - stale: the server still holds a progress snapshot but nobody has refreshed
+ *   it: the sync is not known to be finished, and no number is honest.
+ * - done, failed: the outcome.
+ */
+export type BotSyncState = "syncing" | "stale" | "done" | "failed";
+
+/** What a live snapshot is doing: pulling files down to the bot, or pushing them up. */
+export type BotSyncPhase = "pull" | "push";
 
 /**
  * Everything known about one bot's sync. A plain object, so any source can
@@ -54,9 +72,11 @@ export interface BotSyncFacts {
   percent?: number | null;
   /** Typical duration for this sync, when the source knows better than the default. */
   estimateMs?: number | null;
+  /** The phase of a live snapshot, named in the copy. */
+  phase?: BotSyncPhase | null;
 }
 
-/** What the bar draws. Built by {@link botSyncView}. */
+/** What the strip draws. Built by {@link botSyncView}. */
 export interface BotSyncView {
   visible: boolean;
   state: BotSyncState;
@@ -79,32 +99,39 @@ export interface BotSyncView {
  * in hq-pro-agents, first sync 18:10:00 to 18:18:19), and it sits inside the
  * server's own allowance for a first sync (SYNC_FIRST_CYCLE_GRACE_MS, twenty
  * minutes). Replace it with a measured median when there is one. It is only
- * used when the server sends no file counts.
+ * used before the server has sent any snapshot.
  */
 export const BOT_SYNC_ESTIMATE_MS = 8 * 60_000;
 
 /** An estimated bar never passes this. Only the server's "done" fills it. */
 export const BOT_SYNC_ESTIMATE_HOLD = 90;
 
-/** A bar from real counts holds here until the server says the sync is done. */
+/** A bar from live counts holds here until the server says the sync is done. */
 export const BOT_SYNC_REAL_HOLD = 99;
 
-/** How long "Files are up to date." stays before the bar goes away. */
+/** How long "Files are up to date." stays before the strip goes away. */
 export const BOT_SYNC_DONE_VISIBLE_MS = 4_000;
 
 /** How often the open conversation asks the server again. */
 export const BOT_SYNC_POLL_MS = 30_000;
 
 /**
- * Progress the server last heard this long ago is not a sync that is running
- * now. The bot's computer reports once a minute and stops sending a snapshot
- * that is over ten minutes old.
+ * A snapshot refreshed longer ago than this is not live. The bot's computer
+ * reports once a minute while it is syncing; ten minutes without an update
+ * means it stopped sending the block and the server kept the old copy.
  */
-export const BOT_SYNC_STALE_MS = 15 * 60_000;
+export const BOT_SYNC_STALE_MS = 10 * 60_000;
+
+/**
+ * A heartbeat older than this means the bot's computer is not reporting now:
+ * neither its snapshot nor its last sync outcome describe the present.
+ */
+export const BOT_SYNC_HEARTBEAT_FRESH_MS = 5 * 60_000;
 
 export const BOT_SYNC_TITLE = "Syncing your company's files";
+export const BOT_SYNC_STALE_TITLE = "Still syncing your company's files";
 export const BOT_SYNC_DONE_TITLE = "Files are up to date.";
-export const BOT_SYNC_FAILED_TITLE = "File sync did not finish";
+export const BOT_SYNC_FAILED_TITLE = "Sync hit a problem";
 
 const HIDDEN: BotSyncView = {
   visible: false,
@@ -130,19 +157,23 @@ function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, Math.floor(value)));
 }
 
-/** A real percent from what the source sent, or null when it sent no usable number. */
+/**
+ * A real percent from what the source sent, or null when it sent no usable
+ * number. A percent the source states wins; then bytes, which move evenly;
+ * then file counts.
+ */
 function realPercent(facts: BotSyncFacts): number | null {
   const direct = finite(facts.percent);
   if (direct !== null) return clampPercent(direct);
-  const filesTotal = count(facts.filesTotal);
-  const filesDone = count(facts.filesDone);
-  if (filesTotal !== null && filesTotal > 0 && filesDone !== null) {
-    return clampPercent((Math.min(filesDone, filesTotal) / filesTotal) * 100);
-  }
   const bytesTotal = count(facts.bytesTotal);
   const bytesDone = count(facts.bytesDone);
   if (bytesTotal !== null && bytesTotal > 0 && bytesDone !== null) {
     return clampPercent((Math.min(bytesDone, bytesTotal) / bytesTotal) * 100);
+  }
+  const filesTotal = count(facts.filesTotal);
+  const filesDone = count(facts.filesDone);
+  if (filesTotal !== null && filesTotal > 0 && filesDone !== null) {
+    return clampPercent((Math.min(filesDone, filesTotal) / filesTotal) * 100);
   }
   return null;
 }
@@ -170,9 +201,16 @@ function fileCounts(facts: BotSyncFacts): string | null {
   return `${Math.min(done, total).toLocaleString("en-US")} of ${total.toLocaleString("en-US")} files`;
 }
 
+/** The phase as the word the copy uses. */
+function phaseWord(phase: BotSyncPhase | null | undefined): string | null {
+  if (phase === "pull") return "Pulling files down.";
+  if (phase === "push") return "Pushing files up.";
+  return null;
+}
+
 /**
- * What the bar draws for these facts at this moment. Pure: same input, same
- * view. With no facts there is no bar.
+ * What the strip draws for these facts at this moment. Pure: same input, same
+ * view. With no facts there is no strip.
  */
 export function botSyncView(
   facts: BotSyncFacts | null | undefined,
@@ -185,7 +223,7 @@ export function botSyncView(
       visible: true,
       state: "failed",
       title: BOT_SYNC_FAILED_TITLE,
-      detail: `${bot} could not finish downloading your company's files.`,
+      detail: `${bot} could not finish syncing your company's files.`,
       progress: null,
       estimated: false,
       amount: null,
@@ -210,15 +248,30 @@ export function botSyncView(
       counts: null,
     };
   }
-  const detail = `You can chat now. ${bot} will know more as this finishes.`;
+  const chat = `You can chat now. ${bot} will know more as this finishes.`;
+  if (facts.state === "stale") {
+    // The server holds a snapshot nobody has refreshed. Whatever counts it
+    // carries are frozen, so no number is shown, whatever the facts say.
+    return {
+      visible: true,
+      state: "stale",
+      title: BOT_SYNC_STALE_TITLE,
+      detail: chat,
+      progress: null,
+      estimated: false,
+      amount: null,
+      counts: null,
+    };
+  }
   const real = realPercent(facts);
   if (real !== null) {
     const progress = Math.min(BOT_SYNC_REAL_HOLD, real);
+    const phase = phaseWord(facts.phase);
     return {
       visible: true,
       state: "syncing",
       title: BOT_SYNC_TITLE,
-      detail,
+      detail: phase ? `${phase} ${chat}` : chat,
       progress,
       estimated: false,
       amount: `${progress}%`,
@@ -230,7 +283,7 @@ export function botSyncView(
     visible: true,
     state: "syncing",
     title: BOT_SYNC_TITLE,
-    detail,
+    detail: chat,
     progress:
       startedAt === null
         ? null
@@ -241,7 +294,7 @@ export function botSyncView(
   };
 }
 
-/** Whether the view changes by itself as time passes, so the bar needs a clock. */
+/** Whether the view changes by itself as time passes, so the strip needs a clock. */
 export function botSyncNeedsClock(facts: BotSyncFacts | null | undefined, now: number): boolean {
   if (!facts) return false;
   if (facts.state === "done") return botSyncView(facts, { now }).visible;
@@ -255,11 +308,15 @@ export type BotSyncObservation =
   | {
       state: "syncing";
       startedAt: number | null;
+      /** Null before the first snapshot: the strip estimates from `startedAt`. */
+      phase: BotSyncPhase | null;
       filesDone: number | null;
       filesTotal: number | null;
       bytesDone: number | null;
       bytesTotal: number | null;
     }
+  /** A snapshot the server still holds, that nobody has refreshed. */
+  | { state: "stale"; startedAt: number | null }
   | { state: "done"; filesTotal: number | null }
   /** `first`: the bot has never finished a sync. */
   | { state: "failed"; first: boolean }
@@ -280,11 +337,29 @@ function lower(value: unknown): string {
   return typeof value === "string" ? value.trim().toLowerCase() : "";
 }
 
+function phaseOf(value: unknown): BotSyncPhase | null {
+  const word = lower(value);
+  return word === "pull" || word === "push" ? word : null;
+}
+
 /**
  * Read a bot's status answer. Every field may be missing; nothing here
  * throws. `expectFirstSync` is for a bot made in the new bot flow on this
  * device: its first download counts as running from the moment it can chat,
  * even before its computer has reported any progress.
+ *
+ * The order of the checks is the rule:
+ *   1. Finished: `firstSyncFinalized` present, or `syncOkAt` set with no
+ *      snapshot left, or a fresh heartbeat whose last sync run is "ok".
+ *   2. The setup's sync step failed: a failed first download.
+ *   3. Not yet able to chat, or no runtime: nothing to say.
+ *   4. A snapshot refreshed within {@link BOT_SYNC_STALE_MS} on a computer
+ *      that heartbeated within {@link BOT_SYNC_HEARTBEAT_FRESH_MS}: live,
+ *      with its counts.
+ *   5. A fresh heartbeat whose last sync run is "failed": failed.
+ *   6. A snapshot that is present but not live: stale, with no counts.
+ *   7. No snapshot yet, but the download has started or is expected: an
+ *      estimate.
  */
 export function observeBotSync(
   payload: unknown,
@@ -297,50 +372,72 @@ export function observeBotSync(
   const runtime = isRecord(agent.runtime) ? agent.runtime : null;
   const setup = isRecord(root.setupState) ? root.setupState : isRecord(agent.setupState) ? agent.setupState : null;
   const readiness = agentChatReadiness(payload);
-  const everSynced = time(runtime?.syncOkAt) !== null;
 
-  const live = isRecord(runtime?.firstSync) ? runtime.firstSync : null;
-  const liveStartedAt = time(live?.startedAt);
-  const liveUpdatedAt = time(live?.updatedAt);
-  const liveFresh = live !== null && liveUpdatedAt !== null && now - liveUpdatedAt <= BOT_SYNC_STALE_MS;
+  const snapshot = isRecord(runtime?.firstSync) ? runtime.firstSync : null;
+  const finalized = isRecord(runtime?.firstSyncFinalized) ? runtime.firstSyncFinalized : null;
+  const syncOkAt = time(runtime?.syncOkAt);
   const heartbeat = isRecord(runtime?.lastHeartbeat) ? runtime.lastHeartbeat : null;
+  const heartbeatAt = time(heartbeat?.at);
+  // A heartbeat stamped a little ahead of this clock is fresh too.
+  const heartbeatFresh = heartbeatAt !== null && now - heartbeatAt < BOT_SYNC_HEARTBEAT_FRESH_MS;
   const components = isRecord(heartbeat?.components) ? heartbeat.components : null;
-  const lastRunFailed = lower(components?.sync) === "failed";
+  const lastRun = lower(components?.sync);
   const steps = Array.isArray(setup?.steps) ? setup.steps.filter(isRecord) : [];
   const syncStepFailed = steps.some((step) => lower(step.name) === "sync" && lower(step.status) === "failed");
+  const startedAt = time(snapshot?.startedAt) ?? time(runtime?.firstSyncStartedAt);
 
-  const syncing = (): BotSyncObservation => ({
-    state: "syncing",
-    startedAt: liveStartedAt ?? time(runtime?.firstSyncStartedAt),
-    filesDone: live ? count(live.filesDone) : null,
-    filesTotal: live ? count(live.filesTotal) : null,
-    bytesDone: live ? count(live.bytesDone) : null,
-    bytesTotal: live ? count(live.bytesTotal) : null,
-  });
-
-  if (everSynced) {
-    // A sync after the first one: the server only shows it while the bot's
-    // computer reports fresh progress (a full download on a rebuilt computer).
-    if (liveFresh) return syncing();
-    if (lastRunFailed) return { state: "failed", first: false };
-    const finalized = isRecord(runtime?.firstSyncFinalized) ? runtime.firstSyncFinalized : null;
+  // 1. Finished.
+  if (finalized !== null || (syncOkAt !== null && snapshot === null) || (heartbeatFresh && lastRun === "ok")) {
     return { state: "done", filesTotal: count(finalized?.totalObjects) };
   }
-  // The first download. Setup can fail for a reason that is not the files (the
-  // brain sign-in, say): that only counts for a download this app saw running.
+  // 2. The files step itself failed. Setup can fail for another reason (the
+  //    brain sign-in, say): that only counts for a download this app saw running.
   if (syncStepFailed) return { state: "failed", first: true };
   if (readiness.failed) return { state: "failed", first: false };
+  // 3. Nothing to say yet.
   if (!readiness.chatReady) return { state: "none" };
   if (!runtime) return { state: "none" };
-  if (live || time(runtime.firstSyncStartedAt) !== null || options.expectFirstSync === true) return syncing();
+  const runFailed = heartbeatFresh && lastRun === "failed";
+  if (snapshot) {
+    const updatedAt = time(snapshot.updatedAt);
+    const snapshotFresh = updatedAt !== null && now - updatedAt <= BOT_SYNC_STALE_MS;
+    // 4. Live.
+    if (snapshotFresh && heartbeatFresh) {
+      return {
+        state: "syncing",
+        startedAt,
+        phase: phaseOf(snapshot.phase),
+        filesDone: count(snapshot.filesDone),
+        filesTotal: count(snapshot.filesTotal),
+        bytesDone: count(snapshot.bytesDone),
+        bytesTotal: count(snapshot.bytesTotal),
+      };
+    }
+    // 5. Failed.
+    if (runFailed) return { state: "failed", first: syncOkAt === null };
+    // 6. Stale: the server kept a snapshot the computer stopped refreshing.
+    return { state: "stale", startedAt };
+  }
+  if (runFailed) return { state: "failed", first: syncOkAt === null };
+  // 7. Before the first snapshot.
+  if (startedAt !== null || options.expectFirstSync === true) {
+    return { state: "syncing", startedAt, phase: null, filesDone: null, filesTotal: null, bytesDone: null, bytesTotal: null };
+  }
   return { state: "none" };
 }
 
+/** True for the states that mean a strip is showing a sync in progress. */
+function inProgress(facts: BotSyncFacts | null): facts is BotSyncFacts {
+  return facts?.state === "syncing" || facts?.state === "stale";
+}
+
 /**
- * Fold one observation into the facts the bar is drawn from. Returns the same
- * object when nothing changed.
+ * Fold one observation into the facts the strip is drawn from. Returns the
+ * same object when nothing changed.
  *
- *   - syncing: the bar shows, with the newest counts.
+ *   - syncing: the strip shows, with the newest counts.
+ *   - stale: the strip shows with no number. Counts from before are dropped,
+ *     so a frozen snapshot never reads as progress.
  *   - done: shows "up to date" for a few seconds, but only after a sync this
  *     app saw running (or failing). A bot that was already in sync shows
  *     nothing.
@@ -355,7 +452,7 @@ export function advanceBotSync(
 ): BotSyncFacts | null {
   const prev = previous ?? null;
   if (observation.state === "syncing") {
-    const startedAt = observation.startedAt ?? (prev?.state === "syncing" ? prev.startedAt : null) ?? now;
+    const startedAt = observation.startedAt ?? (inProgress(prev) ? prev.startedAt : null) ?? now;
     const next: BotSyncFacts = {
       state: "syncing",
       startedAt,
@@ -364,6 +461,7 @@ export function advanceBotSync(
       filesTotal: observation.filesTotal,
       bytesDone: observation.bytesDone,
       bytesTotal: observation.bytesTotal,
+      phase: observation.phase,
     };
     if (
       prev?.state === "syncing" &&
@@ -371,11 +469,17 @@ export function advanceBotSync(
       prev.filesDone === next.filesDone &&
       prev.filesTotal === next.filesTotal &&
       (prev.bytesDone ?? null) === next.bytesDone &&
-      (prev.bytesTotal ?? null) === next.bytesTotal
+      (prev.bytesTotal ?? null) === next.bytesTotal &&
+      (prev.phase ?? null) === next.phase
     ) {
       return prev;
     }
     return next;
+  }
+  if (observation.state === "stale") {
+    const startedAt = observation.startedAt ?? (inProgress(prev) ? prev.startedAt : null);
+    if (prev?.state === "stale" && prev.startedAt === startedAt) return prev;
+    return { state: "stale", startedAt, endedAt: null, filesDone: null, filesTotal: null };
   }
   if (observation.state === "done") {
     if (!prev || prev.state === "done") return prev;
@@ -389,7 +493,7 @@ export function advanceBotSync(
   }
   if (observation.state === "failed") {
     if (prev?.state === "failed") return prev;
-    if (!observation.first && prev?.state !== "syncing") return prev;
+    if (!observation.first && !inProgress(prev)) return prev;
     return {
       state: "failed",
       startedAt: prev?.startedAt ?? null,
@@ -398,5 +502,5 @@ export function advanceBotSync(
       filesTotal: prev?.filesTotal ?? null,
     };
   }
-  return prev?.state === "syncing" ? null : prev;
+  return inProgress(prev) ? null : prev;
 }

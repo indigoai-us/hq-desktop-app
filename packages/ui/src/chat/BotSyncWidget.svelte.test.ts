@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-// The sync widget: a slim bar drawn from plain facts about a bot's file sync.
+// The sync strip: one line drawn from plain facts about a bot's file sync.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, tick, unmount } from "svelte";
@@ -50,6 +50,8 @@ async function settle(): Promise<void> {
 const widget = () => host!.querySelector<HTMLElement>('[data-testid="bot-sync-widget"]');
 const bar = () => host!.querySelector<HTMLElement>('[data-testid="bot-sync-progress"]');
 const title = () => host!.querySelector('[data-testid="bot-sync-title"]')?.textContent ?? "";
+const amount = () => host!.querySelector('[data-testid="bot-sync-amount"]');
+const glyph = () => host!.querySelector<SVGElement>('[data-testid="bot-sync-icon"] svg');
 
 describe("BotSyncWidget", () => {
   it("is not there without facts", () => {
@@ -58,20 +60,23 @@ describe("BotSyncWidget", () => {
     expect(host!.textContent?.trim()).toBe("");
   });
 
-  it("shows a syncing bar with the title, the line and a progress bar", () => {
+  it("shows a syncing strip with the title, the line and a progress bar", () => {
     render(syncing());
     const el = widget()!;
     expect(el.dataset.state).toBe("syncing");
     expect(title()).toBe("Syncing your company's files");
     expect(el.textContent).toContain("You can chat now. Crassly will know more as this finishes.");
     expect(el.closest(".bot-sync-slot")?.getAttribute("data-open")).toBe("true");
+    // The glyph turns while the sync runs.
+    expect(glyph()!.classList.contains("bot-sync-spin")).toBe(true);
   });
 
   it("announces the words politely, and the bar is a real progress bar", () => {
-    render(syncing({ filesDone: 128, filesTotal: 412 }));
+    render(syncing({ filesDone: 128, filesTotal: 412, phase: "pull" }));
     const words = widget()!.querySelector<HTMLElement>('[role="status"]')!;
     expect(words.getAttribute("aria-live")).toBe("polite");
     expect(words.textContent).toContain("Syncing your company's files");
+    expect(words.textContent).toContain("Pulling files down.");
     expect(widget()!.getAttribute("aria-label")).toBe("File sync");
     const progress = bar()!;
     expect(progress.getAttribute("role")).toBe("progressbar");
@@ -80,17 +85,25 @@ describe("BotSyncWidget", () => {
     expect(progress.getAttribute("aria-valuenow")).toBe("31");
     expect(progress.getAttribute("aria-valuetext")).toBe("128 of 412 files");
     expect(progress.getAttribute("aria-label")).toBe("Syncing your company's files");
-    // The moving bar is not inside the announced words.
+    // The moving bar is not inside the announced words, and neither is the percent.
     expect(words.contains(progress)).toBe(false);
-    expect(host!.querySelector('[data-testid="bot-sync-amount"]')?.textContent).toBe("31%");
+    expect(words.contains(amount()!)).toBe(false);
+    expect(amount()?.textContent).toBe("31%");
     expect(progress.querySelector<HTMLElement>(".bot-sync-fill")!.style.width).toBe("31%");
-    // The art is a layer a screen reader skips.
-    expect(widget()!.querySelector(".bot-sync-art")?.getAttribute("aria-hidden")).toBe("true");
+    // The glyph is decoration a screen reader skips.
+    expect(host!.querySelector('[data-testid="bot-sync-icon"]')?.getAttribute("aria-hidden")).toBe("true");
+  });
+
+  it("puts the words first and the percent after them, on the one line", () => {
+    render(syncing({ filesDone: 128, filesTotal: 412 }));
+    const el = widget()!;
+    const order = Array.from(el.children).map((child) => child.getAttribute("data-testid") ?? child.getAttribute("role"));
+    expect(order).toEqual(["bot-sync-icon", "status", "bot-sync-amount", "bot-sync-progress"]);
   });
 
   it("shows no percent in words while the bar is an estimate", () => {
     render(syncing());
-    expect(host!.querySelector('[data-testid="bot-sync-amount"]')).toBeNull();
+    expect(amount()).toBeNull();
     expect(widget()!.textContent).not.toMatch(/\d/);
     const now = Number(bar()!.getAttribute("aria-valuenow"));
     expect(now).toBeGreaterThan(0);
@@ -104,7 +117,21 @@ describe("BotSyncWidget", () => {
     expect(progress.hasAttribute("aria-valuenow")).toBe(false);
     expect(progress.classList.contains("is-unknown")).toBe(true);
     expect(widget()!.textContent).not.toMatch(/\d/);
-    expect(host!.querySelector('[data-testid="bot-sync-amount"]')).toBeNull();
+    expect(amount()).toBeNull();
+  });
+
+  it("a stale sync: the neutral title, a shimmering line, no number, and a glyph that holds still", () => {
+    render({ state: "stale", startedAt: NOW - 40 * 60_000, endedAt: null, filesDone: 412, filesTotal: 412 });
+    const el = widget()!;
+    expect(el.dataset.state).toBe("stale");
+    expect(title()).toBe("Still syncing your company's files");
+    expect(el.textContent).toContain("You can chat now. Crassly will know more as this finishes.");
+    expect(el.textContent).not.toMatch(/\d/);
+    expect(amount()).toBeNull();
+    const progress = bar()!;
+    expect(progress.classList.contains("is-unknown")).toBe(true);
+    expect(progress.hasAttribute("aria-valuenow")).toBe(false);
+    expect(glyph()!.classList.contains("bot-sync-spin")).toBe(false);
   });
 
   it("moves an estimated bar forward as time passes", async () => {
@@ -126,20 +153,20 @@ describe("BotSyncWidget", () => {
     expect(widget()!.closest(".bot-sync-slot")?.getAttribute("data-open")).toBe("true");
   });
 
-  it("shows up to date with a full bar, then goes away", async () => {
+  it("shows up to date with a full bar, then fades away", async () => {
     const { props } = render(syncing({ filesDone: 400, filesTotal: 412 }));
     props.facts = { state: "done", startedAt: NOW - 60_000, endedAt: Date.now(), filesDone: 412, filesTotal: 412 };
     await settle();
     expect(widget()!.dataset.state).toBe("done");
     expect(title()).toBe("Files are up to date.");
     expect(bar()!.getAttribute("aria-valuenow")).toBe("100");
-    expect(host!.querySelector('[data-testid="bot-sync-amount"]')).toBeNull();
+    expect(amount()).toBeNull();
     await vi.advanceTimersByTimeAsync(BOT_SYNC_DONE_VISIBLE_MS - 1_500);
     flushSync();
     expect(widget()).not.toBeNull();
     await vi.advanceTimersByTimeAsync(2_000);
     flushSync();
-    // Closing: the height goes first, then the bar leaves the page.
+    // Closing: it fades and its height goes first, then it leaves the page.
     expect(host!.querySelector(".bot-sync-slot")?.getAttribute("data-open") ?? "false").toBe("false");
     await vi.advanceTimersByTimeAsync(400);
     flushSync();
@@ -158,12 +185,14 @@ describe("BotSyncWidget", () => {
     expect(widget()).toBeNull();
   });
 
-  it("says a failed sync in one sentence, with no bar, and stays", async () => {
+  it("says a failed sync in one sentence, with no bar and no percent, and stays", async () => {
     render({ state: "failed", startedAt: NOW - 60_000, endedAt: NOW, filesDone: 3, filesTotal: 412 });
     expect(widget()!.dataset.state).toBe("failed");
-    expect(title()).toBe("File sync did not finish");
-    expect(widget()!.textContent).toContain("Crassly could not finish downloading your company's files.");
+    expect(title()).toBe("Sync hit a problem");
+    expect(widget()!.textContent).toContain("Crassly could not finish syncing your company's files.");
+    expect(widget()!.textContent).not.toMatch(/\d/);
     expect(bar()).toBeNull();
+    expect(amount()).toBeNull();
     await vi.advanceTimersByTimeAsync(3_600_000);
     flushSync();
     expect(widget()).not.toBeNull();
