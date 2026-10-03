@@ -124,9 +124,6 @@
   let projects = $state<Project[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
-  // BLANK-2: a failed read with nothing loaded shows only the failed line and
-  // Try again; counts and the empty board wait for a read that succeeded.
-  const failedEmpty = $derived(Boolean(error) && companyProjects.length === 0);
   /** Free-text filter over project name/description. */
   let searchQuery = $state("");
   /** Portfolio state filter (All states / column). */
@@ -350,6 +347,9 @@
       .map((project) => applyProjectProvenance(project, cloudProvenance))
       .sort(compareProjectsByRecency),
   );
+  // BLANK-2: a failed read with nothing loaded shows only the failed line and
+  // Try again; counts and the empty board wait for a read that succeeded.
+  const failedEmpty = $derived(Boolean(error) && companyProjects.length === 0);
 
   // Open the focused project once it loads (QA-066: Atlas Open files / Open
   // board). Matches the board id or the project's folder under projects/.
