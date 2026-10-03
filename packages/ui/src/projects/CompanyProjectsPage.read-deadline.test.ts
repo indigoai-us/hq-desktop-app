@@ -44,5 +44,9 @@ describe("CompanyProjectsPage read deadline (BLANK-1)", () => {
     expect(host.querySelector("[data-testid='projects-load-error']")?.textContent).toContain("Couldn't read this company's projects.");
     expect(host.querySelector("[data-testid='projects-retry']")).toBeTruthy();
     expect(logged).toHaveBeenCalled();
+    // BLANK-2: no zero count or empty board next to the failed read.
+    expect(host.querySelector("[data-testid='projects-count']")).toBeNull();
+    expect(host.querySelector("[data-testid='empty-projects-state']")).toBeNull();
+    expect(host.textContent).not.toMatch(/Nothing yet|Nothing live/);
   });
 });

@@ -124,6 +124,9 @@
   let projects = $state<Project[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
+  // BLANK-2: a failed read with nothing loaded shows only the failed line and
+  // Try again; counts and the empty board wait for a read that succeeded.
+  const failedEmpty = $derived(Boolean(error) && companyProjects.length === 0);
   /** Free-text filter over project name/description. */
   let searchQuery = $state("");
   /** Portfolio state filter (All states / column). */
@@ -975,6 +978,7 @@
     <header class="projects-header">
       <div class="projects-heading">
         <h2 id="company-projects-title">Projects</h2>
+        {#if !failedEmpty}
         <span
           class="projects-count meta-line"
           data-meta-line
@@ -991,6 +995,7 @@
             <span class="projects-live">· {liveCount} live</span>
           {/if}
         </span>
+        {/if}
       </div>
       <div
         class="project-actions detail-primary-actions"
@@ -1127,6 +1132,8 @@
             </div>
           {/each}
         </div>
+      {:else if failedEmpty}
+        <!-- BLANK-2: the failed line above stands in for the empty board. -->
       {:else if companyProjects.length === 0}
         <div
           class="kanban-board"
