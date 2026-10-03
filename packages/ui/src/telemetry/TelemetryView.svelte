@@ -1,5 +1,6 @@
 <script lang="ts">
   import { compactNumber } from "../common/compact-number.js";
+  import CompanyLabel from "../company/CompanyLabel.svelte";
   import RailButton from "../common/button/RailButton.svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
   /**
@@ -403,7 +404,7 @@
                 onclick={() => row.threadPath && onopenthread?.(row.threadPath)}
               >
                 <span>{row.when}</span>
-                <span>{row.company}</span>
+                <span class="co">{#if row.company}<CompanyLabel name={row.company} />{/if}</span>
                 <span>{row.project}</span>
                 <span class="pr">{row.title}</span>
                 <span class="n">{row.length}</span>
@@ -494,6 +495,7 @@
   .bar i { display: block; height: 100%; opacity: 0.45; }
   .foot { margin: 8px 0 0; padding: 0 8px; }
   .empty-line { margin: 0; padding: 48px 16px; text-align: center; font-size: 13px; color: var(--t3); }
+  .co { display: flex; align-items: center; gap: 6px; }
   .nm { display: flex; align-items: center; gap: 6px; color: var(--t1, var(--v4-text-1)); }
   /* One column under ~1100px; nothing scrolls sideways at 1000x700. */
   @media (max-width: 1100px) {
