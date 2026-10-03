@@ -9,6 +9,29 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 
 import CreateModal from "./CreateModal.svelte";
+import { flushSync } from "svelte";
+import { chooseDropdown, dropdownButton, dropdownValue } from "../test-support/dropdown.js";
+
+// Reads a dropdown's options and closes the menu with a second button click:
+// the modal's capture-phase window Escape handler would otherwise eat an
+// Escape and step back out of the create form.
+async function menuOptions(testid: string) {
+  const button = await dropdownButton(document, testid);
+  button.click();
+  flushSync();
+  const menu = await vi.waitFor(() => {
+    const el = document.querySelector(`[data-testid="${testid}-menu"]`);
+    if (!el) throw new Error(`${testid} menu not open`);
+    return el;
+  });
+  const out = [...menu.querySelectorAll<HTMLElement>('[role="option"]')].map((o) => ({
+    value: o.dataset.value ?? "",
+    disabled: o.getAttribute("aria-disabled") === "true",
+  }));
+  button.click();
+  flushSync();
+  return out;
+}
 import type { ChatSidebarApi } from "./chat-api.js";
 import type { ConversationRow, DmContactInput } from "./sidebar-model.js";
 
@@ -988,11 +1011,32 @@ describe("CreateModal Company/Personal scope", () => {
     expect(args).not.toHaveProperty("companyUid");
   });
 
+  // OWNER-R6: the sheet listens for Escape on window in the capture phase;
+  // with the company dropdown open, Escape closes only the menu.
+  it("Escape in the open company dropdown closes the menu and keeps the form", async () => {
+    open({ scopeCompanies: TWO, activeScope: "cmp_amass" });
+    await tick();
+    await gotoCreate("Growth");
+    const button = await dropdownButton(document, "chat-channel-scope");
+    button.click();
+    await tick();
+    const menu = await vi.waitFor(() => {
+      const el = $('[data-testid="chat-channel-scope-menu"]');
+      if (!el) throw new Error("menu not open");
+      return el;
+    });
+    menu.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await tick();
+    expect($('[data-testid="chat-channel-scope-menu"]')).toBeNull();
+    expect($('[data-testid="chat-channel-scope"]')).not.toBeNull();
+    expect($('[data-testid="chat-channel-name"]')).not.toBeNull();
+  });
+
   it("shows the company dropdown only while Company is chosen", async () => {
     open({ scopeCompanies: TWO, activeScope: "cmp_amass" });
     await tick();
     await gotoCreate("Growth");
-    expect($<HTMLSelectElement>('[data-testid="chat-channel-scope"]')?.value).toBe(
+    expect(await dropdownValue(document, "chat-channel-scope")).toBe(
       "cmp_amass",
     );
 
@@ -1003,7 +1047,7 @@ describe("CreateModal Company/Personal scope", () => {
     // Back to Company restores the company that was chosen before.
     $<HTMLButtonElement>('[data-testid="chat-channel-scope-company"]')?.click();
     await tick();
-    expect($<HTMLSelectElement>('[data-testid="chat-channel-scope"]')?.value).toBe(
+    expect(await dropdownValue(document, "chat-channel-scope")).toBe(
       "cmp_amass",
     );
   });
@@ -1106,9 +1150,8 @@ describe("CreateModal cross-company confirmation (D7)", () => {
     expect(
       $('[data-testid="chat-channel-scope-unavailable"]')?.textContent,
     ).toContain("Kai isn't a member of Indigo");
-    const scope = $<HTMLSelectElement>('[data-testid="chat-channel-scope"]')!;
     expect(
-      [...scope.options].find((option) => option.value === "cmp_indigo")
+      (await menuOptions("chat-channel-scope")).find((option) => option.value === "cmp_indigo")
         ?.disabled,
     ).toBe(true);
     const create = $<HTMLButtonElement>('[data-testid="chat-channel-create"]')!;
@@ -1149,9 +1192,7 @@ describe("CreateModal cross-company confirmation (D7)", () => {
       "external",
     );
 
-    const scope = $<HTMLSelectElement>('[data-testid="chat-channel-scope"]')!;
-    scope.value = "cmp_indigo";
-    scope.dispatchEvent(new Event("change", { bubbles: true }));
+    await chooseDropdown(document, "chat-channel-scope", "cmp_indigo");
     // The Indigo roster loads asynchronously; the question follows it.
     await vi.waitFor(() => {
       expect($('[data-testid="chat-create-confirm-external"]')).toBeTruthy();
@@ -1261,10 +1302,8 @@ describe("CreateModal cross-company confirmation (D7)", () => {
     await tick();
     await pickMember("Kai");
 
-    const scope = $<HTMLSelectElement>('[data-testid="chat-channel-scope"]')!;
     const select = async (value: string) => {
-      scope.value = value;
-      scope.dispatchEvent(new Event("change", { bubbles: true }));
+      await chooseDropdown(document, "chat-channel-scope", value);
       await tick();
     };
 
@@ -2017,3 +2056,4 @@ describe("New bot step Escape", () => {
     expect(onclose).not.toHaveBeenCalled();
   });
 });
+

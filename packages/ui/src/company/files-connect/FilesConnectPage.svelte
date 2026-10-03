@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Dropdown from "../../common/LazyDropdown.svelte";
   import ReadLoader from "../../common/ReadLoader.svelte";
   import RailButton from "../../common/button/RailButton.svelte";
   /**
@@ -1074,11 +1075,13 @@
           </div>
         {:else}
           <label class="fr"><span class="lb">Project</span>
-            <select class="field" data-testid="deploy-source" bind:value={deploySource}>
-              {#each deployScan.sources as source (source.id)}
-                <option value={source.id}>{source.dir === "." ? source.project : `${source.project} · ${source.dir}`}</option>
-              {/each}
-            </select>
+            <Dropdown
+              block
+              testid="deploy-source"
+              label="Project"
+              bind:value={deploySource}
+              options={deployScan.sources.map((source) => ({ value: source.id, label: source.dir === "." ? source.project : `${source.project} · ${source.dir}` }))}
+            />
           </label>
           {#if deploySourceCurrent}<p class="hint mono" data-testid="deploy-source-path" title={deploySourceCurrent.path}>{deploySourceCurrent.path}</p>{/if}
         {/if}

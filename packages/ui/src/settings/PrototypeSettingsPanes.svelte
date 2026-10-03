@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Dropdown from "../common/LazyDropdown.svelte";
   import { type AdapterResult } from "./update-orchestration";
   import {
     appRowActions,
@@ -1573,19 +1574,14 @@
       {:else if companies === null}
         <span class="val" data-testid="recording-company-membership-pending">Memberships loading…</span>
       {:else if recordingCompanies.length > 0}
-        <label class="sr-only" for="recording-company">Recording company</label>
-        <select
-          id="recording-company"
-          class="mono-select"
+        <Dropdown
+          label="Recording company"
+          testid="recording-company"
           value={native.defaultRecordingCompanyUid ?? ""}
           disabled={!nativeLoaded || pending("recording-company")}
-          onchange={(event) => void setRecordingCompany(event.currentTarget.value)}
-        >
-          <option value="">Personal</option>
-          {#each recordingCompanies as row (row.id)}
-            <option value={row.id}>{row.name}</option>
-          {/each}
-        </select>
+          options={[{ value: "", label: "Personal" }, ...recordingCompanies.map((row) => ({ value: row.id, label: row.name }))]}
+          onchange={(v) => void setRecordingCompany(v)}
+        />
       {:else}
         <span class="val" data-testid="recording-company-personal">Personal</span>
       {/if}
@@ -1785,20 +1781,14 @@
           <div class="sd" role="alert" data-testid="settings-channel-error">{channelError}</div>
         {/if}
       </div>
-      <select
-        class="chip"
-        data-testid="settings-release-channel"
-        aria-label="Release channel"
-        aria-busy={channelSaving}
+      <Dropdown
+        testid="settings-release-channel"
+        label="Release channel"
         disabled={channelSaving || versionsRefreshing || releaseChannelOptions.length <= 1}
         value={selectedReleaseChannel}
-        onchange={(e) =>
-          void selectReleaseChannel((e.currentTarget as HTMLSelectElement).value)}
-      >
-        {#each releaseChannelOptions as option (option.id)}
-          <option value={option.id}>{option.label}</option>
-        {/each}
-      </select>
+        options={releaseChannelOptions.map((option) => ({ value: option.id, label: option.label }))}
+        onchange={(v) => void selectReleaseChannel(v)}
+      />
     </div>
     <div class="set-row">
       <div><div class="sn">Update status</div><div class="sd">Refreshes when you open this window or an update arrives.</div></div>

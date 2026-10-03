@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Dropdown from "../common/LazyDropdown.svelte";
   /**
    * MarketplacePanel — the desktop-alt **Marketplace** tab body (US-008).
    *
@@ -607,29 +608,20 @@
         >
           <h3 class="section-title">Install</h3>
           <label class="scope-label" for="marketplace-scope">Scope</label>
-          <select
-            id="marketplace-scope"
-            class="scope-select"
-            data-testid="marketplace-scope-select"
-            bind:value={scopeIndex}
+          <Dropdown
+            block
+            testid="marketplace-scope-select"
+            label="Scope"
+            value={String(scopeIndex)}
             disabled={installing}
-          >
-            {#each installTargets as target, i (i)}
-              <option
-                value={i}
-                disabled={!target.enabled}
-                data-testid="marketplace-scope-option"
-                data-enabled={target.enabled}
-                data-slug={target.scope.kind === "company"
-                  ? target.scope.slug
-                  : "personal"}
-              >
-                {target.label}{target.enabled
-                  ? ""
-                  : ` — ${target.reason ?? "unavailable"}`}
-              </option>
-            {/each}
-          </select>
+            options={installTargets.map((target, i) => ({
+              value: String(i),
+              label: target.label,
+              detail: target.enabled ? null : (target.reason ?? "unavailable"),
+              disabled: !target.enabled,
+            }))}
+            onchange={(v) => (scopeIndex = Number(v))}
+          />
 
           <p class="scope-hint" data-testid="marketplace-scope-hint">
             {selectedScopeLabel}

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Dropdown from "./LazyDropdown.svelte";
   import RailButton from "./button/RailButton.svelte";
   import type { ActiveMeeting, RecordingMembership } from "./active-meeting";
   import { humanCompanyLabel } from "../chat/visible-labels";
@@ -154,22 +155,14 @@
       {#if showCompanyPicker && oncompany}
         <div class="live-company">
           <label class="lc-label" for="live-company-select">Record as</label>
-          <select
-            id="live-company-select"
-            class="lc-select"
+          <Dropdown
+            testid="live-company-select"
+            label="Record as"
             value={meeting.companyUid ?? ""}
-            onchange={(e) =>
-              oncompany(
-                meeting.windowId,
-                (e.currentTarget as HTMLSelectElement).value || null,
-              )}
+            onchange={(v) => oncompany(meeting.windowId, v || null)}
             disabled={isBusy}
-          >
-            <option value="">Personal</option>
-            {#each memberships as m (m.companyUid)}
-              <option value={m.companyUid}>{humanCompanyLabel(m)}</option>
-            {/each}
-          </select>
+            options={[{ value: "", label: "Personal" }, ...memberships.map((m) => ({ value: m.companyUid, label: humanCompanyLabel(m) }))]}
+          />
         </div>
       {/if}
 

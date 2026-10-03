@@ -27,10 +27,6 @@ const ALLOWLIST: Record<string, string> = {
     "Sentence: \"{name} is empty\".",
   "chat/AgencyChatPanel.svelte::selected.company":
     "`company/team` path identifier, not a company label.",
-  "chat/CreateModal.svelte::blocked ? `${company.label} \u2014 ${blocked.reason}` : company.label":
-    "Native <option> text cannot hold markup.",
-  "chat/LocalBotDetailPanel.svelte::company.name":
-    "Native <option> text cannot hold markup.",
   "chat/SetupFinale.svelte::company.label":
     "Button verb phrase (\"Open {name}\"), not a bare name.",
   "chat/SetupRunCard.svelte::card.scope === \"company\" ? (card.company ? `${card.company} vault` : \"company vault\") : \"your personal vault\"":
@@ -41,8 +37,6 @@ const ALLOWLIST: Record<string, string> = {
     "Help sentence.",
   "chat/create-bot/CloudDetailsStep.svelte::companyLabel":
     "Help sentence: \"{name} hosts it and opens its channel.\"",
-  "common/LiveNowCard.svelte::humanCompanyLabel(m)":
-    "Native <option> text cannot hold markup.",
   "company/CompanySettingsPage.svelte::snap.general.name || companyLabel":
     "Sentence: \"billed to {name}\".",
   "files/explorer/ShareFileSheet.svelte::target.company":
@@ -57,10 +51,6 @@ const ALLOWLIST: Record<string, string> = {
     "Sentence: \"{name} is not connected to HQ cloud\".",
   "meetings/MeetingsStatesBody.svelte::companyName":
     "Sentence: \"Join opens 10 min before \u00b7 {name}\".",
-  "settings/PrototypeSettingsPanes.svelte::row.name":
-    "Native <option> text cannot hold markup.",
-  "settings/SettingsPage.svelte::m.companyName?.trim() || \"Company\"":
-    "Native <option> text cannot hold markup.",
   "shell/AtlasLandingHost.svelte::companyLabel":
     "Loading status sentence: \"Loading {name}\".",
 };

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Dropdown from "../common/LazyDropdown.svelte";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import { onMount, untrack } from "svelte";
   import { dismissToastByKey, pushToast } from "../shell/toast-stack.svelte.js";
@@ -937,17 +938,14 @@
         <!-- Destination picker. Only renders once the user starts typing —
              keeps the idle bar clean. `null` = Personal (the default). -->
         <span class="url-invite-company-wrap">
-          <select
-            class="url-invite-company"
-            aria-label="Save bot to"
-            bind:value={urlInputCompanyId}
+          <Dropdown
+            testid="url-invite-company"
+            label="Save bot to"
+            value={urlInputCompanyId ?? ""}
+            onchange={(v) => (urlInputCompanyId = v || null)}
             disabled={urlInviting}
-          >
-            <option value={null}>Personal</option>
-            {#each [...companyNamesByUid.entries()] as [uid, name] (uid)}
-              <option value={uid}>{name}</option>
-            {/each}
-          </select>
+            options={[{ value: "", label: "Personal" }, ...[...companyNamesByUid.entries()].map(([uid, name]) => ({ value: uid, label: name }))]}
+          />
           <span class="url-invite-company-chevron" aria-hidden="true">›</span>
         </span>
       {/if}

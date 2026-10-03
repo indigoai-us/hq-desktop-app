@@ -18,6 +18,7 @@
    * tokens, sits above panes and under toasts. Replaces native selects.
    */
   import { tick } from "svelte";
+  import { markDropdownOpen } from "./dropdown-open.js";
 
   interface Props {
     value: V;
@@ -119,11 +120,15 @@
 
   $effect(() => {
     if (!open) return;
+    markDropdownOpen(true);
     const onDown = (e: PointerEvent) => {
       if (root && !root.contains(e.target as Node)) hide(false);
     };
     document.addEventListener("pointerdown", onDown, true);
-    return () => document.removeEventListener("pointerdown", onDown, true);
+    return () => {
+      markDropdownOpen(false);
+      document.removeEventListener("pointerdown", onDown, true);
+    };
   });
 </script>
 

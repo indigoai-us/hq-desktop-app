@@ -1062,21 +1062,12 @@
         />
       </label>
 
-      <label class="tool-select">
-        <span class="visually-hidden">Filter by state</span>
-        <select
-          bind:value={stateFilter}
-          data-testid="portfolio-state-filter"
-          aria-label="Filter by project state"
-        >
-          {#each PORTFOLIO_STATE_FILTER_OPTIONS as option (option.value)}
-            <option value={option.value}>{option.label}</option>
-          {/each}
-        </select>
-        <svg class="select-caret" viewBox="0 0 16 16" aria-hidden="true">
-          <path d="M4.5 6.5 8 10l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
-      </label>
+      <Dropdown
+        bind:value={stateFilter}
+        options={PORTFOLIO_STATE_FILTER_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+        label="Filter by project state"
+        testid="portfolio-state-filter"
+      />
 
       <Dropdown
         bind:value={ownerFilter}
@@ -1439,7 +1430,7 @@
     <NewProjectSheet
       company={newProjectDefaultCompany(slug, sheetCompanies)}
       companies={sheetCompanies}
-      owners={ownerOptions}
+      owners={personOptions.slice(1).filter((o) => o.label !== "Unknown person" && o.label !== "Unknown bot" && o.label !== "…").map((o) => o.label)}
       {objectives}
       onclose={() => (newProjectOpen = false)}
       oncreate={submitNewProject}
