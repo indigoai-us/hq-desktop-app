@@ -219,7 +219,7 @@
           {#if logo}
             <ConnectionCardLogo {logo} size={34} />
           {:else}
-            <span class="card-modal-icon" aria-hidden="true"><ConnectionCardIcon name={icon} size={18} /></span>
+            <span class="card-modal-icon" data-icon={icon} aria-hidden="true"><ConnectionCardIcon name={icon} size={icon === "slack" ? 20 : 18} /></span>
           {/if}
           <div class="card-modal-heading">
             <h2 class="card-modal-title" id={titleId} data-testid="card-modal-title">{title}</h2>

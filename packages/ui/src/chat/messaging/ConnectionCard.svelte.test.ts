@@ -3,6 +3,9 @@
 // Connection cards: a `connect` block in a bot's message draws one card per
 // target from views the host built. A press goes to the host, once.
 
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, tick, unmount } from "svelte";
 
@@ -20,6 +23,7 @@ import {
   type ConnectionCards,
 } from "./connection-card-model.js";
 import { parseRichContent, type ConnectTarget } from "./richMessageContent.js";
+import { SLACK_MARK } from "./app-brand-marks.js";
 import type { ConversationMessageWire } from "../chat-api";
 
 const NOW = Date.parse("2026-10-02T15:00:00.000Z");
@@ -158,14 +162,33 @@ describe("a connection card", () => {
       expect(box.style.width).toBe("28px");
       expect(box.style.height).toBe("28px");
       expect(box.getAttribute("aria-hidden")).toBe("true");
-      // The glyph is the one the card always drew, scaled to sit inside the box.
+      expect(box.dataset.icon).toBe(which);
       const svg = box.querySelector("svg")!;
       expect(svg.getAttribute("width")).toBe("18");
-      expect(svg.getAttribute("viewBox")).toBe("0 0 16 16");
+      // No words in the box: never a letter or two made from the name.
+      expect(box.textContent?.trim()).toBe("");
       void unmount(component!);
       component = null;
       host?.remove();
     }
+  });
+
+  it("draws the real Slack mark, in Slack's colour, and the generic app glyph for the tools card", () => {
+    const slack = renderCard(connectionCardView("slack", input()));
+    const mark = slack.querySelector<SVGElement>('[data-testid="connection-card-icon-slack"]')!;
+    expect(mark).not.toBeNull();
+    expect(mark.getAttribute("viewBox")).toBe("0 0 24 24");
+    expect(mark.getAttribute("fill")).toBe(`#${SLACK_MARK.hex}`);
+    expect(mark.querySelector("path")?.getAttribute("d")).toBe(SLACK_MARK.path);
+    expect(slack.querySelector('[data-testid="connection-card-icon-generic"]')).toBeNull();
+    void unmount(component!);
+    component = null;
+    host?.remove();
+    const tools = renderCard(connectionCardView("tools", input()));
+    const glyph = tools.querySelector<SVGElement>('[data-testid="connection-card-icon-generic"]')!;
+    expect(glyph).not.toBeNull();
+    expect(glyph.getAttribute("stroke")).toBe("currentColor");
+    expect(tools.querySelector('[data-testid="connection-card-icon-slack"]')).toBeNull();
   });
 
   it("shows the note under the card", () => {
@@ -397,6 +420,22 @@ describe("a card that keeps one height", () => {
     expect(el.querySelector('[data-testid="connection-card-more"]')).toBeNull();
     // The card itself takes no inline size: the height is one constant in its style.
     expect(el.getAttribute("style")).toBeNull();
+  });
+
+  it("is 168px tall in every state, with one line of copy, and the rows scroll inside", () => {
+    // happy-dom does not lay out the component's stylesheet, so the rule is
+    // read from the source: one constant, one clamp. Owner, 2026-10-03: the
+    // 240px cards took too much room; about 168px, header, one line, buttons.
+    const cardSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "ConnectionCard.svelte"), "utf8");
+    const heightRule = cardSource.match(/--cc-height:\s*(\d+)px/);
+    expect(heightRule?.[1]).toBe("168");
+    expect(cardSource).toMatch(/\.connection-card\s*\{[^}]*height:\s*var\(--cc-height\)/);
+    const line = cardSource.match(/\.connection-card-line\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(line).toMatch(/-webkit-line-clamp:\s*1\b/);
+    expect(line).toMatch(/\bline-clamp:\s*1\b/);
+    // The scroll area keeps scrolling inside the shorter card.
+    const scroll = cardSource.match(/\.connection-card-scroll\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(scroll).toMatch(/overflow-y:\s*auto/);
   });
 
   it("makes the scroll area reachable from the keyboard, with a name", () => {

@@ -10,6 +10,7 @@ import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { createChatWakeBus } from "../chat/chat-api.js";
 import { buildAgentHelloRequest } from "../chat/agent-channel.js";
 import { BOT_CONNECTION_CARDS_STORAGE_KEY } from "../chat/messaging/connection-card-model.js";
+import { brandMarkFor } from "../chat/messaging/app-brand-marks.js";
 import type { ConversationRow } from "../chat/sidebar-model.js";
 import type { Workspace } from "../chat/workspaces.js";
 
@@ -277,9 +278,10 @@ describe("DesktopApp connection cards in a cloud bot's direct message", () => {
     expect(linear.textContent).toContain("Linear");
     expect(linear.textContent).toContain("Connected. Let Nova use it?");
     expect(appPrimary("linear.app")!.textContent?.trim()).toBe("Let Nova use it");
-    // The logo box is drawn from the domain, with its badge.
-    expect(linear.querySelector('[data-testid="connection-card-logo-badge"]')?.textContent).toBe("Li");
-    expect(linear.querySelector<HTMLImageElement>('[data-testid="connection-card-logo-img"]')?.getAttribute("src")).toContain("linear.app");
+    // The logo box is drawn from the domain: Linear's bundled mark, no favicon request, no letters.
+    expect(linear.querySelector('[data-testid="connection-card-logo-mark"] path')?.getAttribute("d")).toBe(brandMarkFor("linear.app")?.path);
+    expect(linear.querySelector('[data-testid="connection-card-logo-img"]')).toBeNull();
+    expect(linear.querySelector('[data-testid="connection-card-logo"]')?.textContent?.trim()).toBe("");
     // Nothing is said to the bot about a connection it cannot use yet.
     expect(hiddenNotices(w)).toHaveLength(0);
 

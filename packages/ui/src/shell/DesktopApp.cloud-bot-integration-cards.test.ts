@@ -9,6 +9,7 @@ import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { createChatWakeBus } from "../chat/chat-api.js";
 import { buildAgentHelloRequest } from "../chat/agent-channel.js";
+import { brandMarkFor } from "../chat/messaging/app-brand-marks.js";
 import type { ConversationRow } from "../chat/sidebar-model.js";
 import type { Workspace } from "../chat/workspaces.js";
 
@@ -292,9 +293,12 @@ describe("DesktopApp integration cards named by a cloud bot", () => {
     expect(appCard("linear.app")!.textContent).toContain("Linear");
     expect(appLine("linear.app")).toBe("Your team's issues live here");
     expect(appLine("deepwiki.com")).toBe("Connect DeepWiki so Nova can use it.");
-    expect(appCard("linear.app")!.querySelector('[data-testid="connection-card-logo-badge"]')?.textContent).toBe("Li");
-    expect(appCard("linear.app")!.querySelector<HTMLImageElement>('[data-testid="connection-card-logo-img"]')?.getAttribute("src")).toBe(
-      "https://t0.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https%3A%2F%2Flinear.app&size=64",
+    // Linear has a bundled mark, so no favicon is requested and no letters are drawn. DeepWiki has none: its favicon chain starts.
+    expect(appCard("linear.app")!.querySelector('[data-testid="connection-card-logo-mark"] path')?.getAttribute("d")).toBe(brandMarkFor("linear.app")?.path);
+    expect(appCard("linear.app")!.querySelector('[data-testid="connection-card-logo-img"]')).toBeNull();
+    expect(appCard("linear.app")!.querySelector('[data-testid="connection-card-logo"]')?.textContent?.trim()).toBe("");
+    expect(appCard("deepwiki.com")!.querySelector<HTMLImageElement>('[data-testid="connection-card-logo-img"]')?.getAttribute("src")).toBe(
+      "https://t0.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https%3A%2F%2Fdeepwiki.com&size=64",
     );
     expect(appPrimary("linear.app")!.textContent?.trim()).toBe("Connect Linear");
     expect(appPrimary("example.com")!.getAttribute("aria-haspopup")).toBe("dialog");
@@ -437,7 +441,9 @@ describe("DesktopApp integration cards named by a cloud bot", () => {
     appPrimary("example.com")!.click();
     await vi.waitFor(() => expect(dialog()).not.toBeNull());
     expect(dialog()!.querySelector('[data-testid="card-modal-title"]')?.textContent).toBe("Example");
-    expect(dialog()!.querySelector('[data-testid="connection-card-logo-badge"]')?.textContent).toBe("Ex");
+    // Example has no bundled mark: the generic glyph holds the box while the favicon loads, never letters.
+    expect(dialog()!.querySelector('[data-testid="connection-card-logo-generic"]')).not.toBeNull();
+    expect(dialog()!.querySelector('[data-testid="connection-card-logo"]')?.textContent?.trim()).toBe("");
     expect(dialog()!.textContent).toContain("Example needs a key to connect.");
     await vi.waitFor(() => expect(w.blueprint).toHaveBeenCalledTimes(1));
     expect(w.blueprint).toHaveBeenCalledWith({ companyUid: COMPANY, catalogEntryId: "cat_example" });

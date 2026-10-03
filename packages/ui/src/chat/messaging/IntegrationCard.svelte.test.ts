@@ -1,8 +1,9 @@
 // @vitest-environment happy-dom
 
 // Integration cards: one card per app the bot named, drawn from views the
-// app built. The logo is a badge first and a favicon once one loads. A row
-// is a grid, with a quiet browse-all link under it.
+// app built. The logo is the app's bundled brand mark, else a favicon once
+// one loads, else the generic app glyph: never a badge made from the name.
+// A row is a grid, with a quiet browse-all link under it.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, unmount } from "svelte";
@@ -10,8 +11,17 @@ import { flushSync, mount, unmount } from "svelte";
 import ConnectionCard from "./ConnectionCard.svelte";
 import ConnectionCardLogo from "./ConnectionCardLogo.svelte";
 import RichMessageContent from "./RichMessageContent.svelte";
-import { connectionCardView, markAppConnecting, markAppDeclined, recordGrant, type ConnectionCards, type ConnectionCardView } from "./connection-card-model.js";
-import { integrationCardView, readCompanyConnections, type CatalogLookup, type IntegrationCardInput } from "./integration-cards-model.js";
+import { siGmail, siIntercom, siLinear } from "simple-icons";
+import {
+  connectionCardView,
+  markAppConnecting,
+  markAppDeclined,
+  recordGrant,
+  type ConnectionCardLogo as CardLogo,
+  type ConnectionCards,
+  type ConnectionCardView,
+} from "./connection-card-model.js";
+import { appLogo, integrationCardView, readCompanyConnections, type CatalogLookup, type IntegrationCardInput } from "./integration-cards-model.js";
 import { parseRichContent } from "./richMessageContent.js";
 
 const NOW = Date.parse("2026-10-02T15:00:00.000Z");
@@ -173,68 +183,135 @@ describe("an integration card", () => {
 });
 
 describe("the logo", () => {
-  const LOGO = { sources: ["https://t0.gstatic.com/faviconV2?x=1", "https://icons.duckduckgo.com/ip3/linear.app.ico"], monogram: "Li" };
+  const SOURCES = ["https://t0.gstatic.com/faviconV2?x=1", "https://icons.duckduckgo.com/ip3/example.com.ico"];
+  /** An app with no bundled mark: the image chain, with the generic glyph under it. */
+  const IMAGE_ONLY = { mark: null, sources: SOURCES };
+  const logoMark = (el: ParentNode) => el.querySelector<SVGElement>('[data-testid="connection-card-logo-mark"]');
+  const generic = (el: ParentNode) => el.querySelector<HTMLElement>('[data-testid="connection-card-logo-generic"]');
 
-  function renderLogo(logo = LOGO): HTMLElement {
+  function renderLogo(logo: CardLogo = IMAGE_ONLY, size = 28): HTMLElement {
     const root = target();
-    component = mount(ConnectionCardLogo, { target: root, props: { logo, size: 28 } });
+    component = mount(ConnectionCardLogo, { target: root, props: { logo, size } });
     flushSync();
     return logoBox(root);
   }
 
-  it("shows the badge first, and a lazy image that tries the first source", () => {
-    const box = renderLogo();
-    expect(box.dataset.loaded).toBe("false");
-    expect(box.querySelector('[data-testid="connection-card-logo-badge"]')?.textContent).toBe("Li");
+  it("draws a bundled brand mark at once, in the brand's colour, with no image and no letters", () => {
+    const box = renderLogo(appLogo("linear.app"));
+    expect(box.dataset.logo).toBe("mark");
+    expect(box.dataset.tile).toBe("light");
     expect(box.style.width).toBe("28px");
     expect(box.style.height).toBe("28px");
+    expect(box.getAttribute("aria-hidden")).toBe("true");
+    const mark = logoMark(box)!;
+    expect(mark.getAttribute("viewBox")).toBe("0 0 24 24");
+    expect(mark.getAttribute("width")).toBe("18");
+    expect(mark.getAttribute("fill")).toBe(`#${siLinear.hex}`);
+    expect(mark.querySelector("path")?.getAttribute("d")).toBe(siLinear.path);
+    expect(logoImg(box)).toBeNull();
+    expect(generic(box)).toBeNull();
+    expect(box.textContent?.trim()).toBe("");
+  });
+
+  it("puts a light-coloured mark on a dark tile", () => {
+    const box = renderLogo(appLogo("intercom.com"));
+    expect(box.dataset.logo).toBe("mark");
+    expect(box.dataset.tile).toBe("dark");
+    expect(logoMark(box)?.getAttribute("fill")).toBe(`#${siIntercom.hex}`);
+  });
+
+  it("shows the generic glyph first, and a lazy image that tries the first source", () => {
+    const box = renderLogo();
+    expect(box.dataset.logo).toBe("generic");
+    expect(box.dataset.tile).toBe("glass");
+    expect(box.dataset.loaded).toBe("false");
+    expect(generic(box)?.querySelector('[data-testid="connection-card-icon-generic"]')).not.toBeNull();
+    expect(box.textContent?.trim()).toBe("");
     const img = logoImg(box)!;
-    expect(img.getAttribute("src")).toBe(LOGO.sources[0]);
+    expect(img.getAttribute("src")).toBe(SOURCES[0]);
     expect(img.getAttribute("loading")).toBe("lazy");
     expect(img.getAttribute("decoding")).toBe("async");
     expect(img.getAttribute("alt")).toBe("");
-    expect(box.getAttribute("aria-hidden")).toBe("true");
+    expect(img.getAttribute("referrerpolicy")).toBe("no-referrer");
   });
 
-  it("replaces the badge once the image has loaded", () => {
+  it("replaces the glyph with the image once it has loaded, on a light tile", () => {
     const box = renderLogo();
     logoImg(box)!.dispatchEvent(new Event("load"));
     flushSync();
     expect(box.dataset.loaded).toBe("true");
-    // The badge stays in the box (hidden by style), so nothing moves.
-    expect(box.querySelector('[data-testid="connection-card-logo-badge"]')).not.toBeNull();
+    expect(box.dataset.logo).toBe("image");
+    expect(box.dataset.tile).toBe("light");
+    // The glyph stays in the box (hidden by style), so nothing moves.
+    expect(generic(box)).not.toBeNull();
     expect(box.style.width).toBe("28px");
   });
 
-  it("falls through both sources on error and ends on the badge", () => {
+  it("falls through both sources on error and ends on the generic glyph, never on letters", () => {
     const box = renderLogo();
     logoImg(box)!.dispatchEvent(new Event("error"));
     flushSync();
-    expect(logoImg(box)!.getAttribute("src")).toBe(LOGO.sources[1]);
+    expect(logoImg(box)!.getAttribute("src")).toBe(SOURCES[1]);
     expect(box.dataset.loaded).toBe("false");
     logoImg(box)!.dispatchEvent(new Event("error"));
     flushSync();
     expect(logoImg(box)).toBeNull();
-    expect(box.dataset.loaded).toBe("false");
-    expect(box.textContent?.trim()).toBe("Li");
+    expect(box.dataset.logo).toBe("generic");
+    expect(generic(box)).not.toBeNull();
+    expect(box.textContent?.trim()).toBe("");
   });
 
-  it("draws only the badge when there are no sources", () => {
-    const box = renderLogo({ sources: [], monogram: "GD" });
+  it("draws only the generic glyph when there is no mark and no source", () => {
+    const box = renderLogo({ mark: null, sources: [] });
     expect(logoImg(box)).toBeNull();
-    expect(box.textContent?.trim()).toBe("GD");
+    expect(logoMark(box)).toBeNull();
+    expect(generic(box)).not.toBeNull();
+    expect(box.textContent?.trim()).toBe("");
   });
 
-  it("is in the card's header, and Slack keeps its drawn icon", () => {
-    const el = renderCard(view("linear.app", { lookup: LINEAR }));
-    expect(logoBox(el)).not.toBeNull();
-    expect(el.querySelector(".connection-card-icon")).toBeNull();
+  it("sizes the mark and the image from the box, so the modal's larger box gets a larger logo", () => {
+    const mark = renderLogo(appLogo("github.com"), 34);
+    expect(logoMark(mark)?.getAttribute("width")).toBe("24");
+    void unmount(component!);
+    component = null;
+    host?.remove();
+    const image = renderLogo(IMAGE_ONLY, 34);
+    expect(logoImg(image)?.getAttribute("width")).toBe("26");
+  });
+
+  it("is in the card's header: a bundled mark for Linear, the image chain for an app without one, and Slack's own mark", () => {
+    const linear = renderCard(view("linear.app", { lookup: LINEAR }));
+    expect(logoMark(logoBox(linear))).not.toBeNull();
+    expect(logoImg(linear)).toBeNull();
+    expect(linear.querySelector(".connection-card-icon")).toBeNull();
+    void unmount(component!);
+    component = null;
+    host?.remove();
+    const example = renderCard(view("example.com", { lookup: EXAMPLE }));
+    expect(logoMark(logoBox(example))).toBeNull();
+    expect(logoImg(example)?.getAttribute("src")).toContain("t0.gstatic.com");
     void unmount(component!);
     component = null;
     host?.remove();
     const slack = renderCard(connectionCardView("slack", { botName: "Nova", now: NOW }));
     expect(slack.querySelector('[data-testid="connection-card-logo"]')).toBeNull();
-    expect(slack.querySelector(".connection-card-icon svg")).not.toBeNull();
+    expect(slack.querySelector('.connection-card-icon [data-testid="connection-card-icon-slack"]')).not.toBeNull();
+  });
+
+  it("gives a connected card of the person's own the same logo path as a catalog card", () => {
+    const own = renderCard(view("linear.app", { facts: facts([connection()]) }));
+    expect(own.dataset.state).toBe("connected");
+    expect(logoMark(logoBox(own))?.querySelector("path")?.getAttribute("d")).toBe(siLinear.path);
+    void unmount(component!);
+    component = null;
+    host?.remove();
+    // A connection the list names only by provider: "{provider}.com" gets the image chain for that host.
+    const gmail = renderCard(
+      view("gmail.com", { facts: facts([connection({ id: "acct_gmail", provider: "factory:gmail", installation: { displayName: "Gmail (Stefan)" } })]) }),
+    );
+    expect(gmail.dataset.state).toBe("connected");
+    expect(logoMark(logoBox(gmail))?.querySelector("path")?.getAttribute("d")).toBe(siGmail.path);
+    expect(gmail.textContent).not.toContain("G(");
   });
 });
 
@@ -345,6 +422,8 @@ describe("a row of integration cards in a message", () => {
     const root = renderBlock(cardsFor(), hostile);
     expect(root.innerHTML).not.toContain("evil");
     expect(root.textContent).not.toContain("Free tokens");
-    expect(logoImg(root)!.getAttribute("src")).toContain("t0.gstatic.com");
+    // The logo is the app's bundled Linear mark, not the bot's picture.
+    expect(root.querySelector('[data-testid="connection-card-logo-mark"] path')?.getAttribute("d")).toBe(siLinear.path);
+    expect(logoImg(root)).toBeNull();
   });
 });

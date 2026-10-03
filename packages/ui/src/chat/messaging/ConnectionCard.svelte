@@ -22,9 +22,10 @@
    * a glass panel holding the words. Like the takeover the card is dark in
    * both app themes, so no color here comes from a theme variable.
    *
-   * Every card is one fixed height in every state (`--cc-height` below). What
-   * does not fit scrolls inside the glass panel: the tools card's rows. The
-   * header, the line and the button strip never move.
+   * Every card is one fixed height in every state (`--cc-height` below): the
+   * header row (logo, name, status), one line of copy, the button strip at
+   * the bottom. What does not fit scrolls inside the glass panel: the tools
+   * card's rows. The header, the line and the button strip never move.
    */
   import { onDestroy } from "svelte";
   import ConnectionCardIcon from "./ConnectionCardIcon.svelte";
@@ -157,12 +158,14 @@
   <div class="connection-card-glass">
     <div class="connection-card-head">
       {#if view.logo}
-        <!-- The app's logo: the badge at once, the favicon once it has loaded. -->
+        <!-- The app's logo: its bundled mark at once, else the favicon once it has loaded, else the generic glyph. -->
         <ConnectionCardLogo logo={view.logo} size={HEAD_BOX} />
       {:else}
+        <!-- Slack's own mark on a light tile; the generic glyph on the glass for the tools card. -->
         <span
           class="connection-card-icon"
           data-testid="connection-card-icon"
+          data-icon={view.target}
           aria-hidden="true"
           style:width={`${HEAD_BOX}px`}
           style:height={`${HEAD_BOX}px`}
@@ -178,7 +181,7 @@
         </span>
       {/if}
     </div>
-    <!-- A long line is cut at two lines so the card keeps its height; the title holds all of it. -->
+    <!-- One line of copy, cut with an ellipsis past it so the card keeps its height; the title holds all of it. -->
     <div class="connection-card-line" data-testid="connection-card-line" title={view.line}>{view.line}</div>
     {#if view.waiting.length > 0}
       <div class="connection-card-list" data-more-below={moreBelow ? "true" : "false"}>
@@ -273,9 +276,10 @@
     --cc-accent: #c4a5ff;
     --cc-ok: #4ade80;
     --cc-warn: #fcd34d;
-    /* The one height of every connection card, in every state. Room for the
-       title, two lines and a note on the glass, the art, and the button strip. */
-    --cc-height: 240px;
+    /* The one height of every connection card, in every state: the header
+       row, one line of copy and a note on the glass, the button strip at the
+       bottom, the art behind. Rows that do not fit scroll inside the glass. */
+    --cc-height: 168px;
     position: relative;
     isolation: isolate;
     overflow: hidden;
@@ -314,13 +318,15 @@
   /* The glass panel: the takeover card's treatment. */
   .connection-card-glass {
     /* As tall as its words, never taller than the room above the buttons:
-       past that the rows scroll inside it. */
+       past that the rows scroll inside it, and anything past that is clipped
+       rather than drawn over the buttons. */
     flex: 0 1 auto;
     min-height: 0;
     display: flex;
     flex-direction: column;
     gap: 6px;
-    padding: 7px 9px 8px;
+    padding: 6px 8px 7px;
+    overflow: hidden;
     border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: 5px;
     background: rgba(17, 17, 19, 0.68);
@@ -378,6 +384,12 @@
     background: rgba(255, 255, 255, 0.05);
     color: var(--cc-muted);
   }
+  /* Slack's mark is in Slack's own colour, so it sits on a light tile, the
+     same tile a brand mark gets in ConnectionCardLogo. */
+  .connection-card-icon[data-icon="slack"] {
+    border-color: rgba(255, 255, 255, 0.3);
+    background: #fff;
+  }
   .connection-card[data-state="connecting"] .connection-card-icon {
     color: var(--cc-accent);
   }
@@ -386,6 +398,9 @@
   }
   .connection-card[data-state="declined"] .connection-card-icon {
     color: rgba(250, 250, 250, 0.5);
+  }
+  .connection-card[data-state="declined"] .connection-card-icon[data-icon="slack"] {
+    background: rgba(255, 255, 255, 0.72);
   }
   .connection-card-title {
     font-weight: 600;
@@ -404,7 +419,8 @@
     color: var(--cc-ok);
     white-space: nowrap;
   }
-  /* Two lines at most, then an ellipsis: a long line never grows the card. */
+  /* The copy is one line and the note two at most, then an ellipsis: neither
+     ever grows the card. The title attribute holds the whole sentence. */
   .connection-card-line,
   .connection-card-note {
     flex: 0 0 auto;
@@ -416,6 +432,8 @@
     overflow-wrap: anywhere;
   }
   .connection-card-line {
+    -webkit-line-clamp: 1;
+    line-clamp: 1;
     font-size: 12px;
     line-height: 1.45;
     color: var(--cc-muted);

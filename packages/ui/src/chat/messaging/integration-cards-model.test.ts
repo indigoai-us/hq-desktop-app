@@ -8,7 +8,6 @@ import {
   appChosenItems,
   appLogo,
   appLogoSources,
-  appMonogram,
   botCanUse,
   catalogMatchFor,
   companyAppsBrief,
@@ -34,6 +33,7 @@ import {
   markAppDeclined,
   recordGrant,
 } from "./connection-card-model.js";
+import { brandMarkFor } from "./app-brand-marks.js";
 
 const NOW = Date.parse("2026-10-02T15:00:00.000Z");
 
@@ -185,12 +185,14 @@ describe("the logo", () => {
     expect(appLogoSources("nope")).toEqual([]);
   });
 
-  it("uses the console's two-letter rule for the badge", () => {
-    expect(appMonogram("GitHub")).toBe("Gi");
-    expect(appMonogram("Google Drive")).toBe("GD");
-    expect(appMonogram("  Linear ")).toBe("Li");
-    expect(appMonogram("X")).toBe("X");
-    expect(appLogo("linear.app", "Linear")).toEqual({ sources: appLogoSources("linear.app"), monogram: "Li" });
+  it("pairs the bundled mark, when the app has one, with the favicon sources; never a badge from the name", () => {
+    expect(appLogo("linear.app")).toEqual({ mark: brandMarkFor("linear.app"), sources: appLogoSources("linear.app") });
+    expect(appLogo("linear.app").mark?.title).toBe("Linear");
+    expect(appLogo("mcp.linear.app").mark?.title).toBe("Linear");
+    // An app with no bundled mark: the image chain only.
+    expect(appLogo("example.com")).toEqual({ mark: null, sources: appLogoSources("example.com") });
+    expect(appLogo("nope")).toEqual({ mark: null, sources: [] });
+    expect(Object.keys(appLogo("github.com"))).not.toContain("monogram");
   });
 });
 
@@ -218,7 +220,7 @@ describe("integrationCardView", () => {
       note: null,
       authClass: "oauth",
       connectionId: null,
-      logo: { monogram: "Li" },
+      logo: { mark: { title: "Linear" } },
     });
     expect(view.logo?.sources).toHaveLength(2);
   });

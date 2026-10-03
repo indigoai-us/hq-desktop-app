@@ -15,7 +15,7 @@ import type { CardModalContentProps } from "./card-modal-registry.js";
 /** An obviously fake key. Never a real one. */
 const KEY = "fake-key-0000";
 const NOVA = "agt_nova";
-const LOGO = { sources: ["https://t0.gstatic.com/faviconV2?x=example", "https://icons.duckduckgo.com/ip3/example.com.ico"], monogram: "Ex" };
+const LOGO = { mark: null, sources: ["https://t0.gstatic.com/faviconV2?x=example", "https://icons.duckduckgo.com/ip3/example.com.ico"] };
 
 const BLUEPRINT = {
   ok: true,
@@ -140,7 +140,10 @@ describe("IntegrationConnectModal", () => {
     await settle();
     expect(dialog().querySelector('[data-testid="card-modal-title"]')?.textContent).toBe("Example");
     expect(dialog().querySelector('[data-testid="connection-card-logo"]')).not.toBeNull();
-    expect(dialog().querySelector('[data-testid="connection-card-logo-badge"]')?.textContent).toBe("Ex");
+    // No bundled mark for example.com: the generic glyph holds the box while the favicon loads. No letters from the name.
+    expect(dialog().querySelector('[data-testid="connection-card-logo-generic"]')).not.toBeNull();
+    expect(dialog().querySelector('[data-testid="connection-card-logo-img"]')?.getAttribute("src")).toBe(LOGO.sources[0]);
+    expect(dialog().querySelector('[data-testid="connection-card-logo"]')?.textContent?.trim()).toBe("");
     expect(dialog().textContent).toContain("Example needs a key to connect.");
     expect(blueprint).toHaveBeenCalledTimes(1);
     expect(blueprint).toHaveBeenCalledWith({ companyUid: "cmp_acme", domain: "example.com" });

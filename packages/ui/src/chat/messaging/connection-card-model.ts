@@ -16,6 +16,7 @@
  * here reads text, a link or a style from the bot.
  */
 
+import type { BrandMark } from "./app-brand-marks.js";
 import type { ConnectTarget } from "./richMessageContent.js";
 import { slackCapabilityFromStatus, slackRowFromStatus, slackRowStage, type SlackPendingStage } from "./slack-status.js";
 
@@ -43,18 +44,22 @@ export type ConnectionCardPrimaryAction = "connect" | "open" | "allow";
 /** How an integration connects: with nothing, in the browser, or with a pasted key. */
 export type IntegrationAuthClass = "none" | "oauth" | "key";
 
-/** The logo of an integration card: image sources tried in order, and the badge drawn until one loads. */
+/**
+ * The logo of an integration card: a bundled brand mark when the app has
+ * one, else image sources tried in order, else the generic app glyph. There
+ * is no badge made from the name: a card never shows a made-up logo.
+ */
 export interface ConnectionCardLogo {
   /** Image URLs the app built from the domain, tried in order. Never from the bot. */
   sources: string[];
-  /** The two-letter badge. */
-  monogram: string;
 }
 
 /**
  * The cards whose main button opens a modal instead of connecting at once.
  *
  * This is the one place a target is marked as "has a modal". Add the target
+  /** The app's bundled mark (app-brand-marks.ts), or null when it has none. */
+  mark: BrandMark | null;
  * here and register its content in card-modal-registry.ts: the card's main
  * button then sends `open` and the shell shows that content in a CardModal.
  * A target listed here with no registered content has a button that does
@@ -575,7 +580,7 @@ export interface ConnectionCardView {
   kind?: "integration";
   /** The app's website domain, normalized. Integration cards only. */
   domain?: string;
-  /** The app's logo: sources and badge. Integration cards only; Slack keeps its drawn icon. */
+  /** The app's logo: a bundled mark or image sources. Integration cards only; Slack keeps its drawn mark. */
   logo?: ConnectionCardLogo | null;
   /** How the app connects, when known. Integration cards only. */
   authClass?: IntegrationAuthClass | null;

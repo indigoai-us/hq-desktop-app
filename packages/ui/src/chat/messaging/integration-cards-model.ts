@@ -8,9 +8,9 @@
  *
  * WHAT THE BOT SUPPLIES: a domain and an optional sanitized reason. Nothing
  * else. The app supplies the name (the connection's, else the catalog's, else
- * the domain's first label), the logo (two favicon URLs built from the domain
- * and a two-letter badge, the way the console does it), every word, every
- * link and every state.
+ * the domain's first label), the logo (a bundled brand mark for the apps that
+ * have one, else two favicon URLs built from the domain, else a generic
+ * glyph), every word, every link and every state.
  *
  * WHAT DECIDES A CARD:
  * - a company connection whose domain or provider matches the item: a
@@ -24,6 +24,7 @@
  * always read from the company's connection list.
  */
 
+import { brandMarkFor } from "./app-brand-marks.js";
 import type { ConnectItem, ConnectTarget } from "./richMessageContent.js";
 import { normalizeConnectDomain } from "./richMessageContent.js";
 import {
@@ -227,8 +228,11 @@ export function defaultAppName(domain: string): string {
 /**
  * The two favicon services the console uses, in its order: Google's index
  * first, DuckDuckGo second. Both answer a real 404 for an unknown domain, so
- * an image that fails falls through to the next and then to the badge. The
- * app's image policy names exactly these two hosts.
+ * an image that fails falls through to the next and then to the generic
+ * glyph. The app's image policy names exactly these two hosts, in both places
+ * it is set: `tauri.conf.json` (`app.security.csp`) and the UI protocol's
+ * response header (`apps/sync/src-tauri/src/ui_protocol.rs`). The webview
+ * enforces both, so a host missing from either blocks the image.
  */
 export function appLogoSources(domain: string): string[] {
   const registrable = normalizeConnectDomain(domain);
@@ -241,15 +245,15 @@ export function appLogoSources(domain: string): string[] {
   ];
 }
 
-/** The console's two-letter rule: "GitHub" → "Gi", "Google Drive" → "GD". */
-export function appMonogram(name: string): string {
-  const words = name.trim().split(/\s+/).filter(Boolean);
-  if (words.length > 1) return (words[0]!.charAt(0) + words[1]!.charAt(0)).toUpperCase();
-  return name.trim().slice(0, 2);
-}
-
-export function appLogo(domain: string, name: string): ConnectionCardLogo {
-  return { sources: appLogoSources(domain), monogram: appMonogram(name) };
+/**
+ * An app's logo: its bundled brand mark when it has one (app-brand-marks.ts),
+ * and the favicon sources for the image tried when it has none. The card
+ * draws the mark, else the first image that loads, else the generic app
+ * glyph. Nothing is made up from the name.
+ */
+export function appLogo(domain: string): ConnectionCardLogo {
+  const registrable = normalizeConnectDomain(domain);
+  return { mark: brandMarkFor(registrable), sources: appLogoSources(domain) };
 }
 
 // ── The view ─────────────────────────────────────────────────────────────
@@ -303,7 +307,7 @@ export function integrationCardView(item: { domain: string; why?: string }, inpu
     target: "integration" as const,
     kind: "integration" as const,
     domain,
-    logo: appLogo(domain, name),
+    logo: appLogo(domain),
     authClass,
     connectionId: connection?.id ?? null,
     title: name,

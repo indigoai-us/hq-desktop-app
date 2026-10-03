@@ -138,6 +138,13 @@
   color: var(--cm-ink);
 }
 
+/* Slack's mark is in Slack's own colour (ConnectionCardIcon), so its box is
+   a light tile, the same tile a brand mark gets on the card. */
+.card-modal-icon[data-icon="slack"] {
+  border-color: rgba(255, 255, 255, 0.3);
+  background: #fff;
+}
+
 .card-modal-heading {
   display: grid;
   gap: 3px;
