@@ -1,7 +1,8 @@
 <script lang="ts">
   /**
-   * First-run company step. Shown once the install is done to a person with no
-   * active company: join a pending invite, or name a company (optional website,
+   * First-run company step. Shown after the setup explainers and before the
+   * ready ("Open HQ Desktop") screen, while the install runs, to a person with
+   * no active company: join a pending invite, or name a company (optional website,
    * teammates), then pick Starter or Workforce. The company handle (slug) is
    * made from the name and checked in the background; nobody types it. When
    * the person already picked a plan on the website (`priorPlan`), the plan
@@ -863,6 +864,17 @@
   }
   .company-actions {
     justify-content: center;
+  }
+  /*
+   * The line under the heading and any status line stay inside that same
+   * column, so nothing on the screen is wider than the form (the welcome
+   * panel itself is 560px wide).
+   */
+  .follow-on > .body,
+  .follow-on > .note {
+    box-sizing: border-box;
+    max-width: 360px;
+    margin: 14px auto 0;
   }
   .plan-options {
     border: 0;

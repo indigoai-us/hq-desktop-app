@@ -3811,6 +3811,10 @@ describe('company onboarding step', () => {
     companyMembers?: Array<Record<string, unknown>>;
     membershipFailures?: number;
     companyRouteLookupRetryEnabled?: boolean;
+    /** Keep the install running (initial sync never finishes) and stop on the explainers. */
+    holdInstall?: boolean;
+    /** Delay, in ms, before GET /membership/me answers. */
+    membershipDelayMs?: number;
     pendingInvites?: Array<{ slug: string; displayName: string }>;
     checkout?: { status: number; body: unknown };
     /** Whether GET /entity/cmp_new reports the new company provisioned. */
@@ -3861,6 +3865,8 @@ describe('company onboarding step', () => {
           return options.claimResult ?? { ok: true, claimedSlugs: [args?.companySlug], message: 'Joined' };
         case 'web_visitor_anon_id':
           return options.anonId ?? null;
+        case 'start_initial_cloud_sync':
+          return options.holdInstall ? new Promise<never>(() => {}) : undefined;
         case 'activate_company_cloud':
           activations += 1;
           // The create flow's own activation happens once; only a retry flips the entity.
@@ -3905,6 +3911,9 @@ describe('company onboarding step', () => {
         case 'hq_pro_fetch': {
           if (args?.url === '/membership/me') {
             membershipReads += 1;
+            if (options.membershipDelayMs) {
+              await new Promise((resolve) => setTimeout(resolve, options.membershipDelayMs));
+            }
             if (membershipReads <= (options.membershipFailures ?? 0)) {
               throw new Error('temporary membership lookup failure');
             }
@@ -3971,11 +3980,102 @@ describe('company onboarding step', () => {
     });
 
     await vi.advanceTimersByTimeAsync(1_000);
+    if (options.holdInstall) {
+      await flushUntil(() =>
+        tauri.invoke.mock.calls.some(([command]) => command === 'start_initial_cloud_sync'),
+      );
+      return;
+    }
     await flushUntil(() =>
       tauri.invoke.mock.calls.some(([command]) => command === 'record_install_complete'),
     );
     await skipToReady();
   }
+
+  /** Next on the screen that is on show. */
+  async function nextOnScreen(): Promise<void> {
+    const button = [...host.querySelectorAll<HTMLButtonElement>('.scene.on button.btn-primary')].find(
+      (candidate) => candidate.textContent?.trim() === 'Next',
+    );
+    if (!button) throw new Error('Expected a Next button on the screen on show.');
+    button.click();
+    await vi.advanceTimersByTimeAsync(500);
+    await flush();
+  }
+
+  function onScreen(sceneId: string): boolean {
+    return host.querySelector(`.scene[data-scene="${sceneId}"]`)?.classList.contains('on') ?? false;
+  }
+
+  /** Steps in the order they were entered, from step telemetry. */
+  function enteredSteps(): string[] {
+    return tauri.invoke.mock.calls.flatMap(([command, rawArgs]) => {
+      const args = rawArgs as { eventName?: string; properties?: Record<string, unknown> };
+      return command === 'emit_desktop_operational_telemetry' &&
+        args.eventName === 'desktop_onboarding_step' &&
+        args.properties?.action === 'entered'
+        ? [String(args.properties.step)]
+        : [];
+    });
+  }
+
+  it('runs the company step after the setup explainers and before the ready screen, while the install runs', async () => {
+    await reachCompanyScenario({ holdInstall: true });
+    expect(onScreen('cloud')).toBe(true);
+    await nextOnScreen();
+    expect(onScreen('shortcut')).toBe(true);
+    await nextOnScreen();
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')));
+
+    // The install is still running, and "Open HQ Desktop" has not been shown.
+    expect(tauri.invoke.mock.calls.some(([command]) => command === 'record_install_complete')).toBe(false);
+    expect(onScreen('company')).toBe(true);
+    expect(onScreen('ready')).toBe(false);
+    expect(enteredSteps()).not.toContain('ready');
+
+    typeInto('onboarding-company-field-name', 'Acme');
+    await settle();
+    click('onboarding-company-create');
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-plan-starter"]')));
+    click('onboarding-plan-continue');
+    await settle();
+
+    // Then the ready screen, still waiting on the install.
+    expect(onScreen('ready')).toBe(true);
+    expect(host.querySelector('[data-testid="onboarding-company"]')).toBeNull();
+    const steps = enteredSteps();
+    expect(steps.indexOf('company')).toBeGreaterThanOrEqual(0);
+    expect(steps.indexOf('company')).toBeLessThan(steps.indexOf('ready'));
+  });
+
+  it('hands over from the ready screen to the company step when the lookup answers late', async () => {
+    await reachCompanyScenario({ holdInstall: true, membershipDelayMs: 5_000 });
+    await nextOnScreen();
+    await nextOnScreen();
+    // Leaving the explainers waits a short while, then shows ready.
+    await vi.advanceTimersByTimeAsync(3_000);
+    await flush();
+    expect(onScreen('ready')).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(3_000);
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')));
+    expect(onScreen('company')).toBe(true);
+    expect(tauri.invoke.mock.calls.some(([command]) => command === 'record_install_complete')).toBe(false);
+  });
+
+  it('does not show the company step to a member of a company, before or after ready', async () => {
+    await reachCompanyScenario({
+      holdInstall: true,
+      memberships: [
+        { companyUid: 'cmp_demo', companySlug: 'demo', personUid: 'prs_me', status: 'active', role: 'member' },
+      ],
+    });
+    await nextOnScreen();
+    await nextOnScreen();
+    await settle();
+    expect(onScreen('ready')).toBe(true);
+    expect(host.querySelector('[data-testid="onboarding-company"]')).toBeNull();
+  });
 
   function companyRows(): Array<Record<string, unknown>> {
     return tauri.invoke.mock.calls.flatMap(([command, rawArgs]) => {

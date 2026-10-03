@@ -436,6 +436,18 @@
   const firstFolderSelfHealTimeoutMs = 90_000;
   const firstFolderSelfHealIntervalMs = 2_000;
   let companyStepVisited = false;
+  /**
+   * The company route lookup. It starts on the second setup explainer, so the
+   * company step can run between the setup explainers and the ready
+   * ("Open HQ Desktop") screen instead of after it. Reset on an account switch.
+   */
+  let companyRouteResolution: Promise<void> | null = null;
+  let companyRouteGeneration = 0;
+  /** The company lookup has answered with a usable route (or none needed). */
+  let companyRouteResolved = $state(false);
+  /** Leaving the explainers waits this long at most for the company lookup. */
+  const COMPANY_ROUTE_WAIT_MS = 3_000;
+  let leavingExplainers = false;
   let companyStepCompanyUid: string | null = null;
   let inviteTeammateContext: { companyUid: string; personUid: string } | null = null;
   let inviteCreatedForEmail: string | null = null;
@@ -1216,6 +1228,16 @@
       void resolvePostSetupSteps(() => mounted);
       return;
     }
+    if (resumeAfterAccountSwitch && setupStarted && !setupCancelled) {
+      // Switched account from the company step while the install still runs:
+      // the folder is chosen and the install carries on, so look up the new
+      // account's company and go on from the ready screen (the company step
+      // comes back first when this account needs it).
+      resumeAfterAccountSwitch = false;
+      void resolveCompanyStep();
+      advanceTo(READY_STEP_INDEX, 'completed', { ...details, outcome: 'authenticated' }, 'ready');
+      return;
+    }
     // The consent question is asked later as its own step after setup.
     // Operational setup telemetry is emitted independently; skill usage
     // remains governed by that choice.
@@ -1433,6 +1455,7 @@
       companyPath = null;
       companyPriorPlan = null;
       companyStepVisited = false;
+      resetCompanyRoute();
       postSetupStepsResolved = false;
       resumeAfterAccountSwitch = true;
       advanceTo(WELCOME_SIGNIN_STEP_INDEX, 'completed', { outcome: 'switch_account' }, 'welcome');
@@ -2479,8 +2502,29 @@
     }
   }
 
-  /** The optional follow-on steps after setup; re-run after an account switch. */
-  async function resolvePostSetupSteps(stillCurrent: () => boolean): Promise<void> {
+  /** Forget the company lookup (account switch): the next call looks again. */
+  function resetCompanyRoute(): void {
+    companyRouteGeneration += 1;
+    companyRouteResolution = null;
+    companyRouteResolved = false;
+  }
+
+  /**
+   * Look up which way the company step goes (create, join, existing, skip),
+   * once. Started on the second setup explainer (or when the explainers are
+   * skipped) so the step can come before the ready screen; awaited again once setup completes. A lookup that fails is
+   * forgotten, so the post-setup call tries again (the person entity is
+   * provisioned during setup, and the old after-setup timing still works).
+   */
+  function resolveCompanyStep(): Promise<void> {
+    if (!companyRouteResolution) {
+      const generation = companyRouteGeneration;
+      companyRouteResolution = lookUpCompanyRoute(() => mounted && generation === companyRouteGeneration);
+    }
+    return companyRouteResolution;
+  }
+
+  async function lookUpCompanyRoute(stillCurrent: () => boolean): Promise<void> {
     const retryCompanyLookup = resolveCompanyRouteLookupRetryFlag();
     const [email, anonId] = await Promise.all([
       resolveSignedInEmail(),
@@ -2500,8 +2544,7 @@
       if (!resolved || !('route' in resolved) || resolved.route.kind !== 'create') return false;
       return resolveCompanyNamePrefillFlag();
     });
-    const [firstFolderEnabled, firstRunCompanyPath, namePrefillEnabled] = await Promise.all([
-      resolveFirstFolderSyncStepFlag(),
+    const [firstRunCompanyPath, namePrefillEnabled] = await Promise.all([
       firstRunCompanyPathPromise,
       companyNamePrefillPromise,
     ]);
@@ -2518,16 +2561,62 @@
       companyNamePrefillEnabled =
         namePrefillEnabled && firstRunCompanyPath.route.kind === 'create';
       recordCompanyRoute(firstRunCompanyPath.route, firstRunCompanyPath.summary);
-    } else {
-      companyPath = null;
-      companyPriorPlan = null;
-      companyNamePrefillEnabled = false;
-      if (firstRunCompanyPath?.kind === 'lookup_failed') recordCompanyRouteLookupFailed();
+      inviteTeammateContext = inviteContext;
+      showInviteTeammateStep = inviteContext !== null;
+      companyRouteResolved = true;
+      return;
     }
+    companyPath = null;
+    companyPriorPlan = null;
+    companyNamePrefillEnabled = false;
+    inviteTeammateContext = null;
+    showInviteTeammateStep = false;
+    if (firstRunCompanyPath?.kind === 'lookup_failed') recordCompanyRouteLookupFailed();
+    if (setupCompleted) {
+      // After setup there is no later attempt: settle on no company step.
+      companyRouteResolved = true;
+    } else {
+      // Too early (before setup); setup completion looks again.
+      companyRouteResolution = null;
+    }
+  }
+
+  /** The optional follow-on steps after setup; re-run after an account switch. */
+  async function resolvePostSetupSteps(stillCurrent: () => boolean): Promise<void> {
+    const [firstFolderEnabled] = await Promise.all([
+      resolveFirstFolderSyncStepFlag(),
+      resolveCompanyStep(),
+    ]);
+    if (!stillCurrent()) return;
     showFirstFolderSyncStep = firstFolderEnabled;
-    inviteTeammateContext = inviteContext;
-    showInviteTeammateStep = inviteContext !== null;
     postSetupStepsResolved = true;
+  }
+
+  /** Whether the company step still has to be shown; null while the lookup runs. */
+  function companyStepPending(): boolean | null {
+    if (!companyRouteResolved) return null;
+    return Boolean(companyPath && companyPath.kind !== 'skip' && !companyStepVisited);
+  }
+
+  /**
+   * Leave the setup explainers. The company step comes first when this
+   * person needs one, then the ready ("Open HQ Desktop") screen. A lookup
+   * that has not answered yet gets a short wait; if it answers later, the
+   * ready screen hands over to the company step then.
+   */
+  async function leaveExplainers(): Promise<void> {
+    if (leavingExplainers) return;
+    leavingExplainers = true;
+    try {
+      if (!consentOnly && !replay && companyStepPending() === null) {
+        const lookup = resolveCompanyStep();
+        await Promise.race([lookup, new Promise((resolve) => setTimeout(resolve, COMPANY_ROUTE_WAIT_MS))]);
+        if (!mounted) return;
+      }
+      advanceTo(!consentOnly && !replay && companyStepPending() ? COMPANY_STEP_INDEX : READY_STEP_INDEX, null);
+    } finally {
+      leavingExplainers = false;
+    }
   }
 
   interface SetupCompletionMetrics {
@@ -3061,12 +3150,16 @@
         handleInstall();
         return;
       case 'cloud':
+        // Look up the company step while the second explainer plays, so it
+        // can come right after the explainers, before the ready screen.
+        void resolveCompanyStep();
         scene = 'shortcut';
         return;
       case 'shortcut':
         // Leaving the explainers is not the setup step "completing": the
-        // install records its own completion when it finishes.
-        advanceTo(READY_STEP_INDEX, null);
+        // install records its own completion when it finishes. The company
+        // step, when needed, comes before the ready screen.
+        void leaveExplainers();
         return;
       case 'consent':
         if (!consentFailure) void submitConsent();
@@ -3100,7 +3193,7 @@
   }
 
   function skipIntro(): void {
-    if (chrome.skip === 'ready') advanceTo(READY_STEP_INDEX, null);
+    if (chrome.skip === 'ready') void leaveExplainers();
     else if (chrome.skip === 'end') void finishReplay();
   }
 
@@ -3411,6 +3504,17 @@
   // the teammate invite (flag-gated, sole active member only), then the
   // connector import, which only shows itself if it has something to offer.
   // Each hands back to the ready screen, which picks the next one up here.
+  // The company step comes before the ready screen. When the lookup answers
+  // only after the person reached ready (a quick Skip intro), hand over then;
+  // this does not wait for the install.
+  $effect(() => {
+    if (consentOnly || replay || !companyRouteResolved) return;
+    if (currentStep !== READY_STEP_INDEX) return;
+    if (companyPath && companyPath.kind !== 'skip' && !companyStepVisited) {
+      advanceTo(COMPANY_STEP_INDEX, null);
+    }
+  });
+
   $effect(() => {
     if (consentOnly || replay || !setupCompleted || !postSetupStepsResolved) return;
     if (currentStep !== READY_STEP_INDEX) return;
@@ -3961,8 +4065,9 @@
     </section>
     {/if}
 
-    <!-- Name a company (or join an invite) and pick a plan, offered once the
-         install is done to anyone with no company yet. -->
+    <!-- Name a company (or join an invite) and pick a plan, for anyone with
+         no company yet: right after the setup explainers, before the ready
+         ("Open HQ Desktop") screen, while the install carries on. -->
     <section
       class="scene s-follow-on s-company"
       class:on={scene === 'company'}
