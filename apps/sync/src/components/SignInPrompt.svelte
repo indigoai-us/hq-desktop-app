@@ -496,7 +496,7 @@
       disabled={quitting}
       aria-busy={quitting}
     >
-      {quitting ? 'Quitting…' : 'Quit HQ Sync'}
+      {quitting ? 'Quitting…' : 'Quit HQ'}
     </button>
 
     {#if error}
@@ -633,14 +633,14 @@
   }
 
   h1 {
-    font-size: 1.25rem;
-    font-weight: 600;
+    font-size: 20px;
+    font-weight: 500;
     color: var(--pop-text);
     margin: 0 0 0.5rem 0;
   }
 
   .description {
-    font-size: 0.8125rem;
+    font-size: 13px;
     color: var(--pop-muted);
     margin: 0 0 1.5rem 0;
     line-height: 1.4;
@@ -675,7 +675,7 @@
   }
 
   .microsoft-email label {
-    font-size: 0.75rem;
+    font-size: 12px;
     color: var(--pop-muted);
     line-height: 1.4;
   }
@@ -690,7 +690,7 @@
     background: transparent;
     color: var(--pop-text);
     font: inherit;
-    font-size: 0.8125rem;
+    font-size: 13px;
   }
 
   .microsoft-email input:focus-visible {
@@ -707,7 +707,7 @@
 
   .continuation-lead {
     margin: 0;
-    font-size: 0.8125rem;
+    font-size: 13px;
     opacity: 0.75;
   }
 
@@ -781,14 +781,14 @@
   }
 
   .error {
-    font-size: 0.75rem;
+    font-size: 12px;
     color: var(--pop-muted);
     margin: 0;
     line-height: 1.4;
   }
 
   .loading-hint {
-    font-size: 0.6875rem;
+    font-size: 11px;
     color: var(--pop-muted);
     margin: 0.75rem 0 0 0;
     line-height: 1.4;
@@ -799,7 +799,7 @@
   .retry-btn {
     margin-top: 0.875rem;
     padding: 0.375rem 0.625rem;
-    font-size: 0.75rem;
+    font-size: 12px;
     font-family: inherit;
     color: var(--pop-muted);
     background: none;
@@ -854,7 +854,7 @@
   }
 
   .footer {
-    font-size: 0.6875rem;
+    font-size: 11px;
     color: var(--dot);
     margin: 1.5rem 0 0 0;
     letter-spacing: 0.02em;
