@@ -56,6 +56,12 @@ export interface FirstRunInvite {
  */
 export type FirstRunCompanyPath = CompanyRoute;
 
+export const COMPANY_ROUTE_LOOKUP_RETRY_DELAY_MS = 250;
+
+export interface CompanyRouteLookupFailed {
+  kind: 'lookup_failed';
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -78,11 +84,20 @@ export interface ResolvedCompanyRoute {
   summary: CompanyRouteSummary;
 }
 
+export type FirstRunCompanyRouteResult = ResolvedCompanyRoute | CompanyRouteLookupFailed;
+
+export type CompanyRouteRetrySleep = (delayMs: number) => Promise<void>;
+export type CompanyRouteRetryGate = boolean | Promise<boolean>;
+
+function waitForCompanyRouteRetry(delayMs: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
 /**
- * Look before creating. Returns null when membership can't be read: the
- * wizard then skips the step and the seeded create-company card in #setup is
- * still there in the app, so a failed lookup never strands anyone (and never
- * creates a second company for someone who already has one).
+ * Look before creating. A retry is optional and only runs after the first
+ * unreadable lookup when the caller's flag gate resolves true. A second
+ * failure is distinct so the wizard can preserve its #setup recovery path;
+ * neither failure ever creates a company.
  */
 export async function resolveFirstRunCompanyRoute(deps: {
   hqProJson: HqProJsonFn;
@@ -91,16 +106,46 @@ export async function resolveFirstRunCompanyRoute(deps: {
   /** Website visitor id (download tag / sign-in link), for the other-account lookup. */
   anonId?: string | null;
   now?: () => number;
-}): Promise<ResolvedCompanyRoute | null> {
-  let me: Record<string, unknown>;
-  try {
-    me = await deps.hqProJson('GET', '/membership/me');
-  } catch (error) {
-    console.warn('onboarding: company step membership lookup failed', error);
-    return null;
+  enableMembershipLookupRetry?: CompanyRouteRetryGate;
+  sleep?: CompanyRouteRetrySleep;
+}): Promise<FirstRunCompanyRouteResult | null> {
+  let retryEnabled = deps.enableMembershipLookupRetry ?? false;
+  const retryIsEnabled = async (): Promise<boolean> => {
+    if (typeof retryEnabled === 'boolean') return retryEnabled;
+    try {
+      retryEnabled = await retryEnabled;
+    } catch (error) {
+      console.warn('onboarding: company route lookup retry flag failed; leaving retry off', error);
+      retryEnabled = false;
+    }
+    return retryEnabled === true;
+  };
+  let me: Record<string, unknown> | null = null;
+  let listed: ReturnType<typeof activeMembershipCompanies> = null;
+  let lastLookupError: unknown;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const candidate = await deps.hqProJson('GET', '/membership/me');
+      const memberships = activeMembershipCompanies(candidate);
+      if (memberships !== null) {
+        me = candidate;
+        listed = memberships;
+        break;
+      }
+      lastLookupError = new Error('membership lookup returned an unreadable payload');
+    } catch (error) {
+      lastLookupError = error;
+    }
+    console.warn('onboarding: company step membership lookup failed', lastLookupError);
+    if (attempt === 0 && await retryIsEnabled()) {
+      await (deps.sleep ?? waitForCompanyRouteRetry)(COMPANY_ROUTE_LOOKUP_RETRY_DELAY_MS);
+      continue;
+    }
+    if (attempt === 0) return null;
   }
-  const listed = activeMembershipCompanies(me);
-  if (listed === null) return null;
+  if (me === null || listed === null) {
+    return { kind: 'lookup_failed' };
+  }
   // Resume half-finished setup: an owned company with no bucket on the
   // membership row and no explicit status gets one entity read.
   const companies = await Promise.all(
@@ -180,7 +225,8 @@ export async function resolveFirstRunCompanyPath(deps: {
   signedInEmail?: string | null;
   anonId?: string | null;
 }): Promise<FirstRunCompanyPath | null> {
-  return (await resolveFirstRunCompanyRoute(deps))?.route ?? null;
+  const result = await resolveFirstRunCompanyRoute(deps);
+  return result && 'route' in result ? result.route : null;
 }
 
 async function hqProFetch(
