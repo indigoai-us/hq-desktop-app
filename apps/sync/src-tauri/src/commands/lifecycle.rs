@@ -659,11 +659,11 @@ pub fn report_unexpected_startup_surface(
     let seconds_since_start = elapsed_since_start
         .map(|elapsed| elapsed.as_secs())
         .unwrap_or(0);
-    let (auth_session_status, refresh_failure_class) =
+    let (auth_session_status, refresh_failure_class, refresh_rejection_class) =
         crate::commands::auth::startup_auth_diagnostic_tags();
     let diagnostic_tags =
         hq_desktop_core::unexpected_surface::apply_startup_token_store_diagnostics(
-            hq_desktop_core::unexpected_surface::startup_diagnostic_tags_with_auth_session(
+            hq_desktop_core::unexpected_surface::startup_diagnostic_tags_with_rejection_class(
                 authenticated,
                 &token_presence,
                 elapsed_since_start.map(|elapsed| elapsed.as_millis()),
@@ -680,6 +680,7 @@ pub fn report_unexpected_startup_surface(
                 },
                 auth_session_status,
                 refresh_failure_class,
+                refresh_rejection_class,
             ),
             &surface,
             &token_presence,
@@ -714,7 +715,7 @@ pub fn report_unexpected_startup_surface(
 
     // Always write the log line so diagnostics can find it.
     let log_line = format!(
-        "unexpected_startup_surface surface={} lifecycle_state={} install_completed={} first_run_completed={} config_valid={} hq_root_valid={} has_auth={} tools_present={} bundled_cli_ready={} consent_answered={} evidence_unreadable={} token_file_exists={} token_file_age_minutes={} auth_check_failed={} probe_attempts={} session_restore_state={} token_present={} keychain_status={} ms_since_launch={} prior_surface={} from_updater_restart={} app_version={} invalidation_marker_present={} first_read_result={} recheck_read_result={} last_auth_transition={} last_auth_transition_age_seconds={} hq_candidate_count_bucket={} managed_hq_package_state={} bundled_cli_mode={}",
+        "unexpected_startup_surface surface={} lifecycle_state={} install_completed={} first_run_completed={} config_valid={} hq_root_valid={} has_auth={} tools_present={} bundled_cli_ready={} consent_answered={} evidence_unreadable={} token_file_exists={} token_file_age_minutes={} auth_check_failed={} probe_attempts={} session_restore_state={} token_present={} keychain_status={} ms_since_launch={} prior_surface={} from_updater_restart={} app_version={} invalidation_marker_present={} marker_kind={} refresh_rejection_class={} first_read_result={} recheck_read_result={} last_auth_transition={} last_auth_transition_age_seconds={} hq_candidate_count_bucket={} managed_hq_package_state={} bundled_cli_mode={}",
         surface,
         lc_state_str,
         inputs.install_completed,
@@ -738,6 +739,8 @@ pub fn report_unexpected_startup_surface(
         std::env::args().any(|a| a == hq_platform::launchagent::LAUNCH_AGENT_RELAUNCH_ARG),
         crate::app_version::current(),
         diagnostic_tags.invalidation_marker_present,
+        diagnostic_tags.marker_kind,
+        diagnostic_tags.refresh_rejection_class,
         diagnostic_tags.first_read_result,
         diagnostic_tags.recheck_read_result,
         last_auth_transition,
