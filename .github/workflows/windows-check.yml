@@ -512,6 +512,7 @@ jobs:
     env:
       RUST_BACKTRACE: 1
       HQ_SYNC_SENTRY_DSN: ""
+      HQ_CI_FIRST_LAUNCH_TELEMETRY_SUPPRESSED: "1"
 
     steps:
       - uses: actions/checkout@v4
@@ -1016,6 +1017,7 @@ jobs:
     env:
       RUST_BACKTRACE: 1
       HQ_SYNC_SENTRY_DSN: ""
+      HQ_CI_FIRST_LAUNCH_TELEMETRY_SUPPRESSED: "1"
       BRIDGE_VERSION: ${{ needs.build-bridge-installers.outputs.bridge }}
       TARGET_VERSION: ${{ needs.build-bridge-installers.outputs.target }}
 
