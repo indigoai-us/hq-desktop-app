@@ -3488,16 +3488,12 @@
       result = await adapter.sync.resolveConflict(path, strategy);
     } catch (err) {
       console.error("resolve_conflict threw:", err);
-      setConflictStatus(path, "error", "Could not resolve this file.");
+      setConflictStatus(path, "error", "Could not resolve this file. Try again.");
       return;
     }
     if (!result.ok) {
       console.error("resolve_conflict failed:", result.reason, result.message);
-      setConflictStatus(
-        path,
-        "error",
-        result.message?.trim() || "Could not resolve this file.",
-      );
+      setConflictStatus(path, "error", "Could not resolve this file. Try again.");
       return;
     }
     // Resolved files leave the list; the row disappearing IS the confirmation.
