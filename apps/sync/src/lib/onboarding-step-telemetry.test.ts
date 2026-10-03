@@ -221,6 +221,27 @@ describe('onboarding step telemetry', () => {
     expect(unsafeFailure).not.toHaveProperty('errorCode');
   });
 
+  it('adds a bounded failure stage when a failed setup event omits failureStage', () => {
+    const missingStage = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-09-09T10:00:00.000Z',
+      properties: {
+        step: 'setup',
+        action: 'failed',
+        component: 'deps',
+        errorCategory: '/Users/alice/HQ/raw-error.txt' as never,
+        surface: 'desktop_installer',
+        platform: 'macos',
+      },
+    });
+
+    expect(missingStage).toMatchObject({
+      failureStage: 'deps',
+      errorCategory: 'unknown',
+    });
+    expect(JSON.stringify(missingStage)).not.toContain('/Users/alice/HQ/raw-error.txt');
+  });
+
   it('keeps failed-run dependency, category, stages, and run identifier in telemetry', () => {
     const depsFailure = desktopPropertiesForOnboardingStep({
       sessionId: '11111111-1111-4111-8111-111111111111',

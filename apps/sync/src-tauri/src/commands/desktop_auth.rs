@@ -526,6 +526,8 @@ pub struct ContinuationContext {
     /// Vault API base, resolved the same way the sync path resolves it, so a
     /// dev install pointed elsewhere by `HQ_VAULT_API_URL` stays pointed there.
     pub api_base: String,
+    /// Set only by CI jobs that launch packaged builds against production telemetry.
+    pub suppress_first_launch_telemetry: bool,
 }
 
 fn endpoints() -> ContinuationEndpoints {
@@ -556,6 +558,8 @@ pub async fn desktop_continuation_context(_app: AppHandle) -> Option<Continuatio
         install_attempt_id,
         app_version: crate::app_version::current().to_string(),
         api_base: endpoints().api_base,
+        suppress_first_launch_telemetry: std::env::var("HQ_CI_FIRST_LAUNCH_TELEMETRY_SUPPRESSED")
+            .is_ok_and(|value| value == "1"),
     })
 }
 

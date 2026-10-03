@@ -3,6 +3,9 @@ import {
   emitPlanLimitPromptTelemetry,
   emitDesktopOperationalTelemetry,
   emitDesktopOperationalTelemetryStrict,
+  emitDesktopAuthFailure,
+  emitDesktopAuthProgress,
+  classifyDesktopAuthError,
   emitDesktopTelemetry,
   emitDesktopTelemetryStrict,
 } from './desktop-telemetry';
@@ -104,6 +107,44 @@ describe('emitDesktopTelemetry', () => {
         invokeCommand,
       }),
     ).rejects.toThrow('no token');
+  });
+});
+
+describe('desktop auth operational telemetry', () => {
+  it('emits bounded progress and failure facts without forwarding raw errors', async () => {
+    const invokeCommand = vi.fn().mockResolvedValue(undefined);
+
+    await emitDesktopAuthProgress({
+      provider: 'google',
+      step: 'callback_received',
+      invokeCommand,
+    });
+    await emitDesktopAuthFailure({
+      provider: 'google',
+      step: 'callback_received',
+      error: new Error('OAuth callback timed out with code=do-not-send'),
+      invokeCommand,
+    });
+
+    expect(invokeCommand).toHaveBeenNthCalledWith(1, 'emit_desktop_operational_telemetry', {
+      eventName: 'desktop_auth_progress',
+      properties: { provider: 'google', step: 'callback_received' },
+    });
+    expect(invokeCommand).toHaveBeenNthCalledWith(2, 'emit_desktop_operational_telemetry', {
+      eventName: 'desktop_auth_failure',
+      properties: {
+        provider: 'google',
+        step: 'callback_received',
+        errorCategory: 'timeout',
+      },
+    });
+    expect(JSON.stringify(invokeCommand.mock.calls)).not.toContain('do-not-send');
+  });
+
+  it('uses closed error categories for sign-in failures', () => {
+    expect(classifyDesktopAuthError(new Error('provider denied access'))).toBe('cancelled');
+    expect(classifyDesktopAuthError(new Error('TLS certificate failed'))).toBe('tls');
+    expect(classifyDesktopAuthError({})).toBe('unknown');
   });
 });
 
