@@ -10,10 +10,16 @@ import { ok, type PlatformAdapter } from "@hq/platform";
 
 import SlackConnectModal from "./SlackConnectModal.svelte";
 import type { CardModalContentProps } from "./card-modal-registry.js";
-import { SLACK_FINISHING_SLOW_MS, SLACK_TOKEN_ACCEPT_GRACE_MS } from "./slack-connect-model.js";
+import { SLACK_COPIED_MS, SLACK_FINISHING_SLOW_MS, SLACK_TOKEN_ACCEPT_GRACE_MS } from "./slack-connect-model.js";
 
-/** An obviously fake app-level token. Never a real one. */
+/**
+ * An obviously fake app-level token. Never a real one. Too short to count as
+ * a whole token, so pasting it waits for Connect, as most tests here want.
+ */
 const TOKEN = "xapp-test-0000";
+/** A fake token long enough to be sent the moment it is pasted. */
+const WHOLE_TOKEN = "xapp-test-0000-aaaa-bbbb";
+const OTHER_WHOLE_TOKEN = "xapp-test-1111-cccc-dddd";
 const NOVA = "agt_nova";
 const INSTALL = "https://slack.com/oauth/v2/authorize?client_id=1.2&scope=chat%3Awrite&state=A0TEST";
 const FRESH_INSTALL = "https://slack.com/oauth/v2/authorize?client_id=1.2&scope=chat%3Awrite&state=A0FRESH";
@@ -44,6 +50,10 @@ const WAITING_FOR_ACCESS = status(
 );
 const TOKEN_STORED = status({ workspace: "acme", teamId: "T0ACME", appId: "A0TEST", connectionMode: "socket" }, "socket-mode-degraded");
 const CONNECTED = status({ workspace: "acme", teamId: "T0ACME", appId: "A0TEST", connectionMode: "socket" }, "socket-mode");
+const CONNECTED_WITH_BOT = status(
+  { workspace: "acme", teamId: "T0ACME", botUserId: "U0NOVA", appId: "A0TEST", connectionMode: "socket" },
+  "socket-mode",
+);
 const EVENTS_ROW = { workspace: "pending-install", installUrl: INSTALL, appId: "A0TEST", connectionMode: "events" };
 const EVENTS_INSTALLED = status({ workspace: "acme", teamId: "T0ACME", appId: "A0TEST", connectionMode: "events" }, "unknown");
 const EVENTS_CONNECTED = status({ workspace: "acme", teamId: "T0ACME", appId: "A0TEST", connectionMode: "events" }, "ok");
@@ -167,6 +177,11 @@ const tokenField = () => byId("slack-connect-token")?.querySelector<HTMLInputEle
 const submitButton = () => byId<HTMLButtonElement>("slack-connect-submit")!;
 const fieldError = () => byId("card-modal-field-error")?.textContent ?? null;
 const closeX = () => byId<HTMLButtonElement>("card-modal-close")!;
+const howtoLines = () =>
+  [...(byId("slack-connect-howto")?.querySelectorAll<HTMLElement>("li") ?? [])].map(
+    (li) => li.querySelector(".slack-connect-howto-line")!.textContent!.trim(),
+  );
+const copyButton = () => byId<HTMLButtonElement>("slack-connect-copy-scope")!;
 
 function paste(value: string): void {
   const input = tokenField()!;
@@ -174,6 +189,14 @@ function paste(value: string): void {
   input.value = value;
   input.dispatchEvent(new Event("input", { bubbles: true }));
   flushSync();
+}
+
+/** Stand in a clipboard, or take it away, for one test. */
+function clipboard(writeText: ((text: string) => Promise<void>) | null): void {
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: writeText ? { writeText } : undefined,
+  });
 }
 
 /** Everything a test can reach that must never hold the token. */
@@ -220,31 +243,52 @@ describe("the Connect Slack modal: each stage", () => {
     expect(tokenField()).toBeNull();
   });
 
-  it("shows token: step 2 current with the four instructions, the app page button and a password field", () => {
+  it("shows token: step 2 current with one line of why, three things to do, and a password field under the third", () => {
     render({ status: WAITING_FOR_TOKEN });
     expect(stage()).toBe("token");
     expect(steps()).toEqual(["done:Approve Nova in Slack", "current:Create a token for Nova", "todo:HQ finishes the setup"]);
     expect(indicator()).toBe("Step 2 of 3: Add the token");
-    const howto = [...byId("slack-connect-howto")!.querySelectorAll("li")].map((li) =>
-      li.querySelector(".slack-connect-howto-line")!.textContent!.trim(),
+    expect(byId("slack-connect-why")!.textContent).toBe(
+      "Slack needs a token so Nova can listen for messages. Slack only lets a person create it.",
     );
-    expect(howto).toEqual([
-      "Open Nova's app page in Slack.",
-      "Scroll to App-Level Tokens and click Generate Token and Scopes.",
-      "Name it anything, add the scope connections:write, and click Generate.",
-      "Copy the token (it starts with xapp-) and paste it here.",
+    expect(howtoLines()).toEqual([
+      "Open Nova's app page",
+      "Under App-Level Tokens, click Generate Token and Scopes. Add the scope",
+      "Paste the token here.",
     ]);
-    expect(byId("slack-connect-open-app-page")!.textContent!.trim()).toBe("Open app page");
+    const rows = [...byId("slack-connect-howto")!.querySelectorAll<HTMLElement>("li")];
+    // The button sits in the first row, the scope and its Copy in the second, the field in the third.
+    expect(rows[0].querySelector('[data-testid="slack-connect-open-app-page"]')!.textContent!.trim()).toBe("Open app page");
+    expect(rows[1].querySelector('[data-testid="slack-connect-scope"] code')!.textContent).toBe("connections:write");
+    expect(rows[1].querySelector('[data-testid="slack-connect-copy-scope"]')!.textContent!.trim()).toBe("Copy");
+    expect(rows[2].querySelector('[data-testid="slack-connect-token"]')).not.toBeNull();
     const input = tokenField()!;
     expect(input.type).toBe("password");
     expect(input.getAttribute("autocomplete")).toBe("off");
     expect(input.getAttribute("spellcheck")).toBe("false");
     expect(input.hasAttribute("name")).toBe(false);
-    expect(document.querySelector(`label[for="${input.id}"]`)!.textContent).toBe("Token");
+    // The field is still named for a screen reader; the line above it is the visible label.
+    const label = document.querySelector<HTMLElement>(`label[for="${input.id}"]`)!;
+    expect(label.textContent).toBe("Token");
+    expect(label.classList.contains("card-modal-sr")).toBe(true);
     expect(document.activeElement).toBe(input);
     expect(footerButtons()).toEqual(["Connect"]);
     // Nothing to send yet.
     expect(submitButton().disabled).toBe(true);
+  });
+
+  it("shows under Open Slack what the person will see, only while there is a link to open", () => {
+    render({ status: WAITING_FOR_APPROVAL });
+    expect(byId("slack-connect-approve-what")!.textContent).toBe("Slack asks you to allow Nova in your workspace. Click Allow.");
+    const step = document.querySelector<HTMLElement>('[data-testid="card-modal-step"][data-state="current"]')!;
+    expect(step.contains(byId("slack-connect-approve-what"))).toBe(true);
+    expect(step.contains(byId("slack-connect-open-slack"))).toBe(true);
+  });
+
+  it("says nothing about Allow while Slack has sent no link", () => {
+    render({ status: status({ ...SOCKET_ROW, installUrl: "https://example.com/phish" }, "pending-install") });
+    expect(byId("slack-connect-approve-what")).toBeNull();
+    expect(document.querySelector<HTMLElement>('[data-testid="card-modal-step"][data-state="current"]')!.dataset.more).toBeUndefined();
   });
 
   it("shows token with access pending: the waiting sentence, no instructions and no field", () => {
@@ -304,8 +348,44 @@ describe("the Connect Slack modal: each stage", () => {
     expect(footerButtons()).toEqual(["Done"]);
     // No button that claims to send a test message.
     expect(dialog().textContent).not.toMatch(/send (a )?test/i);
+    // No bot user id in the status: no button to open the bot.
+    expect(byId("slack-connect-open-bot")).toBeNull();
     byId<HTMLButtonElement>("slack-connect-finish")!.click();
     expect(onclose).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers to open the bot in Slack once connected, when the status carries both ids", () => {
+    render({ status: CONNECTED_WITH_BOT });
+    expect(stage()).toBe("connected");
+    expect(footerButtons()).toEqual(["Done", "Open Nova in Slack"]);
+    const open = byId<HTMLButtonElement>("slack-connect-open-bot")!;
+    expect(open.classList.contains("is-primary")).toBe(true);
+    expect(document.activeElement).toBe(open);
+    open.click();
+    expect(openUrl).toHaveBeenCalledTimes(1);
+    // Slack's web client, an https link the app will open: never a slack:// link.
+    expect(openUrl).toHaveBeenCalledWith("https://app.slack.com/client/T0ACME/U0NOVA");
+    expect(onclose).not.toHaveBeenCalled();
+    byId<HTMLButtonElement>("slack-connect-finish")!.click();
+    expect(onclose).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers no button to open the bot for an id that is not shaped like Slack's, or before the end", async () => {
+    render({
+      status: status({ workspace: "acme", teamId: "T0ACME", botUserId: "U0NOVA/../x", appId: "A0TEST", connectionMode: "socket" }, "socket-mode"),
+    });
+    expect(stage()).toBe("connected");
+    expect(byId("slack-connect-open-bot")).toBeNull();
+    expect(footerButtons()).toEqual(["Done"]);
+    await takeDown();
+    render({
+      status: status(
+        { workspace: "acme", teamId: "T0ACME", botUserId: "U0NOVA", appId: "A0TEST", connectionMode: "socket", appTokenPendingUrl: APP },
+        "socket-mode-degraded",
+      ),
+    });
+    expect(stage()).toBe("token");
+    expect(byId("slack-connect-open-bot")).toBeNull();
   });
 
   it("shows two steps for a bot the server asks no token for, and never a token step", async () => {
@@ -520,6 +600,164 @@ describe("the Connect Slack modal: approving in Slack", () => {
     render({ status: WAITING_FOR_TOKEN });
     byId<HTMLButtonElement>("slack-connect-open-app-page")!.click();
     expect(openUrl).toHaveBeenCalledWith(`${APP}/general`);
+  });
+});
+
+describe("the Connect Slack modal: copying the scope", () => {
+  const hadClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+
+  afterEach(() => {
+    if (hadClipboard) Object.defineProperty(navigator, "clipboard", hadClipboard);
+    else delete (navigator as unknown as Record<string, unknown>).clipboard;
+    vi.useRealTimers();
+  });
+
+  it("puts connections:write on the clipboard and says Copied for a moment", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const writeText = vi.fn(async (_text: string) => {});
+    clipboard(writeText);
+    render({ status: WAITING_FOR_TOKEN });
+    copyButton().click();
+    await settle();
+    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(writeText).toHaveBeenCalledWith("connections:write");
+    expect(copyButton().textContent!.trim()).toBe("Copied");
+    expect(copyButton().dataset.copied).toBe("true");
+    vi.advanceTimersByTime(SLACK_COPIED_MS - 1);
+    flushSync();
+    expect(copyButton().textContent!.trim()).toBe("Copied");
+    vi.advanceTimersByTime(1);
+    flushSync();
+    expect(copyButton().textContent!.trim()).toBe("Copy");
+    expect(copyButton().dataset.copied).toBe("false");
+    // Nothing else was asked of the server or opened.
+    expect(submitSlackAppToken).not.toHaveBeenCalled();
+    expect(openUrl).not.toHaveBeenCalled();
+  });
+
+  it("selects the scope instead when there is no clipboard, so Copy on the keyboard takes it", async () => {
+    clipboard(null);
+    render({ status: WAITING_FOR_TOKEN });
+    copyButton().click();
+    await settle();
+    expect(copyButton().textContent!.trim()).toBe("Copy");
+    const selection = window.getSelection()!;
+    const chip = byId("slack-connect-scope")!.querySelector("code")!;
+    expect(selection.rangeCount).toBe(1);
+    expect(chip.contains(selection.getRangeAt(0).commonAncestorContainer)).toBe(true);
+    expect(selection.toString()).toBe("connections:write");
+  });
+
+  it("selects the scope when the clipboard refuses", async () => {
+    clipboard(vi.fn(async () => Promise.reject(new Error("not allowed"))));
+    render({ status: WAITING_FOR_TOKEN });
+    copyButton().click();
+    await settle();
+    expect(copyButton().textContent!.trim()).toBe("Copy");
+    expect(window.getSelection()!.toString()).toBe("connections:write");
+  });
+});
+
+describe("the Connect Slack modal: a token pasted whole", () => {
+  it("is sent the moment it is pasted, once, with no press on Connect", async () => {
+    let finish: (value: unknown) => void = () => {};
+    submitSlackAppToken.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)));
+    render({ status: WAITING_FOR_TOKEN });
+    paste(`  ${WHOLE_TOKEN} `);
+    await settle();
+    expect(submitSlackAppToken).toHaveBeenCalledTimes(1);
+    expect(submitSlackAppToken).toHaveBeenCalledWith(NOVA, WHOLE_TOKEN);
+    expect(statusLines()).toEqual(["working:Checking the token with Slack."]);
+    expect(submitButton().disabled).toBe(true);
+    expect(started).toHaveBeenCalledTimes(1);
+    // The same value again while it is on its way, or after, sends nothing more.
+    paste(WHOLE_TOKEN);
+    await settle();
+    serverStatus = TOKEN_STORED;
+    finish(ok({ ok: true }));
+    await settle();
+    expect(submitSlackAppToken).toHaveBeenCalledTimes(1);
+    expect(stage()).toBe("finishing");
+    expect(document.body.innerHTML).not.toContain(WHOLE_TOKEN);
+    for (const input of document.querySelectorAll("input")) expect(input.value).not.toContain(WHOLE_TOKEN);
+  });
+
+  it("waits for Connect when what was pasted is not a whole token", async () => {
+    render({ status: WAITING_FOR_TOKEN });
+    for (const partial of ["xapp-", "xapp-short", TOKEN, `${WHOLE_TOKEN} with a space`, "token-0000-aaaa-bbbb"]) {
+      paste(partial);
+      await settle();
+    }
+    expect(submitSlackAppToken).not.toHaveBeenCalled();
+    expect(started).not.toHaveBeenCalled();
+    expect(fieldError()).toBeNull();
+    expect(submitButton().disabled).toBe(false);
+    // Connect still sends the fixture token the ordinary way.
+    paste(TOKEN);
+    submitButton().click();
+    await settle();
+    expect(submitSlackAppToken).toHaveBeenCalledTimes(1);
+    expect(submitSlackAppToken).toHaveBeenCalledWith(NOVA, TOKEN);
+  });
+
+  it("is sent by itself once per value: a value that could not be checked waits for Connect", async () => {
+    submitSlackAppToken.mockResolvedValueOnce(refusal("SLACK_APP_TOKEN_VERIFY_UNAVAILABLE", 502));
+    render({ status: WAITING_FOR_TOKEN });
+    paste(WHOLE_TOKEN);
+    await settle();
+    expect(submitSlackAppToken).toHaveBeenCalledTimes(1);
+    expect(fieldError()).toBe("Could not check the token with Slack. Try again.");
+    // The value stays, as it does after Connect. Typing over it with the same value sends nothing.
+    expect(tokenField()!.value).toBe(WHOLE_TOKEN);
+    expect(document.activeElement).toBe(tokenField());
+    paste(WHOLE_TOKEN);
+    await settle();
+    expect(submitSlackAppToken).toHaveBeenCalledTimes(1);
+    expect(submitButton().disabled).toBe(false);
+    // Connect sends it again, and works.
+    serverStatus = TOKEN_STORED;
+    submitButton().click();
+    await settle();
+    expect(submitSlackAppToken).toHaveBeenCalledTimes(2);
+    expect(submitSlackAppToken).toHaveBeenLastCalledWith(NOVA, WHOLE_TOKEN);
+    expect(stage()).toBe("finishing");
+  });
+
+  it("shows the rejection, clears the field and takes the next whole token by itself", async () => {
+    submitSlackAppToken.mockResolvedValueOnce(refusal("SLACK_APP_TOKEN_REJECTED", 400));
+    render({ status: WAITING_FOR_TOKEN });
+    paste(WHOLE_TOKEN);
+    await settle();
+    expect(stage()).toBe("token");
+    expect(fieldError()).toBe(
+      "Slack did not accept that token. Check that it starts with xapp- and has the connections:write scope.",
+    );
+    expect(tokenField()!.value).toBe("");
+    expect(tokenField()!.disabled).toBe(false);
+    expect(document.activeElement).toBe(tokenField());
+    expect(closeX().disabled).toBe(false);
+    // A new token made on Slack's page is a new value: sent at once.
+    serverStatus = TOKEN_STORED;
+    paste(OTHER_WHOLE_TOKEN);
+    await settle();
+    expect(submitSlackAppToken).toHaveBeenCalledTimes(2);
+    expect(submitSlackAppToken).toHaveBeenLastCalledWith(NOVA, OTHER_WHOLE_TOKEN);
+    expect(stage()).toBe("finishing");
+    expect(document.body.innerHTML).not.toContain(WHOLE_TOKEN);
+    expect(document.body.innerHTML).not.toContain(OTHER_WHOLE_TOKEN);
+  });
+
+  it("is forgotten with the field when the modal closes: the same value pasted later is sent again", async () => {
+    render({ status: WAITING_FOR_TOKEN });
+    paste(WHOLE_TOKEN);
+    await settle();
+    expect(submitSlackAppToken).toHaveBeenCalledTimes(1);
+    await takeDown();
+    submitSlackAppToken.mockClear();
+    render({ status: WAITING_FOR_TOKEN });
+    paste(WHOLE_TOKEN);
+    await settle();
+    expect(submitSlackAppToken).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -18,6 +18,12 @@
     name?: string;
     /** Take focus when the modal opens. */
     autofocus?: boolean;
+    /**
+     * Keep the label for assistive tech only: the line right above the field
+     * already says what it is.
+     */
+    labelHidden?: boolean;
+    /** Something was typed or pasted. Called with what the field holds now. */
     oninput?: (value: string) => void;
     /** Enter was pressed in the field. */
     onsubmit?: (value: string) => void;
@@ -33,6 +39,7 @@
     type = "text",
     name,
     autofocus = false,
+    labelHidden = false,
     oninput,
     onsubmit,
   }: Props = $props();
@@ -44,7 +51,7 @@
 </script>
 
 <div class="card-modal-field" data-testid="card-modal-field" data-invalid={error ? "true" : "false"}>
-  <label class="card-modal-field-label" for={inputId}>{label}</label>
+  <label class={labelHidden ? "card-modal-sr" : "card-modal-field-label"} for={inputId}>{label}</label>
   <input
     id={inputId}
     class="card-modal-field-input"
@@ -57,7 +64,7 @@
     aria-invalid={error ? "true" : undefined}
     aria-describedby={error || hint ? noteId : undefined}
     bind:value
-    oninput={() => oninput?.(value)}
+    oninput={(event) => oninput?.(event.currentTarget.value)}
     onkeydown={(event) => {
       if (event.key === "Enter" && !event.isComposing) {
         event.preventDefault();
