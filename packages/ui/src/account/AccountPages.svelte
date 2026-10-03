@@ -520,7 +520,7 @@
   }
   .sheet {
     width: 480px; max-width: calc(100% - 32px);
-    background: var(--panel-bg, var(--v4-popover));
+    background: var(--overlay-bg, var(--panel-bg, var(--v4-popover)));
     border: 1px solid var(--panel-border, var(--v4-hairline));
     border-radius: 8px;
     box-shadow: var(--panel-shadow, var(--v4-shadow-popover));

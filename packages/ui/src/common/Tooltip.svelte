@@ -138,7 +138,7 @@
     padding: 4px 8px;
     border: 1px solid var(--panel-border, var(--line2));
     border-radius: 6px;
-    background: var(--v4-popover-strong, var(--panel-bg));
+    background: var(--overlay-bg);
     box-shadow: var(--panel-shadow, 0 4px 12px rgba(0, 0, 0, 0.22));
     color: var(--t1);
     font-size: 11px;

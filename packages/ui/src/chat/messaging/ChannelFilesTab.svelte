@@ -700,7 +700,7 @@
     max-width: 100%;
     min-height: 0;
     border-left: 1px solid var(--line);
-    background: var(--elevated, var(--raised));
+    background: var(--overlay-bg, var(--elevated, var(--raised)));
     box-shadow: -8px 0 32px color-mix(in srgb, #000 18%, transparent);
   }
 

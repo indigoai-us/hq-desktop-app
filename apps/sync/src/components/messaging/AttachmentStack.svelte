@@ -123,7 +123,7 @@
     padding: 8px 6px 6px;
     border: 1px solid var(--border, var(--pop-border, rgba(255, 255, 255, 0.14)));
     border-radius: 10px;
-    background: var(--surface-raise, var(--elevated, #1e1e24));
+    background: var(--surface-raise, var(--elevated, #242424));
     color: var(--fg, var(--pop-text, #e8e8e8));
     cursor: pointer;
     text-align: center;
@@ -154,7 +154,7 @@
     padding: 0 3px;
     border: 1px solid var(--border-strong, rgba(255, 255, 255, 0.18));
     border-radius: 3px;
-    background: var(--surface-raise, #1e1e24);
+    background: var(--surface-raise, #242424);
     font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
     font-size: 8px;
     font-weight: 700;

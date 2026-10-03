@@ -2465,7 +2465,7 @@
     z-index: 40;
     display: grid;
     place-items: center;
-    background: color-mix(in srgb, var(--pop-bg, #101014) 55%, transparent);
+    background: color-mix(in srgb, var(--pop-bg, #121212) 55%, transparent);
     pointer-events: none;
   }
 
@@ -2473,7 +2473,7 @@
     padding: 14px 22px;
     border: 1px dashed var(--c-field-border, var(--pop-border));
     border-radius: 12px;
-    background: var(--pop-bg);
+    background: var(--overlay-bg, var(--pop-bg));
     color: var(--t1, var(--pop-text));
     font: 500 13px/1.3 var(--font-ui);
     box-shadow: var(--pop-shadow);
@@ -3403,7 +3403,7 @@
     padding: 4px;
     border-radius: 10px;
     border: 1px solid var(--pop-border);
-    background: var(--pop-bg);
+    background: var(--overlay-bg, var(--pop-bg));
     box-shadow: var(--pop-shadow);
   }
 

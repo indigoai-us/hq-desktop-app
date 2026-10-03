@@ -1225,7 +1225,7 @@
   .status { margin: 0; padding: 8px 16px; color: var(--t3, var(--v4-text-3)); border-top: 1px solid var(--line, var(--v4-rowline)); }
   /* Sheet: chat/NewChannelSheet.svelte. */
   .scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45); z-index: 70; }
-  .sheet { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(480px, calc(100vw - 32px)); max-height: calc(100% - 40px); display: flex; flex-direction: column; overflow: hidden; z-index: 71; background: var(--panel-bg, var(--v4-popover)); border: 1px solid var(--panel-border, var(--v4-hairline)); border-radius: 8px; color: var(--t1, var(--v4-text-1)); font: 400 13px/1.45 var(--font-ui, var(--font-sans)); }
+  .sheet { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(480px, calc(100vw - 32px)); max-height: calc(100% - 40px); display: flex; flex-direction: column; overflow: hidden; z-index: 71; background: var(--overlay-bg, var(--panel-bg, var(--v4-popover))); border: 1px solid var(--panel-border, var(--v4-hairline)); border-radius: 8px; color: var(--t1, var(--v4-text-1)); font: 400 13px/1.45 var(--font-ui, var(--font-sans)); }
   .sh { height: 52px; flex: 0 0 52px; display: flex; align-items: center; gap: 8px; padding: 0 10px 0 20px; border-bottom: 1px solid var(--panel-border, var(--v4-hairline)); font-weight: 500; }
   .sb { overflow: auto; }
   .fr { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 12px; align-items: center; min-height: 28px; padding: 10px 20px; border-bottom: 1px solid var(--panel-border, var(--v4-rowline)); }

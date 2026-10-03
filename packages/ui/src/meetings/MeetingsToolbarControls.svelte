@@ -113,7 +113,7 @@
   .ct { color: var(--t3); }
   .icon-btn { display: inline-grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--t2); cursor: pointer; }
   .scrim { position: fixed; inset: 0; z-index: 4; }
-  .pop { position: absolute; top: 32px; right: 0; z-index: 5; width: 340px; padding: 12px; background: var(--v4-popover, var(--side-bg)); border: 1px solid var(--panel-border, var(--line)); border-radius: 8px; box-shadow: var(--panel-shadow, 0 8px 24px rgba(0, 0, 0, 0.25)); font-size: 13px; }
+  .pop { position: absolute; top: 32px; right: 0; z-index: 5; width: 340px; padding: 12px; background: var(--overlay-bg, var(--v4-popover, var(--side-bg))); border: 1px solid var(--panel-border, var(--line)); border-radius: 8px; box-shadow: var(--panel-shadow, 0 8px 24px rgba(0, 0, 0, 0.25)); font-size: 13px; }
   .pop.wide { width: 380px; }
   .sk { padding: 2px 0; }
   .bar, .line { height: 10px; margin: 8px 0; border-radius: 6px; background: var(--hover); }

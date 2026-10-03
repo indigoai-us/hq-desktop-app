@@ -68,7 +68,7 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
-    background: var(--v4-popover);
+    background: var(--overlay-bg, var(--v4-popover));
     border: 1px solid var(--v4-hairline);
     border-radius: 8px;
     color: var(--v4-text-1);

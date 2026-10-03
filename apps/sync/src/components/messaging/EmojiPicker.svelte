@@ -226,7 +226,7 @@
     max-height: 360px;
     padding: 0.375rem;
     border-radius: 12px;
-    background: var(--pop-bg);
+    background: var(--overlay-bg, var(--pop-bg));
     border: 1px solid var(--pop-border);
     box-shadow: var(--pop-shadow), inset 0 1px 0 var(--pop-highlight);
     backdrop-filter: var(--glass-filter-soft, blur(16px) saturate(112%) contrast(101%));
@@ -326,7 +326,7 @@
 
   @media (prefers-reduced-transparency: reduce) {
     .emoji-picker {
-      background: var(--c-bg);
+      background: var(--overlay-bg, var(--c-bg));
       backdrop-filter: none;
       -webkit-backdrop-filter: none;
     }

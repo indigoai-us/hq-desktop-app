@@ -43,7 +43,7 @@
   .bp-sheet {
     position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
     z-index: 10021; width: min(560px, calc(100vw - 32px)); padding: 16px;
-    background: var(--v4-popover); border: 1px solid var(--v4-hairline); border-radius: 8px;
+    background: var(--overlay-bg, var(--v4-popover)); border: 1px solid var(--v4-hairline); border-radius: 8px;
     color: var(--v4-text-1); display: flex; flex-direction: column; gap: 8px;
   }
   header { font-size: 15px; font-weight: 600; }

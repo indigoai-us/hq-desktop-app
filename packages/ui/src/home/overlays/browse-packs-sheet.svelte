@@ -158,7 +158,7 @@
     position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
     z-index: 10021; width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 48px);
     display: flex; flex-direction: column; overflow: hidden;
-    background: var(--v4-popover); border: 1px solid var(--v4-hairline); border-radius: 8px;
+    background: var(--overlay-bg, var(--v4-popover)); border: 1px solid var(--v4-hairline); border-radius: 8px;
     box-shadow: var(--v4-shadow-popover, 0 16px 48px rgba(0, 0, 0, 0.28));
     color: var(--v4-text-1); font-size: 13px;
   }

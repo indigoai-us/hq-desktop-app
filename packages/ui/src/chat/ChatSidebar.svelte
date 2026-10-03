@@ -5352,18 +5352,18 @@
     border-radius: 12px;
     /* Near-opaque popover tier: without a backdrop blur the translucent
        --panel-bg let the timeline read straight through the menu. */
-    background: var(--v4-popover-strong, var(--panel-bg));
+    background: var(--overlay-bg);
     box-shadow: var(--panel-shadow);
   }
 
   :global(:root[data-force-theme="dark"]) .chat-popover,
   :global(.dark) .chat-popover {
-    background: var(--v4-popover-strong, var(--panel-bg));
+    background: var(--overlay-bg);
   }
 
   @media (prefers-color-scheme: dark) {
     :global(:root:not([data-force-theme="light"])) .chat-popover {
-      background: var(--v4-popover-strong, var(--panel-bg));
+      background: var(--overlay-bg);
     }
   }
 
@@ -5550,7 +5550,7 @@
     padding: 6px;
     border: 1px solid var(--panel-border);
     border-radius: 12px;
-    background: var(--v4-popover-strong, var(--panel-bg));
+    background: var(--overlay-bg);
     box-shadow: var(--panel-shadow);
   }
 

@@ -654,7 +654,7 @@
   .inspector .bot { padding-left: 0; }
   h2 { font-size: 13px; font-weight: 500; margin: 0 0 2px; color: var(--t1, var(--v4-text-1)); }
   .kind { margin: 0 0 8px; display: flex; align-items: center; }
-  .sheet { position: absolute; right: 16px; bottom: 16px; width: 320px; padding: 16px 20px; border: 1px solid var(--panel-border, var(--v4-rowline)); border-radius: 8px; background: var(--panel-bg, var(--v4-raised, var(--v4-ground))); box-shadow: var(--panel-shadow, none); display: flex; flex-direction: column; gap: 8px; }
+  .sheet { position: absolute; right: 16px; bottom: 16px; width: 320px; padding: 16px 20px; border: 1px solid var(--panel-border, var(--v4-rowline)); border-radius: 8px; background: var(--overlay-bg, var(--panel-bg, var(--v4-raised, var(--v4-ground)))); box-shadow: var(--panel-shadow, none); display: flex; flex-direction: column; gap: 8px; }
   .irow { grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.4fr) 110px 110px; }
   .console-line { margin: 12px 0 0; }
   .console-line a { color: inherit; }

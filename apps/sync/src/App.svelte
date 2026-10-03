@@ -2237,7 +2237,7 @@
     margin: 0;
     padding: 8px 12px;
     border-radius: 8px;
-    background: var(--popover-surface, #17171b);
+    background: var(--popover-surface, #191919);
     color: var(--popover-text, #e0e0e0);
     font-size: 12px;
     text-align: center;

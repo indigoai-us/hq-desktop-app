@@ -400,7 +400,7 @@
     padding: 6px;
     border: 1px solid var(--line);
     border-radius: 8px;
-    background: var(--v4-popover, var(--side-bg));
+    background: var(--overlay-bg, var(--v4-popover, var(--side-bg)));
     box-shadow: var(--v4-shadow-popover);
   }
 

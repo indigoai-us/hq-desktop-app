@@ -336,7 +336,7 @@
   .sheet {
     width: 480px;
     max-width: calc(100% - 32px);
-    background: var(--panel-bg);
+    background: var(--overlay-bg, var(--panel-bg));
     border: 1px solid var(--panel-border);
     border-radius: 8px;
     box-shadow: var(--panel-shadow);
