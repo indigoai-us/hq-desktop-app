@@ -213,6 +213,7 @@
   const showConnectEmpty = $derived(
     !initialLoadPending &&
       meetingsStore.hasLiveSnapshot &&
+      !meetingsStore.calendarReadFailed &&
       !fetchError &&
       accounts.length === 0 &&
       events.length === 0 &&

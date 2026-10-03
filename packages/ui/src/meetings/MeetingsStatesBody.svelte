@@ -116,9 +116,18 @@
   const url = $derived(
     ((event ? meetingJoinUrl(event) : "") || (event ? meetingsRailState.attachedLinks.get(event.id) : "") || "").trim(),
   );
-  // US-042: settled, no error, and no linked account → connect-first canvas.
+  // US-042: a read that succeeded, no error, and no linked account → connect-first canvas.
+  // AUDIT-3-16: a failed calendar read is not "no calendar"; it gets the
+  // failed-read line and Try again instead.
+  const calendarFailed = $derived(
+    !meetingsStore.initialLoadPending && meetingsStore.calendarReadFailed && meetingsStore.accounts.length === 0,
+  );
   const noCalendar = $derived(
-    !meetingsStore.initialLoadPending && !meetingsStore.fetchError && meetingsStore.accounts.length === 0,
+    !meetingsStore.initialLoadPending &&
+      meetingsStore.hasLiveSnapshot &&
+      !meetingsStore.calendarReadFailed &&
+      !meetingsStore.fetchError &&
+      meetingsStore.accounts.length === 0,
   );
   let firstRunLink = $state("");
   let firstRunJoining = $state(false);
@@ -216,7 +225,14 @@
       <button type="button" class="btn" data-testid="empty-new-meeting" onclick={() => onopenSheet?.()}>New meeting</button>
     </div>
     <div class="empty-body" data-testid="meetings-empty">
-      {#if noCalendar}
+      {#if calendarFailed}
+        <div class="next" role="alert" data-testid="meetings-calendar-failed">
+          <h2>Couldn't read your calendar.</h2>
+          <div class="actions">
+            <button type="button" class="btn" data-testid="meetings-calendar-retry" disabled={meetingsStore.loading} aria-busy={meetingsStore.loading} onclick={() => void meetingsStore.refresh()}>Try again</button>
+          </div>
+        </div>
+      {:else if noCalendar}
         <div class="next first-run" data-testid="meetings-no-calendar">
           <div class="kind">Get started</div>
           <h2>Connect your calendar to see meetings here</h2>

@@ -231,6 +231,27 @@ describe("MeetingsPage first-load UX (US-010)", () => {
     expect(q("meetings-connect-empty")).toBeNull();
   });
 
+  it("keeps the connect empty state hidden when the calendar accounts read fails (AUDIT-3-16)", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    call.mockImplementation((method: string) => {
+      if (method === "listAccounts") return Promise.reject(new Error("HTTP 503"));
+      if (method === "listCalendars") {
+        return Promise.resolve(ok({ calendars: [], selectedCalendarIds: [] }));
+      }
+      return Promise.resolve(ok([]));
+    });
+
+    mountPage();
+    await tick();
+
+    await vi.waitFor(() => {
+      expect(q("meetings-loading")).toBeNull();
+      expect(meetingsStore.hasLiveSnapshot).toBe(true);
+    });
+    expect(q("meetings-connect-empty")).toBeNull();
+    expect(host.textContent).not.toContain("Connect your calendar");
+  });
+
   it("the connect empty state's CTA starts the calendar connect flow", async () => {
     const consentUrl =
       "https://accounts.google.com/o/oauth2/v2/auth?state=us-010";
