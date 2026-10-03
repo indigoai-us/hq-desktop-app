@@ -199,6 +199,16 @@ function expectReadyWithConsent(): void {
   expect(host.querySelector('[data-testid="onboarding-consent"]')).toBeNull();
 }
 
+/** Properties of every `emit_desktop_operational_telemetry` row named `eventName`. */
+function operationalRows(eventName: string): Record<string, unknown>[] {
+  return tauri.invoke.mock.calls.flatMap(([command, rawArgs]) => {
+    const args = rawArgs as { eventName?: string; properties?: Record<string, unknown> };
+    return command === 'emit_desktop_operational_telemetry' && args.eventName === eventName
+      ? [args.properties ?? {}]
+      : [];
+  });
+}
+
 function firstFolderSyncActions(): string[] {
   return tauri.invoke.mock.calls.flatMap(([command, rawArgs]) => {
     const args = rawArgs as { eventName?: string; properties?: { step?: string; action?: string } };
@@ -2752,6 +2762,9 @@ describe('invite teammate onboarding step', () => {
       inviteeEmail: inviteEmail,
       sendEmail: true,
     });
+    await flushUntil(() => operationalRows('desktop_invite_sent').length > 0);
+    expect(operationalRows('desktop_invite_sent')).toEqual([{ count: 1 }]);
+    expect(operationalRows('desktop_invite_failed')).toEqual([]);
   });
 
   it('labels the optional action Skip before send and Continue after success', async () => {
@@ -2923,6 +2936,10 @@ describe('invite teammate onboarding step', () => {
           row.action === 'failed' && row.errorKind === 'plan_limit' && row.statusCode === 402,
       ),
     ).toBe(true);
+    expect(operationalRows('desktop_invite_failed')).toEqual([
+      { count: 1, errorClass: 'plan_limit' },
+    ]);
+    expect(operationalRows('desktop_invite_sent')).toEqual([]);
   });
 
   it('names an invalid email address', async () => {
@@ -3953,6 +3970,7 @@ describe('company onboarding step', () => {
     const rows = companyRows();
     expect(rows.find((row) => row.outcome === 'company_created')?.companyUid).toBe('cmp_new');
     expect(rows.some((row) => row.outcome === 'plan_starter')).toBe(true);
+    expect(operationalRows('desktop_plan_selected')).toEqual([{ plan: 'starter' }]);
     expect(rows.some((row) => row.action === 'completed' && row.outcome === 'created_starter')).toBe(true);
     for (const row of rows) {
       expect(JSON.stringify(row)).not.toContain('pat@acme.com');
@@ -4032,7 +4050,10 @@ describe('company onboarding step', () => {
 
     click('onboarding-company-join');
     await settle();
-    expect(tauri.invoke).toHaveBeenCalledWith('claim_pending_company_invite', { companySlug: 'acme' });
+    expect(tauri.invoke).toHaveBeenCalledWith('claim_pending_company_invite', {
+      companySlug: 'acme',
+      route: 'onboarding',
+    });
     expect(host.querySelector('[data-testid="onboarding-company"]')).toBeNull();
     expect(tauri.invoke.mock.calls.some(([command]) => command === 'run_card_action')).toBe(false);
     const done = companyRows().find((row) => row.action === 'completed' && row.outcome === 'joined_invite');
