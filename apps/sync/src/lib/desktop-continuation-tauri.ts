@@ -52,6 +52,9 @@ export interface ContinuationContext {
  */
 export type InvokeFn = (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
 
+const INSTALL_ATTEMPT_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 /** Injection seam. Real code passes nothing; tests pass everything. */
 export interface ContinuationTauriOptions {
   invoke?: InvokeFn;
@@ -92,6 +95,20 @@ export async function loadContinuationContext(
       suppressFirstLaunchTelemetry: context.suppressFirstLaunchTelemetry === true,
     };
   } catch {
+    return null;
+  }
+}
+
+/** Read the native persisted installation id without requiring continuation context. */
+export async function loadInstallAttemptId(
+  options: Pick<ContinuationTauriOptions, 'invoke'> = {},
+): Promise<string | null> {
+  const call: InvokeFn = options.invoke ?? invoke;
+  try {
+    const value = await call('desktop_install_attempt_id');
+    return typeof value === 'string' && INSTALL_ATTEMPT_ID_RE.test(value) ? value : null;
+  } catch (error) {
+    console.warn('onboarding: native install attempt id unavailable for join-key telemetry', error);
     return null;
   }
 }

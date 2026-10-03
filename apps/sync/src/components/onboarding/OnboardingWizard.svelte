@@ -60,7 +60,10 @@
   import {
     continuationDeps,
     loadContinuationContext,
+    loadInstallAttemptId,
+    type ContinuationContext,
   } from '../../lib/desktop-continuation-tauri';
+  import { resolveFirstLaunchJoinKey } from '../../lib/desktop-first-launch-join-key';
   import {
     classifyContinuationError,
     flushReceipts,
@@ -173,6 +176,7 @@
   import {
     createSyncPlatformAdapter,
     dispatchPostReadyAction,
+    FIRST_LAUNCH_JOIN_KEY_FLAG,
     COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
     FIRST_FOLDER_SYNC_STEP_FLAG,
     SETUP_DEPS_TIMEOUT_RETRY_FLAG,
@@ -283,6 +287,22 @@
   const onboardingFeatureFlags = createSyncPlatformAdapter({
     invoke: (command, args) => invoke(command, args),
   });
+  let onboardingIdentityPromise:
+    | Promise<{
+        context: ContinuationContext | null;
+        firstLaunchReceiptRecorded: boolean;
+      }>
+    | null = null;
+  let onboardingIdentityPrepared = false;
+  let firstLaunchStatusKnown: boolean | null = null;
+  let firstLaunchJoinKeyEnabled: boolean | null = null;
+  let firstLaunchJoinKeyFlagPromise: Promise<boolean> | null = null;
+  const queuedOnboardingStepRecords: Array<{
+    step: number;
+    action: OnboardingAction;
+    occurredAt: string;
+    record: () => void;
+  }> = [];
 
   let activeInitialStep = $state<number | null>(null);
   let router = $state(createWizardRouter());
@@ -517,6 +537,34 @@
     flow?: OnboardingFlow,
   ): void {
     if (consentOnly || replay) return;
+    // Hold records only until first-launch eligibility is known. A disabled
+    // flag or a non-first launch drains them without waiting for native context.
+    if (
+      !onboardingIdentityPrepared &&
+      firstLaunchStatusKnown !== false &&
+      firstLaunchJoinKeyEnabled !== false
+    ) {
+      const queuedDetails = { ...details };
+      const occurredAt = new Date().toISOString();
+      queuedOnboardingStepRecords.push({
+        step,
+        action,
+        occurredAt,
+        record: () => recordStepNow(step, action, queuedDetails, flow, occurredAt),
+      });
+      return;
+    }
+    recordStepNow(step, action, details, flow);
+  }
+
+  function recordStepNow(
+    step: number,
+    action: OnboardingAction,
+    details: StepTelemetryDetails = {},
+    flow?: OnboardingFlow,
+    occurredAt?: string,
+  ): void {
+    if (consentOnly || replay) return;
     const stepId = stepIdFor(step);
     const companyUid =
       stepId === 'invite-teammate'
@@ -533,6 +581,7 @@
         appVersion: onboardingAppVersion,
         flow: flow ?? onboardingFlow,
       },
+      ...(occurredAt ? { occurredAt } : {}),
     });
   }
 
@@ -550,11 +599,27 @@
   }
 
   function recordOnboardingAbandonment(): void {
+    if (!consentOnly && !replay) flushQueuedOnboardingStepRecords();
     if (consentOnly || replay || finishing || finishInProgress || onboardingCompleted || onboardingAbandoned) return;
     const durationMs = Date.now() - currentStepVisibleAt;
     if (durationMs < MIN_VISIBLE_MS_FOR_ABANDON) return;
     onboardingAbandoned = true;
     recordStep(currentStep, 'abandoned', { durationMs });
+  }
+
+  function flushQueuedOnboardingStepRecords(suppressFirstLaunchWelcomeEntry = false): void {
+    onboardingIdentityPrepared = true;
+    for (const queued of queuedOnboardingStepRecords.splice(0)) {
+      if (
+        suppressFirstLaunchWelcomeEntry &&
+        firstLaunchJoinKeyEnabled === true &&
+        queued.step === WELCOME_SIGNIN_STEP_INDEX &&
+        queued.action === 'entered'
+      ) {
+        continue;
+      }
+      queued.record();
+    }
   }
 
   /**
@@ -766,6 +831,7 @@
     window.addEventListener('pagehide', recordOnboardingAbandonment);
 
     if (!consentOnly && !replay) {
+      void prepareOnboardingTelemetryIdentity();
       // Every visible panel has an entry event. A resumed, non-initial panel
       // records both its ordinary entry and the resume signal used for drop-off
       // analysis.
@@ -1006,12 +1072,8 @@
    * and never starts a browser session continuation.
    */
   async function recordLaunch(): Promise<void> {
-    const firstLaunch = await invokeCommand<boolean>('is_first_run').catch(() => false);
-    const context = await loadContinuationContext();
-    if (!context) {
-      if (firstLaunch) onboardingTelemetry.recordFirstLaunch();
-      return;
-    }
+    const { context, firstLaunchReceiptRecorded } = await prepareOnboardingTelemetryIdentity();
+    if (!context) return;
     // The anonymous launch receipt and later authenticated desktop auth events
     // share this opaque id. Use it as the onboarding session join key too.
     onboardingTelemetry.setInstallAttemptId(context.installAttemptId);
@@ -1020,12 +1082,109 @@
     // `firstLaunchRecorded` is the existing durable first-installation gate.
     // It survives re-renders and a resumed wizard, while recordReceipt keeps
     // an undelivered receipt's event id and timestamp stable for retry.
-    if (
-      shouldSendFirstLaunchReceipt(firstLaunch, context.suppressFirstLaunchTelemetry) &&
-      onboardingTelemetry.recordFirstLaunch()
-    ) {
+    if (firstLaunchReceiptRecorded) {
       void recordReceipt(deps, launchReceipt(deps)).catch(() => undefined);
     }
+  }
+
+  function resolveFirstLaunchJoinKeyEnabled(): Promise<boolean> {
+    if (!firstLaunchJoinKeyFlagPromise) {
+      const flag = onboardingFeatureFlags.identity.hasFeature(FIRST_LAUNCH_JOIN_KEY_FLAG).then(
+        (result) => {
+          if (!result.ok) {
+            console.warn(
+              'onboarding: first-launch join-key flag unavailable; leaving fallback off',
+              result.reason,
+              result.code,
+            );
+            return false;
+          }
+          return result.value === true;
+        },
+        (error) => {
+          console.warn(
+            'onboarding: first-launch join-key flag failed; leaving fallback off',
+            error,
+          );
+          return false;
+        },
+      );
+      firstLaunchJoinKeyFlagPromise = resolveFlagWithTimeout(flag, 2_000).then(
+        (enabled) => {
+          firstLaunchJoinKeyEnabled = enabled;
+          if (!enabled) flushQueuedOnboardingStepRecords();
+          return enabled;
+        },
+        (error) => {
+          console.warn(
+            'onboarding: first-launch join-key flag resolution failed; leaving fallback off',
+            error,
+          );
+          firstLaunchJoinKeyEnabled = false;
+          flushQueuedOnboardingStepRecords();
+          return false;
+        },
+      );
+    }
+    return firstLaunchJoinKeyFlagPromise;
+  }
+
+  function prepareOnboardingTelemetryIdentity(): Promise<{
+    context: ContinuationContext | null;
+    firstLaunchReceiptRecorded: boolean;
+  }> {
+    if (!onboardingIdentityPromise) {
+      onboardingIdentityPromise = (async () => {
+        const firstLaunchPromise = invokeCommand<boolean>('is_first_run')
+          .catch(() => false)
+          .then((firstLaunch) => {
+            firstLaunchStatusKnown = firstLaunch;
+            if (!firstLaunch) flushQueuedOnboardingStepRecords();
+            return firstLaunch;
+          });
+        const contextPromise = loadContinuationContext();
+        const firstLaunchJoinKeyEnabledPromise = firstLaunchPromise.then((firstLaunch) =>
+          firstLaunch ? resolveFirstLaunchJoinKeyEnabled() : false,
+        );
+        const [firstLaunch, context, joinKeyEnabled] = await Promise.all([
+          firstLaunchPromise,
+          contextPromise,
+          firstLaunchJoinKeyEnabledPromise,
+        ]);
+        const installAttemptId = await resolveFirstLaunchJoinKey({
+          firstLaunch,
+          continuationInstallAttemptId: context?.installAttemptId ?? null,
+          isEnabled: async () => joinKeyEnabled,
+          readNativeId: loadInstallAttemptId,
+        });
+        if (installAttemptId) onboardingTelemetry.setInstallAttemptId(installAttemptId);
+        const firstLaunchReceiptRecorded = context
+          ? shouldSendFirstLaunchReceipt(firstLaunch, context.suppressFirstLaunchTelemetry) &&
+            onboardingTelemetry.recordFirstLaunch()
+          : firstLaunch && onboardingTelemetry.recordFirstLaunch();
+        return { context, firstLaunchReceiptRecorded, installAttemptId };
+      })()
+        .catch((error) => {
+          console.warn(
+            'onboarding: telemetry identity preparation failed; using the local session id',
+            error,
+          );
+          return {
+            context: null,
+            firstLaunchReceiptRecorded: false,
+          };
+        })
+        .then((result) => {
+          flushQueuedOnboardingStepRecords(
+            result.firstLaunchReceiptRecorded &&
+              firstLaunchJoinKeyEnabled === true &&
+              'installAttemptId' in result &&
+              Boolean(result.installAttemptId),
+          );
+          return result;
+        });
+    }
+    return onboardingIdentityPromise;
   }
 
   /**
