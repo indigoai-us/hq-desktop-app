@@ -162,6 +162,7 @@ describe("US-002 pending console-rail contracts", () => {
       "telemetry",
       "secrets",
       "connections",
+      "marketplace",
       "outpost",
       "you",
     ]);

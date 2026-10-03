@@ -27,6 +27,9 @@ function webAdapter(): PlatformAdapter {
       fetchChannel: async () => ok(null),
       fetchDm: async () => ok(null),
     },
+    marketplace: {
+      listListings: async () => ok({ listings: [] }),
+    },
     meetings: {
       listAccounts: async () => ok([]),
       permissionsState: async () => ok(null),
@@ -162,6 +165,7 @@ describe("DesktopApp app rail (console-rail US-003)", () => {
       "telemetry",
       "secrets",
       "connections",
+      "marketplace",
       "outpost",
       "you",
     ]);
@@ -176,6 +180,17 @@ describe("DesktopApp app rail (console-rail US-003)", () => {
     for (const el of host.querySelectorAll<HTMLButtonElement>('[data-testid="app-rail"] button')) {
       expect(el.getAttribute("aria-label")).toBeTruthy();
     }
+  });
+
+  it("OWNER-R22: Marketplace opens the Library marketplace and stays selected", async () => {
+    await mountShell();
+    const button = host.querySelector<HTMLButtonElement>('[data-testid="rail-marketplace"]')!;
+    expect(button.getAttribute("aria-label")).toBe("Marketplace");
+    expect(button.querySelector("svg")?.getAttribute("viewBox")).toBe("0 0 24 24");
+    click("rail-marketplace");
+    await settle();
+    expect(current()).toBe("marketplace");
+    expect(host.querySelector('[data-testid="library-overlay"]')).not.toBeNull();
   });
 
   it("Meetings, then Home, then back shows Meetings", async () => {
@@ -353,8 +368,11 @@ describe("DesktopApp app rail (console-rail US-003)", () => {
     expect(current()).toBe("meetings");
     await press("4");
     expect(current()).toBe("library");
+    await press("8");
+    expect(current()).toBe("connections");
+    // OWNER-R22: Marketplace sits beneath Connections, so it is ⌘9.
     await press("9");
-    expect(current()).toBe("outpost");
+    expect(current()).toBe("marketplace");
     await press("1");
     expect(current()).toBe("home");
     await lazyBodiesLoaded(

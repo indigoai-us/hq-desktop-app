@@ -9044,7 +9044,7 @@
     );
   });
   const activeRailId = $derived(
-    activeRailItemId({ view, tenantCompanyId, extraPageId, settingsSection }),
+    activeRailItemId({ view, tenantCompanyId, extraPageId, settingsSection, libraryTab }),
   );
   const railPlaceholder = $derived(
     view === "extra"

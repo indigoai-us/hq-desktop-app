@@ -13,6 +13,19 @@ import {
 import { canonicalizeDestination } from "./navigation-history.js";
 
 describe("app rail model (console-rail US-003)", () => {
+  it("OWNER-R22: Marketplace sits beneath Connections and opens the Library marketplace tab", () => {
+    const items = railItems([], "You");
+    const ids = items.map((item) => item.id);
+    expect(ids.indexOf("marketplace")).toBe(ids.indexOf("connections") + 1);
+    const marketplace = items.find((item) => item.id === "marketplace")!;
+    expect(marketplace.label).toBe("Marketplace");
+    expect(railTooltip(marketplace)).toBe("Marketplace");
+    expect(railDestination(marketplace)).toEqual({ kind: "library", tab: "marketplace" });
+    const base = { view: "library", tenantCompanyId: null, extraPageId: null, settingsSection: null };
+    expect(activeRailItemId({ ...base, libraryTab: "marketplace" })).toBe("marketplace");
+    expect(activeRailItemId({ ...base, libraryTab: "skills" })).toBe("library");
+  });
+
   it("lists items in the decided order", () => {
     const items = railItems(
       [
@@ -32,6 +45,7 @@ describe("app rail model (console-rail US-003)", () => {
       "telemetry",
       "secrets",
       "connections",
+      "marketplace",
       "outpost",
       "you",
     ]);
