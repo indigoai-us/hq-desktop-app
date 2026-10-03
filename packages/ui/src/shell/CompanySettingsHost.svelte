@@ -17,9 +17,13 @@
     messaging?: MessagingApi | null;
     /** RELEASE-001 gate for the Workforce seat-limit line. */
     seatLimit?: boolean;
+    /** OWNER-R24: the panel pane to show. */
+    section?: "general" | "brand" | "groups" | "grants" | "billing";
+    /** OWNER-R24: the caller's role; General and Brand are read-only unless Owner. */
+    role?: string | null;
   }
 
-  let { slug, companyLabel, openExternal, companyUid = null, company = null, messaging = null, seatLimit = true }: Props = $props();
+  let { slug, companyLabel, openExternal, companyUid = null, company = null, messaging = null, seatLimit = true, section = "general", role = null }: Props = $props();
 
   let View = $state<typeof import("../company/CompanySettingsPage.svelte").default | null>(null);
 
@@ -32,7 +36,7 @@
 
 <div class="host" data-testid="company-settings-host">
   {#if View}
-    <View {slug} {companyLabel} {openExternal} {companyUid} {company} {messaging} {seatLimit} />
+    <View {slug} {companyLabel} {openExternal} {companyUid} {company} {messaging} {seatLimit} {section} {role} />
   {:else}
     <div class="loading" aria-busy="true">
       <ReadLoader testid="company-settings-loading" />

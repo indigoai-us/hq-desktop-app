@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 // OWNER-R5: one resolver for people and bots; never a raw id.
 import { describe, expect, it, vi } from "vitest";
 import { buildPeopleIndex, isRawPersonId, resolvePerson, rosterEntriesFromRows, uniquePeople } from "./people.js";
@@ -59,5 +60,22 @@ describe("people resolver", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     expect(resolvePerson(two, "sam").resolved).toBe(false);
     warn.mockRestore();
+  });
+});
+
+describe("people roster loader (OWNER-R5)", () => {
+  it("resolves names from a cached Team read when loaded from a page effect", async () => {
+    const { flushSync, mount, unmount } = await import("svelte");
+    const { writeTeamCache } = await import("../../company/team-cache.js");
+    const Probe = (await import("./PeopleLoadProbe.test-fixture.svelte")).default;
+    writeTeamCache("loop-probe", {
+      view: { members: [{ id: "prs_a", displayName: "Ada", kind: "human", topSkills: [], activeProjects: [] }], humans: [], agents: [], error: null, empty: false },
+      invites: [],
+    });
+    const target = document.createElement("div");
+    const app = mount(Probe, { target, props: { slug: "loop-probe" } });
+    flushSync();
+    expect(target.textContent).toBe("Ada");
+    await unmount(app);
   });
 });

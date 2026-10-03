@@ -111,7 +111,8 @@ function click(testId: string): void {
 }
 
 describe("DesktopApp company sidepane (console-rail US-007)", () => {
-  it("Indigo tile shows all 15 rows in the decided groups and Company settings in the footer", async () => {
+  // OWNER-R24: Groups under People, a Settings group last, no footer link.
+  it("Indigo tile shows every row in the decided groups with Settings last and no footer", async () => {
     await mountShell([
       {
         slug: "indigo",
@@ -131,20 +132,20 @@ describe("DesktopApp company sidepane (console-rail US-007)", () => {
     const labels = [...host.querySelectorAll('[data-testid="sidepane-section-label"]')].map(
       (el) => el.textContent?.trim(),
     );
-    expect(labels).toEqual(["People", "Brain", "Files and connect"]);
+    expect(labels).toEqual(["People", "Brain", "Files and connect", "Settings"]);
     const rows = [...host.querySelectorAll<HTMLElement>('[data-testid="sidepane-row"]')].map(
       (el) => el.getAttribute("data-row-id"),
     );
     expect(rows).toEqual([
-      "atlas", "projects", "activity", "goals", "team", "bots",
+      "atlas", "projects", "activity", "goals", "team", "bots", "groups",
       "knowledge", "policies", "skills", "workers",
       "vault", "integrations", "secrets", "deployments",
+      // Grants and Billing are hidden: the member role is not owner or admin.
+      "general", "brand",
       // US-014: the tile lands on Atlas and this company has no teammates yet.
       "invite-teammate",
     ]);
-    expect(
-      host.querySelector('[data-testid="sidepane-footer"] [data-testid="company-sidepane-settings"]'),
-    ).not.toBeNull();
+    expect(host.querySelector('[data-testid="company-sidepane-settings"]')).toBeNull();
 
     host.querySelector<HTMLButtonElement>('[data-row-id="workers"]')!.click();
     await settle();

@@ -3,6 +3,7 @@
  * cache when the Team page already loaded it, else the same roster read the
  * Team page uses (contacts by company uid, else members by slug). No new route.
  */
+import { untrack } from "svelte";
 import type { CompanyApi, MessagingApi } from "@hq/platform";
 import { readTeamCache } from "../../company/team-cache.js";
 import {
@@ -21,6 +22,8 @@ interface RosterState {
 const states = new Map<string, RosterState>();
 const inflight = new Map<string, Promise<void>>();
 let version = $state(0);
+// Bumping must not subscribe the caller: loadPeople runs inside page effects.
+const bump = () => untrack(() => (version += 1));
 
 function fromTeamCache(slug: string): PeopleRosterEntry[] | null {
   const hit = readTeamCache(slug);
@@ -50,7 +53,7 @@ export function loadPeople(opts: {
   const cached = fromTeamCache(slug);
   if (cached) {
     states.set(slug, { index: buildPeopleIndex(cached), loading: false });
-    version += 1;
+    bump();
     return Promise.resolve();
   }
   const running = inflight.get(slug);
@@ -73,7 +76,7 @@ export function loadPeople(opts: {
     }
     states.set(slug, { index: buildPeopleIndex(rosterEntriesFromRows(rows)), loading: false });
     inflight.delete(slug);
-    version += 1;
+    bump();
   })();
   inflight.set(slug, run);
   return run;
@@ -83,7 +86,7 @@ export function loadPeople(opts: {
 export function resetPeopleRosters(): void {
   states.clear();
   inflight.clear();
-  version += 1;
+  bump();
 }
 
 let activeSlug = $state("");

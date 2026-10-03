@@ -9,7 +9,6 @@
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
   import {
     GRANT_FILTERS,
-    SETTINGS_TABS,
     deleteGroup,
     emptySnapshot,
     expiringGrantCount,
@@ -27,6 +26,8 @@
   import type { CompanyApi, MessagingApi } from "@hq/platform";
   import { readCompanyTeam, readTeamCache, seatCounts, writeTeamCache } from "./team-bots-pages.js";
   import type { TeamMember } from "./team-telemetry.js";
+  import { resolvePerson } from "../common/people/people.js";
+  import { loadPeople, peopleFor } from "../common/people/people-roster.svelte.js";
   import "../home/tokens.css";
   import "../chat/chat-tokens.css";
 
@@ -40,21 +41,37 @@
     messaging?: MessagingApi | null;
     /** RELEASE-001 gate: false hides the plan seat-limit line on Workforce. */
     seatLimit?: boolean;
+    /** OWNER-R24: which company panel pane this is. */
+    section?: "general" | "brand" | "groups" | "grants" | "billing";
+    /** OWNER-R24: the caller's role; only an Owner edits General and Brand. */
+    role?: string | null;
   }
 
-  let { slug, companyLabel, openExternal, companyUid = null, company = null, messaging = null, seatLimit = true }: Props = $props();
+  let { slug, companyLabel, openExternal, companyUid = null, company = null, messaging = null, seatLimit = true, section = "general", role = null }: Props = $props();
 
-  let tab = $state<SettingsTab>("general");
+  // OWNER-R24: one pane per panel row; Billing carries the plan (seats and
+  // hosted agents, formerly "HQ Workforce") at its top.
+  const tab = $derived<SettingsTab>(section);
+  const showPlan = $derived(section === "billing");
+  const canEdit = $derived(role === "Owner");
+  let saved = $state("");
+  const people = $derived(peopleFor(slug));
+  const personName = (value: string): string => resolvePerson(people.index, value, { loading: people.loading }).name;
   let grantFilter = $state<GrantFilter>("all");
   let selectedGroup = $state<string | null>(null);
   let deleteId = $state<string | null>(null);
   let snap = $state<SettingsSnapshot>(emptySnapshot("", ""));
+  const dirty = $derived(saved !== "" && JSON.stringify({ g: snap.general, b: snap.brand }) !== saved);
 
   $effect(() => {
     const key = slug;
     const label = companyLabel;
-    const hit = readSettingsCache(key);
-    snap = hit ?? emptySnapshot(label, key);
+    const next = readSettingsCache(key) ?? emptySnapshot(label, key);
+    snap = next;
+    saved = JSON.stringify({ g: next.general, b: next.brand });
+  });
+  $effect(() => {
+    void loadPeople({ slug, companyUid, company, messaging });
   });
 
   // HQ Workforce seats come from the same roster as Team. The Team cache
@@ -71,7 +88,7 @@
   }
 
   $effect(() => {
-    if (tab !== "workforce") return;
+    if (!showPlan) return;
     const key = slug;
     rosterHumans = null;
     rosterAgents = [];
@@ -112,6 +129,7 @@
 
   function remember(): void {
     writeSettingsCache(slug, snap);
+    saved = JSON.stringify({ g: snap.general, b: snap.brand });
   }
 
   function saveGeneral(): void {
@@ -131,14 +149,6 @@
     remember();
   }
 
-  const tabLabel: Record<SettingsTab, string> = {
-    general: "General",
-    brand: "Brand",
-    groups: "Groups",
-    grants: "Grants",
-    workforce: "HQ Workforce",
-    billing: "Billing",
-  };
 </script>
 
 <section
@@ -148,29 +158,6 @@
   data-tab={tab}
   data-scroll-budget={metadata.performanceBudget.scrollDroppedFramesPct}
 >
-  <nav class="subnav" aria-label="Settings sections">
-    {#each SETTINGS_TABS as id (id)}
-      {#if id === "workforce"}
-        <div class="sec">Plan</div>
-      {/if}
-      <button
-        type="button"
-        class="row"
-        aria-current={tab === id ? "true" : undefined}
-        data-testid={`settings-tab-${id}`}
-        onclick={() => (tab = id)}
-      >
-        <span class="t">{tabLabel[id]}</span>
-        {#if id === "groups" && snap.groups.length}
-          <span class="count">{snap.groups.length}</span>
-        {/if}
-        {#if id === "grants" && expiringGrantCount(snap.grants)}
-          <span class="count">{expiringGrantCount(snap.grants)}</span>
-        {/if}
-      </button>
-    {/each}
-  </nav>
-
   <div class="page">
     {#if tab === "general"}
       <div class="page-head">
@@ -179,8 +166,9 @@
           <p class="sub">Name, slug, defaults for new members, ownership</p>
         </div>
         <span class="grow"></span>
-        <RailButton icon="check" variant="primary" type="button" data-testid="settings-save" onclick={saveGeneral}>Save changes</RailButton>
+        {#if canEdit}<RailButton icon="check" variant="primary" type="button" data-testid="settings-save" disabled={!dirty} onclick={saveGeneral}>Save</RailButton>{/if}
       </div>
+      <fieldset class="fs" disabled={!canEdit}>
       <label class="fr"><span class="lb">Company name</span><input class="in" bind:value={snap.general.name} /></label>
       <label class="fr"><span class="lb">Slug</span><input class="in mono" bind:value={snap.general.slug} /></label>
       <label class="fr"><span class="lb">Website</span><input class="in" bind:value={snap.general.website} placeholder="https://" /></label>
@@ -188,14 +176,13 @@
         <span class="lb">Default vault access<small>What a new Member can reach before any group</small></span>
         <textarea class="in mono ta" bind:value={snap.general.defaultAccess}></textarea>
       </label>
-      <div class="fr">
-        <span class="lb">Default company<small>for members</small></span>
-        <button type="button" class="sw" class:on={snap.general.openOnSignIn} aria-pressed={snap.general.openOnSignIn} onclick={() => (snap.general.openOnSignIn = !snap.general.openOnSignIn)}>
-          Open {snap.general.name || "this company"} on sign-in for members
-        </button>
-      </div>
+      <label class="fr toggle-row" data-testid="settings-default-company">
+        <span class="lb">Open {snap.general.name || "this company"} on sign-in for members</span>
+        <input type="checkbox" role="switch" class="switch" bind:checked={snap.general.openOnSignIn} />
+      </label>
       <label class="fr"><span class="lb">Meeting bot<small>display name</small></span><input class="in" bind:value={snap.general.meetingBotName} /></label>
-      <p class="note">Only the company owner can change these settings. Archive and ownership transfer stay on the web console.</p>
+      </fieldset>
+      {#if !canEdit}<p class="note" data-testid="settings-owner-note">Only the owner can change these.</p>{/if}
     {:else if tab === "brand"}
       <div class="page-head">
         <div>
@@ -207,13 +194,16 @@
           <button type="button" class="tab" role="tab" aria-selected={snap.brand.appearance === "light"} onclick={() => (snap.brand.appearance = "light")}>Light</button>
           <button type="button" class="tab" role="tab" aria-selected={snap.brand.appearance === "dark"} onclick={() => (snap.brand.appearance = "dark")}>Dark</button>
         </div>
-        <RailButton icon="check" variant="primary" type="button" onclick={remember}>Save changes</RailButton>
+        {#if canEdit}<RailButton icon="check" variant="primary" type="button" data-testid="brand-save" disabled={!dirty} onclick={remember}>Save</RailButton>{/if}
       </div>
+      <fieldset class="fs" disabled={!canEdit}>
       <label class="fr"><span class="lb">Logo<small>file name</small></span><input class="in" bind:value={snap.brand.logoName} placeholder="wordmark.svg" /></label>
       <p class="note">The logo shows on this company's rail tile. The accent color tints this company's buttons and highlights. The live indicator stays green.</p>
       <label class="fr"><span class="lb">Accent</span><input class="in mono" bind:value={snap.brand.accent} placeholder="#4F46E5" /></label>
       <label class="fr"><span class="lb">Voice notes</span><textarea class="in ta" bind:value={snap.brand.voice}></textarea></label>
       <label class="fr"><span class="lb">Bot branding</span><input class="in" bind:value={snap.brand.botIntro} /></label>
+      </fieldset>
+      {#if !canEdit}<p class="note">Only the owner can change these.</p>{/if}
     {:else if tab === "groups"}
       <div class="page-head">
         <div>
@@ -243,7 +233,7 @@
                 <RailButton icon="trash" type="button" data-testid="delete-group" onclick={() => (deleteId = group.id)}>Delete group</RailButton>
               </div>
               {#each group.members as m (m.id)}
-                <div class="line"><span class="nm">{m.name}</span><span class="c">{m.role}</span><span class="c">{m.added}</span></div>
+                <div class="line"><span class="nm">{personName(m.name)}</span><span class="c">{m.role}</span><span class="c">{m.added}</span></div>
               {/each}
               {#each group.paths as p (p.path)}
                 <div class="line"><span class="mono">{p.path}</span><span class="c">{grantLevelLabel(p.level)}</span></div>
@@ -269,7 +259,7 @@
       <div class="gt hd"><span>Principal</span><span>Folder</span><span>Level</span><span>Expiry</span></div>
       {#each visibleGrants as g (g.id)}
         <div class="gt" data-testid="grant-row">
-          <span class="nm">{g.principal}</span>
+          <span class="nm">{personName(g.principal)}</span>
           <span class="mono">{g.path}</span>
           <span>{grantLevelLabel(g.level)}</span>
           <span class:soon={g.expiring}>{g.expiry}</span>
@@ -277,12 +267,14 @@
       {:else}
         <p class="note">No grants in this filter. Levels are read or write.</p>
       {/each}
-    {:else if tab === "workforce"}
+    {:else}
       <div class="page-head">
         <div>
-          <h2>HQ Workforce</h2>
-          <p class="sub">Team plan · billed to {snap.general.name || companyLabel}</p>
+          <h2>Billing</h2>
+          <p class="sub">Plan, seats and payment · billed to {snap.general.name || companyLabel}</p>
         </div>
+        <span class="grow"></span>
+        <RailButton icon="external" type="button" data-testid="manage-payment" onclick={() => openStripe("portal")}>Manage payment</RailButton>
       </div>
       <div class="plan">
         <div data-testid="workforce-seats">
@@ -321,15 +313,7 @@
         </div>
         <RailButton icon="arrow-right" variant="primary" type="button" data-testid="workforce-upgrade" onclick={() => openStripe("upgrade")}>Upgrade</RailButton>
       </div>
-    {:else}
-      <div class="page-head">
-        <div>
-          <h2>Billing</h2>
-          <p class="sub">Payment method and invoices live in Stripe</p>
-        </div>
-      </div>
-      <p class="note">Manage payment opens the Stripe customer portal in the system browser.</p>
-      <RailButton icon="external" type="button" data-testid="manage-payment" onclick={() => openStripe("portal")}>Manage payment</RailButton>
+      <p class="note">Manage payment opens the Stripe customer portal in your browser.</p>
     {/if}
   </div>
 </section>
@@ -349,13 +333,16 @@
   .tabs, .seg { width: max-content; flex: none; justify-content: flex-start; }
   .settings {
     display: grid;
-    grid-template-columns: 176px minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
     height: 100%;
     min-height: 0;
     color: var(--t1);
     font-size: 13px;
     background: transparent;
   }
+  .fs { border: 0; margin: 0; padding: 0; min-width: 0; display: contents; }
+  .toggle-row { align-items: center; }
+  .switch { width: 28px; height: 16px; accent-color: var(--v4-ok, currentColor); }
   .subnav, .page { min-height: 0; overflow: auto; }
   .subnav {
     border-right: 1px solid var(--line);

@@ -38,6 +38,7 @@
   import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
   import AppRail from "./AppRail.svelte";
   import LazyDoor from "./LazyDoor.svelte";
+  import { callerRole, loadCallerRole } from "../company/company-roles.svelte.js";
   import {
     brainPageDoor,
     teamPageDoor,
@@ -9260,6 +9261,14 @@
   }
   /** Bumped by the sidepane Invite a teammate row; TeamPage opens its sheet. */
   let teamInviteSeq = $state(0);
+  // OWNER-R24: the caller's role in the open company, from the membership
+  // roster. Grants and Billing show only to owners and admins.
+  const companyPaneRole = $derived(callerRole(companyPaneCompany?.uid));
+  $effect(() => {
+    const uid = companyPaneCompany?.uid;
+    if (!uid) return;
+    loadCallerRole({ companyUid: uid, selfUid: self?.uid ?? null, selfEmail: self?.email ?? null, company: adapter.company ?? null });
+  });
 
   function placeMoreCompanies(): void {
     const button = document.querySelector("[data-testid='rail-more-companies']");
@@ -10433,6 +10442,7 @@
         {#if companyPaneCompany}
           <CompanySidepane
             company={companyPaneCompany}
+            canManage={companyPaneRole === "Owner" || companyPaneRole === "Admin"}
             selectedId={companyPaneSelectedId}
             onselect={selectCompanyPaneRow}
             memory={sidepaneScrollMemory}
@@ -10640,7 +10650,7 @@
             }}
           >
             {#snippet skeleton()}
-              <div class="team-door-skeleton" data-testid="team-page-loading" aria-busy="true"></div>
+              <ReadLoader testid="team-page-loading" surface="team" />
             {/snippet}
           </LazyDoor>
         {:else if railPlaceholder?.id === "projects" && companyPaneCompany}
@@ -10658,8 +10668,12 @@
               }}
             />
           </div>
-        {:else if railPlaceholder?.id === "company-settings" && companyPaneCompany}
+        {:else if (railPlaceholder?.id === "general" || railPlaceholder?.id === "brand" || railPlaceholder?.id === "groups" || railPlaceholder?.id === "grants" || railPlaceholder?.id === "billing") && companyPaneCompany}
+          <!-- OWNER-R24: company settings are panel panes (General, Brand,
+               Billing under Settings; Groups, Grants under People). -->
           <CompanySettingsHost
+            section={railPlaceholder.id}
+            role={companyPaneRole ?? null}
             slug={companyPaneCompany.slug ?? ""}
             companyLabel={companyPaneCompany.label}
             openExternal={onopenurl}

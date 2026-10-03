@@ -46,7 +46,8 @@ describe("sidepane models (console-rail US-006)", () => {
     expect(sidepaneModelKind("atlas:co_a")).toBe("atlas");
   });
 
-  it("company model follows the Console groups with settings pinned in the footer", () => {
+  // OWNER-R24: Settings is the last group in the list; no footer row.
+  it("company model follows the Console groups with Settings last and no footer", () => {
     const model = companySidepaneModel({ uid: "co_a", label: "Indigo", liveCount: 3 });
     expect(model.title).toBe("Indigo");
     expect(model.liveCount).toBe(3);
@@ -55,9 +56,11 @@ describe("sidepane models (console-rail US-006)", () => {
       "People",
       "Brain",
       "Files and connect",
+      "Settings",
     ]);
     expect(model.sections[0].rows.map((r) => r.id)).toEqual(["atlas", "projects", "activity", "goals"]);
-    expect(model.footerRow).toEqual(COMPANY_SETTINGS_ROW);
+    expect(model.sections.at(-1)!.rows.map((r) => r.id)).toEqual(["general", "brand", "billing"]);
+    expect(model.footerRow).toBeNull();
     const ids = model.sections.flatMap((s) => s.rows.map((r) => r.id));
     expect(ids).not.toContain(COMPANY_SETTINGS_ROW.id);
   });
@@ -199,7 +202,7 @@ describe("SidepaneList (console-rail US-006)", () => {
     app = mount(SidepaneList, { target, props: { sections: model.sections, selectedId: model.selectedId } });
     flushSync();
     const labels = [...target.querySelectorAll('[data-testid="sidepane-section-label"]')].map((n) => n.textContent);
-    expect(labels).toEqual(["People", "Brain", "Files and connect"]);
+    expect(labels).toEqual(["People", "Brain", "Files and connect", "Settings"]);
     const selected = target.querySelectorAll('[aria-current="page"]');
     expect(selected).toHaveLength(1);
     expect(selected[0].getAttribute("data-row-id")).toBe("projects");

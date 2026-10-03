@@ -2,8 +2,8 @@
   Company sidepane (console-rail US-007).
 
   Header: circle company mark, name, and the live count chip from the presence
-  snapshot. Body: the Console-aligned sections. Footer: Company settings,
-  pinned so it never scrolls. Row counts paint from the cached company summary
+  snapshot. Body: the Console-aligned sections, ending with Settings
+  (General, Brand, Billing) since OWNER-R24; there is no footer row. Row counts paint from the cached company summary
   and refresh in the background; nothing here blocks the first frame.
 -->
 <script lang="ts">
@@ -11,7 +11,6 @@
   import ReadLoader from "../common/ReadLoader.svelte";
   import SidepaneList from "./SidepaneList.svelte";
   import {
-    COMPANY_SETTINGS_ROW,
     atlasSidepaneModel,
     type SidepaneRosterEntry,
     type SidepaneScrollMemory,
@@ -39,6 +38,8 @@
     rosterLoading?: boolean;
     /** Atlas (US-013): roster person filtering the map; highlighted instead of Atlas. */
     rosterSelected?: string | null;
+    /** OWNER-R24: owner or admin; false hides Grants and Billing. */
+    canManage?: boolean;
   }
 
   let {
@@ -50,6 +51,7 @@
     roster = [],
     rosterLoading = false,
     rosterSelected = null,
+    canManage = false,
   }: Props = $props();
 
   // Same wiring the old company Overview did, minus the poller: counts load once per
@@ -88,6 +90,7 @@
       summary.summary,
       selectedId,
       { ...storeCounts, ...companyPageCounts(company.slug, company.uid) },
+      canManage,
     );
     if (!atlasActive || rosterLoading) return base;
     // Same pane key either way, so landing on Atlas keeps scroll memory.
@@ -122,18 +125,6 @@
         <i class="live-dot" aria-hidden="true"></i>{model.liveCount}
       </span>
     </div>
-  {/snippet}
-  {#snippet footer()}
-    <button
-      type="button"
-      class="footer-row"
-      class:is-selected={selectedId === COMPANY_SETTINGS_ROW.id}
-      aria-current={selectedId === COMPANY_SETTINGS_ROW.id ? "page" : undefined}
-      data-testid="company-sidepane-settings"
-      onclick={() => onselect?.(COMPANY_SETTINGS_ROW.id)}
-    >
-      {COMPANY_SETTINGS_ROW.label}
-    </button>
   {/snippet}
   <SidepaneList
     sections={model.sections}
@@ -218,34 +209,7 @@
     text-transform: uppercase;
   }
 
-  .footer-row {
-    display: flex;
-    align-items: center;
-    width: 100%;
-    height: 31px;
-    box-sizing: border-box;
-    padding: 7px 8px;
-    border: 0;
-    border-radius: 8px;
-    background: transparent;
-    color: var(--t1);
-    font: inherit;
-    font-size: 13px;
-    line-height: 17px;
-    text-align: left;
-    cursor: pointer;
-  }
 
-  .footer-row:hover {
-    background: var(--hover);
-  }
 
-  .footer-row.is-selected {
-    background: var(--sel);
-  }
 
-  .footer-row:focus-visible {
-    outline: 1px solid var(--line2);
-    outline-offset: -1px;
-  }
 </style>

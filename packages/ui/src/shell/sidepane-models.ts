@@ -81,7 +81,7 @@ export interface SidepaneListModel {
   /** Live count chip in the header. */
   liveCount: number;
   sections: SidepaneSection[];
-  /** Row pinned in the footer (Company settings); never scrolls away. */
+  /** Row pinned in the footer; none since OWNER-R24 moved Company settings into the panel. */
   footerRow: SidepaneRow | null;
   selectedId: string | null;
 }
@@ -103,6 +103,8 @@ export const COMPANY_SIDEPANE_SECTIONS: readonly SidepaneSection[] = [
     rows: [
       { id: "team", label: "Team" },
       { id: "bots", label: "Bots" },
+      { id: "groups", label: "Groups" },
+      { id: "grants", label: "Grants" },
     ],
   },
   {
@@ -125,7 +127,20 @@ export const COMPANY_SIDEPANE_SECTIONS: readonly SidepaneSection[] = [
       { id: "deployments", label: "Deployments" },
     ],
   },
+  // OWNER-R24: company settings live in the panel; no separate settings page.
+  {
+    id: "settings",
+    label: "Settings",
+    rows: [
+      { id: "general", label: "General" },
+      { id: "brand", label: "Brand" },
+      { id: "billing", label: "Billing" },
+    ],
+  },
 ];
+
+/** OWNER-R24: rows only owners and admins can open; hidden from everyone else. */
+export const MANAGER_ONLY_ROWS: ReadonlySet<string> = new Set(["grants", "billing"]);
 
 export const COMPANY_SETTINGS_ROW: SidepaneRow = {
   id: "company-settings",
@@ -152,7 +167,7 @@ export function companySidepaneModel(
     title: company.label || company.uid,
     liveCount: Math.max(0, company.liveCount ?? 0),
     sections: cloneSections(),
-    footerRow: COMPANY_SETTINGS_ROW,
+    footerRow: null,
     selectedId,
   };
 }
@@ -197,7 +212,7 @@ export function atlasSidepaneModel(
     title: company.label || company.uid,
     liveCount: live.length,
     sections,
-    footerRow: COMPANY_SETTINGS_ROW,
+    footerRow: null,
     selectedId: "atlas",
   };
 }
