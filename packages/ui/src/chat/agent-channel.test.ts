@@ -4,6 +4,7 @@ import {
   agentComposerPlaceholder,
   isAgentConversationRow,
   provisioningFromMessages,
+  AGENT_HELLO_PICK_LINE,
   AGENT_HELLO_REQUEST_LEAD,
   agentHelloArrived,
   agentHelloEventId,
@@ -11,6 +12,9 @@ import {
   buildAgentHelloRequest,
   buildAgentSlackConnectedNotice,
   buildAgentToolConnectedNotice,
+  cleanAgentHelloText,
+  helloCardSource,
+  helloCardSourceLogLine,
 } from "./agent-channel.js";
 import { inlineReplyRows } from "./live-messages.js";
 import { parseRichContent } from "./messaging/richMessageContent.js";
@@ -207,16 +211,41 @@ describe("the new bot's first message", () => {
     return [...text.matchAll(/```hq-block\n([\s\S]*?)\n```/g)].map((match) => parseRichContent(JSON.parse(match[1]!)));
   }
 
-  it("asks for a short hello about connecting things: a greeting by name, one line per app, and the ask to pick a card", () => {
+  it("asks for a short hello about connecting things: two sentences at most, a greeting by name, and the pick-a-card line", () => {
     // Owner, live walkthrough 2026-10-03: "Our initial message should be less
     // broad and more focused on connecting things."
     const text = buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: false });
-    expect(text).toContain("keep it to two or three short sentences: greet Stefan by name;");
-    expect(text).toContain("say which apps are worth connecting and why, one line each, the same apps you name in the connect block;");
-    expect(text).toContain("and end by asking Stefan to pick one of the cards under your message.");
+    expect(text).toContain("Write your first message to Stefan now, two short sentences at most: greet Stefan by name and end with");
+    expect(text).toContain(`"${AGENT_HELLO_PICK_LINE}"`);
+    expect(AGENT_HELLO_PICK_LINE).toBe("Pick a card below to connect something, or skip for now.");
     expect(text).toContain("Do not ask what you can help with, do not list what you can do, and do not add a suggestions block: the cards are the choice.");
+    expect(text).not.toContain("one line each");
+    expect(text).not.toContain("say which apps are worth connecting");
     expect(text).not.toContain("ask what you can help with first");
     expect(text).not.toContain("skip that for now");
+  });
+
+  it("never lets the prose name an app, a domain, an address or a command, and the files clause sits between the greeting and the ask", () => {
+    // Live, 2026-10-03, bot "Big Nuts": the hello read "slack.com: See the
+    // conversations behind the work." and two lines like it, then "/help
+    // shows the available commands". Owner: "Why does it write the names of
+    // the apps in the message? That's not good."
+    for (const filesStillDownloading of [true, false]) {
+      const text = buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading });
+      expect(text).toContain(
+        'Never write an app name, a website domain, a web address, a command, or "/help" in your text, and do not mention commands at all: ' +
+          "the apps you pick go only in the connect block, and the app draws them as cards with their logos and your reasons.",
+      );
+    }
+    const downloading = buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: true });
+    expect(downloading).toContain(
+      `greet Stefan by name, say in one short clause that your company files are still downloading in the background, and end with "${AGENT_HELLO_PICK_LINE}"`,
+    );
+    const done = buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: false });
+    expect(done).toContain(`greet Stefan by name and end with "${AGENT_HELLO_PICK_LINE}"`);
+    expect(done).not.toContain("downloading");
+    // The same rule goes with the Connect more request.
+    expect(buildAgentConnectMoreRequest({ personName: "Stefan" })).toContain("Never write an app name, a website domain, a web address, a command, or \"/help\" in your text");
   });
 
   it("tells the bot the app draws a card per app it names, and how to pick at most three, Slack first", () => {
@@ -225,7 +254,9 @@ describe("the new bot's first message", () => {
     expect(text).toContain("Pick at most three apps, in this order: Slack, unless the list says Slack is connected;");
     expect(text).toContain("then the company's connected apps that you cannot use yet and that matter most for your work;");
     expect(text).toContain("then the apps this company would get the most from, judged from the company's files and work.");
-    expect(text).toContain("Name each app by its website domain (for example linear.app or notion.so) and give a reason under 60 characters.");
+    expect(text).toContain(
+      "In the connect block, name each app by its website domain (for example linear.app or notion.so) and give a reason under 60 characters as its why.",
+    );
     expect(text).not.toContain("four");
   });
 
@@ -319,7 +350,7 @@ describe("the new bot's first message", () => {
 
   it("keeps the files sentence to one clause and the ask not to mention the request, with no long dash", () => {
     const text = buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: true });
-    expect(text).toContain("Your company files are still downloading in the background: say so in one short clause, no more.");
+    expect(text).toContain("say in one short clause that your company files are still downloading in the background,");
     expect(text).not.toContain("will know more about the company as that finishes");
     expect(text.endsWith("Do not mention this message or that you were asked to write.")).toBe(true);
     expect(text).not.toContain("\u2014");
@@ -474,5 +505,97 @@ describe("the hidden notices to a bot", () => {
       expect(fenced(body)).toBe('{"v":1,"blocks":[{"kind":"suggestions","items":["...","..."]}]}');
       expect(parseRichContent(JSON.parse(fenced(body)))).toEqual({ blocks: [{ kind: "suggestions", items: ["..."] }] });
     }
+  });
+});
+
+// The hello "Big Nuts" (agt_479JF407A45ZFB5G0QDCHQC1T8, Indigo) wrote on
+// 2026-10-03, read back from the DM channel with `hq dm thread --json`. No
+// fence, three "domain: reason" lines, a "/help" sentence. The cards under
+// it were the app's fallback picks (Slack, Gmail, Firecrawl), not these three.
+const BIG_NUTS_HELLO =
+  "Hi Stefan, I'm Big Nuts at Indigo. The company files are still downloading.\n\n" +
+  "slack.com: See the conversations behind the work.\n" +
+  "notion.com: Use the team's shared docs.\n" +
+  "sentry.io: Investigate reported errors.\n\n" +
+  "Which one would you like to connect or share first? /help shows the available commands.";
+
+describe("cleanAgentHelloText", () => {
+  it("takes the domain lines and the /help sentence out of the live hello, and leaves the rest word for word", () => {
+    const fallback = [{ app: "slack" as const }, { domain: "gmailmcp.googleapis.com" }, { domain: "firecrawl.dev" }];
+    expect(cleanAgentHelloText(BIG_NUTS_HELLO, fallback)).toBe(
+      "Hi Stefan, I'm Big Nuts at Indigo. The company files are still downloading.\n\nWhich one would you like to connect or share first?",
+    );
+    // The domain lines go whether or not they are among the cards shown.
+    expect(cleanAgentHelloText(BIG_NUTS_HELLO, [])).toBe(cleanAgentHelloText(BIG_NUTS_HELLO, fallback));
+  });
+
+  it("takes out a line written under an app's name when that app is one of the cards, with a list marker or bold around it", () => {
+    const items = [{ app: "slack" as const }, { domain: "linear.app", why: "Issues" }, { domain: "notion.so" }];
+    const text =
+      "Hi Stefan.\n" +
+      "- Slack: the conversations behind the work.\n" +
+      "* **Linear**: your team's issues.\n" +
+      "1. Notion: the shared docs.\n" +
+      "Pick a card below to connect something, or skip for now.";
+    expect(cleanAgentHelloText(text, items)).toBe("Hi Stefan.\nPick a card below to connect something, or skip for now.");
+    // A name that is not one of the cards is ordinary text and stays.
+    expect(cleanAgentHelloText("Note: the files are still downloading.\nAsana: your tasks.", items)).toBe(
+      "Note: the files are still downloading.\nAsana: your tasks.",
+    );
+  });
+
+  it("drops only the sentence that names /help or the available commands, wherever it sits on the line", () => {
+    expect(cleanAgentHelloText("Hi Stefan. Type /help to see what I can do. Pick a card below.", [])).toBe("Hi Stefan. Pick a card below.");
+    expect(cleanAgentHelloText("Hi Stefan. The available commands are listed in the console.", [])).toBe("Hi Stefan.");
+    expect(cleanAgentHelloText("Hi Stefan.\n\n/help shows the available commands.", [])).toBe("Hi Stefan.");
+  });
+
+  it("leaves ordinary text alone: times, abbreviations, colons mid-sentence, an empty body", () => {
+    const plain = "Hi Stefan, I'm Nova. We meet at 10:30, e.g. in the usual room: the one by the lift.\nPick a card below.";
+    expect(cleanAgentHelloText(plain, [{ app: "slack" }])).toBe(plain);
+    expect(cleanAgentHelloText("", [{ app: "slack" }])).toBe("");
+  });
+});
+
+describe("helloCardSource", () => {
+  const fallback = [{ app: "slack" as const }, { domain: "gmailmcp.googleapis.com" }, { domain: "firecrawl.dev" }];
+  const fence = (envelope: unknown) => "```hq-block\n" + JSON.stringify(envelope) + "\n```";
+
+  it("shows the bot's picks when its message carries an envelope that parses", () => {
+    const body =
+      "Hi Stefan.\n" +
+      fence({ v: 1, blocks: [{ kind: "connect", items: [{ app: "slack" }, { domain: "notion.com", why: "Shared docs" }, { domain: "sentry.io" }] }] });
+    expect(helloCardSource({ body }, fallback)).toEqual({
+      source: "bot",
+      items: [{ app: "slack" }, { domain: "notion.com", why: "Shared docs" }, { domain: "sentry.io" }],
+    });
+  });
+
+  it("shows the app's fallback picks when the envelope is absent: the live Big Nuts hello", () => {
+    expect(helloCardSource({ body: BIG_NUTS_HELLO }, fallback)).toEqual({ source: "app", items: fallback });
+    expect(helloCardSource(null, fallback)).toEqual({ source: "app", items: fallback });
+  });
+
+  it("shows the app's fallback picks when the envelope is invalid: bad JSON, a wrong version, or no item the parser keeps", () => {
+    for (const body of [
+      "Hi.\n```hq-block\n{\"v\":1,\"blocks\":[{\"kind\":\"connect\",\"items\":[{\"app\":\"slack\"}]\n```",
+      "Hi.\n" + fence({ v: 2, blocks: [{ kind: "connect", items: [{ app: "slack" }] }] }),
+      "Hi.\n" + fence({ v: 1, blocks: [{ kind: "connect", items: [{ domain: "not a domain" }, { app: "tools" }] }] }),
+      "Hi.\n" + fence({ v: 1, blocks: [{ kind: "suggestions", items: ["Connect Slack"] }] }),
+    ]) {
+      expect(helloCardSource({ body }, fallback), body).toEqual({ source: "app", items: fallback });
+    }
+  });
+
+  it("writes one log line naming the source and the apps, and never a body", () => {
+    const bot = helloCardSource({ body: "Hi.\n" + fence({ v: 1, blocks: [{ kind: "connect", items: [{ app: "slack" }, { domain: "notion.com" }] }] }) }, fallback);
+    expect(helloCardSourceLogLine({ agentUid: "agt_479JF407A45ZFB5G0QDCHQC1T8", eventId: "b0cd2cf7", picks: bot })).toBe(
+      "agent=agt_479JF407A45ZFB5G0QDCHQC1T8 event=b0cd2cf7 source=bot items=slack,notion.com",
+    );
+    const app = helloCardSource({ body: BIG_NUTS_HELLO }, fallback);
+    const line = helloCardSourceLogLine({ agentUid: "agt_479JF407A45ZFB5G0QDCHQC1T8", eventId: "b0cd2cf7", picks: app });
+    expect(line).toBe("agent=agt_479JF407A45ZFB5G0QDCHQC1T8 event=b0cd2cf7 source=app items=slack,gmailmcp.googleapis.com,firecrawl.dev");
+    expect(line).not.toContain("Big Nuts");
+    expect(helloCardSourceLogLine({ agentUid: "agt_x", eventId: "e", picks: { source: "app", items: [] } })).toBe("agent=agt_x event=e source=app items=-");
   });
 });

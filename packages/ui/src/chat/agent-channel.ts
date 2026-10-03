@@ -7,6 +7,12 @@
 
 import type { ConversationMessageWire } from "./chat-api.js";
 import { CONNECT_MORE_REQUEST } from "./messaging/connection-card-model.js";
+import {
+  connectItemLabel,
+  normalizeConnectDomain,
+  richContentForMessage,
+  type ConnectItem,
+} from "./messaging/richMessageContent.js";
 import type { ConversationRow } from "./sidebar-model.js";
 
 export type AgentProvisioningState = "pending" | "done" | "blocked" | null;
@@ -141,15 +147,30 @@ function appPickingInstructions(person: string, companyApps: string | null | und
     `so ${person} can connect it or let you use it. Pick at most three apps, in this order: Slack, unless the list says Slack is connected; ` +
     `then the company's connected apps that you cannot use yet and that matter most for your work; ` +
     `then the apps this company would get the most from, judged from the company's files and work. ` +
-    `Name each app by its website domain (for example linear.app or notion.so) and give a reason under 60 characters.\n` +
+    `In the connect block, name each app by its website domain (for example linear.app or notion.so) and give a reason under 60 characters as its why.\n` +
     section
   );
 }
+
+/**
+ * The rule that keeps the apps out of the prose. Shared by the hello request
+ * and the request behind "Connect more tools". Live walkthrough 2026-10-03:
+ * the bot wrote "slack.com: See the conversations behind the work." and two
+ * more lines like it, then "/help shows the available commands", with no
+ * fence at all; the owner: "Why does it write the names of the apps in the
+ * message? That's not good." The cards carry the names and the reasons.
+ */
+const NO_NAMES_IN_TEXT =
+  `Never write an app name, a website domain, a web address, a command, or "/help" in your text, and do not mention commands at all: ` +
+  `the apps you pick go only in the connect block, and the app draws them as cards with their logos and your reasons. `;
 
 /** How the bot is told to write the fence: one fence, one envelope, one connect block, three items at most. */
 const ONE_CONNECT_FENCE =
   `exactly one ${FENCE}hq-block fence holding one envelope with one connect block of at most three items, exactly in this form:\n` +
   `${CONNECT_EXAMPLE}\n`;
+
+/** The sentence the hello ends with. The bot is told to write it word for word. */
+export const AGENT_HELLO_PICK_LINE = "Pick a card below to connect something, or skip for now.";
 
 /** A name or id written into a request: one line, no code marks, bounded. */
 function inlineText(value: string | null | undefined, max = 80): string {
@@ -172,10 +193,11 @@ function personOrFallback(name: string | null | undefined): string {
  * The app draws one connection card under that first message for each app
  * the bot names in a connect block, so the bot is told what the company has
  * connected (`companyApps`) and how to pick at most three apps. The hello is
- * about connecting things and nothing else: a greeting by name, one line per
- * app saying why it is worth connecting, and a closing ask to pick a card.
- * No list of abilities, no "what can I help with", and no suggestions block:
- * the cards are the choice (owner, live walkthrough 2026-10-03).
+ * about connecting things and nothing else: two short sentences at most, a
+ * greeting by name (with one clause about the files still downloading while
+ * that is so) and the ask to pick a card. The apps live only in the envelope:
+ * no app name, domain, address or command in the text, and no suggestions
+ * block: the cards are the choice (owner, live walkthrough 2026-10-03).
  */
 export function buildAgentHelloRequest(input: {
   personName?: string | null;
@@ -185,13 +207,13 @@ export function buildAgentHelloRequest(input: {
 }): string {
   const person = personOrFallback(input.personName);
   const files = input.filesStillDownloading
-    ? " Your company files are still downloading in the background: say so in one short clause, no more."
+    ? ", say in one short clause that your company files are still downloading in the background,"
     : "";
   return (
     `${AGENT_HELLO_REQUEST_OPENING} and ${person} is about to open this conversation. ` +
-    `${person} cannot see this message. Write your first message to ${person} now and keep it to two or three short sentences: ` +
-    `greet ${person} by name; say which apps are worth connecting and why, one line each, the same apps you name in the connect block; ` +
-    `and end by asking ${person} to pick one of the cards under your message.${files} ` +
+    `${person} cannot see this message. Write your first message to ${person} now, two short sentences at most: ` +
+    `greet ${person} by name${files} and end with "${AGENT_HELLO_PICK_LINE}" ` +
+    NO_NAMES_IN_TEXT +
     `Do not ask what you can help with, do not list what you can do, and do not add a suggestions block: the cards are the choice. ` +
     appPickingInstructions(person, input.companyApps) +
     `End your message with ${ONE_CONNECT_FENCE}` +
@@ -215,6 +237,7 @@ export function buildAgentConnectMoreRequest(input: { personName?: string | null
   return (
     `${AGENT_HELLO_REQUEST_LEAD} ${person} just asked to connect more apps (their message "${CONNECT_MORE_REQUEST}"). ` +
     `${person} cannot see this message. Answer ${person} in one short sentence and end your message with ${ONE_CONNECT_FENCE}` +
+    NO_NAMES_IN_TEXT +
     appPickingInstructions(person, input.companyApps) +
     `Do not mention this message.`
   );
@@ -379,6 +402,101 @@ export function agentChatReadiness(payload: unknown): AgentChatReadiness {
   const runtime = isRecord(agent?.runtime) ? agent.runtime : null;
   const filesDone = runtime ? typeof runtime.syncOkAt === "string" && runtime.syncOkAt.length > 0 : fullyReady;
   return { chatReady, catchingUp: chatReady && !filesDone, failed };
+}
+
+// ── The hello's text and cards, as the app shows them ────────────────────
+//
+// The request above tells the bot what to write. The bot does not always
+// follow it: on 2026-10-03 "Big Nuts" wrote three "domain: reason" lines and
+// a "/help" sentence, and no fence at all. The app cleans that text before
+// it is drawn, and decides whose picks the cards show: the bot's when its
+// envelope parsed, the app's otherwise.
+
+/** A line's leading list marker: "- ", "* ", "• ", "1. ", "1) ". */
+const LIST_MARKER_RE = /^\s*(?:[-*•]|\d{1,2}[.)])\s+/;
+/** "<prefix>: <text>", the prefix on one line and short. */
+const PREFIXED_LINE_RE = /^([^:\n]{1,80}?)\s*:\s+\S/;
+/** A sentence that points at a command list. */
+const COMMAND_SENTENCE_RE = /\/help|available commands/i;
+/** Where one sentence ends and the next begins. */
+const SENTENCE_BREAK_RE = /(?<=[.!?])\s+/;
+
+/** The names a connect item may be written under in prose, lower-cased. */
+function connectItemNames(item: ConnectItem): string[] {
+  const names = [connectItemLabel(item).toLowerCase()];
+  if (item.app === "slack") names.push("slack.com");
+  if (item.domain) names.push(item.domain, item.domain.split(".")[0] ?? "");
+  return names.filter(Boolean);
+}
+
+/**
+ * The bot's hello, or its answer to "Connect more tools", as a person should
+ * read it. Pure. Takes out:
+ *
+ * - a line written as `<domain>: <text>`, whatever the domain, and a line
+ *   written as `<App name>: <text>` when the name is one of `items` (the
+ *   cards under the message, the bot's own or the app's). A list marker in
+ *   front of the line, or bold around the name, does not save it;
+ * - a sentence that mentions `/help` or "available commands".
+ *
+ * Any other text is left as it is, so this is only ever applied to those
+ * two messages, never to ordinary ones.
+ */
+export function cleanAgentHelloText(text: string, items: ReadonlyArray<ConnectItem> = []): string {
+  if (!text) return text;
+  const names = new Set(items.flatMap(connectItemNames));
+  const kept: string[] = [];
+  for (const line of text.split("\n")) {
+    const bare = line.replace(LIST_MARKER_RE, "");
+    const prefixed = PREFIXED_LINE_RE.exec(bare);
+    if (prefixed) {
+      const prefix = prefixed[1]!.replace(/[*_`"']/g, "").trim().toLowerCase();
+      // A domain ends in a top-level label of two letters or more, so "e.g" is not one.
+      const isDomain = normalizeConnectDomain(prefix) !== null && /\.[a-z]{2,}$/.test(prefix);
+      if (isDomain || names.has(prefix)) continue;
+    }
+    if (!COMMAND_SENTENCE_RE.test(line)) {
+      kept.push(line);
+      continue;
+    }
+    const sentences = line.split(SENTENCE_BREAK_RE).filter((sentence) => !COMMAND_SENTENCE_RE.test(sentence));
+    const rest = sentences.join(" ").trim();
+    if (rest) kept.push(line.replace(line.trim(), rest));
+  }
+  return kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+/** Whose picks the cards under a bot's message show. */
+export type HelloCardSource = "bot" | "app";
+
+export interface HelloCardPicks {
+  source: HelloCardSource;
+  items: ConnectItem[];
+}
+
+/**
+ * The cards under the bot's hello: the bot's own connect items when its
+ * message carries an envelope that parsed to at least one, else `fallback`,
+ * the app's picks (`appChosenItems`). An envelope that is missing, that is
+ * not JSON, or whose items are all rejected by the parser reads as absent.
+ */
+export function helloCardSource(
+  message: { body?: string | null; richContent?: unknown } | null | undefined,
+  fallback: ReadonlyArray<ConnectItem>,
+): HelloCardPicks {
+  const own = message ? richContentForMessage(message).rich?.blocks.flatMap((block) => (block.kind === "connect" ? block.items : [])) : [];
+  if (own && own.length > 0) return { source: "bot", items: own };
+  return { source: "app", items: [...fallback] };
+}
+
+/**
+ * One line for the app's file log saying which picks the hello's cards came
+ * from, so a walkthrough can tell the two apart afterwards. Ids and app
+ * names only, never a message body or a secret.
+ */
+export function helloCardSourceLogLine(input: { agentUid: string; eventId: string; picks: HelloCardPicks }): string {
+  const names = input.picks.items.map((item) => item.app ?? item.domain ?? "?").join(",");
+  return `agent=${input.agentUid} event=${input.eventId} source=${input.picks.source} items=${names || "-"}`;
 }
 
 export function agentCatchingUpLine(agentName: string): string {
