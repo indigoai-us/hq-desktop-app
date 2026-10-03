@@ -1508,8 +1508,7 @@
       const result = await adapter.sync.startSync(target.slug);
       if (!result.ok) {
         console.error("membership sync failed:", result.reason, result.message);
-        membershipSyncError =
-          result.message?.trim() || "Sync could not be started.";
+        membershipSyncError = "Sync could not be started. Try again.";
         membershipSyncPending = false;
       } else if (!syncEvents) {
         // No event bridge on this platform: the run was dispatched, but this
@@ -1519,10 +1518,7 @@
       }
     } catch (err) {
       console.error("membership sync failed:", err);
-      membershipSyncError =
-        err instanceof Error && err.message.trim()
-          ? err.message
-          : "Sync could not be started.";
+      membershipSyncError = "Sync could not be started. Try again.";
       membershipSyncPending = false;
     }
   }
@@ -1735,7 +1731,10 @@
           (e) => !membershipSyncTarget || e.company === membershipSyncTarget,
         );
         membershipSyncPending = false;
-        if (mine) membershipSyncError = mine.message?.trim() || "Sync failed.";
+        if (mine) {
+          console.warn("[membership-sync] sync run failed", mine.message);
+          membershipSyncError = "Sync failed. Try again.";
+        }
       }),
     );
     // NOTE: deliberately NOT listening to `sync:error`. That event is PER FILE

@@ -224,7 +224,9 @@ describe("DesktopApp membership sync", () => {
     });
     await settle();
     expect(banner()?.textContent).toContain("Added to Acme");
-    expect(errorText()).toContain("Bucket is not reachable");
+    // Raw run error text is logged, not shown (AUDIT-3c).
+    expect(errorText()).not.toContain("Bucket is not reachable");
+    expect(errorText()).toContain("Sync failed. Try again.");
     syncNow().click();
     await settle();
     expect(startSync).toHaveBeenCalledTimes(2);
@@ -239,7 +241,39 @@ describe("DesktopApp membership sync", () => {
     failDispatch();
     syncNow().click();
     await settle();
-    expect(errorText()).toContain("Sync is already running");
+    expect(errorText()).not.toContain("Sync is already running");
+    expect(errorText()).toContain("Sync could not be started. Try again.");
+  });
+
+  it("never shows raw transport error text in the membership sync banner", async () => {
+    const RAW = '[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}';
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const events = createSyncEventHost();
+    await mountApp([joinableCompany], events.host);
+    events.emit("sync:all-complete", { companiesAttempted: 1, errors: [{ company: "acme", message: RAW }] });
+    await settle();
+    expect(errorText()).toContain("Sync failed. Try again.");
+    expect(errorText()).not.toContain("boom");
+    expect(warn.mock.calls.some((a) => a.some((x) => String(x).includes("boom")))).toBe(true);
+
+    startSync.mockRejectedValueOnce(new Error(RAW));
+    syncNow().click();
+    await settle();
+    expect(errorText()).toContain("Sync could not be started. Try again.");
+    expect(banner()?.textContent).not.toContain("HTTP 500");
+    for (const el of Array.from(banner()?.querySelectorAll("[title]") ?? [])) {
+      expect(el.getAttribute("title")).not.toContain("boom");
+    }
+    expect(error.mock.calls.some((a) => a.some((x) => String(x).includes("boom")))).toBe(true);
+
+    startSync.mockResolvedValueOnce({ ok: false, reason: "runner-failed", message: RAW });
+    syncNow().click();
+    await settle();
+    expect(errorText()).toContain("Sync could not be started. Try again.");
+    expect(errorText()).not.toContain("boom");
+    warn.mockRestore();
+    error.mockRestore();
   });
 
   it("surfaces the reauth path, which start_sync reports as success", async () => {
