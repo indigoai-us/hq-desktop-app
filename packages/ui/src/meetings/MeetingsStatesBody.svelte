@@ -55,6 +55,10 @@
     sheetOnly?: boolean;
     /** A recorded past meeting's saved notes are still loading. */
     notesLoading?: boolean;
+    /** Saved notes past the first page, not read yet. */
+    notesRemaining?: number;
+    notesLoadingMore?: boolean;
+    onloadmore?: () => void;
   }
 
   let {
@@ -75,6 +79,9 @@
     sheetOnly = false,
     sheetLink = null,
     notesLoading = false,
+    notesRemaining = 0,
+    notesLoadingMore = false,
+    onloadmore,
   }: Props = $props();
 
   let tab = $state<"recap" | "transcript" | "notes" | "agenda">("recap");
@@ -339,6 +346,12 @@
                 <div class="it"><span class="mk"></span><span>{item.title}</span><span class="own">{item.owner}</span><span class="chip">{item.status}</span></div>
               {/each}
             {/if}
+            {#if notesRemaining > 0}
+              <div class="more" data-testid="recap-more">
+                <span class="muted" data-testid="recap-more-count">{notesRemaining} more {notesRemaining === 1 ? "note" : "notes"}</span>
+                <button type="button" class="btn" data-testid="recap-load-more" disabled={notesLoadingMore} aria-busy={notesLoadingMore} onclick={() => onloadmore?.()}>{notesLoadingMore ? "Loading…" : "Load more"}</button>
+              </div>
+            {/if}
           </div>
         {:else if tab === "transcript"}
           <div data-testid="meeting-transcript">
@@ -508,6 +521,7 @@
   .meta { margin-left: auto; }
   .sh { display: flex; gap: 8px; margin: 16px 0 4px; font-size: 13px; font-weight: 500; line-height: 17px; color: var(--t2); }
   .n { color: var(--t3); font-weight: 400; }
+  .more { display: flex; align-items: center; gap: 8px; margin: 12px 0 4px; }
   .sum { max-width: 66ch; line-height: 1.55; }
   .sum b { font-weight: 500; }
   .it { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; gap: 8px; align-items: center; min-height: 28px; padding: 4px 0; font-size: 13px; line-height: 17px; }

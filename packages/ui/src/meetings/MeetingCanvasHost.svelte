@@ -138,6 +138,9 @@
     mode={phase === "past" ? "recap" : phase === "upcoming" ? "upcoming" : "empty"}
     event={shownEvent}
     {notesLoading}
+    notesRemaining={notesEntry?.remaining ?? 0}
+    notesLoadingMore={notesEntry?.loadingMore ?? false}
+    onloadmore={() => recordedId && void meetingsStore.loadMoreRecordedNotes(recordedId)}
     {bot}
     {companyName}
     {sections}

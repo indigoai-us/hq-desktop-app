@@ -242,21 +242,40 @@ export function signalBodyText(markdown: string): string {
     .trim();
 }
 
-/** Upper bound on signal bodies read for one opened meeting. */
+/** Signal bodies read per page: the first page when a meeting opens, then one per "Load more". */
 export const RECORDED_SIGNAL_READ_LIMIT = 24;
 
+export interface RecordedSignals {
+  summary: string;
+  decisions: { title: string }[];
+  actions: { title: string }[];
+  questions: { title: string }[];
+}
+
+/** Paging state for one meeting's notes: every ref, plus the texts read so far (in ref order). */
+export interface RecordedSignalPages {
+  refs: readonly RecordedSignalRef[];
+  texts: readonly string[];
+}
+
+/** Notes not read yet. */
+export function recordedSignalsRemaining(pages: RecordedSignalPages): number {
+  return Math.max(0, pages.refs.length - pages.texts.length);
+}
+
 /**
- * Build the recap `signals` object for a recorded meeting from its signal
- * refs. Titles come from the server when present; otherwise the body is read
- * from its presigned URL. A body that cannot be read is logged and skipped.
+ * Read the next page of signal bodies. Titles come from the server when
+ * present; otherwise the body is read from its presigned URL. A body that
+ * cannot be read is logged and kept as an empty text, so it is not retried.
  */
-export async function loadRecordedSignals(
-  refs: readonly RecordedSignalRef[],
+export async function loadNextRecordedSignalPage(
+  pages: RecordedSignalPages,
   readText: (url: string) => Promise<string>,
-): Promise<{ summary: string; decisions: { title: string }[]; actions: { title: string }[]; questions: { title: string }[] }> {
-  const out = { summary: "", decisions: [] as { title: string }[], actions: [] as { title: string }[], questions: [] as { title: string }[] };
+): Promise<RecordedSignalPages> {
+  const from = pages.texts.length;
+  const next = pages.refs.slice(from, from + RECORDED_SIGNAL_READ_LIMIT);
   const texts = await Promise.all(
-    refs.slice(0, RECORDED_SIGNAL_READ_LIMIT).map(async (ref) => {
+    next.map(async (ref) => {
       if (ref.title) return ref.title;
       if (!ref.url) return "";
       try {
@@ -267,11 +286,25 @@ export async function loadRecordedSignals(
       }
     }),
   );
-  refs.slice(0, RECORDED_SIGNAL_READ_LIMIT).forEach((ref, i) => {
-    const text = texts[i];
-    if (!text) return;
+  return { refs: pages.refs, texts: [...pages.texts, ...texts] };
+}
+
+/** The recap `signals` object from every text read so far, in ref order. */
+export function recordedSignalsFromPages(pages: RecordedSignalPages): RecordedSignals {
+  const out: RecordedSignals = { summary: "", decisions: [], actions: [], questions: [] };
+  pages.texts.forEach((text, i) => {
+    const ref = pages.refs[i];
+    if (!text || !ref) return;
     if (ref.kind === "summary") out.summary = out.summary ? `${out.summary} ${text}` : text;
     else out[ref.kind].push({ title: text });
   });
   return out;
+}
+
+/** The recap `signals` for the first page of a meeting's notes. */
+export async function loadRecordedSignals(
+  refs: readonly RecordedSignalRef[],
+  readText: (url: string) => Promise<string>,
+): Promise<RecordedSignals> {
+  return recordedSignalsFromPages(await loadNextRecordedSignalPage({ refs, texts: [] }, readText));
 }

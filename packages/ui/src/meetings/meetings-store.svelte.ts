@@ -36,10 +36,14 @@ import {
 } from "./meetings-model";
 import { takeAgendaWindow } from "./meetings-view-model";
 import {
-  loadRecordedSignals,
+  loadNextRecordedSignalPage,
   mergeRecordedMeetings,
   ownRecordedMeetings,
   parseRecordedDetail,
+  recordedSignalsFromPages,
+  recordedSignalsRemaining,
+  type RecordedSignalPages,
+  type RecordedSignals,
   parseRecordedMeetings,
   type RecordedMeeting,
 } from "./recorded-meetings";
@@ -202,7 +206,11 @@ let recordedError = $state("");
 /** Saved notes per recorded meeting id, loaded when a past meeting opens. */
 export interface RecordedNotesEntry {
   status: "loading" | "ready" | "error";
-  signals?: Awaited<ReturnType<typeof loadRecordedSignals>>;
+  signals?: RecordedSignals;
+  /** Saved notes not read yet; "Load more" reads the next page. */
+  remaining?: number;
+  loadingMore?: boolean;
+  pages?: RecordedSignalPages;
 }
 let recordedNotes = $state<Record<string, RecordedNotesEntry>>({});
 let membershipsError = $state("");
@@ -474,13 +482,43 @@ async function loadRecordedNotes(meetingId: string, companyUid: string | null): 
     const refs = parseRecordedDetail(
       unwrap(await requireApi().meetings.getRecorded(meetingId, companyUid)),
     );
-    const signals = await loadRecordedSignals(refs, readSignalBody);
+    const pages = await loadNextRecordedSignalPage({ refs, texts: [] }, readSignalBody);
     if (epoch !== sessionEpoch) return;
-    recordedNotes = { ...recordedNotes, [meetingId]: { status: "ready", signals } };
+    recordedNotes = { ...recordedNotes, [meetingId]: notesEntryFor(pages) };
   } catch (err) {
     console.error(`meetings getRecorded failed for ${meetingId}:`, err);
     if (epoch !== sessionEpoch) return;
     recordedNotes = { ...recordedNotes, [meetingId]: { status: "error" } };
+  }
+}
+
+function notesEntryFor(pages: RecordedSignalPages): RecordedNotesEntry {
+  return {
+    status: "ready",
+    signals: recordedSignalsFromPages(pages),
+    remaining: recordedSignalsRemaining(pages),
+    pages,
+  };
+}
+
+/**
+ * Read the next page of an opened meeting's saved notes. Pages append in ref
+ * order, so with every page read the recap matches the full set. A failed
+ * page keeps the notes already shown and leaves "Load more" to try again.
+ */
+async function loadMoreRecordedNotes(meetingId: string): Promise<void> {
+  const entry = recordedNotes[meetingId];
+  if (!entry?.pages || entry.loadingMore || !entry.remaining) return;
+  const epoch = sessionEpoch;
+  recordedNotes = { ...recordedNotes, [meetingId]: { ...entry, loadingMore: true } };
+  try {
+    const pages = await loadNextRecordedSignalPage(entry.pages, readSignalBody);
+    if (epoch !== sessionEpoch) return;
+    recordedNotes = { ...recordedNotes, [meetingId]: notesEntryFor(pages) };
+  } catch (err) {
+    console.error(`meetings load more notes failed for ${meetingId}:`, err);
+    if (epoch !== sessionEpoch) return;
+    recordedNotes = { ...recordedNotes, [meetingId]: { ...entry, loadingMore: false } };
   }
 }
 
@@ -1311,6 +1349,7 @@ export const meetingsStore = {
     return recordedNotes;
   },
   loadRecordedNotes,
+  loadMoreRecordedNotes,
   /** Plain-language note when some or all history scopes failed. */
   get recordedError() {
     return recordedError;
