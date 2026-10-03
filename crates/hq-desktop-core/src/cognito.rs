@@ -722,7 +722,11 @@ fn marker_kind_from_contents(contents: Option<&[u8]>) -> &'static str {
     match contents {
         None => "none",
         Some([]) => "cli",
-        Some(b"refresh-rejected") => "desktop",
+        Some(contents)
+            if contents == b"refresh-rejected" || contents.starts_with(b"refresh-rejected:") =>
+        {
+            "desktop"
+        }
         Some(_) => "unknown",
     }
 }
@@ -2770,6 +2774,17 @@ mod tests {
         assert!(refresh_rejection_recorded_at(&path, access).unwrap());
         std::fs::write(&marker, b"refresh-rejected").unwrap();
         assert!(refresh_rejection_recorded_at(&path, access).unwrap());
+    }
+
+    #[test]
+    fn marker_kind_maps_legacy_and_reason_suffixed_refresh_rejection_markers() {
+        assert_eq!(marker_kind_from_contents(Some(b"refresh-rejected")), "desktop");
+        assert_eq!(
+            marker_kind_from_contents(Some(b"refresh-rejected:NotAuthorizedException")),
+            "desktop"
+        );
+        assert_eq!(marker_kind_from_contents(Some(b"")), "cli");
+        assert_eq!(marker_kind_from_contents(Some(b"other")), "unknown");
     }
 
     #[test]

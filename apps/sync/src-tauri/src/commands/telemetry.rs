@@ -1413,7 +1413,16 @@ pub async fn emit_desktop_operational_telemetry(
     // Mirror the funnel stage to the CDP before any auth work: a queue push
     // only, and independent of whether hq-pro accepts the row.
     crate::commands::cdp_mirror::note_operational_event(&event_name, properties.as_ref());
-    let access_token = crate::commands::cognito::get_valid_access_token().await?;
+    let access_token = match crate::commands::cognito::get_valid_access_token().await {
+        Ok(token) => token,
+        // A first sign-in has no session until the token exchange, so its
+        // progress and failure rows wait on disk for the next session.
+        Err(_) if crate::commands::cdp_mirror::is_held_auth_event(&event_name) => {
+            crate::commands::cdp_mirror::hold_auth_row(&event_name, properties.as_ref());
+            return Ok(());
+        }
+        Err(err) => return Err(err),
+    };
     let api_url = resolve_vault_api_url()?;
     let vault = VaultClient::new(&api_url, &access_token);
     emit_desktop_operational_telemetry_with_vault(
@@ -1423,7 +1432,41 @@ pub async fn emit_desktop_operational_telemetry(
         session_id,
         occurred_at,
     )
-    .await
+    .await?;
+    crate::commands::cdp_mirror::flush_held_auth_rows_now().await;
+    Ok(())
+}
+
+/// Send one row held by `cdp_mirror::hold_auth_row` with its own timestamp
+/// and idempotencyKey.
+pub async fn post_held_auth_row(row: &Value) -> Result<(), String> {
+    let event_name = row
+        .get("eventName")
+        .and_then(Value::as_str)
+        .filter(|name| crate::commands::cdp_mirror::is_held_auth_event(name))
+        .ok_or("held row has no sign-in event name")?;
+    let access_token = crate::commands::cognito::get_valid_access_token().await?;
+    let api_url = resolve_vault_api_url()?;
+    let vault = VaultClient::new(&api_url, &access_token);
+    let mut event = build_desktop_telemetry_event(
+        event_name.to_string(),
+        row.get("properties").cloned(),
+        None,
+        row.get("occurredAt")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        "no-consent",
+    );
+    event.idempotency_key = row
+        .get("idempotencyKey")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    vault
+        .post_telemetry_events(&TelemetryEventsBatch {
+            events: vec![event],
+        })
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// hq-pro only, for a row whose CDP copy was queued earlier.
@@ -4058,6 +4101,7 @@ mod codex_telemetry_tests {
         let home = setup_home();
         write_menubar(home.path(), "{}");
         let _home = scoped_home(home.path());
+        crate::commands::cognito::clear_tokens().await.unwrap();
         std::env::set_var("HQ_VAULT_API_URL", server.uri());
 
         // What `cdp_mirror::init` does on a first launch.
@@ -4234,6 +4278,202 @@ mod codex_telemetry_tests {
             assert!(warnings[2].contains("clear_write_failed"), "{warnings:?}");
         }
         std::env::remove_var("HQ_VAULT_API_URL");
+    }
+
+    async fn auth_failure_posts(server: &MockServer) -> Vec<Value> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|request| request.method == wiremock::http::Method::POST)
+            .map(|request| serde_json::from_slice::<Value>(&request.body).unwrap())
+            .flat_map(|body| body["events"].as_array().cloned().unwrap_or_default())
+            .filter(|event| event["eventName"] == "desktop_auth_failure")
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn first_sign_in_failure_before_a_token_reaches_hq_pro_after_sign_in() {
+        // Regression: a brand-new user has no token until token_exchange_ok,
+        // so a sign-in failure before that was never sent to hq-pro. Only
+        // returning users' sign-in rows reached it.
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = first_open_server(200).await;
+        let home = setup_home();
+        write_menubar(home.path(), "{}");
+        let _home = scoped_home(home.path());
+        crate::commands::cognito::clear_tokens().await.unwrap();
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        // First-time sign-in, no token: the provider page fails to open.
+        let _ = emit_desktop_operational_telemetry(
+            "desktop_auth_failure".to_string(),
+            Some(json!({
+                "provider": "google",
+                "step": "provider_page_opened",
+                "errorCategory": "network",
+            })),
+            None,
+            None,
+        )
+        .await;
+        assert!(
+            auth_failure_posts(&server).await.is_empty(),
+            "no session yet"
+        );
+
+        // The app quits here; only what is on disk carries over. On the next
+        // launch the user signs in and the app reports token_exchange_ok.
+        write_valid_access_token(home.path());
+        emit_desktop_operational_telemetry(
+            "desktop_auth_progress".to_string(),
+            Some(json!({ "provider": "google", "step": "token_exchange_ok" })),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        std::env::remove_var("HQ_VAULT_API_URL");
+
+        let failures = auth_failure_posts(&server).await;
+        assert_eq!(failures.len(), 1, "the pre-token failure must reach hq-pro");
+        assert_eq!(failures[0]["properties"]["step"], "provider_page_opened");
+        assert_eq!(failures[0]["properties"]["errorCategory"], "network");
+    }
+
+    fn held_auth_rows(home: &std::path::Path) -> Vec<Value> {
+        crate::commands::cdp_mirror::held_auth_rows_at(
+            &home.join(".hq/menubar.json"),
+            chrono::Utc::now().timestamp_millis() as u64,
+        )
+    }
+
+    async fn emit_pre_token_failure(step: &str) {
+        emit_desktop_operational_telemetry(
+            "desktop_auth_failure".to_string(),
+            Some(json!({
+                "provider": "google",
+                "step": step,
+                "errorCategory": "network",
+                "message": "connect error: secret-callback-code-123",
+            })),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn held_sign_in_failure_survives_app_quit_with_labels_only() {
+        // Regression: the row lived nowhere once the app quit after a failed
+        // first sign-in. It must be on disk, with closed labels only.
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = first_open_server(200).await;
+        let home = setup_home();
+        write_menubar(home.path(), "{}");
+        let _home = scoped_home(home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        emit_pre_token_failure("provider_page_opened").await;
+        // Quit: nothing in memory carries over; read what a relaunch reads.
+        let raw = std::fs::read_to_string(home.path().join(".hq/menubar.json")).unwrap();
+        assert!(
+            !raw.contains("secret-callback-code"),
+            "no raw error text on disk"
+        );
+        let held = held_auth_rows(home.path());
+        assert_eq!(held.len(), 1);
+        assert_eq!(
+            held[0]["properties"],
+            json!({ "provider": "google", "step": "provider_page_opened", "errorCategory": "network" })
+        );
+
+        // Next launch, user signs in; the launch-time flush sends it.
+        write_valid_access_token(home.path());
+        assert_eq!(
+            crate::commands::cdp_mirror::flush_held_auth_rows_now().await,
+            1
+        );
+        std::env::remove_var("HQ_VAULT_API_URL");
+        assert!(held_auth_rows(home.path()).is_empty());
+        let failures = auth_failure_posts(&server).await;
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0]["occurredAt"], held[0]["occurredAt"]);
+        assert!(failures[0]["properties"].get("message").is_none());
+    }
+
+    #[tokio::test]
+    async fn held_sign_in_failure_is_delivered_exactly_once_after_sign_in() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = first_open_server(200).await;
+        let home = setup_home();
+        write_menubar(home.path(), "{}");
+        let _home = scoped_home(home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        emit_pre_token_failure("callback_received").await;
+        let key = held_auth_rows(home.path())[0]["idempotencyKey"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        write_valid_access_token(home.path());
+        for step in ["sign_in_started", "token_exchange_ok"] {
+            emit_desktop_operational_telemetry(
+                "desktop_auth_progress".to_string(),
+                Some(json!({ "provider": "google", "step": step })),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        }
+        assert_eq!(
+            crate::commands::cdp_mirror::flush_held_auth_rows_now().await,
+            0
+        );
+        std::env::remove_var("HQ_VAULT_API_URL");
+
+        let failures = auth_failure_posts(&server).await;
+        assert_eq!(failures.len(), 1, "delivered exactly once");
+        assert_eq!(failures[0]["idempotencyKey"], json!(key));
+        assert!(key.starts_with("hq-desktop-app:auth-held:") && key.len() <= 200);
+        assert!(held_auth_rows(home.path()).is_empty());
+    }
+
+    #[test]
+    fn held_sign_in_rows_are_capped_and_expire() {
+        use crate::commands::cdp_mirror::{
+            held_auth_rows_at, hold_auth_row_at, AUTH_HELD_CAP, AUTH_HELD_TTL_MS,
+        };
+        let home = setup_home();
+        write_menubar(home.path(), "{}");
+        let path = home.path().join(".hq/menubar.json");
+        let start = 1_800_000_000_000u64;
+        let props = |i: usize| json!({ "provider": format!("p{i}"), "step": "sign_in_started" });
+        for i in 0..AUTH_HELD_CAP + 5 {
+            hold_auth_row_at(
+                &path,
+                "desktop_auth_progress",
+                Some(&props(i)),
+                start + i as u64,
+            )
+            .unwrap();
+        }
+        let rows = held_auth_rows_at(&path, start + 100);
+        assert_eq!(rows.len(), AUTH_HELD_CAP, "capped");
+        assert_eq!(
+            rows[0]["properties"]["provider"], "p5",
+            "oldest dropped first"
+        );
+
+        // Past the TTL every row is gone, and the next hold prunes the file.
+        let later = start + AUTH_HELD_TTL_MS + 100;
+        assert!(held_auth_rows_at(&path, later).is_empty(), "expired");
+        hold_auth_row_at(&path, "desktop_auth_failure", Some(&props(99)), later).unwrap();
+        let stored = hq_desktop_core::first_run::read_menubar_obj(&path);
+        assert_eq!(stored["cdpAuthHeld"].as_array().unwrap().len(), 1);
     }
 
     #[test]

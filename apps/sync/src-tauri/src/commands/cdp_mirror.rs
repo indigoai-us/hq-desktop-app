@@ -15,11 +15,11 @@
 use hq_desktop_core::cdp_mirror::{
     hash_identifier, Endpoints, Mirror, MirrorContext, EVENT_ACCOUNT_LINKED,
     EVENT_AGENT_SESSION_LAUNCHED, EVENT_APP_DAILY_ACTIVE, EVENT_APP_FIRST_LAUNCH, EVENT_APP_OPENED,
-    EVENT_COMPANY_CREATED, EVENT_COMPANY_JOINED, EVENT_COMPANY_PROVISIONING_FAILED,
-    EVENT_COMPANY_ROUTE_DECIDED, EVENT_COMPANY_SELF_HEAL, EVENT_FIRST_SYNC_COMPLETED,
-    EVENT_INVITE_FAILED, EVENT_INVITE_SENT, EVENT_LOGIN_COMPLETED, EVENT_ONBOARDING_STEP_SHOWN,
-    EVENT_AUTH_FAILURE, EVENT_AUTH_PROGRESS, EVENT_PLAN_SELECTED, EVENT_SETUP_ABANDONED,
-    EVENT_SYNC_COMPLETED, EVENT_SYNC_FAILED, EVENT_SYNC_STARTED, FLAG_REFRESH_INTERVAL,
+    EVENT_AUTH_FAILURE, EVENT_AUTH_PROGRESS, EVENT_COMPANY_CREATED, EVENT_COMPANY_JOINED,
+    EVENT_COMPANY_PROVISIONING_FAILED, EVENT_COMPANY_ROUTE_DECIDED, EVENT_COMPANY_SELF_HEAL,
+    EVENT_FIRST_SYNC_COMPLETED, EVENT_INVITE_FAILED, EVENT_INVITE_SENT, EVENT_LOGIN_COMPLETED,
+    EVENT_ONBOARDING_STEP_SHOWN, EVENT_PLAN_SELECTED, EVENT_SETUP_ABANDONED, EVENT_SYNC_COMPLETED,
+    EVENT_SYNC_FAILED, EVENT_SYNC_STARTED, FLAG_REFRESH_INTERVAL,
 };
 use hq_desktop_core::first_run::{merge_menubar_flags, read_menubar_obj};
 use hq_desktop_core::lifecycle::LifecycleState;
@@ -50,6 +50,13 @@ pub const ACCOUNT_LINKED_KEY: &str = "cdpAccountLinked";
 /// `true` while the first launch's `desktop_app_opened` row has not reached
 /// hq-pro. That route needs a signed-in caller, and a first launch has none.
 pub const FIRST_OPEN_PENDING_KEY: &str = "cdpFirstOpenPending";
+/// Sign-in progress and failure rows emitted before the app had a session.
+/// hq-pro needs a signed-in caller, so they wait here for the next session.
+pub const AUTH_HELD_KEY: &str = "cdpAuthHeld";
+/// Most held sign-in rows kept; the oldest is dropped past this.
+pub const AUTH_HELD_CAP: usize = 20;
+/// Held sign-in rows older than this are dropped unsent.
+pub const AUTH_HELD_TTL_MS: u64 = 3 * 24 * 60 * 60 * 1000;
 
 /// hq-pro operational rows (consent-free) for the funnel events below. Each is
 /// mirrored to the CDP under the unprefixed name by
@@ -104,11 +111,7 @@ pub const OPERATIONAL_MIRRORS: &[(&str, &str, &[&str])] = &[
     ),
     (OP_COMPANY_JOINED, EVENT_COMPANY_JOINED, &["route", "count"]),
     (OP_PLAN_SELECTED, EVENT_PLAN_SELECTED, &["plan"]),
-    (
-        OP_AUTH_PROGRESS,
-        EVENT_AUTH_PROGRESS,
-        &["provider", "step"],
-    ),
+    (OP_AUTH_PROGRESS, EVENT_AUTH_PROGRESS, &["provider", "step"]),
     (
         OP_AUTH_FAILURE,
         EVENT_AUTH_FAILURE,
@@ -383,6 +386,7 @@ fn init_mirror(_app: &AppHandle, is_first_launch: bool) {
     }
     tauri::async_runtime::spawn(mirror.run());
     flush_install_tag_report();
+    flush_held_auth_rows();
 }
 
 /// Queue a named event with extra props. Common props are added by the mirror.
@@ -474,6 +478,7 @@ pub fn note_login_completed(provider: &str) {
     flush_install_tag_report();
     note_account_linked();
     flush_pending_first_open();
+    flush_held_auth_rows();
 }
 
 /// Hold the first launch's `desktop_app_opened` row for
@@ -559,6 +564,138 @@ pub async fn flush_pending_first_open_now() -> bool {
     }
     FIRST_OPEN_FLUSHING.store(false, Ordering::SeqCst);
     sent
+}
+
+/// Whether `event_name` is a sign-in row held when there is no session yet.
+pub fn is_held_auth_event(event_name: &str) -> bool {
+    matches!(event_name, OP_AUTH_PROGRESS | OP_AUTH_FAILURE)
+}
+
+fn held_label(props: Option<&Value>, key: &str) -> Option<Value> {
+    props
+        .and_then(|p| p.get(key))
+        .and_then(Value::as_str)
+        .filter(|v| {
+            !v.is_empty()
+                && v.len() <= 64
+                && v.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"_-.".contains(&b))
+        })
+        .map(|v| json!(v))
+}
+
+/// Held rows at `path` still inside [`AUTH_HELD_TTL_MS`] at `now`.
+pub fn held_auth_rows_at(path: &std::path::Path, now: u64) -> Vec<Value> {
+    read_menubar_obj(path)
+        .get(AUTH_HELD_KEY)
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter(|row| {
+                    row.get("heldAtMs")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|at| now.saturating_sub(at) < AUTH_HELD_TTL_MS)
+                })
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Persist one sign-in row for a later session. Only the closed labels
+/// `provider`, `step` and `errorCategory` are kept, never error text. Expired
+/// rows are pruned and the oldest dropped past [`AUTH_HELD_CAP`].
+pub fn hold_auth_row_at(
+    path: &std::path::Path,
+    event_name: &str,
+    properties: Option<&Value>,
+    now: u64,
+) -> Result<(), String> {
+    let mut props = Map::new();
+    for key in ["provider", "step", "errorCategory"] {
+        if let Some(value) = held_label(properties, key) {
+            props.insert(key.into(), value);
+        }
+    }
+    let occurred_at = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(now as i64)
+        .unwrap_or_else(chrono::Utc::now)
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let mut rows = held_auth_rows_at(path, now);
+    rows.push(json!({
+        "eventName": event_name,
+        "properties": props,
+        "occurredAt": occurred_at,
+        "heldAtMs": now,
+        "idempotencyKey": format!("hq-desktop-app:auth-held:{}", uuid::Uuid::new_v4()),
+    }));
+    let excess = rows.len().saturating_sub(AUTH_HELD_CAP);
+    rows.drain(..excess);
+    merge_menubar_flags(path, &[(AUTH_HELD_KEY, Value::Array(rows))])
+}
+
+/// [`hold_auth_row_at`] for this install's `menubar.json`. Failures are
+/// logged by kind only.
+pub fn hold_auth_row(event_name: &str, properties: Option<&Value>) {
+    let held = paths::menubar_json_path()
+        .and_then(|path| hold_auth_row_at(&path, event_name, properties, now_ms()));
+    if held.is_err() {
+        crate::util::logfile::log("cdp", "WARN auth_held hold_write_failed");
+    }
+}
+
+/// Drop the delivered row `key` and any expired rows; keeps rows held meanwhile.
+fn clear_held_auth_row(path: &std::path::Path, key: &str) -> Result<(), String> {
+    let rows: Vec<Value> = held_auth_rows_at(path, now_ms())
+        .into_iter()
+        .filter(|row| row.get("idempotencyKey").and_then(Value::as_str) != Some(key))
+        .collect();
+    let value = if rows.is_empty() {
+        Value::Null
+    } else {
+        Value::Array(rows)
+    };
+    merge_menubar_flags(path, &[(AUTH_HELD_KEY, value)])
+}
+
+static AUTH_HELD_FLUSHING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Send held sign-in rows oldest first, each with its stable idempotencyKey so
+/// a resend is stored once. Stops at the first failure; the rest stay held.
+/// Returns how many were delivered.
+pub async fn flush_held_auth_rows_now() -> usize {
+    use std::sync::atomic::Ordering;
+    let Ok(path) = paths::menubar_json_path() else {
+        return 0;
+    };
+    if held_auth_rows_at(&path, now_ms()).is_empty()
+        || AUTH_HELD_FLUSHING.swap(true, Ordering::SeqCst)
+    {
+        return 0;
+    }
+    let mut sent = 0;
+    for row in held_auth_rows_at(&path, now_ms()) {
+        let Some(key) = row.get("idempotencyKey").and_then(Value::as_str) else {
+            continue;
+        };
+        if super::telemetry::post_held_auth_row(&row).await.is_err() {
+            crate::util::logfile::log("cdp", "WARN auth_held send_failed_held_for_retry");
+            break;
+        }
+        sent += 1;
+        if clear_held_auth_row(&path, key).is_err() {
+            crate::util::logfile::log("cdp", "WARN auth_held clear_write_failed");
+            break;
+        }
+    }
+    AUTH_HELD_FLUSHING.store(false, Ordering::SeqCst);
+    sent
+}
+
+fn flush_held_auth_rows() {
+    tauri::async_runtime::spawn(async {
+        flush_held_auth_rows_now().await;
+    });
 }
 
 /// `idempotencyKey` for the first launch's `desktop_app_opened` row: one per

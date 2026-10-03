@@ -52,6 +52,7 @@ afterEach(async () => {
   if (component) await unmount(component);
   component = null;
   host.remove();
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -150,10 +151,16 @@ describe('SignInPrompt session retry (OWNER-015)', () => {
     const actions = host.querySelector('.sign-in-actions')!;
     expect(actions.compareDocumentPosition(retry!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
+    // main #1287 added a native get_auth_state recheck on mount; that is a
+    // local session probe, not a data call. Retry itself must add no call.
+    const callsBeforeRetry = tauri.invoke.mock.calls.length;
     retry!.click();
     expect(onretry).toHaveBeenCalledTimes(1);
+    expect(tauri.invoke.mock.calls.length).toBe(callsBeforeRetry);
     const commands = tauri.invoke.mock.calls.map(([command]) => command);
-    expect(commands.every((command) => command === 'desktop_continuation_context')).toBe(true);
+    expect(
+      commands.every((command) => command === 'desktop_continuation_context' || command === 'get_auth_state'),
+    ).toBe(true);
   });
 
   it('omits Retry when no handler is passed and never renders a password control', async () => {
@@ -176,6 +183,219 @@ describe('SignInPrompt session retry (OWNER-015)', () => {
     expect(headings[0]!.textContent).toBe('Sign in to HQ');
     expect(host.querySelector('[data-testid="sign-in-description"]')?.textContent?.trim()).toBe(
       'Your session expired.',
+    );
+  });
+});
+
+describe('SignInPrompt welcome handoff', () => {
+  it('advances when a valid native session appears while the welcome view is open', async () => {
+    const onsuccess = vi.fn();
+    tauri.invoke.mockImplementation((command: string) => {
+      if (command === 'desktop_continuation_context') return Promise.resolve(null);
+      if (command === 'get_auth_state') {
+        return Promise.resolve({ authenticated: true, expiresAt: '2099-01-01T00:00:00Z' });
+      }
+      return Promise.resolve(undefined);
+    });
+
+    component = mount(SignInPrompt, { target: host, props: { onsuccess } });
+
+    await flushUntil(() => onsuccess.mock.calls.length === 1);
+
+    expect(onsuccess).toHaveBeenCalledWith({
+      authenticated: true,
+      expiresAt: '2099-01-01T00:00:00Z',
+    });
+  });
+
+  it('shows an in-place browser handoff with reopen and back actions', async () => {
+    let waitForCallback!: () => void;
+    const callback = new Promise<{ code: string }>((resolve) => {
+      waitForCallback = () => resolve({ code: 'code' });
+    });
+    tauri.invoke.mockImplementation((command: string) => {
+      switch (command) {
+        case 'desktop_continuation_context':
+          return Promise.resolve(null);
+        case 'get_auth_state':
+          return Promise.resolve({ authenticated: false, expiresAt: '' });
+        case 'start_oauth_login':
+          return Promise.resolve({ authorizeUrl: 'https://login.example.test/google', state: 'state' });
+        case 'oauth_listen_for_code':
+          return callback;
+        default:
+          return Promise.resolve(undefined);
+      }
+    });
+    tauri.open.mockResolvedValue(undefined);
+    component = mount(SignInPrompt, { target: host });
+    await flush();
+
+    providerButtons()[0]?.click();
+    await flushUntil(() => host.querySelector('[data-testid="signin-browser-handoff"]') !== null);
+
+    expect(host.textContent).toContain('Finish signing in in your browser');
+    expect(host.textContent).toContain('Continue with Google in your browser');
+    host.querySelector<HTMLButtonElement>('[data-testid="reopen-browser-signin"]')?.click();
+    await flush();
+    expect(tauri.open).toHaveBeenCalledTimes(2);
+
+    Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Back')?.click();
+    await flushUntil(() => host.querySelector('[data-testid="signin-browser-handoff"]') === null);
+    expect(providerButtons()[0]?.disabled).toBe(false);
+
+    waitForCallback();
+  });
+
+  it('ends a stalled browser handoff with a plain Try again path', async () => {
+    vi.useFakeTimers();
+    let resolveCallback!: (value: { code: string }) => void;
+    const callback = new Promise<{ code: string }>((resolve) => {
+      resolveCallback = resolve;
+    });
+    const onsuccess = vi.fn();
+    tauri.invoke.mockImplementation((command: string) => {
+      switch (command) {
+        case 'desktop_continuation_context':
+          return Promise.resolve(null);
+        case 'get_auth_state':
+          return Promise.resolve({ authenticated: false, expiresAt: '' });
+        case 'start_oauth_login':
+          return Promise.resolve({ authorizeUrl: 'https://login.example.test/google', state: 'state' });
+        case 'oauth_listen_for_code':
+          return callback;
+        default:
+          return Promise.resolve(undefined);
+      }
+    });
+    tauri.open.mockResolvedValue(undefined);
+    component = mount(SignInPrompt, { target: host, props: { onsuccess } });
+    await flush();
+
+    providerButtons()[0]?.click();
+    await flushUntil(() => host.querySelector('[data-testid="signin-browser-handoff"]') !== null);
+    await vi.advanceTimersByTimeAsync(3 * 60 * 1_000);
+    await flush();
+
+    expect(host.textContent).toContain('We couldn’t finish sign-in. Try again.');
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="retry-signin"]')?.textContent).toBe('Try again');
+    expect(tauri.invoke).toHaveBeenCalledWith('oauth_cancel_listen', { state: 'state' });
+
+    resolveCallback({ code: 'late-code' });
+    await flush();
+
+    expect(tauri.invoke).not.toHaveBeenCalledWith(
+      'oauth_exchange_code',
+      expect.objectContaining({ code: 'late-code' }),
+    );
+    expect(onsuccess).not.toHaveBeenCalled();
+  });
+
+  it('cancels the native listener and ignores its callback after unmount', async () => {
+    let resolveCallback!: (value: { code: string }) => void;
+    const callback = new Promise<{ code: string }>((resolve) => {
+      resolveCallback = resolve;
+    });
+    const onsuccess = vi.fn();
+    tauri.invoke.mockImplementation((command: string) => {
+      switch (command) {
+        case 'desktop_continuation_context':
+          return Promise.resolve(null);
+        case 'get_auth_state':
+          return Promise.resolve({ authenticated: false, expiresAt: '' });
+        case 'start_oauth_login':
+          return Promise.resolve({ authorizeUrl: 'https://login.example.test/google', state: 'state' });
+        case 'oauth_listen_for_code':
+          return callback;
+        default:
+          return Promise.resolve(undefined);
+      }
+    });
+    tauri.open.mockResolvedValue(undefined);
+    component = mount(SignInPrompt, { target: host, props: { onsuccess } });
+    await flush();
+
+    providerButtons()[0]?.click();
+    await flushUntil(() => host.querySelector('[data-testid="signin-browser-handoff"]') !== null);
+    await unmount(component);
+    component = null;
+
+    expect(tauri.invoke).toHaveBeenCalledWith('oauth_cancel_listen', { state: 'state' });
+    resolveCallback({ code: 'late-code' });
+    await flush();
+
+    expect(tauri.invoke).not.toHaveBeenCalledWith(
+      'oauth_exchange_code',
+      expect.objectContaining({ code: 'late-code' }),
+    );
+    expect(onsuccess).not.toHaveBeenCalled();
+  });
+
+  it('reports manual sign-in success only once when the session poll observes it', async () => {
+    vi.useFakeTimers();
+    let authenticated = false;
+    const onsuccess = vi.fn();
+    tauri.invoke.mockImplementation((command: string) => {
+      switch (command) {
+        case 'desktop_continuation_context':
+          return Promise.resolve(null);
+        case 'get_auth_state':
+          return Promise.resolve({
+            authenticated,
+            expiresAt: authenticated ? '2099-01-01T00:00:00Z' : '',
+          });
+        case 'start_oauth_login':
+          return Promise.resolve({ authorizeUrl: 'https://login.example.test/google', state: 'state' });
+        case 'oauth_listen_for_code':
+          return Promise.resolve({ code: 'code' });
+        case 'oauth_exchange_code':
+          authenticated = true;
+          return Promise.resolve({ authenticated: true, expiresAt: '2099-01-01T00:00:00Z' });
+        default:
+          return Promise.resolve(undefined);
+      }
+    });
+    tauri.open.mockResolvedValue(undefined);
+    component = mount(SignInPrompt, { target: host, props: { onsuccess } });
+    await flush();
+
+    providerButtons()[0]?.click();
+    await flushUntil(() => onsuccess.mock.calls.length === 1);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await flush();
+
+    expect(onsuccess).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a callback failure plain while recording the existing failure event', async () => {
+    tauri.invoke.mockImplementation((command: string) => {
+      switch (command) {
+        case 'desktop_continuation_context':
+          return Promise.resolve(null);
+        case 'get_auth_state':
+          return Promise.resolve({ authenticated: false, expiresAt: '' });
+        case 'start_oauth_login':
+          return Promise.resolve({ authorizeUrl: 'https://login.example.test/google', state: 'state' });
+        case 'oauth_listen_for_code':
+          return Promise.reject(new Error('callback rejected: provider detail'));
+        default:
+          return Promise.resolve(undefined);
+      }
+    });
+    tauri.open.mockResolvedValue(undefined);
+    component = mount(SignInPrompt, { target: host });
+    await flush();
+
+    providerButtons()[0]?.click();
+    await flushUntil(() => host.textContent?.includes('We couldn’t finish sign-in. Try again.') ?? false);
+
+    expect(host.textContent).not.toContain('provider detail');
+    expect(tauri.invoke).toHaveBeenCalledWith(
+      'emit_desktop_operational_telemetry',
+      expect.objectContaining({
+        eventName: 'desktop_auth_failure',
+        properties: expect.objectContaining({ step: 'provider_page_opened', errorCategory: 'auth' }),
+      }),
     );
   });
 });
