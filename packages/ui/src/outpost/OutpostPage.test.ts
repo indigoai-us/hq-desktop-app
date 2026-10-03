@@ -44,6 +44,29 @@ describe("US-034 OutpostPage", () => {
     expect(target.querySelector("[data-testid='outpost-try-again']")).not.toBeNull();
   });
 
+  it("reads on open even when the window reports hidden, so loading always ends (QA-084)", async () => {
+    clearOutpostCache("personal");
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    let calls = 0;
+    const target = mountPage(async () => {
+      calls += 1;
+      return { ...fixtureOutpost(), fetchedAt: new Date().toISOString() };
+    });
+    await vi.waitFor(() => expect(calls).toBe(1));
+    await vi.waitFor(() => expect(target.querySelector("[data-testid='outpost-loading']")).toBeNull());
+    expect(target.querySelector("[data-testid='outpost-freshness']")?.textContent).not.toBe("Refreshing…");
+  });
+
+  it("never shows raw transport text when the read fails (QA-084)", async () => {
+    clearOutpostCache("personal");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const target = mountPage(async () => {
+      throw new Error("outpost status: http-504 Endpoint request timed out");
+    });
+    await vi.waitFor(() => expect(target.querySelector("[data-testid='outpost-load-error']")).not.toBeNull());
+    expect(target.textContent).not.toMatch(/http-504|Endpoint request/);
+  });
+
   it("a failed first read shows an error with Try again instead of loading forever (QA-084)", async () => {
     clearOutpostCache("personal");
     vi.spyOn(console, "error").mockImplementation(() => {});

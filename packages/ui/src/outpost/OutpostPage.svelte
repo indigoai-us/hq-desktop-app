@@ -32,6 +32,7 @@
     visibleLogWindow,
     withReadTimeout,
     writeOutpostCache,
+    OUTPOST_READ_TIMEOUT_MS,
     type JobAlert,
     type JobCadence,
     type JobRunMode,
@@ -95,8 +96,12 @@
       if (cached) data = cached;
     });
     let live = true;
-    const run = async (): Promise<void> => {
-      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+    let settled = false;
+    // The visibility gate only skips background refreshes. The first read always
+    // runs: a window macOS reports hidden (occluded, behind another app) must
+    // still leave "Reading your Outpost…" (QA-084).
+    const run = async (background = false): Promise<void> => {
+      if (background && typeof document !== "undefined" && document.visibilityState === "hidden") return;
       try {
         const next = await withReadTimeout(read());
         if (!live) return;
@@ -108,16 +113,30 @@
         console.error("[outpost] refresh failed", err);
         if (live) refreshFailed = true;
       } finally {
+        settled = true;
         if (live) now = Date.now();
       }
     };
     void run();
     retry = () => void run();
-    const timer = setInterval(() => void run(), OUTPOST_REFRESH_MS);
+    const timer = setInterval(() => void run(true), OUTPOST_REFRESH_MS);
+    // Backstop: whatever happens to the read, loading ends within the bound.
+    const deadline = setTimeout(() => {
+      if (live && !settled && data.provisioned === null) {
+        console.error("[outpost] first read did not settle in time");
+        refreshFailed = true;
+      }
+    }, OUTPOST_READ_TIMEOUT_MS + 1_000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void run(true);
+    };
+    if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVisible);
     const stopTick = startNowTicker((t) => (now = t));
     return () => {
       live = false;
       clearInterval(timer);
+      clearTimeout(deadline);
+      if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVisible);
       stopTick();
     };
   });
@@ -289,7 +308,9 @@
           <RailButton icon="plus" variant="primary" type="button" disabled={offline} data-testid="new-job" onclick={openNew}>New job</RailButton>
         </div>
         <div class="jrow hd"><span>Job</span><span>Cadence</span><span>Next run</span><span>Last result</span><span>Alerts</span><span></span></div>
-        {#if data.jobs.length === 0}
+        {#if data.jobsUnavailable}
+          {@render jobsError("outpost-jobs-error", "Couldn't load scheduled jobs")}
+        {:else if data.jobs.length === 0}
           <p class="sub" data-testid="outpost-no-jobs">No scheduled jobs</p>
         {/if}
         {#each jobs as job (job.id)}
@@ -315,7 +336,9 @@
             <button type="button" class:on={runFilter === name} onclick={() => (runFilter = name as typeof runFilter)}>{name}</button>
           {/each}
         </div>
-        {#if data.runs.length === 0}
+        {#if data.jobsUnavailable}
+          {#if tab === "runs"}{@render jobsError("outpost-runs-error", "Couldn't load runs")}{/if}
+        {:else if data.runs.length === 0}
           <p class="sub" data-testid="outpost-no-runs">No runs yet</p>
         {/if}
         {#each runs as run (run.id)}
@@ -424,7 +447,15 @@
   {/if}
 </div>
 
+{#snippet jobsError(testid: string, title: string)}
+  <div class="sub section-error" role="alert" data-testid={testid}>
+    <span>{title}</span>
+    <RailButton icon="refresh" type="button" onclick={() => retry()}>Try again</RailButton>
+  </div>
+{/snippet}
+
 <style>
+  .section-error { display: flex; align-items: center; gap: 8px; }
   /* Console-rail chrome measured from Messages (docs/design-standard-console-rail.md):
      one 20px/500 title, 13px Geist everywhere else, 31px rows, status as dot plus
      text, mono only for the fingerprint, cron, commands and log lines. */
