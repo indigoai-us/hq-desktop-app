@@ -16,7 +16,8 @@ This beta brings the new HQ interface. A rail on the left holds your companies, 
 - Clicking a company opens its panes beside the rail. Switching companies keeps you on the same kind of page where it exists.
 - Opening a company lands on Atlas, a map of the company's folders, projects and people.
 - The command palette (Cmd+K) searches pages, companies, projects and people. Cmd+N opens the create menu, Cmd+Shift+K starts a new message and Cmd+Shift+A opens Atlas.
-- Notices such as update ready, sync progress and copy confirmations appear as small toasts in one corner instead of banners across the window. Toasts use the same neutral grey as other overlays.
+- Notices such as update ready, sync progress and copy confirmations appear as small toasts in one corner instead of banners across the window.
+- Toasts use the same neutral grey as other overlays.
 - Company names show the company favicon beside them across the app, including the New bot company chips, project header, More companies, command palette, Connections, settings, bot membership lists, Meetings, Telemetry and Atlas. The company list reloads when you switch companies, so an icon added later replaces the initials.
 
 ### Home and Messages
@@ -37,7 +38,8 @@ This beta brings the new HQ interface. A rail on the left holds your companies, 
 - Bots shows the company's bots. New bot starts on the company you opened it from.
 - New cloud bots sign in with your model subscription. The API key option is no longer offered.
 - Behind `agents.desktop-agent-creation` (Indigo only): New bot is one three-step flow (what kind, where it runs, its details). Choosing Cloud creates the bot directly, without Slack, and opens its DM. New cloud bots start on Claude, with Codex and Grok offered. Cloud stays visible when it can't be used and says why (admin role, plan, or no company). Settings › Bots › New bot closes Settings and opens the same flow. The flag is checked for the company you pick, and the cloud create code loads only when the flow opens, so startup is not slower.
-- Files and Knowledge show the company vault with a preview pane. Relative links in any Markdown preview open the linked file.
+- Files and Knowledge show the company vault with a preview pane.
+- Relative links in any Markdown preview open the linked file.
 - Policies, Workers and Skills each have their own page.
 - Settings covers General, Brand, Groups, Grants and Workforce. Integrations is view only; manage connections in the web console.
 - Secrets lists secret names without ever showing their values.
