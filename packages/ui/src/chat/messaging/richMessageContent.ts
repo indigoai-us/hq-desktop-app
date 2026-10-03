@@ -204,21 +204,37 @@ export interface SuggestionsBlock {
   items: string[];
 }
 
-/** What a {@link ConnectBlock} can offer to connect. A closed list. */
+/**
+ * The built-in cards a {@link ConnectItem} can name. A closed list. `tools`
+ * is legacy: old messages still draw the generic tools card, but it is no
+ * longer advertised to a bot.
+ */
 export type ConnectTarget = "slack" | "tools";
 
+/** One card a bot asks for in a {@link ConnectBlock}. Exactly one of `app` or `domain` is set. */
+export interface ConnectItem {
+  /** A built-in card: "slack" (or "tools", legacy only). */
+  app?: ConnectTarget;
+  /** An integration named by its website domain, e.g. "linear.app". Normalized. */
+  domain?: string;
+  /** The bot's short reason, sanitized text, at most 80 characters. */
+  why?: string;
+}
+
 /**
- * A bot's offer to connect Slack or the company's tools, drawn as one card per
- * target inside the message. Data-only and deliberately bare: `targets` is the
- * ONLY field read, and only its two known names. The bot never supplies a
- * link, a label or a style. The app writes every word on a card and builds
- * every link it opens itself, so nothing an agent emits can send a person to
- * a page of the agent's choosing. A press does NOT run agent code; it goes to
- * the host through {@link RichMessageContent}'s `connections.onaction`.
+ * A bot's offer to connect apps, drawn as one card per item inside the
+ * message. Data-only and deliberately bare: an item carries a built-in card
+ * name or a website domain, and an optional sanitized reason. The bot never
+ * supplies a link, a label, a logo or a style. The app writes every word on a
+ * card and builds every link and every logo URL itself, so nothing an agent
+ * emits can send a person to a page of the agent's choosing. A press does NOT
+ * run agent code; it goes to the host through {@link RichMessageContent}'s
+ * `connections.onaction`. The old form `targets: ["slack", "tools"]` is still
+ * read and becomes items.
  */
 export interface ConnectBlock {
   kind: "connect";
-  targets: ConnectTarget[];
+  items: ConnectItem[];
 }
 
 export type RichBlock =
@@ -538,20 +554,79 @@ function parseSuggestionsBlock(raw: Record<string, unknown>): SuggestionsBlock |
   return items.length > 0 ? { kind: "suggestions", items } : null;
 }
 
-/** The targets a `connect` block may name, in the order cards are drawn. */
+/** The built-in cards the old `targets` form may name. */
 const CONNECT_TARGETS: readonly ConnectTarget[] = ["slack", "tools"];
+/** How many cards one `connect` block may ask for. */
+const MAX_CONNECT_ITEMS = 6;
+const MAX_CONNECT_WHY_LEN = 80;
+const MAX_CONNECT_DOMAIN_LEN = 80;
+const HOSTNAME = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
+
+/**
+ * A website domain as a `connect` item names it: lower-cased, trimmed, the
+ * `www.` and `mcp.` prefixes removed, letters, digits, dots and hyphens only,
+ * at least one dot, at most 80 characters. Anything else is null. The same
+ * rule normalizes a connection's domain, so the two compare as equals.
+ */
+export function normalizeConnectDomain(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  let domain = value.trim().toLowerCase();
+  // A pasted address is still a domain: keep its host.
+  domain = domain.replace(/^[a-z][a-z0-9+.-]*:\/\//, "").replace(/[/?#].*$/, "");
+  while (/^(www|mcp)\./.test(domain)) domain = domain.replace(/^(www|mcp)\./, "");
+  if (!domain || domain.length > MAX_CONNECT_DOMAIN_LEN || !HOSTNAME.test(domain)) return null;
+  return domain;
+}
+
+function parseConnectItem(entry: unknown): ConnectItem | null {
+  if (typeof entry === "string") {
+    // The old form: a bare target name.
+    const target = CONNECT_TARGETS.find((known) => known === entry);
+    return target ? { app: target } : null;
+  }
+  if (!isRecord(entry)) return null;
+  // Only `app`, `domain` and `why` are read. A url, label, logo or style the
+  // agent adds is ignored: the app builds every link and writes every word.
+  const why = toSafeText(entry.why, MAX_CONNECT_WHY_LEN - 1).replace(/\s+/g, " ").trim();
+  const withWhy = (item: ConnectItem): ConnectItem => (why ? { ...item, why } : item);
+  if (entry.app !== undefined) {
+    // Only Slack is a built-in a bot may name in the new form.
+    return entry.app === "slack" ? withWhy({ app: "slack" }) : null;
+  }
+  const domain = normalizeConnectDomain(entry.domain);
+  return domain ? withWhy({ domain }) : null;
+}
 
 function parseConnectBlock(raw: Record<string, unknown>): ConnectBlock | null {
-  // Only `targets` is read. A url, label or style the agent adds is ignored:
-  // the app builds every link and writes every word on a card itself.
-  const rawTargets = Array.isArray(raw.targets) ? raw.targets : [];
-  const targets: ConnectTarget[] = [];
-  for (const entry of rawTargets) {
-    const target = CONNECT_TARGETS.find((known) => known === entry);
-    if (!target || targets.includes(target)) continue;
-    targets.push(target);
+  // `items` is the form a bot is told about; `targets` is the old form. When
+  // a block carries `items`, that is what is read.
+  const source = Array.isArray(raw.items) ? raw.items : Array.isArray(raw.targets) ? raw.targets : [];
+  const items: ConnectItem[] = [];
+  const seen = new Set<string>();
+  for (const entry of source) {
+    if (items.length >= MAX_CONNECT_ITEMS) break;
+    const item = parseConnectItem(entry);
+    if (!item) continue;
+    const key = item.app ? `app:${item.app}` : `domain:${item.domain}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    items.push(item);
   }
-  return targets.length > 0 ? { kind: "connect", targets } : null;
+  return items.length > 0 ? { kind: "connect", items } : null;
+}
+
+/** The name a `connect` item reads as in plain text: "Slack", "your tools", "Linear". */
+export function connectItemLabel(item: ConnectItem): string {
+  if (item.app === "slack") return "Slack";
+  if (item.app === "tools") return "your tools";
+  const first = (item.domain ?? "").split(".")[0] ?? "";
+  return first ? first.charAt(0).toUpperCase() + first.slice(1) : "an app";
+}
+
+/** "Linear, Notion or Slack": a short list in prose. */
+function proseList(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? "";
+  return `${names.slice(0, -1).join(", ")} or ${names[names.length - 1]}`;
 }
 
 function parseBlock(raw: unknown): RichBlock | null {
@@ -800,12 +875,8 @@ function blockToPlainText(block: RichBlock): string {
       return `${block.label ? `${block.label}: ` : ""}${block.value}%`;
     case "callout":
       return `${block.title ? `${block.title} — ` : ""}${block.body}`;
-    case "connect": {
-      const slack = block.targets.includes("slack");
-      const tools = block.targets.includes("tools");
-      if (slack && tools) return "Connect Slack or your tools from the HQ app.";
-      return slack ? "Connect Slack from the HQ app." : "Connect your tools from the HQ app.";
-    }
+    case "connect":
+      return `Connect ${proseList(block.items.map(connectItemLabel))} from the HQ app.`;
     case "decision":
       return [
         block.question,

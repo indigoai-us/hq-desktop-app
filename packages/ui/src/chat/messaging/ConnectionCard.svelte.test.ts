@@ -501,7 +501,7 @@ describe("ChannelConversation with connection cards", () => {
     const viewsFor = vi.fn((_message: { eventId: string }) => views());
     const root = mountConversation({
       connections: { viewsFor, onaction: () => {} },
-      extraBlocksByEventId: { evt_hello: [{ kind: "connect", targets: ["slack", "tools"] }] },
+      extraBlocksByEventId: { evt_hello: [{ kind: "connect", items: [{ app: "slack" }, { app: "tools" }] }] },
     });
     const hello = message(root, "evt_hello");
     expect(hello.textContent).toContain("Hi Corey, I am Nova.");
@@ -521,7 +521,7 @@ describe("ChannelConversation with connection cards", () => {
         viewsFor: (msg: ConversationMessageWire) => views({ record, messageAt: Date.parse(msg.createdAt ?? "") }),
         onaction: () => {},
       },
-      extraBlocksByEventId: { evt_hello: [{ kind: "connect", targets: ["slack", "tools"] }] },
+      extraBlocksByEventId: { evt_hello: [{ kind: "connect", items: [{ app: "slack" }, { app: "tools" }] }] },
     });
     expect(card(message(root, "evt_hello"), "slack").dataset.state).toBe("declined");
     expect(card(message(root, "evt_offer"), "slack").dataset.state).toBe("offered");
@@ -529,7 +529,7 @@ describe("ChannelConversation with connection cards", () => {
 
   it("draws no card without the host's cards: a channel or a conversation between people", () => {
     const root = mountConversation({
-      extraBlocksByEventId: { evt_hello: [{ kind: "connect", targets: ["slack", "tools"] }] },
+      extraBlocksByEventId: { evt_hello: [{ kind: "connect", items: [{ app: "slack" }, { app: "tools" }] }] },
     });
     expect(cards(root)).toEqual([]);
     expect(message(root, "evt_offer").textContent).toContain("I need Slack for that.");

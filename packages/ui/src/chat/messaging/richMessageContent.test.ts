@@ -639,37 +639,109 @@ describe("parseRichContent — decision block", () => {
 });
 
 describe("parseRichContent: connect block", () => {
+  // The old form, `targets`, still parses: each name becomes an item.
   const connect = (targets: unknown, extra: Record<string, unknown> = {}) => ({
     v: 1,
     blocks: [{ kind: "connect", targets, ...extra }],
   });
+  const items = (items: unknown, extra: Record<string, unknown> = {}) => ({
+    v: 1,
+    blocks: [{ kind: "connect", items, ...extra }],
+  });
+  const parsed = (envelope: unknown) => parseRichContent(envelope)?.blocks;
 
-  it("keeps the two known targets in the order given", () => {
-    expect(parseRichContent(connect(["slack", "tools"]))?.blocks).toEqual([
-      { kind: "connect", targets: ["slack", "tools"] },
-    ]);
-    expect(parseRichContent(connect(["tools", "slack"]))?.blocks).toEqual([
-      { kind: "connect", targets: ["tools", "slack"] },
-    ]);
-    expect(parseRichContent(connect(["slack"]))?.blocks).toEqual([{ kind: "connect", targets: ["slack"] }]);
+  it("reads the old targets form as items, in the order given", () => {
+    expect(parsed(connect(["slack", "tools"]))).toEqual([{ kind: "connect", items: [{ app: "slack" }, { app: "tools" }] }]);
+    expect(parsed(connect(["tools", "slack"]))).toEqual([{ kind: "connect", items: [{ app: "tools" }, { app: "slack" }] }]);
+    expect(parsed(connect(["slack"]))).toEqual([{ kind: "connect", items: [{ app: "slack" }] }]);
   });
 
-  it("drops unknown targets and duplicates", () => {
-    expect(parseRichContent(connect(["github", "tools", "tools", 7, null, "Slack", "slack"]))?.blocks).toEqual([
-      { kind: "connect", targets: ["tools", "slack"] },
+  it("drops unknown targets and duplicates in the old form", () => {
+    expect(parsed(connect(["github", "tools", "tools", 7, null, "Slack", "slack"]))).toEqual([
+      { kind: "connect", items: [{ app: "tools" }, { app: "slack" }] },
     ]);
   });
 
-  it("drops the block when no target is valid", () => {
+  it("drops the block when no item is valid", () => {
     expect(parseRichContent(connect([]))).toBeNull();
     expect(parseRichContent(connect(["github"]))).toBeNull();
     expect(parseRichContent(connect("slack"))).toBeNull();
     expect(parseRichContent(connect(undefined))).toBeNull();
+    expect(parseRichContent(items([]))).toBeNull();
+    expect(parseRichContent(items([{ domain: "linear" }, { app: "github" }, {}, "nope", 3]))).toBeNull();
   });
 
-  it("reads nothing but the targets: no link, label or style from the bot", () => {
+  it("reads the new form: Slack by app, apps by domain, with a short reason", () => {
+    expect(parsed(items([{ app: "slack" }, { domain: "linear.app", why: "Your issues live here" }, { domain: "notion.so" }]))).toEqual([
+      {
+        kind: "connect",
+        items: [{ app: "slack" }, { domain: "linear.app", why: "Your issues live here" }, { domain: "notion.so" }],
+      },
+    ]);
+  });
+
+  it("normalizes a domain: lower case, trimmed, www. and mcp. removed, a pasted address kept to its host", () => {
+    const domains = parsed(
+      items([
+        { domain: "  WWW.Linear.app " },
+        { domain: "mcp.notion.so" },
+        { domain: "https://www.github.com/org/repo" },
+        { domain: "quickbooks.intuit.com" },
+      ]),
+    )?.[0];
+    expect(domains).toEqual({
+      kind: "connect",
+      items: [{ domain: "linear.app" }, { domain: "notion.so" }, { domain: "github.com" }, { domain: "quickbooks.intuit.com" }],
+    });
+  });
+
+  it("drops an item whose domain is not a hostname", () => {
+    const bad = ["linear", "", "lin ear.app", "a..b", "-x.com", "x-.com", "x.com:443", "ünicode.com", `${"a".repeat(80)}.com`, 42, null];
+    expect(parseRichContent(items(bad.map((domain) => ({ domain }))))).toBeNull();
+    // Just under the cap stays.
+    const long = `${"a".repeat(76)}.com`;
+    expect(parsed(items([{ domain: long }]))).toEqual([{ kind: "connect", items: [{ domain: long }] }]);
+  });
+
+  it("names only Slack as a built-in in the new form: tools and anything else is dropped", () => {
+    expect(parsed(items([{ app: "tools" }, { app: "slack" }, { app: "github" }]))).toEqual([
+      { kind: "connect", items: [{ app: "slack" }] },
+    ]);
+  });
+
+  it("drops duplicates, keeping the first and its reason, and stops at six items", () => {
+    expect(parsed(items([{ domain: "linear.app", why: "first" }, { domain: "www.linear.app", why: "second" }, { app: "slack" }, { app: "slack" }]))).toEqual([
+      { kind: "connect", items: [{ domain: "linear.app", why: "first" }, { app: "slack" }] },
+    ]);
+    const many = Array.from({ length: 9 }, (_, i) => ({ domain: `app${i}.com` }));
+    expect(parsed(items(many))?.[0]).toEqual({ kind: "connect", items: many.slice(0, 6) });
+  });
+
+  it("sanitizes the reason: plain text, one line, capped at 80 characters, dropped when empty", () => {
+    const [block] = parsed(
+      items([
+        { domain: "linear.app", why: "Your\u0007 team's\n\n issues   live here" },
+        { domain: "notion.so", why: "x".repeat(200) },
+        { domain: "asana.com", why: "   " },
+        { domain: "hubspot.com", why: 12 },
+      ]),
+    ) as Array<{ items: Array<{ domain: string; why?: string }> }>;
+    expect(block!.items[0]).toEqual({ domain: "linear.app", why: "Your team's issues live here" });
+    expect(block!.items[1]!.why).toHaveLength(80);
+    expect(block!.items[1]!.why!.endsWith("…")).toBe(true);
+    expect(block!.items[2]).toEqual({ domain: "asana.com" });
+    expect(block!.items[3]).toEqual({ domain: "hubspot.com", why: "12" });
+  });
+
+  it("prefers items over targets when a block carries both", () => {
+    expect(parsed({ v: 1, blocks: [{ kind: "connect", items: [{ domain: "linear.app" }], targets: ["slack"] }] })).toEqual([
+      { kind: "connect", items: [{ domain: "linear.app" }] },
+    ]);
+  });
+
+  it("reads nothing but app, domain and why: no link, label, logo or style from the bot", () => {
     const model = parseRichContent(
-      connect(["slack"], {
+      items([{ app: "slack", url: "https://evil.example/s" }, { domain: "linear.app", logo: "https://evil.example/l.png", label: "Click here" }], {
         url: "https://evil.example/login",
         href: "https://evil.example",
         label: "Click here",
@@ -678,8 +750,9 @@ describe("parseRichContent: connect block", () => {
         links: { slack: "https://evil.example" },
       }),
     );
-    expect(model?.blocks).toEqual([{ kind: "connect", targets: ["slack"] }]);
+    expect(model?.blocks).toEqual([{ kind: "connect", items: [{ app: "slack" }, { domain: "linear.app" }] }]);
     expect(JSON.stringify(model)).not.toContain("evil");
+    expect(JSON.stringify(model)).not.toContain("Click here");
   });
 
   it("is a known kind drawn inside the bubble, not placed by the host", () => {
@@ -690,18 +763,24 @@ describe("parseRichContent: connect block", () => {
     expect(messageHasConnectBlock({ body })).toBe(true);
     expect(messageHasConnectBlock({ body: "Sure." })).toBe(false);
     expect(richContentForMessage({ body }).text).toBe("Sure.");
+    const newForm = 'Sure.\n```hq-block\n{"v":1,"blocks":[{"kind":"connect","items":[{"domain":"linear.app"}]}]}\n```';
+    expect(messageHasConnectBlock({ body: newForm })).toBe(true);
   });
 
-  it("projects to one plain line that matches the targets", () => {
-    const line = (targets: string[]) => richContentToPlainText(parseRichContent(connect(targets))!);
-    expect(line(["slack", "tools"])).toBe("Connect Slack or your tools from the HQ app.");
-    expect(line(["slack"])).toBe("Connect Slack from the HQ app.");
-    expect(line(["tools"])).toBe("Connect your tools from the HQ app.");
+  it("projects to one plain line built from the items", () => {
+    const line = (envelope: unknown) => richContentToPlainText(parseRichContent(envelope)!);
+    expect(line(connect(["slack", "tools"]))).toBe("Connect Slack or your tools from the HQ app.");
+    expect(line(connect(["slack"]))).toBe("Connect Slack from the HQ app.");
+    expect(line(connect(["tools"]))).toBe("Connect your tools from the HQ app.");
+    expect(line(items([{ domain: "linear.app" }, { domain: "notion.so" }, { app: "slack" }]))).toBe(
+      "Connect Linear, Notion or Slack from the HQ app.",
+    );
+    expect(line(items([{ domain: "quickbooks.intuit.com" }]))).toBe("Connect Quickbooks from the HQ app.");
   });
 });
 
 describe("withExtraBlocks", () => {
-  const extra = [{ kind: "connect" as const, targets: ["slack" as const, "tools" as const] }];
+  const extra = [{ kind: "connect" as const, items: [{ app: "slack" as const }, { app: "tools" as const }] }];
 
   it("appends the host's blocks after the message's own", () => {
     const own = parseRichContent({ v: 1, blocks: [{ kind: "markdown", text: "hi" }] });

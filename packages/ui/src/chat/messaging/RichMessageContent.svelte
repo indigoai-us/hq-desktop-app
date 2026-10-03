@@ -80,8 +80,8 @@
     const views = connections?.views;
     if (!views) return [];
     const out: ConnectionCardView[] = [];
-    for (const target of block.targets) {
-      const view = views[target];
+    for (const item of block.items) {
+      const view = item.app ? views[item.app] : undefined;
       if (view) out.push(view);
     }
     return out;

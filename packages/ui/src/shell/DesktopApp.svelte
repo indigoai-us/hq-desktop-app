@@ -4599,7 +4599,7 @@
     const ids = [...(cloudBotHelloCardsAt ? [cloudBotHelloCardsAt] : []), ...cloudBotConnectMoreAt];
     if (ids.length === 0) return null;
     const out: Record<string, RichBlock[]> = {};
-    for (const id of ids) out[id] = [{ kind: "connect", targets: ["slack", "tools"] }];
+    for (const id of ids) out[id] = [{ kind: "connect", items: [{ app: "slack" }, { app: "tools" }] }];
     return out;
   });
 

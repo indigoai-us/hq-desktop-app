@@ -201,7 +201,7 @@ describe("the new bot's first message", () => {
     expect(text).toContain("when a task needs Slack or a tool that is not connected, you can show the cards again");
     expect(text).toContain('```hq-block\n{"v":1,"blocks":[{"kind":"connect","targets":["slack"]}]}\n```');
     expect(text).toContain('The targets can be "slack", "tools" or both.');
-    expect(fencedBlocks(text)[1]).toEqual({ blocks: [{ kind: "connect", targets: ["slack"] }] });
+    expect(fencedBlocks(text)[1]).toEqual({ blocks: [{ kind: "connect", items: [{ app: "slack" }] }] });
     expect(text).toContain("Never ask for a password or a token in chat.");
   });
 
