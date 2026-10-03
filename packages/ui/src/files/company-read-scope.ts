@@ -51,7 +51,7 @@ export function fileTreeErrorReason(err: unknown): string {
   const text = err instanceof Error ? err.message : String(err ?? "");
   if (/signed-in user|AUTH_REQUIRED/i.test(text)) return "Sign in to HQ to see these files.";
   if (/scope not bound|cross-company/i.test(text)) return "This company's files could not be opened in this window.";
-  if (/not authorized/i.test(text)) return "You don't have access to this company's files.";
+  if (/not authorized|\b403\b|forbidden/i.test(text)) return "You don't have access to this company's files.";
   if (/not found|no such file|does not exist/i.test(text)) return "This folder isn't on this computer yet. Sync the company, then retry.";
   return "Could not read this folder.";
 }

@@ -70,7 +70,8 @@ function plainError(raw: string | null): string | null {
   if (!text) return null;
   const mapped = HOLD_TEXT[text.replace(/[_\s-]/g, "").toLowerCase()];
   if (mapped) return mapped;
-  return looksLikeStateKey(text) ? "Could not restart to update." : text;
+  // Unknown text is raw transport/server output: never show it verbatim.
+  return "Could not restart to update. Try again.";
 }
 
 export function updateToastCopy(input: UpdateToastInput): UpdateToastCopy {

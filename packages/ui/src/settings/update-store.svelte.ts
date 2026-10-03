@@ -220,7 +220,7 @@ export async function downloadDesktopUpdate(
       return;
     }
     installPhase = "failed";
-    installError = result.message ?? "Download failed";
+    installError = plainInstallError(result.message, "download", "Download failed. Try again.");
   })().finally(() => {
     if (generation === storeGeneration) downloadInFlight = null;
   });
@@ -250,7 +250,7 @@ export async function restartToUpdate(
       installPhase = "queued";
       return;
     }
-    installError = result.message ?? "Install failed";
+    installError = plainInstallError(result.message, "install", "Install failed. Try again.");
     installPhase = isRecordingRestartDeferral(result.message) ? "deferred" : "ready";
   })().finally(() => {
     if (generation === storeGeneration) installInFlight = null;
@@ -329,16 +329,32 @@ export function markInstallStarted(version?: string | null): void {
   installPhase = "queued";
 }
 
+/**
+ * `installError` is rendered (tooltips, toast), so it only ever holds app copy.
+ * The recording deferral is a fixed host sentence the toast keys on, so it is
+ * kept; anything else is logged and replaced with plain copy.
+ */
+function plainInstallError(
+  raw: string | null | undefined,
+  what: string,
+  copy: string,
+): string {
+  if (raw && isRecordingRestartDeferral(raw)) return raw;
+  if (raw) console.warn(`[update] ${what} failed`, raw);
+  return copy;
+}
+
 /** Host `update:install-failed` — download or install failed natively. */
 export function reportInstallFailed(payload: unknown): void {
   const rec =
     payload && typeof payload === "object"
       ? (payload as { message?: unknown })
       : null;
-  installError =
-    typeof rec?.message === "string" && rec.message.trim()
-      ? rec.message.trim()
-      : "Update failed";
+  installError = plainInstallError(
+    typeof rec?.message === "string" ? rec.message.trim() : null,
+    "install",
+    "Update failed. Try again.",
+  );
   installPhase = "failed";
   clearIdleWait();
 }

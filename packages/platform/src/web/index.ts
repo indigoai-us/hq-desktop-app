@@ -41,6 +41,7 @@ import {
   createScopedFeatureFlagGates,
   DESKTOP_AGENT_CREATION_FLAG,
   PERSONAL_WORKSPACE_BOARD_FLAG,
+  PERSONAL_TRANSCRIPTS_FLAG,
   type ScopedFeatureFlagGates,
 } from "../flags.js";
 import {
@@ -495,7 +496,8 @@ export class WebPlatformAdapter implements PlatformAdapter {
       flag === "meetings" ||
       flag === "agents.claude-provider" ||
       flag === DESKTOP_AGENT_CREATION_FLAG ||
-      flag === PERSONAL_WORKSPACE_BOARD_FLAG
+      flag === PERSONAL_WORKSPACE_BOARD_FLAG ||
+      flag === PERSONAL_TRANSCRIPTS_FLAG
     ) {
       return Promise.resolve(ok(false));
     }

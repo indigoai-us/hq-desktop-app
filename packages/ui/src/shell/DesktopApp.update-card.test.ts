@@ -252,7 +252,35 @@ describe("DesktopApp update-available card", () => {
 
     const errorEl = document.querySelector('[data-testid="update-available-card"] [data-testid="toast-error"]');
     expect(errorEl).not.toBeNull();
-    expect(errorEl?.textContent).toContain("A recording is in progress");
+    // Server text is not shown; the toast uses plain copy (AUDIT-3c).
+    expect(errorEl?.textContent).not.toContain("A recording is in progress");
+    expect(errorEl?.textContent).toContain("Could not restart to update. Try again.");
+  });
+
+  it("never shows raw transport error text in the update toast", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const RAW = '[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}';
+    const events = createSyncEventHost();
+    await mountApp(events.host);
+    events.emit("update-gate://deferred", gatePayload(VERSION_A));
+    await settle();
+
+    installPendingUpdate.mockRejectedValueOnce(new Error(RAW));
+    document
+      .querySelector<HTMLButtonElement>('[data-testid="update-install"]')!
+      .click();
+    await settle();
+
+    const card = document.querySelector('[data-testid="update-available-card"]');
+    const errorEl = card?.querySelector('[data-testid="toast-error"]');
+    expect(errorEl?.textContent).toContain("Could not restart to update. Try again.");
+    expect(card?.textContent).not.toContain("HTTP 500");
+    expect(card?.textContent).not.toContain("boom");
+    for (const el of Array.from(card?.querySelectorAll("[title]") ?? [])) {
+      expect(el.getAttribute("title")).not.toContain("boom");
+    }
+    expect(warn.mock.calls.some((args) => args.some((a) => String(a).includes("boom")))).toBe(true);
+    warn.mockRestore();
   });
 
   it("keeps the sidebar card in a recording-deferred state", async () => {

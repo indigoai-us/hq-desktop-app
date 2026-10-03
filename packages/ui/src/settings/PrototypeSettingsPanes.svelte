@@ -445,9 +445,10 @@
         : { kind: "error", message: "Couldn't read notification settings." };
     } catch (err) {
       if (seq !== notifyPrefsLoadSeq) return;
+      console.warn("[settings] notification settings load failed", err);
       notifyPrefsState = {
         kind: "error",
-        message: err instanceof Error ? err.message : String(err),
+        message: "Couldn't load notification settings. Try again.",
       };
     }
   }
@@ -478,7 +479,8 @@
       if (saved) notifyPrefsState = { kind: "ready", prefs: saved };
     } catch (err) {
       notifyPrefsState = { kind: "ready", prefs: previous };
-      notifyPrefsError = err instanceof Error ? err.message : String(err);
+      console.warn("[settings] notification settings save failed", err);
+      notifyPrefsError = "Couldn't save notification settings. Try again.";
     } finally {
       notifyPrefsSaving = false;
     }
@@ -516,7 +518,9 @@
   }
 
   function actionableError(subject: string, detail?: string): string {
-    return `${subject} wasn’t saved${detail ? `: ${detail}` : "."} Try again.`;
+    // The host's failure text is logged, never shown.
+    if (detail) console.warn(`[settings] ${subject} not saved`, detail);
+    return `${subject} wasn’t saved. Try again.`;
   }
 
   function readBoolean(raw: Record<string, unknown>, key: string, fallback: boolean): boolean {
@@ -1029,7 +1033,8 @@
     try {
       await openExternalUrl(HQ_CONSOLE_INTEGRATIONS_URL);
     } catch (error) {
-      setCalendarConnectMessage(`Couldn’t open HQ Console: ${String(error)}`, true);
+      console.warn("[settings] open HQ Console failed", error);
+      setCalendarConnectMessage("Couldn’t open HQ Console. Try again.", true);
     }
   }
 
@@ -1061,10 +1066,8 @@
           await openExternalUrl(result.url);
         } catch (err) {
           meetingsStore.stopCalendarConnectWatch();
-          setCalendarConnectMessage(
-            `Couldn't open the browser: ${String(err)}`,
-            true,
-          );
+          console.warn("[settings] open calendar connect URL failed", err);
+          setCalendarConnectMessage("Couldn't open the browser. Try again.", true);
         }
       }
     } finally {

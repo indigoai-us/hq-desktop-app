@@ -928,7 +928,7 @@ describe('US-103 embedded desktop window', () => {
       expect(calls.filter((call) => call.cmd === 'create_channel')).toHaveLength(1);
       expect(
         document.querySelector('[data-testid="chat-create-summary-error"]')?.textContent,
-      ).toContain('network unavailable');
+      ).toContain("That didn't work either. Try again."); // AUDIT-3c: raw transport text is logged, not shown
       expect(document.querySelector('[data-testid="chat-create-summary"]')?.textContent).toContain(
         'do not lose me',
       );

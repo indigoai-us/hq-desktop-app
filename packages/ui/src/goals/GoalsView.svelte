@@ -7,6 +7,7 @@
    * session cache because board.json is read-only from this app.
    */
   import { onMount } from "svelte";
+  import { withReadDeadline } from "../common/read-deadline.js";
   import type { PlatformAdapter } from "@hq/platform";
   import "../home/tokens.css";
   import "../common/button/rail-type.css";
@@ -69,6 +70,9 @@
   const companyProjects = $derived(dedupeProjects(projects.filter((project) => project.company === slug)));
   const unlinked = $derived(unlinkedProjects(companyProjects, links));
   const summary = $derived(tallyGlyphs(visible));
+  // BLANK-2: a failed read with nothing loaded shows only the failed line and
+  // Try again; "0 objectives" waits for a read that succeeded.
+  const failedEmpty = $derived(Boolean(error) && (objectives ?? []).length === 0);
 
   function remember(active: string): void {
     if (objectives) writeGoalsCache(storage, active, { objectives, links });
@@ -111,7 +115,7 @@
     projectsError = null;
     try {
       configureProjectsApi(adapter.projects);
-      const allProjects = await loadLocalProjects();
+      const allProjects = await withReadDeadline(loadLocalProjects(), "company projects");
       if (slug !== active) return;
       projects = allProjects;
       projectsLoaded = true;
@@ -136,7 +140,8 @@
     error = null;
     try {
       configureProjectsApi(adapter.projects);
-      const goals = await loadCompanyGoals(active);
+      // BLANK-1: a read that never answers falls to the failed-read state.
+      const goals = await withReadDeadline(loadCompanyGoals(active), "company goals");
       if (slug !== active) return;
       const cached = readGoalsCache(storage, active);
       // Key results added in this app stay on their board objective after a refresh.
@@ -250,7 +255,7 @@
       {/each}
     </div>
     <span class="grow"></span>
-    {#if objectives}
+    {#if objectives && !failedEmpty}
       <span class="meta-line" data-meta-line>{visible.length} objectives · {krCount(visible)} KRs</span>
       {#if summary}<span class="meta-line" data-meta-line>{summary}</span>{/if}
     {/if}
@@ -264,7 +269,7 @@
     </div>
   {:else}
     <div class="canvas">
-      <div class="sech">Objectives · {period} <span class="grow"></span><span class="plain">Progress averages each objective's KRs</span></div>
+      {#if !failedEmpty}<div class="sech">Objectives · {period} <span class="grow"></span><span class="plain">Progress averages each objective's KRs</span></div>{/if}
       {#if error}
         <div class="empty load-error" role="alert" data-testid="goals-load-error">
           <p>{error}</p>

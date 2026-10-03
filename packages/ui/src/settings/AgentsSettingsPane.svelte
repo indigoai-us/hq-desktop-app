@@ -79,7 +79,8 @@
     error = "";
     const result = await sessions.preflight();
     if (!result.ok) {
-      error = result.message || "Could not read AI tool status.";
+      console.warn("[agents-settings] preflight failed", result.message);
+      error = "Couldn't read AI tool status. Try again.";
       loading = false;
       return;
     }
@@ -128,9 +129,13 @@
       return;
     }
     busy = null;
+    console.warn(
+      "[agents-settings] sign-in status failed",
+      result.ok ? (result.value as { message?: string }).message : result.message,
+    );
     line = result.ok
-      ? String((result.value as { message?: string }).message ?? "Sign-in did not complete.")
-      : result.message || "Could not check sign-in.";
+      ? "Sign-in did not complete. Try again."
+      : "Couldn't check sign-in. Try again.";
   }
 
   async function connect(id: SessionProviderId) {
@@ -144,7 +149,8 @@
     if (token !== generation) return;
     if (!result.ok) {
       busy = null;
-      line = result.message || `Could not open sign-in. If the browser did not open, run \`${id === "claude" ? "claude" : id} login\` in a terminal.`;
+      console.warn("[agents-settings] sign-in start failed", result.message);
+      line = `Couldn't open sign-in. Try again, or run \`${id === "claude" ? "claude" : id} login\` in a terminal.`;
       return;
     }
     const state = String((result.value as { state?: string }).state ?? "");
@@ -161,7 +167,8 @@
       return;
     }
     busy = null;
-    line = String((result.value as { message?: string }).message ?? "Sign-in did not complete.");
+    console.warn("[agents-settings] sign-in did not complete", (result.value as { message?: string }).message);
+    line = "Sign-in did not complete. Try again.";
   }
 
   async function install(id: SessionProviderId) {
@@ -172,7 +179,8 @@
     line = `Installing ${PROVIDERS.find((provider) => provider.id === id)?.name ?? id}…`;
     const result = await adapter.sessions.installProvider(id);
     if (!result.ok) {
-      line = result.message || "Install failed. Check your network and try again.";
+      console.warn("[agents-settings] install failed", result.message);
+      line = "Install failed. Check your network and try again.";
       busy = null;
       action = null;
       return;

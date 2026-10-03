@@ -8,6 +8,7 @@
    * filter share one control row; New project remains the primary action.
    */
   import { onMount } from "svelte";
+  import { withReadDeadline } from "../common/read-deadline.js";
   import RailButton from "../common/button/RailButton.svelte";
   import { publishCompanyPageCount } from "../shell/company-page-counts.svelte.js";
   import type { PlatformAdapter } from "@hq/platform";
@@ -346,6 +347,9 @@
       .map((project) => applyProjectProvenance(project, cloudProvenance))
       .sort(compareProjectsByRecency),
   );
+  // BLANK-2: a failed read with nothing loaded shows only the failed line and
+  // Try again; counts and the empty board wait for a read that succeeded.
+  const failedEmpty = $derived(Boolean(error) && companyProjects.length === 0);
 
   // Open the focused project once it loads (QA-066: Atlas Open files / Open
   // board). Matches the board id or the project's folder under projects/.
@@ -578,14 +582,15 @@
 
     void (async () => {
       try {
-        const [goals, allProjects] = await Promise.all([
+        // BLANK-1: a read that never answers falls to the failed-read state.
+        const [goals, allProjects] = await withReadDeadline(Promise.all([
           // A goals read failure keeps the cached goals; it never blanks the board.
           loadCompanyGoals(activeSlug).catch((err: unknown) => {
             console.warn(`loadCompanyGoals(${activeSlug}) failed:`, err);
             return null;
           }),
           loadLocalProjects(),
-        ]);
+        ]), "company projects");
         if (cancelled) return;
         const cachedGoals = readGoalsCache(goalsStorage, activeSlug);
         objectives = goals
@@ -757,9 +762,9 @@
     } catch (err) {
       if (!isCurrentStoryLoad(generation, companySlug, selectedIdentity))
         return;
-      console.error("get_local_project_prd failed:", err);
-      const detail = err instanceof Error ? err.message : String(err);
-      storiesError = `Could not load this project’s stories — ${detail}`;
+      // AUDIT-3c: log the raw failure; show app copy.
+      console.warn("[projects] story load failed", err);
+      storiesError = "Could not load this project’s stories. Try again.";
       stories = [];
     } finally {
       if (isCurrentStoryLoad(generation, companySlug, selectedIdentity)) {
@@ -796,10 +801,9 @@
         peekStories = nextStories;
         peekBranch = branch;
       } catch (err) {
-        console.error("task view stories failed:", err);
+        console.warn("[projects] task load failed", err);
         if (generation !== peekGeneration) return;
-        const detail = err instanceof Error ? err.message : String(err);
-        peekError = `Could not load this project’s tasks — ${detail}`;
+        peekError = "Could not load this project’s tasks. Try again.";
       } finally {
         if (generation === peekGeneration) peekLoading = false;
       }
@@ -974,6 +978,7 @@
     <header class="projects-header">
       <div class="projects-heading">
         <h2 id="company-projects-title">Projects</h2>
+        {#if !failedEmpty}
         <span
           class="projects-count meta-line"
           data-meta-line
@@ -990,6 +995,7 @@
             <span class="projects-live">· {liveCount} live</span>
           {/if}
         </span>
+        {/if}
       </div>
       <div
         class="project-actions detail-primary-actions"
@@ -1126,6 +1132,8 @@
             </div>
           {/each}
         </div>
+      {:else if failedEmpty}
+        <!-- BLANK-2: the failed line above stands in for the empty board. -->
       {:else if companyProjects.length === 0}
         <div
           class="kanban-board"

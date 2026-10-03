@@ -1,8 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   beginCardActionIdempotencyKey,
   cardActionFailureMessage,
+  CARD_ACTION_FAILED_MESSAGE,
+  CARD_ACTION_FORBIDDEN_MESSAGE,
   endCardActionIdempotencyKey,
   patchLifecycleCardState,
   submitLifecycleCardAction,
@@ -58,13 +60,23 @@ describe("card action idempotency", () => {
 });
 
 describe("cardActionFailureMessage", () => {
-  it("strips adapter code prefixes so the card shows the permission reason", () => {
+  it("maps a permission failure to plain copy instead of the server sentence", () => {
     expect(
       cardActionFailureMessage(
         new Error("[invoke] Viewer cannot act on this card"),
       ),
-    ).toBe("Viewer cannot act on this card");
-    expect(cardActionFailureMessage("cannot_act")).toBe("cannot_act");
+    ).toBe(CARD_ACTION_FORBIDDEN_MESSAGE);
+  });
+
+  it("never returns raw transport text; logs it and returns plain copy", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const raw = '[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}';
+    const message = cardActionFailureMessage(new Error(raw));
+    expect(message).toBe(CARD_ACTION_FAILED_MESSAGE);
+    expect(message).not.toContain("boom");
+    expect(message).not.toContain("HTTP 500");
+    expect(warn).toHaveBeenCalledWith("[card-action] action failed", raw);
+    warn.mockRestore();
   });
 });
 
@@ -150,7 +162,7 @@ describe("submitLifecycleCardAction", () => {
       onFailure: (cardId, message) => failures.push({ cardId, message }),
     });
     expect(failures).toEqual([
-      { cardId: "card_create_1", message: "Viewer cannot act on this card" },
+      { cardId: "card_create_1", message: CARD_ACTION_FORBIDDEN_MESSAGE },
     ]);
   });
 });

@@ -80,6 +80,8 @@ import {
 
 export const FIRST_FOLDER_SYNC_STEP_FLAG =
   "desktop.first-folder-sync-step-v1";
+export const COMPANY_ROUTE_LOOKUP_RETRY_FLAG =
+  "desktop.company-route-lookup-retry-v1";
 export const PERSONAL_WORKSPACE_BOARD_FLAG =
   "desktop.personal-workspace-board-v1";
 export const LOGIN_RECEIPT_DURABILITY_FLAG =
@@ -92,6 +94,8 @@ export const SETUP_DEPS_TIMEOUT_RETRY_FLAG =
   "desktop.setup-deps-timeout-retry-v1";
 export const HUMAN_ONLY_CONVERSATIONS_FLAG =
   "desktop.human-only-conversations";
+export const PERSONAL_TRANSCRIPTS_FLAG =
+  "desktop.meetings-personal-transcripts";
 /**
  * New bot → Cloud creates through POST /v1/agents (desktop-agent-creation).
  * Targeted to one company, so it must be read with that company's uid:
@@ -141,6 +145,7 @@ export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
   meetings: "desktop.meetings",
   "agents.claude-provider": "agents.claude-provider",
   [FIRST_FOLDER_SYNC_STEP_FLAG]: FIRST_FOLDER_SYNC_STEP_FLAG,
+  [COMPANY_ROUTE_LOOKUP_RETRY_FLAG]: COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
   [PERSONAL_WORKSPACE_BOARD_FLAG]: PERSONAL_WORKSPACE_BOARD_FLAG,
   [LOGIN_RECEIPT_DURABILITY_FLAG]: LOGIN_RECEIPT_DURABILITY_FLAG,
   [POST_READY_ACTION_TELEMETRY_FLAG]: POST_READY_ACTION_TELEMETRY_FLAG,
@@ -149,6 +154,7 @@ export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
   [SETUP_DEPS_TIMEOUT_RETRY_FLAG]: SETUP_DEPS_TIMEOUT_RETRY_FLAG,
   [HUMAN_ONLY_CONVERSATIONS_FLAG]: HUMAN_ONLY_CONVERSATIONS_FLAG,
   [DESKTOP_AGENT_CREATION_FLAG]: DESKTOP_AGENT_CREATION_FLAG,
+  [PERSONAL_TRANSCRIPTS_FLAG]: PERSONAL_TRANSCRIPTS_FLAG,
   "desktop.mirror-quarantine-move-not-deletion":
     "desktop.mirror-quarantine-move-not-deletion",
   [RAIL_TELEMETRY_FLAG]: RAIL_TELEMETRY_FLAG,

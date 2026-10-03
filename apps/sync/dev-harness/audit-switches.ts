@@ -8,6 +8,9 @@
  *       fail     every data read rejects
  *       empty    every list in every result is empty
  *       partial  every second data command (stable by name) rejects, the rest load
+ *       hang     every data read never settles (BLANK-1)
+ *       denied   every data read is refused the way a 403 comes back (BLANK-1):
+ *                host commands reject with a 403 message, hq-pro reads answer 403
  *   ?toast=update|info|error|progress|stack       raise toasts through the real paths
  *   ?gates=on                                    flag registry answers true for every key
  *   ?atlas=populated                             company Atlas reads a synced folder
@@ -33,13 +36,13 @@ export function authSwitch(search?: string | null): string | null {
   return value && value in AUTH_SWITCHES ? AUTH_SWITCHES[value] : null;
 }
 
-export type ReadsSwitch = 'slow' | 'fail' | 'empty' | 'partial';
+export type ReadsSwitch = 'slow' | 'fail' | 'empty' | 'partial' | 'hang' | 'denied';
+
+const READS_SWITCHES: readonly ReadsSwitch[] = ['slow', 'fail', 'empty', 'partial', 'hang', 'denied'];
 
 export function readsSwitch(search?: string | null): ReadsSwitch | null {
-  const value = params(search).get('reads');
-  return value === 'slow' || value === 'fail' || value === 'empty' || value === 'partial'
-    ? value
-    : null;
+  const value = params(search).get('reads') as ReadsSwitch | null;
+  return value && READS_SWITCHES.includes(value) ? value : null;
 }
 
 /** Stable split for `reads=partial`: about half of all command names fail. */
@@ -157,6 +160,13 @@ export async function withReadsSwitch<T>(
   loadingMs: number | null,
 ): Promise<T> {
   if (!reads || isBootCommand(cmd)) return run();
+  if (reads === 'hang') return new Promise<T>(() => {});
+  if (reads === 'denied') {
+    if (cmd === 'hq_pro_fetch') {
+      return { status: 403, body: JSON.stringify({ error: 'forbidden', message: 'Forbidden' }) } as T;
+    }
+    throw new Error(`hq-pro returned 403 Forbidden for ${cmd}`);
+  }
   if (reads === 'partial') {
     if (failsInPartial(cmd)) throw new Error(`harness: simulated failure for ${cmd}`);
     return run();

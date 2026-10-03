@@ -55,6 +55,9 @@ This beta brings the new HQ interface. A rail on the left holds your companies, 
 - Goals shows a loading skeleton on first load instead of briefly showing the empty line.
 - Pages with nothing in them yet use plain empty copy.
 - Library and Settings text uses the app's standard sizes and weights.
+- If company Knowledge, Policies, Skills, Workers, Goals, Projects, Vault, Secrets, Deployments, Team or Bots, or the personal Library, Deployments, Secrets or Connections pages are still loading after 12 seconds, they stop waiting and say so in plain words with Try again, instead of staying on the loading placeholder.
+- When a page can't be read, it no longer also says the page is empty or shows zero counts. This covers Team, Goals, Bots, Projects, Knowledge, Policies, Skills, Workers, Secrets, Deployments, Connections and the company map.
+- Company Vault says you don't have access when the server refuses access, instead of showing an error.
 
 ### Meetings
 
@@ -62,6 +65,8 @@ This beta brings the new HQ interface. A rail on the left holds your companies, 
 - Meetings lists only your own meetings: ones your notetaker recorded, ones on your calendar, and ones recorded on this device. Company role does not add other people's meetings. Past meetings are grouped under day headers.
 - Meetings stored as a single document now show their notes, transcript and attendees.
 - Load more shows meeting notes past the first 24.
+- When your calendar can't be read, Meetings says so with Try again instead of asking you to connect your calendar.
+- Behind the `desktop.meetings-personal-transcripts` flag (off by default): Past meetings can list meeting transcripts and notes saved privately on this computer, including older ones, and your own desktop recordings. Transcripts from another account signed in on the same computer stay hidden.
 
 ### New companies and setup
 
@@ -71,6 +76,7 @@ This beta brings the new HQ interface. A rail on the left holds your companies, 
 
 - Settings, Profile and Billing open from your account at the bottom of the rail. Light appearance is supported across the new pages.
 - The signed-out page uses plain copy that names the app HQ. Its quit button reads Quit HQ.
+- Office Hours and the Settings profile show a plain message with Try again when they can't load or save.
 
 ### Other changes
 
@@ -78,6 +84,13 @@ This beta brings the new HQ interface. A rail on the left holds your companies, 
 - Setup failure events now fill a missing stage from the bounded component and keep error categories on the closed list.
 - CI launches of the desktop app no longer add first-run rows to the install funnel.
 - Desktop Core baseline refresh now retries GitHub timeouts before reporting a pending baseline. Persistent timeouts are still reported.
+- Error messages across the app use plain words instead of technical error text, including sending messages, uploads, channel actions, Settings, sign-in, setup and the marketplace. The technical details go to the app log.
+- Opening a company retries the company lookup once before giving up.
+- Sync keeps a company's cloud link when the company is missing from your membership list or its lookup comes back missing. Only a confirmed deletion removes the link.
+- A rejected saved sign-in at startup is treated as signed out, so HQ asks you to sign in again.
+- After a Windows Core update, HQ puts its managed CLI ahead of stale CLI paths in the HQ Claude settings file so the updated version is selected.
+- Shelltest builds report to a separate Sentry environment. Release telemetry is unchanged.
+- More internal tests now check what the desktop UI does instead of searching its source text. Nothing changes in the app.
 
 ### Known gaps for the beta
 
@@ -90,7 +103,6 @@ This beta brings the new HQ interface. A rail on the left holds your companies, 
 - Custom keyboard shortcuts in the Edit shortcuts sheet are not saved yet.
 
 ## [0.10.385] — 2026-10-03
-
 - The vyg CDP mirror now also records app opens (every launch), one daily-active row per day, account linking after sign-in (sha256 hashes of the person and company ids only), Claude/Codex/Grok session launches, sync start and end, teammate invites, joining a company from an invite, and the plan picked during setup. The same rows go to HQ's operational telemetry. The `desktop.cdp-mirror` flag is now re-checked every 6 hours, so turning it on or off no longer needs a relaunch.
 - Referral links now carry through desktop sign-in regardless of the signup experiment. HQ retries referral confirmation after connection failures or a restart and keeps each referral tied to the account that signed in.
 - Release builds: a daily check now fails, and opens an issue, once the release test sign-in is 25 days old, five days before it expires, so it is renewed before a release depends on it. The renewal steps no longer need AWS keys or a shared GitHub token.

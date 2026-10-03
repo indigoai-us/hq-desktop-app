@@ -88,17 +88,9 @@
       wakes?.emit?.("dm:request-update", { pairKey: req.pairKey });
       onresolved?.(req, action);
     } catch (err) {
-      const detail =
-        typeof err === "string"
-          ? err
-          : err instanceof Error && err.message
-            ? err.message
-            : "";
       errors = {
         ...errors,
-        [req.pairKey]: detail
-          ? `Could not ${action} this request: ${detail}`
-          : `Could not ${action} this request.`,
+        [req.pairKey]: `Could not ${action} this request. Try again.`,
       };
       console.error(`dm-requests: respond_dm_request ${action} failed`, err);
     } finally {

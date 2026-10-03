@@ -101,10 +101,9 @@
   const FIRST_PAINT_ROWS = 8;
   let rowBudget = $state(FIRST_PAINT_ROWS);
 
-  function errorMessage(error: unknown): string {
-    if (error instanceof Error && error.message) return error.message;
-    if (typeof error === "string" && error.trim()) return error;
-    return "The command was rejected before it could finish.";
+  // AUDIT-3c: the thrown text is logged by execute(); the UI shows app copy.
+  function errorMessage(_error: unknown): string {
+    return "The command didn’t finish. Try again.";
   }
 
   function fuzzyMatch(value: string, needle: string): boolean {
@@ -310,7 +309,7 @@
       await command.action();
       if (!command.keepOpen) onclose();
     } catch (err) {
-      console.error("command-palette: action failed", err);
+      console.warn("[command-palette] action failed", err);
       actionError = { command, message: errorMessage(err) };
     } finally {
       executingId = null;

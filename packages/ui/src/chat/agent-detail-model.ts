@@ -320,7 +320,11 @@ export function unavailableMessage(
   if (result.reason === "unavailable") {
     return "Not available yet.";
   }
-  return result.message?.trim() || "Not available yet.";
+  if (result.message?.trim()) {
+    console.warn(`[agent-detail] ${surface} load failed`, result.message);
+    return "Couldn't load this. Try again.";
+  }
+  return "Not available yet.";
 }
 
 export function jobsFromPayload(

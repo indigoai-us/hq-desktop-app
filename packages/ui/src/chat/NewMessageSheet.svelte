@@ -125,7 +125,8 @@
         memberCount: selected.length,
       });
     } catch (err) {
-      error = err instanceof Error ? err.message : "Could not send";
+      console.warn("[new-message] send failed", err);
+      error = "Could not send. Try again.";
     } finally {
       sending = false;
     }

@@ -24,7 +24,10 @@
     company: string;
     /** Null hides the objects chip (the US-009 landing has no map yet). */
     objectCount: number | null;
-    projectsInProgress: number;
+    /** Null hides the projects chip (BLANK-2: no count from a failed read). */
+    projectsInProgress: number | null;
+    /** BLANK-2: the map read failed; no "Nobody is working" beside the error. */
+    mapFailed?: boolean;
     nowMs: number;
     onselect: (id: string) => void;
     onopenfiles?: (node: AtlasNode) => void;
@@ -41,6 +44,7 @@
     company,
     objectCount,
     projectsInProgress,
+    mapFailed = false,
     nowMs,
     onselect,
     onopenfiles,
@@ -135,11 +139,15 @@
     <div class="chips" data-testid="atlas-inspector-rollup">
       {#if presence.length}<span class="chip live"><i class="ldot"></i>{presence.length} live</span>{/if}
       {#if objectCount !== null}<span class="chip">{objectCount} objects</span>{/if}
-      <span class="chip">{projectsInProgress} projects in progress</span>
+      {#if projectsInProgress !== null}<span class="chip">{projectsInProgress} projects in progress</span>{/if}
     </div>
+    {#if !mapFailed || presence.length}
     <div class="hr"></div>
     <div class="kind">Working now</div>
-    {#if presence.length}
+    {/if}
+    {#if mapFailed && !presence.length}
+      <!-- BLANK-2: the map's failed line and Retry stand in for the roll-up. -->
+    {:else if presence.length}
       <div class="list" data-testid="atlas-inspector-working-now">
         {#each presence as who (`${who.name}:${who.nodeId}`)}
           <button type="button" class="li rowbtn" onclick={() => onselect(who.nodeId)}>

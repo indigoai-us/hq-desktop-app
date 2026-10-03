@@ -267,7 +267,12 @@ export class SetupAgent {
       const failure = this.failure;
       if (!failure) return null;
       const note = this.attempts > 1 ? "Tried again just now — same thing happened." : "";
-      return [failure.message, note].filter(Boolean).join(" ") || null;
+      // Only the transient line is our own copy; the engine's words stay in the log.
+      if (!failure.transient && failure.message) {
+        console.warn("[setup-agent] run stopped", failure.message);
+      }
+      const plain = failure.transient ? failure.message : "";
+      return [plain, note].filter(Boolean).join(" ") || null;
     });
     this.transcript = $derived.by(() => {
       const live = this.snapshot
@@ -458,7 +463,8 @@ export class SetupAgent {
       this.hooks.onstarted?.();
       return "started";
     } catch (err) {
-      this.error = err instanceof Error ? err.message : String(err);
+      console.warn("[setup-agent] start failed", err);
+      this.error = "Setup could not start. Try again.";
       if (this.mode === "starting") this.mode = "idle";
       return "needs-sessions-page";
     } finally {
@@ -483,7 +489,8 @@ export class SetupAgent {
       this.watch(sessionId);
       this.mode = "live";
     } catch (err) {
-      this.error = err instanceof Error ? err.message : String(err);
+      console.warn("[setup-agent] continue failed", err);
+      this.error = "Could not reconnect to setup. Try again.";
     } finally {
       this.busy = false;
     }
@@ -552,7 +559,8 @@ export class SetupAgent {
     try {
       await action(api, sessionId);
     } catch (err) {
-      this.error = err instanceof Error ? err.message : String(err);
+      console.warn("[setup-agent] action failed", err);
+      this.error = "That didn't go through. Try again.";
     } finally {
       this.busy = false;
     }

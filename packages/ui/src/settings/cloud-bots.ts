@@ -12,6 +12,10 @@
  */
 
 import type { AdapterResult, Json } from "@hq/platform";
+import { classifyApiError } from "../common/api-error.js";
+
+/** Plain copy shown when every roster request fails with unclassified text. */
+export const CLOUD_ROSTER_ERROR_COPY = "Couldn't read your cloud bots. Try again.";
 import type { WorkspaceLike } from "../chat/channel-admin.js";
 import { canEditAgentProfile } from "../avatars/can-edit.js";
 import { deriveAgentWorkStatus, type AgentWorkStatus } from "../chat/agent-detail-model.js";
@@ -145,5 +149,15 @@ export async function fetchCloudRoster(
       else agents.push(item);
     }
   }
-  return { agents, failure: anyOk ? null : failure };
+  if (anyOk) return { agents, failure: null };
+  // Unclassified failure text (raw server body, invoke error) must not reach
+  // the screen: friendlyApiError passes unclassified text through, so swap it
+  // for plain copy here and keep the raw text in the log.
+  if (isRecord(failure) && typeof failure.message === "string" && failure.message.trim()) {
+    if (!classifyApiError(failure)) {
+      console.warn("[bots] cloud roster failed", failure.message);
+      failure = { ...failure, message: CLOUD_ROSTER_ERROR_COPY };
+    }
+  }
+  return { agents, failure };
 }

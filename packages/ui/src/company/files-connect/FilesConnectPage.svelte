@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { withReadDeadline } from "../../common/read-deadline.js";
   import RailButton from "../../common/button/RailButton.svelte";
   /**
    * Vault, Integrations, Secrets, Deployments (US-029).
@@ -144,8 +145,15 @@
   });
 
   async function refresh(s: string, alive: () => boolean): Promise<void> {
+    // BLANK-1: the two reads run side by side so each settles within the bound.
+    await Promise.all([refreshSecrets(s, alive), refreshDeployments(s, alive)]);
+    writeFilesConnectCache(s, data);
+  }
+
+  async function refreshSecrets(s: string, alive: () => boolean): Promise<void> {
     try {
-      const loaded = await companyStore.loadSecrets(s, false);
+      // BLANK-1: a read that never answers falls to the failed-read state.
+      const loaded = await withReadDeadline(companyStore.loadSecrets(s, false), "company secrets");
       if (!alive()) return;
       secrets = secretRowsFromSource(Array.isArray(loaded) ? loaded : []);
       secretsError = null;
@@ -155,16 +163,19 @@
       secretsError = "Could not load secrets.";
       secrets = secrets ?? [];
     }
+  }
+
+  async function refreshDeployments(s: string, alive: () => boolean): Promise<void> {
     try {
       // Names come from the real hq-deploy apps (QA-013), else the legacy list.
       const list = listDeployApps ?? adapter?.company?.listDeployApps;
       let rows: DeploymentRowModel[];
       if (list) {
-        const res = await list(s);
+        const res = await withReadDeadline(list(s), "company deployments");
         if (!res.ok) throw new Error(res.message ?? res.reason);
         rows = companyDeploymentRows(res.value as DeployAppsPage, s);
       } else {
-        const loaded = await companyStore.loadDeployments(s, false);
+        const loaded = await withReadDeadline(companyStore.loadDeployments(s, false), "company deployments");
         rows = deploymentRowsFromSource(Array.isArray(loaded) ? loaded : [], s);
       }
       if (!alive()) return;
@@ -176,7 +187,6 @@
       deploymentsError = "Could not load deployments.";
       deployments = deployments ?? [];
     }
-    writeFilesConnectCache(s, data);
   }
 
   // AUDIT-3: Try again after a failed secrets or deployments read.
@@ -247,7 +257,8 @@
     vaultRootSummary = cached ? folderSummary(cached) : null;
     if (!files) return;
     let alive = true;
-    loadVaultChildren(root)
+    // BLANK-1: the folder summary line settles within the shared bound.
+    withReadDeadline(loadVaultChildren(root), "vault folder summary")
       .then((entries) => {
         if (alive) vaultRootSummary = folderSummary(entries);
       })
@@ -541,6 +552,12 @@
         : { name: file.name, dest: null, status: "skipped" as const, detail: "Skipped, name already in this folder" };
     });
     sheet = "upload-progress";
+    // Only these app-written sentences may reach the row; anything else is raw.
+    const UPLOAD_COPY = new Set([
+      "That folder is outside this company.",
+      "Could not prepare the upload.",
+      "The upload did not finish.",
+    ]);
     for (let index = 0; index < picked.length; index += 1) {
       const row = uploads[index];
       const file = picked[index];
@@ -551,18 +568,25 @@
         if (!key) throw new Error("That folder is outside this company.");
         const contentType = file.type || "application/octet-stream";
         const signed = await api.presignVaultPut(uid, key, contentType, await fileIntegrity(file));
-        if (!signed.ok) throw new Error(signed.message || "Could not prepare the upload.");
+        if (!signed.ok) {
+          // AUDIT-3c: the presign failure text is server text; log it, show app copy.
+          console.warn("[files] upload presign failed", signed.code, signed.message);
+          throw new Error("Could not prepare the upload.");
+        }
         const target = presignUrlFromResult(signed.value);
         if (!target) throw new Error("Could not prepare the upload.");
         const put = await putChatAttachmentDirect(target.url, target.headers, file);
         if (!put.ok) throw new Error("The upload did not finish.");
         uploads[index] = { ...row, status: "done", detail: "Uploaded. It appears here after the next sync." };
       } catch (err) {
-        console.error("vault upload failed:", err);
+        console.warn("[files] vault upload failed", err);
         uploads[index] = {
           ...row,
           status: "failed",
-          detail: err instanceof Error && err.message.endsWith(".") ? err.message : "Could not upload this file.",
+          detail:
+            err instanceof Error && UPLOAD_COPY.has(err.message)
+              ? err.message
+              : "Could not upload this file. Try again.",
         };
       }
     }
@@ -817,7 +841,8 @@
   {:else if page === "secrets"}
     <header class="toolbar">
       <h1>Secrets</h1>
-      {#if secrets}<span class="count" data-testid="secrets-count">{countLabel("Secrets", secretRows.length)}{secretsFiltered ? ` of ${secrets.length.toLocaleString()}` : ""}</span>{/if}
+      <!-- BLANK-2: no "Secrets · 0" next to a failed read with nothing loaded. -->
+      {#if secrets && !(secretsError && secrets.length === 0)}<span class="count" data-testid="secrets-count">{countLabel("Secrets", secretRows.length)}{secretsFiltered ? ` of ${secrets.length.toLocaleString()}` : ""}</span>{/if}
       <span class="grow"></span>
       <div class="fc-seg" role="tablist" aria-label="Secret kind">
         <button class="fc-seg-tab" role="tab" aria-selected={secretTab === "all"} onclick={() => (secretTab = "all")}>All</button>
@@ -887,7 +912,7 @@
   {:else}
     <header class="toolbar">
       <h1>Deployments</h1>
-      {#if deployments}<span class="count" data-testid="deployments-count">{countLabel("Deployments", deployments.length)}</span>{/if}
+      {#if deployments && !(deploymentsError && deployments.length === 0)}<span class="count" data-testid="deployments-count">{countLabel("Deployments", deployments.length)}</span>{/if}
       <span class="grow"></span>
       <RailButton icon="send" variant="primary" data-testid="deploy-from-project" onclick={openDeploy}>Deploy</RailButton>
     </header>

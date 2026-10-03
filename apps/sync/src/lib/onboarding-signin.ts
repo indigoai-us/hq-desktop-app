@@ -61,5 +61,6 @@ export function mapSignInError(message: string, provider?: SignInProvider): stri
     return `Could not start ${provider ?? 'provider'} sign-in from this environment. Open HQ as the desktop app and try again.`;
   }
 
-  return message || 'Sign-in failed';
+  console.warn('[signin] sign-in failed', message);
+  return 'Sign-in did not finish. Choose your provider and try again.';
 }

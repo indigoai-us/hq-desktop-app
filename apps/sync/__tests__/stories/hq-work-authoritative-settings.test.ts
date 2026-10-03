@@ -191,7 +191,9 @@ describe('embedded HQ Work authoritative settings', () => {
 
     await vi.waitFor(() => {
       expect(host.querySelector('[aria-label="Launch at login"]')?.getAttribute('aria-checked')).toBe('false');
-      expect(host.querySelector('[data-testid="settings-native-error"]')?.textContent).toContain('macOS rejected this login item');
+      // AUDIT-3c: the host's own sentence goes to the log; the row shows plain copy.
+      expect(host.querySelector('[data-testid="settings-native-error"]')?.textContent).toContain('Launch at login wasn’t saved. Try again.');
+      expect(host.querySelector('[data-testid="settings-native-error"]')?.textContent).not.toContain('macOS rejected this login item');
     });
     expect(calls.some((call) => call.command === 'save_settings')).toBe(false);
     expect(persisted().startAtLogin).toBe(false);

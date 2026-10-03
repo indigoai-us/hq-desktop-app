@@ -58,13 +58,9 @@
       await openExternal(`https://${deployment.url}`);
       openError = null;
     } catch (err) {
-      console.error("deployment: open failed", err);
-      openError =
-        err instanceof Error && err.message
-          ? err.message
-          : typeof err === "string" && err.trim()
-            ? err
-            : "The browser handoff was rejected.";
+      // AUDIT-3c: log the raw failure; the tooltip shows app copy.
+      console.warn("[deployment] open failed", err);
+      openError = "The browser didn’t open. Try again.";
     } finally {
       opening = false;
     }

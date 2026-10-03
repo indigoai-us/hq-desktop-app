@@ -101,8 +101,9 @@
       clearFormDraft(DRAFT_KEY);
       onclose();
     } catch (err) {
-      console.error("new project failed:", err);
-      error = err instanceof Error ? err.message : "Could not create the project";
+      // AUDIT-3c: log the raw failure; show app copy.
+      console.warn("[projects] new project failed", err);
+      error = "Could not create the project. Try again.";
       creating = false;
     }
   }

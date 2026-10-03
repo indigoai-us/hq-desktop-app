@@ -688,13 +688,10 @@ export function parseCreateChannelError(
       message: "That name is too long — 200 characters max.",
     };
   }
-  const cleaned = stripRawUids(raw);
+  if (raw.trim()) console.warn("[create-channel] create failed", raw);
   return {
     code: "unknown",
-    message:
-      cleaned && cleaned === raw.trim()
-        ? cleaned
-        : "Could not create the channel.",
+    message: "Could not create the channel. Try again.",
   };
 }
 

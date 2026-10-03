@@ -1509,6 +1509,7 @@
     } catch (err) {
       forgetLocalSends(localSends.filter((row) => row.eventId === eventId));
       localSends = localSends.filter((row) => row.eventId !== eventId);
+      // raw-error-ok: formatComposerSendError maps it to plain copy
       const raw = err instanceof Error ? err.message.trim() : "";
       // The mention names go in so a denial can name who could not be tagged;
       // the server answers with a code and a sentence, never the offending uid.
