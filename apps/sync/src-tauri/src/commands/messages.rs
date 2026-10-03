@@ -995,6 +995,17 @@ fn card_action_from_body(body: &serde_json::Value, replayed: bool) -> CardAction
 }
 
 fn card_action_error_message(status: u16, body: &serde_json::Value) -> String {
+    // A plan-limit refusal (402/403 `PLAN_LIMIT_EXCEEDED` / `plan_limit_reached`)
+    // keeps its upgrade link in a leading `[plan-limit ...]` tag. The shared
+    // `cardActionFailureMessage` strips leading `[...]` tags, so other surfaces
+    // still show only the sentence; the onboarding company step reads the tag
+    // to show the upgrade prompt inline.
+    if let Some(refusal) =
+        hq_desktop_core::plan_limit::parse_plan_limit_body(&body.to_string())
+    {
+        let url = refusal.upgrade_url.unwrap_or_default();
+        return format!("[plan-limit url={url}] {}", refusal.message);
+    }
     body.get("error")
         .and_then(|v| v.as_str())
         .or_else(|| body.get("reason").and_then(|v| v.as_str()))
@@ -1868,6 +1879,21 @@ mod tests {
         .await;
         assert!(res.is_err());
         assert_eq!(err_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn card_action_plan_limit_refusal_keeps_upgrade_link_in_tag() {
+        let body = serde_json::json!({
+            "error": "plan_limit_reached",
+            "code": "PLAN_LIMIT_EXCEEDED",
+            "message": "Starter includes one company.",
+            "upgradeUrl": "https://hq.computer/billing/upgrade?company=cmp_a",
+        });
+        let msg = card_action_error_message(402, &body);
+        assert!(msg.starts_with("[plan-limit url=https://hq.computer/"), "{msg}");
+        assert!(msg.ends_with("] Starter includes one company."), "{msg}");
+        let plain = card_action_error_message(403, &serde_json::json!({"error": "nope"}));
+        assert_eq!(plain, "nope");
     }
 
     #[tokio::test]

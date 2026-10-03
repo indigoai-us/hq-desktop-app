@@ -191,30 +191,63 @@ pub(crate) async fn feature_flag_value(flag: &str) -> Option<bool> {
     .await
 }
 
-async fn feature_flag_value_with_fetch<Fetch, FetchFuture>(
+/// Resolve one flag without collapsing an unreadable response into a real
+/// off value. `Ok(None)` means hq-flags answered successfully without this
+/// key; `Err(())` means the request or response could not be trusted.
+pub(crate) async fn feature_flag_read(flag: &str) -> Result<Option<bool>, ()> {
+    feature_flag_read_with_fetch(flag, || {
+        hq_pro_fetch("/v1/flags/resolve".to_string(), "GET".to_string(), None)
+    })
+    .await
+}
+
+async fn feature_flag_read_with_fetch<Fetch, FetchFuture>(
     flag: &str,
     fetch: Fetch,
-) -> Option<bool>
+) -> Result<Option<bool>, ()>
 where
     Fetch: FnOnce() -> FetchFuture,
     FetchFuture: Future<Output = Result<HqProHttpResponse, String>>,
 {
-    match tokio::time::timeout(FLAG_REQUEST_TIMEOUT, fetch()).await {
+    feature_flag_read_with_fetch_and_timeout(flag, fetch, FLAG_REQUEST_TIMEOUT).await
+}
+
+async fn feature_flag_read_with_fetch_and_timeout<Fetch, FetchFuture>(
+    flag: &str,
+    fetch: Fetch,
+    timeout: Duration,
+) -> Result<Option<bool>, ()>
+where
+    Fetch: FnOnce() -> FetchFuture,
+    FetchFuture: Future<Output = Result<HqProHttpResponse, String>>,
+{
+    match tokio::time::timeout(timeout, fetch()).await {
         Ok(Ok(response)) => match parse_feature_flag_response(response.status, &response.body) {
-            Some(values) => values.get(flag).copied(),
+            Some(values) => Ok(values.get(flag).copied()),
             None => {
                 if response.status == 200 {
                     log(LOG_TAG, "HQ_FLAGS_RESOLVE_INVALID_RESPONSE");
                 }
-                None
+                Err(())
             }
         },
-        Ok(Err(_)) => None,
+        Ok(Err(_)) => Err(()),
         Err(_) => {
             log(LOG_TAG, "HQ_FLAGS_RESOLVE_TIMEOUT");
-            None
+            Err(())
         }
     }
+}
+
+async fn feature_flag_value_with_fetch<Fetch, FetchFuture>(flag: &str, fetch: Fetch) -> Option<bool>
+where
+    Fetch: FnOnce() -> FetchFuture,
+    FetchFuture: Future<Output = Result<HqProHttpResponse, String>>,
+{
+    feature_flag_read_with_fetch(flag, fetch)
+        .await
+        .ok()
+        .flatten()
 }
 
 fn parse_configured_feature_flags(body: &str) -> Option<HashMap<String, bool>> {
@@ -418,6 +451,44 @@ mod tests {
         })
         .await;
         assert_eq!(transport, None);
+    }
+
+    #[tokio::test]
+    async fn feature_flag_read_keeps_auth_network_and_timeout_failures_distinct_from_off() {
+        let flag = "desktop.hq-daemon";
+        let auth = feature_flag_read_with_fetch(flag, || async {
+            Ok(HqProHttpResponse {
+                status: 401,
+                body: String::new(),
+                retry_after: None,
+            })
+        })
+        .await;
+        assert_eq!(auth, Err(()));
+
+        let network = feature_flag_read_with_fetch(flag, || async {
+            Err::<HqProHttpResponse, String>("offline".to_string())
+        })
+        .await;
+        assert_eq!(network, Err(()));
+
+        let timeout = feature_flag_read_with_fetch_and_timeout(
+            flag,
+            || std::future::pending::<Result<HqProHttpResponse, String>>(),
+            Duration::from_millis(1),
+        )
+        .await;
+        assert_eq!(timeout, Err(()));
+
+        let off = feature_flag_read_with_fetch(flag, || async {
+            Ok(HqProHttpResponse {
+                status: 200,
+                body: format!(r#"{{"version":1,"flags":{{"{flag}":false}}}}"#),
+                retry_after: None,
+            })
+        })
+        .await;
+        assert_eq!(off, Ok(Some(false)));
     }
 
     #[test]

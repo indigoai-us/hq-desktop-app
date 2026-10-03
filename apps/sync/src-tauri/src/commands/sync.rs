@@ -1114,10 +1114,18 @@ enum ResolveJwtError {
     Other(String),
 }
 
+fn resolve_jwt_refresh_failure(error: cognito::CognitoRefreshError) -> ResolveJwtError {
+    if error.requires_reauth {
+        ResolveJwtError::NeedsReauth
+    } else {
+        ResolveJwtError::Other(error.message)
+    }
+}
+
 /// Fetch the current JWT from the on-disk token cache, refreshing and
 /// persisting it if expired. Terminal refresh rejection invalidates only the
-/// rejected token generation; a temporary failure preserves it but still
-/// routes this run to the reauth surface after the built-in retry is exhausted.
+/// rejected token generation. A temporary failure preserves it and returns
+/// the diagnostic to the sync failure surface without starting reauth.
 async fn resolve_jwt_classified() -> Result<String, ResolveJwtError> {
     let tokens = cognito::get_tokens()
         .await
@@ -1141,7 +1149,7 @@ async fn resolve_jwt_classified() -> Result<String, ResolveJwtError> {
                     .await
                     .map_err(ResolveJwtError::Other)?;
             }
-            Err(ResolveJwtError::NeedsReauth)
+            Err(resolve_jwt_refresh_failure(err))
         }
     }
 }
@@ -3399,6 +3407,21 @@ mod tests {
     use crate::util::test_support::{scoped_home, ENV_MUTEX};
     use std::fs;
     use tempfile::TempDir;
+
+    #[test]
+    fn invalid_client_refresh_failure_does_not_route_sync_to_reauth() {
+        let result = resolve_jwt_refresh_failure(cognito::CognitoRefreshError {
+            message: "Cognito returned status=400 code=invalid_client".to_string(),
+            requires_reauth: false,
+            status_code: Some(400),
+            error_code: Some("invalid_client".to_string()),
+            failure_class: cognito::CognitoRefreshFailureClass::Http4xx,
+        });
+        assert_eq!(
+            result,
+            ResolveJwtError::Other("Cognito returned status=400 code=invalid_client".to_string())
+        );
+    }
 
     // ── Per-file progress coalescing ────────────────────────────────────────
 
