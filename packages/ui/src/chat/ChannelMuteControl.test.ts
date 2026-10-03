@@ -2,8 +2,6 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 
 import ChannelMuteControl from "./ChannelMuteControl.svelte";
 import type { NotifyLevel } from "./notify-level";
@@ -126,16 +124,47 @@ describe("ChannelMuteControl", () => {
     expect(host.querySelector('[role="menu"]')).toBeNull();
   });
 
-  // Owner decision 2026-09-25: mute control now draws a bell (bell-slash when
-  // muted), replacing the earlier speaker glyph.
-  it("draws a bell, not a speaker, and uses background highlight only", () => {
-    const source = readFileSync(
-      resolve(process.cwd(), "src/chat/ChannelMuteControl.svelte"),
-      "utf8",
-    );
-    expect(source).not.toMatch(/border-left/);
-    expect(source).toMatch(/bell/i);
-    expect(source).not.toMatch(/speaker/i);
-    expect(source).toMatch(/\.notify-item\.current\s*\{[^}]*background/);
+  // Owner decision 2026-09-25: the control draws a bell, and a slash across
+  // it only while the channel is muted. The current level is a background
+  // highlight, never a left accent.
+  const BELL_BODY = "M8 2.5";
+  const BELL_CLAPPER = "M6.6 12.5";
+  const BELL_SLASH = "M2.5 2.5l11 11";
+
+  function glyphPaths(id: string): string[] {
+    return [...q(id).querySelectorAll("path")].map((path) => path.getAttribute("d") ?? "");
+  }
+
+  function muteStyles(): string {
+    return [...document.querySelectorAll("style")]
+      .map((node) => node.textContent ?? "")
+      .filter((css) => css.includes("notify-item"))
+      .join("\n");
+  }
+
+  it("draws a bell without a slash while the channel is unmuted", () => {
+    render({ level: "all" });
+    const open = glyphPaths("channel-mute-toggle");
+    expect(open.some((d) => d.includes(BELL_BODY))).toBe(true);
+    expect(open.some((d) => d.includes(BELL_CLAPPER))).toBe(true);
+    expect(open.some((d) => d.includes(BELL_SLASH))).toBe(false);
+  });
+
+  it("adds the slash across the bell while the channel is muted", () => {
+    render({ level: "muted" });
+    const muted = glyphPaths("channel-mute-toggle");
+    expect(muted.some((d) => d.includes(BELL_BODY))).toBe(true);
+    expect(muted.some((d) => d.includes(BELL_SLASH))).toBe(true);
+  });
+
+  it("highlights the current level with a background and no left accent", async () => {
+    render({ level: "mentions" });
+    q("channel-notify-menu-toggle").click();
+    await tick();
+    const current = q("channel-notify-mentions");
+    expect(current.classList.contains("current")).toBe(true);
+    const css = muteStyles();
+    expect(css).toMatch(/notify-item[^{]*current[^{]*\{[^}]*background:\s*var\(--raised\)/);
+    expect(css).not.toMatch(/border-left/);
   });
 });
