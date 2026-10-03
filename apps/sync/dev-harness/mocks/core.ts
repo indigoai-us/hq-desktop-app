@@ -4,6 +4,7 @@
 import type { Workspace } from '../../src/lib/workspaces';
 import { resolveHarnessPersona, type ShellPersona } from '../personas';
 import { resolveHarnessState, resolveLoadingMs, withHarnessState } from '../state-flags';
+import { readsSwitch, switchedHandler, withReadsSwitch } from '../audit-switches';
 import { emit } from './event';
 import { deployAppsFixture } from '../../../../packages/ui/src/library/personal-deployments.fixture';
 
@@ -1787,13 +1788,21 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
     }
   }
   const search = typeof window === 'undefined' ? null : window.location.search;
-  return withHarnessState<T>(resolveHarnessState(search), cmd, () => {
+  if (cmd === 'hq_pro_fetch' && typeof window !== 'undefined') {
+    ((window as Window & { __hqFetchUrls?: string[] }).__hqFetchUrls ??= []).push(String(args?.url ?? ''));
+  }
+  const switched = switchedHandler(cmd, args, search);
+  if (switched) return switched.value as T;
+  const reads = readsSwitch(search);
+  // ?reads= maps onto the state flags so both spellings behave the same.
+  const state = reads === 'fail' ? 'error' : reads === 'empty' ? 'empty' : resolveHarnessState(search);
+  return withReadsSwitch<T>(reads, cmd, () => withHarnessState<T>(state, cmd, () => {
     const handler = handlers[cmd];
     if (handler) return handler(args) as T;
     // Unknown command: log once and resolve null so mount paths don't throw.
     console.debug('[harness] unhandled invoke:', cmd, args);
     return null as T;
-  }, resolveLoadingMs(search));
+  }, resolveLoadingMs(search)), resolveLoadingMs(search));
 }
 
 export class Channel<T = unknown> {

@@ -258,7 +258,7 @@
     <span><i class="ldot"></i>live</span>
     <span><i class="halo-key"></i>someone here now</span>
     {#if nothingActive}<span data-testid="atlas-nothing-active">Nothing active right now</span>{/if}
-    <span class="hint">drag to pan · wheel to zoom · 0 frames all</span>
+    <span class="hint">Drag to pan · Scroll to zoom · Press 0 to frame all</span>
   </div>
   <div class="map-tools">
     <button type="button" class="zoom-btn" aria-label="Zoom out" onclick={() => zoomBy(1 / 1.25)}>−</button>
@@ -285,10 +285,9 @@
     cursor: grabbing;
   }
   .region {
-    font-family: var(--font-mono, "Geist Mono", monospace);
+    /* AUDIT-3: section labels are sans, sentence case, no tracking. */
+    font-family: var(--font-ui, var(--font-sans, "Geist", sans-serif));
     font-size: 11px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
     fill: var(--v4-text-3);
     pointer-events: none;
   }

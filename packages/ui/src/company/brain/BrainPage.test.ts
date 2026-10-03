@@ -349,4 +349,41 @@ describe("US-028 BrainPage", () => {
       expect(document.querySelectorAll("[data-testid='brain-list'] .item")).toHaveLength(1);
     });
   });
+
+  it("AUDIT-3: a failed file read offers Try again and clears once the read works", async () => {
+    let fail = true;
+    const files = {
+      listDir: vi.fn(async () => (fail ? unavailable("io") : ok([]))),
+      getFileContent: vi.fn(async () => ok("")),
+    };
+    component = mount(BrainPage, {
+      target: document.body,
+      props: { page: "knowledge", slug: "acme-retry", files: files as never, library: null, shell: null, settings: null },
+    });
+    await vi.waitFor(() => {
+      flushSync();
+      expect(document.querySelector("[data-testid='brain-read-error']")?.textContent).toContain("Some company files could not be read.");
+    });
+    fail = false;
+    (document.querySelector("[data-testid='brain-retry']") as HTMLButtonElement).click();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(document.querySelector("[data-testid='brain-read-error']")).toBeNull();
+    });
+  });
+
+  it.each([["policies", "No policies yet."], ["skills", "No skills yet."], ["workers", "No workers yet."]] as const)(
+    "AUDIT-3: an empty %s page says so plainly",
+    async (page, copy) => {
+      component = mount(BrainPage, {
+        target: document.body,
+        props: { page, slug: `empty-${page}`, files: null, library: null, shell: null, settings: null },
+      });
+      await vi.waitFor(() => {
+        flushSync();
+        expect(document.querySelector("[data-testid='brain-empty']")?.textContent).toContain(copy);
+      });
+      expect(document.body.textContent).not.toContain("listing");
+    },
+  );
 });

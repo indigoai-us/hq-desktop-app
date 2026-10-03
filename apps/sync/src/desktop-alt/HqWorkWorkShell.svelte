@@ -1354,10 +1354,10 @@
       </h1>
       <p>
         {signedOutReason === 'expired'
-          ? 'Sign in again to continue using HQ Work.'
+          ? 'Sign in again to continue using HQ.'
           : signedOutReason === 'non-human'
-            ? 'The HQ credentials saved on this device belong to a fleet agent, not to a person, so HQ Work will not open as that identity. Sign in with your own HQ account to continue.'
-            : 'This device no longer has an active HQ Work session.'}
+            ? 'The HQ sign-in saved on this computer belongs to an agent, not a person. Sign in with your own HQ account to continue.'
+            : 'Sign in to pick up where you left off on this computer.'}
       </p>
       <div class="workspace-signin">
         <SignInPrompt

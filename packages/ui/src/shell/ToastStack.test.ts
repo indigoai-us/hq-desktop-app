@@ -289,13 +289,16 @@ describe("sync toast copy guard", () => {
   });
 
   it("maps sync states to plain copy with counted progress", () => {
-    expect(syncToastCopy(syncing(28, 3), true)).toEqual({
+    expect(syncToastCopy(syncing(28, 3), true, false, () => "Acme")).toEqual({
       state: "busy",
       title: "Syncing 28 files for Acme",
       detail: "3 of 28 done",
       progress: 3 / 28,
     });
     expect(syncToastCopy(syncing(0, 2), true)).toMatchObject({ detail: "2 files done", progress: "indeterminate" });
+    // AUDIT-3: the toast names a company only by display name, never the slug.
+    expect(syncToastCopy({ ...syncing(28, 3), company: "acme-co" }, true).title).toBe("Syncing 28 files");
+    expect(syncToastCopy({ ...syncing(28, 3), company: "acme-co" }, true, false, (slug) => (slug === "acme-co" ? "Acme Co" : null)).title).toBe("Syncing 28 files for Acme Co");
     expect(syncToastCopy(emptySyncStatus(), true)).toMatchObject({ state: "done", title: "Files up to date" });
     expect(syncToastCopy(emptySyncStatus(), false).state).toBe("none");
     expect(syncToastCopy(emptySyncStatus(), false, true).title).toBe("Sync is paused");

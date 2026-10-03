@@ -91,6 +91,8 @@ const RAW_FAILURE_SHAPES: readonly RegExp[] = [
   /\b(?:HTTP|status)\s*[:=]?\s*\d{3}\b/i,
   /\b\d{3}\s+(?:Bad Request|Unauthorized|Forbidden|Not Found|Conflict|Internal Server Error)\b/i,
   /\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b/,
+  // AUDIT-3: host command names (local_bots_create) are machine text too.
+  /\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/,
   /type="|slug="|uid="/,
   /\b(?:Error|TypeError|RangeError|SyntaxError):/,
   /\bat\s+\S+\s+\([^)]*:\d+:\d+\)/,

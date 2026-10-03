@@ -337,4 +337,10 @@
     color: var(--v4-text-2);
     font: 400 13px/1.45 var(--ts-font);
   }
+  /* AUDIT-3: the shell focus ring, not the browser default. */
+  .ts-act:focus-visible,
+  .ts-x:focus-visible {
+    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
+    outline-offset: 2px;
+  }
 </style>

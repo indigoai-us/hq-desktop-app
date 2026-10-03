@@ -10,6 +10,7 @@
    * Obsidian's file pane.
    */
   import { untrack } from "svelte";
+  import RailButton from "../../common/button/RailButton.svelte";
   import type { Vault, TreeEntry } from "./vault-model.js";
   import { toTreeEntry, visibleEntries } from "./vault-model.js";
 
@@ -59,7 +60,9 @@
     if (gen !== generation) return;
     loading = { ...loading, [path]: false };
     if (!res.ok) {
-      if (path === vault.root) rootError = res.message || "This vault could not be read.";
+      // AUDIT-3: plain copy only; the host message goes to the log.
+      console.warn("VaultTree: folder read failed:", path, res.message);
+      if (path === vault.root) rootError = "Couldn't read this vault.";
       children = { ...children, [path]: [] };
       return;
     }
@@ -236,7 +239,10 @@
   data-testid="vault-tree"
 >
   {#if rootError}
-    <p class="vt-note" role="status">{rootError}</p>
+    <div class="vt-note vt-error" role="alert" data-testid="vault-tree-error">
+      <p>{rootError}</p>
+      <RailButton icon="refresh" data-testid="vault-tree-retry" onclick={() => { rootError = null; void load(vault.root); }}>Try again</RailButton>
+    </div>
   {:else if loading[vault.root] && !children[vault.root]}
     <div class="vt-skeleton" aria-hidden="true">
       {#each [72, 54, 64, 40, 58] as w, i (i)}
@@ -393,6 +399,8 @@
       transform: rotate(360deg);
     }
   }
+  .vt-error { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+  .vt-error p { margin: 0; }
   .vt-note {
     margin: 12px 10px;
     color: var(--v4-text-3);

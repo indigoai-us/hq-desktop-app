@@ -127,8 +127,12 @@
       : 0,
   );
 
+  // AUDIT-3: Try again on a failed read re-runs the load below.
+  let readAttempt = $state(0);
+
   $effect(() => {
     const key = slug;
+    void readAttempt;
     const hit = readTeamCache(key);
     if (hit) {
       view = hit.view;
@@ -287,7 +291,10 @@
       </div>
     {:else}
       {#if view.error}
-        <p class="note" role="alert">{view.error}</p>
+        <div class="note load-error" role="alert" data-testid="team-load-error">
+          <p>{view.error}</p>
+          <RailButton icon="refresh" data-testid="team-retry" onclick={() => (readAttempt += 1)}>Try again</RailButton>
+        </div>
       {/if}
       {#if showHumans}
         <div class="sech" data-testid="team-section-label">Humans · {humans.length}</div>
@@ -580,6 +587,8 @@
   .meta { color: var(--t3); font-size: 13px; }
   .empty { margin: 0; padding: 7px 8px; color: var(--t3); font-size: 13px; line-height: 17px; }
   .note { margin: 16px 8px 0; color: var(--t3); font-size: 13px; }
+  .load-error { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+  .load-error p { margin: 0; }
   .scrim { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(0, 0, 0, 0.45); z-index: 20; }
   .sheet {
     width: 480px;
