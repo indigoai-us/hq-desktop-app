@@ -179,6 +179,12 @@
     writeFilesConnectCache(s, data);
   }
 
+  // AUDIT-3: Try again after a failed secrets or deployments read.
+  function retryRefresh(): void {
+    const s = slug;
+    void refresh(s, () => slug === s);
+  }
+
   const vaultRows = $derived(filterVault(data.nodes, vaultTab, query));
 
   // The sidepane shows these same totals (QA-014): every row, before tabs and search.
@@ -827,7 +833,10 @@
           {@render skeletonRows()}
         {:else if secretRows.length === 0}
           {#if secretsError}
-            <p class="empty-line" data-testid="secrets-empty">{secretsError}</p>
+            <div class="empty" role="alert" data-testid="secrets-empty">
+              <span class="empty-title">{secretsError}</span>
+              <RailButton icon="refresh" data-testid="secrets-retry" onclick={retryRefresh}>Try again</RailButton>
+            </div>
           {:else}
             <ListEmptyState
               total={secrets.length}
@@ -886,8 +895,13 @@
       <div class="list" data-testid="deployments-skeleton" aria-busy="true">{@render skeletonRows()}</div>
     {:else if deployments.length === 0}
       <div class="empty" data-testid="deployments-empty">
-        <p>{deploymentsError ?? "Nothing deployed yet"}</p>
-        <RailButton icon="send" onclick={openDeploy}>Deploy from a project</RailButton>
+        {#if deploymentsError}
+          <p role="alert">{deploymentsError}</p>
+          <RailButton icon="refresh" data-testid="deployments-retry" onclick={retryRefresh}>Try again</RailButton>
+        {:else}
+          <p>Nothing deployed yet</p>
+          <RailButton icon="send" onclick={openDeploy}>Deploy from a project</RailButton>
+        {/if}
       </div>
     {:else}
       <div class="split">
@@ -913,8 +927,9 @@
               <div class="actions">
                 <RailButton icon="external" disabled={!deployCurrent.url} onclick={() => openExternal?.(deployCurrent.url)}>Open</RailButton>
                 {#if deployActions}<RailButton icon="refresh" data-testid="redeploy" onclick={() => askRedeploy(deployCurrent)}>Redeploy</RailButton>{/if}
-                <RailButton icon="key" data-testid="deploy-access" onclick={openDeployAccess}>Access</RailButton>
+                {#if deployCurrent.appId}<RailButton icon="key" data-testid="deploy-access" onclick={openDeployAccess}>Access</RailButton>{/if}
               </div>
+              {#if !deployCurrent.appId}<p class="meta" data-testid="deploy-access-unmanaged">Access for this deployment is managed where it was deployed.</p>{/if}
             </div>
           {/if}
         </aside>
@@ -935,9 +950,9 @@
         <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M3.5 3.5l7 7M10.5 3.5l-7 7" /></svg>
       </button>
     </header>
-    {#if sheet === "deploy-access" && deployCurrent}
+    {#if sheet === "deploy-access" && deployCurrent?.appId}
       <DeployAccessForm
-        appId={deployCurrent.id}
+        appId={deployCurrent.appId}
         appName={deployCurrent.name}
         scope={slug}
         request={accessRequest}

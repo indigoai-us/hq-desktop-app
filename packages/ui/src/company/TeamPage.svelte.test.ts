@@ -155,3 +155,35 @@ describe("TeamPage roster (QA-022)", () => {
     expect(rows.find((text) => text.includes("Di"))).toContain("owner");
   });
 });
+
+describe("TeamPage failed read (AUDIT-3)", () => {
+  it("offers Try again and shows the team once the read succeeds", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    let fail = true;
+    const company = {
+      getTeamTelemetry: vi.fn(async () =>
+        fail
+          ? ({ ok: false as const, reason: "http", message: "HTTP 502 Bad Gateway" })
+          : ({ ok: true as const, value: { perMember: [] } }),
+      ),
+      listMembers: vi.fn(async () =>
+        fail
+          ? ({ ok: true as const, value: [] })
+          : ({ ok: true as const, value: [{ personUid: "prs_ana", displayName: "Ana Ruiz", email: "ana@example.com" }] }),
+      ),
+    };
+    const target = render({ slug: "acme-retry", company });
+    await vi.waitFor(() => {
+      flushSync();
+      expect(target.querySelector("[data-testid='team-load-error']")?.textContent).toContain("Could not read the team.");
+    });
+    expect(target.textContent).not.toContain("502");
+    fail = false;
+    (target.querySelector("[data-testid='team-retry']") as HTMLButtonElement).click();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(target.querySelector("[data-testid='team-load-error']")).toBeNull();
+      expect(target.querySelectorAll("[data-testid='team-row']")).toHaveLength(1);
+    });
+  });
+});

@@ -248,3 +248,12 @@ describe("localBotInCompany (OWNER-014)", () => {
     expect(localBotsForCompany(bots, null, workspaces)).toEqual([]);
   });
 });
+
+describe("plainBotFailure host command text (AUDIT-3)", () => {
+  it("never shows a host command name, falls back to the plain sentence", () => {
+    const fallback = "Could not create setup.";
+    expect(plainBotFailure("harness: simulated failure for local_bots_create", fallback)).toBe(fallback);
+    expect(plainBotFailure("local_bots_create failed: spawn hq ENOENT", fallback)).toBe(fallback);
+    expect(isRawBotFailureText("Claude Code is not signed in on this Mac.")).toBe(false);
+  });
+});

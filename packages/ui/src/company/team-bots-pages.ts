@@ -313,7 +313,7 @@ export async function readCompanyTeam(opts: {
   }
   if (!rawRes.ok && roster.length === 0) {
     console.warn("[team] telemetry read failed", rawRes.message ?? rawRes.reason);
-    return { view: empty, invites: [], error: "Could not read the team. Try again in a moment." };
+    return { view: empty, invites: [], error: "Could not read the team." };
   }
   if (!rawRes.ok) console.warn("[team] telemetry read failed; showing the roster", rawRes.message ?? rawRes.reason);
   const fromTelemetry = rawRes.ok

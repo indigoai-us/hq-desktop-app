@@ -66,6 +66,7 @@
     flushReceipts,
     launchReceipt,
     recordReceipt,
+    shouldSendFirstLaunchReceipt,
   } from '../../lib/desktop-session-continuation';
   import {
     NO_AI_TOOLS,
@@ -121,7 +122,12 @@
     yourComputerNounFor,
   } from '../../lib/onboarding-platform';
   import { postOptIn, markConsentRepromptShown } from '../../lib/onboarding-telemetry';
-  import { emitDesktopOperationalTelemetry } from '../../lib/desktop-telemetry';
+  import {
+    emitDesktopAuthFailure,
+    emitDesktopAuthProgress,
+    emitDesktopOperationalTelemetry,
+    type DesktopAuthProgressStep,
+  } from '../../lib/desktop-telemetry';
   import { inviteFailedEvent, inviteSentEvent, planSelectedEvent } from '../../lib/cdp-funnel-events';
   import {
     createOnboardingStepTelemetry,
@@ -917,6 +923,8 @@
     loadingProvider = provider;
     signInError = '';
     const telemetryProvider = provider === 'Google' ? 'google' : 'microsoft';
+    let authStep: DesktopAuthProgressStep = 'sign_in_started';
+    void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep });
     recordStep(WELCOME_SIGNIN_STEP_INDEX, 'started', { provider: telemetryProvider });
 
     try {
@@ -933,12 +941,16 @@
         throw new Error('The desktop shell cannot open a browser in this environment.');
       }
       await openExternal(authorizeUrl);
+      authStep = 'provider_page_opened';
+      void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep });
       if (!isCurrentSignInCall(call)) return;
 
       const { code } = await invokeCommand<{ code: string }>(
         'oauth_listen_for_code',
         { state },
       );
+      authStep = 'callback_received';
+      void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep });
       if (!isCurrentSignInCall(call)) return;
 
       const result = await invokeCommand<{
@@ -949,8 +961,15 @@
       if (!isCurrentSignInCall(call)) return;
 
       if (result.authenticated) {
+        authStep = 'token_exchange_ok';
+        void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep });
         await completeAuthenticatedSignIn(call, { provider: telemetryProvider });
       } else {
+        void emitDesktopAuthFailure({
+          provider: telemetryProvider,
+          step: authStep,
+          error: 'authentication rejected',
+        });
         signInError = 'Authentication failed. Please try again.';
         recordStep(WELCOME_SIGNIN_STEP_INDEX, 'failed', {
           provider: telemetryProvider,
@@ -959,6 +978,7 @@
       }
     } catch (err) {
       if (!isCurrentSignInCall(call)) return;
+      void emitDesktopAuthFailure({ provider: telemetryProvider, step: authStep, error: err });
       console.error('[onboarding-signin] sign-in failed:', err);
       const errorKind = classifyContinuationError(err);
       if (!stateRecoveryAttempt && (errorKind === 'expired' || errorKind === 'state_mismatch')) {
@@ -999,7 +1019,10 @@
     // `firstLaunchRecorded` is the existing durable first-installation gate.
     // It survives re-renders and a resumed wizard, while recordReceipt keeps
     // an undelivered receipt's event id and timestamp stable for retry.
-    if (firstLaunch && onboardingTelemetry.recordFirstLaunch()) {
+    if (
+      shouldSendFirstLaunchReceipt(firstLaunch, context.suppressFirstLaunchTelemetry) &&
+      onboardingTelemetry.recordFirstLaunch()
+    ) {
       void recordReceipt(deps, launchReceipt(deps)).catch(() => undefined);
     }
   }

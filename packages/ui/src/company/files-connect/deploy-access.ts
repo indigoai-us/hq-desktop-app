@@ -87,6 +87,26 @@ export interface AppAccessHint {
   accessMode?: string | null;
 }
 
+export const ACCESS_ERROR_COPY = {
+  load: "Couldn't load who can open this deployment. Try again.",
+  save: "Couldn't save access. Nothing changed. Try again.",
+  noRecord: "This deployment has no access settings here. Access is managed where it was deployed.",
+  offline: "Couldn't reach HQ. Check your connection and try again.",
+  signedOut: "You're signed out. Sign in again, then try again.",
+  forbidden: "Only company admins and owners can change who opens this deployment.",
+} as const;
+
+/** Plain copy for an access failure; the raw text goes to the console only. */
+export function accessErrorCopy(err: unknown, kind: "load" | "save"): string {
+  const raw = err instanceof Error ? err.message : typeof err === "string" ? err : "";
+  console.error(`[deploy-access] ${kind} failed:`, raw || err);
+  if (/HTTP 404\b|invalid app id/i.test(raw)) return ACCESS_ERROR_COPY.noRecord;
+  if (/^auth:|HTTP 401\b/i.test(raw)) return ACCESS_ERROR_COPY.signedOut;
+  if (/HTTP 403\b/i.test(raw)) return ACCESS_ERROR_COPY.forbidden;
+  if (/fetch:|network|offline/i.test(raw)) return ACCESS_ERROR_COPY.offline;
+  return ACCESS_ERROR_COPY[kind];
+}
+
 const base = (appId: string) => `/api/apps/${encodeURIComponent(appId)}`;
 
 /** Thin client over the host request; every call returns the parsed JSON. */

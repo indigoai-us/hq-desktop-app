@@ -28,6 +28,7 @@
   import QuickSwitcher from "./QuickSwitcher.svelte";
   import ShareFileSheet from "./ShareFileSheet.svelte";
   import VaultTree from "./VaultTree.svelte";
+  import RailButton from "../../common/button/RailButton.svelte";
   import {
     PERSONAL_VAULT,
     breadcrumbs,
@@ -123,7 +124,17 @@
     if (gen !== summaryGeneration) return;
     summaryLoading = false;
     if (res.ok) summary = res.value;
-    else summaryError = res.message || "This vault could not be read.";
+    else {
+      // AUDIT-3: plain copy only; the host message goes to the log.
+      console.warn("VaultExplorer: vault summary failed:", res.message);
+      summaryError = "Couldn't read this vault.";
+    }
+  }
+
+  // AUDIT-3-22: one Try again retries both the tree and the vault home.
+  function retryVault(): void {
+    treeReload += 1;
+    void loadSummary(vault, showSystem);
   }
 
   $effect(() => {
@@ -137,6 +148,8 @@
   let tabs = $state<string[]>([]);
   let activeTab = $state(0);
   const activePath = $derived(tabs[activeTab] ?? null);
+  // AUDIT-3-22: the vault home owns the one Try again while it is shown with an error.
+  const homeOwnsRetry = $derived(!activePath && summaryError !== null && !summary && !summaryLoading);
   let content = $state<Record<string, { text?: string; size?: number; truncated?: boolean; error?: string }>>({});
   let treeReload = $state(0);
 
@@ -203,14 +216,14 @@
         ...content,
         [p]: res.ok
           ? { text: res.value.text, size: res.value.size, truncated: res.value.truncated }
-          : { error: res.message || "This file could not be read." },
+          : { error: "Couldn't read this file." },
       };
       return;
     }
     const res = await adapter.files.getFileContent(p);
     content = {
       ...content,
-      [p]: res.ok ? { text: String(res.value ?? "") } : { error: res.message || "This file could not be read." },
+      [p]: res.ok ? { text: String(res.value ?? "") } : { error: "Couldn't read this file." },
     };
   }
 
@@ -285,7 +298,10 @@
   async function reveal(p: string): Promise<void> {
     revealError = null;
     const res = await adapter.files.revealInFinder(p);
-    if (!res.ok) revealError = res.message || `Could not open ${fileManagerName}.`;
+    if (!res.ok) {
+      console.warn("VaultExplorer: reveal failed:", res.message);
+      revealError = `Could not open ${fileManagerName}.`;
+    }
   }
 
   const canReveal = $derived(adapter.isAvailable("localFiles"));
@@ -339,7 +355,7 @@
       </button>
     </div>
     <div class="vx-tree">
-      <VaultTree {vault} {listDir} {activePath} {showSystem} reloadKey={treeReload} onopen={(p, o) => openFile(p, o)} />
+      <VaultTree {vault} {listDir} {activePath} {showSystem} reloadKey={treeReload} onopen={(p, o) => openFile(p, o)} retryHere={!homeOwnsRetry} onretry={retryVault} />
     </div>
     <footer class="vx-side-foot">
       {#if vault.kind === "personal"}
@@ -425,7 +441,10 @@
             {:else if summaryLoading}
               <p class="vx-muted">Reading the vault…</p>
             {:else if summaryError}
-              <p class="vx-muted">{summaryError}</p>
+              <div class="vx-load-error" role="alert" data-testid="vault-home-error">
+                <p class="vx-muted">{summaryError}</p>
+                <RailButton icon="refresh" data-testid="vault-home-retry" onclick={retryVault}>Try again</RailButton>
+              </div>
             {:else if !vaultApi}
               <p class="vx-muted">Pick a file on the left to start reading.</p>
             {/if}
@@ -615,8 +634,8 @@
     background: transparent;
     color: var(--v4-text-1);
     font: inherit;
-    font-size: 14px;
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     cursor: pointer;
   }
   .vx-vault-btn:hover {
@@ -643,7 +662,7 @@
     background: color-mix(in srgb, var(--v4-link) 18%, var(--v4-raised));
     color: var(--v4-link);
     font-size: 12px;
-    font-weight: 700;
+    font-weight: 500;
   }
   .vx-avatar.personal {
     background: var(--v4-control-faint);
@@ -692,7 +711,7 @@
   .vx-menu-kind {
     margin-left: auto;
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: 13px;
   }
   .vx-search {
     display: flex;
@@ -717,6 +736,7 @@
   .vx-search kbd {
     margin-left: auto;
     font: inherit;
+    font-family: var(--font-mono, ui-monospace, Menlo, monospace);
     font-size: 11px;
   }
   .vx-tree {
@@ -730,7 +750,7 @@
     padding: 10px 14px 12px;
     border-top: 1px solid var(--v4-hairline);
     color: var(--v4-text-3);
-    font-size: 11.5px;
+    font-size: 13px;
   }
   .vx-toggle {
     display: flex;
@@ -782,7 +802,7 @@
     background: transparent;
     color: inherit;
     font: inherit;
-    font-size: 12.5px;
+    font-size: 13px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -829,7 +849,7 @@
     gap: 6px;
     min-width: 0;
     color: var(--v4-text-3);
-    font-size: 12.5px;
+    font-size: 13px;
     white-space: nowrap;
     overflow: hidden;
   }
@@ -873,7 +893,7 @@
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
     cursor: pointer;
   }
   .vx-action:hover {
@@ -951,28 +971,26 @@
   .vx-eyebrow {
     margin: 0 0 8px;
     color: var(--v4-text-3);
-    font-size: 12px;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    font-size: 13px;
   }
   .vx-home h1 {
     margin: 0;
-    font-size: 36px;
-    font-weight: 680;
-    letter-spacing: -0.025em;
+    font-size: var(--type-title, 20px);
+    font-weight: var(--type-title-weight, 500);
+    line-height: var(--type-title-line, 1.25);
   }
   .vx-lede {
     max-width: 560px;
     margin: 12px 0 28px;
     color: var(--v4-text-2);
-    font-size: 15px;
-    line-height: 1.6;
+    font-size: 13px;
+    line-height: 1.45;
   }
   .vx-home h2 {
     margin: 36px 0 12px;
     color: var(--v4-text-2);
     font-size: 13px;
-    font-weight: 600;
+    font-weight: 500;
   }
   .vx-stats {
     display: grid;
@@ -988,13 +1006,13 @@
     background: var(--v4-raised);
   }
   .vx-stats strong {
-    font-size: 24px;
-    font-weight: 650;
+    font-size: 13px;
+    font-weight: 500;
     font-variant-numeric: tabular-nums;
   }
   .vx-stats span {
     color: var(--v4-text-3);
-    font-size: 12px;
+    font-size: 13px;
   }
   .vx-areas {
     display: grid;
@@ -1009,12 +1027,12 @@
     border-radius: 10px;
   }
   .vx-area-name {
-    font-size: 14px;
-    font-weight: 550;
+    font-size: 13px;
+    font-weight: 500;
   }
   .vx-area-count {
     color: var(--v4-text-3);
-    font-size: 12px;
+    font-size: 13px;
   }
   .vx-list {
     display: grid;
@@ -1035,7 +1053,7 @@
     background: transparent;
     color: var(--v4-text-1);
     font: inherit;
-    font-size: 13.5px;
+    font-size: 13px;
     text-align: left;
     cursor: pointer;
   }
@@ -1046,11 +1064,13 @@
   .vx-list .vx-muted {
     margin-left: auto;
   }
+  .vx-load-error { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+  .vx-load-error p { margin: 0; }
   .vx-muted {
     color: var(--v4-text-3);
   }
   .small {
-    font-size: 12px;
+    font-size: 13px;
   }
 
   /* ---- right rail ---- */
@@ -1070,8 +1090,8 @@
     gap: 6px;
     margin: 0 0 8px 6px;
     color: var(--v4-text-3);
-    font-size: 11px;
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     letter-spacing: 0.05em;
     text-transform: uppercase;
   }
@@ -1080,7 +1100,7 @@
     border-radius: 999px;
     background: var(--v4-control-faint);
     color: var(--v4-text-2);
-    font-size: 10.5px;
+    font-size: 13px;
     letter-spacing: 0;
   }
   .vx-outline,
@@ -1100,7 +1120,7 @@
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
-    font-size: 12.5px;
+    font-size: 13px;
     line-height: 1.4;
     text-align: left;
     cursor: pointer;
@@ -1117,7 +1137,7 @@
     font-size: 13px;
   }
   .vx-links .small {
-    font-size: 11px;
+    font-size: 13px;
   }
 
   /* The note keeps its reading width; below that the rail folds into the
@@ -1139,8 +1159,8 @@
     gap: 6px;
     margin: 0 0 8px;
     color: var(--v4-text-3);
-    font-size: 11px;
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     letter-spacing: 0.05em;
     text-transform: uppercase;
   }

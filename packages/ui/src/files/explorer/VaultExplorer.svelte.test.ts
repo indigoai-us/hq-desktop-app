@@ -317,3 +317,39 @@ describe("VaultExplorer", () => {
     expect(host.querySelector('[data-testid="file-share-sheet"]')).toBeNull();
   });
 });
+
+describe("VaultExplorer failed read (AUDIT-3-22)", () => {
+  it("one failure shows one Try again, in the vault home, and it retries the tree too", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    let fail = true;
+    const calls: string[] = [];
+    const adapter = makeAdapter(calls);
+    const listOk = adapter.files!.listDir;
+    const summaryOk = adapter.files!.vault!.summary;
+    (adapter.files as unknown as Record<string, unknown>).listDir = vi.fn(async (p: string) =>
+      fail ? { ok: false as const, message: "HTTP 503" } : listOk(p),
+    );
+    (adapter.files!.vault as unknown as Record<string, unknown>).summary = vi.fn(async (root: string, sys: boolean) =>
+      fail ? { ok: false as const, message: "HTTP 503" } : summaryOk(root, sys),
+    );
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(VaultExplorer, {
+      target: host,
+      props: { adapter, companies, vaultId: "company:acme", onlocationchange: vi.fn() } as never,
+    });
+    await settle();
+    expect(host.querySelector('[data-testid="vault-home-error"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="vault-tree-error"]')).toBeTruthy();
+    const retries = [...host.querySelectorAll("button")].filter((b) => b.textContent?.trim() === "Try again");
+    expect(retries).toHaveLength(1);
+    expect(retries[0]!.getAttribute("data-testid")).toBe("vault-home-retry");
+    fail = false;
+    retries[0]!.click();
+    await settle(10);
+    expect(host.querySelector('[data-testid="vault-tree-error"]')).toBeNull();
+    expect(host.querySelector('[data-testid="vault-home-error"]')).toBeNull();
+    expect(rowNames(host).length).toBeGreaterThan(0);
+    expect(host.querySelector('[data-testid="vault-home"]')!.textContent).toContain("3notes");
+  });
+});

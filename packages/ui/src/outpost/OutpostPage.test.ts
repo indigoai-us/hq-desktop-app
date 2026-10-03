@@ -291,3 +291,19 @@ describe("QA-096 Outpost sidebar host name", () => {
     }
   });
 });
+
+describe("AUDIT-2 Outpost filter labels", () => {
+  it("renders job and run filter tabs and run statuses in sentence case", async () => {
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const component = mount(OutpostPage, { target, props: {} });
+    flushSync();
+    const tabs = [...target.querySelectorAll(".tabs button:not([data-testid])")].map((b) => b.textContent?.trim() ?? "");
+    expect(tabs).toEqual(expect.arrayContaining(["All", "Active", "Paused", "Failing", "OK", "Failed", "Running"]));
+    expect(tabs.filter((t) => /^[a-z]/.test(t))).toEqual([]);
+    const statuses = [...target.querySelectorAll(".run .st")].map((s) => s.textContent?.trim() ?? "");
+    expect(statuses.length).toBeGreaterThan(0);
+    expect(statuses.filter((t) => /^[a-z]/.test(t))).toEqual([]);
+    await unmount(component);
+  });
+});

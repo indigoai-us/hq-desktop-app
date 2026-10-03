@@ -8,6 +8,7 @@
    * filter share one control row; New project remains the primary action.
    */
   import { onMount } from "svelte";
+  import RailButton from "../common/button/RailButton.svelte";
   import { publishCompanyPageCount } from "../shell/company-page-counts.svelte.js";
   import type { PlatformAdapter } from "@hq/platform";
   import { buildClaudeCodeUrl } from "../files/claude-code-link.js";
@@ -520,8 +521,12 @@
       : (stories.find((story) => story.id === selectedStoryId) ?? null),
   );
 
+  // AUDIT-3: Try again after a failed read re-runs the load below.
+  let loadAttempt = $state(0);
+
   $effect(() => {
     const activeSlug = slug;
+    void loadAttempt;
     error = null;
     const companyChanged = loadedSlug !== activeSlug;
     loadedSlug = activeSlug;
@@ -605,7 +610,7 @@
         }
         console.error("CompanyProjectsPage load failed:", err);
         if (!cancelled) {
-          error = "Projects unavailable. Try again after a sync.";
+          error = "Couldn't read this company's projects.";
           objectives = readGoalsCache(goalsStorage, activeSlug)?.objectives ?? [];
           projects = [];
         }
@@ -1094,7 +1099,10 @@
     </div>
 
     {#if error}
-      <div class="projects-error" role="alert">{error}</div>
+      <div class="projects-error" role="alert" data-testid="projects-load-error">
+        <p>{error}</p>
+        <RailButton icon="refresh" data-testid="projects-retry" onclick={() => (loadAttempt += 1)}>Try again</RailButton>
+      </div>
     {/if}
 
     <div class="portfolio-body" aria-busy={loading}>
@@ -2060,7 +2068,12 @@
     opacity: 0.52;
   }
 
+  .projects-error p { margin: 0; }
   .projects-error {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
     padding: 12px 0;
     border: 0;
     border-top: 1px solid var(--v4-hairline);

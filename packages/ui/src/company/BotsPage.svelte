@@ -62,6 +62,7 @@
   // Clearing `selected` alone let the first-row fallback reopen it at once.
   let dismissed = $state(false);
   let pages = $state(1);
+  let cloudFailed = $state(false);
 
   function localRows(): BotListRow[] {
     // OWNER-014: only bots that are members of (or moving to) this company.
@@ -81,40 +82,53 @@
   const rows = $derived(filterBots([...localRows(), ...cloud], filter));
   // The sidepane Bots row shows this same total, before the filter (QA-014).
   $effect(() => {
-    if (cloudPhase === "ready") publishCompanyPageCount(companyUid, "bots", localRows().length + cloud.length);
+    if (cloudPhase === "ready" && !cloudFailed) publishCompanyPageCount(companyUid, "bots", localRows().length + cloud.length);
   });
   const page = $derived(pageRows(rows, pages));
   const current = $derived(
     dismissed ? null : (rows.find((row) => row.uid === selected) ?? rows[0] ?? null),
   );
-  const empty = $derived(cloudPhase === "ready" && localRows().length === 0 && cloud.length === 0);
+  const empty = $derived(cloudPhase === "ready" && !cloudFailed && localRows().length === 0 && cloud.length === 0);
+
+  // AUDIT-3-17: a failed cloud read shows the failed-read line and Try again,
+  // never "No bots in this company yet."; local rows stay visible.
+  let cancelled = false;
+
+  async function loadCloud(): Promise<void> {
+    const agents = adapter?.agents;
+    if (!agents?.listMobileRoster) {
+      cloudPhase = "ready";
+      return;
+    }
+    cloudFailed = false;
+    cloudPhase = "shimmer";
+    try {
+      const result = await agents.listMobileRoster(companyUid);
+      if (cancelled) return;
+      if (result.ok) {
+        cloud = cloudBotsFromRoster(result.value, { companies }).map((bot) => ({
+          uid: bot.uid,
+          name: bot.displayName,
+          kind: "cloud" as const,
+          live: bot.status === "WORKING",
+          status: bot.phase || bot.status,
+          detail: bot.companyLabel ?? "Cloud",
+          canPause: bot.canManage,
+        }));
+      } else {
+        console.error("[bots] cloud roster read failed", result.reason);
+        cloudFailed = true;
+      }
+    } catch (err) {
+      console.error("[bots] cloud roster read failed", err);
+      if (!cancelled) cloudFailed = true;
+    } finally {
+      if (!cancelled) cloudPhase = "ready";
+    }
+  }
 
   onMount(() => {
-    let cancelled = false;
-    void (async () => {
-      const agents = adapter?.agents;
-      if (!agents?.listMobileRoster) {
-        cloudPhase = "ready";
-        return;
-      }
-      try {
-        const result = await agents.listMobileRoster(companyUid);
-        if (cancelled) return;
-        if (result.ok) {
-          cloud = cloudBotsFromRoster(result.value, { companies }).map((bot) => ({
-            uid: bot.uid,
-            name: bot.displayName,
-            kind: "cloud" as const,
-            live: bot.status === "WORKING",
-            status: bot.phase || bot.status,
-            detail: bot.companyLabel ?? "Cloud",
-            canPause: bot.canManage,
-          }));
-        }
-      } finally {
-        if (!cancelled) cloudPhase = "ready";
-      }
-    })();
+    void loadCloud();
     return () => {
       cancelled = true;
     };
@@ -164,6 +178,12 @@
     <RailButton icon="plus" variant="primary" type="button" data-testid="bots-new" onclick={() => onaddbot?.()}>New bot</RailButton>
   </div>
 
+  {#if cloudFailed}
+    <div class="load-error" role="alert" data-testid="bots-load-error">
+      <p>Couldn't read this company's cloud bots.</p>
+      <RailButton icon="refresh" data-testid="bots-retry" onclick={() => void loadCloud()}>Try again</RailButton>
+    </div>
+  {/if}
   {#if empty}
     <p class="empty-state" data-testid="bots-empty">No bots in this company yet.</p>
   {:else}
@@ -326,6 +346,8 @@
     padding: 4px 8px;
   }
   .empty-state { margin: 0; padding: 48px 16px; text-align: center; color: var(--t3); font-size: 13px; }
+  .load-error { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 12px 16px; }
+  .load-error p { margin: 0; }
   .split { display: flex; min-height: 0; flex: 1; }
   .roster { flex: 1; min-width: 0; min-height: 0; overflow: auto; padding: 12px; display: flex; flex-direction: column; }
   .inspector { flex: 0 0 340px; width: 340px; min-height: 0; border-left: 1px solid var(--line); display: flex; flex-direction: column; }

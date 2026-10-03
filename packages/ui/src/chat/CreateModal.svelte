@@ -660,11 +660,19 @@
   // step. Read once, at mount — a later prop change must not yank the person
   // out of the step they are on.
   let initialStepApplied = false;
+  // True while the bot step is the one the modal opened on (Messages > New >
+  // New bot, Settings > Bots > New bot). Escape then closes the modal instead
+  // of dropping the person on a search step they never saw; the back arrow
+  // still returns to search, and clears this so later visits step back.
+  let botOpenedDirect = false;
   $effect(() => {
     if (initialStepApplied) return;
     initialStepApplied = true;
     if (initialStep === "company" && companyCreate) void enterCompanyStep("");
-    else if (initialStep === "bot") newBot();
+    else if (initialStep === "bot") {
+      botOpenedDirect = true;
+      newBot();
+    }
   });
   let query = $state("");
   let queryDebounced = $state("");
@@ -1450,6 +1458,10 @@
       }
       if (step === "bot") {
         if (entryBusy) return;
+        if (botOpenedDirect) {
+          closeAll();
+          return;
+        }
         entryError = null;
         step = "find";
         return;
@@ -2179,6 +2191,7 @@
             disabled={creating || emailSending || entryBusy !== null || companyBusy}
             onclick={() => {
               if (step === "bot") {
+                botOpenedDirect = false;
                 entryError = null;
                 step = "find";
               } else if (step === "company") backFromCompany();
@@ -2646,6 +2659,7 @@
           directCloud,
           oncreate: canCreateLocalBot ? submitLocalBot : null,
           onback: () => {
+            botOpenedDirect = false;
             entryError = null;
             step = "find";
           },

@@ -973,6 +973,7 @@ jobs:
         env:
           HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO: ${{ secrets.HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO }}
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          HQ_CI_FIRST_LAUNCH_TELEMETRY_SUPPRESSED: "1"
         run: |
           set -euo pipefail
           if [ -z "${HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO:-}" ]; then
@@ -1747,6 +1748,7 @@ jobs:
         env:
           HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO: ${{ secrets.HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO }}
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          HQ_CI_FIRST_LAUNCH_TELEMETRY_SUPPRESSED: "1"
         run: |
           set -euo pipefail
           if [ -z "${HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO:-}" ]; then

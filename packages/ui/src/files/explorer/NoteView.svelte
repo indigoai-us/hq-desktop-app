@@ -239,8 +239,8 @@
   .note-title {
     margin: 0;
     color: var(--v4-text-1);
-    font-size: 30px;
-    font-weight: 650;
+    font-size: var(--type-title, 20px);
+    font-weight: var(--type-title-weight, 500);
     letter-spacing: -0.02em;
     line-height: 1.2;
     overflow-wrap: anywhere;
@@ -248,7 +248,7 @@
   .note-meta {
     margin: 6px 0 0;
     color: var(--v4-text-3);
-    font-size: 12px;
+    font-size: 13px;
   }
   .note-large {
     display: flex;
@@ -270,7 +270,7 @@
     background: transparent;
     color: var(--v4-text-1);
     font: inherit;
-    font-size: 12.5px;
+    font-size: 13px;
     cursor: pointer;
     white-space: nowrap;
   }
@@ -311,7 +311,7 @@
     border-radius: 999px;
     background: var(--v4-control-faint);
     color: var(--v4-text-2);
-    font-size: 12px;
+    font-size: 13px;
   }
   .pill.tag {
     color: var(--v4-link);
@@ -319,7 +319,7 @@
 
   .markdown-body {
     color: var(--v4-text-1);
-    font-size: 15.5px;
+    font-size: 13px;
     line-height: 1.72;
     overflow-wrap: anywhere;
   }
@@ -330,17 +330,17 @@
   .markdown-body :global(h5),
   .markdown-body :global(h6) {
     color: var(--v4-text-1);
-    font-weight: 620;
+    font-weight: 500;
     letter-spacing: -0.01em;
     line-height: 1.3;
     scroll-margin-top: 24px;
   }
-  .markdown-body :global(h1) { font-size: 24px; margin: 1.6em 0 0.6em; }
-  .markdown-body :global(h2) { font-size: 20px; margin: 1.5em 0 0.5em; padding-bottom: 6px; border-bottom: 1px solid var(--v4-hairline); }
-  .markdown-body :global(h3) { font-size: 17px; margin: 1.3em 0 0.4em; }
+  .markdown-body :global(h1) { font-size: 13px; margin: 1.6em 0 0.6em; }
+  .markdown-body :global(h2) { font-size: 13px; margin: 1.5em 0 0.5em; padding-bottom: 6px; border-bottom: 1px solid var(--v4-hairline); }
+  .markdown-body :global(h3) { font-size: 13px; margin: 1.3em 0 0.4em; }
   .markdown-body :global(h4),
   .markdown-body :global(h5),
-  .markdown-body :global(h6) { font-size: 15px; margin: 1.2em 0 0.3em; color: var(--v4-text-2); }
+  .markdown-body :global(h6) { font-size: 13px; margin: 1.2em 0 0.3em; color: var(--v4-text-2); }
   .markdown-body :global(:first-child) { margin-top: 0; }
   .markdown-body :global(p) { margin: 0 0 0.9em; }
   .markdown-body :global(ul),
@@ -381,7 +381,7 @@
     border-radius: 5px;
     background: var(--v4-control-faint);
     font-family: ui-monospace, "SF Mono", Menlo, monospace;
-    font-size: 0.86em;
+    font-size: 13px;
   }
   .markdown-body :global(pre) {
     margin: 0 0 1em;
@@ -392,7 +392,7 @@
     overflow-x: auto;
     line-height: 1.55;
   }
-  .markdown-body :global(pre code) { padding: 0; background: none; font-size: 12.5px; }
+  .markdown-body :global(pre code) { padding: 0; background: none; font-size: 13px; }
   .markdown-body :global(blockquote) {
     margin: 0 0 1em;
     padding: 2px 0 2px 16px;
@@ -404,7 +404,7 @@
     width: 100%;
     margin: 0 0 1.1em;
     border-collapse: collapse;
-    font-size: 13.5px;
+    font-size: 13px;
     display: block;
     overflow-x: auto;
   }
@@ -415,7 +415,7 @@
     text-align: left;
     vertical-align: top;
   }
-  .markdown-body :global(th) { color: var(--v4-text-2); font-weight: 600; }
+  .markdown-body :global(th) { color: var(--v4-text-2); font-weight: 500; }
   .markdown-body :global(input[type="checkbox"]) { margin-right: 6px; accent-color: var(--v4-link); }
 
   @media (max-width: 900px) {

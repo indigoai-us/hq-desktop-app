@@ -1248,7 +1248,7 @@
     {#if canTray}
       <div class="set-row">
         <div><div class="sn">Window opacity</div><div class="sd">How see-through this window is</div></div>
-        <div class="range-wrap"><input type="range" min={MIN_SLIDER_WINDOW_OPACITY} max={MAX_SLIDER_WINDOW_OPACITY} value={prefs.windowOpacity} aria-label="Window opacity" oninput={(event) => setOpacity(Number(event.currentTarget.value))} /><span class="mono range-val">{prefs.windowOpacity}%</span></div>
+        <div class="range-wrap"><input type="range" min={MIN_SLIDER_WINDOW_OPACITY} max={MAX_SLIDER_WINDOW_OPACITY} value={prefs.windowOpacity} aria-label="Window opacity" oninput={(event) => setOpacity(Number(event.currentTarget.value))} /><span class="val range-val">{prefs.windowOpacity}%</span></div>
       </div>
     {/if}
     <div class="set-row">
@@ -1320,14 +1320,14 @@
     {#if canTray && notifPermission && notifPermission !== "unknown" && notifPermission !== "unsupported"}
       <div class="set-row">
         <div><div class="sn">System permission</div><div class="sd">{notifPermission === "granted" ? "Your system is allowing notifications from HQ" : notifPermission === "denied" ? "Blocked by system settings — open Notification Settings to allow" : "Not enabled yet — allow to see message alerts"}{#if notifPermissionError}<div class="sd" role="alert" data-testid="settings-notification-permission-error">{notifPermissionError}</div>{/if}</div></div>
-        {#if notifPermission === "granted"}<span class="mono ok">Enabled</span>{:else}<button type="button" class="chip" onclick={() => void enableNotifications()} disabled={notifRequesting} aria-busy={notifRequesting}>{notifRequesting ? "Requesting…" : notifPermissionError ? "Try again" : notifPermission === "denied" ? "Open Settings" : "Enable"}</button>{/if}
+        {#if notifPermission === "granted"}<span class="val ok">Enabled</span>{:else}<button type="button" class="chip" onclick={() => void enableNotifications()} disabled={notifRequesting} aria-busy={notifRequesting}>{notifRequesting ? "Requesting…" : notifPermissionError ? "Try again" : notifPermission === "denied" ? "Open Settings" : "Enable"}</button>{/if}
       </div>
     {/if}
   {:else if section === "sync" && canSync}
     <div class="set-row">
       <div>
         <div class="sn">HQ folder</div>
-        <div class="sd mono-path">{formatHqFolderMeta(hqFolder) || "Not located"}</div>
+        <div class="sd" class:mono-path={!!formatHqFolderMeta(hqFolder)}>{formatHqFolderMeta(hqFolder) || "Not located"}</div>
       </div>
       <button type="button" class="chip quiet" onclick={() => void chooseHqFolder()} disabled={pending("hq-folder")}>{pending("hq-folder") ? "Choosing…" : "Choose…"}</button>
     </div>
@@ -1345,7 +1345,7 @@
           {/if}
         </div>
       </div>
-      <span class="mono" class:ok={liveSync.daemonRunning}
+      <span class="val" class:ok={liveSync.daemonRunning}
         >{liveSync.daemonRunning ? "RUNNING" : "STOPPED"}</span
       >
     </div>
@@ -1363,7 +1363,7 @@
           {/if}
         </div>
       </div>
-      <span class="mono">{lastSyncLabelFromLive(liveSync) ?? "Never"}</span>
+      <span class="val">{lastSyncLabelFromLive(liveSync) ?? "Never"}</span>
     </div>
     {#if liveSync.daemonErrors.length > 0 || liveSync.daemonLogPath}
       <div class="set-row">
@@ -1449,7 +1449,7 @@
           {lists.active.length} membership{lists.active.length === 1 ? "" : "s"}
         </div>
       </div>
-      <span class="mono">{lists.active.length} ACTIVE</span>
+      <span class="val">{lists.active.length} ACTIVE</span>
     </div>
   {:else if section === "meetings"}
     {#if canWatchMeetings && meetingPerms}
@@ -1468,7 +1468,7 @@
           </div>
         </div>
         {#if meetingPerms.allRequiredGranted}
-          <span class="mono ok" data-testid="settings-meeting-permissions-ready">Ready</span>
+          <span class="val ok" data-testid="settings-meeting-permissions-ready">Ready</span>
         {:else}
           <button
             type="button"
@@ -1550,9 +1550,9 @@
         </div>
       </div>
       {#if !nativeLoaded}
-        <span class="mono" data-testid="recording-company-unavailable">Settings unavailable</span>
+        <span class="val" data-testid="recording-company-unavailable">Settings unavailable</span>
       {:else if companies === null}
-        <span class="mono" data-testid="recording-company-membership-pending">Memberships loading…</span>
+        <span class="val" data-testid="recording-company-membership-pending">Memberships loading…</span>
       {:else if recordingCompanies.length > 0}
         <label class="sr-only" for="recording-company">Recording company</label>
         <select
@@ -1568,7 +1568,7 @@
           {/each}
         </select>
       {:else}
-        <span class="mono" data-testid="recording-company-personal">Personal</span>
+        <span class="val" data-testid="recording-company-personal">Personal</span>
       {/if}
     </div>
     {#if connectedAccounts.length > 0}
@@ -1582,7 +1582,7 @@
             <div class="sd">Connected calendar</div>
           </div>
           <div class="connect-actions">
-            <span class="mono ok">On</span>
+            <span class="val ok">On</span>
             <button
               type="button"
               class="chip quiet"
@@ -1694,13 +1694,13 @@
             onclick={() => void restartDesktopUpdate()}
           >Restart to update</button>
         {/if}
-        <span class="mono" class:ok={appRowLabel === "UP TO DATE"} data-testid="settings-app-status">{appRowLabel}</span>
+        <span class="val" class:ok={appRowLabel === "UP TO DATE"} data-testid="settings-app-status">{appRowLabel}</span>
       </span>
     </div>
     <div class="set-row">
       <div>
         <div class="sn">HQ Core</div>
-        <div class="sd mono-path">
+        <div class="sd" class:mono-path={!!coreVersion}>
           {coreVersion
             ? `v${coreVersion}`
             : coreUpdateStatus === "checking"
@@ -1719,12 +1719,12 @@
           <div class="sd">Core update status could not be checked{coreProbeError ? `: ${coreProbeError}` : ""}. Refresh and verify your connection.</div>
         {/if}
       </div>
-      <span class="mono" class:ok={coreUpdateStatus === "up-to-date"}>{coreUpdateStatus === "checking" ? "CHECKING" : coreUpdateStatus === "available" ? "UPDATE AVAILABLE" : coreUpdateStatus === "up-to-date" ? "UP TO DATE" : coreUpdateStatus === "unlocated" ? "ROOT NEEDED" : coreUpdateStatus === "failed" ? "CHECK FAILED" : "NOT CHECKED"}</span>
+      <span class="val" class:ok={coreUpdateStatus === "up-to-date"}>{coreUpdateStatus === "checking" ? "CHECKING" : coreUpdateStatus === "available" ? "UPDATE AVAILABLE" : coreUpdateStatus === "up-to-date" ? "UP TO DATE" : coreUpdateStatus === "unlocated" ? "ROOT NEEDED" : coreUpdateStatus === "failed" ? "CHECK FAILED" : "NOT CHECKED"}</span>
     </div>
     <div class="set-row">
       <div>
         <div class="sn">HQ CLI</div>
-        <div class="sd mono-path">
+        <div class="sd" class:mono-path={!!cliVersion}>
           {cliVersion
             ? `v${cliVersion}`
             : cliUpdateStatus === "checking"
@@ -1743,7 +1743,7 @@
           <div class="sd">CLI update status could not be checked{cliProbeError ? `: ${cliProbeError}` : ""}. Refresh and verify your connection.</div>
         {/if}
       </div>
-      <span class="mono" class:ok={cliUpdateStatus === "up-to-date"}>{cliUpdateStatus === "checking" ? "CHECKING" : cliUpdateStatus === "available" ? "UPDATE AVAILABLE" : cliUpdateStatus === "up-to-date" ? "UP TO DATE" : cliUpdateStatus === "unlocated" ? "CLI NEEDED" : cliUpdateStatus === "failed" ? "CHECK FAILED" : "NOT CHECKED"}</span>
+      <span class="val" class:ok={cliUpdateStatus === "up-to-date"}>{cliUpdateStatus === "checking" ? "CHECKING" : cliUpdateStatus === "available" ? "UPDATE AVAILABLE" : cliUpdateStatus === "up-to-date" ? "UP TO DATE" : cliUpdateStatus === "unlocated" ? "CLI NEEDED" : cliUpdateStatus === "failed" ? "CHECK FAILED" : "NOT CHECKED"}</span>
     </div>
     <div class="set-row">
       <div>
@@ -1843,19 +1843,19 @@
     line-height: 1.45;
   }
 
+  /* Mono only for paths and versions (AUDIT-2-08). */
   .sd.mono-path {
     font-family: var(--font-mono, ui-monospace, Menlo, monospace);
-    letter-spacing: 0.02em;
+    font-size: 13px;
   }
 
-  .mono {
+  .val {
     margin-left: auto;
     color: var(--ice-ink, #c9d6e4);
-    font-family: var(--font-mono, ui-monospace, Menlo, monospace);
-    font-size: 11px;
+    font-size: 13px;
   }
 
-  .mono.ok {
+  .val.ok {
     color: var(--ok);
   }
 
@@ -1868,10 +1868,8 @@
     border-radius: 6px;
     background: transparent;
     color: var(--ice-ink, #c9d6e4);
-    font-family: var(--font-mono, ui-monospace, Menlo, monospace);
-    font-size: 11px;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
+    font: inherit;
+    font-size: 13px;
     cursor: pointer;
   }
 

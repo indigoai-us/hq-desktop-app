@@ -1901,3 +1901,68 @@ describe("CreateModal message by email", () => {
     expect($('[data-testid="chat-create-email-body"]')).toBeNull();
   });
 });
+
+// AUDIT-2-14: opened straight to the bot step (Messages > New > New bot,
+// Settings > Bots > New bot), Escape closes the modal; reached from the search
+// step, Escape goes back one step. The back arrow returns to search either way.
+describe("New bot step Escape", () => {
+  function openBot(initialStep: "find" | "bot", onclose: (id?: string) => void) {
+    const props = {
+      api: stubApi(),
+      rows: [],
+      contacts: [],
+      scopeCompanies: [{ companyUid: "cmp_indigo", label: "Indigo" }],
+      activeScope: "cmp_indigo",
+      self: { uid: "prs_me", displayName: "Stefan" },
+      onclose,
+      onpick: () => {},
+      oncreated: () => {},
+      oncreatebot: async () => ({ ok: true as const, agentUid: "agt_test", name: "Test bot" }),
+      initialStep,
+    };
+    component = mount(CreateModal, { target: host, props });
+  }
+  const onFind = () => !!$('[data-testid="chat-create-query"]');
+
+  it("closes the modal when it opened straight on the bot step", async () => {
+    const onclose = vi.fn();
+    openBot("bot", onclose);
+    await tick();
+    expect(onFind()).toBe(false);
+    press(window, "Escape");
+    await tick();
+    expect(onclose).toHaveBeenCalledTimes(1);
+    expect(onFind()).toBe(false);
+  });
+
+  it("back arrow still returns to search when opened straight on the bot step", async () => {
+    const onclose = vi.fn();
+    openBot("bot", onclose);
+    await tick();
+    $<HTMLButtonElement>('[data-testid="chat-create-back"]')!.click();
+    await tick();
+    expect(onFind()).toBe(true);
+    expect(onclose).not.toHaveBeenCalled();
+    // Re-entered from search: Escape now steps back instead of closing.
+    $<HTMLButtonElement>('[data-testid="chat-create-new-bot"]')!.click();
+    await tick();
+    expect(onFind()).toBe(false);
+    press(window, "Escape");
+    await tick();
+    expect(onFind()).toBe(true);
+    expect(onclose).not.toHaveBeenCalled();
+  });
+
+  it("goes back to search when the bot step was reached from search", async () => {
+    const onclose = vi.fn();
+    openBot("find", onclose);
+    await tick();
+    $<HTMLButtonElement>('[data-testid="chat-create-new-bot"]')!.click();
+    await tick();
+    expect(onFind()).toBe(false);
+    press(window, "Escape");
+    await tick();
+    expect(onFind()).toBe(true);
+    expect(onclose).not.toHaveBeenCalled();
+  });
+});
