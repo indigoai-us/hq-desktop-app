@@ -35,6 +35,7 @@ const ALLOWED: Record<string, string> = {
   "meetings/meeting-details.ts": "agenda and attendee caps on one meeting's detail card",
   "meetings/meetings-view-model.ts": "agenda windows; the full list opens from Meetings",
   "meetings/meeting-link.ts": "upcoming-meeting chip shows the next few only",
+  "meetings/recorded-meetings.ts": "fetch budget: reads at most 24 signal bodies to build one meeting recap, not a rendered list",
   "atlas/atlas-build.ts":
     "map node budget: the 80 most recent loose files per continent and 16 PRD knowledge links are a recency-ranked node budget for the map, not a paged list",
   "projects/board-faces.ts": "avatar stack with a +N overflow face",
