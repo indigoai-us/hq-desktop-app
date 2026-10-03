@@ -4,7 +4,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import TelemetryView from "./TelemetryView.svelte";
 import { createTelemetryCache } from "./telemetry-cache.js";
 import {
-  SESSIONS_UNAVAILABLE,
   createMyTelemetryFetcher,
   modelDisplayName,
   modelFamily,
@@ -171,22 +170,15 @@ describe("TelemetryView on the real source", () => {
     expect(target.querySelector(".stat .n")?.textContent).toContain("42");
     expect(target.textContent).not.toContain("128");
     expect(target.textContent).not.toContain("LiveRecover");
-    // OWNER-R18: one plain sentence for sessions; no false 0, no empty table,
-    // no developer line, and no median gap that cannot be computed.
+    // OWNER-R31: no session source in this window, so no Sessions section,
+    // no "not available" sentence, no false 0, and no median gap.
     expect(target.querySelector("[data-testid='telemetry-notice']")).toBeNull();
-    expect(target.querySelector("[data-testid='telemetry-sessions-unavailable']")?.textContent).toBe(SESSIONS_UNAVAILABLE);
+    expect(target.querySelector("[data-testid='telemetry-sessions']")).toBeNull();
+    expect(target.textContent).not.toContain("not available yet");
     expect(target.querySelector("[data-testid='telemetry-sessions-count']")).toBeNull();
     expect(target.querySelector(".srow")).toBeNull();
-    expect(target.textContent).not.toContain("median session gap");
+    expect(target.textContent).not.toContain("median");
     expect(target.textContent).not.toContain("endpoint");
-    const sessionsNav = [...target.querySelectorAll("aside.pane button.row")].find((b) => b.textContent?.trim().startsWith("Sessions")) as HTMLButtonElement;
-    expect(sessionsNav.textContent?.trim()).toBe("Sessions");
-    sessionsNav.click();
-    flushSync();
-    expect(target.querySelector("[data-testid='telemetry-sessions-head']")).toBeNull();
-    expect(target.querySelector("[data-testid='telemetry-sessions-unavailable']")?.textContent).toBe(SESSIONS_UNAVAILABLE);
-    ([...target.querySelectorAll("aside.pane button.row")].find((b) => b.textContent?.trim() === "Overview") as HTMLButtonElement).click();
-    flushSync();
 
     const seven = [...target.querySelectorAll("button.tab")].find((b) => b.textContent === "7d") as HTMLButtonElement;
     seven.click();

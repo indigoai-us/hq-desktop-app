@@ -10772,7 +10772,10 @@
           </LazyDoor>
         {:else if railPlaceholder?.id === "telemetry"}
           {#if telemetryVisible}
-            <TelemetryRailHost agents={adapter.agents ?? null} />
+            <TelemetryRailHost
+              agents={adapter.agents ?? null}
+              onopenthread={(path) => void navigate({ kind: "explorer", vault: "personal", path })}
+            />
           {/if}
         {:else if railPlaceholder?.id === "secrets" || railPlaceholder?.id === "connections"}
           <PersonalRailHost

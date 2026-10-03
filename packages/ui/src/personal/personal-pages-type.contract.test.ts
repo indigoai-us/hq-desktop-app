@@ -69,10 +69,13 @@ describe("personal pages type scale contract", () => {
   });
 
   it("draws status as a dot plus text, not a bordered pill", () => {
-    for (const file of ["personal/PersonalRailPage.svelte", "telemetry/TelemetryView.svelte", "outpost/OutpostPage.svelte"]) {
+    for (const file of ["personal/PersonalRailPage.svelte", "outpost/OutpostPage.svelte"]) {
       expect(read(file)).not.toMatch(/class="chip[ "]/);
       expect(styleOf(file)).toMatch(/\.dot \{[^}]*width: 6px; height: 6px/);
     }
+    // OWNER-R35: My Telemetry has no status rows left (bots and outcomes are
+    // not on the single page), and still no pills.
+    expect(read("telemetry/TelemetryView.svelte")).not.toMatch(/class="chip[ "]/);
   });
 
   it("keeps list rows at the 31px Messages row height", () => {
@@ -85,8 +88,8 @@ describe("personal pages type scale contract", () => {
     expect(styleOf("personal/PersonalRailPage.svelte")).toMatch(/\.cell \{[^}]*gap: 8px/);
   });
 
-  it("stacks Telemetry's right column under the sessions table on narrow windows (QA-039)", () => {
-    expect(styleOf("telemetry/TelemetryView.svelte")).toMatch(/@media \(max-width: 1180px\) \{\s*\.two \{ grid-template-columns: minmax\(0, 1fr\); \}/);
+  it("stacks Telemetry's two columns into one on narrow windows (QA-039, OWNER-R35 at 1100px)", () => {
+    expect(styleOf("telemetry/TelemetryView.svelte")).toMatch(/@media \(max-width: 1100px\) \{\s*\.two \{ grid-template-columns: minmax\(0, 1fr\); \}/);
   });
 
   it("never collapses the Deployments app name; narrow windows drop lesser columns (QA-040)", () => {

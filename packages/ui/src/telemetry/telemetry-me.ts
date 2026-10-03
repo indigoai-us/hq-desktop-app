@@ -29,7 +29,6 @@ export interface MyTelemetryApi {
  * OWNER-R18: hq-pro has no per-session route for the caller and the app keeps
  * no local session list, so the Sessions list says this plainly.
  */
-export const SESSIONS_UNAVAILABLE = "Session-by-session history is not available yet. Totals above are complete.";
 
 export class TelemetryLoadError extends Error {
   constructor(
