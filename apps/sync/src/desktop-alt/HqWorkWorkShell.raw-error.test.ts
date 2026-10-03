@@ -141,9 +141,9 @@ afterEach(async () => {
 
 const RAW = '[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}';
 
-function warnedRaw(warn: ReturnType<typeof vi.spyOn>): boolean {
-  return warn.mock.calls.some((args) =>
-    args.some((a) => (a instanceof Error ? a.message : String(a)).includes(RAW)),
+function warnedRaw(warn: { mock: { calls: unknown[][] } }): boolean {
+  return warn.mock.calls.some((args: unknown[]) =>
+    args.some((a: unknown) => (a instanceof Error ? a.message : String(a)).includes(RAW)),
   );
 }
 

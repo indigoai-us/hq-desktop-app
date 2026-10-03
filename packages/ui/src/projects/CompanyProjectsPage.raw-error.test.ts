@@ -49,9 +49,9 @@ function mountPage() {
   flushSync();
 }
 
-function warnedRaw(warn: ReturnType<typeof vi.spyOn>, tag: string): boolean {
+function warnedRaw(warn: { mock: { calls: unknown[][] } }, tag: string): boolean {
   return warn.mock.calls.some(
-    (args) => args[0] === tag && args.slice(1).some((a) => String(a instanceof Error ? a.message : a).includes("HTTP 500")),
+    (args: unknown[]) => args[0] === tag && args.slice(1).some((a: unknown) => String(a instanceof Error ? a.message : a).includes("HTTP 500")),
   );
 }
 
