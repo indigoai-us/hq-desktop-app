@@ -79,6 +79,7 @@ export const FIRST_LAUNCH_JOIN_KEY_FLAG =
   "desktop.first-launch-join-key-v1";
 export const COMPANY_ROUTE_LOOKUP_RETRY_FLAG =
   "desktop.company-route-lookup-retry-v1";
+export const COMPANY_NAME_PREFILL_FLAG = "desktop.company-name-prefill-v1";
 export const PERSONAL_WORKSPACE_BOARD_FLAG =
   "desktop.personal-workspace-board-v1";
 export const LOGIN_RECEIPT_DURABILITY_FLAG =
@@ -108,6 +109,7 @@ export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
   [FIRST_FOLDER_SYNC_STEP_FLAG]: FIRST_FOLDER_SYNC_STEP_FLAG,
   [FIRST_LAUNCH_JOIN_KEY_FLAG]: FIRST_LAUNCH_JOIN_KEY_FLAG,
   [COMPANY_ROUTE_LOOKUP_RETRY_FLAG]: COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
+  [COMPANY_NAME_PREFILL_FLAG]: COMPANY_NAME_PREFILL_FLAG,
   [PERSONAL_WORKSPACE_BOARD_FLAG]: PERSONAL_WORKSPACE_BOARD_FLAG,
   [LOGIN_RECEIPT_DURABILITY_FLAG]: LOGIN_RECEIPT_DURABILITY_FLAG,
   [POST_READY_ACTION_TELEMETRY_FLAG]: POST_READY_ACTION_TELEMETRY_FLAG,
@@ -147,6 +149,8 @@ export type FeatureFlagFallback = () => AdapterPromise<boolean>;
 
 export interface FeatureFlagGate {
   resolve(flag: string, fallback: FeatureFlagFallback): AdapterPromise<boolean>;
+  /** Bypass the normal refresh cadence when identity changes before a gated route. */
+  refresh(): Promise<void>;
   /** Notify when the registry client publishes a refreshed snapshot. */
   subscribe(
     flag: string,
@@ -286,6 +290,9 @@ export function createFeatureFlagGate(
   }
 
   const gate: FeatureFlagGate = {
+    refresh() {
+      return getClient().refresh();
+    },
     subscribe(flag, fallback, onChange) {
       const key = registryKeyFor(flag);
       if (!key) return () => {};

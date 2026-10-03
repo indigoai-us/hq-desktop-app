@@ -37,6 +37,11 @@
   import PlanUpgradeAction from '../PlanUpgradeAction.svelte';
   import { flushPendingCompanyInvites, queuePendingCompanyInvites } from '../../lib/pending-company-invites';
   import type { ProvisioningState } from '../../lib/onboarding-company-route';
+  import {
+    companyNameFromEmail,
+    companyNamePrefillStatus,
+    type CompanyNamePrefillStatus,
+  } from '../../lib/company-name-prefill';
 
   export type CompanyStepEvent =
     | {
@@ -45,6 +50,7 @@
         inviteCount: number;
         inviteFailureCount: number;
         inviteQueuedCount: number;
+        namePrefill: CompanyNamePrefillStatus;
       }
     | { action: 'company_create_failed'; blocked: boolean }
     | { action: 'existing_used'; companyUid: string }
@@ -79,9 +85,22 @@
     listen: (event: string, handler: (payload: unknown) => void) => Promise<() => void>;
     onTelemetry?: (event: CompanyStepEvent) => void;
     oncomplete: (result: CompanyStepResult) => void;
+    namePrefillEnabled?: boolean;
+    signedInEmail?: string | null;
   }
 
-  let { path, invoke, onswitchaccount, provisioningPoll, openUrl, listen, onTelemetry, oncomplete }: Props = $props();
+  let {
+    path,
+    invoke,
+    onswitchaccount,
+    provisioningPoll,
+    openUrl,
+    listen,
+    onTelemetry,
+    oncomplete,
+    namePrefillEnabled = false,
+    signedInEmail = null,
+  }: Props = $props();
 
   type Phase = 'other-identity' | 'existing' | 'join' | 'loading' | 'details' | 'provisioning' | 'provision-failed' | 'plan' | 'checkout';
 
@@ -121,6 +140,7 @@
 
   let form = $state<CompanyDraftForm | null>(null);
   let values = $state<Record<string, string>>({});
+  let prefilledCompanyName = $state<string | null>(null);
   let slugEdited = false;
   let slugFieldId = $state<string | null>(null);
   let slugState = $state<SlugState>(SLUG_IDLE);
@@ -168,7 +188,18 @@
       return;
     }
     form = draft.form;
-    values = Object.fromEntries(draft.form.fields.map((field) => [field.id, field.value ?? '']));
+    prefilledCompanyName = null;
+    if (namePrefillEnabled && path.kind === 'create') {
+      prefilledCompanyName = companyNameFromEmail(signedInEmail);
+    }
+    values = Object.fromEntries(
+      draft.form.fields.map((field) => [
+        field.id,
+        field.id === draft.form.nameFieldId
+          ? prefilledCompanyName ?? field.value ?? ''
+          : field.value ?? '',
+      ]),
+    );
     slugFieldId = slugFieldOf(draft.form.fields);
     slugWatcher?.cancel();
     slugWatcher = slugFieldId
@@ -179,6 +210,11 @@
           onerror: (err) => console.warn('onboarding: company handle check failed', err),
         })
       : null;
+    if (prefilledCompanyName && form.nameFieldId) {
+      // Use the same edit path as typing so the derived slug and availability
+      // check are populated before the create button is evaluated.
+      setValue(form.nameFieldId, prefilledCompanyName);
+    }
     phase = 'details';
   }
 
@@ -322,6 +358,10 @@
       inviteCount: queued.length,
       inviteFailureCount: failedEmails.length,
       inviteQueuedCount: stillQueued,
+      namePrefill: companyNamePrefillStatus(
+        prefilledCompanyName,
+        form?.nameFieldId ? values[form.nameFieldId] ?? '' : '',
+      ),
     });
     const notes: string[] = [];
     if (stillQueued > 0) {
