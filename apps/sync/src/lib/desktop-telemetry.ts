@@ -108,6 +108,78 @@ export interface EmitDesktopTelemetryOptions {
   invokeCommand?: InvokeCommand;
 }
 
+export type DesktopAuthProgressStep =
+  | 'sign_in_started'
+  | 'provider_page_opened'
+  | 'callback_received'
+  | 'token_exchange_ok';
+
+export type DesktopAuthErrorCategory =
+  | 'auth'
+  | 'network'
+  | 'dns'
+  | 'tls'
+  | 'timeout'
+  | 'cancelled'
+  | 'unsupported-platform'
+  | 'unknown';
+
+export interface EmitDesktopAuthProgressOptions {
+  provider: string;
+  step: DesktopAuthProgressStep;
+  invokeCommand?: InvokeCommand;
+}
+
+export interface EmitDesktopAuthFailureOptions {
+  provider: string;
+  step: DesktopAuthProgressStep;
+  error: unknown;
+  invokeCommand?: InvokeCommand;
+}
+
+/**
+ * Convert a local sign-in error into the small, closed vocabulary allowed in
+ * operational telemetry. Raw provider errors, URLs, codes, and tokens must
+ * never leave the desktop in these progress rows.
+ */
+export function classifyDesktopAuthError(error: unknown): DesktopAuthErrorCategory {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  const value = message.toLowerCase();
+  if (/cancel|denied/.test(value)) return 'cancelled';
+  if (/timed out|timeout|expired/.test(value)) return 'timeout';
+  if (/dns|resolve host|name or service/.test(value)) return 'dns';
+  if (/tls|certificate|ssl/.test(value)) return 'tls';
+  if (/network|offline|connection|fetch failed/.test(value)) return 'network';
+  if (/desktop bridge|invoke|open.*browser|shell/.test(value)) return 'unsupported-platform';
+  if (/oauth|provider|state|token|port.in.use|authentication/.test(value)) return 'auth';
+  return 'unknown';
+}
+
+export async function emitDesktopAuthProgress({
+  provider,
+  step,
+  invokeCommand,
+}: EmitDesktopAuthProgressOptions): Promise<void> {
+  await emitDesktopOperationalTelemetry({
+    eventName: 'desktop_auth_progress',
+    properties: { provider, step },
+    invokeCommand,
+  });
+}
+
+export async function emitDesktopAuthFailure({
+  provider,
+  step,
+  error,
+  invokeCommand,
+}: EmitDesktopAuthFailureOptions): Promise<void> {
+  await emitDesktopOperationalTelemetry({
+    eventName: 'desktop_auth_failure',
+    properties: { provider, step, errorCategory: classifyDesktopAuthError(error) },
+    invokeCommand,
+  });
+}
+
 export async function emitDesktopTelemetry({
   eventName,
   properties = {},
