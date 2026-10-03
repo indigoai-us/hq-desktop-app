@@ -2,7 +2,7 @@
 // Returns plausible fixture data per command so components mount and render
 // without a Tauri backend. Design-only: no real side effects.
 import type { Workspace } from '../../src/lib/workspaces';
-import { resolveHarnessPersona, type ShellPersona } from '../personas';
+import { personaHasLocalHq, resolveHarnessPersona, type ShellPersona } from '../personas';
 import { resolveHarnessState, resolveLoadingMs, withHarnessState } from '../state-flags';
 import { readsSwitch, switchedHandler, withReadsSwitch } from '../audit-switches';
 import { emit } from './event';
@@ -742,7 +742,7 @@ const handlers: Record<string, Handler> = {
     workspaces: harnessPersona()?.workspaces ?? HARNESS_WORKSPACES,
     cloudReachable: true,
     error: null,
-    hqFolderPath: '/Users/corey/Documents/HQ',
+    hqFolderPath: personaHasLocalHq(harnessPersona()) ? '/Users/corey/Documents/HQ' : null,
     manifestError: null,
   }),
   get_company_board: (args) => ({
@@ -777,7 +777,12 @@ const handlers: Record<string, Handler> = {
   // resolves its optimistic write in the browser harness (mirrors the real
   // set_sync_mode, which returns the resulting MembershipSyncConfig).
   set_sync_mode: (args) => ({ syncMode: args?.mode ?? 'all' }),
-  get_config: () => ({ hqFolderPath: '/Users/corey/Documents/HQ', companySlug: 'indigo', configured: true }),
+  get_config: () => {
+    const persona = harnessPersona();
+    if (!personaHasLocalHq(persona)) return { hqFolderPath: null, companySlug: null, configured: false };
+    const company = persona?.workspaces.find((row) => row.kind === 'company')?.slug;
+    return { hqFolderPath: '/Users/corey/Documents/HQ', companySlug: persona ? (company ?? null) : 'indigo', configured: true };
+  },
   check_core_state: () => currentHarnessCoreState(),
   // Lazy HQ file tree (?view=desktop → company Knowledge tab / Files mode).
   // Serves a small knowledge subtree for any company so the inline
@@ -1267,7 +1272,6 @@ This final paragraph verifies spacing after a thematic break.
     await emit('recording:ended', { windowId: args?.windowId, platform: 'meet', endedAt: new Date().toISOString() });
     return null;
   },
-  is_indigo_user: () => true,
   available_channels: () => ['stable', 'beta', 'alpha'],
   notification_permission_state: () =>
     harnessScenario() === 'permission-denied' ? 'denied' : 'prompt',
