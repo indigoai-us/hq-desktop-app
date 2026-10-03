@@ -3461,6 +3461,7 @@ mod tests {
             status_code: Some(400),
             error_code: Some("invalid_client".to_string()),
             failure_class: cognito::CognitoRefreshFailureClass::Http4xx,
+            rejection_class: "unknown",
         });
         assert_eq!(
             result,
