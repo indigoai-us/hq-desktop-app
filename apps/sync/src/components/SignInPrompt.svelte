@@ -58,6 +58,8 @@
   let continuation = $state<ContinuationState>({ phase: 'idle' });
   let continuationDepsRef: ContinuationDeps | null = null;
   let continuationBusy = $state(false);
+  let webAuthorizeEnabled = $state(false);
+  let webAuthorizeBusy = $state(false);
 
   /**
    * Set the moment a provider button is pressed, and never cleared.
@@ -72,8 +74,19 @@
     void prepareContinuation();
   });
 
+  async function loadWebAuthorizeFlag() {
+    try {
+      webAuthorizeEnabled = (await invoke('web_authorize_enabled')) === true;
+    } catch {
+      webAuthorizeEnabled = false;
+    }
+  }
+
   async function prepareContinuation() {
+    const flagPromise = loadWebAuthorizeFlag();
     const context = await loadContinuationContext();
+    await flagPromise;
+    if (webAuthorizeEnabled) return;
     if (!context) return;
     const deps = continuationDeps(context);
     continuationDepsRef = deps;
@@ -168,6 +181,7 @@
   function resetManualSignInState() {
     clearCallbackTimeout();
     loadingProvider = null;
+    webAuthorizeBusy = false;
     activeState = null;
     authorizeUrl = null;
   }
@@ -237,6 +251,95 @@
       if (state) void cancelPendingSignIn(state);
       failSignIn(provider, 'provider_page_opened', new Error('sign-in timed out'));
     }, CALLBACK_TIMEOUT_MS);
+  }
+
+  async function handleWebAuthorize() {
+    const run = ++signInRun;
+    manualSignInStarted = true;
+    webAuthorizeBusy = true;
+    error = '';
+    lastProvider = null;
+    activeState = null;
+    authorizeUrl = null;
+    let authStep: DesktopAuthProgressStep = 'sign_in_started';
+    void emitDesktopAuthProgress({ provider: 'web', step: authStep });
+    try {
+      const { authorizeUrl: nextAuthorizeUrl, state } = await invoke<{
+        authorizeUrl: string;
+        state: string;
+      }>('start_web_authorize');
+      if (!isCurrentSignInRun(run)) {
+        await cancelPendingSignIn(state);
+        return;
+      }
+      activeState = state;
+      await open(nextAuthorizeUrl);
+      authStep = 'provider_page_opened';
+      void emitDesktopAuthProgress({ provider: 'web', step: authStep });
+      if (!isCurrentSignInRun(run)) return;
+      authorizeUrl = nextAuthorizeUrl;
+      clearCallbackTimeout();
+      callbackTimeout = window.setTimeout(() => {
+        if (!isCurrentSignInRun(run)) return;
+        const pending = activeState;
+        ++signInRun;
+        resetManualSignInState();
+        if (pending) void cancelPendingSignIn(pending);
+        void emitDesktopAuthFailure({
+          provider: 'web',
+          step: 'provider_page_opened',
+          error: new Error('sign-in timed out'),
+        });
+        error = 'We couldn’t finish sign-in. Try again.';
+      }, CALLBACK_TIMEOUT_MS);
+      const { code } = await invoke<{ code: string }>('oauth_listen_for_code', { state });
+      clearCallbackTimeout();
+      authStep = 'callback_received';
+      void emitDesktopAuthProgress({ provider: 'web', step: authStep });
+      if (!isCurrentSignInRun(run)) return;
+      const result = await invoke<{ authenticated: boolean; expiresAt: string }>(
+        'oauth_exchange_code',
+        { code },
+      );
+      authStep = 'token_exchange_ok';
+      if (result.authenticated) {
+        void emitDesktopAuthProgress({ provider: 'web', step: authStep });
+        acceptedExistingSession = true;
+        if (bringMainToFront) {
+          try {
+            await invoke('bring_main_window_to_front');
+          } catch (focusErr) {
+            console.warn('[signin] failed to refocus window:', focusErr);
+          }
+        }
+        void emitDesktopOperationalTelemetry({
+          eventName: 'oauth_signin_succeeded',
+          properties: { provider: 'web' },
+        });
+        onsuccess?.(result);
+      } else {
+        void emitDesktopAuthFailure({
+          provider: 'web',
+          step: authStep,
+          error: 'authentication rejected',
+        });
+        error = 'We couldn’t finish sign-in. Try again.';
+      }
+    } catch (err) {
+      if (!isCurrentSignInRun(run)) return;
+      clearCallbackTimeout();
+      void emitDesktopAuthFailure({
+        provider: 'web',
+        step: authStep,
+        error: err,
+      });
+      error = 'We couldn’t finish sign-in. Try again.';
+      await cancelPendingSignIn();
+    } finally {
+      if (isCurrentSignInRun(run)) {
+        resetManualSignInState();
+      }
+    }
   }
 
   async function handleSignIn(provider: SignInProvider) {
@@ -356,7 +459,7 @@
   }
 
   async function handleBack() {
-    if (!loadingProvider || cancelling) return;
+    if ((!loadingProvider && !webAuthorizeBusy) || cancelling) return;
     const state = activeState;
     ++signInRun;
     cancelling = true;
@@ -370,7 +473,7 @@
   }
 
   async function reopenBrowser() {
-    if (!loadingProvider || !authorizeUrl) return;
+    if ((!loadingProvider && !webAuthorizeBusy) || !authorizeUrl) return;
     try {
       await open(authorizeUrl);
     } catch (err) {
@@ -378,7 +481,16 @@
       ++signInRun;
       await cancelPendingSignIn();
       resetManualSignInState();
-      failSignIn(provider, 'provider_page_opened', err);
+      if (provider) {
+        failSignIn(provider, 'provider_page_opened', err);
+      } else {
+        void emitDesktopAuthFailure({
+          provider: 'web',
+          step: 'provider_page_opened',
+          error: err,
+        });
+        error = 'We couldn’t finish sign-in. Try again.';
+      }
     }
   }
 
@@ -470,14 +582,47 @@
       hidden={
         continuation.phase === 'opening' ||
         continuation.phase === 'waiting' ||
-        loadingProvider !== null
+        loadingProvider !== null ||
+        webAuthorizeBusy
       }
     >
+      {#if webAuthorizeEnabled}
+        <button
+          class="sign-in-btn"
+          data-testid="web-authorize-signin"
+          onclick={() => void handleWebAuthorize()}
+          disabled={loadingProvider !== null || webAuthorizeBusy || quitting}
+        >
+          {#if webAuthorizeBusy}
+            <span class="spinner"></span>
+            Waiting for browser…
+          {:else}
+            Sign in
+          {/if}
+        </button>
+        <details class="other-ways" data-testid="other-ways-to-sign-in">
+          <summary>Other ways to sign in</summary>
+          {#each providers as provider}
+            <button
+              class="sign-in-btn"
+              onclick={() => handleSignIn(provider.key)}
+              disabled={loadingProvider !== null || webAuthorizeBusy || quitting}
+            >
+              {#if provider.key === 'Google'}
+                {@render GoogleGlyph()}
+              {:else}
+                {@render MicrosoftGlyph()}
+              {/if}
+              Continue with {provider.label}
+            </button>
+          {/each}
+        </details>
+      {:else}
       {#each providers as provider}
         <button
           class="sign-in-btn"
           onclick={() => handleSignIn(provider.key)}
-          disabled={loadingProvider !== null || quitting}
+          disabled={loadingProvider !== null || webAuthorizeBusy || quitting}
         >
           {#if loadingProvider === provider.key}
             <span class="spinner"></span>
@@ -492,6 +637,7 @@
           {/if}
         </button>
       {/each}
+      {/if}
       {#if microsoftEmailPrompt}
         <form
           class="microsoft-email"
@@ -510,13 +656,13 @@
             autocapitalize="none"
             spellcheck="false"
             bind:value={microsoftEmail}
-            disabled={loadingProvider !== null || quitting}
+            disabled={loadingProvider !== null || webAuthorizeBusy || quitting}
           />
           <button
             class="sign-in-btn"
             type="submit"
             data-testid="microsoft-email-continue"
-            disabled={loadingProvider !== null || quitting || microsoftEmail.trim() === ''}
+            disabled={loadingProvider !== null || webAuthorizeBusy || quitting || microsoftEmail.trim() === ''}
           >
             Continue
           </button>
@@ -524,11 +670,11 @@
       {/if}
     </div>
 
-    {#if loadingProvider}
+    {#if loadingProvider || webAuthorizeBusy}
       <div class="browser-handoff" data-testid="signin-browser-handoff" role="status">
         <p class="browser-handoff-title">Finish signing in in your browser</p>
         <p class="loading-hint">
-          Continue with {loadingProvider} in your browser, then return to HQ.
+          Continue with {loadingProvider ?? 'HQ'} in your browser, then return to HQ.
         </p>
       </div>
       <button
@@ -537,7 +683,7 @@
         disabled={cancelling || quitting || !authorizeUrl}
         data-testid="reopen-browser-signin"
       >
-        Reopen {loadingProvider} sign-in
+        Reopen {loadingProvider ?? 'HQ'} sign-in
       </button>
       <button
         class="cancel-btn"
@@ -687,6 +833,23 @@
 
   .sign-in-actions[hidden] {
     display: none;
+  }
+
+  .other-ways {
+    width: 100%;
+    text-align: left;
+  }
+
+  .other-ways summary {
+    cursor: pointer;
+    font-size: 0.75rem;
+    color: var(--pop-muted);
+    margin: 0.25rem 0 0.5rem;
+  }
+
+  .other-ways .sign-in-btn {
+    width: 100%;
+    margin-top: 0.5rem;
   }
 
   .microsoft-email {

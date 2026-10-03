@@ -381,6 +381,8 @@
   type ConsentFailure = { kind: 'server' | 'offline'; message: string };
   let consentFailure = $state<ConsentFailure | null>(null);
   let loadingProvider = $state<SignInProvider | null>(null);
+  let webAuthorizeEnabled = $state(false);
+  let webAuthorizeBusy = $state(false);
   let signInError = $state('');
   let microsoftEmail = $state('');
   let microsoftEmailPrompt = $state(false);
@@ -856,6 +858,13 @@
         })
         .catch(() => {});
       if (currentStep === WELCOME_SIGNIN_STEP_INDEX) void checkExistingSession();
+      void invokeCommand<boolean>('web_authorize_enabled')
+        .then((enabled) => {
+          if (mounted) webAuthorizeEnabled = enabled === true;
+        })
+        .catch(() => {
+          if (mounted) webAuthorizeEnabled = false;
+        });
     }
 
     const media = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -977,6 +986,55 @@
       privacyOpenError = true;
     } finally {
       privacyOpening = false;
+    }
+  }
+
+  async function handleWebAuthorize() {
+    existingSessionEmail = null;
+    const call = ++currentSignInCall;
+    webAuthorizeBusy = true;
+    signInError = '';
+    let authStep: DesktopAuthProgressStep = 'sign_in_started';
+    void emitDesktopAuthProgress({ provider: 'web', step: authStep });
+    recordStep(WELCOME_SIGNIN_STEP_INDEX, 'started', { provider: 'web' });
+    try {
+      const { authorizeUrl, state } = await invokeCommand<{
+        authorizeUrl: string;
+        state: string;
+      }>('start_web_authorize');
+      if (!isCurrentSignInCall(call)) return;
+      if (typeof openExternal !== 'function') {
+        throw new Error('The desktop shell cannot open a browser in this environment.');
+      }
+      await openExternal(authorizeUrl);
+      authStep = 'provider_page_opened';
+      void emitDesktopAuthProgress({ provider: 'web', step: authStep });
+      if (!isCurrentSignInCall(call)) return;
+      const { code } = await invokeCommand<{ code: string }>('oauth_listen_for_code', { state });
+      authStep = 'callback_received';
+      void emitDesktopAuthProgress({ provider: 'web', step: authStep });
+      if (!isCurrentSignInCall(call)) return;
+      const result = await invokeCommand<{ authenticated: boolean; expiresAt: string }>(
+        'oauth_exchange_code',
+        { code },
+      );
+      authStep = 'token_exchange_ok';
+      if (!isCurrentSignInCall(call)) return;
+      if (result.authenticated) {
+        authStep = 'token_exchange_ok';
+        void emitDesktopAuthProgress({ provider: 'web', step: authStep });
+        await completeAuthenticatedSignIn(call, { provider: 'web' });
+      } else {
+        webAuthorizeEnabled = false;
+        signInError = 'That sign-in did not finish. Choose your provider and try once more.';
+      }
+    } catch (err) {
+      if (!isCurrentSignInCall(call)) return;
+      void emitDesktopAuthFailure({ provider: 'web', step: authStep, error: err });
+      webAuthorizeEnabled = false;
+      signInError = 'That sign-in did not finish. Choose your provider and try once more.';
+    } finally {
+      if (isCurrentSignInCall(call)) webAuthorizeBusy = false;
     }
   }
 
@@ -3566,17 +3624,28 @@
           <div class="btns-slot">
             {#if signInActionsReady}
               <div class="btns">
+                {#if webAuthorizeEnabled}
+                  <button
+                    class="btn btn-primary"
+                    type="button"
+                    data-testid="web-authorize-signin"
+                    disabled={loadingProvider !== null || webAuthorizeBusy}
+                    aria-busy={webAuthorizeBusy}
+                    onclick={() => void handleWebAuthorize()}
+                  >{webAuthorizeBusy ? 'Waiting for browser…' : 'Sign in'}</button>
+                {/if}
                 <button
                   class="btn btn-primary"
+                  class:btn-secondary={webAuthorizeEnabled}
                   type="button"
-                  disabled={loadingProvider !== null}
+                  disabled={loadingProvider !== null || webAuthorizeBusy}
                   aria-busy={loadingProvider === 'Google'}
                   onclick={() => handleSignIn('Google')}
                 >{@render GoogleMark()}Continue with Google</button>
                 <button
                   class="btn btn-secondary"
                   type="button"
-                  disabled={loadingProvider !== null}
+                  disabled={loadingProvider !== null || webAuthorizeBusy}
                   aria-busy={loadingProvider === 'Microsoft'}
                   onclick={() => handleSignIn('Microsoft')}
                 >{@render MicrosoftMark()}Continue with Microsoft</button>

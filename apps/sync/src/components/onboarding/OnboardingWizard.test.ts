@@ -299,6 +299,10 @@ function stubContinuationInvoke({
         return undefined;
       case 'desktop_continuation_deliver':
         return deliver(args as { path: string; body: Record<string, string | number> });
+      case 'web_authorize_enabled':
+        return false;
+      case 'start_web_authorize':
+        return { authorizeUrl: 'https://hqforwork.com/authorize/desktop', state: 'web-state' };
       case 'start_oauth_login':
         return { authorizeUrl: 'https://placeholder.test/authorize', state: 'oauth-state' };
       case 'oauth_listen_for_code':

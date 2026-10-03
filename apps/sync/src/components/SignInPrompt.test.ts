@@ -343,3 +343,58 @@ describe('SignInPrompt welcome handoff', () => {
     );
   });
 });
+
+describe('SignInPrompt web authorize flag', () => {
+  it('keeps today\'s provider buttons when the flag is off', async () => {
+    tauri.invoke.mockImplementation((command: string) => {
+      switch (command) {
+        case 'web_authorize_enabled':
+          return Promise.resolve(false);
+        case 'desktop_continuation_context':
+          return Promise.resolve(null);
+        default:
+          return Promise.resolve(undefined);
+      }
+    });
+    component = mount(SignInPrompt, { target: host });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'web_authorize_enabled'),
+    );
+    await flush();
+    expect(host.querySelector('[data-testid="web-authorize-signin"]')).toBeNull();
+    expect(providerButtons().map((button) => button.textContent)).toEqual([
+      expect.stringContaining('Continue with Google'),
+      expect.stringContaining('Continue with Microsoft'),
+    ]);
+  });
+
+  it('shows Sign in when the flag is on and opens the web authorize page', async () => {
+    tauri.invoke.mockImplementation((command: string) => {
+      switch (command) {
+        case 'web_authorize_enabled':
+          return Promise.resolve(true);
+        case 'desktop_continuation_context':
+          return Promise.resolve(null);
+        case 'start_web_authorize':
+          return Promise.resolve({
+            authorizeUrl: 'https://hqforwork.com/authorize/desktop?client_id=7acei2c8v870enheptb1j5foln',
+            state: 'web-state',
+          });
+        case 'oauth_listen_for_code':
+          return new Promise(() => {});
+        default:
+          return Promise.resolve(undefined);
+      }
+    });
+    component = mount(SignInPrompt, { target: host });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="web-authorize-signin"]')));
+    expect(host.querySelector('[data-testid="other-ways-to-sign-in"]')).not.toBeNull();
+    host.querySelector<HTMLButtonElement>('[data-testid="web-authorize-signin"]')?.click();
+    flushSync();
+    await flush();
+    expect(tauri.invoke).toHaveBeenCalledWith('start_web_authorize');
+    expect(tauri.open).toHaveBeenCalledWith(
+      'https://hqforwork.com/authorize/desktop?client_id=7acei2c8v870enheptb1j5foln',
+    );
+  });
+});
