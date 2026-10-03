@@ -55,6 +55,8 @@
      * listing; `atlasSource` is the fallback when the folder is missing.
      */
     atlasLocal?: AtlasLocalSource | null;
+    /** OWNER-R4: company telemetry for the Atlas People & agents list. */
+    loadPeople?: (() => Promise<unknown>) | null;
   }
 
   let {
@@ -72,6 +74,7 @@
     atlasCache = null,
     atlasSource = null,
     atlasLocal = null,
+    loadPeople = null,
   }: Props = $props();
 
   // Shared cache with the company sidepane: paints the warm summary first and
@@ -158,6 +161,7 @@
       {onclearfilter}
       {onopenpage}
       projectsInProgress={boardInProgress}
+      {loadPeople}
       onopenfiles={(node) => openNode(node, "files")}
       onopenboard={(node) => openNode(node, "board")}
       onopenperson={(uid) => onopenperson?.(uid)}

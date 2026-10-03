@@ -14,6 +14,7 @@
     type AtlasNode,
     type AtlasPresence,
   } from "./atlas-model.js";
+  import { ATLAS_PEOPLE_DAYS, compactTokens, type AtlasPeopleState } from "./atlas-people.js";
 
   interface Props {
     node: AtlasNode | null;
@@ -33,6 +34,13 @@
     onopenfiles?: (node: AtlasNode) => void;
     onopenboard?: (node: AtlasNode) => void;
     onmessage?: (who: AtlasPresence) => void;
+    /** OWNER-R4: People & agents over the last 30 days (company roll-up only). */
+    people?: AtlasPeopleState;
+    selectedPersonId?: string | null;
+    onperson?: (id: string) => void;
+    onpeopleretry?: () => void;
+    /** Map objects lit for the picked person; 0 means none of their skills are on the map. */
+    personMatches?: number;
   }
 
   let {
@@ -50,7 +58,18 @@
     onopenfiles,
     onopenboard,
     onmessage,
+    people = { status: "idle" },
+    selectedPersonId = null,
+    onperson,
+    onpeopleretry,
+    personMatches = 0,
   }: Props = $props();
+
+  function sparkPath(values: number[]): string {
+    if (values.length < 2) return "";
+    const max = Math.max(...values, 1);
+    return values.map((v, i) => `${i === 0 ? "M" : "L"}${((i / (values.length - 1)) * 48).toFixed(1)},${(12 - (v / max) * 12).toFixed(1)}`).join(" ");
+  }
 
   const here = $derived(node ? presence.filter((p) => p.nodeId === node.id) : presence);
   const isLive = $derived(node ? here.length > 0 : false);
@@ -159,10 +178,61 @@
     {:else}
       <p class="goal">Nobody is working in this company right now.</p>
     {/if}
+    {#if people.status !== "idle"}
+      <div class="hr"></div>
+      <div class="kind people-head">People &amp; agents <span class="mm">{ATLAS_PEOPLE_DAYS}d · tokens</span></div>
+      {#if people.status === "loading"}
+        <p class="goal" data-testid="atlas-people-loading" aria-busy="true">Reading activity…</p>
+      {:else if people.status === "failed"}
+        <p class="goal" data-testid="atlas-people-failed">
+          {people.forbidden ? "Only owners and admins can see team activity." : "Activity could not be read."}
+          {#if !people.forbidden}<button type="button" class="link" onclick={() => onpeopleretry?.()}>Try again</button>{/if}
+        </p>
+      {:else if people.status === "ok" && people.people.length === 0}
+        <p class="goal" data-testid="atlas-people-empty">No activity in the last {ATLAS_PEOPLE_DAYS} days.</p>
+      {:else if people.status === "ok"}
+        <div class="list" data-testid="atlas-people">
+          {#each people.people as person (person.id)}
+            <button
+              type="button"
+              class="li rowbtn person"
+              data-testid="atlas-person"
+              aria-pressed={selectedPersonId === person.id}
+              onclick={() => onperson?.(person.id)}
+            >
+              <div class="pmain">
+                <div class="tt">{person.name}{#if person.bot}<span class="tag">agent</span>{/if}<span class="grow"></span><span class="mm tok">{person.tokens > 0 ? compactTokens(person.tokens) : "—"}</span></div>
+                <div class="mm prow">
+                  {#if !person.bot && person.trend.length > 1}<svg class="spark" width="48" height="12" viewBox="0 0 48 12" aria-hidden="true"><path d={sparkPath(person.trend)} /></svg>{/if}
+                  <span>{person.sessions} sess · {person.stories} stories</span>
+                  {#if !person.bot && person.topSkill}<span class="sk">{person.topSkill}</span>{/if}
+                </div>
+              </div>
+            </button>
+          {/each}
+        </div>
+        {#if selectedPersonId}
+          <p class="goal" data-testid="atlas-person-matches">
+            {personMatches > 0 ? `${personMatches} of their skills on the map.` : "None of the skills they ran are on this map."}
+          </p>
+        {/if}
+      {/if}
+    {/if}
   {/if}
 </aside>
 
 <style>
+  .people-head { display: flex; gap: 8px; align-items: baseline; }
+  .li.person { display: block; width: 100%; text-align: left; padding: 6px 0; }
+  .li.person[aria-pressed="true"] { background: var(--v4-active-row); }
+  .pmain { width: 100%; min-width: 0; }
+  .pmain .tt { display: flex; align-items: baseline; gap: 6px; }
+  .pmain .grow { flex: 1; }
+  .tag { font-size: var(--type-ui, 13px); color: var(--v4-text-3); text-transform: uppercase; letter-spacing: 0.04em; }
+  .prow { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .prow .sk { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .spark path { fill: none; stroke: currentColor; stroke-width: 1.2; opacity: 0.7; }
+  .link { background: none; border: 0; padding: 0; color: inherit; text-decoration: underline; cursor: pointer; font: inherit; min-height: 28px; }
   .inspector {
     width: 340px;
     box-sizing: border-box;

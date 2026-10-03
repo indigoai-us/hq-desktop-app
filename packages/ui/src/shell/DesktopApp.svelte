@@ -9995,6 +9995,15 @@
       window.removeEventListener("pointerdown", onPointerDown, true);
     };
   });
+
+  /** OWNER-R4: the web Atlas people read, last 30 days of company telemetry. */
+  async function loadAtlasPeople(slug: string): Promise<unknown> {
+    const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+    const now = Date.now();
+    const res = await adapter.company.getTeamTelemetry(slug, { from: day(now - 29 * 86_400_000), to: day(now) });
+    if (!res.ok) throw Object.assign(new Error(res.message ?? res.reason), { code: res.reason });
+    return res.value;
+  }
 </script>
 
 {#snippet meetingsAgenda()}
@@ -10554,6 +10563,7 @@
             companyUid={companyPaneCompany?.uid ?? null}
             atlasSource={atlasVaultSource}
             atlasLocal={atlasLocalSource}
+            loadPeople={companyPaneCompany?.slug ? () => loadAtlasPeople(companyPaneCompany?.slug ?? "") : null}
             actors={atlasActors}
             filterActor={atlasFilterActor}
             onclearfilter={() => (atlasFilterActor = null)}

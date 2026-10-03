@@ -1088,6 +1088,7 @@ This final paragraph verifies spacing after a thematic break.
         totals: {
           events: 184,
           distinctSessions: 31,
+          tokensByModel: [{ model: "claude-opus-4", input: 820000, output: 210000, cacheCreation: 90000, cacheRead: 1400000 }],
           skills: { bySkill: [{ skill: 'run-project', count: 22 }, { skill: 'storyboard', count: 14 }] },
         },
         activeProjects: ['HQ Desktop app', 'Event-driven HQ-Cloud sync'],
@@ -1100,6 +1101,7 @@ This final paragraph verifies spacing after a thematic break.
         totals: {
           events: 143,
           distinctSessions: 28,
+          tokensByModel: [{ model: "claude-sonnet-4", input: 410000, output: 120000, cacheCreation: 30000, cacheRead: 600000 }],
           skills: { bySkill: [{ skill: 'dm', count: 36 }, { skill: 'hq-sync', count: 19 }] },
         },
         activeProjects: ['Instant DM delivery'],
@@ -1112,6 +1114,7 @@ This final paragraph verifies spacing after a thematic break.
         totals: {
           events: 88,
           distinctSessions: 17,
+          tokensByModel: [{ model: "claude-sonnet-4", input: 190000, output: 60000, cacheCreation: 10000, cacheRead: 240000 }],
           skills: { bySkill: [{ skill: 'review', count: 12 }, { skill: 'quality-gate', count: 9 }] },
         },
         activeProjects: ['S3-versioned conflict handling'],
@@ -1123,6 +1126,7 @@ This final paragraph verifies spacing after a thematic break.
         totals: {
           events: 51,
           distinctSessions: 9,
+          tokensByModel: [{ model: "claude-haiku-4", input: 40000, output: 12000, cacheCreation: 0, cacheRead: 30000 }],
           skills: { bySkill: [{ skill: 'diagnose', count: 11 }] },
         },
         activeProjects: [],

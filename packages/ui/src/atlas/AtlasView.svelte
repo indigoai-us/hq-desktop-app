@@ -7,6 +7,7 @@
    * cached graph for the company in the first frame, then refreshes from the
    * Console atlas endpoint in the background. Loaded only via dynamic import.
    */
+  import { atlasPeopleFromTelemetry, atlasPersonNodeIds, isForbidden, type AtlasPeopleState } from "./atlas-people.js";
   import { onMount, untrack } from "svelte";
   import AtlasMap from "./AtlasMap.svelte";
   import AtlasInspector from "./AtlasInspector.svelte";
@@ -63,6 +64,11 @@
      * over the graph's story rollup, which the local map does not fill.
      */
     projectsInProgress?: number | null;
+    /**
+     * OWNER-R4: the web Atlas people read (company telemetry, last 30 days),
+     * resolving to the raw body. Runs only after the map has painted.
+     */
+    loadPeople?: (() => Promise<unknown>) | null;
   }
 
   let {
@@ -81,7 +87,13 @@
     onmessage,
     onopenpage,
     projectsInProgress: boardInProgress = null,
+    loadPeople = null,
   }: Props = $props();
+
+  let people = $state<AtlasPeopleState>({ status: "idle" });
+  let peopleNonce = $state(0);
+  let personFilter = $state<string | null>(null);
+  let peopleFor = "";
 
   let graph = $state<AtlasGraph | null>(untrack(() => cache.cached(companyUid)));
   let refreshError = $state<AtlasFailReason | null>(null);
@@ -110,7 +122,40 @@
   );
   const working = $derived(atlasDistinctActors(presence));
   const live = $derived(new Set(presence.map((p) => p.nodeId)));
-  const filterIds = $derived(atlasActorNodeIds(presence, filterActor));
+  const actorFilterIds = $derived(atlasActorNodeIds(presence, filterActor));
+  const selectedPerson = $derived(
+    personFilter && people.status === "ok" ? (people.people.find((p) => p.id === personFilter) ?? null) : null,
+  );
+  // A person picked in the People list lights up the skills they ran.
+  const personIds = $derived(selectedPerson ? atlasPersonNodeIds(selectedPerson, graph?.nodes ?? []) : null);
+  // With none of their skills on the map, nothing is dimmed; the list says so.
+  const filterIds = $derived(personIds && personIds.size > 0 ? personIds : actorFilterIds);
+
+  // OWNER-R4: the people read starts once the map is on screen, so the map
+  // never waits for telemetry (3-4 s on large companies).
+  $effect(() => {
+    const read = loadPeople;
+    const uid = companyUid;
+    const painted = graph !== null;
+    void peopleNonce;
+    if (!read || !painted) return;
+    const key = `${uid}:${peopleNonce}`;
+    if (peopleFor === key) return;
+    peopleFor = key;
+    people = { status: "loading" };
+    personFilter = null;
+    const alive = () => companyUid === uid;
+    requestAnimationFrame(() => {
+      read()
+        .then((body) => {
+          if (alive()) people = { status: "ok", people: atlasPeopleFromTelemetry(body) };
+        })
+        .catch((err: unknown) => {
+          console.error("atlas people read failed:", err);
+          if (alive()) people = { status: "failed", forbidden: isForbidden(err) };
+        });
+    });
+  });
   const filterName = $derived(
     filterActor ? (presence.find((p) => p.actorUid === filterActor)?.name ?? null) : null,
   );
@@ -368,6 +413,11 @@
       {detailLoading}
       {related}
       presence={selectedNode ? presence : working}
+      {people}
+      selectedPersonId={personFilter}
+      onperson={(id) => (personFilter = personFilter === id ? null : id)}
+      onpeopleretry={() => (peopleNonce += 1)}
+      personMatches={personIds?.size ?? 0}
       company={companyName ?? graph?.company ?? ""}
       objectCount={loadFailed ? null : (graph?.nodes.length ?? 0)}
       projectsInProgress={loadFailed && boardInProgress == null ? null : projectsInProgress}
