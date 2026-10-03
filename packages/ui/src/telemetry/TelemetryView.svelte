@@ -5,7 +5,7 @@
    * My Telemetry (US-032). Paints the cached snapshot on the first frame,
    * then refreshes in the background. Charts are CSS bars in text-1 opacities.
    */
-  import { onMount, untrack } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import "../chat/scroll-perf.css";
   import "../common/button/rail-type.css";
   import type { TelemetryCache } from "./telemetry-cache.js";
@@ -76,6 +76,21 @@
   // Chart bands are the By-model rows plus Other, in table order.
   const bandLabels = $derived(snapshot ? chartBandLabels(snapshot) : []);
   const skillMax = $derived(snapshot?.skills[0]?.count ?? 1);
+  let skillsSection = $state<HTMLElement | null>(null);
+
+  // QA-068: no host passes onskills, so both Skills controls fell through to
+  // a no-op. Without a host handler they open Overview and bring the Top
+  // skills breakdown into view.
+  async function showSkills(): Promise<void> {
+    if (onskills) {
+      onskills();
+      return;
+    }
+    page = "overview";
+    await tick();
+    skillsSection?.scrollIntoView({ block: "start" });
+    skillsSection?.focus({ preventScroll: true });
+  }
   // Family rows plus the remainder row, so the table total matches the headline.
   const tokenTotal = $derived(
     (snapshot?.models.reduce(
@@ -179,7 +194,7 @@
           {#if item.meta}<span class="meta" data-testid="telemetry-sessions-count">{snapshot ? String(snapshot.sessionsRows.length) : item.meta}</span>{/if}
         </button>
       {/each}
-      <button class="row" onclick={() => onskills?.()}>
+      <button class="row" onclick={() => void showSkills()}>
         <span>Skills</span>
         <span class="meta">{snapshot?.distinctSkills ?? ""}</span>
       </button>
@@ -294,9 +309,9 @@
             </div>
             <p class="foot">Sessions on your laptop, your Outpost, and bots running under your identity. Company admins see totals only, never transcripts.</p>
           </div>
-          <div>
+          <div bind:this={skillsSection} tabindex="-1" data-testid="telemetry-top-skills">
             <div class="sech">Top skills <span class="grow"></span>
-              <button class="lnk" onclick={() => onskills?.()}>{snapshot.distinctSkills} total</button>
+              <button class="lnk" onclick={() => void showSkills()}>{snapshot.distinctSkills} total</button>
             </div>
             {#each snapshot.skills as skill (skill.name)}
               <div class="sk">
