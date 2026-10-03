@@ -6,7 +6,7 @@
   no new pollers.
 -->
 <script lang="ts">
-  import { onMount, type Snippet } from "svelte";
+  import { onMount, untrack, type Snippet } from "svelte";
   import LiveNowCard from "../common/LiveNowCard.svelte";
   import {
     activeMeetings,
@@ -17,7 +17,7 @@
   } from "./active-meetings";
   import MeetingCanvas from "./MeetingCanvas.svelte";
   import { meetingsStore } from "./meetings-store.svelte";
-  import { withRecordedEvents } from "./recorded-meetings";
+  import { withRecordedDocument, withRecordedEvents } from "./recorded-meetings";
   import { meetingsRailState } from "./meetings-rail-state.svelte";
   import { defaultMeetingId, meetingsRailSections } from "./meetings-rail-model";
   import { botForEvent, pickLiveMeeting } from "./meetings-model";
@@ -73,6 +73,22 @@
     event ? botForEvent(event, meetingsStore.botsByEventId, meetingsStore.scheduledBots) : undefined,
   );
   const phase = $derived(event ? meetingPhase(event, new Date(), bot) : null);
+  // A recorded past meeting loads its saved notes from the server when opened;
+  // the canvas shows them, or one quiet line when there are none.
+  const recordedId = $derived(phase === "past" ? (event?.recorded?.meetingId ?? null) : null);
+  $effect(() => {
+    const id = recordedId;
+    if (!id) return;
+    const companyUid = event?.sourceCompanyUid ?? null;
+    untrack(() => void meetingsStore.loadRecordedNotes(id, companyUid));
+  });
+  const notesEntry = $derived(recordedId ? meetingsStore.recordedNotes[recordedId] : undefined);
+  const shownEvent = $derived(
+    event && notesEntry?.signals
+      ? withRecordedDocument({ ...event, signals: notesEntry.signals }, notesEntry.document)
+      : event,
+  );
+  const notesLoading = $derived(Boolean(recordedId) && (!notesEntry || notesEntry.status === "loading"));
   const companyName = $derived(
     event?.sourceCompanyUid ? (meetingsStore.companyNamesByUid.get(event.sourceCompanyUid) ?? null) : null,
   );
@@ -122,7 +138,11 @@
 {:else if !meetingsRailState.agenda && phase !== "live"}
   <MeetingsStatesDoor
     mode={phase === "past" ? "recap" : phase === "upcoming" ? "upcoming" : "empty"}
-    {event}
+    event={shownEvent}
+    {notesLoading}
+    notesRemaining={notesEntry?.remaining ?? 0}
+    notesLoadingMore={notesEntry?.loadingMore ?? false}
+    onloadmore={() => recordedId && void meetingsStore.loadMoreRecordedNotes(recordedId)}
     {bot}
     {companyName}
     {sections}

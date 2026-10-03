@@ -971,9 +971,12 @@ pub(crate) fn claim_http_failure(
 
 /// Accept pending company invite(s) via `POST /membership/claim-by-email`
 /// (modern tokenless path). Optional `company_slug` is advisory for messaging.
+/// `route` names the caller (`onboarding` | `company_page`) for the
+/// `company_joined` funnel row.
 #[tauri::command]
 pub async fn claim_pending_company_invite(
     company_slug: Option<String>,
+    route: Option<String>,
 ) -> Result<ClaimPendingInviteResult, String> {
     let vault_url = resolve_vault_api_url()?;
     let jwt = resolve_jwt().await?;
@@ -1089,6 +1092,7 @@ pub async fn claim_pending_company_invite(
             person.uid, claimed_slugs
         ),
     );
+    crate::commands::cdp_mirror::note_company_joined(route.as_deref(), claimed_slugs.len());
 
     Ok(ClaimPendingInviteResult {
         ok: true,

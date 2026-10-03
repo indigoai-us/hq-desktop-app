@@ -47,7 +47,7 @@ describe("listEmptyState", () => {
   it("treats an active filter with no query as no matches", () => {
     expect(listEmptyState({ total: 1, shown: 0, filtered: true, noun: FILES })).toEqual({
       kind: "no-matches",
-      title: "No matches for these filters",
+      title: "No files match these filters",
       totalLabel: "1 file",
     });
   });

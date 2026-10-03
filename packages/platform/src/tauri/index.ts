@@ -31,11 +31,13 @@ import { scrubTransportFailure } from "../api-error.js";
 import { createCallsApi } from "../calls/api.js";
 import {
   CLAUDE_PROVIDER_FLAG,
+  DESKTOP_AGENT_CREATION_FLAG,
   HUMAN_ONLY_CONVERSATIONS_FLAG,
   HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT,
-  createFeatureFlagGate,
   createHqProFlagFetch,
-  type FeatureFlagGate,
+  createHqProRestFetch,
+  createScopedFeatureFlagGates,
+  type ScopedFeatureFlagGates,
 } from "../flags.js";
 
 /** Meetings are cloud-backed — desktop composite routes them via web.meetings. */
@@ -93,11 +95,11 @@ export class TauriPlatformAdapter implements PlatformAdapter {
   private readonly invokeFn: InvokeFn;
   /** Serializes get-settings → merge → save across generic desktop callers. */
   private settingsMutationTail: Promise<void> = Promise.resolve();
-  private readonly flags: FeatureFlagGate;
+  private readonly flagsFor: ScopedFeatureFlagGates;
 
   constructor(config: TauriPlatformAdapterConfig) {
     this.invokeFn = config.invoke;
-    this.flags = createFeatureFlagGate({
+    this.flagsFor = createScopedFeatureFlagGates({
       // Rust `hq_pro_fetch` already prefixes the hq-pro base URL.
       endpoint: "",
       getToken: () => "",
@@ -202,22 +204,22 @@ export class TauriPlatformAdapter implements PlatformAdapter {
   readonly identity: PlatformAdapter["identity"] = {
     whoami: () => this.hqProJson("GET", "/v1/identity/whoami"),
     isAdmin: () => this.call("is_admin"),
-    hasFeature: (flag) =>
+    hasFeature: (flag, scope) =>
       flag === HUMAN_ONLY_CONVERSATIONS_FLAG
         ? // Pinned per release; the registry cannot turn it off.
           Promise.resolve(ok(HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT))
-        : this.flags.resolve(flag, () =>
-            flag === CLAUDE_PROVIDER_FLAG
+        : this.flagsFor(scope?.companyUid).resolve(flag, () =>
+            flag === CLAUDE_PROVIDER_FLAG || flag === DESKTOP_AGENT_CREATION_FLAG
               ? Promise.resolve(ok(false))
               : this.call("has_feature", { flag }),
           ),
     subscribeFeature: (flag, onChange) =>
       flag === HUMAN_ONLY_CONVERSATIONS_FLAG
         ? () => {}
-        : this.flags.subscribe(
+        : this.flagsFor(null).subscribe(
             flag,
             () =>
-              flag === CLAUDE_PROVIDER_FLAG
+              flag === CLAUDE_PROVIDER_FLAG || flag === DESKTOP_AGENT_CREATION_FLAG
                 ? Promise.resolve(ok(false))
                 : this.call("has_feature", { flag }),
             onChange,
@@ -445,6 +447,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     listUpcoming: async () => MEETINGS_USE_CLOUD,
     listScheduledBots: async () => MEETINGS_USE_CLOUD,
     listRecorded: async () => MEETINGS_USE_CLOUD,
+    getRecorded: async () => MEETINGS_USE_CLOUD,
     inviteBot: async () => MEETINGS_USE_CLOUD,
     cancelBot: async () => MEETINGS_USE_CLOUD,
     joinBotNow: async () => MEETINGS_USE_CLOUD,
@@ -488,6 +491,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
   };
 
   readonly agents: PlatformAdapter["agents"] = {
+    fetch: createHqProRestFetch((cmd, args) => this.invokeFn(cmd, args)),
     getProvisionOptions: (companyUid) =>
       this.hqProJson<AgentProvisionOptionsView>(
         "GET",

@@ -22,6 +22,7 @@
   } from "./library.js";
   import type { LibraryApi } from "@hq/platform";
   import { renderMarkdown } from "../common/markdown.js";
+  import { markdownLinks } from "../common/markdown-links.js";
   import LabelChip from "../common/LabelChip.svelte";
 
   interface Props {
@@ -49,6 +50,9 @@
         ? item.worker.name
         : item.skill.name,
   );
+  // Worker and skill bodies have no file tree beside them, so relative links
+  // stay inert; web links and #anchors still work (QA-104).
+  const itemPath = $derived(item === null ? "" : item.kind === "worker" ? item.worker.path : item.skill.path);
   const kindLabel = $derived(item?.kind === "worker" ? "Worker" : "Skill");
 
   // Load detail whenever the open item changes. Cancel-flag guards against an
@@ -234,7 +238,7 @@
             <section class="detail-section">
               <h3 class="section-title">Instructions</h3>
               <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-              <article class="markdown-body" data-testid="worker-instructions">
+              <article class="markdown-body" data-testid="worker-instructions" use:markdownLinks={{ currentPath: itemPath }}>
                 {@html workerInstructionsHtml}
               </article>
             </section>
@@ -265,7 +269,7 @@
           <section class="detail-section">
             <h3 class="section-title">Details</h3>
             <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-            <article class="markdown-body" data-testid="skill-body">
+            <article class="markdown-body" data-testid="skill-body" use:markdownLinks={{ currentPath: itemPath }}>
               {@html skillBodyHtml}
             </article>
           </section>

@@ -27,8 +27,12 @@
   import { formatShortcut } from "../common/keyboard-shortcuts";
   import type { LocalBotEntryResult } from "./local-bots.js";
   import type { AvatarPack } from "../avatars/types.js";
-  import CreateBotFlow, { type CreateBotExtras } from "./create-bot/CreateBotFlow.svelte";
+  import type { CreateBotExtras } from "./create-bot/CreateBotFlow.svelte";
+  import LazyDoor from "../shell/LazyDoor.svelte";
+  import { createBotFlowDoor } from "../shell/lazy-doors.js";
   import type { BotRuntime } from "./create-bot/create-bot-model.js";
+  import type { DirectCloudFlowSeam } from "./create-bot/direct-cloud-lazy.js";
+  import type { CreateErrorFix } from "@hq/agents";
   import type { RuntimeSignInApi } from "./create-bot/RuntimeSignIn.svelte";
   import type { ChatSidebarApi } from "./chat-api.js";
   import type {
@@ -142,6 +146,8 @@
       | null;
     loadClaudeProviderFlag?: (() => AdapterPromise<boolean>) | null;
     loadCloudProvisionOptions?: ((companyUid: string) => AdapterPromise<AgentProvisionOptionsView>) | null;
+    /** `agents.desktop-agent-creation` seam for the New bot flow. */
+    directCloud?: DirectCloudFlowSeam | null;
     /** Companies an agent can be added to (cloud companies the user is in). */
     agentCompanies?: ScopeCompany[] | null;
     /**
@@ -224,6 +230,7 @@
     oncreateagent = null,
     loadClaudeProviderFlag = null,
     loadCloudProvisionOptions = null,
+    directCloud = null,
     agentCompanies = null,
     oncreatebot = null,
     botRuntimeReady = null,
@@ -272,6 +279,8 @@
   );
   let entryBusy = $state<"company" | "agent" | "bot" | null>(null);
   let entryError = $state<string | null>(null);
+  /** The fix for `entryError`, when the direct cloud create named one. */
+  let entryFix = $state<CreateErrorFix | null>(null);
 
   async function runEntry(
     kind: "company" | "agent" | "bot",
@@ -280,6 +289,7 @@
     if (entryBusy) return;
     entryBusy = kind;
     entryError = null;
+    entryFix = null;
     try {
       const result = await run();
       if (result.ok) {
@@ -287,6 +297,7 @@
         return;
       }
       entryError = result.reason;
+      entryFix = "fix" in result ? (result.fix ?? null) : null;
     } catch (err) {
       entryError = err instanceof Error ? err.message : String(err);
     } finally {
@@ -2092,6 +2103,10 @@
     if (issue.reason === "member-other") return true;
     return issue.reason === "member-unreachable" && !offersEmailFallback(issue);
   }
+
+  // Start loading the New bot flow as soon as the modal opens, so the bot
+  // step usually paints with it already loaded.
+  createBotFlowDoor.preload();
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -2606,35 +2621,42 @@
         {/if}
       </div>
     {:else if step === "bot"}
-      <CreateBotFlow
-        {botRuntimeReady}
-        {botRuntimeStatus}
-        {onrecheckruntimes}
-        {aiTools}
-        {hqFolderPath}
-        {onopenassistant}
-        {onassistedinstall}
-        {onrequestaitools}
-        {botWorkers}
-        existingNames={existingBotNames}
-        {botCompanies}
-        agentTargets={canCreateCloudBot ? agentTargets : []}
-        initialCompanyUid={botCompanyUid}
-        initialCompanySlug={botCompanySlug}
-        onCloudCreate={canCreateCloudBot ? newAgentFor : null}
-        {loadClaudeProviderFlag}
-        {loadCloudProvisionOptions}
-        oncreate={canCreateLocalBot ? submitLocalBot : null}
-        onback={() => {
-          entryError = null;
-          step = "find";
+      <!-- The flow loads on first open (preloaded when this modal mounts), so
+           it stays out of the shell's startup JS. -->
+      <LazyDoor
+        door={createBotFlowDoor}
+        props={{
+          botRuntimeReady,
+          botRuntimeStatus,
+          onrecheckruntimes,
+          aiTools,
+          hqFolderPath,
+          onopenassistant,
+          onassistedinstall,
+          onrequestaitools,
+          botWorkers,
+          existingNames: existingBotNames,
+          botCompanies,
+          agentTargets: canCreateCloudBot ? agentTargets : [],
+          initialCompanyUid: botCompanyUid,
+          initialCompanySlug: botCompanySlug,
+          onCloudCreate: canCreateCloudBot ? newAgentFor : null,
+          loadClaudeProviderFlag,
+          loadCloudProvisionOptions,
+          directCloud,
+          oncreate: canCreateLocalBot ? submitLocalBot : null,
+          onback: () => {
+            entryError = null;
+            step = "find";
+          },
+          entryBusy,
+          entryError,
+          entryFix,
+          signInApi: botSignIn,
+          onsignedin: onbotsignedin,
+          avatarPacks,
+          loadAvatarPacks,
         }}
-        {entryBusy}
-        {entryError}
-        signInApi={botSignIn}
-        onsignedin={onbotsignedin}
-        {avatarPacks}
-        {loadAvatarPacks}
       />
     {:else if step === "email"}
       {#if emailOutcome}

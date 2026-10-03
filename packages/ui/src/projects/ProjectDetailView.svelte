@@ -31,6 +31,7 @@
   import { mergeProvenance } from "../common/provenance.js";
   import { projectsStore, setProjectStatus } from "./projects-store.svelte.js";
   import { renderMarkdownDocument } from "../common/markdown.js";
+  import { markdownLinks } from "../common/markdown-links.js";
   import {
     classifyTasks,
     groupByTaskColumn,
@@ -373,6 +374,14 @@
   const projectFilesRoot = $derived(
     projectFilesRootFromPrdPath(project.prdPath),
   );
+  /** README sits beside prd.json; its relative links resolve from there and
+   *  open in the Files tab (QA-104). */
+  const readmePath = $derived(projectFilesRoot ? `${projectFilesRoot}/README.md` : "README.md");
+  let filesOpenPath = $state<string | null>(null);
+  function openReadmeLink(target: string): void {
+    filesOpenPath = target;
+    tab = "files";
+  }
 
   $effect(() => {
     void projectIdentity(project);
@@ -1078,7 +1087,11 @@
                 <p class="muted-note">Loading README...</p>
               {:else if hasReadme}
                 <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-                <article class="markdown-body" data-testid="readme-markdown">
+                <article
+                  class="markdown-body"
+                  data-testid="readme-markdown"
+                  use:markdownLinks={{ currentPath: readmePath, onopenfile: openReadmeLink }}
+                >
                   {@html readmeHtml}
                 </article>
               {:else if project.description}
@@ -1147,6 +1160,7 @@
             <ProjectFilesHost
               {adapter}
               vaultRoot={projectFilesRoot}
+              openPath={filesOpenPath}
               prdPath={project.prdPath}
               {repoAccess}
               sessions={projectSessions}

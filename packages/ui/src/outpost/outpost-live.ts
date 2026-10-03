@@ -201,7 +201,9 @@ export function createOutpostRefresher(api: OutpostReadApi | null | undefined) {
     }
     const jobs = await api.listMyOutpostJobs();
     if (!jobs.ok) {
-      throw new Error(`outpost jobs: ${jobs.code ?? jobs.reason} ${jobs.message ?? ""}`.trim());
+      // The host read worked: keep it on screen and mark only jobs/runs unknown (QA-084).
+      console.error("[outpost] jobs read failed", `${jobs.code ?? jobs.reason} ${jobs.message ?? ""}`.trim());
+      return { ...outpostFromHqPro(status.value, null, fetchedAt), jobsUnavailable: true };
     }
     return outpostFromHqPro(status.value, jobs.value ?? null, fetchedAt);
   };

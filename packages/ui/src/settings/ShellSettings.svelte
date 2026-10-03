@@ -94,6 +94,8 @@
     refreshAppVersion?: () => Promise<string>;
     /** Live interface version when a UI hot update is serving. */
     uiVersion?: string | null;
+    /** Settings › Bots "New bot": opens the Messages New bot modal. */
+    onnewbot?: (() => void) | null;
   }
 
   let {
@@ -113,6 +115,7 @@
     updateWakeSeq = 0,
     refreshAppVersion,
     uiVersion = null,
+    onnewbot = null,
   }: Props = $props();
 
   let externalError = $state<string | null>(null);
@@ -672,7 +675,7 @@
       {:else if active === "agents"}
         <AgentsSettingsPane {adapter} />
       {:else if active === "bots"}
-        <BotsSettingsPane {adapter} {companies} />
+        <BotsSettingsPane {adapter} {companies} {onnewbot} />
       {:else}
         <PrototypeSettingsPanes
           section={active as
@@ -777,9 +780,10 @@
     font-weight: 500;
     text-align: left;
     cursor: pointer;
-    transition:
-      color 0.12s,
-      background 0.12s;
+    /* Background only. A color transition on a var()-driven color leaves
+       WebKit painting the old theme's text after the theme attribute flips
+       while Settings is mounted (QA-103), so text color switches instantly. */
+    transition: background 0.12s;
   }
 
   .ss-nav-item:hover {

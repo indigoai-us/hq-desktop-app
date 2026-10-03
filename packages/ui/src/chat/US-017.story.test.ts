@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { CREATE_MENU_ITEMS, createMenuHasCompany } from "./create-menu.js";
 import {
   channelPathPreview,
+  companyFolderSlug,
   entriesFromDirectory,
   filterPickerEntries,
   groupPickerEntries,
@@ -81,9 +82,15 @@ describe("US-017 create menu and people picker", () => {
     expect(names("cmp_sender")).toEqual(["sender bot"]);
   });
 
-  it("previews the channel path from the company label and the typed name", () => {
-    expect(channelPathPreview("Indigo", "Cost Desktop Push")).toBe(
+  it("previews the channel path from the company slug and the typed name", () => {
+    expect(channelPathPreview("indigo", "Cost Desktop Push")).toBe(
       "companies/indigo/channels/cost-desktop-push",
     );
+  });
+
+  it("takes the folder segment from the configured slug, never the display name (QA-101)", () => {
+    expect(companyFolderSlug({ slug: "acme-ops" })).toBe("acme-ops");
+    expect(companyFolderSlug({ slug: "  " })).toBe("personal");
+    expect(companyFolderSlug(null)).toBe("personal");
   });
 });

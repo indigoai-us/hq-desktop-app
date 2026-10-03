@@ -58,6 +58,7 @@
     type WorkerRow,
     type WorkerScope,
     type WorkerScopeFilter,
+    inspectedRow,
   } from "./brain-model.js";
 
   interface Props {
@@ -167,10 +168,15 @@
   const windowed = $derived(virtualWindow(shown.length, scrollTop, 640));
   const slice = $derived(shown.slice(windowed.start, windowed.end));
   const policyGroups = $derived(groupPolicies(policyRows));
-  const selectedSkill = $derived(cache.skills.find((row) => row.path === selected) ?? cache.skills[0] ?? null);
-  const selectedWorker = $derived(cache.workers.find((row) => row.path === selected) ?? cache.workers[0] ?? null);
-  const selectedPolicy = $derived(cache.policies.find((row) => row.path === selected) ?? cache.policies[0] ?? null);
-  const selectedFile = $derived(cache.knowledge.find((row) => row.path === selected) ?? cache.knowledge[0] ?? null);
+  // QA-102: the inspector reads the filtered rows, so a search or filter that
+  // hides the selection never leaves its detail and actions on screen.
+  const selectedSkill = $derived(inspectedRow(skillRows, selected));
+  const selectedWorker = $derived(inspectedRow(workerRows, selected));
+  const selectedPolicy = $derived(inspectedRow(policyRows, selected));
+  const selectedFile = $derived(inspectedRow(knowledgeRows, selected));
+  $effect(() => {
+    if (selected && !activeList.some((row) => row.path === selected)) selected = null;
+  });
   const title = $derived(page === "knowledge" ? "Knowledge" : page === "policies" ? "Policies" : page === "skills" ? "Skills" : "Workers");
   // QA-058: the unfiltered total and filter state behind the shared empty state.
   const sourceTotal = $derived(
@@ -562,6 +568,11 @@
             <RailButton icon="copy" onclick={() => copyPath(selectedFile.path)}>Copy path</RailButton>
           </div>
           <div class="body">{selectedFile.body}</div>
+        {:else if activeList.length === 0 && sourceTotal > 0 && query.trim()}
+          <div class="detail-empty" data-testid="brain-detail-empty">
+            <p class="empty">No {listNoun[1]} match “{query.trim()}”</p>
+            <RailButton icon="x" onclick={clearListFilters}>Clear search</RailButton>
+          </div>
         {:else}
           <p class="empty">Select a row.</p>
         {/if}

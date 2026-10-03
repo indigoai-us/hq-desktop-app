@@ -870,6 +870,17 @@ const ALLOWED_DESKTOP_PROPERTY_KEYS: &[&str] = &[
     "decision",
     "provisioningStep",
     "selfHeal",
+    // Funnel rows mirrored to the CDP (cdp_mirror::OPERATIONAL_MIRRORS).
+    "isFirstLaunch",
+    "userHash",
+    "companyHash",
+    "success",
+    "errorClass",
+    "trigger",
+    "downloadedCount",
+    "count",
+    "route",
+    "plan",
 ];
 
 const SYMLINK_ERROR_OPERATION_VALUES: &[&str] = &[
@@ -1087,6 +1098,8 @@ fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
                         | "npxResolved"
                         | "found"
                         | "paidCompany"
+                        | "success"
+                        | "isFirstLaunch"
                 )
                 .then_some(value),
                 (_, Value::Number(n)) => {
@@ -1363,6 +1376,16 @@ const OPERATIONAL_DESKTOP_EVENT_NAMES: &[&str] = &[
     "oauth_signin_succeeded",
     "telemetry_preference_changed",
     "install_tag_read",
+    crate::commands::cdp_mirror::OP_APP_OPENED,
+    crate::commands::cdp_mirror::OP_ACCOUNT_LINKED,
+    crate::commands::cdp_mirror::OP_AGENT_SESSION_LAUNCHED,
+    crate::commands::cdp_mirror::OP_SYNC_STARTED,
+    crate::commands::cdp_mirror::OP_SYNC_COMPLETED,
+    crate::commands::cdp_mirror::OP_SYNC_FAILED,
+    crate::commands::cdp_mirror::OP_INVITE_SENT,
+    crate::commands::cdp_mirror::OP_INVITE_FAILED,
+    crate::commands::cdp_mirror::OP_COMPANY_JOINED,
+    crate::commands::cdp_mirror::OP_PLAN_SELECTED,
 ];
 
 fn is_operational_desktop_event_name(event_name: &str) -> bool {
@@ -2992,6 +3015,43 @@ mod codex_telemetry_tests {
     }
 
     #[test]
+    fn cdp_funnel_rows_are_operational_and_keep_their_props() {
+        let samples = json!({
+            "isFirstLaunch": true,
+            "userHash": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            "companyHash": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            "provider": "claude",
+            "surface": "terminal",
+            "success": false,
+            "errorClass": "not_found",
+            "trigger": "manual",
+            "flow": "runner",
+            "downloadedCount": 12,
+            "count": 1,
+            "route": "onboarding",
+            "plan": "workforce",
+        });
+        for (op, _, keys) in crate::commands::cdp_mirror::OPERATIONAL_MIRRORS {
+            assert!(is_operational_desktop_event_name(op), "{op} not approved");
+            let input: Map<String, Value> = keys
+                .iter()
+                .map(|key| ((*key).to_string(), samples[*key].clone()))
+                .collect();
+            let out = sanitize_desktop_properties(Some(Value::Object(input)));
+            for key in keys.iter() {
+                assert_eq!(out[*key], samples[*key], "{op}.{key} dropped");
+            }
+        }
+        // Identifiers and emails never pass, whatever the row.
+        let leaky = sanitize_desktop_properties(Some(json!({
+            "userHash": "prs_01ABC@example.com",
+            "personUid": "prs_01ABC",
+            "inviteeEmail": "a@b.c",
+        })));
+        assert!(leaky.as_object().unwrap().is_empty(), "{leaky}");
+    }
+
+    #[test]
     fn invite_step_failure_keeps_error_kind_and_bounded_http_status() {
         let sanitized = sanitize_desktop_properties(Some(json!({
             "step": "invite-teammate",
@@ -3176,6 +3236,16 @@ mod codex_telemetry_tests {
                 "decision",
                 "provisioningStep",
                 "selfHeal",
+                "isFirstLaunch",
+                "userHash",
+                "companyHash",
+                "success",
+                "errorClass",
+                "trigger",
+                "downloadedCount",
+                "count",
+                "route",
+                "plan",
             ]
         );
         for key in ALLOWED_DESKTOP_PROPERTY_KEYS {

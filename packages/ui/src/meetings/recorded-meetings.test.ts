@@ -103,13 +103,18 @@ describe("recorded meetings in the rail", () => {
       companyNamesByUid: names,
       now,
     });
-    expect(sections.map((s) => s.id)).toEqual(["past"]);
-    expect(
-      sections[0].rows.map((r) => [r.title, r.time, r.duration, r.companyLabel, r.companyMark, r.hasRecap]),
-    ).toEqual([
-      ["GTM Sync", "Jul 1", null, null, null, true],
-      ["Untitled meeting", "Jun 30", "45m", "Indigo", "IN", false],
+    // One day header per meeting day; rows carry the start time only.
+    expect(sections.map((s) => [s.id, s.label])).toEqual([
+      ["past", "JUL 1"],
+      ["past", "JUN 30"],
     ]);
+    expect(
+      sections.flatMap((s) => s.rows).map((r) => [r.title, r.duration, r.companyLabel, r.companyMark, r.hasRecap]),
+    ).toEqual([
+      ["GTM Sync", null, null, null, true],
+      ["Untitled meeting", "45m", "Indigo", "IN", false],
+    ]);
+    for (const row of sections.flatMap((s) => s.rows)) expect(row.time).toMatch(/^\d\d:\d\d$/);
   });
 
   it("shows only the selected company's meetings in company scope", () => {
@@ -135,8 +140,9 @@ describe("recorded meetings in the rail", () => {
       companyNamesByUid: names,
       now,
     });
-    expect(sections[0].rows).toHaveLength(20);
-    expect(sections[0].rows[0].id).toBe("recorded:m19");
+    const rows = sections.flatMap((s) => s.rows);
+    expect(rows).toHaveLength(20);
+    expect(rows[0].id).toBe("recorded:m19");
   });
 
   it("maps to a past event the canvas can open by id", () => {

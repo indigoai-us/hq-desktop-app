@@ -423,3 +423,16 @@ export function groupPolicies(rows: readonly PolicyDoc[]): { hard: PolicyDoc[]; 
     soft: rows.filter((row) => row.enforcement === "soft"),
   };
 }
+
+/**
+ * The row the inspector shows: the selected row when the current results hold
+ * it, else the first result, else nothing (QA-102). Reading from the filtered
+ * rows keeps a search with no matches from leaving an unrelated row and its
+ * actions in the inspector.
+ */
+export function inspectedRow<T extends { path: string }>(
+  rows: readonly T[],
+  selected: string | null,
+): T | null {
+  return rows.find((row) => row.path === selected) ?? rows[0] ?? null;
+}

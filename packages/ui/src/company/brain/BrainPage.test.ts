@@ -201,6 +201,46 @@ describe("US-028 BrainPage", () => {
     expect(document.querySelector("[data-testid='brain-empty']")).toBeNull();
   });
 
+  it("QA-102: a skill search with no matches clears the old skill's inspector and its actions", async () => {
+    const skill = (name: string) => ({
+      name,
+      description: `${name} skill`,
+      scope: "company",
+      company: "qa102-co",
+      path: `companies/qa102-co/skills/${name}/SKILL.md`,
+      allowedTools: [],
+    });
+    const library = {
+      getCompany: vi.fn(async () => ok({ workers: [], skills: [skill("memo-draft"), skill("daily-brief")] })),
+    };
+    component = mount(BrainPage, {
+      target: document.body,
+      props: { page: "skills", slug: "qa102-co", files: null, library: library as never, shell: null, settings: null },
+    });
+    await vi.waitFor(() => {
+      expect(document.querySelectorAll("[data-testid='skill-row']").length).toBe(2);
+    });
+    const rows = [...document.querySelectorAll<HTMLButtonElement>("[data-testid='skill-row']")];
+    rows.find((row) => row.textContent?.includes("memo-draft"))!.click();
+    flushSync();
+    const detail = () => document.querySelector("[data-testid='brain-detail']") as HTMLElement;
+    expect(detail().textContent).toContain("memo-draft");
+    expect(document.querySelector("[data-testid='skill-run']")).toBeTruthy();
+
+    const search = document.querySelector("[data-testid='brain-page'] input.search") as HTMLInputElement;
+    search.value = "qa-no-match";
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+    expect(detail().textContent).not.toContain("memo-draft");
+    expect(document.querySelector("[data-testid='skill-run']")).toBeNull();
+    const empty = document.querySelector("[data-testid='brain-detail-empty']") as HTMLElement;
+    expect(empty.textContent).toContain("No skills match “qa-no-match”");
+    (empty.querySelector("button") as HTMLButtonElement).click();
+    flushSync();
+    expect(search.value).toBe("");
+    expect(document.querySelectorAll("[data-testid='skill-row']").length).toBe(2);
+  });
+
   it("QA-010: the worker count, the collapsed list and the full list agree", async () => {
     const workers = Array.from({ length: 27 }, (_, i) => ({
       id: `w${i}`,

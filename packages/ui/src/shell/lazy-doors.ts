@@ -48,6 +48,10 @@ export const notificationsPopoverDoor = door(
 export const moreCompaniesDoor = door(
   () => import("./MoreCompaniesPopover.svelte"),
 );
+/** The New bot flow inside the create modal; preloaded when the modal opens. */
+export const createBotFlowDoor = door(
+  () => import("../chat/create-bot/CreateBotFlow.svelte"),
+);
 export const newMessageSheetDoor = door(
   () => import("../chat/NewMessageSheet.svelte"),
 );

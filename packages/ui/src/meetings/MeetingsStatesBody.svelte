@@ -15,6 +15,7 @@
     emptyNewMeetingDraft,
     filterTranscript,
     joinAvailable,
+    pastNotesState,
     recapModel,
     recapPlainText,
     relativeUntil,
@@ -52,6 +53,12 @@
     sheetLink?: string | null;
     /** Sheet only, over the live canvas. */
     sheetOnly?: boolean;
+    /** A recorded past meeting's saved notes are still loading. */
+    notesLoading?: boolean;
+    /** Saved notes past the first page, not read yet. */
+    notesRemaining?: number;
+    notesLoadingMore?: boolean;
+    onloadmore?: () => void;
   }
 
   let {
@@ -71,6 +78,10 @@
     onopenSheet,
     sheetOnly = false,
     sheetLink = null,
+    notesLoading = false,
+    notesRemaining = 0,
+    notesLoadingMore = false,
+    onloadmore,
   }: Props = $props();
 
   let tab = $state<"recap" | "transcript" | "notes" | "agenda">("recap");
@@ -80,8 +91,14 @@
   const place = $derived(event ? locationLabel(event) : "");
   // A cached event from before the host passed details through has no
   // attendees field; hold a skeleton while the first refresh is in flight.
+  // Recorded meetings never get attendees from a calendar refresh: they wait
+  // only for their own notes load, then show names or "Attendees unavailable".
   const detailsPending = $derived(
-    !!event && event.attendees === undefined && meetingsStore.loading && meetingsStore.lastSyncedAt === 0,
+    !!event &&
+      event.attendees === undefined &&
+      (event.recorded
+        ? notesLoading
+        : meetingsStore.loading && meetingsStore.lastSyncedAt === 0),
   );
   let query = $state("");
   let jumped = $state<string | null>(null);
@@ -90,6 +107,11 @@
   let titleError = $state(false);
 
   const recap = $derived(event ? recapModel(event, bot) : null);
+  // Past meetings show tabs only when real notes exist on the server.
+  const notesState = $derived(
+    mode === "recap" && event ? pastNotesState(event, now, { bot, detailLoading: notesLoading }) : null,
+  );
+  const hasNotes = $derived(notesState === null || notesState === "ready");
   const turns = $derived(event ? filterTranscript(transcriptTurns(event), query) : []);
   const url = $derived(
     ((event ? meetingJoinUrl(event) : "") || (event ? meetingsRailState.attachedLinks.get(event.id) : "") || "").trim(),
@@ -268,14 +290,30 @@
         <span class="hint">{canJoin ? "Ready to join" : "Join opens 10 min before"}</span>
         <button type="button" class="btn primary" data-testid="meeting-join" disabled={!canJoin} title={canJoin ? "Opens the meeting link in your browser" : "Opens 10 min before the meeting starts"} onclick={() => url && openExternal?.(url)}>Join</button>
         <button type="button" class="btn" data-testid="meeting-copy" disabled={!url} onclick={copyLink}>Copy link</button>
-      {:else}
+      {:else if hasNotes}
         <button type="button" class="btn" onclick={() => oncopy?.(`sources/meetings/${event.id}.md`)}>Open notes file</button>
         <button type="button" class="btn" data-testid="copy-recap" onclick={copyRecap}>Copy recap</button>
+      {:else if url}
+        <button type="button" class="btn" data-testid="meeting-copy" onclick={copyLink}>Copy link</button>
       {/if}
     </div>
 
     <div class="split">
       <div class="main">
+        {#if !hasNotes}
+          <div class="no-notes" data-testid="meeting-no-notes" data-state={notesState}>
+            {#if notesState === "loading"}
+              <div class="sk-lines" aria-busy="true" aria-label="Loading notes"><i></i><i></i></div>
+            {:else if notesState === "preparing"}
+              <p class="sum">Notes are being prepared.</p>
+              <p class="muted">They usually appear within 15 minutes after the meeting ends.</p>
+            {:else}
+              <p class="muted">No notes for this meeting</p>
+            {/if}
+            <p class="muted" data-testid="meeting-when">{whenChip(event)}</p>
+            {#if url}<p class="muted" data-testid="meeting-link">{url}</p>{/if}
+          </div>
+        {:else}
         <div class="tabs" data-testid="meeting-tabs">
           {#if mode === "recap"}
             <button type="button" class="tab" aria-pressed={tab === "recap"} onclick={() => (tab = "recap")}>Recap</button>
@@ -292,20 +330,34 @@
 
         {#if tab === "recap" && recap}
           <div data-testid="meeting-recap">
-            <h2 class="sh">Summary</h2>
-            <p class="sum">{recap.summary}</p>
-            <h2 class="sh">Decisions <span class="n">{recap.decisions.length}</span></h2>
-            {#each recap.decisions as item (item.id)}
-              <div class="it" data-testid="recap-decision"><span class="mk hi"></span><span>{item.title}</span><span class="own"><span class="mini">{item.ownerInitials}</span>{item.owner}</span><span class="ts">{item.when}</span></div>
-            {:else}<p class="muted">No decisions recorded.</p>{/each}
-            <h2 class="sh">Action items <span class="n">{recap.actions.length}</span></h2>
-            {#each recap.actions as item (item.id)}
-              <div class="it" data-testid="recap-action"><span class="mk"></span><span>{item.title}{#if item.detail}<span class="q">{item.detail}</span>{/if}</span><span class="own"><span class="mini" class:sq={item.bot}>{item.bot ? "⌁" : item.ownerInitials}</span>{item.owner}</span><span class="chip">{item.status}</span></div>
-            {:else}<p class="muted">No action items.</p>{/each}
-            <h2 class="sh">Open questions <span class="n">{recap.questions.length}</span></h2>
-            {#each recap.questions as item (item.id)}
-              <div class="it"><span class="mk"></span><span>{item.title}</span><span class="own">{item.owner}</span><span class="chip">{item.status}</span></div>
-            {:else}<p class="muted">No open questions.</p>{/each}
+            {#if recap.summary}
+              <h2 class="sh">Summary</h2>
+              <p class="sum">{recap.summary}</p>
+            {/if}
+            {#if recap.decisions.length}
+              <h2 class="sh">Decisions <span class="n">{recap.decisions.length}</span></h2>
+              {#each recap.decisions as item (item.id)}
+                <div class="it" data-testid="recap-decision"><span class="mk hi"></span><span>{item.title}</span><span class="own"><span class="mini">{item.ownerInitials}</span>{item.owner}</span><span class="ts">{item.when}</span></div>
+              {/each}
+            {/if}
+            {#if recap.actions.length}
+              <h2 class="sh">Action items <span class="n">{recap.actions.length}</span></h2>
+              {#each recap.actions as item (item.id)}
+                <div class="it" data-testid="recap-action"><span class="mk"></span><span>{item.title}{#if item.detail}<span class="q">{item.detail}</span>{/if}</span><span class="own"><span class="mini" class:sq={item.bot}>{item.bot ? "⌁" : item.ownerInitials}</span>{item.owner}</span><span class="chip">{item.status}</span></div>
+              {/each}
+            {/if}
+            {#if recap.questions.length}
+              <h2 class="sh">Open questions <span class="n">{recap.questions.length}</span></h2>
+              {#each recap.questions as item (item.id)}
+                <div class="it"><span class="mk"></span><span>{item.title}</span><span class="own">{item.owner}</span><span class="chip">{item.status}</span></div>
+              {/each}
+            {/if}
+            {#if notesRemaining > 0}
+              <div class="more" data-testid="recap-more">
+                <span class="muted" data-testid="recap-more-count">{notesRemaining} more {notesRemaining === 1 ? "note" : "notes"}</span>
+                <button type="button" class="btn" data-testid="recap-load-more" disabled={notesLoadingMore} aria-busy={notesLoadingMore} onclick={() => onloadmore?.()}>{notesLoadingMore ? "Loading…" : "Load more"}</button>
+              </div>
+            {/if}
           </div>
         {:else if tab === "transcript"}
           <div data-testid="meeting-transcript">
@@ -342,6 +394,7 @@
             {:else}<p class="muted">Notes render here. The file stays in the company vault.</p>{/each}
           </div>
         {/if}
+        {/if}
       </div>
       <aside class="side" data-testid="meeting-side">
         <h2 class="sh">Attendees{#if attendees.length}<span class="n">{attendees.length}</span>{/if}</h2>
@@ -350,7 +403,7 @@
         {:else}
           {#each attendees as person (person.key)}
             <div class="att" data-testid="meeting-attendee" title={person.email || undefined}><span class="mini">{initialsOf(person.name || "?")}</span><span class="an">{person.name}{#if person.organizer}<span class="q">Organizer</span>{/if}</span><span class="meta">{person.response}</span></div>
-          {:else}<p class="muted">No attendees on the calendar event.</p>{/each}
+          {:else}<p class="muted" data-testid="meeting-attendees-unavailable">{event.recorded || event.attendees === undefined ? "Attendees unavailable" : "No attendees on the calendar event."}</p>{/each}
         {/if}
         {#if organizer || place}
           <h2 class="sh">Details</h2>
@@ -360,7 +413,7 @@
         {#if mode === "upcoming"}
           <h2 class="sh">Live signals</h2>
           <p class="muted">Nothing yet. Action items, decisions, and questions appear here once the meeting is live.</p>
-        {:else if recap}
+        {:else if recap && hasNotes}
           <h2 class="sh">Details</h2>
           <p class="muted">{recap.decisions.length} decisions · {recap.actions.length} actions · {recap.questions.length} questions</p>
         {/if}
@@ -474,6 +527,7 @@
   .meta { margin-left: auto; }
   .sh { display: flex; gap: 8px; margin: 16px 0 4px; font-size: 13px; font-weight: 500; line-height: 17px; color: var(--t2); }
   .n { color: var(--t3); font-weight: 400; }
+  .more { display: flex; align-items: center; gap: 8px; margin: 12px 0 4px; }
   .sum { max-width: 66ch; line-height: 1.55; }
   .sum b { font-weight: 500; }
   .it { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; gap: 8px; align-items: center; min-height: 28px; padding: 4px 0; font-size: 13px; line-height: 17px; }
@@ -495,6 +549,10 @@
   .ag li.ag-empty { display: block; }
   .an { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .an .q { display: inline; margin-left: 6px; }
+  .no-notes {
+    padding-top: 8px;
+  }
+
   .sk-lines { display: grid; gap: 8px; padding: 8px 0; }
   .sk-lines i { display: block; height: 10px; border-radius: 4px; background: var(--v4-control-bg, var(--hover)); }
   .sk-lines i:nth-child(2) { width: 70%; }

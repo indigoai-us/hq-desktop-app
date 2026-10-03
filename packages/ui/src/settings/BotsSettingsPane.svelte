@@ -76,8 +76,14 @@
     companies?: Workspace[] | null;
     /** Explicit admin override (host-known); null defers to membership roles. */
     isAdmin?: boolean | null;
+    /**
+     * Open the one New bot modal (the Messages "New" flow). The host closes
+     * Settings first; creating lands in the bot's DM. Without it the pane
+     * falls back to its own local-only dialog.
+     */
+    onnewbot?: (() => void) | null;
   }
-  let { adapter = null, companies = null, isAdmin = null }: Props = $props();
+  let { adapter = null, companies = null, isAdmin = null, onnewbot = null }: Props = $props();
 
   type Runtime = LocalBotRow["runtime"];
   const RUNTIMES = LOCAL_BOT_RUNTIMES;
@@ -265,6 +271,10 @@
   }
 
   async function openCreate(): Promise<void> {
+    if (onnewbot) {
+      onnewbot();
+      return;
+    }
     if (!adapter?.bots) return;
     createError = null;
     createOpen = true;

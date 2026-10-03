@@ -180,6 +180,8 @@ export function isStrictlyRicherConversationRow(
 export interface ScopeCompany {
   companyUid: string;
   label: string;
+  /** Configured company slug (the `companies/<slug>/` folder). Never derive it from `label`. */
+  slug?: string | null;
   /** Presigned company icon, when the membership row carried one. */
   iconUrl?: string | null;
 }

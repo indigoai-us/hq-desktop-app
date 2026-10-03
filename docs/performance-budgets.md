@@ -141,7 +141,7 @@ start, because the rail is on every window.
 | Command palette | product target p95 ≤ 20 ms, same gate rule as conversation switch. The clock starts at the Cmd-K `keydown` in the page and stops on the microtask where the palette input is visible (it has a box and is not under `[hidden]`). That is the frame that will paint the input. It is not the next animation frame, and it is not the second frame after the key. The test driver's round trip is outside the sample. A trace of the open is about 3 ms of main-thread work (dispatch, style, layout, paint). | It is summoned constantly and has to feel instant. |
 | Scroll dropped frames | ≤ 1% in Messages and every sidepane; worst frame ≤ 33 ms | A dropped frame is the original choppy-scroll complaint. |
 | Idle main-thread busy | 0 ms | No new pollers. Presence keeps using the stores that already exist. |
-| Initial JS | reference + 150 KB (2026-09-08 reference 2,486,977 bytes, about 6%) | The rail is added to every screen, so the boot bundle can grow a little and no more. |
+| Initial JS | reference + 150 KB (2026-10-03 reference 2,636,981 bytes, measured on the main merge base 4b8f6137b; limit 2,790,581 bytes, about 6%) | The rail is added to every screen, so the boot bundle can grow a little and no more. The reference tracks main because code that ships on main is not the rail's; the rail's share stays 150 KB. |
 | Lazy chunks | Atlas ≤ 120 KB, Telemetry ≤ 80 KB, neither in the initial JS | Those two views are the heavy ones, so they load only when opened. |
 
 Company switch and sidepane switch stay skipped, with a TODO, until the

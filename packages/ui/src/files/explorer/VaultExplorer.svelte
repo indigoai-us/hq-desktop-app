@@ -181,6 +181,19 @@
   }
 
   /** Note text: the native capped reader when present, else the whole file. */
+  /** Whether a relative Markdown link target exists in this vault (QA-104). */
+  async function linkExists(p: string): Promise<boolean> {
+    if (!pathInVault(vault, p)) return false;
+    await ensureScope(vault);
+    const parent = p.split("/").slice(0, -1).join("/");
+    const res = await adapter.files.listDir(parent);
+    if (!res.ok) {
+      console.warn("Markdown link folder unreadable:", parent, res.message);
+      return false;
+    }
+    return (res.value as Array<{ path?: string; isDir?: boolean }>).some((entry) => entry.path === p && !entry.isDir);
+  }
+
   async function loadContent(p: string): Promise<void> {
     await ensureScope(vault);
     const api = vaultApi;
@@ -458,6 +471,7 @@
                 onlinktargets={(targets) => resolveLinks(activePath, targets)}
                 {scrollTo}
                 onopenfull={canReveal ? () => reveal(activePath) : undefined}
+                linkexists={linkExists}
               />
             {/key}
             {#if backlinks.length > 0}
@@ -485,7 +499,13 @@
           {/if}
         {:else}
           {#key activePath}
-            <div class="vx-preview"><FilePreviewPane {adapter} path={activePath} /></div>
+            <div class="vx-preview"><FilePreviewPane
+                {adapter}
+                path={activePath}
+                scopeRoot={vault.kind === "company" ? vault.root : null}
+                scopeLabel="vault"
+                onopenpath={(p) => openFile(p, { newTab: false })}
+              /></div>
           {/key}
         {/if}
       </div>

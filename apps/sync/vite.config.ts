@@ -33,7 +33,7 @@ export default defineConfig({
     },
   },
   optimizeDeps: {
-    exclude: ['@hq/ui', '@hq/platform', '@hq/core', '@hq/work', '@hq/meet-core'],
+    exclude: ['@hq/ui', '@hq/agents', '@hq/platform', '@hq/core', '@hq/work', '@hq/meet-core'],
   },
   envPrefix: ["VITE_", "TAURI_"],
   build: {

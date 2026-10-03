@@ -255,6 +255,13 @@ fn failure_reason_for_run(totals: &RunTotals) -> ClientHealthFailureReason {
     }
 }
 
+/// Closed class for a runner pass that did not end cleanly (`None` when it
+/// did). Same discipline and wire tokens as the client-health failure reason.
+pub(crate) fn sync_failure_class(exit_success: bool, totals: &RunTotals) -> Option<&'static str> {
+    (!run_was_genuine_success(exit_success, totals))
+        .then(|| failure_reason_for_run(totals).wire_value())
+}
+
 /// Shared success/failure bookkeeping for a completed run — the ONLY writer
 /// of `lastSyncSuccessAt`, used by both the manual seam and the watch/auto
 /// seam so their success discipline can never diverge.
@@ -909,6 +916,21 @@ mod tests {
     }
 
     // ── Closed reason codes (AC: no paths, no raw logs) ──────────────────────
+
+    #[test]
+    fn sync_failure_class_is_none_only_for_a_genuine_success() {
+        assert_eq!(sync_failure_class(true, &RunTotals::default()), None);
+        assert_eq!(
+            sync_failure_class(false, &RunTotals::default()),
+            Some(ClientHealthFailureReason::RunnerFailed.wire_value())
+        );
+        let mut auth = RunTotals::default();
+        auth.record_auth_error();
+        assert_eq!(
+            sync_failure_class(true, &auth),
+            Some(ClientHealthFailureReason::AuthExpired.wire_value())
+        );
+    }
 
     #[test]
     fn failure_reasons_map_to_closed_codes() {

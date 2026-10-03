@@ -219,6 +219,7 @@
     type EntryPointTarget,
     type CloudBotDraft,
   } from "../chat/lifecycle-entry-points.js";
+  import { lazyDirectCloudCreate } from "../chat/create-bot/direct-cloud-lazy.js";
   import {
     openCreateCompanyDraft,
     sendCompanyInvites,
@@ -6480,6 +6481,14 @@
     companyUid: string,
     draft: CloudBotDraft,
   ): Promise<EntryPointResult> {
+    if (
+      directCloudCreate &&
+      draft.idempotencyKey &&
+      draft.quote &&
+      (await directCloudCreate.isEnabled(companyUid))
+    ) {
+      return createCloudBotDirect(companyUid, draft);
+    }
     const result = await runCreateCloudBotEntry(conversationApi, companyUid, draft);
     if (result.ok) {
       const title = draft.title?.trim() ?? "";
@@ -6513,6 +6522,68 @@
       if (signInUrl) onopenurl?.(signInUrl);
     }
     return result;
+  }
+
+  /**
+   * `agents.desktop-agent-creation` (Indigo only for now): New bot → Cloud
+   * creates through POST /v1/agents instead of driving the card sequence.
+   * Null when the adapter has no REST transport, which keeps the card path.
+   */
+  const directCloudCreate = $derived(lazyDirectCloudCreate(adapter));
+
+  /**
+   * Direct create: one POST with the session's idempotency key, Slack
+   * deferred, subscription sign-in. The bot's DM opens straight away; setup
+   * continues on the server. The title goes onto the agent profile the same
+   * way it does for the card path.
+   */
+  async function createCloudBotDirect(
+    companyUid: string,
+    draft: CloudBotDraft,
+  ): Promise<EntryPointResult> {
+    if (!directCloudCreate || !draft.idempotencyKey || !draft.quote) {
+      return { ok: false, reason: "Adding bots isn't available in this build", blocked: false };
+    }
+    const companyLabel =
+      (companies ?? []).find((c) => c.cloudUid === companyUid)?.displayName?.trim() || undefined;
+    // The flag is read for this company on every direct create, not only by
+    // the surface that offered Cloud.
+    const result = await directCloudCreate.create(
+      companyUid,
+      {
+        name: draft.name,
+        handle: draft.handle,
+        ...(draft.runtime ? { runtime: draft.runtime } : {}),
+        idempotencyKey: draft.idempotencyKey,
+        quote: draft.quote,
+      },
+      companyLabel ? { companyLabel } : {},
+    );
+    if (!result.ok) {
+      return { ok: false, reason: result.reason, blocked: result.blocked, fix: result.fix };
+    }
+    const agentUid = result.agentUid;
+    const title = draft.title?.trim() ?? "";
+    if (title) void saveNewBotProfile(agentUid, { title });
+    const existing = railRows.find((r) => r.kind === "dm" && r.personUid === agentUid);
+    handleSelect(
+      existing ?? {
+        id: `dm:${agentUid}`,
+        kind: "dm",
+        title: draft.name,
+        companyUid,
+        unreadDot: false,
+        lastActivityAt: Date.now(),
+        pinned: false,
+        personUid: agentUid,
+      },
+    );
+    // Until the in-DM setup card (US-006) renders sign-in, a Claude bot keeps
+    // the browser sign-in the card path opened.
+    const signInUrl = claudeSubscriptionSignInUrl(draft, agentUid);
+    if (signInUrl) onopenurl?.(signInUrl);
+    // The DM is opened by the bot's uid, so there is no channel to land on.
+    return { ok: true, target: { channelId: "", cardId: null, cardKind: null, agentUid } };
   }
 
   const cardActionKeys: CardActionIdempotencyStore = new Map();
@@ -9503,6 +9574,15 @@
     withSidebar((actions) => actions.openNewAgent(companyUid));
   }
 
+  /**
+   * Settings › Bots "New bot": close Settings and open the same New bot modal
+   * as the Messages "New" menu. Creating there lands in the bot's DM.
+   */
+  function openNewBotFromSettings(): void {
+    closeSettings();
+    withSidebar((actions) => actions.openNewAgent(null));
+  }
+
   function openNewChat(): void {
     paletteOpen = false;
     cheatSheetOpen = false;
@@ -10215,6 +10295,7 @@
       {#key settingsLoadAttempt}
       {#await loadShellSettings() then { default: ShellSettings }}
         <ShellSettings
+          onnewbot={openNewBotFromSettings}
           profile={resolvedSettingsProfile}
           {companies}
           {adapter}
@@ -10344,6 +10425,7 @@
           loadClaudeProviderFlag={() => adapter.identity.hasFeature(CLAUDE_PROVIDER_FLAG)}
           humanOnly={humanOnlyConversations}
           loadCloudProvisionOptions={(companyUid) => adapter.agents.getProvisionOptions(companyUid)}
+          directCloud={directCloudCreate}
           oncreatebot={adapter.bots ? createBotEntry : null}
           botRuntimeReady={localBotRuntimeReady}
           botRuntimeStatus={localBotRuntimeStatus}

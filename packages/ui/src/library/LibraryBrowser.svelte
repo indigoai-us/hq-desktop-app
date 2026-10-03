@@ -9,8 +9,10 @@
   import { onMount } from "svelte";
   import {
     facetLabel,
+    filterLibraryItems,
     libraryFacets,
     libraryItemFacet,
+    selectionInResults,
     toLibraryItems,
     type LibraryItem,
     type LibraryItems,
@@ -137,6 +139,14 @@
         ? facetFiltered.filter((item) => item.kind === "skill")
         : facetFiltered,
   );
+
+  // A search, tab, or scope filter that hides the selected item clears it, so
+  // the inspector never shows a skill or worker outside the results (QA-102).
+  const results = $derived(filterLibraryItems(scopedItems, query));
+  const inspected = $derived(selectionInResults(selected, results));
+  $effect(() => {
+    if (selected && !inspected) selected = null;
+  });
 
   const allFacetsSelected = $derived(
     facets.length > 0 && facets.every((f) => selectedFacets.has(f)),
@@ -310,7 +320,7 @@
 
     <LibraryDetailPanel
       library={libraryApi}
-      item={selected}
+      item={inspected}
       onclose={closeDetail}
     />
   {/if}

@@ -7,7 +7,7 @@
  * New bot flow's Cloud option — which creates a company-hosted bot by running
  * the server's own card sequence headlessly and landing in the bot's channel.
  */
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import { ok, type AgentProvisionOptionsView, type PlatformAdapter } from "@hq/platform";
 
@@ -16,6 +16,13 @@ import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { OPEN_CHANNEL_EVENT, takePendingChannelOpen } from "../chat/open-target.js";
 import type { ConversationRow } from "../chat/sidebar-model.js";
+import { createBotFlowDoor } from "./lazy-doors.js";
+
+// The create modal preloads the New bot flow when it opens; load it once here
+// so the flow paints in the same tick these tests click into it.
+beforeAll(async () => {
+  await createBotFlowDoor.load();
+});
 
 const COMPANY_ROW: ConversationRow = {
   id: "ch:chn_acme",
@@ -449,9 +456,10 @@ describe("DesktopApp New bot: the Cloud option", () => {
       expect(runCardAction.mock.calls[2]![0]).toMatchObject({
         cardId: "card_create_agent_3",
         actionId: "create",
-        values: { size: "basic", authMode: "subscription" },
+        values: { size: "basic" },
       });
       expect(runCardAction.mock.calls[2]![0].values).not.toHaveProperty("apiKey");
+      expect(runCardAction.mock.calls[2]![0].values).not.toHaveProperty("authMode");
       expect(onopenurl).toHaveBeenCalledWith("https://hq.getindigo.ai/resolve/agents/agt_polar");
 
       // Nothing was ever drawn: the card that collects these details is a
