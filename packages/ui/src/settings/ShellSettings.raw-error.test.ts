@@ -85,4 +85,51 @@ describe("Settings profile raw error text", () => {
     expect(host.textContent).not.toContain("HTTP 500");
     expect(warn).toHaveBeenCalledWith("[settings] profile save failed", RAW);
   });
+
+  it("a failed console open shows plain copy, not the error text", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const err = new Error(RAW);
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(ShellSettings, {
+      target: host,
+      props: {
+        profile,
+        adapter: { isAvailable: () => false, identity: { getProfile: async () => ({ ok: true, value: { profile: {} } }) } } as unknown as PlatformAdapter,
+        onopenconsole: async () => { throw err; },
+      },
+    });
+    await settle();
+    host.querySelector<HTMLButtonElement>('[data-testid="settings-open-console"]')!.click();
+    await settle();
+    const alert = host.querySelector('[data-testid="settings-external-error"]');
+    expect(alert?.textContent).toContain("Couldn’t open HQ Console. Try again.");
+    expect(host.textContent).not.toContain("boom");
+    expect(host.textContent).not.toContain("HTTP 500");
+    expect(warn).toHaveBeenCalledWith("[settings] open HQ Console failed", err);
+  });
+
+  it("a failed sign out shows plain copy, not the error text", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const err = new Error(RAW);
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(ShellSettings, {
+      target: host,
+      props: {
+        profile,
+        adapter: { isAvailable: () => false, identity: { getProfile: async () => ({ ok: true, value: { profile: {} } }) } } as unknown as PlatformAdapter,
+        onsignout: async () => { throw err; },
+      },
+    });
+    await settle();
+    host.querySelector<HTMLButtonElement>('[data-testid="settings-sign-out"]')!.click();
+    await settle();
+    document.querySelector<HTMLButtonElement>('[data-testid="confirm-dialog-ok"]')!.click();
+    await settle();
+    const alert = host.querySelector('[data-testid="settings-external-error"]');
+    expect(alert?.textContent).toContain("Couldn’t sign out. Try again.");
+    expect(document.body.textContent).not.toContain("boom");
+    expect(warn).toHaveBeenCalledWith("[settings] sign out failed", err);
+  });
 });

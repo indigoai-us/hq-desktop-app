@@ -129,7 +129,8 @@
     try {
       await onopenconsole(url);
     } catch (error) {
-      externalError = `Couldn’t open HQ Console: ${String(error)}`;
+      console.warn("[settings] open HQ Console failed", error);
+      externalError = "Couldn’t open HQ Console. Try again.";
     }
   }
 
@@ -143,7 +144,8 @@
     try {
       await onsignout();
     } catch (error) {
-      externalError = `Couldn’t sign out: ${String(error)}`;
+      console.warn("[settings] sign out failed", error);
+      externalError = "Couldn’t sign out. Try again.";
     }
   }
 
