@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   ATLAS_RECENT_MS,
   atlasEdges,
-  atlasLabelIds,
+  atlasScreenLabels,
+  ATLAS_LABEL_ALL_ZOOM,
   atlasRadius,
   atlasRelatedIds,
   atlasVisibleEdges,
@@ -54,25 +55,79 @@ describe("atlas layout", () => {
     expect(atlasVisibleEdges(edges, null, "repo:repos/private/hq-pro/")).toHaveLength(1);
   });
 
-  it("labels only selected, hovered, related, and recently touched objects", () => {
-    const placed = [
-      { id: "a", touched: NOW - ATLAS_RECENT_MS - 1 },
-      { id: "b", touched: NOW - 1000 },
-      { id: "c" },
-      { id: "d" },
-      { id: "e" },
-    ];
-    const ids = atlasLabelIds({
+  it("with an object selected, labels only selected, hovered, related, and recently touched objects at fit", () => {
+    const at = (id: string, x: number, touched?: number) => ({ id, label: id, x, y: 0, r: 4, touched });
+    const placed = [at("a", 0, NOW - ATLAS_RECENT_MS - 1), at("b", 100, NOW - 1000), at("c", 200), at("d", 300), at("e", 400), at("f", 500)];
+    const labels = atlasScreenLabels({
       placed,
       selected: "c",
       hovered: "d",
       related: new Set(["e"]),
       nowMs: NOW,
+      view: { x: 20, y: 100, k: 0.5 },
+      width: 2000,
+      height: 400,
+      measure: () => 20,
     });
-    expect([...ids].sort()).toEqual(["b", "c", "d", "e"]);
+    expect(labels.map((l) => l.id).sort()).toEqual(["b", "c", "d", "e"]);
     expect(atlasRelatedIds("x", [{ source: "x", target: "y", kind: "uses" }])).toEqual(
       new Set(["y"]),
     );
+  });
+
+  it("keeps labels readable and non-overlapping, preferring recent then larger objects (OWNER-D 4)", () => {
+    const { placed } = layoutAtlas(smokeAtlasGraph().nodes);
+    for (const [w, h] of [[1440, 900], [1000, 700], [640, 420]]) {
+      const view = frameAll(placed, w, h);
+      const labels = atlasScreenLabels({
+        placed,
+        selected: null,
+        hovered: null,
+        related: new Set(),
+        nowMs: NOW,
+        view,
+        width: w,
+        height: h,
+        measure: (t) => t.length * 8,
+      });
+      for (const [i, a] of labels.entries()) {
+        expect(a.box.left).toBeGreaterThanOrEqual(0);
+        expect(a.box.right).toBeLessThanOrEqual(w);
+        for (const b of labels.slice(i + 1)) {
+          const overlap =
+            a.box.left < b.box.right && b.box.left < a.box.right && a.box.top < b.box.bottom && b.box.top < a.box.bottom;
+          expect(overlap, `${a.id} × ${b.id} at ${w}`).toBe(false);
+        }
+      }
+    }
+    // Crowded: two objects on top of each other; the more recent one wins.
+    const crowd = [
+      { id: "old", label: "old", x: 0, y: 0, r: 9, touched: NOW - 5000 },
+      { id: "new", label: "new", x: 1, y: 1, r: 2, touched: NOW - 10 },
+    ];
+    const args = { selected: null, hovered: null, related: new Set<string>(), nowMs: NOW, width: 500, height: 500, measure: () => 40 };
+    expect(atlasScreenLabels({ ...args, placed: crowd, view: { x: 100, y: 100, k: 1 } }).map((l) => l.id)).toEqual(["new"]);
+    // Hover reveals a hidden label, ahead of everything else.
+    expect(atlasScreenLabels({ ...args, placed: crowd, hovered: "old", view: { x: 100, y: 100, k: 1 } }).map((l) => l.id)).toEqual(["old"]);
+  });
+
+  it("reveals more labels as the map zooms in (OWNER-D 4)", () => {
+    const { placed } = layoutAtlas(smokeAtlasGraph().nodes);
+    const base = { selected: null, hovered: null, related: new Set<string>(), nowMs: NOW, measure: (t: string) => t.length * 8 };
+    const fit = frameAll(placed, 1000, 700);
+    const atFit = atlasScreenLabels({ ...base, placed, view: fit, width: 1000, height: 700 });
+    // Zoomed in on the first object, with a viewport large enough to hold its district.
+    const target = placed[0]!;
+    const k = ATLAS_LABEL_ALL_ZOOM * 1.5;
+    const zoomed = atlasScreenLabels({
+      ...base,
+      placed,
+      view: { x: 500 - target.x * k, y: 350 - target.y * k, k },
+      width: 1000,
+      height: 700,
+    });
+    const shown = new Set(atFit.map((l) => l.id));
+    expect(zoomed.some((l) => !shown.has(l.id))).toBe(true);
   });
 
   it("frames all circles inside the viewport and zooms around the cursor", () => {

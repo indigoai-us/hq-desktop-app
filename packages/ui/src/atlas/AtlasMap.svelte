@@ -7,8 +7,9 @@
   import type { AtlasPresence, AtlasRefEdge } from "./atlas-model.js";
   import { ATLAS_CHIP_SIZE, atlasDockedChips } from "./atlas-presence.js";
   import {
-    atlasLabelIds,
+    ATLAS_LABEL_PX,
     atlasRelatedIds,
+    atlasScreenLabels,
     atlasVisibleEdges,
     frameAll,
     viewTransform,
@@ -72,7 +73,38 @@
   const byId = $derived(new Map(placed.map((p) => [p.id, p])));
   const related = $derived(atlasRelatedIds(selected ?? hovered, edges));
   const shownEdges = $derived(atlasVisibleEdges(edges, selected, hovered));
-  const labels = $derived(atlasLabelIds({ placed, selected, hovered, related, nowMs }));
+  let mapWidth = $state(0);
+  let mapHeight = $state(0);
+  // OWNER-D 4: labels sit in screen space at a fixed readable size; only the
+  // ones that fit without overlapping are drawn (see atlasScreenLabels).
+  let measureCtx: CanvasRenderingContext2D | null | undefined;
+  function measureLabel(text: string): number {
+    if (measureCtx === undefined) {
+      try {
+        measureCtx = typeof document === "undefined" ? null : document.createElement("canvas").getContext("2d");
+      } catch (err) {
+        console.debug("[atlas] canvas text measure unavailable", err);
+        measureCtx = null;
+      }
+      if (measureCtx) measureCtx.font = `400 ${ATLAS_LABEL_PX}px "Geist", -apple-system, sans-serif`;
+    }
+    const measured = measureCtx?.measureText(text).width;
+    // Fallback is a generous per-character width so estimates never under-count.
+    return Math.ceil(measured && measured > 0 ? measured : text.length * ATLAS_LABEL_PX * 0.62);
+  }
+  const labels = $derived(
+    atlasScreenLabels({
+      placed,
+      selected,
+      hovered,
+      related,
+      nowMs,
+      view,
+      width: mapWidth || 800,
+      height: mapHeight || 560,
+      measure: measureLabel,
+    }),
+  );
   const focusIds = $derived(selected || hovered ? new Set([selected, hovered, ...related]) : null);
   const chips = $derived(atlasDockedChips(placed, presence));
   const half = ATLAS_CHIP_SIZE / 2;
@@ -162,7 +194,7 @@
   }
 </script>
 
-<div class="atlas-map" data-testid="atlas-map">
+<div class="atlas-map" data-testid="atlas-map" bind:clientWidth={mapWidth} bind:clientHeight={mapHeight}>
   <svg
     bind:this={svgEl}
     role="application"
@@ -216,14 +248,6 @@
             <circle class="halo" data-testid={`atlas-halo-${node.id}`} cx={node.x} cy={node.y} r={node.r + 4} vector-effect="non-scaling-stroke" />
           {/if}
           <circle class="dot" cx={node.x} cy={node.y} r={node.r} />
-          {#if labels.has(node.id)}
-            <text
-              class="label"
-              data-testid={`atlas-label-${node.id}`}
-              x={node.x + node.r + 5}
-              y={node.y + 4}
-            >{node.label}</text>
-          {/if}
         </g>
       {/each}
       {#each chips as chip (chip.key)}
@@ -251,6 +275,17 @@
           <text class="initials" x={chip.x} y={chip.y + 3} text-anchor="middle">{chip.initials}</text>
           <title>{chip.name}</title>
         </g>
+      {/each}
+    </g>
+    <g class="labels" data-testid="atlas-labels">
+      {#each labels as label (label.id)}
+        <text
+          class="label"
+          class:dim={dimmed(label.id)}
+          data-testid={`atlas-label-${label.id}`}
+          x={label.x}
+          y={label.y}
+        >{label.text}</text>
       {/each}
     </g>
   </svg>
@@ -313,6 +348,9 @@
   .node.dim {
     opacity: calc(var(--t, 1) * 0.35);
   }
+  .label.dim {
+    opacity: calc(var(--t, 1) * 0.35);
+  }
   .sel-bg {
     fill: var(--v4-active-row);
   }
@@ -358,7 +396,7 @@
   }
   .label {
     font-family: var(--font-sans, "Geist", sans-serif);
-    font-size: 12px;
+    font-size: 13px;
     fill: var(--v4-text-1);
     paint-order: stroke;
     stroke: var(--v4-ground);

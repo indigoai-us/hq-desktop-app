@@ -111,21 +111,87 @@ export function atlasVisibleEdges(
   );
 }
 
-/** Labels only for the selected, hovered, related, or recently touched. */
-export function atlasLabelIds(input: {
-  placed: Pick<AtlasNode, "id" | "touched">[];
+/** Label size on screen (design standard body size); labels never scale with zoom. */
+export const ATLAS_LABEL_PX = 13;
+/** From this zoom up, every object may carry a label when there is room. */
+export const ATLAS_LABEL_ALL_ZOOM = 1;
+/** Below that zoom, at most this many labels for objects nobody is looking at. */
+export const ATLAS_FIT_LABEL_CAP = 8;
+const LABEL_GAP = 4;
+const LABEL_HEIGHT = 16;
+
+export interface AtlasScreenLabel {
+  id: string;
+  text: string;
+  x: number;
+  y: number;
+  box: { left: number; top: number; right: number; bottom: number };
+}
+
+/**
+ * OWNER-D 4 (AUDIT-3-19): which labels to draw, in screen space, at a fixed
+ * readable size. Ranked hovered, selected, related, then by significance:
+ * touched in the last two days first, then most recently touched, then larger
+ * objects (size comes from the object's item count). With an object selected
+ * or hovered, only it, its relations and recent objects are labelled. Below
+ * ATLAS_LABEL_ALL_ZOOM, at most ATLAS_FIT_LABEL_CAP labels go to objects
+ * nobody is looking at. A label is kept only when it fits inside the map and
+ * does not overlap a label already kept, so crowded maps show the most
+ * significant names and the rest appear on hover or as the map zooms in.
+ */
+export function atlasScreenLabels(input: {
+  placed: Pick<AtlasPlaced, "id" | "label" | "touched" | "x" | "y" | "r">[];
   selected: string | null;
   hovered: string | null;
   related: Set<string>;
   nowMs: number;
-}): Set<string> {
-  const out = new Set<string>(input.related);
-  if (input.selected) out.add(input.selected);
-  if (input.hovered) out.add(input.hovered);
-  for (const n of input.placed) {
-    if (n.touched && input.nowMs - n.touched <= ATLAS_RECENT_MS) out.add(n.id);
+  view: AtlasView;
+  width: number;
+  height: number;
+  measure: (text: string) => number;
+}): AtlasScreenLabel[] {
+  const { view, width, height } = input;
+  const recent = (n: { touched?: number }) =>
+    n.touched !== undefined && input.nowMs - n.touched <= ATLAS_RECENT_MS;
+  const all = view.k >= ATLAS_LABEL_ALL_ZOOM;
+  const rank = (n: (typeof input.placed)[number]): number => {
+    if (n.id === input.hovered) return 0;
+    if (n.id === input.selected) return 1;
+    if (input.related.has(n.id)) return 2;
+    if (recent(n)) return 3;
+    return all || (!input.hovered && !input.selected) ? 4 : -1;
+  };
+  const candidates = input.placed
+    .map((n) => ({ n, r: rank(n) }))
+    .filter((c) => c.r >= 0)
+    .sort(
+      (a, b) =>
+        a.r - b.r ||
+        (b.n.touched ?? -Infinity) - (a.n.touched ?? -Infinity) ||
+        b.n.r - a.n.r ||
+        a.n.id.localeCompare(b.n.id),
+    );
+  const kept: AtlasScreenLabel[] = [];
+  let ambient = 0;
+  for (const { n, r } of candidates) {
+    if (r >= 3 && !all && ambient >= ATLAS_FIT_LABEL_CAP) break;
+    const x = n.x * view.k + view.x + n.r * view.k + 5;
+    const y = n.y * view.k + view.y + 4;
+    const w = input.measure(n.label);
+    const box = { left: x, top: y - 12, right: x + w, bottom: y - 12 + LABEL_HEIGHT };
+    if (box.left < 0 || box.top < 0 || box.right > width || box.bottom > height) continue;
+    const hit = kept.some(
+      (k) =>
+        box.left < k.box.right + LABEL_GAP &&
+        k.box.left < box.right + LABEL_GAP &&
+        box.top < k.box.bottom + LABEL_GAP &&
+        k.box.top < box.bottom + LABEL_GAP,
+    );
+    if (hit) continue;
+    if (r >= 3) ambient += 1;
+    kept.push({ id: n.id, text: n.label, x, y, box });
   }
-  return out;
+  return kept;
 }
 
 export function clampZoom(k: number): number {
