@@ -223,13 +223,12 @@ describe("US-029 FilesConnectPage", () => {
     const rowFor = (path: string) =>
       target.querySelector<HTMLElement>(`[data-testid='vault-tree-row'][data-tree-path='${path}']`);
     rowFor("companies/indigo/knowledge")!.click();
-    await flush();
-    const folderRows = [...target.querySelectorAll<HTMLElement>("[data-testid='vault-folder-row']")];
-    expect(folderRows.map((row) => row.title)).toEqual(["gtm.md"]);
-    folderRows[0]!.click();
-    await flush();
+    // The folder view is its own chunk; wait for its rows, not a fixed number of ticks.
+    const folderRowsOf = () => [...target.querySelectorAll<HTMLElement>("[data-testid='vault-folder-row']")];
+    await vi.waitFor(() => expect(folderRowsOf().map((row) => row.title)).toEqual(["gtm.md"]), { timeout: 3000 });
+    folderRowsOf()[0]!.click();
+    await vi.waitFor(() => expect(target.querySelector("[data-testid='vault-content']")?.textContent).toContain("GTM"), { timeout: 3000 });
     expect(target.querySelector("[data-testid='vault-folder']")).toBeNull();
-    expect(target.querySelector("[data-testid='vault-content']")?.textContent).toContain("GTM");
   });
 
   describe("Vault What's new (QA-070)", () => {
