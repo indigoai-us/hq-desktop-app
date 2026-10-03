@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { withReadDeadline } from "../common/read-deadline.js";
   import RailButton from "../common/button/RailButton.svelte";
   import { dismissable } from "../common/dismissable.js";
   import { publishCompanyPageCount } from "../shell/company-page-counts.svelte.js";
@@ -150,7 +151,8 @@
     let cancelled = false;
     void (async () => {
       try {
-        const read = await readCompanyTeam({ slug: key, companyUid, company, messaging });
+        // BLANK-1: a read that never answers falls to the failed-read state.
+        const read = await withReadDeadline(readCompanyTeam({ slug: key, companyUid, company, messaging }), "company team");
         if (cancelled) return;
         if (read.error) {
           view = { ...emptyView, error: read.error };
