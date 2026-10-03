@@ -1007,7 +1007,13 @@ fn schedule_sync_on_launch(app: AppHandle) {
         // Let the app finish choosing its sync host before the one-shot pass.
         std::thread::sleep(Duration::from_secs(2));
         tauri::async_runtime::spawn(async move {
-            if let Err(error) = crate::commands::sync::start_sync(app, None).await {
+            if let Err(error) = crate::commands::sync::start_sync_with_trigger(
+                app,
+                None,
+                crate::commands::cdp_mirror::SyncTrigger::Auto,
+            )
+            .await
+            {
                 log(LOG_TAG, &format!("sync-on-launch pass failed: {error}"));
             }
         });

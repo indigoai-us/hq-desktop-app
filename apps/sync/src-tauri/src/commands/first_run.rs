@@ -244,7 +244,13 @@ pub async fn show_main_window_at_tray(
             return;
         }
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        if let Err(error) = crate::commands::sync::start_sync(handle, None).await {
+        if let Err(error) = crate::commands::sync::start_sync_with_trigger(
+            handle,
+            None,
+            crate::commands::cdp_mirror::SyncTrigger::First,
+        )
+        .await
+        {
             crate::util::logfile::log(
                 "first-run",
                 &format!("first-launch sync did not start: {error}"),
