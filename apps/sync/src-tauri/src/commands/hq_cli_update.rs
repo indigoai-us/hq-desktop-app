@@ -5792,7 +5792,10 @@ exit 1
         let _env = crate::util::test_support::ENV_MUTEX
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let _home_lock = HOME_ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _home_lock = HOME_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
@@ -6601,7 +6604,10 @@ exit 0
         let _env = crate::util::test_support::ENV_MUTEX
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let _home_lock = HOME_ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _home_lock = HOME_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let _restore_home = HomeEnvRestore(std::env::var_os("HOME"));
 
         let temp = tempfile::tempdir().unwrap();
@@ -6643,7 +6649,10 @@ exit 0
         let _env = crate::util::test_support::ENV_MUTEX
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let _home_lock = HOME_ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _home_lock = HOME_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let temp = tempfile::tempdir().unwrap();
         let home = temp.path().join("poisoned-home");
         let poisoned_cache = home.join(".npm/_cacache");

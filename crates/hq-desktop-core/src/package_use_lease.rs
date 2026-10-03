@@ -15,6 +15,11 @@ use sha2::{Digest, Sha256};
 const STATE_SUBDIR: &str = "hq-cli/package-use";
 const WINDOWS_STATE_SUBDIR: &str = "hq-cli/state/package-use";
 const UPDATE_REQUEST_NAME: &str = "update.pending.json";
+// Node's performance.timeOrigin can trail the kernel's process birth time while
+// the runtime initializes. Keep this allowance specific to macOS, where the
+// reader gets the kernel timestamp at sub-second precision.
+#[cfg(any(target_os = "macos", test))]
+const MACOS_PROCESS_START_TOLERANCE_MS: u64 = 1_000;
 pub const PACKAGE_USE_LEASE_TIMEOUT_ERROR: &str =
     "The HQ CLI is still running. Close active HQ CLI work and retry the update; npm was not started.";
 
@@ -402,7 +407,22 @@ impl Drop for PackageUseUpdateGuard {
 }
 
 fn same_process_start(actual_ms: u64, recorded_ms: u64) -> bool {
-    actual_ms.abs_diff(recorded_ms) <= process_start_tolerance_ms()
+    let tolerance_ms = process_start_tolerance_ms();
+    #[cfg(target_os = "macos")]
+    if actual_ms.abs_diff(recorded_ms) > 20 {
+        // Emit the observed mismatch once: stale records are removed immediately
+        // after this check, so this measures the skew that exceeded the old
+        // bound without logging repeatedly on each lease poll.
+        let delta_ms = actual_ms.abs_diff(recorded_ms);
+        eprintln!(
+            "HQ CLI package-use lease process-start delta: {delta_ms}ms (tolerance {tolerance_ms}ms)"
+        );
+    }
+    same_process_start_with_tolerance(actual_ms, recorded_ms, tolerance_ms)
+}
+
+fn same_process_start_with_tolerance(actual_ms: u64, recorded_ms: u64, tolerance_ms: u64) -> bool {
+    actual_ms.abs_diff(recorded_ms) <= tolerance_ms
 }
 
 #[cfg(target_os = "windows")]
@@ -523,7 +543,7 @@ fn process_start_tolerance_ms() -> u64 {
 }
 #[cfg(target_os = "macos")]
 fn process_start_tolerance_ms() -> u64 {
-    20
+    MACOS_PROCESS_START_TOLERANCE_MS
 }
 #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
 fn process_start_tolerance_ms() -> u64 {
@@ -585,6 +605,33 @@ mod tests {
         );
         let mut request = PackageUseUpdateRequest::begin_at(paths).unwrap();
         assert!(request.try_acquire().unwrap().is_none());
+    }
+
+    #[test]
+    fn macos_start_time_skew_is_live_but_reused_pid_is_stale() {
+        // The first offset is just beyond the previous 20ms bound; the second
+        // represents a reused PID and must remain outside the 1s allowance.
+        let actual_start_ms: u64 = 10_000;
+        let runtime_origin_start_ms = actual_start_ms + 21;
+        let observed_delta_ms = actual_start_ms.abs_diff(runtime_origin_start_ms);
+        assert!(
+            same_process_start_with_tolerance(
+                actual_start_ms,
+                runtime_origin_start_ms,
+                MACOS_PROCESS_START_TOLERANCE_MS,
+            ),
+            "observed macOS process-start delta was {observed_delta_ms}ms; tolerance is {MACOS_PROCESS_START_TOLERANCE_MS}ms"
+        );
+
+        let reused_pid_start_ms = actual_start_ms + 5_000;
+        assert!(
+            !same_process_start_with_tolerance(
+                actual_start_ms,
+                reused_pid_start_ms,
+                MACOS_PROCESS_START_TOLERANCE_MS,
+            ),
+            "a 5000ms reused-PID offset must remain stale"
+        );
     }
 
     #[tokio::test]
