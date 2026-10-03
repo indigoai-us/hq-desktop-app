@@ -15,6 +15,13 @@ import { bootDesktopAltWindow } from './boot';
 import { dismissBootLoader } from './boot-loader';
 import { installUiHotUpdates, reportUiBootFailure, signalUiBoot } from '../lib/ui-hot';
 import { listen } from '@tauri-apps/api/event';
+import { createDesktopStartupDiagnostics } from './startup-diagnostics';
+
+const startupDiagnostics = createDesktopStartupDiagnostics((command, args) =>
+  invoke(command, args),
+);
+startupDiagnostics.emit('entry-started');
+const removeStartupErrorListeners = startupDiagnostics.installGlobalErrorListeners(window);
 
 const windowLabel = getCurrentWindow().label;
 document.documentElement.dataset.window = windowLabel;
@@ -25,7 +32,11 @@ const isWindows = /Windows/i.test(navigator.userAgent);
 document.documentElement.dataset.platform = isWindows ? 'windows' : 'other';
 const transcriptSources = createTranscriptSourceSync(invoke);
 const transcriptDrain = createTranscriptOutboxDrain(invoke, () => { void transcriptSources.sync(); });
-window.addEventListener('pagehide', () => { transcriptDrain.dispose(); transcriptSources.dispose(); }, {once:true});
+window.addEventListener('pagehide', () => {
+  removeStartupErrorListeners();
+  transcriptDrain.dispose();
+  transcriptSources.dispose();
+}, {once:true});
 installDesktopZoom();
 installAppearancePreferences({
   applyNativeTheme: (theme) => setTheme(theme),
@@ -45,17 +56,26 @@ if (!target) {
 // No top-level await: vite `target: safari13` cannot transpile TLA in this entry.
 const app = bootDesktopAltWindow({
   mountHqWork: async () => {
+    startupDiagnostics.emit('dynamic-import-started');
     const { default: HqWorkWorkShell } = await import('./HqWorkWorkShell.svelte');
+    startupDiagnostics.emit('dynamic-import-completed');
+    startupDiagnostics.emit('mount-started');
     mount(GlobalErrorBoundary, {
       target,
-      props: { component: HqWorkWorkShell, windowLabel },
+      props: {
+        component: HqWorkWorkShell,
+        windowLabel,
+        onStartupBoundaryError: () => startupDiagnostics.emit('boundary-error'),
+      },
     });
+    startupDiagnostics.emit('mount-completed');
     // UI hot updates: confirm this interface booted, then watch for
     // background-applied bundles ("Interface updated — reload").
     signalUiBoot(invoke);
     void installUiHotUpdates(invoke, listen);
   },
 }).catch((error) => {
+  startupDiagnostics.emit('boot-failed');
   // Never leave the user behind a shimmer over a broken window.
   dismissBootLoader();
   reportUiBootFailure(invoke, error instanceof Error ? error.message : String(error));

@@ -1,12 +1,119 @@
 pub use super::cognito::AuthSessionStatus;
 use super::cognito::{self, AuthState, CognitoRefreshFailureClass, CognitoTokens};
 use serde::Serialize;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 use tauri::{AppHandle, Emitter};
 
 pub const AUTH_SESSION_CHANGED_EVENT: &str = "auth:session-changed";
 const MAX_AUTH_SESSION_REASON_CHARS: usize = 200;
+const MAX_STARTUP_AUTH_RESOLUTIONS: u8 = 4;
+const MAX_STARTUP_DIAGNOSTIC_ELAPSED_MS: u128 = 999_999;
+
+static NEXT_STARTUP_AUTH_RESOLUTION: AtomicU8 = AtomicU8::new(1);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StartupAuthOperationId(u8);
+
+impl StartupAuthOperationId {
+    fn new(value: u8) -> Option<Self> {
+        (1..=MAX_STARTUP_AUTH_RESOLUTIONS)
+            .contains(&value)
+            .then_some(Self(value))
+    }
+
+    fn claim() -> Option<Self> {
+        Self::claim_from(&NEXT_STARTUP_AUTH_RESOLUTION)
+    }
+
+    fn claim_from(next: &AtomicU8) -> Option<Self> {
+        let value = next
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some(
+                    current
+                        .saturating_add(1)
+                        .min(MAX_STARTUP_AUTH_RESOLUTIONS + 1),
+                )
+            })
+            .unwrap_or_else(|current| current);
+        Self::new(value)
+    }
+}
+
+enum StartupAuthDiagnostic {
+    ResolutionStarted,
+    TokenStoreReadStarted,
+    TokenStoreReadCompleted,
+    CredentialResolutionStarted,
+    CredentialResolutionCompleted,
+    ResolutionCompleted {
+        status: AuthSessionStatus,
+        refresh_failure_class: Option<CognitoRefreshFailureClass>,
+    },
+}
+
+fn bounded_startup_elapsed_ms(elapsed: Duration) -> u128 {
+    elapsed.as_millis().min(MAX_STARTUP_DIAGNOSTIC_ELAPSED_MS)
+}
+
+fn format_startup_auth_diagnostic(
+    operation: StartupAuthOperationId,
+    diagnostic: StartupAuthDiagnostic,
+    elapsed: Duration,
+) -> String {
+    let prefix = format!(
+        "op={} elapsed_ms={}",
+        operation.0,
+        bounded_startup_elapsed_ms(elapsed)
+    );
+    match diagnostic {
+        StartupAuthDiagnostic::ResolutionStarted => {
+            format!("event=auth-resolution phase=started {prefix}")
+        }
+        StartupAuthDiagnostic::TokenStoreReadStarted => {
+            format!("event=auth-token-store-read phase=started {prefix}")
+        }
+        StartupAuthDiagnostic::TokenStoreReadCompleted => {
+            format!("event=auth-token-store-read phase=completed {prefix}")
+        }
+        StartupAuthDiagnostic::CredentialResolutionStarted => {
+            format!("event=auth-credential-resolution phase=started {prefix}")
+        }
+        StartupAuthDiagnostic::CredentialResolutionCompleted => {
+            format!("event=auth-credential-resolution phase=completed {prefix}")
+        }
+        StartupAuthDiagnostic::ResolutionCompleted {
+            status,
+            refresh_failure_class,
+        } => {
+            let status = hq_desktop_core::unexpected_surface::auth_session_status_tag(
+                auth_session_status_tag(&status),
+            );
+            let refresh_failure_class =
+                hq_desktop_core::unexpected_surface::refresh_failure_class_for_session_tag(
+                    status,
+                    refresh_failure_class.map_or("none", |class| class.as_tag()),
+                );
+            format!(
+                "event=auth-resolution phase=completed auth_session_status={status} refresh_failure_class={refresh_failure_class} {prefix}"
+            )
+        }
+    }
+}
+
+fn emit_startup_auth_diagnostic(
+    operation: Option<StartupAuthOperationId>,
+    diagnostic: StartupAuthDiagnostic,
+    started: Instant,
+) {
+    let Some(operation) = operation else {
+        return;
+    };
+    let message = format_startup_auth_diagnostic(operation, diagnostic, started.elapsed());
+    crate::util::logfile::log("boot-startup", &message);
+    eprintln!("[boot-startup] {message}");
+}
 
 /// Canonical identity the embedded shell hydrates from. Person UID comes from
 /// the vault (same `list_entities_by_type("person")` path as
@@ -425,7 +532,24 @@ fn startup_auth_state_result(
 /// refresh is observed after Cognito has invalidated its file and becomes a
 /// fail-closed signed-out state.
 async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, AuthSessionEnvelope) {
+    let diagnostic_started = Instant::now();
+    let diagnostic_operation = StartupAuthOperationId::claim();
+    emit_startup_auth_diagnostic(
+        diagnostic_operation,
+        StartupAuthDiagnostic::ResolutionStarted,
+        diagnostic_started,
+    );
+    emit_startup_auth_diagnostic(
+        diagnostic_operation,
+        StartupAuthDiagnostic::TokenStoreReadStarted,
+        diagnostic_started,
+    );
     let (first_token_read, first_token_read_result) = cognito::get_tokens_with_read_result().await;
+    emit_startup_auth_diagnostic(
+        diagnostic_operation,
+        StartupAuthDiagnostic::TokenStoreReadCompleted,
+        diagnostic_started,
+    );
     let first_token_read_failed = first_token_read.is_err();
     if first_token_read_failed {
         eprintln!(
@@ -433,8 +557,18 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
         );
     }
     let before = first_token_read.ok().flatten();
+    emit_startup_auth_diagnostic(
+        diagnostic_operation,
+        StartupAuthDiagnostic::CredentialResolutionStarted,
+        diagnostic_started,
+    );
     let outcome =
         crate::commands::dm_notify::resolve_notification_credentials_classified(app).await;
+    emit_startup_auth_diagnostic(
+        diagnostic_operation,
+        StartupAuthDiagnostic::CredentialResolutionCompleted,
+        diagnostic_started,
+    );
     let (state, status, account_id, reason, refresh_failure_class) = match outcome {
         // Refuse to adopt a machine identity as the signed-in person. The
         // credential file is shared with the `hq` CLI and with fleet-agent
@@ -543,6 +677,14 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
         },
     );
     set_auth_session_diagnostic(envelope.status.clone(), refresh_failure_class);
+    emit_startup_auth_diagnostic(
+        diagnostic_operation,
+        StartupAuthDiagnostic::ResolutionCompleted {
+            status: envelope.status.clone(),
+            refresh_failure_class,
+        },
+        diagnostic_started,
+    );
     (state, envelope)
 }
 
@@ -691,6 +833,59 @@ mod tests {
             auth_session_status_tag(&AuthSessionStatus::CredentialsReadError),
             "credentials_read_error"
         );
+    }
+
+    #[test]
+    fn startup_auth_diagnostics_use_only_fixed_categories_and_bounded_numbers() {
+        let operation = StartupAuthOperationId::new(1).expect("bounded operation id");
+        assert_eq!(
+            format_startup_auth_diagnostic(
+                operation,
+                StartupAuthDiagnostic::TokenStoreReadCompleted,
+                Duration::from_millis(42),
+            ),
+            "event=auth-token-store-read phase=completed op=1 elapsed_ms=42"
+        );
+        assert_eq!(
+            format_startup_auth_diagnostic(
+                operation,
+                StartupAuthDiagnostic::ResolutionCompleted {
+                    status: AuthSessionStatus::RefreshTemporarilyUnavailable,
+                    refresh_failure_class: Some(CognitoRefreshFailureClass::Network),
+                },
+                Duration::from_millis(1_500_000),
+            ),
+            "event=auth-resolution phase=completed auth_session_status=refresh_temporarily_unavailable refresh_failure_class=network op=1 elapsed_ms=999999"
+        );
+    }
+
+    #[test]
+    fn startup_auth_diagnostic_operation_ids_are_strictly_bounded() {
+        assert_eq!(StartupAuthOperationId::new(0), None);
+        assert_eq!(
+            StartupAuthOperationId::new(MAX_STARTUP_AUTH_RESOLUTIONS),
+            Some(StartupAuthOperationId(MAX_STARTUP_AUTH_RESOLUTIONS))
+        );
+        assert_eq!(
+            StartupAuthOperationId::new(MAX_STARTUP_AUTH_RESOLUTIONS + 1),
+            None
+        );
+
+        let next = AtomicU8::new(1);
+        let claims: Vec<_> = (0..513)
+            .map(|_| StartupAuthOperationId::claim_from(&next))
+            .collect();
+        assert_eq!(
+            &claims[..4],
+            &[
+                Some(StartupAuthOperationId(1)),
+                Some(StartupAuthOperationId(2)),
+                Some(StartupAuthOperationId(3)),
+                Some(StartupAuthOperationId(4)),
+            ]
+        );
+        assert!(claims[4..].iter().all(Option::is_none));
+        assert_eq!(next.load(Ordering::Relaxed), 5);
     }
 
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
