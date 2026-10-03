@@ -8,6 +8,7 @@
    * filter share one control row; New project remains the primary action.
    */
   import { onMount } from "svelte";
+  import { withReadDeadline } from "../common/read-deadline.js";
   import RailButton from "../common/button/RailButton.svelte";
   import { publishCompanyPageCount } from "../shell/company-page-counts.svelte.js";
   import type { PlatformAdapter } from "@hq/platform";
@@ -578,14 +579,15 @@
 
     void (async () => {
       try {
-        const [goals, allProjects] = await Promise.all([
+        // BLANK-1: a read that never answers falls to the failed-read state.
+        const [goals, allProjects] = await withReadDeadline(Promise.all([
           // A goals read failure keeps the cached goals; it never blanks the board.
           loadCompanyGoals(activeSlug).catch((err: unknown) => {
             console.warn(`loadCompanyGoals(${activeSlug}) failed:`, err);
             return null;
           }),
           loadLocalProjects(),
-        ]);
+        ]), "company projects");
         if (cancelled) return;
         const cachedGoals = readGoalsCache(goalsStorage, activeSlug);
         objectives = goals
