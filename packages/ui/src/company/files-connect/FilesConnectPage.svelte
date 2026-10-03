@@ -29,8 +29,6 @@
   import type { DeployAccessRequest } from "./deploy-access.js";
   import {
     ACCESS_LEVELS,
-    applyDeepLink,
-    beginConnect,
     clampAccess,
     companyDeploymentRows,
     deployPrompt,
@@ -58,7 +56,6 @@
     vaultUploadKey,
     writeFilesConnectCache,
     type AccessLevel,
-    type ConnectSession,
     type DeploymentRowModel,
     type DeploySourceScan,
     type FilesConnectCache,
@@ -68,6 +65,7 @@
     type SecretRow,
   } from "./files-connect-model.js";
   import { parseListPage, type AtlasListedObject } from "../../shell/vault-list-page.js";
+  import { companyIntegrationsUrl } from "../../common/hq-console.js";
 
   interface Props {
     page: FilesConnectPageId;
@@ -122,7 +120,6 @@
   let selectedDeploy = $state<string | null>(null);
   let grantLevel = $state<AccessLevel>("read");
   let sheet = $state<string | null>(null);
-  let connect = $state<ConnectSession | null>(null);
   let secretName = $state("");
   let status = $state("");
   let redeployName = $state("");
@@ -458,17 +455,9 @@
     busy = false;
   }
 
-  function openConnect(app: string): void {
-    const session = beginConnect(app);
-    connect = session;
-    sheet = "connect-waiting";
-    openExternal?.(session.url);
-  }
-
-  function simulateReturn(): void {
-    if (!connect) return;
-    connect = applyDeepLink(connect, "hq://oauth?code=returned");
-    status = `${connect.app} returned from the browser.`;
+  /** OWNER-R14: apps are connected and managed in the web console's Integrations page. */
+  function openConsole(): void {
+    if (slug) openExternal?.(companyIntegrationsUrl(slug));
   }
 
   async function handOff(prompt: string, label: string): Promise<void> {
@@ -651,10 +640,6 @@
         return "Share";
       case "grant":
         return "Grant access";
-      case "connect":
-        return "Connect app";
-      case "connect-waiting":
-        return connect ? `Waiting for ${connect.app}` : "Connect app";
       case "new-secret":
         return "New secret";
       case "rotate":
@@ -829,8 +814,8 @@
         <button class="fc-seg-tab" role="tab" aria-selected={integrationTab === "available"} onclick={() => (integrationTab = "available")}>Available</button>
         <button class="fc-seg-tab" role="tab" aria-selected={integrationTab === "mcp"} data-testid="integrations-mcp" onclick={() => (integrationTab = "mcp")}>Agents & MCP</button>
       </div>
-      <input class="field search" placeholder="App name or website" bind:value={query} />
-      <RailButton icon="plug" variant="primary" data-testid="connect-app" onclick={() => (sheet = "connect")}>Connect app</RailButton>
+      <input class="field search" placeholder="Filter apps" aria-label="Filter apps" bind:value={query} />
+      <RailButton icon="external" variant="primary" data-testid="integrations-open-console" onclick={openConsole}>Open console</RailButton>
     </header>
     <div class="split">
       <div class="list" data-testid="integrations-list">
@@ -879,9 +864,7 @@
             <p class="meta">{integrationCurrent.detail}</p>
             {@render statusDot(integrationCurrent.status)}
             <div class="actions">
-              <RailButton icon="plug" onclick={() => openConnect(integrationCurrent.name)}>
-                {integrationCurrent.status === "active" ? "Manage" : "Connect"}
-              </RailButton>
+              <RailButton icon="external" data-testid="integration-open-console" onclick={openConsole}>Open console</RailButton>
             </div>
           </div>
         {/if}
@@ -1069,11 +1052,6 @@
           </div>
         </div>
         <p class="hint">Runs hq files share for this folder and reads the access back.</p>
-      {:else if sheet === "connect"}
-        <div class="fr"><span class="lb">App</span><span>{query || "Slack"}</span></div>
-        <p class="hint">Sign-in finishes in your browser.</p>
-      {:else if sheet === "connect-waiting" && connect}
-        <p class="hint" data-testid="connect-waiting">Finish sign-in in the browser. This stays open until the app returns.</p>
       {:else if sheet === "new-secret" || sheet === "rotate"}
         {#if sheet === "new-secret"}
           <label class="fr"><span class="lb">Name</span>
@@ -1149,12 +1127,6 @@
       {:else if sheet === "grant"}
         <RailButton icon="x" onclick={closeSheet}>Cancel</RailButton>
         <RailButton icon="user-plus" variant="primary" data-testid="grant-save" disabled={busy || !isEmail(grantRecipient)} onclick={() => void handOff(fileSharePrompt(slug, grantPath, grantRecipient, grantLevel), "grant")}>Grant</RailButton>
-      {:else if sheet === "connect"}
-        <RailButton icon="x" onclick={closeSheet}>Cancel</RailButton>
-        <RailButton icon="external" variant="primary" data-testid="connect-open" onclick={() => openConnect(query || "Slack")}>Open in browser</RailButton>
-      {:else if sheet === "connect-waiting"}
-        <RailButton icon="x" onclick={closeSheet}>Cancel</RailButton>
-        <RailButton icon="check" data-testid="connect-return" onclick={simulateReturn}>I've signed in</RailButton>
       {:else if sheet === "new-secret" || sheet === "rotate"}
         <RailButton icon="x" onclick={closeSheet}>Cancel</RailButton>
         <RailButton icon="check" variant="primary" data-testid="secret-save" disabled={busy || (sheet === "new-secret" && !secretNameValid)} onclick={() => void saveSecret(sheet === "rotate")}>Save</RailButton>

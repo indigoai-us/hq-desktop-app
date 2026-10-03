@@ -518,14 +518,23 @@ describe("US-029 FilesConnectPage", () => {
     expect(document.querySelector("[data-testid='sheet-upload']")).not.toBeNull();
     expect(document.querySelector("[data-testid='upload-choose']")).not.toBeNull();
   });
-  it("closes the Connect app dialog on Escape (QA-012)", () => {
-    const target = mountPage("integrations");
-    (target.querySelector("[data-testid='connect-app']") as HTMLButtonElement).click();
+  it("Open console opens the company's web Integrations page; no in-app connect flow (OWNER-R14)", () => {
+    const openExternal = vi.fn();
+    const target = mountPage("integrations", null, { openExternal });
+    const header = target.querySelector<HTMLButtonElement>("[data-testid='integrations-open-console']");
+    expect(header?.textContent?.trim()).toBe("Open console");
+    header!.click();
     flushSync();
-    expect(target.querySelector("[data-testid='sheet-connect']")).not.toBeNull();
-    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
-    flushSync();
+    expect(openExternal).toHaveBeenCalledWith("https://hq.computer/companies/indigo/integrations");
+    const inspector = target.querySelector<HTMLButtonElement>("[data-testid='integration-open-console']");
+    if (inspector) {
+      inspector.click();
+      expect(openExternal).toHaveBeenLastCalledWith("https://hq.computer/companies/indigo/integrations");
+    }
+    expect(target.querySelector("[data-testid='connect-app']")).toBeNull();
     expect(target.querySelector("[data-testid='sheet-connect']")).toBeNull();
+    expect(target.textContent).not.toContain("Connect app");
+    expect(target.querySelector("input[placeholder='App name or website']")).toBeNull();
   });
 
   it("closes the vault Share dialog on Escape (QA-024)", async () => {
