@@ -1921,6 +1921,7 @@ async fn probe_install_environment(
         // remedy's diagnostic (HQ-DESKTOP-5K) when that remedy ran.
         missing_target_state: MissingTargetState::Unknown,
         target_version: None,
+        running_cli_version: None,
         requested_spec_kind: RequestedSpecKind::Unknown,
         registry_serving_lag_recurred: false,
     }
@@ -2682,6 +2683,24 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
         .await
 }
 
+/// Resolve the executable again at the point an npm failure is reported. The
+/// pre-install `hq` value can be the bare unresolved sentinel or a copy that a
+/// successful install has since replaced.
+fn running_cli_version_after_failure_with(
+    resolve_hq: impl FnOnce() -> String,
+    read_version: impl FnOnce(&str) -> Option<String>,
+) -> Option<String> {
+    let resolved_hq = resolve_hq();
+    read_version(&resolved_hq)
+}
+
+fn running_cli_version_after_failure() -> Option<String> {
+    running_cli_version_after_failure_with(
+        || paths::resolve_bin("hq"),
+        |resolved_hq| resolved_hq_version(resolved_hq),
+    )
+}
+
 async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, String> {
     // Held for the WHOLE install — every executor path below (npm, pnpm, bun,
     // and the managed-toolchain retry) mutates the same global CLI layout, so
@@ -3000,6 +3019,17 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
         // built with `Some(latest)`, a pinned spec — never the `@latest` dist-tag.
         // Tag-only: never a fingerprint/signature/episode-key component.
         install_env = install_env.with_pinned_target_version(&latest);
+        // Resolve the CLI version again after npm failed so the event records the
+        // version present at failure time, rather than the requested target or the
+        // earlier pre-install snapshot. The core reporter bounds this to SemVer or
+        // `unknown` before it reaches Sentry.
+        let running_version = tauri::async_runtime::spawn_blocking(|| {
+            running_cli_version_after_failure()
+        })
+        .await
+        .ok()
+        .flatten();
+        install_env = install_env.with_running_cli_version(running_version.as_deref());
         let failing_node_abi = install_env
             .node_abi
             .as_deref()
@@ -4635,6 +4665,13 @@ async fn managed_toolchain_retry(
     // (HQ-DESKTOP-5Q): the retry installs the SAME resolved `latest`, pinned. Tag
     // only, never a grouping component.
     install_env = install_env.with_pinned_target_version(latest);
+    // This failed managed attempt may have replaced the CLI selected by PATH.
+    // Re-resolve after failure so the report describes the CLI now present.
+    let running_version = tauri::async_runtime::spawn_blocking(running_cli_version_after_failure)
+        .await
+        .ok()
+        .flatten();
+    install_env = install_env.with_running_cli_version(running_version.as_deref());
     let reported_episode_keys = install_failure_episode_markers();
     persist_reported_episode(report_install_failure_episode(
         retry_run.output.status.code(),
@@ -5012,6 +5049,50 @@ console.log('ready'); setInterval(() => {}, 1000);
             .expect("lease fixture publishes its record");
         assert_eq!(ready.trim(), "ready");
         child
+    }
+
+    #[test]
+    fn managed_retry_failure_environment_includes_running_cli_version() {
+        let version = running_cli_version_after_failure_with(
+            || "resolved-after-managed-retry".to_string(),
+            |resolved| {
+                assert_eq!(resolved, "resolved-after-managed-retry");
+                Some("5.335.0".to_string())
+            },
+        );
+        let env = InstallEnvironment {
+            toolchain_source: NpmToolchainSource::Managed,
+            managed_toolchain_retry: true,
+            managed_retry_outcome: ManagedRetryOutcome::Ran,
+            ..InstallEnvironment::default()
+        }
+        .with_running_cli_version(version.as_deref());
+        let events = sentry::test::with_captured_events(|| {
+            report_install_failure_with_environment(
+                Some(1),
+                "npm error network ETIMEDOUT",
+                None,
+                false,
+                &env,
+            );
+        });
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].tags["hq_cli_running_version"], "5.335.0");
+        assert_eq!(events[0].tags["npm_managed_toolchain_retry"], "true");
+        assert_eq!(events[0].tags["npm_managed_retry_outcome"], "ran");
+    }
+
+    #[test]
+    fn failure_time_version_probe_uses_the_re_resolved_hq_path() {
+        let current_hq = "newly-resolved-hq".to_string();
+        let version = running_cli_version_after_failure_with(
+            || current_hq.clone(),
+            |resolved| {
+                assert_eq!(resolved, "newly-resolved-hq");
+                Some("5.335.0".to_string())
+            },
+        );
+        assert_eq!(version.as_deref(), Some("5.335.0"));
     }
 
     #[test]

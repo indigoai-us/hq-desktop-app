@@ -7,6 +7,7 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+- Desktop setup still cancels an install and still records its failure after an internal error interrupts that bookkeeping.
 - On first launch, onboarding step telemetry can share the persisted install attempt id with the anonymous launch receipt when its hq-flags gate is enabled.
 - Workspace refresh no longer clears a company cloud link when an entity lookup is missing; only a confirmed deletion removes it.
 - Internal tests: four more desktop UI tests (desktop sidebar layout, files sidebar contrast, @here mention, emoji shortcodes) now render the components instead of searching their source text. Nothing changes in the app.
@@ -17,6 +18,8 @@ The release moves it under the version it ships in.
 - Internal tests: four more desktop UI tests (task strip, task chip, page header, agents settings) now render the components instead of searching their source text. Nothing changes in the app.
 - Desktop Core baseline refresh now retries GitHub timeouts before reporting a pending baseline; persistent timeouts remain reported.
 
+- Internal: CLI update failure reports now record which CLI version was running when the update failed, as a SemVer value or the word unknown, with no file path.
+- Release builds: the macOS release check now confirms its test sign-in is still valid before it opens the app. An expired test sign-in failed v0.10.383 with a message that looked like the app was stuck loading; it now says the test sign-in expired and how to renew it.
 - Add bounded marker and refresh rejection attribution to unexpected startup diagnostics.
 - Startup diagnostics now distinguish a rejected saved session from an empty credential store.
 - Desktop CLI updates now wait for running CLI commands to finish before replacing shared package files.
