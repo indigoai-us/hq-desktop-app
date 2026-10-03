@@ -213,6 +213,71 @@ pub fn managed_npm_prefix_in(root: &Path) -> PathBuf {
     }
 }
 
+/// Managed Windows directories which must lead the settings PATH for the
+/// desktop's own resolver and child processes. Keep this order aligned with
+/// `extended_search_dirs_raw`: `node` supplies the runtime for the `.cmd` shim,
+/// followed by npm's flat global prefix and the remaining managed tools.
+pub fn managed_windows_path_dirs_for_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
+    let mut dirs = Vec::with_capacity(roots.len() * 5);
+    for root in roots {
+        dirs.push(managed_node_dir_in(root));
+        // This function models the Windows layout independent of the host
+        // running its tests; `managed_npm_prefix_in` follows host cfgs.
+        dirs.push(root.join("npm-prefix"));
+        dirs.push(root.join("bin"));
+        dirs.push(root.join("git").join("cmd"));
+        dirs.push(root.join("git").join("mingw64").join("bin"));
+    }
+    dirs
+}
+
+/// Compose Windows Claude `env.PATH` with HQ-managed tool directories first.
+/// Windows PATH entries are separated by `;` and compared case-insensitively;
+/// only duplicate entries for the managed directories are removed. All other
+/// existing entries, including their spelling and relative order, are retained.
+/// This function is platform-independent so Windows-shaped cases run in core's
+/// ordinary unit-test lane.
+pub fn compose_windows_settings_env_path(
+    toolchain_roots: &[PathBuf],
+    existing: Option<&str>,
+) -> String {
+    fn windows_path_key(path: &str) -> String {
+        let normalized = path.replace('/', "\\");
+        // `C:\\` is a drive root, while `C:` is drive-relative; don't fold
+        // those distinct Windows paths together when trimming separators.
+        let is_drive_root = normalized.len() == 3
+            && normalized.as_bytes()[1] == b':'
+            && normalized.as_bytes()[2] == b'\\';
+        if is_drive_root {
+            normalized.to_lowercase()
+        } else {
+            normalized.trim_end_matches('\\').to_lowercase()
+        }
+    }
+
+    let managed_dirs = managed_windows_path_dirs_for_roots(toolchain_roots);
+    let mut managed_keys = std::collections::HashSet::new();
+    let mut entries = Vec::with_capacity(managed_dirs.len());
+    for dir in managed_dirs {
+        let entry = dir.to_string_lossy().replace('/', "\\");
+        let key = windows_path_key(&entry);
+        if !entry.is_empty() && managed_keys.insert(key) {
+            entries.push(entry);
+        }
+    }
+
+    if let Some(existing) = existing {
+        for entry in existing.split(';') {
+            if managed_keys.contains(&windows_path_key(entry)) {
+                continue;
+            }
+            entries.push(entry.to_string());
+        }
+    }
+
+    entries.join(";")
+}
+
 /// Directory the managed npm prefix places executable shims in — what goes on
 /// PATH. `<prefix>/bin` on unix; the prefix itself on Windows (its shims are
 /// written flat into the prefix, matching hq-installer-win's layout).
@@ -1513,25 +1578,14 @@ fn extended_search_dirs() -> Vec<PathBuf> {
 fn extended_search_dirs_raw() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
 
-    if let Some(toolchain) = managed_toolchain_dir() {
-        dirs.push(toolchain.join("node"));
-        // Keep this order aligned with hq-installer's
-        // `extended_search_path()`. Windows npm global shims and the
-        // drive-letter-translating rsync wrapper live directly in
-        // `npm-prefix`; the Core rescue must see that wrapper before the raw
-        // rsync.exe in `bin`.
-        dirs.push(toolchain.join("npm-prefix"));
-        dirs.push(toolchain.join("bin"));
-        dirs.push(toolchain.join("git").join("cmd"));
-        dirs.push(toolchain.join("git").join("mingw64").join("bin"));
-    }
-    if let Some(legacy) = legacy_managed_toolchain_dir() {
-        dirs.push(legacy.join("node"));
-        dirs.push(legacy.join("npm-prefix"));
-        dirs.push(legacy.join("bin"));
-        dirs.push(legacy.join("git").join("cmd"));
-        dirs.push(legacy.join("git").join("mingw64").join("bin"));
-    }
+    let managed_roots: Vec<PathBuf> = [managed_toolchain_dir(), legacy_managed_toolchain_dir()]
+        .into_iter()
+        .flatten()
+        .collect();
+    // Keep this order aligned with hq-installer's `extended_search_path()`. The
+    // same list leads the HQ settings PATH repair so its resolver sees the
+    // managed `.cmd` shim and Node runtime before a stale user install.
+    dirs.extend(managed_windows_path_dirs_for_roots(&managed_roots));
 
     if let Some(home) = home_dir() {
         dirs.push(home.join(".hq").join("bin"));
@@ -2703,6 +2757,46 @@ mod tests {
         );
         let dirs = settings_path_dirs_in(root);
         assert_eq!(dirs, vec![a, b]);
+    }
+
+    #[test]
+    fn windows_settings_path_hoists_managed_dirs_and_preserves_user_entries() {
+        let toolchain = PathBuf::from(r"C:\ProgramData\IndigoHQ\toolchain");
+        let existing = concat!(
+            r"C:\UserCli\npm",
+            ";",
+            r"c:/programdata/indigohq/toolchain/NPM-PREFIX/",
+            ";;",
+            r"C:\Program Files\PowerShell\7",
+            ";",
+            r"C:\UserCli\npm"
+        );
+
+        let composed = compose_windows_settings_env_path(&[toolchain.clone()], Some(existing));
+        assert_eq!(
+            composed,
+            concat!(
+                r"C:\ProgramData\IndigoHQ\toolchain\node",
+                ";",
+                r"C:\ProgramData\IndigoHQ\toolchain\npm-prefix",
+                ";",
+                r"C:\ProgramData\IndigoHQ\toolchain\bin",
+                ";",
+                r"C:\ProgramData\IndigoHQ\toolchain\git\cmd",
+                ";",
+                r"C:\ProgramData\IndigoHQ\toolchain\git\mingw64\bin",
+                ";",
+                r"C:\UserCli\npm",
+                ";;",
+                r"C:\Program Files\PowerShell\7",
+                ";",
+                r"C:\UserCli\npm"
+            )
+        );
+        assert_eq!(composed.matches("npm-prefix").count(), 1);
+        assert_eq!(composed.matches(r"C:\UserCli\npm").count(), 2);
+        assert!(composed.contains(r"C:\UserCli\npm"));
+        assert!(composed.contains(r"C:\Program Files\PowerShell\7"));
     }
 
     #[test]
