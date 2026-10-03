@@ -18,8 +18,8 @@ use hq_desktop_core::cdp_mirror::{
     EVENT_COMPANY_CREATED, EVENT_COMPANY_JOINED, EVENT_COMPANY_PROVISIONING_FAILED,
     EVENT_COMPANY_ROUTE_DECIDED, EVENT_COMPANY_SELF_HEAL, EVENT_FIRST_SYNC_COMPLETED,
     EVENT_INVITE_FAILED, EVENT_INVITE_SENT, EVENT_LOGIN_COMPLETED, EVENT_ONBOARDING_STEP_SHOWN,
-    EVENT_PLAN_SELECTED, EVENT_SETUP_ABANDONED, EVENT_SYNC_COMPLETED, EVENT_SYNC_FAILED,
-    EVENT_SYNC_STARTED, FLAG_REFRESH_INTERVAL,
+    EVENT_AUTH_FAILURE, EVENT_AUTH_PROGRESS, EVENT_PLAN_SELECTED, EVENT_SETUP_ABANDONED,
+    EVENT_SYNC_COMPLETED, EVENT_SYNC_FAILED, EVENT_SYNC_STARTED, FLAG_REFRESH_INTERVAL,
 };
 use hq_desktop_core::first_run::{merge_menubar_flags, read_menubar_obj};
 use hq_desktop_core::lifecycle::LifecycleState;
@@ -62,6 +62,10 @@ pub const OP_INVITE_SENT: &str = "desktop_invite_sent";
 pub const OP_INVITE_FAILED: &str = "desktop_invite_failed";
 pub const OP_COMPANY_JOINED: &str = "desktop_company_joined";
 pub const OP_PLAN_SELECTED: &str = "desktop_plan_selected";
+/// Sign-in funnel stages before the app has an authenticated account.
+pub const OP_AUTH_PROGRESS: &str = "desktop_auth_progress";
+/// Sanitized sign-in failures, never a provider response, callback code, or token.
+pub const OP_AUTH_FAILURE: &str = "desktop_auth_failure";
 
 /// `(hq-pro operational row, CDP event, props carried over)`. Telemetry tests
 /// check every row name is on the operational allow-list and every prop on the
@@ -97,6 +101,16 @@ pub const OPERATIONAL_MIRRORS: &[(&str, &str, &[&str])] = &[
     ),
     (OP_COMPANY_JOINED, EVENT_COMPANY_JOINED, &["route", "count"]),
     (OP_PLAN_SELECTED, EVENT_PLAN_SELECTED, &["plan"]),
+    (
+        OP_AUTH_PROGRESS,
+        EVENT_AUTH_PROGRESS,
+        &["provider", "step"],
+    ),
+    (
+        OP_AUTH_FAILURE,
+        EVENT_AUTH_FAILURE,
+        &["provider", "step", "errorCategory"],
+    ),
 ];
 
 /// How long an app-initiated quit waits for the final flush.
@@ -311,7 +325,12 @@ fn persist_visitor(anon_id: &str, install_source: Option<&str>) {
 /// Build the mirror and start its sender, then record `app_opened` and start
 /// the daily-active check. Called once from `.setup()`.
 pub fn init(app: &AppHandle, is_first_launch: bool) {
-    init_mirror(app, is_first_launch);
+    let telemetry_suppressed = std::env::var("HQ_CI_FIRST_LAUNCH_TELEMETRY_SUPPRESSED")
+        .is_ok_and(|value| value == "1");
+    init_mirror(
+        app,
+        should_record_first_launch(is_first_launch, telemetry_suppressed),
+    );
     emit_operational(OP_APP_OPENED, json!({ "isFirstLaunch": is_first_launch }));
     tauri::async_runtime::spawn(async {
         loop {
@@ -319,6 +338,10 @@ pub fn init(app: &AppHandle, is_first_launch: bool) {
             tokio::time::sleep(FLAG_REFRESH_INTERVAL).await;
         }
     });
+}
+
+fn should_record_first_launch(is_first_launch: bool, telemetry_suppressed: bool) -> bool {
+    is_first_launch && !telemetry_suppressed
 }
 
 /// Without an install id there is nothing to key events on, so no mirror.
@@ -777,6 +800,14 @@ pub fn on_exit_requested(app: &AppHandle) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn ci_suppression_skips_only_the_first_launch_mirror_event() {
+        assert!(should_record_first_launch(true, false));
+        assert!(!should_record_first_launch(true, true));
+        assert!(!should_record_first_launch(false, false));
+        assert!(!should_record_first_launch(false, true));
+    }
+
     fn tag(aid: &str) -> hq_desktop_core::download_tag::DownloadTag {
         hq_desktop_core::download_tag::DownloadTag {
             anon_id: aid.into(),
@@ -999,6 +1030,16 @@ mod tests {
                 OP_PLAN_SELECTED,
                 EVENT_PLAN_SELECTED,
                 json!({"plan": "workforce"}),
+            ),
+            (
+                OP_AUTH_PROGRESS,
+                EVENT_AUTH_PROGRESS,
+                json!({"provider": "google", "step": "callback_received", "code": "secret"}),
+            ),
+            (
+                OP_AUTH_FAILURE,
+                EVENT_AUTH_FAILURE,
+                json!({"provider": "google", "step": "provider_page_opened", "errorCategory": "network", "message": "secret"}),
             ),
         ];
         assert_eq!(cases.len(), OPERATIONAL_MIRRORS.len());

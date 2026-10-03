@@ -80,7 +80,7 @@
     background: var(--v4-control-faint, rgba(127, 127, 127, 0.12));
     color: var(--t2, currentColor);
     font-size: calc(var(--company-label-size, 14px) * 0.5);
-    font-weight: 600;
+    font-weight: 500;
     line-height: 1;
     letter-spacing: 0;
   }

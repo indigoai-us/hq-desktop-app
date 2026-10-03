@@ -113,8 +113,8 @@ export function botScopeCopy(opts: { noun?: string } = {}): Record<BotScope, { t
   const noun = opts.noun?.trim() || "computer";
   return {
     personal: {
-      title: "Personal - acts as you",
-      sub: `Works under your account, with everything you can reach. Stays on this ${noun}. It has no company identity, so teammates can’t find it - make it a company bot to share it.`,
+      title: "Personal · acts as you",
+      sub: `Works under your account, with everything you can reach. Stays on this ${noun}. It has no company identity, so teammates can’t find it. Make it a company bot to share it.`,
     },
     company: {
       title: "For a company",

@@ -50,3 +50,28 @@ describe('signed-out page typography (OWNER-015)', () => {
     expect(button).toMatch(/font-weight:\s*500/);
   });
 });
+
+describe('signed-out sign-in card type (AUDIT-3)', () => {
+  it('sizes text in px so the 15px shell root cannot make fractional sizes', () => {
+    expect(promptStyle).not.toMatch(/font-size:\s*[\d.]+rem/);
+  });
+
+  it('keeps the card heading at weight 500 or less', () => {
+    const heading = rule(promptStyle, 'h1');
+    const weight = Number(heading.match(/font-weight:\s*(\d+)/)?.[1] ?? 400);
+    expect(weight).toBeLessThanOrEqual(500);
+  });
+
+  it('names the app HQ in the quit control, as the tray menu does', () => {
+    expect(prompt).not.toContain('Quit HQ Sync');
+  });
+});
+
+describe('signed-out page copy (AUDIT-3)', () => {
+  it('uses the app name HQ, not the internal HQ Work name', () => {
+    const start = shell.indexOf('data-testid="hq-work-signed-out"');
+    const block = shell.slice(start, shell.indexOf('</section>', start));
+    expect(block).not.toMatch(/HQ Work\b/);
+    expect(block).not.toMatch(/fleet agent/);
+  });
+});

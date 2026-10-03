@@ -10,6 +10,7 @@
    * Obsidian's file pane.
    */
   import { untrack } from "svelte";
+  import RailButton from "../../common/button/RailButton.svelte";
   import type { Vault, TreeEntry } from "./vault-model.js";
   import { toTreeEntry, visibleEntries } from "./vault-model.js";
 
@@ -21,9 +22,13 @@
     /** Bumped by the parent to force a reload (vault switch, refresh). */
     reloadKey: number;
     onopen: (path: string, opts: { newTab: boolean }) => void;
+    /** AUDIT-3-22: false when the vault home already shows the one Try again. */
+    retryHere?: boolean;
+    /** Retries every vault read, not just the tree. */
+    onretry?: () => void;
   }
 
-  let { vault, listDir, activePath, showSystem, reloadKey, onopen }: Props = $props();
+  let { vault, listDir, activePath, showSystem, reloadKey, onopen, retryHere = true, onretry }: Props = $props();
 
   let children = $state<Record<string, TreeEntry[]>>({});
   let expanded = $state<Record<string, boolean>>({});
@@ -59,7 +64,9 @@
     if (gen !== generation) return;
     loading = { ...loading, [path]: false };
     if (!res.ok) {
-      if (path === vault.root) rootError = res.message || "This vault could not be read.";
+      // AUDIT-3: plain copy only; the host message goes to the log.
+      console.warn("VaultTree: folder read failed:", path, res.message);
+      if (path === vault.root) rootError = "Couldn't read this vault.";
       children = { ...children, [path]: [] };
       return;
     }
@@ -236,7 +243,12 @@
   data-testid="vault-tree"
 >
   {#if rootError}
-    <p class="vt-note" role="status">{rootError}</p>
+    <div class="vt-note vt-error" role="alert" data-testid="vault-tree-error">
+      <p>{rootError}</p>
+      {#if retryHere}
+        <RailButton icon="refresh" data-testid="vault-tree-retry" onclick={() => { rootError = null; if (onretry) onretry(); else void load(vault.root); }}>Try again</RailButton>
+      {/if}
+    </div>
   {:else if loading[vault.root] && !children[vault.root]}
     <div class="vt-skeleton" aria-hidden="true">
       {#each [72, 54, 64, 40, 58] as w, i (i)}
@@ -374,7 +386,7 @@
     border-radius: 4px;
     background: var(--v4-control-faint);
     color: var(--v4-text-3);
-    font-size: 10px;
+    font-size: 13px;
     letter-spacing: 0.02em;
     text-transform: uppercase;
   }
@@ -393,10 +405,12 @@
       transform: rotate(360deg);
     }
   }
+  .vt-error { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+  .vt-error p { margin: 0; }
   .vt-note {
     margin: 12px 10px;
     color: var(--v4-text-3);
-    font-size: 12px;
+    font-size: 13px;
   }
   .vt-skeleton {
     display: grid;

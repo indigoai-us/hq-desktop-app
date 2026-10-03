@@ -19,6 +19,8 @@ This beta brings the new HQ interface. A rail on the left holds your companies, 
 - Notices such as update ready, sync progress and copy confirmations appear as small toasts in one corner instead of banners across the window.
 - Toasts use the same neutral grey as other overlays.
 - Company names show the company favicon beside them across the app, including the New bot company chips, project header, More companies, command palette, Connections, settings, bot membership lists, Meetings, Telemetry and Atlas. The company list reloads when you switch companies, so an icon added later replaces the initials.
+- Clickable icons and small controls on the new pages have a 28 px click area, so they are easier to hit. Their drawn size is unchanged.
+- Toast buttons show a focus ring when you reach them with the keyboard. The sync toast names the company by its display name.
 
 ### Home and Messages
 
@@ -38,6 +40,7 @@ This beta brings the new HQ interface. A rail on the left holds your companies, 
 - Bots shows the company's bots. New bot starts on the company you opened it from.
 - New cloud bots sign in with your model subscription. The API key option is no longer offered.
 - Behind `agents.desktop-agent-creation` (Indigo only): New bot is one three-step flow (what kind, where it runs, its details). Choosing Cloud creates the bot directly, without Slack, and opens its DM. New cloud bots start on Claude, with Codex and Grok offered. Cloud stays visible when it can't be used and says why (admin role, plan, or no company). Settings › Bots › New bot closes Settings and opens the same flow. The flag is checked for the company you pick, and the cloud create code loads only when the flow opens, so startup is not slower.
+- Escape closes New bot when it opened on the bot step.
 - Files and Knowledge show the company vault with a preview pane.
 - Relative links in any Markdown preview open the linked file.
 - Policies, Workers and Skills each have their own page.
@@ -46,6 +49,11 @@ This beta brings the new HQ interface. A rail on the left holds your companies, 
 - When a search on Secrets or Integrations matches nothing, the page says so and the side panel clears instead of showing the last item.
 - Outpost always reads your Outpost when the page opens, even if the window is behind another app. If the read fails it shows Couldn't read your Outpost with Try again instead of loading forever, and if only the jobs fail to load, the host stays on screen and Jobs and Runs show Try again.
 - Deployments lists the company's deployed apps with their links and access.
+- Access on a company deployment now opens. If it can't load, it says so in plain words.
+- When Projects, Goals, Team, Bots, Files, Knowledge, Policies, Skills, Workers, Secrets, Deployments or the Library can't be read, the page says so in plain words with Try again, instead of showing the empty-page line or raw error text.
+- Goals shows a loading skeleton on first load instead of briefly showing the empty line.
+- Pages with nothing in them yet use plain empty copy.
+- Library and Settings text uses the app's standard sizes and weights.
 
 ### Meetings
 
@@ -61,6 +69,14 @@ This beta brings the new HQ interface. A rail on the left holds your companies, 
 ### Settings and account
 
 - Settings, Profile and Billing open from your account at the bottom of the rail. Light appearance is supported across the new pages.
+- The signed-out page uses plain copy that names the app HQ. Its quit button reads Quit HQ.
+
+### Other changes
+
+- Desktop sign-in now records each stage from choosing a provider through the browser callback and token exchange. When it fails, HQ records only the failing stage and a safe error category.
+- Setup failure events now fill a missing stage from the bounded component and keep error categories on the closed list.
+- CI launches of the desktop app no longer add first-run rows to the install funnel.
+- Desktop Core baseline refresh now retries GitHub timeouts before reporting a pending baseline. Persistent timeouts are still reported.
 
 ### Known gaps for the beta
 

@@ -351,6 +351,14 @@ export function desktopPropertiesForOnboardingStep(
   }
   if (event.properties.action === 'failed') {
     properties.errorCategory = normalizeErrorCategory(event.properties.errorCategory);
+    if (event.properties.step === 'setup') {
+      const failureStage = normalizeFailedStageIds([
+        event.properties.failureStage,
+        event.properties.component,
+      ])[0];
+      if (failureStage) properties.failureStage = failureStage;
+      else delete properties.failureStage;
+    }
     if (event.properties.step === 'invite-teammate') {
       properties.errorKind = normalizeInviteErrorKind(event.properties.errorKind);
       const statusCode = normalizeHttpStatus(event.properties.statusCode);

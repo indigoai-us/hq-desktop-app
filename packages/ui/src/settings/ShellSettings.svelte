@@ -567,7 +567,7 @@
                 <div class="sd">Signed-in account</div>
               </div>
               <span class="ss-field-inline">
-                <span class="mono">{resolvedProfile.email}</span>
+                <span class="val">{resolvedProfile.email}</span>
                 {#if resolvedProfile.verified}
                   <span class="ss-badge" data-testid="settings-email-verified"
                     >Verified</span
@@ -839,11 +839,10 @@
     line-height: 1.45;
   }
 
-  .mono {
+  .val {
     margin-left: auto;
     color: var(--ice-ink, #c9d6e4);
-    font-family: var(--font-mono, ui-monospace, Menlo, monospace);
-    font-size: 11px;
+    font-size: 13px;
   }
 
   .chip {
@@ -1017,11 +1016,9 @@
     border-radius: 5px;
     background: color-mix(in srgb, var(--ok, #34c759) 18%, transparent);
     color: var(--ok-ink, var(--ok, #34c759));
-    font-family: var(--font-mono);
-    font-size: 10px;
-    font-weight: 500;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
+    /* Status pill, not a path or id: sans at the OWNER-008 info-pill size. */
+    font-size: 11px;
+    font-weight: 400;
   }
 
   .ss-btn {

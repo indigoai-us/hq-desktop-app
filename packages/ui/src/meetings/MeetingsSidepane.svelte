@@ -189,6 +189,26 @@
 </Sidepane>
 
 <style>
+  /* Hit area (AUDIT-2-10..13): every control here has at least a 28x28 px
+     clickable box. The ::after pad grows only the axes under 28 px, so the
+     drawn size and layout stay as they are. Kept first so a later
+     position rule (e.g. absolute) still wins. */
+  .icon-btn, .pop-row, .link, .retry, .row, .sec { position: relative; }
+  .icon-btn::after,
+  .pop-row::after,
+  .link::after,
+  .retry::after,
+  .row::after,
+  .sec::after {
+    content: "";
+    position: absolute;
+    inset: min(0px, calc(50% - 14px));
+  }
+  /* Filter and New meeting are 26 px with a 2 px gap: each pads 2 px on its
+     outer side only, so both reach 28 px and the two hit areas meet at the
+     gap without overlapping. */
+  .pane-head .icon-btn::after { inset: -1px 0 -1px -2px; }
+  .pane-head .icon-btn + .icon-btn::after { inset: -1px -2px -1px 0; }
   .pane-head {
     position: relative;
     display: flex;
@@ -200,7 +220,7 @@
 
   .title {
     flex: 1 1 auto;
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 500;
   }
 
@@ -262,7 +282,7 @@
     background: transparent;
     color: var(--t1);
     font: inherit;
-    font-size: 14px;
+    font-size: 13px;
     text-align: left;
     cursor: pointer;
   }

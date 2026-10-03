@@ -130,7 +130,7 @@
     </div>
     <div class="foot" data-testid="atlas-inspector-footer">{atlasFooterLine(node, nowMs)}</div>
   {:else}
-    <div class="kind">company</div>
+    <div class="kind">Company</div>
     <h2><CompanyLabel name={company} /></h2>
     <div class="chips" data-testid="atlas-inspector-rollup">
       {#if presence.length}<span class="chip live"><i class="ldot"></i>{presence.length} live</span>{/if}

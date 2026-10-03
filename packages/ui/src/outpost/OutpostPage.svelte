@@ -41,6 +41,7 @@
     type OutpostRefresher,
     type OutpostTab,
   } from "./outpost-model.js";
+  import { outpostFilterLabel } from "./outpost-model.js";
   import { createOutpostRefresher, noOutpost, OUTPOST_SETUP_URL, type OutpostReadApi } from "./outpost-live.js";
 
   export { metadata };
@@ -303,7 +304,7 @@
       <section>
         <div class="tabs">
           {#each ["all", "active", "paused", "failing"] as name (name)}
-            <button type="button" class:on={jobFilter === name} onclick={() => (jobFilter = name as typeof jobFilter)}>{name}</button>
+            <button type="button" class:on={jobFilter === name} onclick={() => (jobFilter = name as typeof jobFilter)}>{outpostFilterLabel(name)}</button>
           {/each}
           <RailButton icon="plus" variant="primary" type="button" disabled={offline} data-testid="new-job" onclick={openNew}>New job</RailButton>
         </div>
@@ -333,7 +334,7 @@
       <section data-testid="outpost-runs">
         <div class="tabs">
           {#each ["all", "ok", "failed", "running"] as name (name)}
-            <button type="button" class:on={runFilter === name} onclick={() => (runFilter = name as typeof runFilter)}>{name}</button>
+            <button type="button" class:on={runFilter === name} onclick={() => (runFilter = name as typeof runFilter)}>{outpostFilterLabel(name)}</button>
           {/each}
         </div>
         {#if data.jobsUnavailable}
@@ -342,7 +343,7 @@
           <p class="sub" data-testid="outpost-no-runs">No runs yet</p>
         {/if}
         {#each runs as run (run.id)}
-          <div class="run"><span class="nm">{run.job}</span><span class="cell sub" data-testid="run-when">{runWhenLabel(run, now)} · {run.detail}</span><span class="st {run.status}"><span class="dot" class:live={run.status === "running"} class:err={run.status === "failed"}></span>{run.status}</span></div>
+          <div class="run"><span class="nm">{run.job}</span><span class="cell sub" data-testid="run-when">{runWhenLabel(run, now)} · {run.detail}</span><span class="st {run.status}"><span class="dot" class:live={run.status === "running"} class:err={run.status === "failed"}></span>{outpostFilterLabel(run.status)}</span></div>
         {/each}
       </section>
     {/if}

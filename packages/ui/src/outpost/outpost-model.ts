@@ -379,3 +379,18 @@ export function presetCron(cadence: Exclude<JobCadence, "custom">): string {
   if (cadence === "weekdays") return "0 9 * * 1-5";
   return "0 7 * * 1";
 }
+
+const FILTER_LABELS: Record<string, string> = {
+  all: "All",
+  active: "Active",
+  paused: "Paused",
+  failing: "Failing",
+  ok: "OK",
+  failed: "Failed",
+  running: "Running",
+};
+
+/** Sentence-case display label for a job/run filter tab or run status key. */
+export function outpostFilterLabel(key: string): string {
+  return FILTER_LABELS[key] ?? key.charAt(0).toUpperCase() + key.slice(1);
+}

@@ -85,6 +85,8 @@ export interface DeploymentRowModel {
   updated: string;
   /** hq-deploy gate flags from the app row, for the Access form (QA-059). */
   accessHint?: { privateMode?: boolean; passwordProtected?: boolean; accessMode?: string | null };
+  /** hq-deploy app record id for `/api/apps/{id}/…`; absent when the server has none (QA-059). */
+  appId?: string;
 }
 
 export interface FilesConnectCache {
@@ -200,8 +202,12 @@ export function companyDeploymentRows(page: DeployAppsPage, slug: string): Deplo
   for (const raw of page.apps ?? []) {
     const row = deploymentFromApp(raw, scope, page.callerSub);
     if (!row) continue;
+    // `row.id` is the scoped list key (`slug:id`); the access routes need the bare app id.
+    const rawId = (raw as Record<string, unknown> | null)?.id;
+    const appId = typeof rawId === "string" && rawId.trim() ? rawId.trim() : undefined;
     rows.push({
       id: row.id,
+      appId,
       name: row.name,
       url: row.url,
       project: row.project,

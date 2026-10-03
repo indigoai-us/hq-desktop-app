@@ -141,6 +141,40 @@ describe("US-029 FilesConnectPage", () => {
     expect(target.textContent).not.toContain("docs.getindigo.ai");
   });
 
+  it("QA-059: Access reads by the bare app id and never renders raw server text", async () => {
+    const listDeployApps = vi.fn(async () =>
+      ok({ apps: [
+        { id: "00000000-0000-4000-8000-000000000001", name: "hq-lifecycle-email-map", subdomain: "hq-lifecycle-email-map", url: "https://hq-lifecycle-email-map.indigo-hq.com", status: "active" },
+      ] }),
+    );
+    const paths: string[] = [];
+    const deployAccessRequest = vi.fn(async (_scope: string, _method: string, path: string) => {
+      paths.push(path);
+      return { ok: false as const, reason: "error", message: "deploy access HTTP 500: Internal" } as never;
+    });
+    const target = mountPage("deployments", null, { listDeployApps, deployAccessRequest });
+    await vi.waitFor(() => expect(target.querySelector("[data-testid='deploy-access']")).not.toBeNull());
+    (target.querySelector("[data-testid='deploy-access']") as HTMLButtonElement).click();
+    flushSync();
+    await vi.waitFor(() => expect(target.querySelector("[data-testid='deploy-access-error']")).not.toBeNull());
+    expect(paths[0]).toBe("/api/apps/00000000-0000-4000-8000-000000000001/access-policy");
+    const text = target.textContent ?? "";
+    expect(text).not.toMatch(/deploy access(:| HTTP| fetch| read| parse)/i);
+    expect(text).not.toContain("Internal");
+    expect(text).not.toMatch(/HTTP \d{3}/);
+    expect(target.querySelector("[data-testid='deploy-access-retry']")).not.toBeNull();
+  });
+
+  it("QA-059: a deployment with no app record does not offer Access", async () => {
+    const listDeployApps = vi.fn(async () =>
+      ok({ apps: [{ name: "legacy-site", subdomain: "legacy-site", url: "https://legacy-site.indigo-hq.com", status: "active" }] }),
+    );
+    const target = mountPage("deployments", null, { listDeployApps });
+    await vi.waitFor(() => expect(target.textContent).toContain("legacy-site"));
+    expect(target.querySelector("[data-testid='deploy-access']")).toBeNull();
+    expect(target.querySelector("[data-testid='deploy-access-unmanaged']")?.textContent).toContain("managed where it was deployed");
+  });
+
   it("asks before redeploy and then calls the deploy workflow", async () => {
     const listDeployApps = vi.fn(async () =>
       ok({ apps: [{ id: "1", name: "real-app", subdomain: "real-app", url: "https://real-app.indigo-hq.com", status: "active" }] }),
@@ -545,5 +579,31 @@ describe("US-029 FilesConnectPage", () => {
     await vi.waitFor(() => expect(target.querySelector("[data-testid='deploy-sources-empty']")).not.toBeNull());
     expect(target.querySelector("[data-testid='deploy-sources-empty']")?.textContent).toMatch(/no projects yet/);
     expect((target.querySelector("[data-testid='run-deploy']") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("AUDIT-3: failed secrets and deployments reads offer Try again and recover", async () => {
+    const { companyStore } = await import("../company-store.svelte.js");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(companyStore.loadSecrets).mockRejectedValueOnce(new Error("vault 503"));
+    let failDeploy = true;
+    const listDeployApps = vi.fn(async () =>
+      failDeploy
+        ? ({ ok: false as const, reason: "error", message: "HTTP 500" } as never)
+        : ok({ apps: [{ id: "1", name: "real-app", subdomain: "real-app", url: "https://real-app.indigo-hq.com", status: "active" }] }),
+    );
+    let target = mountPage("secrets", null, { listDeployApps });
+    await vi.waitFor(() => expect(target.querySelector("[data-testid='secrets-retry']")).not.toBeNull());
+    expect(target.textContent).toContain("Could not load secrets.");
+    (target.querySelector("[data-testid='secrets-retry']") as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(target.querySelector("[data-testid='secrets-retry']")).toBeNull());
+    await unmount(component!);
+    component = null;
+
+    target = mountPage("deployments", null, { listDeployApps });
+    await vi.waitFor(() => expect(target.querySelector("[data-testid='deployments-retry']")).not.toBeNull());
+    expect(target.textContent).not.toContain("HTTP 500");
+    failDeploy = false;
+    (target.querySelector("[data-testid='deployments-retry']") as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(target.textContent).toContain("real-app"));
   });
 });

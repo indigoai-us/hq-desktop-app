@@ -381,7 +381,7 @@
             </div>
           {:else if integrations.length === 0}
             <div class="state empty" data-testid="personal-integrations-empty">
-              <p>No personal connections yet · <a href={PERSONAL_INTEGRATIONS_URL} data-testid="console-link-empty" onclick={(e) => { e.preventDefault(); openConsoleIntegrations(); }}>Manage in the web console</a></p>
+              <p>No personal connections yet · <a class="console-link" href={PERSONAL_INTEGRATIONS_URL} data-testid="console-link-empty" onclick={(e) => { e.preventDefault(); openConsoleIntegrations(); }}>Manage in the web console</a></p>
             </div>
           {:else}
             <div class="head irow"><span>App</span><span>Account</span><span>Status</span><span>Connected</span></div>
@@ -395,7 +395,7 @@
             {/each}
           {/if}
           {#if integrationsState === "ready" && integrations.length > 0}
-            <p class="meta console-line"><a href={PERSONAL_INTEGRATIONS_URL} data-testid="console-link" onclick={(e) => { e.preventDefault(); openConsoleIntegrations(); }}>Manage connections in the web console</a></p>
+            <p class="meta console-line"><a class="console-link" href={PERSONAL_INTEGRATIONS_URL} data-testid="console-link" onclick={(e) => { e.preventDefault(); openConsoleIntegrations(); }}>Manage connections in the web console</a></p>
           {/if}
           {#if activeCompany}
             <button class="srow company-link" type="button" data-testid="company-connections-link" onclick={() => openCompanyConsoleIntegrations(activeCompany)}>
@@ -565,6 +565,20 @@
 </section>
 
 <style>
+  /* Hit area (AUDIT-2-10..13): every control here has at least a 28x28 px
+     clickable box. The ::after pad grows only the axes under 28 px, so the
+     drawn size and layout stay as they are. Kept first so a later
+     position rule (e.g. absolute) still wins. */
+  .nav, .srow, .tab, .link, .console-link { position: relative; }
+  .nav::after,
+  .srow::after,
+  .tab::after,
+  .link::after,
+  .console-link::after {
+    content: "";
+    position: absolute;
+    inset: min(0px, calc(50% - 14px));
+  }
   /* Console-rail page chrome measured from Messages (docs/design-standard-console-rail.md):
      one 20px/500 title, 13px everywhere else, 31px rows, status as dot plus text,
      background-only selection, mono only for secret names, paths and MCP ids. */

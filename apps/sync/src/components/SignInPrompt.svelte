@@ -2,7 +2,12 @@
   import { invoke } from '@tauri-apps/api/core';
   import { open } from '@tauri-apps/plugin-shell';
   import CopyPromptButton from './CopyPromptButton.svelte';
-  import { emitDesktopOperationalTelemetry } from '../lib/desktop-telemetry';
+  import {
+    emitDesktopAuthFailure,
+    emitDesktopAuthProgress,
+    emitDesktopOperationalTelemetry,
+    type DesktopAuthProgressStep,
+  } from '../lib/desktop-telemetry';
   import {
     continuationDeps,
     loadContinuationContext,
@@ -188,6 +193,9 @@
     lastProvider = provider;
     activeState = null;
     console.info('[signin] OAuth runner started', { provider });
+    const telemetryProvider = provider === 'Google' ? 'google' : 'microsoft';
+    let authStep: DesktopAuthProgressStep = 'sign_in_started';
+    void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep });
 
     try {
       // Step 1: Start OAuth login. This binds both loopback listener families
@@ -208,6 +216,8 @@
       // Step 2: Open browser for user to authenticate
       console.info('[signin] OAuth browser open requested', { provider });
       await open(authorizeUrl);
+      authStep = 'provider_page_opened';
+      void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep });
       console.info('[signin] OAuth browser opened', { provider });
       if (!isCurrentSignInRun(run)) return;
 
@@ -217,6 +227,8 @@
         'oauth_listen_for_code',
         { state }
       );
+      authStep = 'callback_received';
+      void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep });
       if (!isCurrentSignInRun(run)) return;
 
       // Step 4: Exchange code for tokens
@@ -225,6 +237,10 @@
         authenticated: boolean;
         expiresAt: string;
       }>('oauth_exchange_code', { code });
+      authStep = 'token_exchange_ok';
+      if (result.authenticated) {
+        void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep });
+      }
       if (!isCurrentSignInRun(run)) return;
 
       // Step 5: Notify parent of success
@@ -249,10 +265,16 @@
         console.info('[signin] OAuth runner succeeded', { provider });
         onsuccess?.(result);
       } else {
+        void emitDesktopAuthFailure({
+          provider: telemetryProvider,
+          step: authStep,
+          error: 'authentication rejected',
+        });
         error = 'That sign-in did not finish. Choose your provider and try once more.';
       }
     } catch (err) {
       if (!isCurrentSignInRun(run)) return;
+      void emitDesktopAuthFailure({ provider: telemetryProvider, step: authStep, error: err });
       console.error('[signin] OAuth runner failed:', err);
       error = mapSignInError(
         err instanceof Error ? err.message : String(err),
@@ -496,7 +518,7 @@
       disabled={quitting}
       aria-busy={quitting}
     >
-      {quitting ? 'Quitting…' : 'Quit HQ Sync'}
+      {quitting ? 'Quitting…' : 'Quit HQ'}
     </button>
 
     {#if error}
@@ -633,14 +655,14 @@
   }
 
   h1 {
-    font-size: 1.25rem;
-    font-weight: 600;
+    font-size: 20px;
+    font-weight: 500;
     color: var(--pop-text);
     margin: 0 0 0.5rem 0;
   }
 
   .description {
-    font-size: 0.8125rem;
+    font-size: 13px;
     color: var(--pop-muted);
     margin: 0 0 1.5rem 0;
     line-height: 1.4;
@@ -675,7 +697,7 @@
   }
 
   .microsoft-email label {
-    font-size: 0.75rem;
+    font-size: 12px;
     color: var(--pop-muted);
     line-height: 1.4;
   }
@@ -690,7 +712,7 @@
     background: transparent;
     color: var(--pop-text);
     font: inherit;
-    font-size: 0.8125rem;
+    font-size: 13px;
   }
 
   .microsoft-email input:focus-visible {
@@ -707,7 +729,7 @@
 
   .continuation-lead {
     margin: 0;
-    font-size: 0.8125rem;
+    font-size: 13px;
     opacity: 0.75;
   }
 
@@ -781,14 +803,14 @@
   }
 
   .error {
-    font-size: 0.75rem;
+    font-size: 12px;
     color: var(--pop-muted);
     margin: 0;
     line-height: 1.4;
   }
 
   .loading-hint {
-    font-size: 0.6875rem;
+    font-size: 11px;
     color: var(--pop-muted);
     margin: 0.75rem 0 0 0;
     line-height: 1.4;
@@ -799,7 +821,7 @@
   .retry-btn {
     margin-top: 0.875rem;
     padding: 0.375rem 0.625rem;
-    font-size: 0.75rem;
+    font-size: 12px;
     font-family: inherit;
     color: var(--pop-muted);
     background: none;
@@ -854,7 +876,7 @@
   }
 
   .footer {
-    font-size: 0.6875rem;
+    font-size: 11px;
     color: var(--dot);
     margin: 1.5rem 0 0 0;
     letter-spacing: 0.02em;

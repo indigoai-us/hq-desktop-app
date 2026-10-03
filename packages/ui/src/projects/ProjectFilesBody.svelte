@@ -6,6 +6,7 @@
    * New file, folder picker, upload, and upload progress are sheets.
    */
   import { onMount } from "svelte";
+  import RailButton from "../common/button/RailButton.svelte";
   import type { PlatformAdapter } from "@hq/platform";
   import CompanyFileTree from "../files/CompanyFileTree.svelte";
   import FilePreviewPane from "../files/FilePreviewPane.svelte";
@@ -181,13 +182,20 @@
     selectedPath = path;
   }
 
+  // AUDIT-3-17: a failed folder read says so, with Try again, instead of an empty list.
+  let foldersFailed = $state(false);
+  let foldersRoot = "";
+
   async function refreshFolders(root: string): Promise<void> {
+    foldersRoot = root;
+    foldersFailed = false;
     try {
       const entries = await loadChildren(root);
       folders = entries.filter((entry) => entry.isDir);
     } catch (err) {
       console.error("folder list failed:", err);
       folders = [];
+      foldersFailed = true;
     }
   }
 
@@ -419,6 +427,12 @@
               <li><button type="button" data-testid="folder-choice" onclick={() => chooseFolder(folder.path)}>{folder.name}</button></li>
             {/each}
           </ul>
+          {#if foldersFailed}
+            <div class="load-error" role="alert" data-testid="folder-load-error">
+              <p>Couldn't read the folders here.</p>
+              <RailButton icon="refresh" data-testid="folder-retry" onclick={() => void refreshFolders(foldersRoot)}>Try again</RailButton>
+            </div>
+          {/if}
         </div>
       {:else if sheet === "upload"}
         <header class="sheet-h">Upload<button type="button" class="icon-x" aria-label="Close" onclick={() => (sheet = null)}>✕</button></header>
@@ -585,6 +599,8 @@
     border-radius: 6px;
     padding: 4px 8px;
   }
+  .load-error { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+  .load-error p { margin: 0; }
   .folder-line, .choices, .picked { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .folder-line code, .starts { font-family: var(--font-mono); font-size: 13px; }
   .choices button.on, .primary { background: var(--v4-primary-bg); color: var(--v4-primary-fg); }

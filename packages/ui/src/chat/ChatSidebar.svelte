@@ -4351,6 +4351,16 @@
 {/snippet}
 
 <style>
+  /* Hit area (AUDIT-2-10..13): every control here has at least a 28x28 px
+     clickable box. The ::after pad grows only the axes under 28 px, so the
+     drawn size and layout stay as they are. Kept first so a later
+     position rule (e.g. absolute) still wins. */
+  .chat-pin-btn { position: relative; }
+  .chat-pin-btn::after {
+    content: "";
+    position: absolute;
+    inset: min(0px, calc(50% - 14px));
+  }
   .chat-sidebar {
     position: relative;
     /* height:100% must include the padding below, or the sidebar renders ~22px

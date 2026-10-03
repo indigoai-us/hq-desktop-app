@@ -127,8 +127,12 @@
       : 0,
   );
 
+  // AUDIT-3: Try again on a failed read re-runs the load below.
+  let readAttempt = $state(0);
+
   $effect(() => {
     const key = slug;
+    void readAttempt;
     const hit = readTeamCache(key);
     if (hit) {
       view = hit.view;
@@ -287,7 +291,10 @@
       </div>
     {:else}
       {#if view.error}
-        <p class="note" role="alert">{view.error}</p>
+        <div class="note load-error" role="alert" data-testid="team-load-error">
+          <p>{view.error}</p>
+          <RailButton icon="refresh" data-testid="team-retry" onclick={() => (readAttempt += 1)}>Try again</RailButton>
+        </div>
       {/if}
       {#if showHumans}
         <div class="sech" data-testid="team-section-label">Humans · {humans.length}</div>
@@ -468,9 +475,9 @@
       <div class="menu" role="menu" data-testid="team-row-menu">
         <span class="menu-note">Change role</span>
         {#each ["Owner", "Admin", "Member"] as role (role)}
-          <button type="button" role="menuitemradio" aria-checked={roleLine(member) === role} onclick={() => setRole(member, role)}>{role}</button>
+          <button type="button" class="mi" role="menuitemradio" aria-checked={roleLine(member) === role} onclick={() => setRole(member, role)}>{role}</button>
         {/each}
-        <button type="button" role="menuitem" data-testid={`team-remove-${member.id}`} onclick={() => (removeId = member.id)}>Remove</button>
+        <button type="button" class="mi" role="menuitem" data-testid={`team-remove-${member.id}`} onclick={() => (removeId = member.id)}>Remove</button>
         {#if bot}<span class="menu-note">Reports to its owner</span>{/if}
       </div>
     {/if}
@@ -498,6 +505,19 @@
 />
 
 <style>
+  /* Hit area (AUDIT-2-10..13): every control here has at least a 28x28 px
+     clickable box. The ::after pad grows only the axes under 28 px, so the
+     drawn size and layout stay as they are. Kept first so a later
+     position rule (e.g. absolute) still wins. */
+  .tab, .icon, .row-main, .mi { position: relative; }
+  .tab::after,
+  .icon::after,
+  .row-main::after,
+  .mi::after {
+    content: "";
+    position: absolute;
+    inset: min(0px, calc(50% - 14px));
+  }
   /* Segmented controls size to their tabs; nothing stretches or centres them. */
   .tabs, .seg { width: max-content; flex: none; justify-content: flex-start; }
   .team-page {
@@ -567,6 +587,8 @@
   .meta { color: var(--t3); font-size: 13px; }
   .empty { margin: 0; padding: 7px 8px; color: var(--t3); font-size: 13px; line-height: 17px; }
   .note { margin: 16px 8px 0; color: var(--t3); font-size: 13px; }
+  .load-error { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+  .load-error p { margin: 0; }
   .scrim { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(0, 0, 0, 0.45); z-index: 20; }
   .sheet {
     width: 480px;
