@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CompanyLabel from "../company/CompanyLabel.svelte";
   import RailButton from "../common/button/RailButton.svelte";
   /**
    * Personal Library (US-031). My files and Shared with me.
@@ -133,7 +134,7 @@
       <div class="sec">Companies</div>
       {#each companies as company (company.slug)}
         <button type="button" class="row" aria-current={section === "company" && companySlug === company.slug ? "true" : undefined} onclick={() => selectSection("company", company.slug)}>
-          <span class="mark">{company.mark}</span><span>{company.label}</span><span class="meta">vault</span>
+          <CompanyLabel name={company.label} companyUid={company.slug} /><span class="meta">vault</span>
         </button>
       {/each}
       <div class="sec">Local</div>
@@ -170,7 +171,7 @@
             >
               <span class="nm">{grant.name}<span>{grant.parent}</span></span>
               <span>{grant.ownerMark} {grant.owner}</span>
-              <span>{grant.companyMark} {grant.company}</span>
+              <span><CompanyLabel name={grant.company} /></span>
               <span class="mono">{grant.access}</span>
               <span class="mono">{grant.expires}</span>
             </button>
@@ -300,7 +301,6 @@
     background: var(--v4-active-row);
     color: var(--v4-text-1);
   }
-  .mark { font-size: 10px; width: 18px; }
   .content { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
   .toolbar { display: flex; align-items: center; gap: 8px; padding: 10px 16px; }
   .grow { flex: 1; }

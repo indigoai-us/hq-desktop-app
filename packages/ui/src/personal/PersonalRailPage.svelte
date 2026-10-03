@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CompanyLabel from "../company/CompanyLabel.svelte";
   import RailButton from "../common/button/RailButton.svelte";
   import { dismissable } from "../common/dismissable.js";
   /**
@@ -382,7 +383,9 @@
           {/if}
           {#if activeCompany}
             <button class="srow company-link" type="button" data-testid="company-connections-link" onclick={() => openCompanyConsoleIntegrations(activeCompany)}>
-              <span>Company connections</span><span class="meta">{activeCompany.label} Integrations</span>
+              <span>Company connections</span><span class="meta"
+                ><CompanyLabel name={activeCompany.label} companyUid={activeCompany.uid} /> Integrations</span
+              >
             </button>
           {/if}
         </div>

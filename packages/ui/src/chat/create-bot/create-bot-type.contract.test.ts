@@ -66,7 +66,6 @@ describe("create-bot wizard type contract", () => {
             if (px === 13) continue;
             if (px === 20 && selector === ".preview-name") continue;
             // Company monogram tiles size their initials to the 24px tile.
-            if (px === 11 && selector === ".company-tile") continue;
             bad.push(`${selector} → ${m[0]}`);
           }
         }

@@ -12,6 +12,7 @@
   row is clicked.
 -->
 <script lang="ts">
+  import CompanyLabel from "../company/CompanyLabel.svelte";
   import {
     elapsedLabel,
     clockLabel,
@@ -116,7 +117,7 @@
         <span class="chip live" data-testid="meeting-live-chip"><i class="ldot"></i>Live · {elapsedLabel(start, now)}</span>
       {/if}
       {#if venue}<span class="chip">{venue}</span>{/if}
-      {#if companyName}<span class="chip">{companyName}</span>{/if}
+      {#if companyName}<span class="chip"><CompanyLabel name={companyName} /></span>{/if}
     </div>
     <button type="button" class="btn primary" disabled={!url} title="Opens the meeting link in your browser" onclick={() => url && openExternal?.(url)}>Join</button>
     <button type="button" class="btn" disabled={!url} title="Copies the link" onclick={() => url && oncopy?.(url)}>Copy link</button>

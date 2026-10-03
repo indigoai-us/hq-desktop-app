@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CompanyLabel from "../company/CompanyLabel.svelte";
   import type { Workspace } from "../chat/workspaces.js";
   import type {
     ActivityEntry,
@@ -465,10 +466,13 @@
                 onclick={() => onopencompany?.(row.slug)}
               >
                 <span class="home-td-name">
-                  <span class={`home-dot ${row.tone}`} aria-hidden="true"
-                  ></span>
                   <span class="home-name-copy">
-                    <span class="home-name">{row.name}</span>
+                    <span class="home-name"
+                      ><CompanyLabel name={row.name} companyUid={row.slug} />
+                      <!-- Sync status, kept as a trailing signal. -->
+                      <span class={`home-dot ${row.tone}`} aria-hidden="true"
+                      ></span></span
+                    >
                     <span class="home-sub">{row.sub}</span>
                   </span>
                 </span>
@@ -495,7 +499,7 @@
                   <span class="home-agenda-time">{item.time}</span>
                   <span class="home-agenda-copy">
                     <span class="home-agenda-title">{item.title}</span>
-                    <span class="home-agenda-company">{item.company}</span>
+                    <span class="home-agenda-company"><CompanyLabel name={item.company} /></span>
                   </span>
                 </div>
               {/each}

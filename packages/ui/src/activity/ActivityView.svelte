@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CompanyLabel from "../company/CompanyLabel.svelte";
   import RailButton from "../common/button/RailButton.svelte";
   /**
    * Company Activity (US-026). Team, Tokens, and Live tabs with a range
@@ -133,7 +134,7 @@
     </div>
   {:else if tab === "team"}
     <div class="canvas">
-      <div class="sech">Team · last {range} <span class="grow"></span><span class="plain">{companyLabel}</span></div>
+      <div class="sech">Team · last {range} <span class="grow"></span><span class="plain"><CompanyLabel name={companyLabel} companyUid={slug} /></span></div>
       {#if snapshot.members.length === 0}
         <p class="empty" data-testid="activity-empty">No team activity in this range yet.</p>
       {:else}

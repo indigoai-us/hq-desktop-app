@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CompanyLabel from "../../company/CompanyLabel.svelte";
   /**
    * 340 px bot profile. Follows the Messages profile pane rhythm
    * (MemberProfilePanel): 12px 14px header with a hairline, 13px text,
@@ -159,7 +160,7 @@
         <section class="g">
           <div class="k" data-testid="bot-profile-companies-label">{#if snapshot.companiesScope === "all"}Companies <span class="count">{snapshot.companies.length}</span>{:else}In this company{/if} <button type="button" class="link" data-testid="bot-profile-edit-membership" onclick={() => onedit?.("membership")}>Edit</button></div>
           {#each snapshot.companies as co (co.name)}
-            <div class="co" data-testid="bot-profile-company"><span class="tile">{co.mark}</span>{co.name}<span class="r">{co.role}</span></div>
+            <div class="co" data-testid="bot-profile-company"><CompanyLabel name={co.name} /><span class="r">{co.role}</span></div>
           {/each}
         </section>
       {/if}
@@ -312,10 +313,6 @@
   .kv { display: grid; grid-template-columns: 96px 1fr; gap: 6px 12px; color: var(--v4-text-1); }
   .kv b { font-weight: 400; color: var(--v4-text-3); }
   .co { display: flex; align-items: center; gap: 8px; min-height: 28px; color: var(--v4-text-1); }
-  .tile {
-    width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center;
-    background: var(--v4-control-bg); font-size: 9px;
-  }
   .r { margin-left: auto; color: var(--v4-text-3); }
   .chips { display: flex; flex-wrap: wrap; gap: 4px; }
   .chip { padding: 1px 7px; border-radius: var(--v4-radius-pill, 999px); background: var(--v4-control-bg); color: var(--v4-text-2); }

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CompanyLabel from "../company/CompanyLabel.svelte";
   /**
    * ProjectsHome: the Projects page. One company at a time, picked from the
    * companies this person belongs to that have a folder on this Mac, with that
@@ -105,9 +106,6 @@
     if (next !== previous) onslugchange?.(next);
   }
 
-  function initial(c: Workspace): string {
-    return (c.displayName || c.slug).trim()[0]?.toUpperCase() ?? "?";
-  }
 </script>
 
 <div class="ph" data-testid="projects-home">
@@ -129,8 +127,9 @@
             data-testid="projects-company-switcher"
             onclick={() => (menuOpen = !menuOpen)}
           >
-            <span class="ph-avatar">{initial(current)}</span>
-            <span class="ph-name">{current.displayName || current.slug}</span>
+            <span class="ph-name"
+              ><CompanyLabel name={current.displayName || current.slug} companyUid={current.slug} /></span
+            >
             <svg viewBox="0 0 16 16" class="ph-caret" aria-hidden="true">
               <path d="M4.5 6.5 8 10l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
             </svg>
@@ -146,8 +145,7 @@
                   class:is-current={c.slug === current.slug}
                   onclick={() => choose(c.slug)}
                 >
-                  <span class="ph-avatar small">{initial(c)}</span>
-                  <span>{c.displayName || c.slug}</span>
+                  <CompanyLabel name={c.displayName || c.slug} companyUid={c.slug} />
                 </button>
               {/each}
             </div>
@@ -212,22 +210,6 @@
   .ph-company-btn[aria-expanded="true"] {
     border-color: var(--v4-hairline);
     background: var(--v4-control-faint);
-  }
-  .ph-avatar {
-    display: inline-grid;
-    place-items: center;
-    width: 22px;
-    height: 22px;
-    border-radius: 6px;
-    background: var(--v4-control-faint);
-    color: var(--v4-text-2);
-    font-size: 13px;
-    font-weight: 500;
-  }
-  .ph-avatar.small {
-    width: 18px;
-    height: 18px;
-    font-size: 10px;
   }
   .ph-caret {
     width: 14px;

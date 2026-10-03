@@ -715,6 +715,7 @@
     companyIconUrl,
   } from "../company/company-display-map.js";
   import CompanyIcon from "../company/CompanyIcon.svelte";
+  import { setCompanyIconRegistry } from "../company/company-icon-registry.svelte.js";
   import { formatReadonlyTimestamp } from "../chat/messaging/channelMessageModels.js";
   import {
     accountChromeFromSelf,
@@ -3670,6 +3671,9 @@
       .map((w) => ({
         companyUid: (w.cloudUid as string).trim(),
         label: w.displayName?.trim() || w.slug,
+        // Carry the roster favicon so pickers built from this list (New bot
+        // company chips, scope pill) show the company icon, not initials.
+        iconUrl: companyIconUrl((w.cloudUid as string).trim(), companyIcons, w.iconUrl ?? null),
       })),
   );
 
@@ -3873,6 +3877,18 @@
   const companyNames = $derived(buildCompanyDisplayMap(effectiveCompanies ?? []));
   /** uid/slug → presigned company icon, for the header + member popover. */
   const companyIcons = $derived(buildCompanyIconMap(effectiveCompanies ?? []));
+  // Publish the roster icons so every CompanyLabel can find a favicon by uid.
+  $effect(() => {
+    const byKey = new Map(companyIcons);
+    for (const c of effectiveCompanies ?? []) {
+      const uid = (c.cloudUid ?? "").trim();
+      const icon = companyIconUrl(uid, companyIcons, c.iconUrl ?? null);
+      const name = c.displayName?.trim();
+      if (icon && name && !byKey.has(name)) byKey.set(name, icon);
+      if (icon && c.slug && !byKey.has(c.slug)) byKey.set(c.slug, icon);
+    }
+    setCompanyIconRegistry(byKey);
+  });
   /**
    * channelId → company, built straight from the roster's own
    * `homeChannelId` (never from the selected row). A channel opened through

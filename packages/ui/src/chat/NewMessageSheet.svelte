@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CompanyLabel from "../company/CompanyLabel.svelte";
   import PeoplePicker from "./PeoplePicker.svelte";
   import {
     entriesFromDirectory,
@@ -153,7 +154,9 @@
 >
   <header class="sh">
     New message
-    <span class="sub">{companyLabel}</span>
+    <span class="sub"
+      >{#if companyUid}<CompanyLabel name={companyLabel} {companyUid} />{:else}Personal{/if}</span
+    >
     <span class="grow"></span>
     <button type="button" class="icon" aria-label="Close" onclick={onclose}>
       <svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true"><path d="M3.5 3.5l7 7M10.5 3.5l-7 7" /></svg>
@@ -188,7 +191,7 @@
               role="tab"
               aria-selected={companyUid === company.companyUid}
               onclick={() => (companyUid = company.companyUid)}
-            >{company.label}</button>
+            ><CompanyLabel name={company.label} companyUid={company.companyUid} /></button>
           {/each}
         </div>
         <p class="hint">Bots and channels from other companies stay hidden. Personal DMs carry no company context.</p>

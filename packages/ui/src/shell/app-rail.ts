@@ -249,3 +249,14 @@ export function activeRailItemId(state: RailSelectionState): RailItemId | null {
 
 /** ⌘1–⌘9 select the rail item at that position. */
 export const RAIL_SHORTCUT_COUNT = 9;
+
+/**
+ * Two-letter initials for a rail tile or company badge: the first two letters
+ * of a one-word name, else the first letter of each of the first two words.
+ */
+export function railInitials(label: string): string {
+  const parts = label.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  if (parts.length === 1) return parts[0]!.slice(0, 2).toUpperCase();
+  return `${parts[0]![0]}${parts[1]![0]}`.toUpperCase();
+}

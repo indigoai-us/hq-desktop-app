@@ -8,7 +8,7 @@
    */
   import Tooltip from "../common/Tooltip.svelte";
   import CompanyIcon from "../company/CompanyIcon.svelte";
-  import { railTooltip, type RailItem, type RailItemId } from "./app-rail.js";
+  import { railInitials, railTooltip, type RailItem, type RailItemId } from "./app-rail.js";
 
   interface Props {
     items: RailItem[];
@@ -50,12 +50,7 @@
   const top = $derived(items.filter((item) => item.kind !== "you"));
   const you = $derived(items.find((item) => item.kind === "you") ?? null);
 
-  function initials(label: string): string {
-    const parts = label.trim().split(/\s+/).filter(Boolean);
-    if (parts.length === 0) return "?";
-    if (parts.length === 1) return parts[0]!.slice(0, 2).toUpperCase();
-    return `${parts[0]![0]}${parts[1]![0]}`.toUpperCase();
-  }
+  const initials = railInitials;
 
   // Company tiles carry no company uid in the DOM: the rail lists every
   // pinned company at once, and the tenant-boundary checks forbid another

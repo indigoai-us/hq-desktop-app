@@ -5,6 +5,7 @@
 </script>
 
 <script lang="ts">
+  import CompanyLabel from "../company/CompanyLabel.svelte";
   /**
    * Chat-first unified conversation sidebar (US-003).
    *
@@ -3332,7 +3333,11 @@
                   {checked}
                   onchange={() => toggleCompanyPin(uid)}
                 />
-                <span>{company.displayName || company.slug}</span>
+                <CompanyLabel
+                  name={company.displayName || company.slug}
+                  iconUrl={company.iconUrl}
+                  companyUid={uid}
+                />
               </label>
             {/if}
           {/each}
@@ -3367,12 +3372,13 @@
                 data-testid={`chat-companies-row-${company.companyUid}`}
                 onclick={() => openCompanyHome(company)}
               >
-                {#if company.iconUrl}
-                  <img class="chat-companies-row-icon" src={company.iconUrl} alt="" aria-hidden="true" />
-                {:else}
-                  <span class="chat-glyph" aria-hidden="true">·</span>
-                {/if}
-                <span class="chat-row-title">{company.label}</span>
+                <span class="chat-row-title"
+                  ><CompanyLabel
+                    name={company.label}
+                    iconUrl={company.iconUrl}
+                    companyUid={company.companyUid}
+                  /></span
+                >
               </button>
             {:else}
               {@const ensuring = companyHomeEnsuring[company.companyUid] === true}
@@ -3389,12 +3395,13 @@
                     : "No company channel yet"}
                 onclick={() => openCompanyHome(company)}
               >
-                {#if company.iconUrl}
-                  <img class="chat-companies-row-icon" src={company.iconUrl} alt="" aria-hidden="true" />
-                {:else}
-                  <span class="chat-glyph" aria-hidden="true">·</span>
-                {/if}
-                <span class="chat-row-title">{company.label}</span>
+                <span class="chat-row-title"
+                  ><CompanyLabel
+                    name={company.label}
+                    iconUrl={company.iconUrl}
+                    companyUid={company.companyUid}
+                  /></span
+                >
                 {#if ensuring}
                   <span
                     class="chat-companies-row-status"
@@ -3919,7 +3926,7 @@
                 >
               {/if}
               <span class="chat-switcher-name">{row.name}</span>
-              <span class="chat-switcher-company">{row.company}</span>
+              <span class="chat-switcher-company"><CompanyLabel name={row.company} /></span>
             </button>
           {:else}
             <div class="chat-empty">
@@ -4713,14 +4720,6 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .chat-companies-row-icon {
-    width: 16px;
-    height: 16px;
-    border-radius: 4px;
-    object-fit: cover;
-    flex: 0 0 auto;
-  }
-
   .chat-row-disabled {
     opacity: 0.55;
     cursor: pointer;

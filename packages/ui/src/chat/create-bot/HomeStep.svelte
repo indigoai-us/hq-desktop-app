@@ -8,7 +8,6 @@
    * "Who is it for?" used to live here and now sits on the details step, next
    * to the name it affects — see DetailsStep.
    */
-  import { initialsFor } from "../sidebar-model.js";
   import { LOCAL_BOT_RUNTIMES } from "../local-bots.js";
   import { hostComputerNoun, subscribeHostComputerNoun } from "@hq/platform";
   import { onMount } from "svelte";
@@ -30,6 +29,7 @@
     InstallOutcome,
   } from "../../install-choice/install-choice.js";
   import "./create-bot.css";
+  import CompanyLabel from "../../company/CompanyLabel.svelte";
 
   interface Props {
     draft: CreateBotDraft;
@@ -376,14 +376,11 @@
               disabled={disabled}
               onclick={() => onpatch({ home: "cloud", companyUid: company.companyUid })}
             >
-              <span class="company-tile" aria-hidden="true">
-                {#if company.iconUrl}
-                  <img src={company.iconUrl} alt="" />
-                {:else}
-                  {initialsFor(company.label)}
-                {/if}
-              </span>
-              <span class="cb-card-title">{company.label}</span>
+              <CompanyLabel
+                name={company.label}
+                iconUrl={company.iconUrl}
+                companyUid={company.companyUid}
+              />
             </button>
           {/each}
         </div>
@@ -452,23 +449,5 @@
     align-items: center;
     gap: 10px;
     padding: 8px 10px;
-  }
-  .company-tile {
-    display: grid;
-    place-items: center;
-    width: 24px;
-    height: 24px;
-    border-radius: 6px;
-    background: var(--v4-control-faint, rgba(127, 127, 127, 0.12));
-    color: var(--t2);
-    font-size: 11px;
-    font-weight: 500;
-    overflow: hidden;
-    flex: 0 0 auto;
-  }
-  .company-tile img {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
   }
 </style>

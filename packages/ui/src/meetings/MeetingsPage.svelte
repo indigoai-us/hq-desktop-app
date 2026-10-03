@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CompanyLabel from "../company/CompanyLabel.svelte";
   import { onMount, untrack } from "svelte";
   import { dismissToastByKey, pushToast } from "../shell/toast-stack.svelte.js";
   import { hostComputerNoun } from "@hq/platform";
@@ -852,7 +853,10 @@
           {@const dur = durationLabel(upNext)}
           <div class="next-title">{upNext.summary ?? "(no title)"}</div>
           <div class="next-meta">
-            Next · {companyLabel(upNext, companyNamesByUid)}{#if dur}
+            Next · {#if upNext.sourceCompanyUid}<CompanyLabel
+                name={companyLabel(upNext, companyNamesByUid)}
+                companyUid={upNext.sourceCompanyUid}
+              />{:else}Personal{/if}{#if dur}
               · {dur}{/if}
           </div>
         {:else}

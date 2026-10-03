@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CompanyLabel from "../company/CompanyLabel.svelte";
   import RailButton from "../common/button/RailButton.svelte";
   /**
    * Atlas inspector (340 px). With a selection: kind, title, vault path,
@@ -130,7 +131,7 @@
     <div class="foot" data-testid="atlas-inspector-footer">{atlasFooterLine(node, nowMs)}</div>
   {:else}
     <div class="kind">company</div>
-    <h2>{company}</h2>
+    <h2><CompanyLabel name={company} /></h2>
     <div class="chips" data-testid="atlas-inspector-rollup">
       {#if presence.length}<span class="chip live"><i class="ldot"></i>{presence.length} live</span>{/if}
       {#if objectCount !== null}<span class="chip">{objectCount} objects</span>{/if}

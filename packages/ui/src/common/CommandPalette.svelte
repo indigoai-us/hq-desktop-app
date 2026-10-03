@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CompanyLabel from "../company/CompanyLabel.svelte";
   import { onMount, tick, untrack } from "svelte";
   import CompanyIcon from "../company/CompanyIcon.svelte";
   import { formatShortcut } from "./keyboard-shortcuts";
@@ -411,7 +412,11 @@
               scope = id;
             }}
           >
-            {paletteScopeLabel(id, companyName)}
+            {#if id === "company"}
+              <CompanyLabel name={paletteScopeLabel(id, companyName)} {companyUid} />
+            {:else}
+              {paletteScopeLabel(id, "")}
+            {/if}
           </button>
         {/each}
       </div>

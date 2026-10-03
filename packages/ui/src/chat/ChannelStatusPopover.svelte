@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CompanyLabel from "../company/CompanyLabel.svelte";
   /**
    * ChannelStatusPopover (US-005) — opened from the channel-header member pill.
    *
@@ -18,7 +19,6 @@
   import { botKindFor } from "./bot-kind.js";
   import { projectReposForDisplay } from "./channel-status-model.js";
   import { isSelf, type SelfIdentity } from "../identity/self.js";
-  import CompanyIcon from "../company/CompanyIcon.svelte";
   import "./tokens.css";
   import "./chat-tokens.css";
 
@@ -261,9 +261,11 @@
       <div class="p-item kv static" data-testid="status-company">
         <span class="k">Company</span>
         <span class="status-company-val">
-          <CompanyIcon iconUrl={model.companyIconUrl ?? null} size={16} />
           <span class="val" data-testid="status-company-name"
-            >{model.companyLabel}</span
+            ><CompanyLabel
+              name={model.companyLabel}
+              iconUrl={model.companyIconUrl ?? null}
+            /></span
           >
         </span>
       </div>

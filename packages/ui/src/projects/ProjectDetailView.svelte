@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CompanyLabel from "../company/CompanyLabel.svelte";
   /**
    * ProjectDetailView — coherent project workspace (DESKTOP-005 / DESKTOP-006).
    *
@@ -59,7 +60,6 @@
   import "../home/tokens.css";
   import RailButton from "../common/button/RailButton.svelte";
   import RailIcon from "../common/button/RailIcon.svelte";
-  import CompanyIcon from "../company/CompanyIcon.svelte";
   import "../common/button/rail-type.css";
 
   interface Props {
@@ -594,7 +594,7 @@
     >
       {#if project.company}
         <span class="crumb-company" data-testid="crumb-company"
-          >{project.company}</span
+          ><CompanyLabel name={project.company} iconUrl={companyIconUrl} companyUid={project.company} /></span
         >
         <span class="crumb-sep" aria-hidden="true">/</span>
       {/if}
@@ -763,8 +763,7 @@
 
       {#if project.company}
         <span class="info-pill company-badge" data-testid="company-badge">
-          <CompanyIcon iconUrl={companyIconUrl} size={12} label={project.company} />
-          {project.company}
+          <CompanyLabel name={project.company} iconUrl={companyIconUrl} companyUid={project.company} />
         </span>
       {/if}
 

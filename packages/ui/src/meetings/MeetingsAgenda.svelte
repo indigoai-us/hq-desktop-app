@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CompanyLabel from "../company/CompanyLabel.svelte";
   import {
     botAttachmentState,
     botForEvent,
@@ -220,7 +221,10 @@
                 {/if}
               </div>
               <div class="mcompany">
-                {companyLabel(event, companyNames)}{#if dur}
+                {#if event.sourceCompanyUid}<CompanyLabel
+                    name={companyLabel(event, companyNames)}
+                    companyUid={event.sourceCompanyUid}
+                  />{:else}Personal{/if}{#if dur}
                   · {dur}{/if}
               </div>
               {#if openingFailures.has(event.id) && url}

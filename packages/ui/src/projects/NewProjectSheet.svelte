@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CompanyLabel from "../company/CompanyLabel.svelte";
   import RailButton from "../common/button/RailButton.svelte";
   /**
    * New project sheet (US-023, storyboard new-project): name, company, repo or
@@ -117,7 +118,7 @@
 >
   <header class="sh">
     New project
-    <span class="sub">{company} · board</span>
+    <span class="sub"><CompanyLabel name={company} companyUid={company} /> · board</span>
     <span class="grow"></span>
     <button type="button" class="icon" aria-label="Close" onclick={() => close()}>✕</button>
   </header>

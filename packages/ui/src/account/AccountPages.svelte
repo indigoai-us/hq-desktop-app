@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CompanyLabel from "../company/CompanyLabel.svelte";
   import RailButton from "../common/button/RailButton.svelte";
   /**
    * Profile, Billing (invoice pane), and Settings (US-035).
@@ -199,7 +200,7 @@
           <tbody>
             {#each companies as company (company.uid)}
               <tr>
-                <td>{company.label}</td>
+                <td><CompanyLabel name={company.label} companyUid={company.uid} /></td>
                 <td>{company.role}</td>
                 <td>{company.plan}</td>
                 <td><button type="button" class="link" onclick={() => oncompany?.(company.uid)}>Company settings</button></td>

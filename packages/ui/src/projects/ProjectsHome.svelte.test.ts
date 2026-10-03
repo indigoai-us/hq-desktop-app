@@ -103,7 +103,7 @@ describe("ProjectsHome", () => {
     el.querySelector<HTMLButtonElement>('[data-testid="projects-company-switcher"]')!.click();
     flushSync();
     const items = [...el.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')];
-    expect(items.map((i) => i.textContent?.trim().replace(/^\w\s*/, ""))).toEqual(["Acme", "Zeta"]);
+    expect(items.map((i) => i.querySelector(".company-label-name")?.textContent)).toEqual(["Acme", "Zeta"]);
     items[1].click();
     expect(onslugchange).toHaveBeenCalledWith("zeta");
   });

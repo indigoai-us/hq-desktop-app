@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CompanyLabel from "../company/CompanyLabel.svelte";
   import PeoplePicker from "./PeoplePicker.svelte";
   import { channelSlug } from "./create-flow.js";
   import {
@@ -119,7 +120,9 @@
 <div class="sheet" role="dialog" aria-label="New channel" data-testid="new-channel-sheet">
   <header class="sh">
     New channel
-    <span class="sub">{companyLabel}</span>
+    <span class="sub"
+      >{#if companyUid}<CompanyLabel name={companyLabel} {companyUid} />{:else}Personal{/if}</span
+    >
     <span class="grow"></span>
     <button type="button" class="icon" aria-label="Close" onclick={() => onclose()}>
       <svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true"><path d="M3.5 3.5l7 7M10.5 3.5l-7 7" /></svg>
@@ -149,7 +152,7 @@
               companyUid = company.companyUid;
               event.currentTarget.scrollIntoView({ block: "nearest", inline: "nearest" });
             }}
-          >{company.label}</button>
+          ><CompanyLabel name={company.label} companyUid={company.companyUid} /></button>
         {/each}
       </div>
     </div>

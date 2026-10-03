@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CompanyLabel from "../company/CompanyLabel.svelte";
   import RailButton from "../common/button/RailButton.svelte";
   /**
    * My Telemetry (US-032). Paints the cached snapshot on the first frame,
@@ -283,7 +284,7 @@
               {#each snapshot.sessionsRows as row (row.id)}
                 <button class="srow hq-contain-row" aria-current={selected?.id === row.id ? "true" : undefined} onclick={() => selectSession(row)}>
                   <span>{row.when}</span>
-                  <span class="co"><span class="mini">{row.mark}</span>{row.company}</span>
+                  <span class="co"><CompanyLabel name={row.company} /></span>
                   <span class="pr">{row.project}{#if row.detail}<span>{row.detail}</span>{/if}</span>
                   <span class="n">{row.length}</span>
                   <span class="n">{row.tokensLabel}</span>
@@ -335,7 +336,7 @@
               {#each group.rows as row (row.id)}
                 <button class="srow wide hq-contain-row" aria-current={selected?.id === row.id ? "true" : undefined} onclick={() => (selectedId = row.id)}>
                   <span>{row.when}</span>
-                  <span class="co"><span class="mini">{row.mark}</span>{row.company}</span>
+                  <span class="co"><CompanyLabel name={row.company} /></span>
                   <span class="pr">{row.project}{#if row.detail}<span>{row.detail}</span>{/if}</span>
                   <span class="host">{row.host}</span>
                   <span class="n">{row.length}</span>
@@ -369,7 +370,7 @@
               </div>
             {/if}
             <div class="kv">
-              <span class="k">Company</span><span class="v"><span class="mini">{selected.mark}</span>{selected.company}</span>
+              <span class="k">Company</span><span class="v"><CompanyLabel name={selected.company} /></span>
               <span class="k">Host</span><span class="v">{selected.host}</span>
               <span class="k">Actor</span><span class="v">{selected.actor === "you" ? "You" : selected.host}</span>
               <span class="k">Session</span><span class="v mono">{selected.id}</span>
@@ -466,7 +467,7 @@
             <div class="sech">By company</div>
             {#each snapshot.byCompany as row (row.id)}
               <div class="trow">
-                <span class="nm"><span class="mini">{row.mark}</span>{row.label}<span class="m">{row.meta}</span></span>
+                <span class="nm"><CompanyLabel name={row.label} companyUid={row.id} /><span class="m">{row.meta}</span></span>
                 <span class="n">{formatTokens(row.tokens)}</span>
                 <span class="bar"><i style:width="{sharePercent(row.tokens, tokenTotal)}%"></i></span>
                 <span class="n">{sharePercent(row.tokens, tokenTotal)}%</span>
@@ -527,7 +528,7 @@
             {#each outcomeRows as row (row.id)}
               <button class="srow out hq-contain-row" onclick={() => onopen?.(row, row.openLabel)}>
                 <span>{row.when}</span>
-                <span class="co"><span class="mini">{row.mark}</span>{row.company}</span>
+                <span class="co"><CompanyLabel name={row.company} /></span>
                 <span class="pr">{row.project}{#if row.detail}<span>{row.detail}</span>{/if}</span>
                 <span class="oc {row.outcomeKind}"><span class="dot" class:live={row.outcomeKind === "live"} class:err={row.outcomeKind === "error"}></span>{row.outcome}</span>
                 <span class="host">{row.detail || row.branch}</span>

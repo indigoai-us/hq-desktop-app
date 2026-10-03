@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CompanyLabel from "../company/CompanyLabel.svelte";
   /**
    * ProjectRow — a single project rendered as a movable portfolio / board card.
    *
@@ -152,7 +153,9 @@
         {/if}
         {#if showCompany && project.company && !showPortfolioMeta}
           <span class="chip company" title={project.company}
-            ><span class="chip-text">{project.company}</span></span
+            ><span class="chip-text"
+              ><CompanyLabel name={project.company} companyUid={project.company} /></span
+            ></span
           >
         {/if}
       </div>

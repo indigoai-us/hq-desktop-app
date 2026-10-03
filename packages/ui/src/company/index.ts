@@ -53,3 +53,6 @@ export {
   membershipRowsFrom,
   workspacesFromMembershipRows,
 } from "./company-display-map";
+export { default as CompanyLabel } from "./CompanyLabel.svelte";
+export { default as CompanyIcon } from "./CompanyIcon.svelte";
+export { setCompanyIconRegistry, companyIconFor } from "./company-icon-registry.svelte";

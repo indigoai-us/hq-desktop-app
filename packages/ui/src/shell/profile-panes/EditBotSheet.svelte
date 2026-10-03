@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CompanyLabel from "../../company/CompanyLabel.svelte";
   import { dismissable } from "../../common/dismissable.js";
   /**
    * Edit bot sheet. Tabs are Identity, Membership, Access, Capabilities and
@@ -84,7 +85,7 @@
       {:else if tab === "membership"}
         <div class="fr"><span>Home company</span><span>{local.companies.find((c) => c.joined)?.label ?? "None yet"}</span></div>
         {#each local.companies as company (company.id)}
-          <label class="rd"><input type="checkbox" bind:checked={company.joined} /> {company.label} <small>{company.role}</small></label>
+          <label class="rd"><input type="checkbox" bind:checked={company.joined} /> <CompanyLabel name={company.label} companyUid={company.id} /> <small>{company.role}</small></label>
         {/each}
         {#if local.companies.length === 0}<p class="hint">No companies are cached yet.</p>{/if}
       {:else if tab === "access"}

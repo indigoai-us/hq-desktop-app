@@ -300,9 +300,17 @@ describe("ChatSidebar lifecycle entry points", () => {
       ),
     );
     expect(options.map((o) => o.dataset.company)).toEqual(["cmp_indigo", "cmp_acme"]);
-    // Company tiles use the app-wide monogram helper (`initialsFor`), the same
-    // two-letter mark the sidebar rows and scope switcher show.
-    expect(options.map((o) => o.textContent?.replace(/\s+/g, " ").trim())).toEqual(["IN Indigo", "AC Acme"]);
+    // Company rows go through CompanyLabel: with no favicon, a two-letter
+    // initials badge sits before the name.
+    expect(
+      options.map((o) => [
+        o.querySelector('[data-testid="company-label-initials"]')?.textContent,
+        o.querySelector(".company-label-name")?.textContent,
+      ]),
+    ).toEqual([
+      ["IN", "Indigo"],
+      ["AC", "Acme"],
+    ]);
     // First company is preselected.
     expect(options.map((o) => o.getAttribute("aria-selected"))).toEqual(["true", "false"]);
 

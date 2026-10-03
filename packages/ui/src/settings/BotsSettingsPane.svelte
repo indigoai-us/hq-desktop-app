@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CompanyLabel from "../company/CompanyLabel.svelte";
   import RailButton from "../common/button/RailButton.svelte";
   /**
    * Settings → Bots — the one pane for every bot the user works with.
@@ -728,7 +729,10 @@
               <BotKindChip kind="cloud" variant="label" />
             </strong>
             <small>
-              {#if bot.companyLabel}{bot.companyLabel} · {/if}{pausedCloud.has(bot.uid)
+              {#if bot.companyLabel}<CompanyLabel
+                  name={bot.companyLabel}
+                  companyUid={bot.companyUid}
+                /> · {/if}{pausedCloud.has(bot.uid)
                 ? "Paused"
                 : cloudBotStatusLabel(bot.status, bot.phase)}
             </small>

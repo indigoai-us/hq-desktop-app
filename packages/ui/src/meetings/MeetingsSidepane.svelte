@@ -9,6 +9,7 @@
   shows shimmer rows only on a true cold start.
 -->
 <script lang="ts">
+  import CompanyLabel from "../company/CompanyLabel.svelte";
   import Sidepane from "../shell/Sidepane.svelte";
   import type { SidepaneScrollMemory } from "../shell/sidepane-models.js";
   import {
@@ -98,8 +99,7 @@
           {#each companies as c (c.uid)}
             <button type="button" class="pop-row" aria-pressed={filter.companyUid === c.uid} onclick={() => onfilter?.({ ...filter, companyUid: c.uid })}>
               <span class="ck">{filter.companyUid === c.uid ? "✓" : ""}</span>
-              <span class="mark" aria-hidden="true">{c.mark}</span>
-              <span class="t">{c.label}</span><span class="count">{c.count}</span>
+              <span class="t"><CompanyLabel name={c.label} companyUid={c.uid} /></span><span class="count">{c.count}</span>
             </button>
           {/each}
           <div class="pop-sec">Show</div>

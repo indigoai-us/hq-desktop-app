@@ -1,11 +1,11 @@
 <script lang="ts">
+  import CompanyLabel from "../company/CompanyLabel.svelte";
   /**
    * More companies (console-rail US-005). 320 px popover on the More tile.
    * Paints from the cached roster. Pin and unpin show on hover. A seventh
    * pin opens an inline chooser instead of growing the rail past six.
    */
   import { focusReturn } from "./focus-return.js";
-  import CompanyIcon from "../company/CompanyIcon.svelte";
   import {
     moreCompaniesSections,
     pinCompany,
@@ -51,12 +51,6 @@
       .filter((company): company is MoreCompany => Boolean(company)),
   );
 
-  function initials(name: string): string {
-    const parts = name.trim().split(/\s+/).filter(Boolean);
-    if (parts.length === 0) return "?";
-    if (parts.length === 1) return parts[0]!.slice(0, 2).toUpperCase();
-    return `${parts[0]![0]}${parts[1]![0]}`.toUpperCase();
-  }
 
   function open(company: MoreCompany): void {
     onopen?.(company);
@@ -115,8 +109,9 @@
     <div class="list" data-testid="more-replace-list">
       {#each replaceTargets as company (company.uid)}
         <button type="button" class="row" onclick={() => chooseReplacement(company)}>
-          <span class="mark" aria-hidden="true">{initials(company.name)}</span>
-          <span class="name">{company.name}</span>
+          <span class="name"
+            ><CompanyLabel name={company.name} iconUrl={company.iconUrl} companyUid={company.uid} size={16} /></span
+          >
         </button>
       {/each}
     </div>
@@ -157,14 +152,9 @@
 {#snippet companyRow(company: MoreCompany, pinned: boolean)}
   <div class="row-wrap">
     <button type="button" class="row" onclick={() => open(company)}>
-      <span class="mark" aria-hidden="true">
-        {#if company.iconUrl}
-          <CompanyIcon iconUrl={company.iconUrl} size={16} label={company.name} />
-        {:else}
-          {initials(company.name)}
-        {/if}
-      </span>
-      <span class="name">{company.name}</span>
+      <span class="name"
+        ><CompanyLabel name={company.name} iconUrl={company.iconUrl} companyUid={company.uid} size={16} /></span
+      >
       {#if company.liveCount > 0}
         <span class="live"><i></i>{company.liveCount}</span>
       {/if}
