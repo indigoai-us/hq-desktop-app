@@ -45,6 +45,17 @@ const SUGGESTIONS = fence([{ kind: "suggestions", items: ["Summarize our company
 
 type Row = Record<string, unknown>;
 
+/** A connection of the person's own the bot cannot use yet: the app offers it as a card. */
+const LINEAR: Row = {
+  id: "acct_linear",
+  provider: "factory:linear",
+  status: "connected",
+  createdBy: "prs_me",
+  createdAt: "2026-10-02T14:10:00.000Z",
+  access: { mode: "private", grantCount: 0 },
+  installation: { displayName: "Linear", domain: "linear.app" },
+};
+
 const HELLO_REQUEST: Row = {
   eventId: "e1",
   fromPersonUid: "prs_me",
@@ -102,6 +113,7 @@ interface World {
   bots: LocalBotRow[];
   getStatus: ReturnType<typeof vi.fn>;
   listConnections: ReturnType<typeof vi.fn>;
+  catalogSearch: ReturnType<typeof vi.fn>;
   sendDm: ReturnType<typeof vi.fn>;
   openUrl: Mock<(url: string) => void>;
 }
@@ -133,6 +145,7 @@ function world(over: Partial<World> = {}): World {
         audit: [],
       }),
     ),
+    catalogSearch: vi.fn(async () => ok({ ok: true, companyUid: COMPANY, entries: [] })),
     sendDm: vi.fn(async () => ok({ eventId: `sent_${Math.random().toString(36).slice(2)}` })),
     openUrl: vi.fn<(url: string) => void>(),
     ...over,
@@ -153,7 +166,7 @@ function adapter(w: World): PlatformAdapter {
       sendDm: w.sendDm,
     },
     agents: { getStatus: w.getStatus },
-    integrations: { listConnections: w.listConnections, grantConnectionAccess: vi.fn(async () => ok({})) },
+    integrations: { listConnections: w.listConnections, grantConnectionAccess: vi.fn(async () => ok({})), catalogSearch: w.catalogSearch },
     ...(w.bots.length > 0 ? { bots: { list: async () => ok({ bots: w.bots }) } } : {}),
     settings: {
       getSetupStatus: async () => ok({ hqRootValid: true, configured: true, hqFolderPath: "/tmp/HQ" }),
@@ -221,7 +234,7 @@ const threadText = (): string => host.querySelector('[data-testid="conversation-
 const message = (eventId: string): HTMLElement =>
   host.querySelector<HTMLElement>(`[data-testid="conversation-message"][data-event-id="${eventId}"]`)!;
 const cardsIn = (el: ParentNode): HTMLElement[] => [...el.querySelectorAll<HTMLElement>('[data-testid="connection-card"]')];
-const cardIn = (el: ParentNode, target: "slack" | "tools"): HTMLElement =>
+const cardIn = (el: ParentNode, target: "slack" | "tools" | "integration"): HTMLElement =>
   el.querySelector<HTMLElement>(`[data-testid="connection-card"][data-target="${target}"]`)!;
 const chipButtons = (): HTMLButtonElement[] => [...host.querySelectorAll<HTMLButtonElement>('[data-testid="suggested-reply"]')];
 const chips = (): string[] => chipButtons().map((chip) => chip.textContent?.trim() ?? "");
@@ -238,7 +251,7 @@ describe("DesktopApp Connect more in a cloud bot's direct message", () => {
     // Nothing is connected yet.
     await vi.waitFor(() => expect(chips()).toEqual(["Connect Slack or tools"]));
     // The cards themselves stay where they were, under the first message.
-    expect(cardsIn(message("e2"))).toHaveLength(2);
+    expect(cardsIn(message("e2"))).toHaveLength(1);
     expect(cardsIn(message("e4"))).toHaveLength(0);
   });
 
@@ -260,7 +273,7 @@ describe("DesktopApp Connect more in a cloud bot's direct message", () => {
   it("is not offered while the newest bot message carries the cards the app put there", async () => {
     const w = world({ thread: page(HELLO_REQUEST, HELLO) });
     await mountNewBotDm(w, "Hi Corey, I am Nova.");
-    await vi.waitFor(() => expect(cardsIn(message("e2"))).toHaveLength(2));
+    await vi.waitFor(() => expect(cardsIn(message("e2"))).toHaveLength(1));
     await settle(20);
     expect(chips()).toEqual([]);
   });
@@ -282,8 +295,8 @@ describe("DesktopApp Connect more in a cloud bot's direct message", () => {
     expect(chips()).toEqual([]);
   });
 
-  it("sends exactly one visible message with the request, and no hidden one", async () => {
-    const w = world();
+  it("sends exactly one visible message with the request, and exactly one hidden request with the company's apps", async () => {
+    const w = world({ connections: [LINEAR] });
     await mountNewBotDm(w, "Quite a lot already.");
     await vi.waitFor(() => expect(chips()).toEqual(["Connect Slack or tools"]));
     const button = chip("Connect Slack or tools");
@@ -295,20 +308,37 @@ describe("DesktopApp Connect more in a cloud bot's direct message", () => {
     const [to, body] = visibleSends(w)[0]!;
     expect(to).toBe(NOVA);
     expect(body).toBe("Connect more tools");
-    expect(hidden(w)).toHaveLength(0);
+    // The bot also gets one request the person never sees, with the apps and
+    // the picking rules, keyed to the person's message.
+    await vi.waitFor(() => expect(hidden(w)).toHaveLength(1));
+    const [hiddenTo, hiddenBody, extras] = hidden(w)[0]!;
+    expect(hiddenTo).toBe(NOVA);
+    expect(hiddenBody).toMatch(/^Automatic message from HQ: Corey just asked to connect more apps/);
+    expect(hiddenBody).toContain("- Linear (linear.app): connected, not shared with you");
+    expect(hiddenBody).toContain("Pick up to four apps");
+    const key = (extras as { audience?: string; idempotencyKey?: string }).idempotencyKey ?? "";
+    expect((extras as { audience?: string }).audience).toBe("agent");
+    expect(key).toMatch(new RegExp(`^new-bot-connect-more-${NOVA}-sent_`));
+    expect(threadText()).not.toContain("Automatic message from HQ");
     // The row is put away, and nothing extra is drawn until the bot answers.
     expect(chips()).toEqual([]);
     expect(cardsIn(host)).toHaveLength(2);
+    // A typed request gets the same hidden request, once per message.
+    await settle(20);
+    expect(hidden(w)).toHaveLength(1);
   });
 
-  it("draws both cards under the bot's answer to the request, and keeps the first ones", async () => {
-    const w = world({ thread: askedAgain() });
+  it("draws the app-chosen cards under a bot answer that carries no block: Slack, then the person's own apps", async () => {
+    const w = world({ thread: askedAgain(), connections: [LINEAR] });
     await mountNewBotDm(w, "Here are your connections.");
     await vi.waitFor(() => expect(cardsIn(message("e6"))).toHaveLength(2));
-    expect(cardsIn(message("e6")).map((el) => [el.dataset.target, el.dataset.state])).toEqual([
-      ["slack", "offered"],
-      ["tools", "offered"],
+    expect(cardsIn(message("e6")).map((el) => [el.dataset.target, el.dataset.domain ?? null, el.dataset.state])).toEqual([
+      ["slack", null, "offered"],
+      ["integration", "linear.app", "connected"],
     ]);
+    expect(cardIn(message("e6"), "integration").textContent).toContain("Connected. Let Nova use it?");
+    // No catalog lookup for an app that is connected.
+    expect(w.catalogSearch).not.toHaveBeenCalled();
     expect(cardsIn(message("e2"))).toHaveLength(2);
     expect(cardsIn(message("e4"))).toHaveLength(0);
     // The person's own request is an ordinary message in the conversation.
@@ -332,7 +362,7 @@ describe("DesktopApp Connect more in a cloud bot's direct message", () => {
     });
     await mountNewBotDm(w, "Tell me what to look at.");
     // A request typed by hand, in lower case with a full stop, counts too.
-    await vi.waitFor(() => expect(cardsIn(message("e6"))).toHaveLength(2));
+    await vi.waitFor(() => expect(cardsIn(message("e6"))).toHaveLength(1));
     expect(cardsIn(message("e8"))).toHaveLength(0);
     await vi.waitFor(() => expect(chips()).toEqual(["Connect Slack or tools"]));
   });
@@ -360,9 +390,9 @@ describe("DesktopApp Connect more in a cloud bot's direct message", () => {
     );
     const w = world({ thread: askedAgain() });
     await mountRow(w, DM_ROW(NOVA), "Here are your connections.");
-    await vi.waitFor(() => expect(cardsIn(message("e6"))).toHaveLength(2));
-    expect(cardsIn(message("e2")).map((el) => el.dataset.state)).toEqual(["declined", "declined"]);
-    expect(cardsIn(message("e6")).map((el) => el.dataset.state)).toEqual(["offered", "offered"]);
+    await vi.waitFor(() => expect(cardsIn(message("e6"))).toHaveLength(1));
+    expect(cardsIn(message("e2")).map((el) => el.dataset.state)).toEqual(["declined"]);
+    expect(cardsIn(message("e6")).map((el) => el.dataset.state)).toEqual(["offered"]);
     expect(
       cardIn(message("e6"), "slack").querySelector('[data-testid="connection-card-primary"]')?.textContent?.trim(),
     ).toBe("Connect Slack");
@@ -372,14 +402,14 @@ describe("DesktopApp Connect more in a cloud bot's direct message", () => {
     const w = world({ thread: page(mine("e5", CONNECT_MORE_REQUEST, 5), novas("e6", "Here are your connections.", 5)) });
     await mountRow(w, DM_ROW(NOVA), "Here are your connections.");
     expect(window.localStorage.getItem(BOT_CONNECTION_CARDS_STORAGE_KEY)).toBeNull();
-    await vi.waitFor(() => expect(cardsIn(message("e6"))).toHaveLength(2));
+    await vi.waitFor(() => expect(cardsIn(message("e6"))).toHaveLength(1));
     // The cards are live: what is connected was asked, and a press works.
     await vi.waitFor(() => expect(w.listConnections).toHaveBeenCalledWith(COMPANY));
     await settle(20);
-    cardIn(message("e6"), "tools").querySelector<HTMLButtonElement>('[data-testid="connection-card-primary"]')!.click();
+    cardIn(message("e6"), "slack").querySelector<HTMLButtonElement>('[data-testid="connection-card-primary"]')!.click();
     await settle(20);
-    expect(w.openUrl).toHaveBeenCalledWith(INTEGRATIONS_URL);
-    expect(cardIn(message("e6"), "tools").dataset.state).toBe("connecting");
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="card-modal"]')).not.toBeNull());
+    expect(w.openUrl).not.toHaveBeenCalledWith(INTEGRATIONS_URL);
   });
 
   it("offers the button for a cloud bot this device has no record of, without asking what is connected", async () => {

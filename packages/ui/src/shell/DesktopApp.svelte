@@ -78,19 +78,26 @@
     messageHasVisibleContent,
     messageMarksSetupDone,
     messageOffersSlackAgent,
+    richContentForMessage,
     suggestionsForMessage,
+    type ConnectItem,
     type ConnectTarget,
     type RichBlock,
   } from "../chat/messaging/richMessageContent.js";
   import {
     CONNECT_MORE_REQUEST,
+    CONNECTING_TIMEOUT_MS,
     connectMoreAnswerIds,
     connectMoreLabel,
     newestBotMessage,
     companyUidFromStatus,
     connectionActionKey,
     connectionCardView,
+    forgetAppCard,
+    isConnectMoreRequest,
     loadConnectionRecords,
+    markAppConnecting,
+    markAppDeclined,
     markConnecting,
     markDeclined,
     markSlackAnnounced,
@@ -105,11 +112,28 @@
     type BotConnectionRecord,
     type BotConnectionRecords,
     type ConnectionCardActionDetail,
+    type ConnectionCardTarget,
     type ConnectionCardView,
     type ConversationConnectionCards,
     type ToolConnection,
   } from "../chat/messaging/connection-card-model.js";
-  import { connectionCardArt } from "../chat/messaging/connection-card-art.js";
+  import {
+    ROW_SETTLE_MS,
+    appChosenItems,
+    botCanUse,
+    catalogMatchFor,
+    companyAppsBrief,
+    connectFailureSentence,
+    connectRowReady,
+    connectionForDomain,
+    domainsToLookUp,
+    integrationCardView,
+    readCompanyConnections,
+    type CatalogLookup,
+    type CompanyConnection,
+    type CompanyConnections,
+  } from "../chat/messaging/integration-cards-model.js";
+  import { connectionCardArt, integrationCardArt } from "../chat/messaging/connection-card-art.js";
   import { slackStatusDenied } from "../chat/messaging/slack-connect-model.js";
   import {
     cardModalContentFor,
@@ -184,6 +208,7 @@
     agentCatchingUpLine,
     agentHelloArrived,
     agentHelloEventId,
+    buildAgentConnectMoreRequest,
     buildAgentHelloRequest,
     buildAgentSlackConnectedNotice,
     buildAgentToolConnectedNotice,
@@ -193,6 +218,7 @@
     provisioningFromMessages,
     type AgentChatReadiness,
   } from "../chat/agent-channel.js";
+  import { composeCloudBotHello } from "../chat/cloud-bot-hello.js";
   import {
     CONVERSATION_BOOT_GRACE_MS,
     DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
@@ -3928,6 +3954,7 @@
     }
     setBotSyncFacts(uid, null);
     forgetBotConnections(uid);
+    chosenItemsByBot.delete(uid);
   }
   /**
    * Ask a new cloud bot to write its first message. The request travels on
@@ -3937,19 +3964,17 @@
   async function sendCloudBotHello(session: { agentUid: string; name: string }): Promise<boolean> {
     const uid = session.agentUid.trim();
     if (!uid) return false;
-    let filesStillDownloading = true;
-    try {
-      const status = await adapter.agents.getStatus(uid);
-      if (status.ok) filesStillDownloading = agentChatReadiness(status.value).catchingUp;
-    } catch {
-      // Say the files are still downloading; that is the usual case this early.
-    }
+    // The bot's status, then the company's connections for the bot to choose
+    // cards from: one list call, the person as the caller. A list that
+    // cannot be read means no apps section (cloud-bot-hello.ts).
     const firstName = (self?.displayName ?? "").trim().split(/\s+/)[0] ?? "";
-    const result = await adapter.messaging.sendDm(
-      uid,
-      buildAgentHelloRequest({ personName: firstName, filesStillDownloading }),
-      { audience: "agent", idempotencyKey: `new-bot-hello-${uid}` },
-    );
+    const hello = await composeCloudBotHello(adapter, {
+      agentUid: uid,
+      personName: firstName,
+      record: connectionRecords[uid] ?? null,
+      companyUidHint: selectedRow?.kind === "dm" && selectedRow.personUid === uid ? selectedRow.companyUid : null,
+    });
+    const result = await adapter.messaging.sendDm(uid, hello.body, { audience: "agent", idempotencyKey: `new-bot-hello-${uid}` });
     if (!result.ok) return false;
     cloudBotHelloPending = { ...cloudBotHelloPending, [uid]: session.name };
     return true;
@@ -4595,11 +4620,34 @@
   const cloudBotCardsShown = $derived(
     cloudBotShowsOwnCards || cloudBotHelloCardsAt !== null || cloudBotConnectMoreAt.length > 0,
   );
+  /**
+   * The cards the app attaches when the bot's message carries no connect
+   * block of its own: Slack unless the bot is in Slack, then up to three of
+   * the person's own connected apps the bot cannot use yet, newest first
+   * (integration-cards-model.ts, `appChosenItems`).
+   */
+  /**
+   * The chosen set, per bot, for this session. It is worked out again until
+   * the company's list is known, then kept: a card the person just acted on
+   * (an app they let the bot use, Slack they connected) stays where it is
+   * and turns connected, instead of going away.
+   */
+  const chosenItemsByBot = new Map<string, { withFacts: boolean; items: ConnectItem[] }>();
   const cloudBotExtraBlocks = $derived.by((): Record<string, RichBlock[]> | null => {
     const ids = [...(cloudBotHelloCardsAt ? [cloudBotHelloCardsAt] : []), ...cloudBotConnectMoreAt];
     if (ids.length === 0) return null;
+    const input = cloudBotCardInput;
+    if (!input) return null;
+    const kept = chosenItemsByBot.get(input.uid);
+    let items: ConnectItem[];
+    if (kept && (kept.withFacts || !input.company)) items = kept.items;
+    else {
+      items = appChosenItems(input.company, input.record, input.slack?.state === "connected");
+      chosenItemsByBot.set(input.uid, { withFacts: input.company !== null, items });
+    }
+    if (items.length === 0) return null;
     const out: Record<string, RichBlock[]> = {};
-    for (const id of ids) out[id] = [{ kind: "connect", items: [{ app: "slack" }, { app: "tools" }] }];
+    for (const id of ids) out[id] = [{ kind: "connect", items }];
     return out;
   });
 
@@ -4614,19 +4662,78 @@
     toolsFailed: boolean;
   }
   let botConnectionFacts = $state.raw<Record<string, BotConnectionFacts>>({});
-  /** A sentence under a card after a press that did not work, per bot. */
-  let connectionNotes = $state.raw<Record<string, Partial<Record<ConnectTarget, string>>>>({});
+  /**
+   * A sentence under a card after a press that did not work, per bot and
+   * card: "slack", "tools", or `app:{domain}` for an integration card.
+   */
+  let connectionNotes = $state.raw<Record<string, Record<string, string>>>({});
   /** Presses on their way to the server, per bot. */
   let connectionInFlight = $state.raw<Record<string, ReadonlySet<string>>>({});
   /** The time the cards were last worked out, so a long wait can run out. */
   let connectionClock = $state(Date.now());
   const CONNECTION_RECHECK_MS = 5_000;
+  /**
+   * What the catalog said about each domain a bot named, per bot. An app
+   * that is not connected draws a card only once its lookup is a match;
+   * nothing is drawn while it is unknown (integration-cards-model.ts).
+   */
+  let catalogLookups = $state.raw<Record<string, Record<string, CatalogLookup>>>({});
+  const catalogLookupsInFlight = new Set<string>();
+  /** When each row of cards first waited for a lookup (ms), for the settle timeout. */
+  const connectRowSince = new Map<string, number>();
 
-  function setConnectionNote(agentUid: string, target: ConnectTarget, note: string | null): void {
+  function setConnectionNote(agentUid: string, key: string, note: string | null): void {
     const current = connectionNotes[agentUid] ?? {};
-    if ((current[target] ?? null) === note) return;
-    const { [target]: _old, ...rest } = current;
-    connectionNotes = { ...connectionNotes, [agentUid]: note ? { ...rest, [target]: note } : rest };
+    if ((current[key] ?? null) === note) return;
+    const { [key]: _old, ...rest } = current;
+    connectionNotes = { ...connectionNotes, [agentUid]: note ? { ...rest, [key]: note } : rest };
+  }
+  const appNoteKey = (domain: string): string => `app:${domain}`;
+
+  /**
+   * The apps brief for a request to the bot: one list call, the person as
+   * the caller. Null when the list could not be read (no section), "" when
+   * nothing is connected. The company comes from the bot's status, else from
+   * what the cards last learned, else from the open row.
+   */
+  async function readCompanyAppsBrief(agentUid: string, companyUidHint: string | null, statusValue: unknown): Promise<string | null> {
+    const facts = botConnectionFacts[agentUid] ?? null;
+    const row = selectedRow;
+    const rowCompanyUid = row?.kind === "dm" && row.personUid === agentUid ? (row.companyUid?.trim() ?? "") : "";
+    const companyUid = companyUidHint ?? facts?.companyUid ?? (rowCompanyUid || null);
+    if (!companyUid) return null;
+    let list: unknown = null;
+    try {
+      const result = await adapter.integrations?.listConnections?.(companyUid);
+      if (!result?.ok) return null;
+      list = result.value;
+    } catch {
+      return null;
+    }
+    const slackStatus = statusValue ?? facts?.status ?? null;
+    return companyAppsBrief({
+      facts: readCompanyConnections(list),
+      record: connectionRecords[agentUid] ?? null,
+      slackConnected: slackStatus != null && slackFactsFromStatus(slackStatus).state === "connected",
+    });
+  }
+
+  /** Ask the catalog about one domain a bot named, once per bot. A failure reads as not found. */
+  async function lookUpCatalog(agentUid: string, companyUid: string, domain: string): Promise<void> {
+    const key = `${agentUid}:${domain}`;
+    if (catalogLookupsInFlight.has(key) || catalogLookups[agentUid]?.[domain]) return;
+    catalogLookupsInFlight.add(key);
+    let lookup: CatalogLookup = "not-found";
+    try {
+      const result = await adapter.integrations?.catalogSearch?.(companyUid, domain, 20);
+      if (result?.ok) lookup = catalogMatchFor(result.value, domain);
+    } catch {
+      lookup = "not-found";
+    } finally {
+      catalogLookupsInFlight.delete(key);
+    }
+    catalogLookups = { ...catalogLookups, [agentUid]: { ...(catalogLookups[agentUid] ?? {}), [domain]: lookup } };
+    connectionClock = Date.now();
   }
   function setConnectionInFlight(agentUid: string, key: string, on: boolean): void {
     const next = new Set(connectionInFlight[agentUid] ?? []);
@@ -4682,11 +4789,11 @@
   /** The cards that open a modal in this build: marked in the model, with content registered. */
   const cardModalTargetsHere = cardModalTargets();
   /** The card modal that is open: one at a time, and it belongs to one bot's conversation. */
-  let openCardModal = $state<{ agentUid: string; target: ConnectTarget } | null>(null);
+  let openCardModal = $state<{ agentUid: string; target: ConnectionCardTarget; domain?: string } | null>(null);
   /** A card's main button asked for its modal. A card with no content opens nothing. */
-  function openConnectionModal(agentUid: string, target: ConnectTarget): void {
+  function openConnectionModal(agentUid: string, target: ConnectionCardTarget, domain?: string): void {
     if (!cardModalContentFor(target)) return;
-    openCardModal = { agentUid, target };
+    openCardModal = { agentUid, target, ...(domain ? { domain } : {}) };
   }
   function closeConnectionModal(): void {
     openCardModal = null;
@@ -4695,9 +4802,10 @@
    * The person started or moved on a connection inside a card's modal. For
    * Slack this is what "pressed Connect" was for the old page in the browser:
    * the card shows the setup as started, and the bot is told once when Slack
-   * is connected.
+   * is connected. An integration's key modal is the whole flow, so its card
+   * is not marked: it turns connected when the list shows the app.
    */
-  function markConnectionStarted(agentUid: string, target: ConnectTarget): void {
+  function markConnectionStarted(agentUid: string, target: ConnectionCardTarget): void {
     if (target !== "slack") return;
     const now = Date.now();
     setBotConnectionRecord(agentUid, markConnecting(connectionRecords[agentUid] ?? null, "slack", now));
@@ -4718,12 +4826,21 @@
     const record = connectionRecords[uid] ?? null;
     const facts = botConnectionFacts[uid] ?? null;
     const pressed = connectionNotes[uid] ?? {};
+    const company = facts?.connections != null ? readCompanyConnections(facts.connections) : null;
+    const rowCompanyUid = selectedRow?.kind === "dm" && selectedRow.personUid === uid ? (selectedRow.companyUid?.trim() ?? "") : "";
+    const lookups = catalogLookups[uid] ?? {};
     return {
       uid,
       botName,
       record,
       slack: facts?.status != null ? slackFactsFromStatus(facts.status) : null,
       tools: facts?.connections != null ? toolFacts(facts.connections, record) : null,
+      /** The company's connections as the integration cards read them. */
+      company,
+      companyUid: facts?.companyUid ?? (rowCompanyUid || null),
+      /** What the catalog said about a domain. A member cannot ask it: an unknown domain is not found. */
+      lookupFor: (domain: string): CatalogLookup => lookups[domain] ?? (company && !company.canManage ? "not-found" : "unknown"),
+      appNotes: pressed,
       now: connectionClock,
       inFlight: connectionInFlight[uid] ?? null,
       modalTargets: cardModalTargetsHere,
@@ -4744,6 +4861,7 @@
   const cloudBotConnections = $derived.by((): ConversationConnectionCards | null => {
     const input = cloudBotCardInput;
     if (!input || !cloudBotCardsShown) return null;
+    const browseUrl = input.companyUid ? companyIntegrationsUrl(companySlugForUid(input.companyUid)) : null;
     return {
       cardsFor: (message) => {
         const at = Date.parse(message.createdAt ?? "");
@@ -4752,7 +4870,33 @@
           slack: connectionCardView("slack", { ...input, messageAt }),
           tools: connectionCardView("tools", { ...input, messageAt }),
         };
-        return { views, onaction: (detail) => handleConnectionAction(input.uid, detail) };
+        return {
+          views,
+          integration: (item) =>
+            integrationCardView(item, {
+              botName: input.botName,
+              record: input.record,
+              facts: input.company,
+              lookup: input.lookupFor(item.domain),
+              now: input.now,
+              messageAt,
+              inFlight: input.inFlight,
+              note: input.appNotes[appNoteKey(item.domain)] ?? null,
+            }),
+          // A row with apps still being looked up waits, up to the settle time
+          // counted from when this row first waited.
+          rowReady: (items) => {
+            const key = `${input.uid}|${items.map((item) => item.domain ?? "").filter(Boolean).sort().join(",")}`;
+            let since = connectRowSince.get(key);
+            if (since === undefined) {
+              since = input.now;
+              connectRowSince.set(key, since);
+            }
+            return connectRowReady(items, { facts: input.company, lookupFor: input.lookupFor, since, now: input.now });
+          },
+          browseAll: browseUrl ? { url: browseUrl, open: () => openConnectionUrl(browseUrl) } : null,
+          onaction: (detail) => handleConnectionAction(input.uid, detail),
+        };
       },
     };
   });
@@ -4764,24 +4908,46 @@
     const Content = cardModalContentFor(modal.target);
     if (!Content) return null;
     const { agentUid, target } = modal;
-    const art = connectionCardArt(target);
     const rowCompanyUid = selectedRow?.companyUid?.trim() || null;
     const facts = botConnectionFacts[agentUid] ?? null;
     const companyUid = facts?.companyUid ?? rowCompanyUid;
+    // An integration card's modal takes the card's name and logo; the card is
+    // read again here so the frame follows what the card shows.
+    const domain = target === "integration" ? (modal.domain ?? "") : "";
+    const appView =
+      target === "integration" && domain
+        ? integrationCardView(
+            { domain },
+            { botName: input.botName, record: input.record, facts: input.company, lookup: input.lookupFor(domain), now: input.now },
+          )
+        : null;
+    if (target === "integration" && !appView) return null;
+    const art = target === "integration" ? integrationCardArt(0) : connectionCardArt(target);
+    const lookup = domain ? input.lookupFor(domain) : "unknown";
     return {
-      key: `${agentUid}:${target}`,
+      key: `${agentUid}:${target}${domain ? `:${domain}` : ""}`,
       Content,
       props: {
         frame: {
           open: true,
-          title: connectionCardView(target, input).title,
+          title: appView?.title ?? connectionCardView(target as ConnectTarget, input).title,
           icon: target,
+          logo: appView?.logo ?? null,
           art: art.url,
           artPosition: art.position,
           onclose: closeConnectionModal,
         },
         agentUid,
         target,
+        integration: appView
+          ? {
+              domain,
+              name: appView.title,
+              authClass: appView.authClass ?? null,
+              catalogEntryId: typeof lookup === "object" ? (lookup.entryId ?? null) : null,
+              connected: (connection) => void appConnectedFromModal(agentUid, domain, connection),
+            }
+          : null,
         botName: input.botName,
         companyUid,
         companySlug: companySlugForUid(companyUid),
@@ -4806,10 +4972,67 @@
   const cloudBotConnecting = $derived.by(() => {
     const input = cloudBotCardInput;
     if (!input || !cloudBotCardsShown) return false;
+    const appWaiting = Object.values(input.record?.apps ?? {}).some(
+      (entry) => entry.state === "connecting" && input.now - entry.since <= CONNECTING_TIMEOUT_MS,
+    );
     return (
+      appWaiting ||
       connectionCardView("slack", input).state === "connecting" ||
       connectionCardView("tools", input).state === "connecting"
     );
+  });
+
+  /** Every `connect` item on screen for the open bot: the bot's own blocks and the app's. */
+  const cloudBotConnectItems = $derived.by((): ConnectItem[] => {
+    const uid = dmCloudBotUid;
+    if (!uid) return [];
+    const items: ConnectItem[] = [];
+    for (const message of timeline) {
+      if (message.fromPersonUid !== uid) continue;
+      for (const block of richContentForMessage(message).rich?.blocks ?? []) {
+        if (block.kind === "connect") items.push(...block.items);
+      }
+    }
+    for (const blocks of Object.values(cloudBotExtraBlocks ?? {})) {
+      for (const block of blocks) if (block.kind === "connect") items.push(...block.items);
+    }
+    return items;
+  });
+  // Look up, once per bot and domain, every app on screen that is not a
+  // connection. Only an owner or admin may ask the catalog: for anyone else
+  // an unknown app simply draws no card. After the settle time the rows stop
+  // waiting for answers that have not come.
+  $effect(() => {
+    const input = cloudBotCardInput;
+    const items = cloudBotConnectItems;
+    if (!input || !input.company || !input.companyUid || items.length === 0) return;
+    const company = input.company;
+    const companyUid = input.companyUid;
+    const uid = input.uid;
+    untrack(() => {
+      if (!company.canManage) return;
+      const wanted = domainsToLookUp(items, company).filter(
+        (domain) => !catalogLookups[uid]?.[domain] && !catalogLookupsInFlight.has(`${uid}:${domain}`),
+      );
+      if (wanted.length === 0) return;
+      for (const domain of wanted) void lookUpCatalog(uid, companyUid, domain);
+      setTimeout(() => {
+        connectionClock = Date.now();
+      }, ROW_SETTLE_MS + 50);
+    });
+  });
+  // A connect started from an integration card: when the list shows the
+  // app, finish what the person asked for (see finishAppConnect).
+  $effect(() => {
+    const input = cloudBotCardInput;
+    if (!input?.company) return;
+    const company = input.company;
+    for (const [domain, entry] of Object.entries(input.record?.apps ?? {})) {
+      if (entry.state !== "connecting") continue;
+      const connection = connectionForDomain(company, domain);
+      if (!connection) continue;
+      untrack(() => void finishAppConnect(input.uid, domain, connection, company));
+    }
   });
 
   // Ask the server once when a bot's cards come on screen.
@@ -4879,6 +5102,20 @@
   }
   function noticePersonName(): string {
     return (self?.displayName ?? "").trim().split(/\s+/)[0] ?? "";
+  }
+  /**
+   * The hidden request behind "Connect more tools": the company's apps and
+   * the picking rules, once per message of the person's, so the bot's
+   * visible answer carries the cards it chose. The apps brief comes from one
+   * list call; without it the request still goes, with no apps section.
+   */
+  async function sendConnectMoreRequest(agentUid: string, eventId: string | null): Promise<void> {
+    const companyApps = await readCompanyAppsBrief(agentUid, null, null);
+    await sendBotNotice(
+      agentUid,
+      buildAgentConnectMoreRequest({ personName: noticePersonName(), companyApps }),
+      `new-bot-connect-more-${agentUid}-${eventId?.trim() || Date.now()}`,
+    );
   }
   /** Tell the bot, once, about a connection it can now use. */
   async function announceToolToBot(agentUid: string, connection: ToolConnection): Promise<void> {
@@ -4978,8 +5215,49 @@
     );
     connectionClock = now;
   }
+  /**
+   * Share one connection with the bot, then tell the bot. Returns whether
+   * the server accepted the share; a failure is written under the card named
+   * by `noteKey`.
+   */
+  async function grantAndAnnounce(
+    agentUid: string,
+    companyUid: string,
+    connection: { id: string; provider: string; name: string },
+    noteKey: string,
+  ): Promise<boolean> {
+    let failure: { code?: string } | null = null;
+    try {
+      const result = await adapter.integrations.grantConnectionAccess({ companyUid, connectionId: connection.id, granteeUid: agentUid });
+      if (!result.ok) failure = result;
+    } catch {
+      failure = {};
+    }
+    if (failure) {
+      setConnectionNote(
+        agentUid,
+        noteKey,
+        failure.code === "http-403"
+          ? `Only the person who connected ${connection.name} or a company admin can share it.`
+          : `Could not share ${connection.name}. Try again.`,
+      );
+      return false;
+    }
+    setConnectionNote(agentUid, noteKey, null);
+    setBotConnectionRecord(agentUid, recordGrant(connectionRecords[agentUid], connection.id, connection.name, Date.now()));
+    await announceToolToBot(agentUid, {
+      id: connection.id,
+      name: connection.name,
+      provider: connection.provider.replace(/^factory:/i, ""),
+      createdAt: "",
+      isNew: true,
+      granted: true,
+      byViewer: true,
+    });
+    return true;
+  }
   /** "Let {bot} use it": share one connection with the bot, then tell the bot. */
-  async function allowBotConnection(agentUid: string, connectionId: string): Promise<void> {
+  async function allowBotConnection(agentUid: string, connectionId: string, noteKey = "tools"): Promise<void> {
     const facts = botConnectionFacts[agentUid] ?? null;
     const companyUid = facts?.companyUid ?? null;
     const connection =
@@ -4988,36 +5266,142 @@
         : undefined;
     // Nothing to do for a connection that is not waiting (already shared).
     if (!companyUid || !connection) return;
-    let failure: { code?: string } | null = null;
-    try {
-      const result = await adapter.integrations.grantConnectionAccess({ companyUid, connectionId, granteeUid: agentUid });
-      if (!result.ok) failure = result;
-    } catch {
-      failure = {};
-    }
-    if (failure) {
-      setConnectionNote(
-        agentUid,
-        "tools",
-        failure.code === "http-403"
-          ? `Only the person who connected ${connection.name} or a company admin can share it.`
-          : `Could not share ${connection.name}. Try again.`,
-      );
+    await grantAndAnnounce(agentUid, companyUid, connection, noteKey);
+  }
+  /** The company of a bot's cards, for a request made from them. */
+  function cardCompanyUid(agentUid: string): string | null {
+    const facts = botConnectionFacts[agentUid] ?? null;
+    const row = selectedRow;
+    const rowCompanyUid = row?.kind === "dm" && row.personUid === agentUid ? (row.companyUid?.trim() ?? "") : "";
+    return facts?.companyUid || rowCompanyUid || null;
+  }
+  /**
+   * Connect (or Open again) on an integration card, by the app's auth class:
+   * OAuth starts the sign-in and opens the provider's page in the browser;
+   * an app that needs nothing installs at once; a key app opens its modal.
+   * Any refusal is one sentence under the card.
+   */
+  async function connectApp(agentUid: string, domain: string): Promise<void> {
+    const input = cloudBotCardInput;
+    if (!input || input.uid !== agentUid) return;
+    const lookup = input.lookupFor(domain);
+    if (typeof lookup !== "object") return;
+    const name = lookup.name;
+    const noteKey = appNoteKey(domain);
+    const companyUid = cardCompanyUid(agentUid);
+    if (!companyUid) {
+      setConnectionNote(agentUid, noteKey, "Could not start the connection. Try again.");
+      void refreshBotConnectionFacts(agentUid, null);
       return;
     }
-    setConnectionNote(agentUid, "tools", null);
-    setBotConnectionRecord(
-      agentUid,
-      recordGrant(connectionRecords[agentUid], connectionId, connection.name, Date.now()),
-    );
-    await announceToolToBot(agentUid, { ...connection, granted: true });
+    setConnectionNote(agentUid, noteKey, null);
+    if (lookup.authClass === "key") {
+      openConnectionModal(agentUid, "integration", domain);
+      return;
+    }
+    if (lookup.authClass === "none") {
+      let result: Awaited<ReturnType<typeof adapter.integrations.install>> | null = null;
+      try {
+        result = await adapter.integrations.install({ companyUid, domain });
+      } catch {
+        result = null;
+      }
+      if (!result?.ok) {
+        setConnectionNote(agentUid, noteKey, connectFailureSentence(result ?? null, name).sentence);
+        return;
+      }
+      await appConnectedFromModal(agentUid, domain, installedConnection(result.value, name));
+      return;
+    }
+    let started: Awaited<ReturnType<typeof adapter.integrations.startOAuth>> | null = null;
+    try {
+      started = await adapter.integrations.startOAuth({
+        companyUid,
+        domain,
+        ...(lookup.entryId ? { catalogEntryId: lookup.entryId } : {}),
+      });
+    } catch {
+      started = null;
+    }
+    if (!started?.ok || typeof started.value.authorizationUrl !== "string" || !/^https:\/\//i.test(started.value.authorizationUrl)) {
+      setConnectionNote(agentUid, noteKey, connectFailureSentence(started && !started.ok ? started : null, name).sentence);
+      return;
+    }
+    openConnectionUrl(started.value.authorizationUrl);
+    const now = Date.now();
+    setBotConnectionRecord(agentUid, markAppConnecting(connectionRecords[agentUid], domain, now));
+    connectionClock = now;
+  }
+  /** The connection an install answer names. */
+  function installedConnection(value: unknown, fallbackName: string): { id: string; provider: string; name: string } {
+    const root = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+    const connection = root.connection && typeof root.connection === "object" ? (root.connection as Record<string, unknown>) : {};
+    const installation = root.installation && typeof root.installation === "object" ? (root.installation as Record<string, unknown>) : {};
+    return {
+      id: typeof connection.id === "string" ? connection.id : "",
+      provider: typeof connection.provider === "string" ? connection.provider : "",
+      name: typeof installation.displayName === "string" && installation.displayName ? installation.displayName : fallbackName,
+    };
+  }
+  /**
+   * The person connected an app from its card (the modal, or a one-click
+   * install): the person pressed Connect on the bot's card for the bot, so
+   * the bot is let in at once and told once. The list is read again so the
+   * card shows the connection.
+   */
+  async function appConnectedFromModal(agentUid: string, domain: string, connection: { id: string; provider: string; name: string }): Promise<void> {
+    const companyUid = cardCompanyUid(agentUid);
+    if (companyUid && connection.id) await grantAndAnnounce(agentUid, companyUid, connection, appNoteKey(domain));
+    setBotConnectionRecord(agentUid, forgetAppCard(connectionRecords[agentUid], domain));
+    await refreshBotConnectionFacts(agentUid, null);
+  }
+  /** Connects being finished, so the list arriving twice does not grant twice. */
+  const appConnectsFinishing = new Set<string>();
+  /**
+   * The list shows an app whose card was waiting for the browser. Created by
+   * this person: let the bot use it at once and tell it; if the share fails
+   * the card falls back to its "Let {bot} use it" button. Already usable: tell
+   * the bot. Connected by someone else: the card says so, nothing is sent.
+   */
+  async function finishAppConnect(agentUid: string, domain: string, connection: CompanyConnection, company: CompanyConnections): Promise<void> {
+    const key = `${agentUid}:${domain}`;
+    if (appConnectsFinishing.has(key)) return;
+    appConnectsFinishing.add(key);
+    try {
+      const companyUid = cardCompanyUid(agentUid);
+      const record = connectionRecords[agentUid] ?? null;
+      const own = company.viewerUid !== "" && connection.createdBy === company.viewerUid;
+      if (own && companyUid && !botCanUse(connection, record)) {
+        await grantAndAnnounce(agentUid, companyUid, connection, appNoteKey(domain));
+      } else if (own) {
+        await announceToolToBot(agentUid, { ...connection, isNew: true, granted: false, byViewer: true });
+      }
+      setBotConnectionRecord(agentUid, forgetAppCard(connectionRecords[agentUid], domain));
+    } finally {
+      appConnectsFinishing.delete(key);
+    }
   }
   /** A button on a card was pressed. A press already under way is ignored. */
   async function handleConnectionAction(agentUid: string, detail: ConnectionCardActionDetail): Promise<void> {
-    const key = connectionActionKey(detail.target, detail.action, detail.connectionId);
+    const key = connectionActionKey(detail.target, detail.action, detail.connectionId, detail.domain);
     if (connectionInFlight[agentUid]?.has(key)) return;
     setConnectionInFlight(agentUid, key, true);
     try {
+      if (detail.target === "integration") {
+        const domain = detail.domain;
+        if (!domain) return;
+        if (detail.action === "decline") {
+          setConnectionNote(agentUid, appNoteKey(domain), null);
+          setBotConnectionRecord(agentUid, markAppDeclined(connectionRecords[agentUid], domain, Date.now()));
+        } else if (detail.action === "connect") {
+          await connectApp(agentUid, domain);
+        } else if (detail.action === "open") {
+          openConnectionModal(agentUid, "integration", domain);
+        } else if (detail.action === "allow" && detail.connectionId) {
+          await allowBotConnection(agentUid, detail.connectionId, appNoteKey(domain));
+        }
+        return;
+      }
       if (detail.action === "decline") {
         setConnectionNote(agentUid, detail.target, null);
         setBotConnectionRecord(agentUid, markDeclined(connectionRecords[agentUid], detail.target, Date.now()));
@@ -8529,6 +8913,12 @@
         const wire = sentMessageFromResult(res.value, extras);
         if (wire)
           commitTimeline(row, mergeTimelineMessages(liveTimeline, [wire]));
+        // "Connect more tools" to a cloud bot (the chip or typed): the bot
+        // also gets one hidden request with the company's apps, so its
+        // visible answer can carry the cards it chose.
+        if (dmCloudBotUid && row.personUid === dmCloudBotUid && isConnectMoreRequest(body)) {
+          void sendConnectMoreRequest(row.personUid, wire?.eventId ?? null);
+        }
         // A 1:1 DM with an agent is inherently addressed to that agent, so
         // any send starts the indicator — no @mention required (unlike a
         // channel, where only an explicit mention wakes an agent). Started

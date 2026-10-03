@@ -37,10 +37,22 @@ const NEW_BOTS_KEY = "hq.chat.newCloudBots.v1";
 
 type Row = Record<string, unknown>;
 
-/** Newest first, as the server returns a direct-message page. */
+/**
+ * Newest first, as the server returns a direct-message page. The bot's hello
+ * carries a connect block in the old form, so both built-in cards (Slack and
+ * the legacy tools card) draw from it: this file is about the modal a card
+ * opens, and the tools card is the one card that has none.
+ */
 function thread(peerUid: string): Row[] {
   return [
-    { eventId: "e2", fromPersonUid: peerUid, fromDisplayName: "Nova", body: "Hi Corey, I am Nova.", createdAt: "2026-10-02T13:54:20.000Z", rootEventId: "e1" },
+    {
+      eventId: "e2",
+      fromPersonUid: peerUid,
+      fromDisplayName: "Nova",
+      body: 'Hi Corey, I am Nova.\n```hq-block\n{"v":1,"blocks":[{"kind":"connect","targets":["slack","tools"]}]}\n```',
+      createdAt: "2026-10-02T13:54:20.000Z",
+      rootEventId: "e1",
+    },
     {
       eventId: "e1",
       fromPersonUid: "prs_me",

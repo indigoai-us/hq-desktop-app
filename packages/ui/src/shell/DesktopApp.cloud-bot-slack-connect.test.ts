@@ -207,7 +207,7 @@ async function mountNewBotDm(w: World, wait: "connections" | "status" = "connect
       coreFixtures: false,
     },
   });
-  await vi.waitFor(() => expect(cards()).toHaveLength(2));
+  await vi.waitFor(() => expect(cards()).toHaveLength(1));
   await vi.waitFor(() => expect(wait === "status" ? w.getStatus : w.listConnections).toHaveBeenCalled());
   await settle();
 }
@@ -618,7 +618,7 @@ describe("DesktopApp: the token and the app around the modal", () => {
     expectTokenNowhere(w);
 
     window.dispatchEvent(new CustomEvent(MESSAGE_PERSON_EVENT, { detail: { personUid: NOVA } }));
-    await vi.waitFor(() => expect(cards()).toHaveLength(2));
+    await vi.waitFor(() => expect(cards()).toHaveLength(1));
     await vi.waitFor(() => expect(card("slack").dataset.state).toBe("connecting"));
     await openModal();
     expect(stage()).toBe("token");
@@ -665,7 +665,7 @@ describe("DesktopApp: the token and the app around the modal", () => {
     // Still the same conversation, the same dialog, the same step.
     expect(dialog()).not.toBeNull();
     expect(stage()).toBe("token");
-    expect(cards()).toHaveLength(2);
+    expect(cards()).toHaveLength(1);
 
     // Once the modal is closed the shortcuts are back.
     await closeModal();
