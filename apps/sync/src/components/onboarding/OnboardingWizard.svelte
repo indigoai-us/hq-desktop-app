@@ -122,7 +122,12 @@
     yourComputerNounFor,
   } from '../../lib/onboarding-platform';
   import { postOptIn, markConsentRepromptShown } from '../../lib/onboarding-telemetry';
-  import { emitDesktopOperationalTelemetry } from '../../lib/desktop-telemetry';
+  import {
+    emitDesktopAuthFailure,
+    emitDesktopAuthProgress,
+    emitDesktopOperationalTelemetry,
+    type DesktopAuthProgressStep,
+  } from '../../lib/desktop-telemetry';
   import { inviteFailedEvent, inviteSentEvent, planSelectedEvent } from '../../lib/cdp-funnel-events';
   import {
     createOnboardingStepTelemetry,
@@ -168,6 +173,7 @@
   import {
     createSyncPlatformAdapter,
     dispatchPostReadyAction,
+    COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
     FIRST_FOLDER_SYNC_STEP_FLAG,
     SETUP_DEPS_TIMEOUT_RETRY_FLAG,
     retryThrottled,
@@ -918,6 +924,8 @@
     loadingProvider = provider;
     signInError = '';
     const telemetryProvider = provider === 'Google' ? 'google' : 'microsoft';
+    let authStep: DesktopAuthProgressStep = 'sign_in_started';
+    void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep });
     recordStep(WELCOME_SIGNIN_STEP_INDEX, 'started', { provider: telemetryProvider });
 
     try {
@@ -934,12 +942,16 @@
         throw new Error('The desktop shell cannot open a browser in this environment.');
       }
       await openExternal(authorizeUrl);
+      authStep = 'provider_page_opened';
+      void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep });
       if (!isCurrentSignInCall(call)) return;
 
       const { code } = await invokeCommand<{ code: string }>(
         'oauth_listen_for_code',
         { state },
       );
+      authStep = 'callback_received';
+      void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep });
       if (!isCurrentSignInCall(call)) return;
 
       const result = await invokeCommand<{
@@ -950,8 +962,15 @@
       if (!isCurrentSignInCall(call)) return;
 
       if (result.authenticated) {
+        authStep = 'token_exchange_ok';
+        void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep });
         await completeAuthenticatedSignIn(call, { provider: telemetryProvider });
       } else {
+        void emitDesktopAuthFailure({
+          provider: telemetryProvider,
+          step: authStep,
+          error: 'authentication rejected',
+        });
         signInError = 'Authentication failed. Please try again.';
         recordStep(WELCOME_SIGNIN_STEP_INDEX, 'failed', {
           provider: telemetryProvider,
@@ -960,6 +979,7 @@
       }
     } catch (err) {
       if (!isCurrentSignInCall(call)) return;
+      void emitDesktopAuthFailure({ provider: telemetryProvider, step: authStep, error: err });
       console.error('[onboarding-signin] sign-in failed:', err);
       const errorKind = classifyContinuationError(err);
       if (!stateRecoveryAttempt && (errorKind === 'expired' || errorKind === 'state_mismatch')) {
@@ -1092,6 +1112,29 @@
       });
     }
     return firstFolderSyncFlagResolution;
+  }
+
+  async function resolveCompanyRouteLookupRetryFlag(): Promise<boolean> {
+    try {
+      const result = await onboardingFeatureFlags.identity.hasFeature(
+        COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
+      );
+      if (!result.ok) {
+        console.warn(
+          'onboarding: company route lookup retry flag unavailable; leaving retry off',
+          result.reason,
+          result.code,
+        );
+        return false;
+      }
+      return result.value === true;
+    } catch (error) {
+      console.warn(
+        'onboarding: company route lookup retry flag failed; leaving retry off',
+        error,
+      );
+      return false;
+    }
   }
 
   function isRecord(value: unknown): value is Record<string, unknown> {
@@ -2250,24 +2293,39 @@
 
   /** The optional follow-on steps after setup; re-run after an account switch. */
   async function resolvePostSetupSteps(stillCurrent: () => boolean): Promise<void> {
-    const [firstFolderEnabled, inviteContext, firstRunCompanyPath] = await Promise.all([
-      resolveFirstFolderSyncStepFlag(),
-      resolveInviteTeammateContext(),
-      Promise.all([
-        resolveSignedInEmail(),
-        invokeCommand<string | null>('web_visitor_anon_id').catch(() => null),
-      ]).then(([email, anonId]) =>
-        resolveFirstRunCompanyRoute({
-          hqProJson: companyStepHqProJson,
-          invoke: invokeCommand,
-          signedInEmail: email,
-          anonId,
-        }),
-      ),
+    const retryCompanyLookup = resolveCompanyRouteLookupRetryFlag();
+    const [email, anonId] = await Promise.all([
+      resolveSignedInEmail(),
+      invokeCommand<string | null>('web_visitor_anon_id').catch(() => null),
     ]);
+    const firstRunCompanyPathPromise = resolveFirstRunCompanyRoute({
+      hqProJson: companyStepHqProJson,
+      invoke: invokeCommand,
+      signedInEmail: email,
+      anonId,
+      enableMembershipLookupRetry: retryCompanyLookup,
+      invalidateMembershipMeRead: () => {
+        membershipMeRead = null;
+      },
+    });
+    const [firstFolderEnabled, firstRunCompanyPath] = await Promise.all([
+      resolveFirstFolderSyncStepFlag(),
+      firstRunCompanyPathPromise,
+    ]);
+    // Resolve invite eligibility after the company route has completed its
+    // retry so it can use the recovered shared membership response.
+    const inviteContext =
+      firstRunCompanyPath !== null && 'route' in firstRunCompanyPath
+        ? await resolveInviteTeammateContext()
+        : null;
     if (!stillCurrent()) return;
-    companyPath = firstRunCompanyPath?.route ?? null;
-    if (firstRunCompanyPath) recordCompanyRoute(firstRunCompanyPath.route, firstRunCompanyPath.summary);
+    if (firstRunCompanyPath && 'route' in firstRunCompanyPath) {
+      companyPath = firstRunCompanyPath.route;
+      recordCompanyRoute(firstRunCompanyPath.route, firstRunCompanyPath.summary);
+    } else {
+      companyPath = null;
+      if (firstRunCompanyPath?.kind === 'lookup_failed') recordCompanyRouteLookupFailed();
+    }
     showFirstFolderSyncStep = firstFolderEnabled;
     inviteTeammateContext = inviteContext;
     showInviteTeammateStep = inviteContext !== null;
@@ -3210,6 +3268,14 @@
       pendingInvites: summary.pendingInvites,
     });
     if (route.kind === 'skip') void selectCompany(route.company.slug);
+  }
+
+  /** A failed lookup keeps the existing #setup create-company recovery in place. */
+  function recordCompanyRouteLookupFailed(): void {
+    recordStep(COMPANY_STEP_INDEX, 'started', {
+      outcome: 'route_lookup_failed',
+      decision: 'lookup_failed',
+    });
   }
 
   /** Make the chosen company the app's active one. Best effort. */
