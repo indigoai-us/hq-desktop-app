@@ -40,6 +40,9 @@ import {
   mergeRecordedMeetings,
   ownRecordedMeetings,
   parseRecordedDetail,
+  parseRecordedDocument,
+  parseRecordedDocumentRef,
+  type RecordedDocument,
   recordedSignalsFromPages,
   recordedSignalsRemaining,
   type RecordedSignalPages,
@@ -211,6 +214,8 @@ export interface RecordedNotesEntry {
   remaining?: number;
   loadingMore?: boolean;
   pages?: RecordedSignalPages;
+  /** Document-shaped meetings: the parsed markdown document. */
+  document?: RecordedDocument | null;
 }
 let recordedNotes = $state<Record<string, RecordedNotesEntry>>({});
 let membershipsError = $state("");
@@ -479,12 +484,17 @@ async function loadRecordedNotes(meetingId: string, companyUid: string | null): 
   const epoch = sessionEpoch;
   recordedNotes = { ...recordedNotes, [meetingId]: { status: "loading" } };
   try {
-    const refs = parseRecordedDetail(
-      unwrap(await requireApi().meetings.getRecorded(meetingId, companyUid)),
-    );
-    const pages = await loadNextRecordedSignalPage({ refs, texts: [] }, readSignalBody);
+    const detail = unwrap(await requireApi().meetings.getRecorded(meetingId, companyUid));
+    const refs = parseRecordedDetail(detail);
+    // OWNER-019: document-shaped meetings keep notes and transcript in one
+    // markdown file behind `source.presigned_url`, not in detail fields.
+    const docRef = parseRecordedDocumentRef(detail);
+    const [pages, document] = await Promise.all([
+      loadNextRecordedSignalPage({ refs, texts: [] }, readSignalBody),
+      docRef ? readSignalBody(docRef.url).then(parseRecordedDocument) : Promise.resolve(null),
+    ]);
     if (epoch !== sessionEpoch) return;
-    recordedNotes = { ...recordedNotes, [meetingId]: notesEntryFor(pages) };
+    recordedNotes = { ...recordedNotes, [meetingId]: { ...notesEntryFor(pages), document } };
   } catch (err) {
     console.error(`meetings getRecorded failed for ${meetingId}:`, err);
     if (epoch !== sessionEpoch) return;
@@ -514,7 +524,7 @@ async function loadMoreRecordedNotes(meetingId: string): Promise<void> {
   try {
     const pages = await loadNextRecordedSignalPage(entry.pages, readSignalBody);
     if (epoch !== sessionEpoch) return;
-    recordedNotes = { ...recordedNotes, [meetingId]: notesEntryFor(pages) };
+    recordedNotes = { ...recordedNotes, [meetingId]: { ...notesEntryFor(pages), document: entry.document } };
   } catch (err) {
     console.error(`meetings load more notes failed for ${meetingId}:`, err);
     if (epoch !== sessionEpoch) return;
