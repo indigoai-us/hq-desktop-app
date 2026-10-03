@@ -1487,20 +1487,20 @@ mod tests {
             DAEMON_OFF_NEXT_LAUNCH_MESSAGE,
             "desktop.hq-daemon turned off; the switch applies on the next launch (daemon-off-by-flag)"
         );
-        if !defer {
-            run_host_transition(
-                HostPhase::Daemon,
-                HostPhase::Legacy,
-                || Ok(()),
-                || {
-                    pause_events.lock().unwrap().push("pause-daemon");
-                    Ok(())
-                },
-                || legacy_events.lock().unwrap().push("start-legacy"),
-                || Ok(()),
-            )
-            .unwrap();
-        }
+        // The transition itself must also be a no-op, so a caller that skips
+        // the deferral check still never pauses the daemon or starts legacy.
+        run_host_transition(
+            HostPhase::Daemon,
+            HostPhase::Legacy,
+            || Ok(()),
+            || {
+                pause_events.lock().unwrap().push("pause-daemon");
+                Ok(())
+            },
+            || legacy_events.lock().unwrap().push("start-legacy"),
+            || Ok(()),
+        )
+        .unwrap();
         assert!(events.lock().unwrap().is_empty());
     }
 
