@@ -1133,6 +1133,7 @@ fn environment_aware_capture_carries_the_previously_missing_provenance() {
         lock_holder_diagnostic: None,
         missing_target_state: MissingTargetState::Unknown,
         target_version: None,
+        running_cli_version: None,
         requested_spec_kind: RequestedSpecKind::Unknown,
         registry_serving_lag_recurred: false,
     };
@@ -1332,6 +1333,7 @@ fn a_managed_retry_of_the_same_stderr_is_not_unsupported_node_and_still_reports(
         lock_holder_diagnostic: None,
         missing_target_state: MissingTargetState::Unknown,
         target_version: None,
+        running_cli_version: None,
         requested_spec_kind: RequestedSpecKind::Unknown,
         registry_serving_lag_recurred: false,
     };
@@ -1702,6 +1704,7 @@ fn managed_toolchain_retry_failure_carries_managed_provenance_and_builder() {
         lock_holder_diagnostic: None,
         missing_target_state: MissingTargetState::Unknown,
         target_version: None,
+        running_cli_version: None,
         requested_spec_kind: RequestedSpecKind::Unknown,
         registry_serving_lag_recurred: false,
     };
@@ -1962,6 +1965,7 @@ fn hq_desktop_5e_postinstall_failure_carries_the_managed_retry_outcome() {
         lock_holder_diagnostic: None,
         missing_target_state: MissingTargetState::Unknown,
         target_version: None,
+        running_cli_version: None,
         requested_spec_kind: RequestedSpecKind::Unknown,
         registry_serving_lag_recurred: false,
     };
@@ -2096,6 +2100,7 @@ fn hq_desktop_5e_repeat_guard_is_unchanged_by_the_outcome_tag() {
         lock_holder_diagnostic: None,
         missing_target_state: MissingTargetState::Unknown,
         target_version: None,
+        running_cli_version: None,
         requested_spec_kind: RequestedSpecKind::Unknown,
         registry_serving_lag_recurred: false,
     };
@@ -2157,6 +2162,7 @@ fn hq_desktop_5e_repeat_guard_is_unchanged_by_the_outcome_tag() {
         lock_holder_diagnostic: None,
         missing_target_state: MissingTargetState::Unknown,
         target_version: None,
+        running_cli_version: None,
         requested_spec_kind: RequestedSpecKind::Unknown,
         registry_serving_lag_recurred: false,
     };
