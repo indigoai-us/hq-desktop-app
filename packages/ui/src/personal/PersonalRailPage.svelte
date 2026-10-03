@@ -40,7 +40,6 @@
   import {
     PERSONAL_INTEGRATIONS_URL,
     connectedLabel,
-    disconnectPersonalIntegration,
     loadPersonalIntegrations,
     readIntegrationsCache,
     writeIntegrationsCache,
@@ -48,6 +47,7 @@
     type PersonalIntegration,
     type PersonalIntegrationsApi,
   } from "./personal-integrations.js";
+  import { companyIntegrationsUrl } from "../common/hq-console.js";
 
   interface Props {
     page: "secrets" | "connections";
@@ -55,8 +55,8 @@
     fixtures?: boolean;
     /** Companies the owner belongs to, for the per-company Integrations links. */
     companies?: { uid: string; label: string }[];
-    /** The selected company, when one is; its Integrations page is linked at the bottom. */
-    activeCompany?: { uid: string; label: string } | null;
+    /** The selected company, when one is; its console Integrations page is linked at the bottom. */
+    activeCompany?: { uid: string; label: string; slug?: string } | null;
     onopenintegrations?: (uid: string) => void;
     /** hq-pro personal integration routes (Google, personal Slack). */
     integrationsApi?: PersonalIntegrationsApi | null;
@@ -132,8 +132,6 @@
   let integrationsState = $state<"loading" | "ready" | "error">(cachedIntegrations ? "ready" : "loading");
   let integrationsError = $state("");
   let selectedIntegration = $state("");
-  let disconnecting = $state(false);
-  let disconnectError = $state("");
 
   $effect(() => {
     if (useFixtures || page !== "connections") return;
@@ -170,19 +168,8 @@
     openExternal?.(PERSONAL_INTEGRATIONS_URL);
   }
 
-  async function confirmDisconnect(row: PersonalIntegration): Promise<void> {
-    if (disconnecting) return;
-    disconnecting = true;
-    disconnectError = "";
-    const error = await disconnectPersonalIntegration(integrationsApi, row);
-    disconnecting = false;
-    if (error) {
-      disconnectError = error;
-      return;
-    }
-    integrations = integrations.filter((item) => item.id !== row.id);
-    writeIntegrationsCache(integrations);
-    sheet = null;
+  function openCompanyConsoleIntegrations(company: { slug?: string }): void {
+    if (company.slug) openExternal?.(companyIntegrationsUrl(company.slug));
   }
 
   const secretRows = $derived(filterPersonalSecrets(data.secrets, secretTab, query));
@@ -357,8 +344,6 @@
       <header class="toolbar">
         <h1>Connections</h1>
         <span class="sub">Apps connected to you, usable across your sessions, never owned by a company</span>
-        <span class="grow"></span>
-        <RailButton icon="plus" variant="primary" type="button" data-testid="add-integration" onclick={openConsoleIntegrations}>Add integration</RailButton>
       </header>
       <div class="split">
         <div class="list" data-testid="personal-integrations-list">
@@ -379,8 +364,7 @@
             </div>
           {:else if integrations.length === 0}
             <div class="state empty" data-testid="personal-integrations-empty">
-              <p>No personal connections yet</p>
-              <RailButton icon="plus" type="button" onclick={openConsoleIntegrations}>Add integration</RailButton>
+              <p>No personal connections yet · <a href={PERSONAL_INTEGRATIONS_URL} data-testid="console-link-empty" onclick={(e) => { e.preventDefault(); openConsoleIntegrations(); }}>Manage in the web console</a></p>
             </div>
           {:else}
             <div class="head irow"><span>App</span><span>Account</span><span>Status</span><span>Connected</span></div>
@@ -393,8 +377,11 @@
               </button>
             {/each}
           {/if}
+          {#if integrationsState === "ready" && integrations.length > 0}
+            <p class="meta console-line"><a href={PERSONAL_INTEGRATIONS_URL} data-testid="console-link" onclick={(e) => { e.preventDefault(); openConsoleIntegrations(); }}>Manage connections in the web console</a></p>
+          {/if}
           {#if activeCompany}
-            <button class="srow company-link" type="button" data-testid="company-connections-link" onclick={() => onopenintegrations?.(activeCompany.uid)}>
+            <button class="srow company-link" type="button" data-testid="company-connections-link" onclick={() => openCompanyConsoleIntegrations(activeCompany)}>
               <span>Company connections</span><span class="meta">{activeCompany.label} Integrations</span>
             </button>
           {/if}
@@ -411,10 +398,6 @@
                 {#each integrationCurrent.sources as source (source)}<li>{source}</li>{/each}
               </ul>
             {/if}
-            <div class="act">
-              <RailButton icon="external" type="button" data-testid="integration-manage" onclick={openConsoleIntegrations}>Manage</RailButton>
-              <RailButton icon="x" type="button" data-testid="integration-disconnect" onclick={() => { disconnectError = ""; sheet = "confirm-integration-disconnect"; }}>Disconnect</RailButton>
-            </div>
           {/if}
         </aside>
       </div>
@@ -552,11 +535,6 @@
         <h2 data-testid="connect-waiting">Waiting for {connect.app}</h2>
         <p>Finish sign-in in the browser. This sheet stays until the deep link returns.</p>
         <RailButton icon="check" type="button" data-testid="connect-return" onclick={simulateReturn}>Deep link returned</RailButton>
-      {:else if sheet === "confirm-integration-disconnect" && integrationCurrent}
-        <h2>Disconnect {integrationCurrent.app}?</h2>
-        <p class="meta">{integrationCurrent.identity}. HQ stops reading this account until you connect it again.</p>
-        {#if disconnectError}<p class="meta" role="alert" data-testid="integration-disconnect-error">{disconnectError}</p>{/if}
-        <RailButton icon="x" variant="danger" type="button" data-testid="confirm-integration-disconnect" disabled={disconnecting} onclick={() => void confirmDisconnect(integrationCurrent)}>{disconnecting ? "Disconnecting…" : "Disconnect"}</RailButton>
       {:else if sheet === "confirm-disconnect"}
         <h2>Disconnect {connectionCurrent?.name}?</h2>
         <p class="meta">Bots lose this connection on their next run.</p>
@@ -623,6 +601,8 @@
   .kind { margin: 0 0 8px; display: flex; align-items: center; }
   .sheet { position: absolute; right: 16px; bottom: 16px; width: 320px; padding: 16px 20px; border: 1px solid var(--panel-border, var(--v4-rowline)); border-radius: 8px; background: var(--panel-bg, var(--v4-raised, var(--v4-ground))); box-shadow: var(--panel-shadow, none); display: flex; flex-direction: column; gap: 8px; }
   .irow { grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.4fr) 110px 110px; }
+  .console-line { margin: 12px 0 0; }
+  .console-line a { color: inherit; }
   .company-link { display: flex; gap: 8px; margin-top: 12px; }
   .sources { list-style: none; margin: 0; padding: 0; color: var(--t2, var(--v4-text-2)); }
   .sources li { height: 28px; line-height: 28px; }

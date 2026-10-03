@@ -130,8 +130,6 @@ describe("US-033 PersonalRailPage", () => {
     return {
       listMyGoogleAccounts: vi.fn(async () => ({ ok: true as const, value: GOOGLE_BODY })),
       listMySlackAccounts: vi.fn(async () => ({ ok: true as const, value: SLACK_BODY })),
-      disconnectMyGoogleAccount: vi.fn(async () => ({ ok: true as const, value: { deleted: true } })),
-      disconnectMySlackAccount: vi.fn(async () => ({ ok: true as const, value: { deleted: true } })),
       ...overrides,
     };
   }
@@ -173,7 +171,7 @@ describe("US-033 PersonalRailPage", () => {
     expect(target.querySelectorAll("[data-testid^='integration-row-']")).toHaveLength(2);
   });
 
-  it("shows the empty state with an add action when nothing is connected", async () => {
+  it("shows the empty state with a web console link when nothing is connected", async () => {
     const opened: string[] = [];
     const api = integrationsApi({
       listMyGoogleAccounts: vi.fn(async () => ({ ok: true as const, value: { accounts: [] } })),
@@ -182,10 +180,9 @@ describe("US-033 PersonalRailPage", () => {
     const target = mountPage("connections", { integrationsApi: api, openExternal: (url: string) => opened.push(url) });
     await settle();
     const empty = target.querySelector("[data-testid='personal-integrations-empty']") as HTMLElement;
-    expect(empty.textContent).toContain("No personal connections yet");
-    (empty.querySelector("button") as HTMLButtonElement).click();
-    (target.querySelector("[data-testid='add-integration']") as HTMLButtonElement).click();
-    expect(opened).toEqual(["https://hq.computer/personal/integrations", "https://hq.computer/personal/integrations"]);
+    expect(empty.textContent).toContain("No personal connections yet · Manage in the web console");
+    (target.querySelector("[data-testid='console-link-empty']") as HTMLAnchorElement).click();
+    expect(opened).toEqual(["https://hq.computer/personal/integrations"]);
   });
 
   it("shows plain-language error copy with a retry, never the server text", async () => {
@@ -206,22 +203,26 @@ describe("US-033 PersonalRailPage", () => {
     expect(target.textContent).toContain("me@example.com");
   });
 
-  it("asks before disconnecting and only calls the server on confirm", async () => {
+  it("is view-only: no add, manage, or disconnect, and the console link opens through the host", async () => {
+    const opened: string[] = [];
     const api = integrationsApi();
-    const target = mountPage("connections", { integrationsApi: api });
+    const target = mountPage("connections", { integrationsApi: api, openExternal: (url: string) => opened.push(url) });
     await settle();
-    (target.querySelector("[data-testid='integration-disconnect']") as HTMLButtonElement).click();
-    flushSync();
-    expect(target.querySelector("[data-testid='sheet-confirm-integration-disconnect']")?.textContent).toContain("Disconnect Google?");
-    expect(api.disconnectMyGoogleAccount).not.toHaveBeenCalled();
-    (target.querySelector("[data-testid='confirm-integration-disconnect']") as HTMLButtonElement).click();
-    await settle();
-    expect(api.disconnectMyGoogleAccount).toHaveBeenCalledWith("g1");
-    expect(target.querySelector("[data-testid='integration-row-google:g1']")).toBeNull();
-    expect(target.querySelector("[data-testid='integration-row-slack:s1']")).not.toBeNull();
+    expect(Object.keys(api).filter((key) => /disconnect|connect[A-Z]|add|delete|remove/i.test(key))).toEqual([]);
+    expect(target.querySelector("[data-testid='add-integration']")).toBeNull();
+    expect(target.querySelector("[data-testid='integration-manage']")).toBeNull();
+    expect(target.querySelector("[data-testid='integration-disconnect']")).toBeNull();
+    const buttons = [...target.querySelectorAll("button")].map((b) => b.textContent?.trim() ?? "");
+    expect(buttons.filter((t) => /^(Add integration|Manage|Disconnect|Show)$/.test(t))).toEqual([]);
+    const link = target.querySelector("[data-testid='console-link']") as HTMLAnchorElement;
+    expect(link.textContent).toBe("Manage connections in the web console");
+    link.click();
+    expect(opened).toEqual(["https://hq.computer/personal/integrations"]);
+    expect(api.listMyGoogleAccounts).toHaveBeenCalledTimes(1);
+    expect(api.listMySlackAccounts).toHaveBeenCalledTimes(1);
   });
 
-  it("links to the selected company's Integrations with one row, not a wall of buttons", async () => {
+  it("opens the selected company's console Integrations page from one row", async () => {
     const opened: string[] = [];
     const target = mountPage("connections", {
       integrationsApi: integrationsApi(),
@@ -229,15 +230,15 @@ describe("US-033 PersonalRailPage", () => {
         { uid: "cmp_a", label: "Acme" },
         { uid: "cmp_b", label: "Beta" },
       ],
-      activeCompany: { uid: "cmp_b", label: "Beta" },
-      onopenintegrations: (uid: string) => opened.push(uid),
+      activeCompany: { uid: "cmp_b", label: "Beta", slug: "beta" },
+      openExternal: (url: string) => opened.push(url),
     });
     await settle();
     expect(target.querySelector("[data-testid='connections-company-cmp_a']")).toBeNull();
     const link = target.querySelector("[data-testid='company-connections-link']") as HTMLButtonElement;
     expect(link.textContent).toContain("Company connections");
     link.click();
-    expect(opened).toEqual(["cmp_b"]);
+    expect(opened).toEqual(["https://hq.computer/companies/beta/integrations"]);
   });
 
   it("hides the company row when no company is selected", async () => {

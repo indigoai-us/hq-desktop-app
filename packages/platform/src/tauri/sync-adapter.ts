@@ -1089,11 +1089,7 @@ export function createSyncPlatformAdapter(
       getMyOutpostStatus: () => hqProJson('POST', OUTPOST_PATHS.status, {}),
       listMyOutpostJobs: () => hqProJson('GET', OUTPOST_PATHS.jobsStatus),
       listMyGoogleAccounts: () => hqProJson('GET', PERSONAL_INTEGRATION_PATHS.googleAccounts),
-      disconnectMyGoogleAccount: (accountId) =>
-        hqProJson('DELETE', PERSONAL_INTEGRATION_PATHS.googleAccount(accountId)),
       listMySlackAccounts: () => hqProJson('GET', PERSONAL_INTEGRATION_PATHS.slackAccounts),
-      disconnectMySlackAccount: (accountId) =>
-        hqProJson('DELETE', PERSONAL_INTEGRATION_PATHS.slackAccount(accountId)),
     },
 
     company: {

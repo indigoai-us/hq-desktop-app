@@ -3,12 +3,10 @@
  * console's Personal > Integrations page reads.
  *
  *   GET    /v1/google/accounts                 { accounts: GoogleAccount[] }
- *   DELETE /v1/google/accounts/{accountId}
  *   GET    /v1/slack/personal/accounts         { accounts: SlackPersonalAccount[] }
- *   DELETE /v1/slack/personal/accounts/{accountId}
  *
- * Connecting a new app needs the console's OAuth return pages, so Add and
- * Manage open https://hq.computer/personal/integrations in the browser.
+ * View-only: connections are managed in the web console at
+ * https://hq.computer/personal/integrations, opened in the browser.
  */
 import type { AdapterPromise, Json } from "@hq/platform";
 import { HQ_CONSOLE_BASE } from "../common/hq-console.js";
@@ -17,9 +15,7 @@ export const PERSONAL_INTEGRATIONS_URL = `${HQ_CONSOLE_BASE}/personal/integratio
 
 export interface PersonalIntegrationsApi {
   listMyGoogleAccounts?(): AdapterPromise<Json>;
-  disconnectMyGoogleAccount?(accountId: string): AdapterPromise<Json>;
   listMySlackAccounts?(): AdapterPromise<Json>;
-  disconnectMySlackAccount?(accountId: string): AdapterPromise<Json>;
 }
 
 export type IntegrationProvider = "google" | "slack";
@@ -108,15 +104,13 @@ export function connectedLabel(iso: string): string {
   return `Connected ${new Date(ms).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`;
 }
 
-/** Plain-language copy for a failed load or disconnect. Never echoes server text. */
-export function integrationsErrorReason(code: string, action: "load" | "disconnect" = "load"): string {
+/** Plain-language copy for a failed load. Never echoes server text. */
+export function integrationsErrorReason(code: string): string {
   if (/http-401|http-403|auth/i.test(code)) {
     return "Your sign-in expired. Sign in again to see your connections.";
   }
   if (code === "unavailable") return "Connections are not available in this window.";
-  return action === "disconnect"
-    ? "Could not disconnect that account. Check your connection and retry."
-    : "Could not load your connections. Check your connection and retry.";
+  return "Could not load your connections. Check your connection and retry.";
 }
 
 export class IntegrationsLoadError extends Error {
@@ -152,19 +146,6 @@ export async function loadPersonalIntegrations(api: PersonalIntegrationsApi | nu
     ...(google?.ok ? googleIntegrationsFromBody(google.value) : []),
     ...(slack?.ok ? slackIntegrationsFromBody(slack.value) : []),
   ];
-}
-
-/** Disconnect one account. Returns "" on success or plain-language error copy. */
-export async function disconnectPersonalIntegration(
-  api: PersonalIntegrationsApi | null | undefined,
-  row: Pick<PersonalIntegration, "provider" | "accountId">,
-): Promise<string> {
-  const call = row.provider === "google" ? api?.disconnectMyGoogleAccount : api?.disconnectMySlackAccount;
-  if (!call) return integrationsErrorReason("unavailable", "disconnect");
-  const res = await call(row.accountId);
-  if (res.ok) return "";
-  console.warn("[personal-integrations] disconnect failed", failCode(res));
-  return integrationsErrorReason(failCode(res), "disconnect");
 }
 
 const cache = new Map<string, PersonalIntegration[]>();

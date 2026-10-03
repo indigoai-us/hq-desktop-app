@@ -45,6 +45,11 @@ export function companyInviteUrl(slug: string): string {
   return `${companyConsoleUrl(slug)}/team/invites`;
 }
 
+/** A company's Integrations page in the console (`/companies/{slug}/integrations`). */
+export function companyIntegrationsUrl(slug: string): string {
+  return `${companyConsoleUrl(slug)}/integrations`;
+}
+
 /** Personal Console Integrations (calendar / meeting-bot connect). */
 export const HQ_CONSOLE_INTEGRATIONS_URL = `${HQ_CONSOLE_BASE}/personal/integrations`;
 

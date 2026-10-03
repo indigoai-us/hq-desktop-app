@@ -1250,11 +1250,7 @@ export const AGENT_PATHS = {
 /** The caller's personal integrations, as read by the console's Personal Integrations page. */
 export const PERSONAL_INTEGRATION_PATHS = {
   googleAccounts: "/v1/google/accounts",
-  googleAccount: (accountId: string) =>
-    `/v1/google/accounts/${encodeURIComponent(accountId)}`,
   slackAccounts: "/v1/slack/personal/accounts",
-  slackAccount: (accountId: string) =>
-    `/v1/slack/personal/accounts/${encodeURIComponent(accountId)}`,
 } as const;
 
 export interface AgentProvisionSizeOption {
@@ -1324,12 +1320,8 @@ export interface AgentsApi {
   listMyOutpostJobs?(): AdapterPromise<Json>;
   /** GET /v1/google/accounts — the caller's connected Google accounts. */
   listMyGoogleAccounts?(): AdapterPromise<Json>;
-  /** DELETE /v1/google/accounts/{accountId} — disconnect one Google account. */
-  disconnectMyGoogleAccount?(accountId: string): AdapterPromise<Json>;
   /** GET /v1/slack/personal/accounts — the caller's personal Slack accounts. */
   listMySlackAccounts?(): AdapterPromise<Json>;
-  /** DELETE /v1/slack/personal/accounts/{accountId}. */
-  disconnectMySlackAccount?(accountId: string): AdapterPromise<Json>;
 }
 
 export interface FeedbackApi {
