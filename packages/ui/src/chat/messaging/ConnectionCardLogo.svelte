@@ -34,10 +34,18 @@
   let index = $state(0);
   let loaded = $state(false);
 
+  /**
+   * The logo as text. The host rebuilds every card view on its clock (a
+   * catalog answer, the row's settle timer, a recheck while connecting), so
+   * the same logo arrives as a new object within a second of the first draw.
+   * The image is already loaded then and fires no second load event, so a
+   * restart on object identity would leave the glyph for good.
+   */
+  const signature = $derived(`${logo.mark?.path ?? ""}\u0000${logo.sources.join("\u0000")}`);
+
   // A new logo (the card changed app) starts the chain again.
   $effect(() => {
-    void logo.sources;
-    void logo.mark;
+    void signature;
     untrack(() => {
       index = 0;
       loaded = false;

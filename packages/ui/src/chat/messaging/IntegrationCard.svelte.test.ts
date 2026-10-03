@@ -247,6 +247,42 @@ describe("the logo", () => {
     expect(box.style.width).toBe("28px");
   });
 
+  it("keeps a loaded image when the card is drawn again with the same logo, and starts over only for a new one", () => {
+    // The host rebuilds every card view on its clock (a catalog answer, the
+    // row's settle timer, a recheck while connecting), so the logo arrives as
+    // a new object with the same sources within a second of the first draw.
+    // The image is already loaded and fires no second load event, so a
+    // restart on object identity left the generic glyph in the installed app.
+    const root = target();
+    const props = $state({ logo: { mark: null, sources: [...SOURCES] } as CardLogo, size: 28 });
+    component = mount(ConnectionCardLogo, { target: root, props });
+    flushSync();
+    const box = logoBox(root);
+    const img = logoImg(box)!;
+    img.dispatchEvent(new Event("load"));
+    flushSync();
+    expect(box.dataset.loaded).toBe("true");
+
+    props.logo = { mark: null, sources: [...SOURCES] };
+    flushSync();
+    expect(box.dataset.loaded).toBe("true");
+    expect(box.dataset.logo).toBe("image");
+    expect(logoImg(box)).toBe(img);
+
+    // A chain that has ended stays ended: the same logo again does not retry the network.
+    props.logo = { mark: null, sources: ["https://t0.gstatic.com/faviconV2?x=2"] };
+    flushSync();
+    expect(box.dataset.loaded).toBe("false");
+    expect(logoImg(box)!.getAttribute("src")).toBe("https://t0.gstatic.com/faviconV2?x=2");
+    logoImg(box)!.dispatchEvent(new Event("error"));
+    flushSync();
+    expect(logoImg(box)).toBeNull();
+    props.logo = { mark: null, sources: ["https://t0.gstatic.com/faviconV2?x=2"] };
+    flushSync();
+    expect(logoImg(box)).toBeNull();
+    expect(box.dataset.logo).toBe("generic");
+  });
+
   it("falls through both sources on error and ends on the generic glyph, never on letters", () => {
     const box = renderLogo();
     logoImg(box)!.dispatchEvent(new Event("error"));
