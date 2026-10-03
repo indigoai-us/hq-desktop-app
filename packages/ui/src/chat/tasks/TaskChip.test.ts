@@ -1,73 +1,101 @@
-import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+// @vitest-environment happy-dom
 
-/**
- * TaskChip is Svelte and the repo has no component-render harness, so we test
- * its SOURCE CONTRACT the same way story-card.test.ts does: design tokens only,
- * no hardcoded hex, a real focus ring, a callback prop, and status text taken
- * from the shared label map rather than written inline.
- */
-const source = readFileSync(
-  resolve(process.cwd(), 'src/chat/tasks/TaskChip.svelte'),
-  'utf8',
-);
+import { afterEach, describe, expect, it } from "vitest";
+import { mount, unmount } from "svelte";
 
-describe('TaskChip source contract', () => {
-  it('uses design tokens and no hardcoded hex colors', () => {
-    expect(source).toContain('var(--');
-    expect(source).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
-  });
+import {
+  AGENT_TASK_STATUS_LABEL,
+  agentTaskTone,
+  type AgentTask,
+} from "./agent-tasks";
+import TaskChip from "./TaskChip.svelte";
 
-  it('carries a visible focus ring', () => {
-    expect(source).toContain(':focus-visible');
-    expect(source).toContain('var(--v4-focus-ring)');
-  });
+let host: HTMLDivElement;
+let component: ReturnType<typeof mount> | null = null;
 
-  it('emits selection through a callback prop, not an event', () => {
-    expect(source).toContain('onselect?: (task: AgentTask) => void');
-    expect(source).toContain('onselect?.(task)');
-  });
-
-  it('is a real button only when it is actually interactive', () => {
-    expect(source).toContain("this={interactive ? 'button' : 'span'}");
-    expect(source).toContain("type={interactive ? 'button' : undefined}");
-  });
-
-  it('takes its status wording from the shared map, never inline strings', () => {
-    expect(source).toContain('AGENT_TASK_STATUS_LABEL[task.status]');
-    expect(source).not.toMatch(/>\s*(Queued|Done|Failed)\s*</);
-  });
-
-  it('colours the status dot from the v4 tone tokens', () => {
-    for (const token of ['--v4-ok', '--v4-warn', '--v4-error', '--v4-unread', '--v4-idle']) {
-      expect(source).toContain(token);
-    }
-  });
-
-  it('names the task and its status for assistive tech', () => {
-    expect(source).toContain('aria-label');
-  });
-
-  it('exposes a stable test hook', () => {
-    expect(source).toContain('data-testid="task-chip"');
-  });
-
-  it('documents why the generated mark is safe to inline', () => {
-    // {@html} is only acceptable here because the markup is generated from a
-    // hashed catalogue address and never interpolates task-supplied text.
-    expect(source).toContain('{@html mark.svg}');
-    expect(source).toMatch(/No task field/i);
-  });
+afterEach(async () => {
+  if (component) await unmount(component);
+  component = null;
+  host?.remove();
 });
 
-describe('TaskChip hover card', () => {
-  it('exposes a tooltip card wired by aria-describedby, shown on hover/focus', () => {
-    expect(source).toContain('data-testid="task-chip-card"');
-    expect(source).toContain('role="tooltip"');
-    expect(source).toContain('aria-describedby={cardId}');
-    expect(source).toContain('.task-chip-row:hover .card');
-    expect(source).toContain('.task-chip-row:focus-within .card');
-    expect(source).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
+const task: AgentTask = {
+  id: "task-1",
+  title: "Ship the chip",
+  status: "queued",
+  lastEventAt: "2026-10-03T00:00:00.000Z",
+  originMessageId: "msg-1",
+};
+
+function render(props: { task?: AgentTask; onselect?: (task: AgentTask) => void } = {}) {
+  host = document.createElement("div");
+  document.body.appendChild(host);
+  component = mount(TaskChip, {
+    target: host,
+    props: { task: props.task ?? task, onselect: props.onselect },
+  });
+}
+
+function chip(): HTMLElement {
+  const node = host.querySelector<HTMLElement>("[data-testid='task-chip']");
+  if (!node) throw new Error("task chip missing");
+  return node;
+}
+
+function scopedCss(): string {
+  const scope = [...chip().classList].find((name) => name.startsWith("svelte-"));
+  return [...document.querySelectorAll("style")]
+    .map((node) => node.textContent ?? "")
+    .filter((css) => (scope ? css.includes(scope) : false))
+    .join("\n");
+}
+
+describe("TaskChip", () => {
+  it("is a button that emits the task when it can be selected", () => {
+    let selected: AgentTask | null = null;
+    render({ onselect: (value) => { selected = value; } });
+    expect(chip().tagName).toBe("BUTTON");
+    expect(chip().getAttribute("type")).toBe("button");
+    chip().click();
+    expect(selected).toEqual(task);
+  });
+
+  it("is a non-interactive span when no selection callback is passed", () => {
+    render();
+    expect(chip().tagName).toBe("SPAN");
+    expect(chip().getAttribute("type")).toBeNull();
+  });
+
+  it("names the task and its shared status label for assistive tech", () => {
+    render({ task: { ...task, status: "failed" } });
+    expect(chip().getAttribute("aria-label")).toBe(
+      `Ship the chip, ${AGENT_TASK_STATUS_LABEL.failed}`,
+    );
+    expect(host.querySelector("[data-testid='task-chip-dot']")?.getAttribute("data-tone")).toBe(
+      agentTaskTone("failed"),
+    );
+  });
+
+  it("exposes the hover card as a tooltip described by the chip", () => {
+    render();
+    const card = host.querySelector<HTMLElement>("[data-testid='task-chip-card']");
+    expect(card?.getAttribute("role")).toBe("tooltip");
+    expect(card?.id).toBe("task-chip-card-task-1");
+    expect(chip().getAttribute("aria-describedby")).toBe(card?.id);
+    expect(card?.textContent).toContain(AGENT_TASK_STATUS_LABEL.queued);
+    expect(card?.textContent).toContain("From a message in this thread");
+  });
+
+  it("keeps a visible focus ring and the status tones in the rendered stylesheet", () => {
+    render();
+    const css = scopedCss();
+    expect(css).toContain(":focus-visible");
+    expect(css).toContain("var(--v4-focus-ring)");
+    for (const token of ["--v4-ok", "--v4-warn", "--v4-error", "--v4-unread", "--v4-idle"]) {
+      expect(css).toContain(token);
+    }
+    expect(css).toContain(":hover");
+    expect(css).toContain(":focus-within");
+    expect(css).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
   });
 });
