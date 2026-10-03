@@ -138,30 +138,16 @@ export function historyNeighbor(
   return snapshot.entries[index] ?? null;
 }
 
-/** Find the nearest prior route outside the Library overlay. */
-export function priorNonLibraryIndex(
-  snapshot: NavigationHistorySnapshot,
-): number | null {
-  for (let index = snapshot.index - 1; index >= 0; index -= 1) {
-    if (snapshot.entries[index]?.destination.kind !== "library") return index;
-  }
-  return null;
-}
-
 const CHANNEL_TABS = new Set<ChannelSurfaceTab>(["chat", "board", "files"]);
 const AGENT_SURFACES = new Set<AgentSurfaceTab>(["chat", "details"]);
 // Office/Team/Settings/Atlas are not desktop tabs; those ids are
 // intentionally excluded here so a stale deep link normalizes back to Chat.
 // Projects is an in-channel tab and is preserved.
 const COMPANY_TABS = new Set<CompanyChannelTabId>(["chat", "projects"]);
-const LIBRARY_TABS = new Set<LibraryTab>([
-  "skills",
-  "workers",
-  "installed",
-  "marketplace",
-  "submit",
-  "profile",
-]);
+// OWNER-R33: the Library is the Marketplace page. Its tabs are Browse
+// ("marketplace"), Installed and Submit. The retired Skills / Workers tabs and
+// any unknown tab redirect to Browse; "profile" redirects to Settings below.
+const LIBRARY_TABS = new Set<LibraryTab>(["installed", "marketplace", "submit"]);
 // Derived from the single source of truth so a new section (e.g. "bots",
 // local-bots US-009) cannot be silently dropped from history canonicalisation
 // — a hand-copied list here reset Settings → Bots to Profile on every click.
@@ -217,7 +203,7 @@ function asCompanyTab(
 }
 
 function asLibraryTab(value: LibraryTab | undefined): LibraryTab {
-  return value && LIBRARY_TABS.has(value) ? value : "skills";
+  return value && LIBRARY_TABS.has(value) ? value : "marketplace";
 }
 
 function asSettingsSection(
@@ -318,7 +304,8 @@ export function canonicalizeDestination(
       return {
         kind: "library",
         tab: asLibraryTab(destination.tab),
-        itemId: trimId(destination.itemId),
+        // Library item details (skill or worker pages) are retired.
+        itemId: null,
       };
     case "settings":
       return {
@@ -488,7 +475,9 @@ export function destinationLabel(destination: NavigationDestination): string {
     case "atlas":
       return "Atlas";
     case "library":
-      return `Library · ${titleCase(dest.tab)}`;
+      return dest.tab === "installed" || dest.tab === "submit"
+        ? `Marketplace · ${titleCase(dest.tab)}`
+        : "Marketplace";
     case "settings":
       return dest.section ? `Settings · ${settingsSectionLabel(dest.section)}` : "Settings";
     case "shared-files":

@@ -396,7 +396,6 @@
     destinationLabel,
     extraParamCompanyKey,
     historyNeighbor,
-    priorNonLibraryIndex,
     type NavigationDestination,
     type NavigationEntry,
     type NavigationScrollState,
@@ -1913,7 +1912,7 @@
   let extraPageParam = $state<string | null>(null);
   /** Which pending request the Requests panel should bring into view first. */
   let dmRequestsFocusPairKey = $state<string | null>(null);
-  let libraryTab = $state<LibraryTab>("skills");
+  let libraryTab = $state<LibraryTab>("marketplace");
   let libraryItemId = $state<string | null>(null);
   let settingsSection = $state<EmbeddedSettingsSection | null>(null);
   let meetingFocusRequest = $state<{
@@ -1930,7 +1929,6 @@
   } | null>(null);
   let navigationCanGoBack = $state(false);
   let navigationCanGoForward = $state(false);
-  let libraryBackTargetIndex = $state<number | null>(null);
   let navigationBackLabel = $state("");
   let navigationForwardLabel = $state("");
   let pendingRestoreScroll = $state<NavigationScrollState | null>(null);
@@ -3794,13 +3792,17 @@
         },
       });
     }
-    nav.push({
-      id: "command-go-library",
-      label: "Library",
-      detail: "Open skills available to you",
-      shortcut: shortcutLabel("view.library"),
-      action: () => openLibrary("skills"),
-    });
+    // OWNER-R33: the Library page is the Marketplace. Desktop lists it once
+    // as command-go-marketplace below; web has no install, so it lists it here.
+    if (isWeb) {
+      nav.push({
+        id: "command-go-library",
+        label: "Marketplace",
+        detail: "Browse packs from creators",
+        shortcut: shortcutLabel("view.library"),
+        action: () => openLibrary("marketplace"),
+      });
+    }
     nav.push({
       id: "command-go-settings",
       label: "Settings",
@@ -3821,7 +3823,7 @@
       nav.push({
         id: "command-go-marketplace",
         label: "Marketplace",
-        detail: "Open marketplace in the library",
+        detail: "Browse packs and see what you have installed",
         shortcut: shortcutLabel("view.marketplace"),
         action: () => openLibrary("marketplace"),
       });
@@ -7389,7 +7391,6 @@
     const snap = navigationHistory.snapshot();
     navigationCanGoBack = navigationHistory.canGoBack();
     navigationCanGoForward = navigationHistory.canGoForward();
-    libraryBackTargetIndex = priorNonLibraryIndex(snap);
     const back = historyNeighbor(snap, "back");
     const forward = historyNeighbor(snap, "forward");
     navigationBackLabel = back ? destinationLabel(back.destination) : "";
@@ -7659,14 +7660,6 @@
   function leaveCurrentDestination() {
     if (navigationHistory.canGoBack()) return goBack();
     return navigate({ kind: "messages" });
-  }
-
-  function leaveLibrary(): void {
-    if (libraryBackTargetIndex != null) {
-      void navigation.backTo(libraryBackTargetIndex);
-      return;
-    }
-    void navigate({ kind: "messages" });
   }
 
   $effect(() => {
@@ -9008,7 +9001,7 @@
     }
   }
 
-  function openLibrary(next: LibraryTab = "skills"): void {
+  function openLibrary(next: LibraryTab = "marketplace"): void {
     void navigate({ kind: "library", tab: next });
   }
 
@@ -10095,7 +10088,7 @@
     ontogglesidebar={() => (sidebarCollapsed = !sidebarCollapsed)}
     onopenNotifications={toggleNotifications}
     onOpenSettings={() => openSettings()}
-    onopenLibrary={() => openLibrary("skills")}
+    onopenLibrary={() => openLibrary("marketplace")}
     onopenMarketplace={isWeb ? undefined : () => openLibrary("marketplace")}
     {onopenurl}
     canGoBack={navigationCanGoBack}
@@ -10380,6 +10373,18 @@
         >
       {/await}
       {/key}
+    </div>
+  {:else if view === "library"}
+    <!-- OWNER-R33: the Marketplace is a full destination in the body, under
+         the top bar, like Settings and Files. It is not a layer over the
+         shell, so the top bar's menus open above it. -->
+    <div class="desktop-body" data-testid="marketplace-host">
+      <LibraryOverlay
+        {adapter}
+        tab={libraryTab}
+        {packagesEvents}
+        onnavigatetab={(next) => void navigate({ kind: "library", tab: next })}
+      />
     </div>
   {:else if view === "explorer"}
     <!-- Full destination, like Settings. -->
@@ -11954,19 +11959,6 @@
         {/if}
       </main>
     </div>
-  {/if}
-
-  {#if view === "library" && !navigationUnavailable}
-    <LibraryOverlay
-      {adapter}
-      tab={libraryTab}
-      itemId={libraryItemId}
-      {packagesEvents}
-      onback={leaveLibrary}
-      onnavigatetab={(next) => void navigate({ kind: "library", tab: next })}
-      onnavigateitem={(id) =>
-        void navigate({ kind: "library", tab: libraryTab, itemId: id })}
-    />
   {/if}
 
   {#if paletteOpen || paletteMounted}

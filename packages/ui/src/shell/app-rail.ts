@@ -235,7 +235,8 @@ export function activeRailItemId(state: RailSelectionState): RailItemId | null {
     case "meetings":
       return "meetings";
     case "library":
-      return state.libraryTab === "marketplace" ? "marketplace" : "library";
+      // OWNER-R33: the whole page is the Marketplace.
+      return "marketplace";
     case "explorer":
       return "library";
     case "settings":

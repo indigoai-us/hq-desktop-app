@@ -13,7 +13,7 @@ import {
 import { canonicalizeDestination } from "./navigation-history.js";
 
 describe("app rail model (console-rail US-003)", () => {
-  it("OWNER-R22: Marketplace sits beneath Connections and opens the Library marketplace tab", () => {
+  it("OWNER-R22/R33: Marketplace sits beneath Connections, opens Browse, and stays selected on every tab", () => {
     const items = railItems([], "You");
     const ids = items.map((item) => item.id);
     expect(ids.indexOf("marketplace")).toBe(ids.indexOf("connections") + 1);
@@ -23,7 +23,9 @@ describe("app rail model (console-rail US-003)", () => {
     expect(railDestination(marketplace)).toEqual({ kind: "library", tab: "marketplace" });
     const base = { view: "library", tenantCompanyId: null, extraPageId: null, settingsSection: null };
     expect(activeRailItemId({ ...base, libraryTab: "marketplace" })).toBe("marketplace");
-    expect(activeRailItemId({ ...base, libraryTab: "skills" })).toBe("library");
+    for (const libraryTab of ["installed", "submit", "skills", "workers", null]) {
+      expect(activeRailItemId({ ...base, libraryTab })).toBe("marketplace");
+    }
   });
 
   it("lists items in the decided order", () => {
@@ -124,7 +126,7 @@ describe("app rail model (console-rail US-003)", () => {
     expect(
       activeRailItemId({ ...base, view: "extra", extraPageId: railPlaceholderPage("outpost") }),
     ).toBe("outpost");
-    expect(activeRailItemId({ ...base, view: "library" })).toBe("library");
+    expect(activeRailItemId({ ...base, view: "library" })).toBe("marketplace");
     expect(activeRailItemId({ ...base, view: "projects" })).toBeNull();
     expect(activeRailItemId({ ...base, view: "extra", extraPageId: "account-profile" })).toBe("you");
     expect(activeRailItemId({ ...base, view: "extra", extraPageId: "account-billing" })).toBe("you");

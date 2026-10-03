@@ -123,6 +123,17 @@ export function parseDesktopRoute(
     case 'atlas':
       if (!detail) return { kind: 'home' };
       break;
+    // OWNER-R33: the page is the Marketplace. `marketplace[:installed|:submit]`
+    // is the route; the old `library[:tab]` route still parses and the shell
+    // redirects its retired Skills and Workers tabs to Browse.
+    case 'marketplace':
+      if (!hasExtraSegments && (!detail || detail === 'browse')) {
+        return { kind: 'library', tab: 'marketplace' };
+      }
+      if (!hasExtraSegments && (detail === 'installed' || detail === 'submit')) {
+        return { kind: 'library', tab: detail };
+      }
+      break;
     case 'library':
       if (!hasExtraSegments && (!detail || detail === 'skills')) {
         return { kind: 'library', tab: 'skills' };
@@ -175,6 +186,10 @@ export function serializeDesktopRoute(route: DesktopRoute): string {
     case 'atlas':
       return 'home';
     case 'library':
+      if (route.tab === 'installed' || route.tab === 'submit') return `marketplace:${route.tab}`;
+      // Retired tabs (skills, workers) and profile serialise by their old
+      // route so the shell's redirect handles them.
+      if (route.tab === 'marketplace') return 'marketplace';
       return route.tab === 'skills' ? 'library' : `library:${route.tab}`;
     case 'settings':
       return route.section ? `settings:${route.section}` : 'settings';
