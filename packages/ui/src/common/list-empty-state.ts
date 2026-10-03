@@ -18,6 +18,8 @@ export interface ListEmptyInput {
   noun: readonly [string, string];
   /** Copy for a genuinely empty list. Defaults to "Nothing here yet." */
   emptyCopy?: string;
+  /** Where the total lives, appended to it, e.g. "in this company". */
+  scope?: string;
 }
 
 export type ListEmptyState =
@@ -35,8 +37,8 @@ export function listEmptyState(input: ListEmptyInput): ListEmptyState | null {
   if (input.total > 0 && (q || input.filtered)) {
     return {
       kind: "no-matches",
-      title: q ? `No matches for '${q}'` : "No matches for these filters",
-      totalLabel: countLabel(input.total, input.noun),
+      title: q ? `No matches for '${q}'` : `No ${input.noun[1]} match these filters`,
+      totalLabel: input.scope ? `${countLabel(input.total, input.noun)} ${input.scope}` : countLabel(input.total, input.noun),
     };
   }
   if (input.total > 0) return null;

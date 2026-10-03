@@ -304,6 +304,58 @@ describe("US-029 FilesConnectPage", () => {
     expect(target.textContent).not.toContain("STRIPE_SECRET_KEY");
   });
 
+  describe("filtered-empty secrets (QA-058, company path)", () => {
+    function tab(target: HTMLElement, label: string) {
+      const button = [...target.querySelectorAll<HTMLButtonElement>(".fc-seg-tab")].find((b) => b.textContent === label);
+      button!.click();
+      flushSync();
+    }
+
+    it("Proxy-only with no proxy secrets says the filter hides them, shows the total and clears", async () => {
+      const target = mountPage("secrets");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      expect(target.querySelector("[data-testid='rotate-secret']")).not.toBeNull();
+      tab(target, "Proxy-only");
+      const empty = target.querySelector("[data-testid='secrets-empty']");
+      expect(empty?.getAttribute("data-kind")).toBe("no-matches");
+      expect(empty?.textContent).toContain("No secrets match these filters");
+      expect(empty?.textContent).toContain("1 secret in this company");
+      expect(target.textContent).not.toContain("No secrets yet");
+      expect(target.querySelector("[data-testid='secrets-count']")?.textContent).toBe("Secrets · 0 of 1");
+      // The inspector reads the filtered rows: no actions for a hidden secret.
+      const inspector = target.querySelector("[data-testid='secret-inspector']")!;
+      expect(inspector.textContent).not.toContain("ATTIO_API_KEY");
+      expect(target.querySelector("[data-testid='rotate-secret']")).toBeNull();
+      expect(target.querySelector("[data-testid='share-secret']")).toBeNull();
+      (target.querySelector("[data-testid='secrets-empty-clear']") as HTMLButtonElement).click();
+      flushSync();
+      expect(target.querySelectorAll("[data-testid='secret-row']").length).toBe(1);
+      expect(target.querySelector("[data-testid='secrets-count']")?.textContent).toBe("Secrets · 1");
+    });
+
+    it("a no-match search clears the selected secret and offers Clear search", async () => {
+      const target = mountPage("secrets");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      (target.querySelector("[data-testid='secret-row']") as HTMLButtonElement).click();
+      flushSync();
+      const search = target.querySelector("input[placeholder='Search secrets']") as HTMLInputElement;
+      search.value = "zz-no-match";
+      search.dispatchEvent(new Event("input"));
+      flushSync();
+      const empty = target.querySelector("[data-testid='secrets-empty']");
+      expect(empty?.textContent).toContain("No matches for 'zz-no-match'");
+      expect(empty?.textContent).toContain("1 secret in this company");
+      expect(target.querySelector("[data-testid='secret-inspector']")?.textContent).not.toContain("ATTIO_API_KEY");
+      expect(target.querySelector("[data-testid='rotate-secret']")).toBeNull();
+      (target.querySelector("[data-testid='secrets-empty-clear']") as HTMLButtonElement).click();
+      flushSync();
+      expect(search.value).toBe("");
+      expect(target.querySelectorAll("[data-testid='secret-row']").length).toBe(1);
+    });
+  });
+
   it("opens New secret as a centered sheet with Save, and Escape closes it", async () => {
     const target = mountPage("secrets");
     await new Promise((resolve) => setTimeout(resolve, 0));
