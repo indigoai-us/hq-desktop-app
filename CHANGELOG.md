@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Cognito refresh failures now log the status and sanitized provider error details. HTTP 401, invalid_grant, and Cognito NotAuthorizedException responses require sign-in; invalid_client keeps the session and parks retries for 15 minutes. Other failures retry with bounded backoff. The shared token lock uses the CLI-compatible PID-file protocol.
 - When a plan limit pauses new files for a company, the app now adds a notification to the notifications panel instead of a banner across the top of the window. Before, someone in many paused companies got one banner per company stacked over the window. Each company gets one notification per pause, a refresh or a reopened window does not repeat it, opening it goes to that company's upgrade page, and the system banner follows your notification settings and is sent once per sync pass however many companies were paused. The main window also stays solid at full opacity, so other apps no longer show through behind it.
 
 ## [0.10.382] — 2026-10-03
