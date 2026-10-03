@@ -407,17 +407,19 @@ impl Drop for PackageUseUpdateGuard {
 
 fn same_process_start(actual_ms: u64, recorded_ms: u64) -> bool {
     let tolerance_ms = process_start_tolerance_ms();
-    #[cfg(target_os = "macos")]
+    // Debug and test builds only: report the first observed delta per process
+    // so CI can measure the macOS skew. Written straight to stderr because the
+    // test harness hides eprintln! output of passing tests. Release builds do
+    // not include it, and it does not affect liveness.
+    #[cfg(all(target_os = "macos", debug_assertions))]
     {
+        use std::io::Write;
         static SKEW_DIAGNOSTIC_EMITTED: std::sync::atomic::AtomicBool =
             std::sync::atomic::AtomicBool::new(false);
         let delta_ms = actual_ms.abs_diff(recorded_ms);
-        if delta_ms > 20
-            && !SKEW_DIAGNOSTIC_EMITTED.swap(true, std::sync::atomic::Ordering::Relaxed)
-        {
-            // Keep one observed delta per process so live leases do not log on
-            // every updater poll. This diagnostic does not affect liveness.
-            eprintln!(
+        if !SKEW_DIAGNOSTIC_EMITTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            let _ = writeln!(
+                std::io::stderr(),
                 "HQ CLI package-use lease process-start delta: {delta_ms}ms (tolerance {tolerance_ms}ms)"
             );
         }
