@@ -372,7 +372,7 @@ describe("US-028 BrainPage", () => {
     });
   });
 
-  it.each([["policies", "No policies yet."], ["skills", "No skills yet."], ["workers", "No workers yet."]])(
+  it.each([["policies", "No policies yet."], ["skills", "No skills yet."], ["workers", "No workers yet."]] as const)(
     "AUDIT-3: an empty %s page says so plainly",
     async (page, copy) => {
       component = mount(BrainPage, {
