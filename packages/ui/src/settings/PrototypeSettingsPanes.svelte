@@ -328,8 +328,15 @@
       })),
   );
 
+  // QA-074: the tenant prefs blob can still hold a stale uiSize from before
+  // the device-wide key existed. Every blob write keeps the device size, so
+  // changing opacity or a toggle never flips Interface size back.
+  function writePrefs(next: Partial<ShellSettingsPrefs>): ShellSettingsPrefs {
+    return { ...writeSettingsPrefs(next, storage), uiSize: prefs.uiSize };
+  }
+
   function patch(next: Partial<ShellSettingsPrefs>): void {
-    prefs = writeSettingsPrefs(next, storage);
+    prefs = writePrefs(next);
   }
 
   function setTheme(next: ColorTheme): void {
@@ -1154,7 +1161,7 @@
     const onAppearanceChange = () => {
       const next = readHostWindowOpacity();
       if (next != null && next !== prefs.windowOpacity) {
-        prefs = writeSettingsPrefs({ windowOpacity: next }, storage);
+        prefs = writePrefs({ windowOpacity: next });
       }
     };
     window.addEventListener(APPEARANCE_CHANGE_EVENT, onAppearanceChange);

@@ -69,4 +69,30 @@ describe("PrototypeSettingsPanes interface size (QA-074)", () => {
     expect(sizeChip(root, "Default").getAttribute("aria-checked")).toBe("false");
     expect(document.documentElement.getAttribute("data-ui-size")).toBe("large");
   });
+
+  it("keeps Default when another appearance setting saves over a stale company size (QA-074 reopen)", async () => {
+    // Before the device key existed, Large was saved in hpo's tenant blob.
+    createTenantStorage(memoryStorage, { accountId: "acct_test", companyId: "cmp_hpo" }).setItem(
+      "hq-work-settings-prefs",
+      JSON.stringify({ uiSize: "large" }),
+    );
+    let root = mountAppearance("cmp_hpo");
+    await tick();
+    sizeChip(root, "Default").click();
+    await tick();
+
+    // Another appearance toggle rewrites the tenant blob; it must not pull Large back.
+    root.querySelector<HTMLButtonElement>('[data-testid="settings-sidebar-scope-labels"]')!.click();
+    await tick();
+    expect(sizeChip(root, "Default").getAttribute("aria-checked")).toBe("true");
+
+    await unmount(component!);
+    component = null;
+    root.remove();
+    root = mountAppearance("cmp_hpo");
+    await tick();
+    expect(sizeChip(root, "Default").getAttribute("aria-checked")).toBe("true");
+    expect(sizeChip(root, "Large").getAttribute("aria-checked")).toBe("false");
+    expect(readStoredUiSize()).toBe("default");
+  });
 });
