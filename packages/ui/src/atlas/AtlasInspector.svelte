@@ -228,7 +228,7 @@
   .pmain { width: 100%; min-width: 0; }
   .pmain .tt { display: flex; align-items: baseline; gap: 6px; }
   .pmain .grow { flex: 1; }
-  .tag { font-size: var(--type-ui, 13px); color: var(--v4-text-3); text-transform: uppercase; letter-spacing: 0.04em; }
+  .tag { color: var(--v4-text-3); }
   .prow { display: flex; align-items: center; gap: 8px; min-width: 0; }
   .prow .sk { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .spark path { fill: none; stroke: currentColor; stroke-width: 1.2; opacity: 0.7; }

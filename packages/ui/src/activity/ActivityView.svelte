@@ -351,7 +351,7 @@
   .pane { width: 300px; flex: none; overflow-y: auto; padding: 12px 16px; border-left: 1px solid var(--line); box-sizing: border-box; }
   .ph { display: flex; align-items: flex-start; gap: 8px; }
   .pn { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
-  .x { background: none; border: 0; color: var(--t2); cursor: pointer; font-size: 16px; }
+  .x { background: none; border: 0; color: var(--t2); cursor: pointer; font: inherit; min-width: 28px; min-height: 28px; }
   .tot { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }
   .tot dt { color: var(--t2); }
   .tot dd { margin: 0; }
