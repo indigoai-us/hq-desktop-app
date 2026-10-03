@@ -814,7 +814,11 @@ describe('embedded Work navigation and lifecycle', () => {
     await fill('[data-testid="submit-application-handle"]', 'ada');
     (host.querySelector('[data-testid="submit-request-access-button"]') as HTMLButtonElement).click();
     await flush(64);
+    // AUDIT-3c: the server's own sentence goes to the log; the panel shows plain copy.
     expect(host.querySelector('[data-testid="submit-request-error"]')?.textContent).toContain(
+      "Couldn't send your request. Try again",
+    );
+    expect(host.querySelector('[data-testid="submit-request-error"]')?.textContent).not.toContain(
       'application service unavailable',
     );
     expect(invocations.find((entry) => entry.command === 'request_creator_access')?.args).toEqual({
