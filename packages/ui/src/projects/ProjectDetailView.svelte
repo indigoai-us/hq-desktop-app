@@ -1833,7 +1833,7 @@
     height: 31px;
     padding: 7px 8px;
     border: 0;
-    border-radius: 8px;
+    border-radius: 0;
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;

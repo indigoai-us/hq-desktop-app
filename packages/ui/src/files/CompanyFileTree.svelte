@@ -497,7 +497,7 @@
     height: auto;
     padding: 4px 8px;
     border: none;
-    border-radius: 4px;
+    border-radius: 0;
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;

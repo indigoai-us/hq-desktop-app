@@ -6,13 +6,21 @@
   no new pollers.
 -->
 <script lang="ts">
-  import type { Snippet } from "svelte";
+  import { onMount, type Snippet } from "svelte";
+  import LiveNowCard from "../common/LiveNowCard.svelte";
+  import {
+    activeMeetings,
+    recordingMemberships,
+    setRecordingCompany,
+    startRecording,
+    stopRecording,
+  } from "./active-meetings";
   import MeetingCanvas from "./MeetingCanvas.svelte";
   import { meetingsStore } from "./meetings-store.svelte";
   import { withRecordedEvents } from "./recorded-meetings";
   import { meetingsRailState } from "./meetings-rail-state.svelte";
   import { defaultMeetingId, meetingsRailSections } from "./meetings-rail-model";
-  import { botForEvent } from "./meetings-model";
+  import { botForEvent, pickLiveMeeting } from "./meetings-model";
   import { meetingPhase } from "./meeting-states-model";
   import MeetingsStatesDoor from "./MeetingsStatesDoor.svelte";
   import { pushToast } from "../shell/toast-stack.svelte.js";
@@ -26,6 +34,12 @@
   }
 
   let { agenda, openExternal, focusMeetingId = null }: Props = $props();
+
+  onMount(() => meetingsRailState.registerCanvasHost());
+
+  // A meeting the desktop detected keeps its recording controls on the
+  // visible canvas; the agenda below is hidden while agenda mode is off.
+  const nativeLiveMeeting = $derived(pickLiveMeeting($activeMeetings));
 
   let focused: string | null = null;
   $effect.pre(() => {
@@ -74,6 +88,16 @@
   }
 </script>
 
+{#if nativeLiveMeeting && meetingsRailState.hostOwnsLiveCard}
+  <LiveNowCard
+    meeting={nativeLiveMeeting}
+    memberships={$recordingMemberships}
+    onstart={startRecording}
+    onstop={stopRecording}
+    oncompany={setRecordingCompany}
+    {openExternal}
+  />
+{/if}
 {#if event && phase === "live"}
   <MeetingCanvas
     {event}

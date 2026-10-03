@@ -149,7 +149,10 @@ test.describe('console rail: keyboard and accessible names', () => {
       );
       expect(name, await control.evaluate((el) => el.outerHTML.slice(0, 120))).not.toBe('');
       // Keyboard modality, so :focus-visible applies as it does for Tab.
-      await page.keyboard.press('Shift');
+      // WebKit does not count a bare modifier press as keyboard input, so the
+      // first control after the mouse click would never match :focus-visible;
+      // a real Tab press sets the modality in every engine.
+      await page.keyboard.press('Tab');
       await control.focus();
       const ring = await control.evaluate((el) => {
         const style = getComputedStyle(el);
