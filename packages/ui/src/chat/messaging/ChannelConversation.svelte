@@ -254,12 +254,12 @@
      */
     belowMessages?: Snippet;
     /**
-     * Optional row pinned under the scroller, above the suggested replies and
-     * the message box (a bot's file sync). It is not part of the thread: it
-     * stays in view while the person scrolls, and takes its own room, so it
-     * never covers a message.
+     * Optional strip across the top of the conversation, directly under the
+     * host's header and above the message scroller (a bot's file sync). It is
+     * not part of the thread: it stays in view while the person scrolls, and
+     * takes its own room, so it never covers a message.
      */
-    aboveComposer?: Snippet;
+    aboveMessages?: Snippet;
     /**
      * Suggested replies to show as buttons above the message box. The host
      * decides which conversation gets them and when; a click sends the text
@@ -353,7 +353,7 @@
     attachmentValidator = validateChatAttachment,
     header,
     belowMessages,
-    aboveComposer,
+    aboveMessages,
     suggestedReplies = [],
     suggestedReplyText = null,
     connections = null,
@@ -1493,8 +1493,9 @@
     const content = threadContent;
     if (!el || !content || typeof ResizeObserver === "undefined") return;
     let lastHeight = content.offsetHeight;
-    // The scroller itself changes height when the area pinned under it does
-    // (a sync row or suggested replies appear or go, the message box grows).
+    // The scroller itself changes height when the strip above it or the area
+    // pinned under it does (a sync strip or suggested replies appear or go,
+    // the message box grows).
     // A tall thread's content box does not change then, so it is watched too.
     let lastViewport = el.clientHeight;
     const observer = new ResizeObserver(() => {
@@ -1559,6 +1560,16 @@
     <div class="drop-overlay" data-testid="composer-drop-overlay">
       <div class="drop-overlay-card">Drop files to attach</div>
     </div>
+  {/if}
+  {#if aboveMessages && !headerOnly}
+    <!--
+      The host's strip (a bot's file sync): directly under the header, full
+      width, above the scroller and outside its scroll flow, so it stays in
+      view. When it appears or goes the scroller changes height; the effect
+      that holds the bottom keeps a reader at the newest message there, and
+      leaves a reader who scrolled up where they are.
+    -->
+    <div class="conversation-strip" data-testid="conversation-strip">{@render aboveMessages()}</div>
   {/if}
   <div class="conversation-body">
     <div class="dm-thread-wrap">
@@ -2019,15 +2030,12 @@
 
   {#if !headerOnly}
   <!--
-    Pinned under the thread, in this order: the host's row (a bot's file
-    sync), the suggested replies, the message box. None of it scrolls with
-    the messages. When this area grows or shrinks the scroller changes height;
-    the effect that holds the bottom keeps a reader at the newest message
-    there, and leaves a reader who scrolled up where they are.
+    Pinned under the thread: the suggested replies, then the message box.
+    Neither scrolls with the messages. When this area grows or shrinks the
+    scroller changes height; the effect that holds the bottom keeps a reader
+    at the newest message there, and leaves a reader who scrolled up where
+    they are.
   -->
-  {#if aboveComposer}
-    <div class="conversation-pinned" data-testid="conversation-pinned">{@render aboveComposer()}</div>
-  {/if}
   {#if visibleSuggestions.length > 0 && !composerLocked}
     <div class="suggested-replies" data-testid="suggested-replies" role="group" aria-label="Suggested replies">
       {#each visibleSuggestions as label (label)}
@@ -2285,6 +2293,12 @@
        for WebKit to take the hit. */
     background: color-mix(in srgb, var(--t1, #111) 1%, transparent);
     pointer-events: auto;
+  }
+
+  /* The host's strip under the header: the pane's full width, above the scroller. */
+  .conversation-strip {
+    flex: 0 0 auto;
+    min-width: 0;
   }
 
   .conversation-body {
@@ -3323,12 +3337,6 @@
     cursor: default;
   }
 
-  /* The host's pinned row: the message box's column, edge to edge. */
-  .conversation-pinned {
-    flex: 0 0 auto;
-    min-width: 0;
-    margin: 0 var(--conv-inset, 16px);
-  }
   .suggested-replies {
     flex: 0 0 auto;
     display: flex;

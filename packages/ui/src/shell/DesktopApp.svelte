@@ -3863,7 +3863,7 @@
 
   // ── Sync widget in a cloud bot's direct message ─────────────────────────
   //
-  // A slim bar at the bottom of the conversation while the bot's copy of the
+  // A slim strip under the conversation header while the bot's copy of the
   // company's files is being brought up to date. It is drawn from plain facts
   // per bot (bot-sync-model.ts). Today the facts come from the bot's status:
   // the first download after the bot was made, and any later full download
@@ -10919,10 +10919,10 @@
                   {/if}
                   {#if botNoticeBelow}{@render localBotNotice()}{/if}
                 {/snippet}
-                {#snippet botSyncPinned()}
-                  <!-- Pinned under the thread, above the suggested replies
-                       and the message box: the bot's file sync. It stays in
-                       view while the person scrolls. -->
+                {#snippet botSyncStrip()}
+                  <!-- A strip directly under the header, above the message
+                       scroller: the bot's file sync. It stays in view while
+                       the person scrolls. -->
                   {#if dmCloudBotUid}
                     <BotSyncWidget facts={dmCloudBotSync} botName={headerTitle} />
                   {/if}
@@ -11125,7 +11125,7 @@
                         ? botProgressHeader
                         : undefined}
                   belowMessages={agentThinkingBelow}
-                  aboveComposer={botSyncPinned}
+                  aboveMessages={botSyncStrip}
                   suggestedReplies={setupSuggestedReplies.length > 0 ? setupSuggestedReplies : cloudBotSuggestedReplies}
                   suggestedReplyText={setupSuggestedReplies.length > 0 ? null : cloudBotSuggestedReplyText}
                   connections={cloudBotConnections}

@@ -1,9 +1,10 @@
 // @vitest-environment happy-dom
 
 /**
- * The area pinned under the thread: the host's row (a bot's file sync), the
- * suggested replies, the message box. None of it scrolls with the messages.
- * When it grows or shrinks the scroller changes height: a reader at the
+ * What sits outside the scroll flow: the host's strip across the top (a
+ * bot's file sync), and under the thread the suggested replies and the
+ * message box. None of it scrolls with the messages. When the strip or the
+ * pinned area grows or shrinks the scroller changes height: a reader at the
  * newest message stays there, and a reader who scrolled up is not moved.
  *
  * happy-dom does no layout, so the scroller's box is stubbed, and a stand-in
@@ -58,8 +59,9 @@ function messages(count: number): ConversationMessageWire[] {
   })) as ConversationMessageWire[];
 }
 
-const probe = createRawSnippet(() => ({ render: () => '<div data-testid="pinned-probe">Syncing</div>' }));
+const probe = createRawSnippet(() => ({ render: () => '<div data-testid="strip-probe">Syncing</div>' }));
 const thinking = createRawSnippet(() => ({ render: () => '<div data-testid="thinking-probe">Nova is thinking</div>' }));
+const intro = createRawSnippet(() => ({ render: () => '<div data-testid="header-probe">About Nova</div>' }));
 
 async function mountConversation(props: Record<string, unknown>): Promise<void> {
   host = document.createElement("div");
@@ -92,49 +94,58 @@ function resized(): void {
   for (const callback of [...resizeCallbacks]) callback();
 }
 
-describe("ChannelConversation pinned area", () => {
-  it("draws the host's row under the thread, then the suggested replies, then the message box", async () => {
-    await mountConversation({ aboveComposer: probe, belowMessages: thinking, suggestedReplies: ["Yes", "Not yet"] });
-    const row = host.querySelector<HTMLElement>('[data-testid="pinned-probe"]')!;
+describe("ChannelConversation strip and pinned area", () => {
+  it("draws the host's strip above the thread, then the thread, the suggested replies and the message box", async () => {
+    await mountConversation({ aboveMessages: probe, belowMessages: thinking, header: intro, suggestedReplies: ["Yes", "Not yet"] });
+    const strip = host.querySelector<HTMLElement>('[data-testid="strip-probe"]')!;
+    expect(strip).not.toBeNull();
+    // Not in the scroller: it stays in view while the person scrolls.
+    expect(thread().contains(strip)).toBe(false);
+    expect(strip.closest('[data-testid="conversation-strip"]')).not.toBeNull();
+    // Above the scroller and everything in it, including the thread's own intro.
+    expect(before(strip, thread())).toBe(true);
+    const headerProbe = host.querySelector<HTMLElement>('[data-testid="header-probe"]')!;
+    expect(thread().contains(headerProbe)).toBe(true);
+    expect(before(strip, headerProbe)).toBe(true);
     // The status row (a bot thinking) is still the last row of the thread itself.
     const lastRow = host.querySelector<HTMLElement>('[data-testid="thinking-probe"]')!;
     expect(thread().contains(lastRow)).toBe(true);
-    expect(before(lastRow, row)).toBe(true);
     const chips = host.querySelector<HTMLElement>('[data-testid="suggested-replies"]')!;
     const box = host.querySelector<HTMLElement>('[data-testid="conversation-composer"]')!;
-    expect(row).not.toBeNull();
-    // Not in the scroller: it stays in view while the person scrolls.
-    expect(thread().contains(row)).toBe(false);
     expect(thread().contains(chips)).toBe(false);
-    expect(row.closest('[data-testid="conversation-pinned"]')).not.toBeNull();
-    expect(before(thread(), row)).toBe(true);
-    expect(before(row, chips)).toBe(true);
+    expect(before(lastRow, chips)).toBe(true);
     expect(before(chips, box)).toBe(true);
+    // The strip is the first thing in the pane, before the scroller's column.
+    const pane = host.querySelector<HTMLElement>('[data-testid="conversation-view"]')!;
+    const stripSlot = host.querySelector<HTMLElement>('[data-testid="conversation-strip"]')!;
+    expect(stripSlot.parentElement).toBe(pane);
+    expect(before(stripSlot, pane.querySelector(".conversation-body")!)).toBe(true);
   });
 
-  it("has no pinned row when the host gives none, or in a header-only pane", async () => {
+  it("has no strip when the host gives none, or in a header-only pane", async () => {
     await mountConversation({});
-    expect(host.querySelector('[data-testid="conversation-pinned"]')).toBeNull();
+    expect(host.querySelector('[data-testid="conversation-strip"]')).toBeNull();
     await unmount(component!);
     component = null;
     host.remove();
-    await mountConversation({ aboveComposer: probe, headerOnly: true });
-    expect(host.querySelector('[data-testid="pinned-probe"]')).toBeNull();
+    await mountConversation({ aboveMessages: probe, headerOnly: true });
+    expect(host.querySelector('[data-testid="strip-probe"]')).toBeNull();
+    expect(host.querySelector('[data-testid="conversation-strip"]')).toBeNull();
   });
 
-  it("keeps a reader at the newest message there when the pinned area takes room", async () => {
-    await mountConversation({ aboveComposer: probe });
+  it("keeps a reader at the newest message there when the strip takes room", async () => {
+    await mountConversation({ aboveMessages: probe });
     const box = { viewport: 600 };
     const el = stubLayout(box);
     await scrollTo(el, 2400);
     resized();
-    // The sync row appears: the scroller loses 60px. Without a pin the newest
-    // message would sit 60px under the fold.
-    box.viewport = 540;
+    // The sync strip appears: the scroller loses 32px. Without a pin the
+    // newest message would sit 32px under the fold.
+    box.viewport = 568;
     el.scrollTop = 2400;
     resized();
     expect(el.scrollTop).toBe(3000);
-    // The row goes: the scroller is tall again and still at the bottom.
+    // The strip goes: the scroller is tall again and still at the bottom.
     box.viewport = 600;
     el.scrollTop = 2400;
     resized();
@@ -142,13 +153,13 @@ describe("ChannelConversation pinned area", () => {
   });
 
   it("leaves a reader who scrolled up where they are", async () => {
-    await mountConversation({ aboveComposer: probe });
+    await mountConversation({ aboveMessages: probe });
     const box = { viewport: 600 };
     const el = stubLayout(box);
     await scrollTo(el, 2400);
     resized();
     await scrollTo(el, 900);
-    box.viewport = 540;
+    box.viewport = 568;
     resized();
     expect(el.scrollTop).toBe(900);
     box.viewport = 600;

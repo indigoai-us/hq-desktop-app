@@ -13,10 +13,10 @@ import { BOT_SYNC_DONE_VISIBLE_MS, BOT_SYNC_POLL_MS } from "../chat/bot-sync-mod
 import type { ConversationRow } from "../chat/sidebar-model.js";
 
 /**
- * The sync widget at the bottom of a cloud bot's direct message: shown while
- * the bot's company files are being downloaded, drawn from the bot's status,
- * gone a few seconds after the server says the files are there. It replaced
- * the grey "still downloading" line.
+ * The sync strip under the header of a cloud bot's direct message: shown
+ * while the bot's company files are being downloaded, drawn from the bot's
+ * status, gone a few seconds after the server says the files are there. It
+ * replaced the grey "still downloading" line.
  */
 
 const NOVA = "agt_nova";
@@ -54,6 +54,10 @@ function statusOf(runtime: Row, setupState: Row = { phase: "waiting", steps: CHA
   return { setupState, agent: { companyUid: COMPANY, runtime, channels: null } };
 }
 
+/** The bot's computer reported `ago` milliseconds back; its last sync run ended as `sync`. */
+const heartbeat = (ago: number, sync = "unknown"): Row => ({ at: new Date(Date.now() - ago).toISOString(), components: { sync } });
+
+/** A live download: a snapshot refreshed moments ago on a computer that is heartbeating. */
 const downloading = (filesDone: number, filesTotal: number): Row => ({
   firstSyncStartedAt: new Date(Date.now() - 120_000).toISOString(),
   firstSync: {
@@ -63,6 +67,7 @@ const downloading = (filesDone: number, filesTotal: number): Row => ({
     startedAt: new Date(Date.now() - 120_000).toISOString(),
     updatedAt: new Date(Date.now() - 5_000).toISOString(),
   },
+  lastHeartbeat: heartbeat(10_000),
 });
 const SYNCED: Row = { syncOkAt: "2026-10-02T14:20:00.000Z", firstSyncFinalized: { totalObjects: 412, startedAt: "2026-10-02T14:10:00.000Z", finishedAt: "2026-10-02T14:20:00.000Z" } };
 
@@ -187,7 +192,7 @@ describe("DesktopApp sync widget in a cloud bot's direct message", () => {
     const el = widget()!;
     expect(el.dataset.state).toBe("syncing");
     expect(el.textContent).toContain("Syncing your company's files");
-    expect(el.textContent).toContain("You can chat now. Nova will know more as this finishes.");
+    expect(el.textContent).toContain("Pulling files down. You can chat now. Nova will know more as this finishes.");
     expect(bar()!.getAttribute("aria-valuenow")).toBe("31");
     expect(bar()!.getAttribute("aria-valuetext")).toBe("128 of 412 files");
     expect(amount()).toBe("31%");
@@ -210,7 +215,7 @@ describe("DesktopApp sync widget in a cloud bot's direct message", () => {
     expect(now).toBeLessThan(100);
   });
 
-  it("is pinned under the thread, above the suggested replies and the message box", async () => {
+  it("is a strip directly under the header, above the thread, the suggested replies and the message box", async () => {
     const w = world({ thread: thread(NOVA, SUGGESTIONS) });
     await mountNewBotDm(w);
     await vi.waitFor(() => expect(widget()).not.toBeNull());
@@ -219,12 +224,46 @@ describe("DesktopApp sync widget in a cloud bot's direct message", () => {
     // Not in the scroller: it stays in view while the person scrolls, and it
     // takes its own room, so it covers nothing.
     expect(threadEl()!.contains(el)).toBe(false);
-    expect(el.closest('[data-testid="conversation-pinned"]')).not.toBeNull();
-    expect(before(threadEl()!, el)).toBe(true);
-    expect(before(el, chipRow()!)).toBe(true);
+    expect(el.closest('[data-testid="conversation-strip"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="conversation-pinned"]')).toBeNull();
+    // Under the conversation header, above everything in the thread.
+    const header = host.querySelector<HTMLElement>('[data-testid="channel-name"]')!;
+    expect(header.textContent).toBe("Nova");
+    expect(before(header, el)).toBe(true);
+    expect(before(el, threadEl()!)).toBe(true);
+    expect(before(threadEl()!, chipRow()!)).toBe(true);
     expect(before(chipRow()!, host.querySelector("textarea")!)).toBe(true);
     // The chips still work as before.
     expect(chipRow()!.textContent).toContain("Summarize our company files");
+  });
+
+  it("the live run: a finished-looking snapshot forty minutes old is stale, with no percent", async () => {
+    // What the walkthrough bot's status said: every file counted, no syncOkAt,
+    // the box heartbeating but its last sync run not ok. The old strip read
+    // the frozen counts as 99%.
+    const w = world({
+      status: () =>
+        statusOf({
+          firstSyncStartedAt: new Date(Date.now() - 50 * 60_000).toISOString(),
+          firstSync: {
+            phase: "pull",
+            filesTotal: 412,
+            filesDone: 412,
+            startedAt: new Date(Date.now() - 50 * 60_000).toISOString(),
+            updatedAt: new Date(Date.now() - 40 * 60_000).toISOString(),
+          },
+          lastHeartbeat: heartbeat(20_000, "degraded"),
+        }),
+    });
+    await mountNewBotDm(w);
+    await vi.waitFor(() => expect(widget()).not.toBeNull());
+    const el = widget()!;
+    expect(el.dataset.state).toBe("stale");
+    expect(el.textContent).toContain("Still syncing your company's files");
+    expect(el.textContent).not.toMatch(/\d/);
+    expect(amount()).toBeNull();
+    expect(bar()!.hasAttribute("aria-valuenow")).toBe(false);
+    expect(bar()!.classList.contains("is-unknown")).toBe(true);
   });
 
   it("shows for a bot that was not made here once its computer reports a download", async () => {
@@ -287,8 +326,10 @@ describe("DesktopApp sync widget in a cloud bot's direct message", () => {
     await mountNewBotDm(w);
     await vi.waitFor(() => expect(widget()).not.toBeNull());
     expect(widget()!.dataset.state).toBe("failed");
-    expect(widget()!.textContent).toContain("Nova could not finish downloading your company's files.");
+    expect(widget()!.textContent).toContain("Sync hit a problem");
+    expect(widget()!.textContent).toContain("Nova could not finish syncing your company's files.");
     expect(bar()).toBeNull();
+    expect(amount()).toBeNull();
   });
 });
 
@@ -334,18 +375,22 @@ describe("DesktopApp sync widget over time", () => {
   });
 
   it("shows again when the server reports a later full download", async () => {
-    let runtime: Row = SYNCED;
+    // A bot from before the server wrote first-sync records: synced, with no
+    // finalized record. A finalized record would mean finished whatever else
+    // the status carried.
+    const synced: Row = { syncOkAt: "2026-10-02T14:20:00.000Z" };
+    let runtime: Row = synced;
     const w = world({ status: () => statusOf(runtime, { phase: "ready" }) });
     await mountRow(w, DM_ROW(NOVA), "Hi Corey, I am Nova.");
     await settle(20);
     expect(widget()).toBeNull();
 
-    runtime = { ...SYNCED, ...downloading(40, 400) };
+    runtime = { ...synced, ...downloading(40, 400) };
     await until(() => widget() !== null);
     expect(widget()!.dataset.state).toBe("syncing");
     expect(amount()).toBe("10%");
 
-    runtime = SYNCED;
+    runtime = synced;
     await until(() => widget()?.dataset.state === "done");
     expect(widget()!.textContent).toContain("Files are up to date.");
     await advance(BOT_SYNC_DONE_VISIBLE_MS + 2_000);
