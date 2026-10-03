@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 - Desktop setup invite telemetry now includes the company for each step outcome and the number of invitations sent. It does not include invitee details.
+- Startup diagnostics now classify reason-suffixed refresh-rejection markers as desktop-origin markers.
 - The welcome sign-in window now advances when you are already signed in, keeps
   you informed while browser sign-in is in progress, and gives you a clear Try
   again path if it does not finish.
