@@ -14,6 +14,7 @@
 
 use hq_desktop_core::cdp_mirror::{
     Endpoints, Mirror, MirrorContext, EVENT_APP_FIRST_LAUNCH, EVENT_COMPANY_CREATED,
+    EVENT_COMPANY_PROVISIONING_FAILED, EVENT_COMPANY_ROUTE_DECIDED, EVENT_COMPANY_SELF_HEAL,
     EVENT_FIRST_SYNC_COMPLETED, EVENT_LOGIN_COMPLETED, EVENT_ONBOARDING_STEP_SHOWN,
     EVENT_SETUP_ABANDONED,
 };
@@ -161,6 +162,22 @@ pub fn current_anon_id() -> Option<String> {
     mirror().and_then(|m| m.context().anon_id)
 }
 
+/// The website visitor id for this install (sign-in link or download tag), so
+/// onboarding can ask hq-pro whether that visitor already made a company under
+/// another account. An opaque, anonymous id; never a token.
+#[tauri::command]
+pub fn web_visitor_anon_id() -> Option<String> {
+    current_anon_id()
+        .or_else(download_tag_anon_id)
+        .filter(|id| {
+            !id.is_empty()
+                && id.len() <= 128
+                && id
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        })
+}
+
 /// Send the pending `install_tag_read` row to hq-pro; clear it on success.
 /// Before sign-in there is no token and it stays pending for the next try.
 pub fn flush_install_tag_report() {
@@ -288,6 +305,33 @@ pub fn mirror_for_operational_event(
     let outcome = props.get("outcome").and_then(Value::as_str).unwrap_or("");
     if outcome == "company_created" {
         return Some((EVENT_COMPANY_CREATED, Map::new()));
+    }
+    if let Some(self_heal) = props.get("selfHeal").and_then(Value::as_str) {
+        let mut out = Map::new();
+        out.insert("result".into(), json!(self_heal));
+        if let Some(step) = props.get("provisioningStep").and_then(Value::as_str) {
+            out.insert("provisioningStep".into(), json!(step));
+        }
+        return Some((EVENT_COMPANY_SELF_HEAL, out));
+    }
+    if step == "company" {
+        if let Some(decision) = props.get("decision").and_then(Value::as_str) {
+            let mut out = Map::new();
+            out.insert("decision".into(), json!(decision));
+            for key in ["existingCompanies", "paidCompany", "pendingInvites"] {
+                if let Some(value) = props.get(key) {
+                    out.insert(key.into(), value.clone());
+                }
+            }
+            return Some((EVENT_COMPANY_ROUTE_DECIDED, out));
+        }
+        if action == "failed" {
+            if let Some(step_name) = props.get("provisioningStep").and_then(Value::as_str) {
+                let mut out = Map::new();
+                out.insert("provisioningStep".into(), json!(step_name));
+                return Some((EVENT_COMPANY_PROVISIONING_FAILED, out));
+            }
+        }
     }
     if action == "entered" {
         let mut out = Map::new();
@@ -473,6 +517,32 @@ mod tests {
         assert_eq!(anon.as_deref(), Some("vyg-x"));
         assert_eq!(source.as_deref(), Some("email-link"));
         assert_eq!(first, 5_000);
+    }
+
+    #[test]
+    fn company_route_provisioning_and_self_heal_rows_mirror() {
+        let route = json!({"step": "company", "action": "started", "decision": "paid_existing",
+            "existingCompanies": 1, "paidCompany": true, "pendingInvites": 0});
+        let (name, props) =
+            mirror_for_operational_event("desktop_onboarding_step", Some(&route)).unwrap();
+        assert_eq!(name, EVENT_COMPANY_ROUTE_DECIDED);
+        assert_eq!(props["decision"], "paid_existing");
+        assert_eq!(props["paidCompany"], true);
+        assert_eq!(props["existingCompanies"], 1);
+
+        let failed =
+            json!({"step": "company", "action": "failed", "provisioningStep": "kms-create"});
+        let (name, props) =
+            mirror_for_operational_event("desktop_onboarding_step", Some(&failed)).unwrap();
+        assert_eq!(name, EVENT_COMPANY_PROVISIONING_FAILED);
+        assert_eq!(props["provisioningStep"], "kms-create");
+
+        let heal =
+            json!({"step": "first-folder-sync", "action": "started", "selfHeal": "succeeded"});
+        let (name, props) =
+            mirror_for_operational_event("desktop_onboarding_step", Some(&heal)).unwrap();
+        assert_eq!(name, EVENT_COMPANY_SELF_HEAL);
+        assert_eq!(props["result"], "succeeded");
     }
 
     #[test]
