@@ -21,9 +21,11 @@ const app = vi.hoisted(() => ({
 }));
 const onboardingFlags = vi.hoisted(() => ({
   firstFolderSyncEnabled: false,
+  companyNamePrefillEnabled: false,
   companyRouteLookupRetryEnabled: false,
   hasFeature: vi.fn(),
   startSync: vi.fn(),
+  refreshFeatureFlags: vi.fn(),
 }));
 
 const httpFetch = vi.hoisted(() =>
@@ -43,6 +45,7 @@ vi.mock('@tauri-apps/plugin-http', () => ({ fetch: httpFetch }));
 vi.mock('@hq/platform', () => ({
   hostComputerNoun: () => 'computer',
   FIRST_FOLDER_SYNC_STEP_FLAG: 'desktop.first-folder-sync-step-v1',
+  COMPANY_NAME_PREFILL_FLAG: 'desktop.company-name-prefill-v1',
   FIRST_LAUNCH_JOIN_KEY_FLAG: 'desktop.first-launch-join-key-v1',
   COMPANY_ROUTE_LOOKUP_RETRY_FLAG: 'desktop.company-route-lookup-retry-v1',
   SETUP_DEPS_TIMEOUT_RETRY_FLAG: 'desktop.setup-deps-timeout-retry-v1',
@@ -60,13 +63,15 @@ vi.mock('@hq/platform', () => ({
   },
   createSyncPlatformAdapter: vi.fn(() => ({
     identity: {
+      refreshFeatureFlags: () => onboardingFlags.refreshFeatureFlags(),
       hasFeature: (flag: string) => {
         if (flag === 'desktop.first-folder-sync-step-v1') {
           return onboardingFlags.hasFeature(flag);
         }
         if (
           flag === 'desktop.first-launch-join-key-v1' ||
-          flag === 'desktop.company-route-lookup-retry-v1'
+          flag === 'desktop.company-route-lookup-retry-v1' ||
+          flag === 'desktop.company-name-prefill-v1'
         ) {
           return onboardingFlags.hasFeature(flag);
         }
@@ -447,12 +452,16 @@ beforeEach(() => {
     text: async () => '',
   });
   onboardingFlags.firstFolderSyncEnabled = false;
+  onboardingFlags.companyNamePrefillEnabled = false;
   onboardingFlags.companyRouteLookupRetryEnabled = false;
+  onboardingFlags.refreshFeatureFlags.mockReset().mockResolvedValue(undefined);
   onboardingFlags.hasFeature.mockReset().mockImplementation(async (flag: string) => ({
     ok: true,
     value: flag === 'desktop.first-folder-sync-step-v1'
       ? onboardingFlags.firstFolderSyncEnabled
-      : flag === 'desktop.company-route-lookup-retry-v1' &&
+      : flag === 'desktop.company-name-prefill-v1'
+        ? onboardingFlags.companyNamePrefillEnabled
+        : flag === 'desktop.company-route-lookup-retry-v1' &&
         onboardingFlags.companyRouteLookupRetryEnabled,
   }));
   onboardingFlags.startSync.mockReset().mockResolvedValue({
@@ -3795,8 +3804,10 @@ describe('company onboarding step', () => {
     anonLookup?: Record<string, unknown>;
     createError?: string;
     signedInEmail?: string;
+    companyNamePrefillEnabled?: boolean;
   } = {}): Promise<void> {
     onboardingFlags.firstFolderSyncEnabled = false;
+    onboardingFlags.companyNamePrefillEnabled = options.companyNamePrefillEnabled ?? false;
     onboardingFlags.companyRouteLookupRetryEnabled = options.companyRouteLookupRetryEnabled ?? false;
     let entityPolls = 0;
     let provisionCalled = false;
@@ -3957,6 +3968,34 @@ describe('company onboarding step', () => {
     await vi.advanceTimersByTimeAsync(400);
     await flush();
   }
+
+  it('prefills a new company name through the user-edit path so the slug is ready', async () => {
+    await reachCompanyScenario({
+      signedInEmail: 'founder@acme.io',
+      companyNamePrefillEnabled: true,
+    });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')));
+    await settle();
+
+    expect(host.querySelector<HTMLInputElement>('[data-testid="onboarding-company-field-name"]')?.value).toBe('Acme');
+    expect(host.querySelector<HTMLInputElement>('[data-testid="onboarding-company-field-slug"]')?.value).toBe('acme');
+    expect(tauri.invoke).toHaveBeenCalledWith('check_company_slug', { slug: 'acme' });
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="onboarding-company-create"]')?.disabled).toBe(false);
+  });
+
+  it('refreshes the hq-flags snapshot before resolving prefill on a create route after sign-in', async () => {
+    await reachCompanyScenario({
+      signedInEmail: 'founder@acme.io',
+      companyNamePrefillEnabled: true,
+    });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')));
+
+    expect(onboardingFlags.refreshFeatureFlags).toHaveBeenCalledTimes(1);
+    const refreshIndex = onboardingFlags.refreshFeatureFlags.mock.invocationCallOrder[0];
+    const prefillRead = onboardingFlags.hasFeature.mock.invocationCallOrder.find((order, index) =>
+      onboardingFlags.hasFeature.mock.calls[index]?.[0] === 'desktop.company-name-prefill-v1');
+    expect(prefillRead).toBeGreaterThan(refreshIndex);
+  });
 
   it('skips the step for a person who already joined a company and selects it', async () => {
     await reachCompanyScenario({

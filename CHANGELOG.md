@@ -7,6 +7,7 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+- When company-name suggestions are enabled, new-company setup can prefill the name from a business email domain. The name remains editable.
 - Desktop setup still cancels an install and still records its failure after an internal error interrupts that bookkeeping.
 - On first launch, onboarding step telemetry can share the persisted install attempt id with the anonymous launch receipt when its hq-flags gate is enabled.
 - Workspace refresh no longer clears a company cloud link when an entity lookup is missing; only a confirmed deletion removes it.

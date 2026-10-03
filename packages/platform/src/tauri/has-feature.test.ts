@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { FlagClient, FlagSnapshot } from "@indigoai-us/hq-flags-client";
 import { TauriPlatformAdapter } from "./index.js";
 import { createSyncPlatformAdapter } from "./sync-adapter.js";
-import { PERSONAL_TRANSCRIPTS_FLAG } from "../flags.js";
+import { COMPANY_NAME_PREFILL_FLAG, PERSONAL_TRANSCRIPTS_FLAG } from "../flags.js";
 
 interface Invocation {
   cmd: string;
@@ -105,6 +105,55 @@ describe("TauriPlatformAdapter hasFeature", () => {
 });
 
 describe("createSyncPlatformAdapter hasFeature", () => {
+  it('force-refreshes the hq-flags client for identity-scoped route resolution', async () => {
+    const refresh = vi.fn(async () => {});
+    const adapter = createSyncPlatformAdapter({
+      invoke: async () => undefined,
+      createFlagClient: () => ({
+        ready: async () => {},
+        snapshot: () => ({ version: 1, flags: {} }),
+        isEnabled: () => false,
+        refresh,
+        explain: () => ({ value: false, source: 'fallback' }),
+        observeVersion: () => {},
+        onSnapshotChange: () => () => {},
+        version: () => 1,
+        close: () => {},
+      }),
+    });
+
+    await adapter.identity.refreshFeatureFlags?.();
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps company-name prefill off when the registry snapshot is missing or unavailable', async () => {
+    const absent = createSyncPlatformAdapter({
+      invoke: async (cmd) => {
+        if (cmd === 'hq_pro_fetch') return { status: 200, body: 'true' };
+        throw new Error(`unexpected ${cmd}`);
+      },
+      createFlagClient: () => fakeClient({
+        ready: async () => {},
+        snapshot: () => null,
+        isEnabled: () => true,
+      }),
+    });
+    await expect(absent.identity.hasFeature(COMPANY_NAME_PREFILL_FLAG)).resolves.toEqual({ ok: true, value: false });
+
+    const unavailable = createSyncPlatformAdapter({
+      invoke: async (cmd) => {
+        if (cmd === 'hq_pro_fetch') return { status: 200, body: 'true' };
+        throw new Error(`unexpected ${cmd}`);
+      },
+      createFlagClient: () => fakeClient({
+        ready: async () => { throw new Error('offline'); },
+        snapshot: () => null,
+        isEnabled: () => true,
+      }),
+    });
+    await expect(unavailable.identity.hasFeature(COMPANY_NAME_PREFILL_FLAG)).resolves.toEqual({ ok: true, value: false });
+  });
+
   it("personal transcript flag reads true from the registry snapshot", async () => {
     const calls: Invocation[] = [];
     const adapter = createSyncPlatformAdapter({
