@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { withReadDeadline } from "../common/read-deadline.js";
   /**
    * CompanyFileTree — Obsidian-style collapsible folder tree (US-002, made LAZY
    * in US-010; DESKTOP-008 keyboard + filter).
@@ -103,7 +104,8 @@
     focusedPath = null;
 
     let cancelled = false;
-    void loadChildren(base)
+    // BLANK-1: a read that never answers falls to the failed-read state.
+    void withReadDeadline(loadChildren(base), "folder listing")
       .then((entries) => {
         if (!cancelled && generation === treeGeneration) {
           roots = entries.map(dirEntryToLazyNode);
