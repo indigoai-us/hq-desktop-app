@@ -15,9 +15,8 @@ use sha2::{Digest, Sha256};
 const STATE_SUBDIR: &str = "hq-cli/package-use";
 const WINDOWS_STATE_SUBDIR: &str = "hq-cli/state/package-use";
 const UPDATE_REQUEST_NAME: &str = "update.pending.json";
-// Node's performance.timeOrigin can trail the kernel's process birth time while
-// the runtime initializes. Keep this allowance specific to macOS, where the
-// reader gets the kernel timestamp at sub-second precision.
+// The Node writer and macOS kernel reader derive process-start timestamps from
+// separate sources. Keep this bounded allowance specific to macOS.
 #[cfg(any(target_os = "macos", test))]
 const MACOS_PROCESS_START_TOLERANCE_MS: u64 = 1_000;
 pub const PACKAGE_USE_LEASE_TIMEOUT_ERROR: &str =
@@ -409,14 +408,19 @@ impl Drop for PackageUseUpdateGuard {
 fn same_process_start(actual_ms: u64, recorded_ms: u64) -> bool {
     let tolerance_ms = process_start_tolerance_ms();
     #[cfg(target_os = "macos")]
-    if actual_ms.abs_diff(recorded_ms) > 20 {
-        // Emit the observed mismatch once: stale records are removed immediately
-        // after this check, so this measures the skew that exceeded the old
-        // bound without logging repeatedly on each lease poll.
+    {
+        static SKEW_DIAGNOSTIC_EMITTED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
         let delta_ms = actual_ms.abs_diff(recorded_ms);
-        eprintln!(
-            "HQ CLI package-use lease process-start delta: {delta_ms}ms (tolerance {tolerance_ms}ms)"
-        );
+        if delta_ms > 20
+            && !SKEW_DIAGNOSTIC_EMITTED.swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            // Keep one observed delta per process so live leases do not log on
+            // every updater poll. This diagnostic does not affect liveness.
+            eprintln!(
+                "HQ CLI package-use lease process-start delta: {delta_ms}ms (tolerance {tolerance_ms}ms)"
+            );
+        }
     }
     same_process_start_with_tolerance(actual_ms, recorded_ms, tolerance_ms)
 }
