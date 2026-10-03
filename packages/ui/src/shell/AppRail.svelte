@@ -274,7 +274,7 @@
     border-radius: 50%;
     display: grid;
     place-items: center;
-    font: 600 12px/1 var(--font-ui);
+    font: 500 12px/1 var(--font-ui);
     letter-spacing: 0.02em;
     background: var(--v4-control-bg);
     color: var(--v4-text-1);
