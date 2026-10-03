@@ -10,6 +10,9 @@ The release moves it under the version it ships in.
 
 - Internal: CLI update failure reports now record which CLI version was running when the update failed, as a SemVer value or the word unknown, with no file path.
 - Release builds: the macOS release check now confirms its test sign-in is still valid before it opens the app. An expired test sign-in failed v0.10.383 with a message that looked like the app was stuck loading; it now says the test sign-in expired and how to renew it.
+- The Meet native Windows test build now pins its signing and Rust toolchain actions to exact versions. Nothing changes in the app.
+- CI launches of the desktop app no longer add first-run rows to the install funnel, including through the CDP mirror.
+- Internal tests: four desktop tests that only searched the source text for strings now check what the code does. Nothing changes in the app.
 
 ## [0.10.385] — 2026-10-03
 

@@ -66,6 +66,7 @@
     flushReceipts,
     launchReceipt,
     recordReceipt,
+    shouldSendFirstLaunchReceipt,
   } from '../../lib/desktop-session-continuation';
   import {
     NO_AI_TOOLS,
@@ -999,7 +1000,10 @@
     // `firstLaunchRecorded` is the existing durable first-installation gate.
     // It survives re-renders and a resumed wizard, while recordReceipt keeps
     // an undelivered receipt's event id and timestamp stable for retry.
-    if (firstLaunch && onboardingTelemetry.recordFirstLaunch()) {
+    if (
+      shouldSendFirstLaunchReceipt(firstLaunch, context.suppressFirstLaunchTelemetry) &&
+      onboardingTelemetry.recordFirstLaunch()
+    ) {
       void recordReceipt(deps, launchReceipt(deps)).catch(() => undefined);
     }
   }

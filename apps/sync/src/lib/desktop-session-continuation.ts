@@ -356,6 +356,14 @@ export function launchReceipt(deps: ContinuationDeps): ContinuationReceipt {
   };
 }
 
+/** CI launches must not inflate the production install denominator. */
+export function shouldSendFirstLaunchReceipt(
+  firstLaunch: boolean,
+  suppressFirstLaunchTelemetry: boolean,
+): boolean {
+  return firstLaunch && !suppressFirstLaunchTelemetry;
+}
+
 /* ------------------------------------------------------------------ */
 /* The attempt                                                        */
 /* ------------------------------------------------------------------ */
