@@ -51,6 +51,12 @@
    * takeover. Integration cards rotate through them by place in the row.
    */
   const art = $derived(view.target === "integration" ? integrationCardArt(index) : connectionCardArt(view.target));
+  /**
+   * The box at the head of every card, in px: an integration card's logo
+   * and a built-in card's icon are the same size, so the header rows of the
+   * cards in one row line up.
+   */
+  const HEAD_BOX = 28;
   const primaryAction = $derived(view.primaryAction);
   /** The connection a "Let {bot} use it" main button shares. */
   const primaryConnectionId = $derived(primaryAction === "allow" ? (view.connectionId ?? undefined) : undefined);
@@ -152,10 +158,16 @@
     <div class="connection-card-head">
       {#if view.logo}
         <!-- The app's logo: the badge at once, the favicon once it has loaded. -->
-        <ConnectionCardLogo logo={view.logo} size={28} />
+        <ConnectionCardLogo logo={view.logo} size={HEAD_BOX} />
       {:else}
-        <span class="connection-card-icon" aria-hidden="true">
-          <ConnectionCardIcon name={view.target} />
+        <span
+          class="connection-card-icon"
+          data-testid="connection-card-icon"
+          aria-hidden="true"
+          style:width={`${HEAD_BOX}px`}
+          style:height={`${HEAD_BOX}px`}
+        >
+          <ConnectionCardIcon name={view.target} size={18} />
         </span>
       {/if}
       <span class="connection-card-title">{view.title}</span>
@@ -353,9 +365,17 @@
     align-items: center;
     gap: 7px;
   }
+  /* The same box as an integration card's logo (ConnectionCardLogo), with
+     the glyph centered in it, so every card's header is one height. */
   .connection-card-icon {
     display: inline-flex;
     flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.05);
     color: var(--cc-muted);
   }
   .connection-card[data-state="connecting"] .connection-card-icon {

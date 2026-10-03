@@ -149,6 +149,25 @@ describe("a connection card", () => {
     expect(el.querySelectorAll("button")).toHaveLength(0);
   });
 
+  it("draws its icon in the same 28px box an integration card's logo takes, so header rows line up", () => {
+    for (const which of ["slack", "tools"] as const) {
+      const el = renderCard(connectionCardView(which, input()));
+      const box = el.querySelector<HTMLElement>('[data-testid="connection-card-icon"]')!;
+      expect(box).not.toBeNull();
+      expect(box.parentElement?.classList.contains("connection-card-head")).toBe(true);
+      expect(box.style.width).toBe("28px");
+      expect(box.style.height).toBe("28px");
+      expect(box.getAttribute("aria-hidden")).toBe("true");
+      // The glyph is the one the card always drew, scaled to sit inside the box.
+      const svg = box.querySelector("svg")!;
+      expect(svg.getAttribute("width")).toBe("18");
+      expect(svg.getAttribute("viewBox")).toBe("0 0 16 16");
+      void unmount(component!);
+      component = null;
+      host?.remove();
+    }
+  });
+
   it("shows the note under the card", () => {
     const el = renderCard(connectionCardView("tools", input({ notes: { tools: "Could not share Linear. Try again." } })));
     expect(el.querySelector('[data-testid="connection-card-note"]')?.textContent).toBe("Could not share Linear. Try again.");
