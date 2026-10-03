@@ -7,11 +7,20 @@
  */
 import { readdirSync, readFileSync, statSync, existsSync } from "node:fs";
 import { join, relative } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { flushSync, mount, unmount } from "svelte";
 import type { PlatformAdapter } from "@hq/platform";
 import GoalsRailHost from "../shell/GoalsRailHost.svelte";
 import DeploymentsRailHost from "../shell/DeploymentsRailHost.svelte";
+
+// The rail hosts load their views with lazy imports. Under full-suite load an
+// import could resolve after this file's environment was torn down
+// (EnvironmentTeardownError). Load the views up front so the hosts' imports
+// resolve from the module cache while the tests run.
+beforeAll(async () => {
+  await import("../goals/GoalsView.svelte");
+  await import("../library/PersonalDeploymentsPage.svelte");
+});
 
 const ROOT = join(__dirname, "..", "..", "..", "..");
 const SOURCES = [join(ROOT, "packages/ui/src"), join(ROOT, "apps/sync/src")];
