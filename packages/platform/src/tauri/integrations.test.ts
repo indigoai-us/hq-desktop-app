@@ -63,11 +63,86 @@ async function callBoth(adapter: PlatformAdapter): Promise<void> {
   await adapter.integrations.grantConnectionAccess(GRANT);
 }
 
+/** The four calls a card makes to connect an app, in order. */
+async function callConnectFlow(adapter: PlatformAdapter): Promise<void> {
+  await adapter.integrations.catalogSearch("cmp_acme", "linear.app", 20);
+  await adapter.integrations.startOAuth({ companyUid: "cmp_acme", domain: "linear.app" });
+  await adapter.integrations.blueprint({ companyUid: "cmp_acme", catalogEntryId: "cat_1" });
+  await adapter.integrations.install({
+    companyUid: "cmp_acme",
+    mcpUrl: "https://mcp.example.com/mcp",
+    authMode: "bearer",
+    bearerToken: "fake-key-3",
+  });
+}
+
+const EXPECTED_CONNECT_FLOW: Invocation[] = [
+  {
+    cmd: "hq_pro_fetch",
+    args: { url: INTEGRATION_PATHS.catalog("cmp_acme", "linear.app", 20), method: "GET", body: null },
+  },
+  {
+    cmd: "hq_pro_fetch",
+    args: { url: INTEGRATION_PATHS.oauthStart, method: "POST", body: JSON.stringify({ companyUid: "cmp_acme", domain: "linear.app" }) },
+  },
+  {
+    cmd: "hq_pro_fetch",
+    args: { url: INTEGRATION_PATHS.blueprint, method: "POST", body: JSON.stringify({ companyUid: "cmp_acme", catalogEntryId: "cat_1" }) },
+  },
+  {
+    cmd: "hq_pro_fetch",
+    args: {
+      url: INTEGRATION_PATHS.install,
+      method: "POST",
+      body: JSON.stringify({ companyUid: "cmp_acme", mcpUrl: "https://mcp.example.com/mcp", authMode: "bearer", bearerToken: "fake-key-3" }),
+    },
+  },
+];
+
+const KEY_REFUSED: Respond = () => ({
+  status: 409,
+  body: JSON.stringify({ error: "Install already running for fake-key-3", code: "INTEGRATION_FACTORY_INSTALL_IN_PROGRESS" }),
+});
+
+async function expectKeyStripped(adapter: PlatformAdapter): Promise<void> {
+  const result = await adapter.integrations.install({
+    companyUid: "cmp_acme",
+    mcpUrl: "https://mcp.example.com/mcp",
+    authMode: "bearer",
+    bearerToken: "fake-key-3",
+  });
+  expect(result).toMatchObject({ ok: false, status: 409, code: "INTEGRATION_FACTORY_INSTALL_IN_PROGRESS" });
+  expect(JSON.stringify(result)).not.toContain("fake-key-3");
+}
+
 describe("TauriPlatformAdapter integrations", () => {
   it("routes the list and the grant through hq_pro_fetch, like agent status", async () => {
     const { adapter, calls } = makeTauri();
     await callBoth(adapter);
     expect(calls).toEqual(EXPECTED);
+  });
+
+  it("routes the catalog, OAuth start, blueprint and install through hq_pro_fetch, the key in the body only", async () => {
+    const { adapter, calls } = makeTauri();
+    await callConnectFlow(adapter);
+    expect(calls).toEqual(EXPECTED_CONNECT_FLOW);
+  });
+
+  it("carries the status and code of a refused install, with the key taken out of the text", async () => {
+    const { adapter } = makeTauri(KEY_REFUSED);
+    await expectKeyStripped(adapter);
+  });
+
+  it("carries the 403 of a catalog search a member may not make", async () => {
+    const { adapter } = makeTauri(() => ({
+      status: 403,
+      body: JSON.stringify({ error: "Only a company owner or admin can browse the integration catalog", code: "INTEGRATION_FACTORY_FORBIDDEN" }),
+    }));
+    expect(await adapter.integrations.catalogSearch("cmp_acme", "linear.app")).toMatchObject({
+      ok: false,
+      status: 403,
+      code: "INTEGRATION_FACTORY_FORBIDDEN",
+    });
   });
 
   it("returns a refused grant as a failure that names the 403", async () => {
@@ -90,6 +165,17 @@ describe("createSyncPlatformAdapter integrations", () => {
     const { adapter, calls } = makeSync();
     await callBoth(adapter);
     expect(calls).toEqual(EXPECTED);
+  });
+
+  it("routes the connect flow the same way, the key in the body only", async () => {
+    const { adapter, calls } = makeSync();
+    await callConnectFlow(adapter);
+    expect(calls).toEqual(EXPECTED_CONNECT_FLOW);
+  });
+
+  it("carries the status and code of a refused install, with the key taken out of the text", async () => {
+    const { adapter } = makeSync(KEY_REFUSED);
+    await expectKeyStripped(adapter);
   });
 
   it("returns the list the server sent", async () => {
@@ -129,6 +215,7 @@ describe("createDesktopAdapter integrations", () => {
       }) as unknown as typeof globalThis.fetch,
     });
     await callBoth(adapter);
+    await callConnectFlow(adapter);
     expect(invoked).toEqual([]);
     expect(seen).toEqual([
       { url: "https://api.test/v1/integrations/admin?companyUid=cmp_acme", method: "GET", body: undefined },
@@ -136,6 +223,14 @@ describe("createDesktopAdapter integrations", () => {
         url: "https://api.test/v1/integrations/factory/access/grant",
         method: "POST",
         body: { companyUid: "cmp_acme", connectionId: "acct_linear", granteeType: "person", granteeId: "agt_nova" },
+      },
+      { url: "https://api.test/v1/integrations/factory/catalog?companyUid=cmp_acme&query=linear.app&limit=20", method: "GET", body: undefined },
+      { url: "https://api.test/v1/integrations/factory/oauth/start", method: "POST", body: { companyUid: "cmp_acme", domain: "linear.app" } },
+      { url: "https://api.test/v1/integrations/factory/blueprint", method: "POST", body: { companyUid: "cmp_acme", catalogEntryId: "cat_1" } },
+      {
+        url: "https://api.test/v1/integrations/factory/install",
+        method: "POST",
+        body: { companyUid: "cmp_acme", mcpUrl: "https://mcp.example.com/mcp", authMode: "bearer", bearerToken: "fake-key-3" },
       },
     ]);
   });

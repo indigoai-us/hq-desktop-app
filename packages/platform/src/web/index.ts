@@ -15,6 +15,7 @@ import {
   buildSendReplyRequest,
   connectionGrantBody,
   failure,
+  integrationAppRefBody,
   normalizeReplyThreadValue,
   normalizeNotificationsFeed,
   ok,
@@ -28,6 +29,7 @@ import {
   type AdapterPromise,
   type AdapterResult,
   type AgentProvisionOptionsView,
+  type IntegrationOAuthStart,
   type Json,
   type PlatformAdapter,
 } from "../adapter.js";
@@ -541,8 +543,17 @@ export class WebPlatformAdapter implements PlatformAdapter {
    * POST whose failure also carries the HTTP status, for the callers that
    * tell a 403 or 404 from a refusal with a server code.
    */
-  private async postWithStatus<T>(path: string, body?: unknown): AdapterPromise<T> {
-    const attempted = await this.requestAttempt<T>("POST", path, body);
+  private postWithStatus<T>(path: string, body?: unknown): AdapterPromise<T> {
+    return this.requestWithStatus<T>("POST", path, body);
+  }
+
+  /** {@link request}, with the HTTP status on a failure. */
+  private async requestWithStatus<T>(
+    method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
+    path: string,
+    body?: unknown,
+  ): AdapterPromise<T> {
+    const attempted = await this.requestAttempt<T>(method, path, body);
     return withHttpStatus(attempted.result, attempted.status);
   }
 
@@ -1026,6 +1037,16 @@ export class WebPlatformAdapter implements PlatformAdapter {
       this.get(INTEGRATION_PATHS.connections(companyUid)),
     grantConnectionAccess: (input) =>
       this.post(INTEGRATION_PATHS.grantAccess, connectionGrantBody(input)),
+    catalogSearch: (companyUid, query, limit) =>
+      this.requestWithStatus("GET", INTEGRATION_PATHS.catalog(companyUid, query, limit)),
+    // No redirectUri: the server's default lands on the console's callback.
+    startOAuth: (input) =>
+      this.postWithStatus<IntegrationOAuthStart>(INTEGRATION_PATHS.oauthStart, integrationAppRefBody(input)),
+    // The key goes in the body only, and is taken out of any failure's text.
+    install: async (input) =>
+      withoutSecret(await this.postWithStatus<Json>(INTEGRATION_PATHS.install, input), input.bearerToken ?? ""),
+    blueprint: (input) =>
+      this.postWithStatus(INTEGRATION_PATHS.blueprint, integrationAppRefBody(input)),
   };
 
   readonly company: PlatformAdapter["company"] = {

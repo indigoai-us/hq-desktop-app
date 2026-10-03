@@ -19,6 +19,8 @@ import {
   type VersionInfo,
   AGENT_PATHS,
   INTEGRATION_PATHS,
+  integrationAppRefBody,
+  type IntegrationOAuthStart,
   buildSendReplyRequest,
   connectionGrantBody,
   failure,
@@ -428,12 +430,21 @@ export function createSyncPlatformAdapter(
    * POST whose failure also carries the HTTP status, for the callers that
    * tell a 403 or 404 from a refusal with a server code. Same 429/503 policy.
    */
-  async function hqProPostWithStatus<T>(
+  function hqProPostWithStatus<T>(
+    path: string,
+    body?: unknown,
+  ): AdapterPromise<T> {
+    return hqProRequestWithStatus<T>('POST', path, body);
+  }
+
+  /** {@link hqProJson}, with the HTTP status on a failure. Same 429/503 policy. */
+  async function hqProRequestWithStatus<T>(
+    method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
     path: string,
     body?: unknown,
   ): AdapterPromise<T> {
     const attempted = await retryThrottled(
-      () => hqProAttempt<T>('POST', path, body),
+      () => hqProAttempt<T>(method, path, body),
       (outcome) => ({ status: outcome.status, retryAfter: outcome.retryAfter }),
       requestPolicy,
     );
@@ -1102,6 +1113,16 @@ export function createSyncPlatformAdapter(
         hqProJson('GET', INTEGRATION_PATHS.connections(companyUid)),
       grantConnectionAccess: (input) =>
         hqProJson('POST', INTEGRATION_PATHS.grantAccess, connectionGrantBody(input)),
+      catalogSearch: (companyUid, query, limit) =>
+        hqProRequestWithStatus('GET', INTEGRATION_PATHS.catalog(companyUid, query, limit)),
+      // No redirectUri: the server's default lands on the console's callback.
+      startOAuth: (input) =>
+        hqProPostWithStatus<IntegrationOAuthStart>(INTEGRATION_PATHS.oauthStart, integrationAppRefBody(input)),
+      // The key goes in the body only, and is taken out of any failure's text.
+      install: async (input) =>
+        withoutSecret(await hqProPostWithStatus<Json>(INTEGRATION_PATHS.install, input), input.bearerToken ?? ''),
+      blueprint: (input) =>
+        hqProPostWithStatus(INTEGRATION_PATHS.blueprint, integrationAppRefBody(input)),
     },
 
     company: {

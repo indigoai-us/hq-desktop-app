@@ -1301,7 +1301,94 @@ export const INTEGRATION_PATHS = {
   connections: (companyUid: string) =>
     `/v1/integrations/admin?companyUid=${encodeURIComponent(companyUid)}`,
   grantAccess: "/v1/integrations/factory/access/grant",
+  /** The catalog of apps HQ can connect. `limit` is left out when not given; the server bounds it to 1..100. */
+  catalog: (companyUid: string, query: string, limit?: number) =>
+    `/v1/integrations/factory/catalog?companyUid=${encodeURIComponent(companyUid)}` +
+    `&query=${encodeURIComponent(query)}` +
+    (typeof limit === "number" && Number.isFinite(limit) ? `&limit=${Math.trunc(limit)}` : ""),
+  oauthStart: "/v1/integrations/factory/oauth/start",
+  install: "/v1/integrations/factory/install",
+  blueprint: "/v1/integrations/factory/blueprint",
 } as const;
+
+/** One row of the integration catalog, as the server sends it. Every field may be missing. */
+export interface IntegrationCatalogEntry {
+  name?: string;
+  domain?: string;
+  description?: string;
+  mcpReady?: boolean;
+  /** How the app connects. Missing when the server does not know. */
+  authClass?: "none" | "oauth" | "key";
+  source?: string;
+  /** Opaque id of a curated or community entry. The cleanest handle for install and OAuth. */
+  entryId?: string;
+}
+
+/** Names the app to connect: by catalog entry when the catalog gave one, else by its website domain. */
+export interface IntegrationAppRef {
+  companyUid: string;
+  domain?: string;
+  catalogEntryId?: string;
+}
+
+/**
+ * The body that names an app for OAuth start and for a blueprint: the
+ * company and exactly the handle given, nothing else. In particular no
+ * `redirectUri`, so the server's default redirect applies.
+ */
+export function integrationAppRefBody(input: IntegrationAppRef): {
+  companyUid: string;
+  domain?: string;
+  catalogEntryId?: string;
+} {
+  return {
+    companyUid: input.companyUid,
+    ...(input.catalogEntryId ? { catalogEntryId: input.catalogEntryId } : {}),
+    ...(input.domain && !input.catalogEntryId ? { domain: input.domain } : {}),
+  };
+}
+
+/** What `POST /v1/integrations/factory/oauth/start` answers. */
+export interface IntegrationOAuthStart {
+  provider: string;
+  displayName: string;
+  /** The provider's own sign-in page. Opened in the system browser. */
+  authorizationUrl: string;
+  state: string;
+  expiresAt: string;
+}
+
+/**
+ * The body of `POST /v1/integrations/factory/install`, passed through as it
+ * is. Three forms, read from hq-pro `origin/main`
+ * `src/vault-service/handlers/integrations-admin.ts`:
+ *
+ * - `{ companyUid, domain }` (3556-3600): an app that needs no credentials.
+ *   The server resolves the domain's MCP surface and probes it without auth;
+ *   a `bearerToken` on this form is NOT read.
+ * - `{ companyUid, catalogEntryId, bearerToken? }` (3513-3550): a catalog
+ *   entry; the server supplies the MCP URL and name and reads `bearerToken`
+ *   only when the entry's `authClass` is `key`.
+ * - `{ companyUid, mcpUrl, authMode: "bearer", bearerToken, authScheme?, provider?, displayName?, domain? }`
+ *   (3059-3170, `installDirectMcpIntegration`): a key app named by its MCP
+ *   URL, which comes from the blueprint (see {@link IntegrationsApi.blueprint}).
+ */
+export interface IntegrationInstallInput {
+  companyUid: string;
+  domain?: string;
+  catalogEntryId?: string;
+  mcpUrl?: string;
+  authMode?: "none" | "bearer";
+  /** A pasted key. A secret: it travels in the body and nowhere else. */
+  bearerToken?: string;
+  authScheme?:
+    | { placement: "authorization"; format: "bearer" }
+    | { placement: "authorization"; format: "prefix"; prefix: string }
+    | { placement: "authorization"; format: "basic"; username?: string }
+    | { placement: "header"; header: string };
+  provider?: string;
+  displayName?: string;
+}
 
 /** Who gets to use a connection. A bot's uid is granted as a person. */
 export interface ConnectionAccessGrant {
@@ -1341,6 +1428,66 @@ export interface IntegrationsApi {
    * connection. Only the person who connected it or a company admin may.
    */
   grantConnectionAccess(input: ConnectionAccessGrant): AdapterPromise<Json>;
+  /**
+   * GET /v1/integrations/factory/catalog?companyUid=&query=&limit=: the apps
+   * HQ can connect that match `query`. Owner or admin only; anyone else gets
+   * a 403 with code `INTEGRATION_FACTORY_FORBIDDEN`. Answers
+   * `{ ok, companyUid, entries: IntegrationCatalogEntry[] }`. A failure
+   * carries the HTTP status (`status`) and the server's `code`.
+   */
+  catalogSearch(companyUid: string, query: string, limit?: number): AdapterPromise<Json>;
+  /**
+   * POST /v1/integrations/factory/oauth/start with `{ companyUid, domain }`
+   * or `{ companyUid, catalogEntryId }` and no `redirectUri`: the server's
+   * default redirect lands the browser on the console's callback. Answers
+   * {@link IntegrationOAuthStart}. A failure carries `status`, `code` (e.g.
+   * `OAUTH_DISCOVERY_FAILED`, `CLIENT_REGISTRATION_REFUSED`,
+   * `OAUTH_REGISTRATION_FAILED`, `INTEGRATION_FACTORY_FORBIDDEN`) and
+   * `upstreamCode` when the server sent one.
+   */
+  startOAuth(input: IntegrationAppRef): AdapterPromise<IntegrationOAuthStart>;
+  /**
+   * POST /v1/integrations/factory/install with the body passed through (see
+   * {@link IntegrationInstallInput} for the three forms). A `bearerToken` is
+   * sent in the body only and is taken out of any failure's text. A failure
+   * carries `status` and `code` (e.g. 402 plan limit, 409
+   * `INTEGRATION_FACTORY_INSTALL_IN_PROGRESS`).
+   */
+  install(input: IntegrationInstallInput): AdapterPromise<Json>;
+  /**
+   * POST /v1/integrations/factory/blueprint with `{ companyUid, domain }` or
+   * `{ companyUid, catalogEntryId }`: what an app needs before it is
+   * connected. Owner or admin only.
+   *
+   * VERIFIED against hq-pro `origin/main`
+   * `src/vault-service/handlers/integrations-admin.ts`: the route is at
+   * 1231-1246 and `pullIntegrationsShBlueprint` at 2953-3057. The answer is
+   * `{ ok: true, companyUid, blueprint, pullPlan }` (2986-2990, 3021-3027,
+   * 3040-3044); a catalog entry or a curated domain answers from HQ's own
+   * catalog first, anything else from integrations.sh. `blueprint` is
+   * `IntegrationBlueprint` from
+   * `src/integration-factory/blueprints/integrations-sh.ts:129-162`:
+   * `{ provider, displayName, domain, credentials: IntegrationsShCredential[],
+   * surfaces: IntegrationsShSurface[], recommendedSurface?, warnings, ... }`.
+   *
+   * For a key app the pieces come from:
+   * - `mcpUrl`: the `url` of `recommendedSurface` when its `kind` is `"mcp"`,
+   *   else of the first surface whose `kind` is `"mcp"`
+   *   (`src/integration-factory/installations.ts:317-329`,
+   *   `installableRemoteMcpSurface`, the same rule the server installs by).
+   * - the credential `label` and `generateUrl`: `credentials[]` entries
+   *   `{ id, type, label, generateUrl?, setup?, acquisition? }`
+   *   (integrations-sh.ts:83-90, parsed at 843-853: `label` falls back to
+   *   the id). The surface's `credentialIds` (integrations-sh.ts:106) name
+   *   which credential it uses.
+   *
+   * hq-cli `origin/main` `src/commands/integrations-connect.ts:1391-1428`
+   * (`inspect`) prints exactly these: `blueprint.displayName`,
+   * `blueprint.domain`, each surface, and `credential.label` with
+   * `credential.generateUrl`; it reads the body's `blueprint` field
+   * (`src/commands/integrations-api.ts:104-117`, `pullBlueprint`).
+   */
+  blueprint(input: IntegrationAppRef): AdapterPromise<Json>;
 }
 
 export interface FeedbackApi {

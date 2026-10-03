@@ -14,6 +14,7 @@ import {
   buildSendReplyRequest,
   connectionGrantBody,
   failure,
+  integrationAppRefBody,
   normalizeReplyThreadValue,
   normalizeNotificationsFeed,
   ok,
@@ -25,6 +26,7 @@ import {
   type AdapterPromise,
   type AdapterResult,
   type AgentProvisionOptionsView,
+  type IntegrationOAuthStart,
   type Json,
   type PlatformAdapter,
 } from "../adapter.js";
@@ -212,8 +214,17 @@ export class TauriPlatformAdapter implements PlatformAdapter {
    * POST whose failure also carries the HTTP status, for the callers that
    * tell a 403 or 404 from a refusal with a server code.
    */
-  private async hqProPostWithStatus<T>(path: string, body?: unknown): AdapterPromise<T> {
-    const attempted = await this.hqProAttempt<T>("POST", path, body);
+  private hqProPostWithStatus<T>(path: string, body?: unknown): AdapterPromise<T> {
+    return this.hqProRequestWithStatus<T>("POST", path, body);
+  }
+
+  /** {@link hqProJson}, with the HTTP status on a failure. */
+  private async hqProRequestWithStatus<T>(
+    method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
+    path: string,
+    body?: unknown,
+  ): AdapterPromise<T> {
+    const attempted = await this.hqProAttempt<T>(method, path, body);
     // A reply that was not JSON is not the server refusing: it keeps no status.
     if (!attempted.result.ok && attempted.result.code === "network") return attempted.result;
     return withHttpStatus(attempted.result, attempted.status);
@@ -556,6 +567,16 @@ export class TauriPlatformAdapter implements PlatformAdapter {
       this.hqProJson("GET", INTEGRATION_PATHS.connections(companyUid)),
     grantConnectionAccess: (input) =>
       this.hqProJson("POST", INTEGRATION_PATHS.grantAccess, connectionGrantBody(input)),
+    catalogSearch: (companyUid, query, limit) =>
+      this.hqProRequestWithStatus("GET", INTEGRATION_PATHS.catalog(companyUid, query, limit)),
+    // No redirectUri: the server's default lands on the console's callback.
+    startOAuth: (input) =>
+      this.hqProPostWithStatus<IntegrationOAuthStart>(INTEGRATION_PATHS.oauthStart, integrationAppRefBody(input)),
+    // The key goes in the body only, and is taken out of any failure's text.
+    install: async (input) =>
+      withoutSecret(await this.hqProPostWithStatus<Json>(INTEGRATION_PATHS.install, input), input.bearerToken ?? ""),
+    blueprint: (input) =>
+      this.hqProPostWithStatus(INTEGRATION_PATHS.blueprint, integrationAppRefBody(input)),
   };
 
   readonly company: PlatformAdapter["company"] = {
