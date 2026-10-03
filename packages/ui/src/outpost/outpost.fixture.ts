@@ -16,6 +16,7 @@ export function fixtureOutpost(now: number = Date.now()): OutpostCache {
       online: true,
       heartbeatAgo: "12 s ago",
       lastHeartbeatAt: "10:52",
+      lastHeartbeatIso: at(-14 * 60_000),
       uptime: "41 d 6 h",
       cpuPct: 18,
       memUsed: "4.3",

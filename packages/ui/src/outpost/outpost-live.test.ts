@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { OUTPOST_PATHS, type AdapterResult, type Json } from "@hq/platform";
 import OutpostPage from "./OutpostPage.svelte";
 import { createOutpostRefresher, OUTPOST_SETUP_URL, type OutpostReadApi } from "./outpost-live.js";
-import { writeOutpostCache } from "./outpost-model.js";
+import { EMPTY_INTERPOLATION, writeOutpostCache } from "./outpost-model.js";
 import { noOutpost } from "./outpost-live.js";
 
 const T0 = Date.parse("2026-10-02T18:00:00Z");
@@ -112,7 +112,9 @@ describe("Outpost live read (QA-069)", () => {
   it("shows Offline from the real instance state", async () => {
     const target = await mountWith({ api: api(ok({ ...STATUS, instanceState: "stopped" } as unknown as Json)) });
     expect(target.querySelector("[data-testid='outpost-online']")?.textContent).toBe("Offline");
-    expect(target.querySelector("[data-testid='outpost-offline-banner']")?.textContent).toContain("No report since");
+    const banner = (target.querySelector("[data-testid='outpost-offline-banner']")?.textContent ?? "").replace(/\s+/g, " ");
+    expect(banner).toContain("No report since");
+    expect(banner).not.toMatch(EMPTY_INTERPOLATION);
   });
 
   it("shows No Outpost yet with a set-up link when hq-pro has no row", async () => {

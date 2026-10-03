@@ -2,7 +2,7 @@
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import OutpostPage from "./OutpostPage.svelte";
-import { clearOutpostCache, OUTPOST_READ_TIMEOUT_MS, writeOutpostCache, lastResultLabel, type OutpostRefresher } from "./outpost-model.js";
+import { clearOutpostCache, EMPTY_INTERPOLATION, OUTPOST_READ_TIMEOUT_MS, writeOutpostCache, lastResultLabel, type OutpostRefresher } from "./outpost-model.js";
 import { fixtureOutpost } from "./outpost.fixture.js";
 
 describe("US-034 OutpostPage", () => {
@@ -66,9 +66,25 @@ describe("US-034 OutpostPage", () => {
     writeOutpostCache("personal", cache);
     const target = mountPage();
     const banner = target.querySelector("[data-testid='outpost-offline-banner']");
-    expect(banner?.textContent).toContain("No report since 10:52");
+    expect(banner?.textContent).toContain("No report since 14 minutes ago.");
+    expect(banner?.getAttribute("title")).toBeTruthy();
     const terminal = [...target.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Open terminal");
     expect(terminal?.hasAttribute("disabled")).toBe(true);
+  });
+
+  it("says no report has been received when the report time is missing (QA-097)", () => {
+    const cache = fixtureOutpost();
+    cache.unreachable = true;
+    cache.host.online = false;
+    cache.host.lastHeartbeatAt = "";
+    cache.host.lastHeartbeatIso = undefined;
+    writeOutpostCache("personal", cache);
+    const target = mountPage();
+    const banner = target.querySelector("[data-testid='outpost-offline-banner']");
+    const text = (banner?.textContent ?? "").replace(/\s+/g, " ").trim();
+    expect(text).toContain("Host unreachable. No report received yet.");
+    expect(text).not.toMatch(EMPTY_INTERPOLATION);
+    expect(banner?.hasAttribute("title")).toBe(false);
   });
 
   it("keeps the full last result readable in the job row (QA-052)", () => {

@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   appendLogTail,
   clampJobAlert,
+  EMPTY_INTERPOLATION,
   formatRetry,
+  lastReportCopy,
   offlineBanner,
   previewCron,
   visibleLogWindow,
@@ -53,8 +55,38 @@ describe("US-034 outpost model", () => {
     cache.retryInSec = 22;
     cache.retryAttempt = 6;
     expect(formatRetry(22)).toBe("0:22");
-    expect(offlineBanner(cache)).toContain("10:52");
+    expect(offlineBanner(cache)).toContain("No report since 14 minutes ago.");
     expect(offlineBanner(cache)).toContain("0:22");
     expect(offlineBanner(cache)).toContain("attempt 6");
+  });
+
+  describe("lastReportCopy (QA-097)", () => {
+    const now = Date.parse("2026-10-03T12:00:00Z");
+    it("shows a relative time with the absolute time as a tooltip", () => {
+      const copy = lastReportCopy("2026-10-03T11:46:00Z", now);
+      expect(copy.text).toBe("Host unreachable. No report since 14 minutes ago.");
+      expect(copy.title).toBe(new Date("2026-10-03T11:46:00Z").toLocaleString());
+      expect(copy.text).not.toMatch(EMPTY_INTERPOLATION);
+    });
+    it("says no report has been received when the time is undefined", () => {
+      expect(lastReportCopy(undefined, now)).toEqual({ text: "Host unreachable. No report received yet." });
+    });
+    it("says no report has been received when the time is invalid", () => {
+      for (const bad of ["", "unknown", "not-a-date"]) {
+        const copy = lastReportCopy(bad, now);
+        expect(copy.text).toBe("Host unreachable. No report received yet.");
+        expect(copy.text).not.toMatch(EMPTY_INTERPOLATION);
+      }
+    });
+    it("never renders an empty value in the offline banner", () => {
+      const cache = fixtureOutpost(now);
+      cache.host.lastHeartbeatIso = undefined;
+      expect(offlineBanner(cache, now)).not.toMatch(EMPTY_INTERPOLATION);
+    });
+    it("copy guard catches trailing empty interpolations", () => {
+      for (const bad of ["No report since .", "Last seen at ,", "since undefined.", "at NaN", "ended  ."]) {
+        expect(bad).toMatch(EMPTY_INTERPOLATION);
+      }
+    });
   });
 });

@@ -266,8 +266,40 @@ export function formatRetry(seconds: number): string {
   return `${m}:${r.toString().padStart(2, "0")}`;
 }
 
-export function offlineBanner(cache: OutpostCache): string {
-  return `Host unreachable. No heartbeat since ${cache.host.lastHeartbeatAt}. Retrying in ${formatRetry(cache.retryInSec)} · attempt ${cache.retryAttempt}`;
+/**
+ * Copy guard (QA-097): matches visible text where an interpolated value came
+ * out empty or unset, e.g. "No report since ." or "since undefined".
+ */
+export const EMPTY_INTERPOLATION = /\b(?:since|at|from|by|on|until)\s*[.,;:]|\b(?:undefined|null|NaN)\b|\s[.,;:](?:\s|$)/;
+
+export interface LastReportCopy {
+  text: string;
+  /** Absolute time for a tooltip. Absent when there is no report time. */
+  title?: string;
+}
+
+function longAgo(at: number, now: number): string {
+  const minutes = Math.max(0, Math.round((now - at) / 60_000));
+  const unit = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"} ago`;
+  if (minutes < 1) return "less than a minute ago";
+  if (minutes < 60) return unit(minutes, "minute");
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return unit(hours, "hour");
+  return unit(Math.round(hours / 24), "day");
+}
+
+/**
+ * Offline notice copy (QA-097). A missing or unreadable report time yields
+ * "No report received yet." so the notice never renders an empty value.
+ */
+export function lastReportCopy(iso: string | undefined, now: number): LastReportCopy {
+  const at = iso ? Date.parse(iso) : Number.NaN;
+  if (Number.isNaN(at)) return { text: "Host unreachable. No report received yet." };
+  return { text: `Host unreachable. No report since ${longAgo(at, now)}.`, title: new Date(at).toLocaleString() };
+}
+
+export function offlineBanner(cache: OutpostCache, now: number = Date.now()): string {
+  return `${lastReportCopy(cache.host.lastHeartbeatIso, now).text} Retrying in ${formatRetry(cache.retryInSec)} · attempt ${cache.retryAttempt}`;
 }
 
 type CronParts = [Set<number>, Set<number>, Set<number>, Set<number>, Set<number>];

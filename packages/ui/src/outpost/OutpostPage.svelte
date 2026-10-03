@@ -20,6 +20,7 @@
     filterRuns,
     blankJob,
     freshnessLabel,
+    lastReportCopy,
     lastResultLabel,
     metadata,
     nextRunLabel,
@@ -118,6 +119,7 @@
 
   let retry = $state<() => void>(() => {});
 
+  const lastReport = $derived(lastReportCopy(data.host.lastHeartbeatIso, now));
   const freshness = $derived(freshnessLabel(data.fetchedAt, refreshFailed, now));
 
   const jobs = $derived(filterJobs(data.jobs, jobFilter));
@@ -261,9 +263,8 @@
     {:else if data.provisioned === null && tab !== "logs"}
       <div class="empty sub" data-testid="outpost-loading">Reading your Outpost…</div>
     {:else if offline}
-      <div class="banner" role="alert" data-testid="outpost-offline-banner">
-        <span class="nm">Host unreachable.</span>
-        No report since {data.host.lastHeartbeatAt}.
+      <div class="banner" role="alert" data-testid="outpost-offline-banner" title={lastReport.title}>
+        {lastReport.text}
         <RailButton icon="refresh" type="button" onclick={() => retry()}>Retry now</RailButton>
       </div>
     {/if}
