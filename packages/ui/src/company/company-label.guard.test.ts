@@ -41,8 +41,6 @@ const ALLOWLIST: Record<string, string> = {
     "Help sentence.",
   "chat/create-bot/CloudDetailsStep.svelte::companyLabel":
     "Help sentence: \"{name} hosts it and opens its channel.\"",
-  "meetings/MeetingsSidepane.svelte::row.companyLabel ?? \"\"":
-    "Screen-reader text inside the row's company mark; nothing visible.",
   "common/LiveNowCard.svelte::humanCompanyLabel(m)":
     "Native <option> text cannot hold markup.",
   "company/CompanySettingsPage.svelte::snap.general.name || companyLabel":
