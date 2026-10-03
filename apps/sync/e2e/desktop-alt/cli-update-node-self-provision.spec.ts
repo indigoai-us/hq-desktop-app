@@ -547,7 +547,12 @@ describe('hq-CLI Windows EBUSY recovery waits for app commands and records the b
       processRs.indexOf('pub async fn wait_for_cli_install_quiescence('),
       processRs.indexOf('#[cfg(target_os = "windows")]\nfn windows_process_open_error_means_exited'),
     );
-    expect(quiescence).toContain('UPDATE_QUIESCE_REQUESTED');
+    expect(quiescence).toContain('close_cli_process_admission_for_update()?');
+    const admission = processRs.slice(
+      processRs.indexOf('pub fn close_cli_process_admission_for_update()'),
+      processRs.indexOf('\n}\n', processRs.indexOf('pub fn close_cli_process_admission_for_update()')),
+    );
+    expect(admission).toContain('UPDATE_QUIESCE_REQUESTED');
     expect(quiescence).toContain('UPDATE_SENSITIVE_OPERATIONS');
     expect(quiescence).toContain('.active');
     expect(quiescence).toContain('.keys()');

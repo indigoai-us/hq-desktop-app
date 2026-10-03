@@ -5786,6 +5786,10 @@ exit 1
     #[tokio::test]
     async fn cli_package_lease_timeout_is_actionable_and_does_not_start_npm() {
         let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _home_lock = HOME_ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
