@@ -32,9 +32,15 @@
      */
     layout?: "card" | "column";
     version?: string;
+    /**
+     * Re-check the saved session without signing in again. The desktop
+     * signed-out page passes this so Retry sits inside the card, under the
+     * providers, instead of floating below it (OWNER-015).
+     */
+    onretry?: () => void;
   }
 
-  let { reauth = false, onsuccess, bringMainToFront = true, layout = "card", version = "" }: Props = $props();
+  let { reauth = false, onsuccess, bringMainToFront = true, layout = "card", version = "", onretry }: Props = $props();
 
   const providers: { key: SignInProvider; label: string }[] = [
     { key: 'Google', label: 'Google' },
@@ -468,7 +474,23 @@
       </button>
     {/if}
 
+    {#if onretry}
+      <button
+        type="button"
+        class="sign-in-btn session-retry"
+        data-testid="sign-in-session-retry"
+        onclick={() => onretry?.()}
+        disabled={loadingProvider !== null || quitting}
+      >
+        <svg class="provider-glyph" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M13 8a5 5 0 1 1-1.5-3.6M13 2.5v2.5h-2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        Retry
+      </button>
+    {/if}
+
     <button
+      type="button"
       class="quit-btn"
       onclick={handleQuit}
       disabled={quitting}
@@ -554,7 +576,7 @@
     backdrop-filter: var(--glass-filter, blur(36px) saturate(118%) contrast(102%));
     -webkit-backdrop-filter: var(--glass-filter, blur(36px) saturate(118%) contrast(102%));
     color: var(--pop-text);
-    font-family: var(--font-sans);
+    font-family: var(--font-sans, "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
     overflow: hidden;
     /* Rounded corners — requires tauri window transparent:true +
        decorations:false + macOSPrivateApi:true for the OS to honor
@@ -701,11 +723,14 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 0.5rem;
+    gap: 8px;
+    box-sizing: border-box;
     width: 100%;
-    padding: 0.625rem 1.25rem;
-    font-size: 0.875rem;
+    height: 36px;
+    padding: 0 16px;
+    font-size: 12px;
     font-weight: 500;
+    line-height: 16px;
     font-family: inherit;
     color: var(--pop-acc-fg);
     background-color: var(--pop-accent);
@@ -793,6 +818,15 @@
 
   .provider-glyph {
     flex-shrink: 0;
+  }
+
+  /* Secondary rail button (OWNER-007): hairline on the control fill, so the
+     provider buttons stay the primary actions. */
+  .session-retry {
+    margin-top: 0.625rem;
+    color: var(--v4-text-1, var(--pop-text));
+    background: var(--v4-control-bg, transparent);
+    border: 1px solid var(--v4-control-border, var(--pop-border));
   }
 
   .microsoft-glyph {

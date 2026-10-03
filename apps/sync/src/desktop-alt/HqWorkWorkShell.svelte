@@ -52,6 +52,7 @@
   import type { DmRequestContact } from '../lib/dmRequests';
   import { dismissBootLoader } from './boot-loader';
   import SignInPrompt from '../components/SignInPrompt.svelte';
+  import { lifecycleForAuthStatus } from './lib/auth-lifecycle';
   import { openApprovedExternalUrl, openBrowserUrl } from './external-open';
   import {
     applyDesktopAltRoute,
@@ -519,32 +520,17 @@
     signOutError = null;
     navigation.clear();
 
-    if (
-      next.status === 'credentials_absent' ||
-      next.status === 'credentials_read_error'
-    ) {
-      signedOutReason = 'signed-out';
+    // Usable credentials that are not a person's stay distinct from 'invalid'
+    // so the screen can explain the actual situation. An unreadable token
+    // store goes to recovery, not signed-out (see lib/auth-lifecycle.ts).
+    const verdict = lifecycleForAuthStatus(next.status);
+    if (verdict.lifecycle === 'signed-out') {
+      signedOutReason = verdict.reason;
       lifecycle = 'signed-out';
       flushSync();
       return;
     }
-    if (next.status === 'credentials_invalid') {
-      signedOutReason = 'invalid';
-      lifecycle = 'signed-out';
-      flushSync();
-      return;
-    }
-    // Usable credentials that are not a person's. Kept distinct from
-    // 'invalid' so the screen can explain the actual situation — retrying or
-    // signing out will not change anything while the machine credential is
-    // still the one on disk.
-    if (next.status === 'non_human_principal') {
-      signedOutReason = 'non-human';
-      lifecycle = 'signed-out';
-      flushSync();
-      return;
-    }
-    if (next.status === 'refresh_temporarily_unavailable') {
+    if (verdict.lifecycle === 'recovery') {
       lifecycle = 'recovery';
       flushSync();
       return;
@@ -1382,9 +1368,9 @@
             signedOutReason === 'non-human'}
           bringMainToFront={false}
           onsuccess={handleWorkspaceSignInSuccess}
+          onretry={() => void hydrateSession()}
         />
       </div>
-      <button type="button" class="secondary" onclick={() => void hydrateSession()}>Retry</button>
     </section>
   {:else if lifecycle === 'recovery'}
     <section class="lifecycle-state" data-testid="hq-work-auth-recovery" role="status">
@@ -1533,14 +1519,32 @@
     width: 100%;
     height: 100%;
     padding: 32px;
-    color: #f1f5f9;
-    background: #121417;
+    /* OWNER-015: this page renders before any session exists, outside the
+       chat shell where --font-ui lives, so it names the app sans with its own
+       fallback. Without it the heading and body dropped to the serif default. */
+    font-family: var(--font-sans, "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+    font-size: 13px;
+    line-height: 1.45;
+    color: var(--v4-text-1, #ededed);
+    background: var(--v4-ground, #121417);
   }
 
   .lifecycle-state h1,
   .lifecycle-state p {
     max-width: 440px;
     margin: 0;
+  }
+
+  /* Sheet-title row of the console-rail type scale. */
+  .lifecycle-state h1 {
+    font-size: 15px;
+    font-weight: 600;
+    line-height: 20px;
+  }
+
+  .lifecycle-state p {
+    font-size: 13px;
+    color: var(--v4-text-2, #b0b0b0);
   }
 
   .lifecycle-state > button {
@@ -1559,10 +1563,19 @@
     width: min(100%, 420px);
   }
 
+  /* The card uses the overlay surface tokens (OWNER-006). No backdrop-filter
+     on a rounded card in WKWebView. */
   .workspace-signin :global(.sign-in-container) {
     width: 100%;
     height: auto;
     min-height: 0;
+    padding: 24px;
+    border: 1px solid var(--overlay-border, var(--v4-hairline, rgba(255, 255, 255, 0.12)));
+    border-radius: 12px;
+    background: var(--overlay-bg, var(--v4-popover-strong, #242424));
+    box-shadow: var(--overlay-shadow, var(--v4-shadow-popover, 0 22px 55px rgba(0, 0, 0, 0.22)));
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
   }
 
   .workspace-warning {
