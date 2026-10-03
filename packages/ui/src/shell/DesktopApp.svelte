@@ -59,6 +59,7 @@
     RAIL_SHORTCUT_EDITING_FLAG,
     RAIL_TELEMETRY_FLAG,
     RAIL_WORKFORCE_LIMITS_FLAG,
+    isIndigoCompany,
     isIndigoOnlySurface,
     watchIndigoOnlyGates,
     type GateCompany,
@@ -9146,7 +9147,12 @@
     isIndigoOnlySurface(key, gateCompany, railGateValues);
   // OWNER-D 3: Telemetry is hidden (rail, palette, deep links) for members
   // without the feature, instead of a "Coming soon" page.
-  const telemetryVisible = $derived(railGate(RAIL_TELEMETRY_FLAG));
+  // The entry belongs to the person: Indigo members keep it on Home and in
+  // every company; others see it once the registry opens it to everyone.
+  const telemetryVisible = $derived(
+    railGate(RAIL_TELEMETRY_FLAG) ||
+      railCompanyRoster.some((company) => isIndigoCompany({ slug: company.slug ?? null })),
+  );
   $effect(() => {
     if (railPlaceholder?.id !== "telemetry" || telemetryVisible) return;
     const company = tenantCompanyId;
