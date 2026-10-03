@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  COMPANY_ROUTE_LOOKUP_RETRY_DELAY_MS,
   activeCompanyUids,
   approvedCheckoutUrl,
   CHECKOUT_DISABLED_REASON,
@@ -91,8 +92,9 @@ describe('resolveFirstRunCompanyPath', () => {
           : { invites: [{ companyUid: 'cmp_acme', invitedBy: 'prs_owner', inviterName: 'Pat' }] },
       invoke: (async () => ({ workspaces: [pendingWorkspace('acme', 'Acme')] })) as unknown as InvokeFn,
     });
-    expect(result?.route).toMatchObject({ kind: 'join', invites: [{ companyUid: 'cmp_acme', name: 'Acme', inviter: 'Pat' }] });
-    expect(result?.summary).toEqual({ existingCompanies: 0, paidCompany: false, pendingInvites: 1, decision: 'join_invite' });
+    if (result === null || !('route' in result)) throw new Error('Expected the invite route to resolve.');
+    expect(result.route).toMatchObject({ kind: 'join', invites: [{ companyUid: 'cmp_acme', name: 'Acme', inviter: 'Pat' }] });
+    expect(result.summary).toEqual({ existingCompanies: 0, paidCompany: false, pendingInvites: 1, decision: 'join_invite' });
   });
 
   it('asks a brand-new person to name a company', async () => {
@@ -127,6 +129,106 @@ describe('resolveFirstRunCompanyPath', () => {
       invoke: vi.fn() as unknown as InvokeFn,
     });
     expect(path).toBeNull();
+    warn.mockRestore();
+  });
+
+  it('retries one failed membership read and resolves the route when it recovers', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const sleep = vi.fn(async () => {});
+    let membershipReads = 0;
+    const hqProJson = vi.fn(async (_method: 'GET' | 'POST', url: string) => {
+      if (url === '/membership/me') {
+        membershipReads += 1;
+        if (membershipReads === 1) throw new Error('temporary lookup failure');
+        return { memberships: [] };
+      }
+      return { invites: [] };
+    });
+    const invoke = vi.fn(async () => ({ workspaces: [] }));
+
+    const result = await resolveFirstRunCompanyRoute({
+      hqProJson,
+      invoke: invoke as unknown as InvokeFn,
+      enableMembershipLookupRetry: true,
+      sleep,
+    });
+
+    expect(hqProJson.mock.calls.filter(([, url]) => url === '/membership/me')).toHaveLength(2);
+    expect(sleep).toHaveBeenCalledExactlyOnceWith(COMPANY_ROUTE_LOOKUP_RETRY_DELAY_MS);
+    expect(result).toMatchObject({ route: { kind: 'create', decision: 'create' } });
+    expect(invoke).not.toHaveBeenCalledWith('create_company', expect.anything());
+    warn.mockRestore();
+  });
+
+  it('bypasses a cached malformed membership response on retry and resolves the recovered company route', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let cachedMembershipRead: Promise<Record<string, unknown>> | null = null;
+    let requestCount = 0;
+    const hqProJson = vi.fn(() => {
+      if (!cachedMembershipRead) {
+        requestCount += 1;
+        cachedMembershipRead = Promise.resolve(
+          requestCount === 1
+            ? {}
+            : { memberships: [{ companyUid: 'cmp_recovered', status: 'active', role: 'member' }] },
+        );
+      }
+      return cachedMembershipRead;
+    });
+    const invalidateMembershipMeRead = vi.fn(() => {
+      cachedMembershipRead = null;
+    });
+
+    const result = await resolveFirstRunCompanyRoute({
+      hqProJson,
+      invoke: vi.fn() as unknown as InvokeFn,
+      enableMembershipLookupRetry: true,
+      sleep: async () => {},
+      invalidateMembershipMeRead,
+    });
+
+    expect(requestCount).toBe(2);
+    expect(invalidateMembershipMeRead).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({ route: { kind: 'skip', decision: 'joined_existing', company: { companyUid: 'cmp_recovered' } } });
+    warn.mockRestore();
+  });
+
+  it('returns lookup_failed after two failed reads without creating a company', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const sleep = vi.fn(async () => {});
+    const hqProJson = vi.fn(async () => {
+      throw new Error('membership lookup unavailable');
+    });
+    const invoke = vi.fn();
+
+    const result = await resolveFirstRunCompanyRoute({
+      hqProJson,
+      invoke: invoke as unknown as InvokeFn,
+      enableMembershipLookupRetry: true,
+      sleep,
+    });
+
+    expect(hqProJson).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledExactlyOnceWith(COMPANY_ROUTE_LOOKUP_RETRY_DELAY_MS);
+    expect(result).toEqual({ kind: 'lookup_failed' });
+    expect(invoke).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('keeps the original single-read null result when lookup retry is disabled', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const hqProJson = vi.fn(async () => {
+      throw new Error('membership lookup unavailable');
+    });
+
+    const result = await resolveFirstRunCompanyRoute({
+      hqProJson,
+      invoke: vi.fn() as unknown as InvokeFn,
+      enableMembershipLookupRetry: false,
+    });
+
+    expect(result).toBeNull();
+    expect(hqProJson).toHaveBeenCalledOnce();
     warn.mockRestore();
   });
 
