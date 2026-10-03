@@ -519,10 +519,39 @@ static FIRST_OPEN_FLUSHING: std::sync::atomic::AtomicBool =
 /// Returns whether a held row was delivered. The row stays held on failure
 /// (no session yet, network), so the next sign-in sends it.
 pub async fn flush_pending_first_open_now() -> bool {
-    use std::sync::atomic::Ordering;
     let Ok(path) = paths::menubar_json_path() else {
         return false;
     };
+    flush_pending_first_open_at(path).await
+}
+
+/// Capture the install's menubar path before dispatching a background flush.
+/// The task must not resolve HOME after another caller has changed it.
+pub(crate) fn capture_background_flush_path() -> Option<std::path::PathBuf> {
+    paths::menubar_json_path().ok()
+}
+
+pub(crate) fn flush_path_matches_current_home(path: &std::path::Path) -> bool {
+    paths::menubar_json_path().is_ok_and(|current| current == path)
+}
+
+pub(crate) fn pending_first_open_flush_task() -> impl std::future::Future<Output = bool> + Send {
+    let path = capture_background_flush_path();
+    async move {
+        match path {
+            Some(path) => flush_pending_first_open_at(path).await,
+            None => false,
+        }
+    }
+}
+
+async fn flush_pending_first_open_at(path: std::path::PathBuf) -> bool {
+    use std::sync::atomic::Ordering;
+    // Do not send one installation's held row with another installation's
+    // access token if HOME changed before this background task was polled.
+    if !flush_path_matches_current_home(&path) {
+        return false;
+    }
     let pending = || {
         read_menubar_obj(&path)
             .get(FIRST_OPEN_PENDING_KEY)
@@ -664,10 +693,31 @@ static AUTH_HELD_FLUSHING: std::sync::atomic::AtomicBool =
 /// a resend is stored once. Stops at the first failure; the rest stay held.
 /// Returns how many were delivered.
 pub async fn flush_held_auth_rows_now() -> usize {
-    use std::sync::atomic::Ordering;
     let Ok(path) = paths::menubar_json_path() else {
         return 0;
     };
+    flush_held_auth_rows_at(path).await
+}
+
+/// Capture the install's menubar path before dispatching a background flush.
+pub(crate) fn held_auth_flush_task() -> impl std::future::Future<Output = usize> + Send {
+    let path = capture_background_flush_path();
+    async move {
+        if let Some(path) = path {
+            flush_held_auth_rows_at(path).await
+        } else {
+            0
+        }
+    }
+}
+
+async fn flush_held_auth_rows_at(path: std::path::PathBuf) -> usize {
+    use std::sync::atomic::Ordering;
+    // The access-token resolver follows current HOME, so leave rows in place
+    // rather than sending them under a different profile's identity.
+    if !flush_path_matches_current_home(&path) {
+        return 0;
+    }
     if held_auth_rows_at(&path, now_ms()).is_empty()
         || AUTH_HELD_FLUSHING.swap(true, Ordering::SeqCst)
     {
@@ -693,9 +743,7 @@ pub async fn flush_held_auth_rows_now() -> usize {
 }
 
 fn flush_held_auth_rows() {
-    tauri::async_runtime::spawn(async {
-        flush_held_auth_rows_now().await;
-    });
+    tauri::async_runtime::spawn(held_auth_flush_task());
 }
 
 /// `idempotencyKey` for the first launch's `desktop_app_opened` row: one per
@@ -705,9 +753,7 @@ pub fn first_open_idempotency_key(install_attempt_id: &str) -> String {
 }
 
 fn flush_pending_first_open() {
-    tauri::async_runtime::spawn(async {
-        flush_pending_first_open_now().await;
-    });
+    tauri::async_runtime::spawn(pending_first_open_flush_task());
 }
 
 /// Send one consent-free hq-pro row; `emit_desktop_operational_telemetry`
