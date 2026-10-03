@@ -75,68 +75,22 @@ pub use hq_desktop_core::workspaces::{
     ManifestLoad, Workspace, WorkspaceKind, WorkspaceState, WorkspacesResult,
 };
 
-/// Detect manifest entries whose `cloud_uid` points at an entity that's no
-/// longer in the cloud (deleted from hq-console), and strip the cloud pointers
-/// so the workspace becomes LocalOnly instead of Broken.
-///
-/// Only triggers when:
-///   - cloud is reachable (otherwise we can't tell the entity is gone), AND
-///   - no `EntityInfo` in `company_entities` has a matching slug.
-///
-/// The disagree-on-UID case (cloud has slug but a different UID) is left as
-/// Broken so Connect can repoint the manifest in a single step.
-///
-/// Mutates `local_companies` in place: stripped entries have their
-/// `cloud_uid` / `bucket_name` cleared so the assemble pass produces
-/// LocalOnly. Best-effort: per-entry write failures are logged and the entry
-/// is left untouched (it'll show as Broken until the next pass).
-///
-/// Returns the number of entries successfully stripped.
+/// A signed-in person's membership roster is not an authoritative company
+/// existence inventory. Preserve manifest bindings until an explicit deletion
+/// signal is available. Returns zero because no roster omission is sufficient
+/// evidence for a destructive update.
 pub(crate) fn prune_dangling_cloud_uids(
     hq_root: &Path,
     local_companies: &mut [LocalCompanyEntry],
     company_entities: &BTreeMap<String, EntityInfo>,
     cloud_reachable: bool,
 ) -> usize {
-    if !cloud_reachable {
-        return 0;
-    }
-    let manifest_path = hq_root.join("companies").join("manifest.yaml");
-    if !manifest_path.exists() {
-        return 0;
-    }
-
-    let mut pruned = 0usize;
-    for entry in local_companies.iter_mut() {
-        if entry.cloud_uid.is_none() {
-            continue;
-        }
-        let slug_in_cloud = company_entities.values().any(|e| e.slug == entry.slug);
-        if slug_in_cloud {
-            continue;
-        }
-        match strip_manifest_cloud_info(&manifest_path, &entry.slug) {
-            Ok(()) => {
-                log(
-                    "workspaces",
-                    &format!(
-                        "prune: stripped manifest cloud_uid for '{}' (cloud entity gone)",
-                        entry.slug
-                    ),
-                );
-                entry.cloud_uid = None;
-                entry.bucket_name = None;
-                pruned += 1;
-            }
-            Err(e) => {
-                log(
-                    "workspaces",
-                    &format!("prune: strip '{}' failed: {e}", entry.slug),
-                );
-            }
-        }
-    }
-    pruned
+    // This roster is scoped to the signed-in person's memberships. A company
+    // missing from it may still exist for another account, so absence cannot
+    // authorize deleting its durable manifest binding. Keep the workspace
+    // Broken until an authoritative deletion signal is available.
+    let _ = (hq_root, local_companies, company_entities, cloud_reachable);
+    0
 }
 
 /// Reconcile the manifest with the local `companies/*/` folder reality after a
@@ -793,9 +747,8 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
             }
         };
 
-    // Auto-clean manifest entries whose cloud_uid points at a cloud entity
-    // that's no longer there (deleted via hq-console). Stripping the manifest
-    // pointers lets the entry render as LocalOnly instead of Broken.
+    // A membership-scoped roster cannot prove global entity deletion. Keep
+    // cloud_uid and bucket_name intact if this account cannot see the company.
     prune_dangling_cloud_uids(&hq_root, &mut local_companies, &entities, cloud_reachable);
 
     let company_sync_enabled = read_workspace_sync_enabled_map();
@@ -2698,7 +2651,7 @@ mod tests {
     // ── prune_dangling_cloud_uids ───────────────────────────────────────
 
     #[test]
-    fn prune_strips_when_cloud_has_no_entity_for_slug() {
+    fn prune_preserves_binding_when_membership_roster_has_no_entity_for_slug() {
         let tmp = TempDir::new().unwrap();
         write_manifest(
             tmp.path(),
@@ -2720,14 +2673,19 @@ companies:
             Some("hq-vault-cmp-gone"),
         )];
 
-        let pruned = prune_dangling_cloud_uids(tmp.path(), &mut entries, &BTreeMap::new(), true);
-        assert_eq!(pruned, 1);
-        assert!(entries[0].cloud_uid.is_none());
-        assert!(entries[0].bucket_name.is_none());
+        let mut entities = BTreeMap::new();
+        entities.insert(
+            "cmp_OTHER".to_string(),
+            company_entity("cmp_OTHER", "other", Some("Other")),
+        );
+        let pruned = prune_dangling_cloud_uids(tmp.path(), &mut entries, &entities, true);
+        assert_eq!(pruned, 0);
+        assert_eq!(entries[0].cloud_uid.as_deref(), Some("cmp_GONE"));
+        assert_eq!(entries[0].bucket_name.as_deref(), Some("hq-vault-cmp-gone"));
 
         let (reread, _) = discover_local_companies(tmp.path());
         let alpha = reread.iter().find(|e| e.slug == "alpha").unwrap();
-        assert!(alpha.cloud_uid.is_none());
+        assert_eq!(alpha.cloud_uid.as_deref(), Some("cmp_GONE"));
     }
 
     #[test]
