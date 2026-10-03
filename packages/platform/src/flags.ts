@@ -71,7 +71,12 @@ import {
   type FlagClientOptions,
   type FlagSnapshot,
 } from "@indigoai-us/hq-flags-client";
-import { ok, type AdapterPromise, type AdapterResult } from "./adapter.js";
+import {
+  ok,
+  type AdapterPromise,
+  type AdapterResult,
+  type HqProFetch,
+} from "./adapter.js";
 
 export const FIRST_FOLDER_SYNC_STEP_FLAG =
   "desktop.first-folder-sync-step-v1";
@@ -87,6 +92,13 @@ export const SETUP_DEPS_TIMEOUT_RETRY_FLAG =
   "desktop.setup-deps-timeout-retry-v1";
 export const HUMAN_ONLY_CONVERSATIONS_FLAG =
   "desktop.human-only-conversations";
+/**
+ * New bot → Cloud creates through POST /v1/agents (desktop-agent-creation).
+ * Targeted to one company, so it must be read with that company's uid:
+ * `hasFeature(DESKTOP_AGENT_CREATION_FLAG, { companyUid })`. A person-only
+ * read never sees a company override. Absent or unreadable means off.
+ */
+export const DESKTOP_AGENT_CREATION_FLAG = "agents.desktop-agent-creation";
 /**
  * Desktop value for `desktop.human-only-conversations`. The desktop (Tauri)
  * adapters answer this flag with this constant and do not consult the
@@ -136,6 +148,7 @@ export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
   [DESKTOP_LIMIT_STATUS_PUSH_FLAG]: DESKTOP_LIMIT_STATUS_PUSH_FLAG,
   [SETUP_DEPS_TIMEOUT_RETRY_FLAG]: SETUP_DEPS_TIMEOUT_RETRY_FLAG,
   [HUMAN_ONLY_CONVERSATIONS_FLAG]: HUMAN_ONLY_CONVERSATIONS_FLAG,
+  [DESKTOP_AGENT_CREATION_FLAG]: DESKTOP_AGENT_CREATION_FLAG,
   "desktop.mirror-quarantine-move-not-deletion":
     "desktop.mirror-quarantine-move-not-deletion",
   [RAIL_TELEMETRY_FLAG]: RAIL_TELEMETRY_FLAG,
@@ -184,6 +197,11 @@ export interface FeatureFlagGate {
 export interface FeatureFlagGateOptions {
   /** hq-pro base URL. Empty when fetch already talks through `hq_pro_fetch`. */
   endpoint: string;
+  /**
+   * Evaluate in this company's context (`/v1/flags/resolve?companyUid=`).
+   * Omit for a person-only evaluation, which ignores company overrides.
+   */
+  companyUid?: string;
   /** Existing adapter token plumbing. Never read tokens from disk here. */
   getToken: () => string | Promise<string>;
   fetch?: typeof fetch;
@@ -238,6 +256,31 @@ export function createHqProFlagFetch(invoke: FlagInvokeFn): typeof fetch {
   };
 }
 
+/**
+ * {@link HqProFetch} over the desktop host's `hq_pro_fetch` command. Unlike
+ * the flag transport above it forwards the method and body. The webview never
+ * holds the bearer: Rust adds it and prefixes the hq-pro base URL.
+ */
+export function createHqProRestFetch(invoke: FlagInvokeFn): HqProFetch {
+  return async (path, init) => {
+    const raw = await invoke("hq_pro_fetch", {
+      url: path,
+      method: init.method,
+      body: init.body ?? null,
+    });
+    const rec =
+      raw && typeof raw === "object" && !Array.isArray(raw)
+        ? (raw as { status?: unknown; body?: unknown })
+        : null;
+    if (rec && typeof rec.status === "number") {
+      const body = typeof rec.body === "string" ? rec.body : "";
+      return { status: rec.status, text: async () => body };
+    }
+    const body = JSON.stringify(raw ?? null);
+    return { status: 200, text: async () => body };
+  };
+}
+
 export function bearerTokenFromHeaders(
   headers: Readonly<Record<string, string>>,
 ): string {
@@ -271,6 +314,7 @@ export function createFeatureFlagGate(
       const create = options.createClient ?? createFlagClient;
       client = create({
         endpoint: options.endpoint,
+        ...(options.companyUid ? { companyUid: options.companyUid } : {}),
         getToken: options.getToken,
         fetch: options.fetch,
         refreshIntervalMs: FLAG_REFRESH_INTERVAL_MS,
@@ -357,4 +401,32 @@ export function createFeatureFlagGate(
     },
   };
   return gate;
+}
+
+/** A person-scoped gate plus one gate per company, created on first use. */
+export type ScopedFeatureFlagGates = (
+  companyUid?: string | null,
+) => FeatureFlagGate;
+
+/**
+ * `createFeatureFlagGate` per evaluation scope. The person-only gate is the
+ * one adapters have always used; a company uid gets its own gate (and its own
+ * snapshot) because hq-flags resolves company overrides only when the request
+ * names the company.
+ */
+export function createScopedFeatureFlagGates(
+  options: Omit<FeatureFlagGateOptions, "companyUid">,
+): ScopedFeatureFlagGates {
+  const personGate = createFeatureFlagGate(options);
+  const companyGates = new Map<string, FeatureFlagGate>();
+  return (companyUid) => {
+    const uid = companyUid?.trim() ?? "";
+    if (!uid) return personGate;
+    let gate = companyGates.get(uid);
+    if (!gate) {
+      gate = createFeatureFlagGate({ ...options, companyUid: uid });
+      companyGates.set(uid, gate);
+    }
+    return gate;
+  };
 }

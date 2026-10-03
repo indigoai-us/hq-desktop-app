@@ -38,9 +38,10 @@ import {
 } from "../library-shelf.js";
 import {
   bearerTokenFromHeaders,
-  createFeatureFlagGate,
+  createScopedFeatureFlagGates,
+  DESKTOP_AGENT_CREATION_FLAG,
   PERSONAL_WORKSPACE_BOARD_FLAG,
-  type FeatureFlagGate,
+  type ScopedFeatureFlagGates,
 } from "../flags.js";
 import {
   retryThrottled,
@@ -460,7 +461,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
   private readonly fetchFn: typeof globalThis.fetch;
   private readonly headers: Record<string, string>;
   private readonly onUnauthorized: () => void;
-  private readonly flags: FeatureFlagGate;
+  private readonly flagsFor: ScopedFeatureFlagGates;
   private readonly requestPolicy: RequestPolicyOptions;
   private activeCompany: string | null = null;
 
@@ -474,7 +475,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
     this.headers = config.headers ?? {};
     this.onUnauthorized = config.onUnauthorized ?? defaultOnUnauthorized;
     this.requestPolicy = config.requestPolicy ?? {};
-    this.flags = createFeatureFlagGate({
+    this.flagsFor = createScopedFeatureFlagGates({
       endpoint: this.baseUrl,
       getToken: () => bearerTokenFromHeaders(this.headers),
       fetch: this.fetchFn,
@@ -493,6 +494,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
     if (
       flag === "meetings" ||
       flag === "agents.claude-provider" ||
+      flag === DESKTOP_AGENT_CREATION_FLAG ||
       flag === PERSONAL_WORKSPACE_BOARD_FLAG
     ) {
       return Promise.resolve(ok(false));
@@ -603,14 +605,16 @@ export class WebPlatformAdapter implements PlatformAdapter {
   readonly identity: PlatformAdapter["identity"] = {
     whoami: () => this.get(WEB_PATHS.whoami),
     isAdmin: () => this.get(WEB_PATHS.isAdmin),
-    hasFeature: (flag) =>
+    hasFeature: (flag, scope) =>
       WEB_REGISTRY_EXCLUDED_FLAGS.has(flag)
         ? this.legacyHasFeature(flag)
-        : this.flags.resolve(flag, () => this.legacyHasFeature(flag)),
+        : this.flagsFor(scope?.companyUid).resolve(flag, () =>
+            this.legacyHasFeature(flag),
+          ),
     subscribeFeature: (flag, onChange) =>
       WEB_REGISTRY_EXCLUDED_FLAGS.has(flag)
         ? () => {}
-        : this.flags.subscribe(
+        : this.flagsFor(null).subscribe(
             flag,
             () => this.legacyHasFeature(flag),
             onChange,
@@ -979,6 +983,16 @@ export class WebPlatformAdapter implements PlatformAdapter {
   };
 
   readonly agents: PlatformAdapter["agents"] = {
+    fetch: async (path, init) => {
+      const res = await this.fetchFn(`${this.baseUrl}${path}`, {
+        method: init.method,
+        credentials: "same-origin",
+        headers: { ...(init.headers ?? {}), ...this.headers },
+        body: init.body,
+      });
+      if (res.status === 401) this.onUnauthorized();
+      return res;
+    },
     getProvisionOptions: (companyUid) =>
       this.get<AgentProvisionOptionsView>(AGENT_PATHS.provisionOptions(companyUid)),
     getStatus: (agentUid) => this.get(WEB_PATHS.agentStatus(agentUid)),

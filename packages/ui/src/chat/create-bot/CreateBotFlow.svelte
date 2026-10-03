@@ -34,6 +34,8 @@
   import type { RuntimeSignInApi } from "./RuntimeSignIn.svelte";
   import type { RuntimeStatus } from "./runtime-status.js";
   import type { CloudBotDraft } from "../lifecycle-entry-points.js";
+  import { cloudUnavailableCopy, type CloudUnavailableCopy, type CreateAvailability, type CreateErrorFix } from "@hq/agents";
+  import { newWizardIdempotencyKey, type DirectCloudCreate } from "./cloud-create.js";
   import {
     STEP_TITLES,
     botDisplayName,
@@ -101,6 +103,15 @@
     onback?: (() => void) | null;
     entryBusy?: "bot" | "agent" | string | null;
     entryError?: string | null;
+    /** The action that fixes `entryError` (direct cloud create only). */
+    entryFix?: CreateErrorFix | null;
+    /**
+     * `agents.desktop-agent-creation`: when the flag is on, Cloud is always
+     * shown (disabled with the reason and the fix when it cannot be used) and
+     * the cloud draft carries a per-session idempotency key and the quote.
+     * Absent or flag off → the older behaviour, unchanged.
+     */
+    directCloud?: DirectCloudCreate | null;
     signInApi?: RuntimeSignInApi | null;
     onsignin?: ((runtime: BotRuntime) => void | Promise<void>) | null;
     onsignedin?: ((runtime: BotRuntime) => void | Promise<void>) | null;
@@ -159,6 +170,8 @@
     onback = null,
     entryBusy = null,
     entryError = null,
+    entryFix = null,
+    directCloud = null,
     signInApi = null,
     onsignin = null,
     onsignedin = null,
@@ -193,11 +206,36 @@
   const companies = $derived(agentTargets ?? []);
   const ownerCompanies = $derived(botCompanies ?? []);
   const canLocal = $derived(!!oncreate);
-  const canCloud = $derived(!!onCloudCreate && companies.length > 0);
+  /** `agents.desktop-agent-creation` resolved on for this person or one of their companies. */
+  let directCloudOn = $state(false);
+  /** Per-company create availability, filled in once the flag is on. */
+  let cloudAvailability = $state<Record<string, CreateAvailability>>({});
+  /** One key for this New bot session: a double-click or a retry replays it. */
+  const cloudIdempotencyKey = newWizardIdempotencyKey();
+  const companyBlocks = $derived.by<Record<string, CloudUnavailableCopy>>(() => {
+    const out: Record<string, CloudUnavailableCopy> = {};
+    if (!directCloudOn) return out;
+    for (const company of companies) {
+      const copy = cloudUnavailableCopy(cloudAvailability[company.companyUid] ?? null, {
+        companyLabel: company.label,
+        companies: companies.length,
+      });
+      if (copy) out[company.companyUid] = copy;
+    }
+    return out;
+  });
+  /** Why Cloud cannot be used at all (flag on only): no company, or every company refuses. */
+  const cloudBlocked = $derived.by<CloudUnavailableCopy | null>(() => {
+    if (!directCloudOn) return null;
+    if (companies.length === 0) return cloudUnavailableCopy(null, { companies: 0 });
+    if (!onCloudCreate) return null;
+    const blocked = companies.map((c) => companyBlocks[c.companyUid]);
+    return blocked.every(Boolean) ? (blocked[0] ?? null) : null;
+  });
+  const canCloud = $derived(!!onCloudCreate && companies.length > 0 && !cloudBlocked);
   let claudeProviderEnabled = $state(false);
   let cloudProvisionOptions = $state<AgentProvisionOptionsView | null>(null);
   let cloudQuoteStatus = $state<"loading" | "ready" | "error">("loading");
-  let cloudApiKey = $state("");
   let quoteReloadToken = $state(0);
   let quoteGeneration = 0;
 
@@ -213,7 +251,6 @@
     claudeProviderEnabled,
     cloudProvisionOptions,
     cloudQuoteStatus,
-    cloudApiKeyPresent: cloudApiKey.trim().length > 0,
     hostNoun,
   });
 
@@ -252,6 +289,35 @@
   const cloudQuoteCompanyUid = $derived(
     draft.home === "cloud" ? (draft.companyUid ?? "").trim() : "",
   );
+
+  onMount(() => {
+    const seam = directCloud;
+    if (!seam) return;
+    let active = true;
+    const uids = untrack(() => companies.map((c) => c.companyUid));
+    void seam.anyEnabled(uids).then(async (on) => {
+      if (!active || !on) return;
+      directCloudOn = true;
+      const entries = await Promise.all(
+        uids.map(async (uid) => [uid, await seam.availability(uid)] as const),
+      );
+      if (!active) return;
+      cloudAvailability = Object.fromEntries(entries);
+    });
+    return () => {
+      active = false;
+    };
+  });
+
+  // A company that cannot take a cloud bot is never the selected one while
+  // another can.
+  $effect(() => {
+    if (!directCloudOn || draft.home !== "cloud") return;
+    const uid = draft.companyUid ?? "";
+    if (uid && !companyBlocks[uid]) return;
+    const open = companies.find((c) => !companyBlocks[c.companyUid]);
+    if (open && open.companyUid !== uid) draft = { ...draft, companyUid: open.companyUid };
+  });
 
   onMount(() => {
     if (!loadClaudeProviderFlag) return;
@@ -337,21 +403,9 @@
 
   function patch(p: Partial<CreateBotDraft>): void {
     if (busy) return;
-    const oldHome = draft.home;
-    const oldCompanyUid = draft.companyUid;
-    const oldRuntime = draft.runtime;
-    const oldAuthMode = draft.authMode;
     draft = { ...draft, ...p };
     if (p.home === "cloud" && draft.runtime === "claude" && claudeProviderEnabled !== true) {
       draft = { ...draft, runtime: "codex" };
-    }
-    if (
-      oldHome !== draft.home ||
-      oldCompanyUid !== draft.companyUid ||
-      oldRuntime !== draft.runtime ||
-      oldAuthMode !== draft.authMode
-    ) {
-      cloudApiKey = "";
     }
     if (p.scope !== undefined) scopeAnswered = true;
     // A company template is a company bot for that company unless the user
@@ -399,9 +453,17 @@
           handle: botHandle(draft),
           runtime: draft.runtime,
           size: quotedSize.key,
-          authMode: draft.authMode,
-          ...(draft.authMode === "apiKey" && cloudApiKey ? { apiKey: cloudApiKey } : {}),
           ...(title ? { title } : {}),
+          ...(directCloudOn && cloudProvisionOptions && quotedSize.netMonthlyCents !== null
+            ? {
+                idempotencyKey: cloudIdempotencyKey,
+                quote: {
+                  instanceType: quotedSize.instanceType,
+                  netMonthlyCents: quotedSize.netMonthlyCents,
+                  catalogVersion: cloudProvisionOptions.catalogVersion,
+                },
+              }
+            : {}),
         });
       }
       return;
@@ -504,6 +566,9 @@
           {draft}
           {canLocal}
           {canCloud}
+          cloudAlwaysShown={directCloudOn}
+          cloudBlocked={cloudBlocked}
+          {companyBlocks}
           runtimeReady={botRuntimeReady}
           runtimeStatus={botRuntimeStatus}
           {companies}
@@ -527,8 +592,6 @@
           claudeProviderEnabled={claudeProviderEnabled}
           cloudProvisionOptions={cloudProvisionOptions}
           cloudQuoteStatus={cloudQuoteStatus}
-          apiKey={cloudApiKey}
-          onapikey={(value) => (cloudApiKey = value)}
           onretryquote={() => (quoteReloadToken += 1)}
           disabled={busy}
           onpatch={patch}
@@ -550,7 +613,16 @@
     </div>
 
     {#if entryError}
-      <p class="flow-error" role="alert" data-testid="chat-create-entry-error">{entryError}</p>
+      <p class="flow-error" role="alert" data-testid="chat-create-entry-error">
+        {entryError}
+        {#if entryFix?.kind === "checkout"}
+          <a class="flow-error-fix" href={entryFix.url} target="_blank" rel="noopener noreferrer" data-testid="chat-create-entry-fix">{entryFix.label}</a>
+        {:else if entryFix?.kind === "reload_quote"}
+          <button type="button" class="flow-error-fix" data-testid="chat-create-entry-fix" disabled={busy} onclick={() => (quoteReloadToken += 1)}>Get the new price</button>
+        {:else if entryFix?.kind === "edit_handle" && step !== "details"}
+          <button type="button" class="flow-error-fix" data-testid="chat-create-entry-fix" disabled={busy} onclick={() => goTo("details")}>Change handle</button>
+        {/if}
+      </p>
     {/if}
 
     <div class="flow-footer">
@@ -686,6 +758,17 @@
     color: var(--v4-error, #d9534f);
     font-size: 13px;
     line-height: 1.45;
+  }
+  .flow-error-fix {
+    margin-left: 6px;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    font-weight: 500;
+    text-decoration: underline;
+    cursor: pointer;
   }
   .flow-footer {
     display: flex;

@@ -3,7 +3,9 @@
    * Step B — Where does it run? Local (this Mac, free, the user's own
    * runtime login) or Cloud (company-hosted, always on). Local shows runtime
    * pills with sign-in state and an inline Sign in; Cloud shows the company
-   * picker. Cloud is hidden entirely when no company can take a bot.
+   * picker. Cloud is hidden entirely when no company can take a bot — unless
+   * `cloudAlwaysShown` (agents.desktop-agent-creation), where it stays on
+   * screen, disabled, with the reason and the fix.
    *
    * "Who is it for?" used to live here and now sits on the details step, next
    * to the name it affects — see DetailsStep.
@@ -28,6 +30,7 @@
     CodingTool,
     InstallOutcome,
   } from "../../install-choice/install-choice.js";
+  import type { CloudUnavailableCopy } from "@hq/agents";
   import "./create-bot.css";
   import CompanyLabel from "../../company/CompanyLabel.svelte";
 
@@ -35,6 +38,12 @@
     draft: CreateBotDraft;
     canLocal: boolean;
     canCloud: boolean;
+    /** Show the Cloud card even when it cannot be used (flag on). */
+    cloudAlwaysShown?: boolean;
+    /** Why Cloud cannot be used, and the fix. Rendered on the disabled card. */
+    cloudBlocked?: CloudUnavailableCopy | null;
+    /** Per-company reasons; those companies are disabled in the picker. */
+    companyBlocks?: Record<string, CloudUnavailableCopy>;
     runtimeReady: Record<string, boolean> | null;
     /**
      * Per-runtime state, when the host has it. `runtimeReady` alone cannot
@@ -99,6 +108,9 @@
     draft,
     canLocal,
     canCloud,
+    cloudAlwaysShown = false,
+    cloudBlocked = null,
+    companyBlocks = {},
     runtimeReady,
     runtimeStatus = null,
     companies,
@@ -230,7 +242,7 @@
           : `Bots can't run on this ${hostNoun}.`}
       </span>
     </button>
-    {#if canCloud}
+    {#if canCloud || cloudAlwaysShown}
       <button
         type="button"
         class="cb-card home-card"
@@ -238,7 +250,8 @@
         aria-checked={draft.home === "cloud"}
         data-testid="chat-bot-where-cloud"
         data-home="cloud"
-        disabled={disabled}
+        data-unavailable={canCloud ? undefined : "true"}
+        disabled={disabled || !canCloud}
         tabindex={draft.home === "cloud" ? 0 : -1}
         onclick={() => pickHome("cloud")}
       >
@@ -247,11 +260,21 @@
           <span class="cb-card-meta">Company credits</span>
         </span>
         <span class="cb-card-sub">
-          Always on, hosted by {companies.length === 1 ? companies[0]?.label : "your company"}. Runs even when this {hostNoun} is off.
+          {#if canCloud}
+            Always on, hosted by {companies.length === 1 ? companies[0]?.label : "your company"}. Runs even when this {hostNoun} is off.
+          {:else}
+            <span data-testid="chat-bot-where-cloud-reason">{cloudBlocked?.reason ?? "Cloud bots aren't available right now."}</span>
+          {/if}
         </span>
       </button>
     {/if}
   </div>
+  {#if cloudAlwaysShown && !canCloud && cloudBlocked?.fix?.kind === "checkout"}
+    <!-- Outside the disabled card so the link stays clickable. -->
+    <p class="cb-help cloud-fix">
+      <a class="cb-pill-link" href={cloudBlocked.fix.url} target="_blank" rel="noopener noreferrer" data-testid="chat-bot-where-cloud-fix">{cloudBlocked.fix.label}</a>
+    </p>
+  {/if}
 
   {#if draft.home === "local" && canLocal}
     <div class="cb-field">
@@ -366,6 +389,7 @@
           onkeydown={onCompanyKey}
         >
           {#each companies as company (company.companyUid)}
+            {@const block = companyBlocks[company.companyUid]}
             <button
               type="button"
               class="cb-card company-row"
@@ -373,7 +397,8 @@
               aria-selected={draft.companyUid === company.companyUid}
               data-testid="chat-create-agent-company"
               data-company={company.companyUid}
-              disabled={disabled}
+              title={block?.reason}
+              disabled={disabled || !!block}
               onclick={() => onpatch({ home: "cloud", companyUid: company.companyUid })}
             >
               <CompanyLabel
@@ -381,6 +406,9 @@
                 iconUrl={company.iconUrl}
                 companyUid={company.companyUid}
               />
+              {#if block}
+                <span class="cb-card-sub" data-testid="chat-create-agent-company-reason">{block.reason}</span>
+              {/if}
             </button>
           {/each}
         </div>
@@ -432,6 +460,9 @@
   }
   .ext-chip::before {
     content: "· ";
+  }
+  .cloud-fix {
+    text-align: right;
   }
   .home-cards {
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));

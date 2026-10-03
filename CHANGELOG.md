@@ -13,6 +13,7 @@ The release moves it under the version it ships in.
 - Referral links now carry through desktop sign-in regardless of the signup experiment. HQ retries referral confirmation after connection failures or a restart and keeps each referral tied to the account that signed in.
 - Release builds: a daily check now fails, and opens an issue, once the release test sign-in is 25 days old, five days before it expires, so it is renewed before a release depends on it. The renewal steps no longer need AWS keys or a shared GitHub token.
 - The updater now refuses a beta or alpha build unless you chose that release channel in Settings. People on the stable channel stay on stable releases even if a test build is ever published by mistake.
+- Behind `agents.desktop-agent-creation` (Indigo only): New bot → Cloud creates the bot directly, without Slack, and opens its DM. Cloud stays visible when it can't be used and says why (admin role, plan, or no company), and Settings › Bots can create cloud bots too.
 
 ## [0.10.384] — 2026-10-03
 
@@ -50,6 +51,8 @@ The release moves it under the version it ships in.
 ## [0.10.379] — 2026-10-02
 
 - Closing the main window no longer logs an error.
+
+- New cloud bots created from the desktop New bot flow sign in with your model subscription. The API key option is no longer offered there.
 
 - When hq-flags enables `desktop.setup-deps-timeout-retry-v1`, a dependency setup timeout gets one automatic retry before setup is marked passed with that step skipped.
 

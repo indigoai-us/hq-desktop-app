@@ -200,7 +200,6 @@ describe("ChatSidebar lifecycle entry points", () => {
       handle: expect.stringMatching(/\S/),
       runtime: "codex",
       size: "basic",
-      authMode: "subscription",
     });
     expect(q('[data-testid="chat-create-modal"]')).toBeNull();
   });
@@ -228,7 +227,6 @@ describe("ChatSidebar lifecycle entry points", () => {
       title: "Ad account analyst",
       runtime: "codex",
       size: "basic",
-      authMode: "subscription",
     });
   });
 
@@ -271,7 +269,6 @@ describe("ChatSidebar lifecycle entry points", () => {
       handle: expect.stringMatching(/\S/),
       runtime: "codex",
       size: "basic",
-      authMode: "subscription",
     });
   });
 
@@ -333,7 +330,6 @@ describe("ChatSidebar lifecycle entry points", () => {
       handle: expect.stringMatching(/\S/),
       runtime: "codex",
       size: "basic",
-      authMode: "subscription",
     });
     expect(oncreatebot).not.toHaveBeenCalled();
     expect(q('[data-testid="chat-create-modal"]')).toBeNull();
@@ -364,7 +360,6 @@ describe("ChatSidebar lifecycle entry points", () => {
       handle: expect.stringMatching(/\S/),
       runtime: "codex",
       size: "basic",
-      authMode: "subscription",
     });
     expect(q('[data-testid="chat-create-modal"]')).toBeTruthy();
     expect(q('[data-testid="chat-create-bot-step"]')).toBeTruthy();
