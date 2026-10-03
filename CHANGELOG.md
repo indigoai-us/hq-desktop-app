@@ -7,6 +7,9 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+- Keep a company's cloud binding in `companies/manifest.yaml` when it is absent
+  from the signed-in person's membership list. The app now waits for an
+  authoritative deletion signal before unlinking a workspace.
 
 - Company names now show the company favicon beside them across the app: the New bot company chips, project header, More companies, command palette, Connections, settings, bot membership lists, Meetings, Telemetry, and Atlas. Companies without a website show their initials instead of a grey dot.
 - Company favicons now show in the left rail for companies that have a website set. The app was dropping the icon the server sends, so every company showed initials. The company list also reloads when you switch companies, so an icon added later replaces the initials.
