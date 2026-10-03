@@ -21,18 +21,8 @@ const DEFAULT_SCOPE: &str = "openid email profile";
 
 /// `~/.hq/menubar.json` boolean. Lets one tester turn the path on without a
 /// public-flag visitor allowlist. The install UUID lives in the same file as
-/// `installAttemptId` (not shown in About).
+/// `installAttemptId` (not shown in About). There is no env-var gate.
 pub const MENUBAR_OVERRIDE_KEY: &str = "webAuthorize";
-/// `1`/`true` forces on, `0`/`false` forces off, anything else defers to the flag.
-pub const ENV_OVERRIDE: &str = "HQ_DESKTOP_WEB_AUTHORIZE";
-
-pub fn env_override(raw: Option<&str>) -> Option<bool> {
-    match raw.map(str::trim) {
-        Some("1") | Some("true") | Some("TRUE") => Some(true),
-        Some("0") | Some("false") | Some("FALSE") => Some(false),
-        _ => None,
-    }
-}
 
 pub fn menubar_override(contents: Option<&str>) -> Option<bool> {
     contents
@@ -40,16 +30,12 @@ pub fn menubar_override(contents: Option<&str>) -> Option<bool> {
         .and_then(|value| value.get(MENUBAR_OVERRIDE_KEY)?.as_bool())
 }
 
-pub fn local_override_from(env: Option<&str>, menubar: Option<&str>) -> Option<bool> {
-    env_override(env).or_else(|| menubar_override(menubar))
-}
-
 pub fn read_local_override() -> Option<bool> {
-    let env = std::env::var(ENV_OVERRIDE).ok();
-    let menubar = crate::paths::hq_config_dir()
+    crate::paths::hq_config_dir()
         .ok()
-        .and_then(|dir| std::fs::read_to_string(dir.join("menubar.json")).ok());
-    local_override_from(env.as_deref(), menubar.as_deref())
+        .and_then(|dir| std::fs::read_to_string(dir.join("menubar.json")).ok())
+        .as_deref()
+        .and_then(|contents| menubar_override(Some(contents)))
 }
 
 /// Parse hq-pro's public flag resolver. Only HTTP 200 with `enabled: true` is on.
@@ -235,22 +221,18 @@ mod tests {
     }
 
     #[test]
-    fn local_override_env_then_menubar() {
-        assert_eq!(env_override(Some("1")), Some(true));
-        assert_eq!(env_override(Some("0")), Some(false));
-        assert_eq!(env_override(Some("maybe")), None);
+    fn menubar_web_authorize_override() {
         assert_eq!(
-            menubar_override(Some(r#"{"installAttemptId":"11111111-1111-4111-8111-111111111111","webAuthorize":true}"#)),
+            menubar_override(Some(
+                r#"{"installAttemptId":"11111111-1111-4111-8111-111111111111","webAuthorize":true}"#
+            )),
             Some(true)
         );
         assert_eq!(
-            local_override_from(Some("0"), Some(r#"{"webAuthorize":true}"#)),
+            menubar_override(Some(r#"{"webAuthorize":false}"#)),
             Some(false)
         );
-        assert_eq!(
-            local_override_from(None, Some(r#"{"webAuthorize":true}"#)),
-            Some(true)
-        );
+        assert_eq!(menubar_override(Some(r#"{"installAttemptId":"x"}"#)), None);
     }
 
     #[tokio::test]
