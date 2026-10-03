@@ -114,6 +114,10 @@ function signInStepDone(payload: unknown): boolean | null {
   const components = record(heartbeat?.components);
   const machineSignedIn = components ? text(components["codex-auth"]) === "ok" : null;
   if (machineSignedIn) return true;
+  // The server's live check (`brainSignIn.codex.signedIn`), answered within
+  // seconds of the sign-in instead of on the machine's next heartbeat.
+  const liveCheck = record(record(root?.brainSignIn ?? agent?.brainSignIn)?.codex);
+  if (liveCheck?.signedIn === true) return true;
   const steps = setup?.steps;
   if (!Array.isArray(steps)) return machineSignedIn;
   const step = steps.map(record).find((entry) => text(entry?.name) === "codex-auth");

@@ -68,6 +68,14 @@ describe("waking model", () => {
     expect(signedIn.approval).toBeNull();
     expect(signedIn.signedInAt).toBe(STARTED + 200_000);
     expect(signedIn.phase).toBe("waking");
+    // The server's live check counts too, before any heartbeat carries it.
+    const liveCheck = {
+      agent: { provider: "codex", runtime: { lastHeartbeat: { components: { "codex-auth": "unknown" } } } },
+      setupState: signInStep("pending"),
+      brainSignIn: { codex: { signedIn: true, verifiedAt: "2026-10-03T20:47:30.000Z" } },
+      pairing: null,
+    };
+    expect(applyWakingStatus(asked, liveCheck, STARTED + 200_000).signedInAt).toBe(STARTED + 200_000);
     // A heartbeat that says anything else leaves the step rule in charge.
     const notYet = {
       agent: { provider: "codex", runtime: { lastHeartbeat: { components: { "codex-auth": "unknown" } } } },
