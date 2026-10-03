@@ -143,12 +143,18 @@ export const BOT_NAME_SUGGESTIONS: readonly string[] = [
 ];
 
 export function initialDraft(
-  ctx: Pick<CreateBotContext, "canLocal" | "canCloud" | "existingNames" | "companies" | "runtimeReady">,
+  ctx: Pick<CreateBotContext, "canLocal" | "canCloud" | "existingNames" | "companies" | "runtimeReady"> &
+    Partial<Pick<CreateBotContext, "ownerCompanies">>,
   preferredCompanyUid: string | null = null,
+  preferredCompanySlug: string | null = null,
 ): CreateBotDraft {
   // Opened from a company's page: start on that company, not the first one.
   const preferred = preferredCompanyUid
     ? ctx.companies.find((c) => c.companyUid === preferredCompanyUid)
+    : undefined;
+  // QA-043: a Local bot opened from a company starts as that company's bot.
+  const ownerSlug = preferredCompanySlug?.trim()
+    ? (ctx.ownerCompanies ?? []).find((c) => c.slug === preferredCompanySlug.trim())?.slug
     : undefined;
   return {
     kind: "blank",
@@ -157,8 +163,8 @@ export function initialDraft(
     size: "",
     authMode: "subscription",
     companyUid: preferred?.companyUid ?? ctx.companies[0]?.companyUid,
-    scope: "personal",
-    companySlugs: [],
+    scope: ownerSlug ? "company" : "personal",
+    companySlugs: ownerSlug ? [ownerSlug] : [],
     name: suggestBotName(ctx.existingNames),
     title: "",
     handle: "",
