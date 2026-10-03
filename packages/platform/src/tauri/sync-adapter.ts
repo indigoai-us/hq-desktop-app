@@ -747,6 +747,8 @@ export function createSyncPlatformAdapter(
           idempotencyKey: args.idempotencyKey ?? null,
         }),
       checkCompanySlug: (slug) => call('check_company_slug', { slug }),
+      activateCompanyCloud: (companyUid) =>
+        call('activate_company_cloud', { companyUid }),
       getCompanyTab: (companyUid, tab) =>
         call('get_company_tab', { companyUid, tab }),
       runCompanyTabAction: (args) =>
