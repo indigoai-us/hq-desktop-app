@@ -148,6 +148,26 @@ SVG stroke only, 14px in 24px buttons, stroke-width 1.3 (ChatSidebar.svelte:2812
 | SVG stroke icons, 14px in 24px hit targets, stroke 1.3 | Emoji or filled glyph icons in chrome |
 | Empty state: one 13px `--t3` line, centered | Illustrations, large headings, or CTA stacks in empty states |
 
+## Messages type exception (AUDIT-2-06)
+
+Owner decision, 2026-10-03: "Keep Messages as is. No change. Messages keeps its larger, bolder text, and the design rule gets a written exception so future passes stop flagging it." The elements below are exempt from the 20/13 sizes and the 500 weight cap. Nothing else is exempt, and new Messages elements follow the standard. The list is kept in `packages/ui/src/chat/messages-type-exception.ts`; `chat/messages-type-exception.contract.test.ts` fails when this table and the code disagree.
+
+| Element | Selector | Size | Weight |
+|---|---|---|---|
+| Channel name in the thread header | `.channel-title h2` (shell/DesktopApp.svelte) | 15px | 600 |
+| Agent name in the thread header | `.channel-header-agent h2` (shell/DesktopApp.svelte) | 15px | 600 |
+| Channel description under the name | `.channel-sub` (shell/DesktopApp.svelte) | 12px | 400 |
+| Message author name | `.dm-msg-author` (chat/messaging/ChannelConversation.svelte) | 14px | 600 |
+| Message body | `:root` `--msg-body-font-size` (chat/messaging/message-row.css) | 15px / 1.7 | 400 |
+| Quick-react Reply / Copy labels | `.dm-quick-react-btn` (ChannelConversation.svelte) | 12px | 400 |
+| Quick-react "more" button | `.dm-quick-react-more` (ChannelConversation.svelte) | inherits | 600 |
+| Reply pane title | `.reply-title` (chat/messaging/ReplyPanel.svelte) | 15px | 700 |
+| Reply pane subtitle | `.reply-sub` (ReplyPanel.svelte) | 12px | 400 |
+| Reply author name | `.reply-author` (ReplyPanel.svelte) | 14px | 600 |
+| Welcome channel heading ("Your company is ready.") | `.hero-title` (chat/SetupChannelIntro.svelte) | 20px | 600 |
+| "Already use Claude Code or Codex" heading | `.setup-elsewhere-title` (SetupChannelIntro.svelte) | 15px | 600 |
+| Welcome resource titles | `.resource-title` (SetupChannelIntro.svelte) | 13px | 600 |
+
 ## Indigo-only gates (RELEASE-001)
 
 Surfaces that are not finished ship to every company in a finished fallback state and in full only when the open company is Indigo. One helper decides: `isIndigoOnlySurface(key, activeCompany, registry)` in `packages/ui/src/shell/indigo-only-gates.ts`. It keys on the company open in the rail, not on the person's memberships, so an Indigo member who opens another company sees that company's fallback. The personal scope (no open company) gets the fallback.
