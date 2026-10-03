@@ -61,6 +61,8 @@ export function endCardActionIdempotencyKey(
 export const CARD_ACTION_FORBIDDEN_MESSAGE =
   "You don't have permission to do this. Ask a workspace owner or admin.";
 export const CARD_ACTION_FAILED_MESSAGE = "That didn't work. Try again.";
+/** Transient copy keeps the word "connection" so the card stays open for retry. */
+export const CARD_ACTION_OFFLINE_MESSAGE = "Couldn't reach HQ. Check your connection and try again.";
 
 /**
  * Plain copy for a failed card/lifecycle action. The raw adapter/server text
@@ -71,6 +73,9 @@ export function cardActionFailureMessage(err: unknown): string {
   console.warn("[card-action] action failed", raw);
   if (/\b403\b|forbidden|permission|owners? only|only owners|cannot act|not allowed/i.test(raw)) {
     return CARD_ACTION_FORBIDDEN_MESSAGE;
+  }
+  if (/timed? out|timeout|network|connection|unavailable|fetch failed|could not reach|\b50[234]\b/i.test(raw)) {
+    return CARD_ACTION_OFFLINE_MESSAGE;
   }
   return CARD_ACTION_FAILED_MESSAGE;
 }

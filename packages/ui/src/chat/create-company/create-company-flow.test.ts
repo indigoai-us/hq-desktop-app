@@ -155,7 +155,7 @@ describe("openCreateCompanyDraft", () => {
     const result = await openCreateCompanyDraft(seam, noWait);
     expect(result).toEqual({
       ok: false,
-      reason: "That didn't work. Try again.",
+      reason: "Couldn't reach HQ. Check your connection and try again.",
       blocked: false,
     });
   });
