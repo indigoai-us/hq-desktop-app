@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { AGENT_PATHS, type PlatformAdapter } from "../adapter.js";
+import { AGENT_PATHS, SLACK_ATTACH_BODY, type PlatformAdapter } from "../adapter.js";
 import { createDesktopAdapter } from "../desktop/index.js";
 import { TauriPlatformAdapter } from "./index.js";
 import { createSyncPlatformAdapter } from "./sync-adapter.js";
@@ -44,7 +44,7 @@ function makeSync(respond: Respond = OK) {
 const EXPECTED: Invocation[] = [
   {
     cmd: "hq_pro_fetch",
-    args: { url: AGENT_PATHS.slackChannel("agt_nova"), method: "POST", body: JSON.stringify({}) },
+    args: { url: AGENT_PATHS.slackChannel("agt_nova"), method: "POST", body: JSON.stringify({ returnTo: "desktop" }) },
   },
   {
     cmd: "hq_pro_fetch",
@@ -104,6 +104,13 @@ for (const [name, make] of [
       const { adapter, calls } = make();
       await callBoth(adapter);
       expectTokenOnlyInBody(calls);
+    });
+
+    it("says in the attach body that the attach comes from the desktop, so the callback can send the person back here", async () => {
+      const { adapter, calls } = make();
+      await adapter.agents.attachSlack("agt_nova");
+      expect(JSON.parse(String(calls[0]!.args?.body))).toEqual({ returnTo: "desktop" });
+      expect(SLACK_ATTACH_BODY).toEqual({ returnTo: "desktop" });
     });
 
     it("returns what the server answered to an attach", async () => {
@@ -223,7 +230,7 @@ describe("createDesktopAdapter Slack channel calls", () => {
     await callBoth(adapter);
     expect(invoked).toEqual([]);
     expect(seen).toEqual([
-      { url: "https://api.test/v1/agents/agt_nova/channels/slack", method: "POST", body: {} },
+      { url: "https://api.test/v1/agents/agt_nova/channels/slack", method: "POST", body: { returnTo: "desktop" } },
       {
         url: "https://api.test/v1/agents/agt_nova/channels/slack/app-token",
         method: "POST",

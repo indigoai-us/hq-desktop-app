@@ -18,6 +18,7 @@ import {
   type WhoAmI,
   type VersionInfo,
   AGENT_PATHS,
+  SLACK_ATTACH_BODY,
   INTEGRATION_PATHS,
   integrationAppRefBody,
   type IntegrationOAuthStart,
@@ -1079,7 +1080,7 @@ export function createSyncPlatformAdapter(
       submitClaudeLoginCode: (agentUid, code) =>
         hqProJson('POST', AGENT_PATHS.loginCode(agentUid), { code }),
       attachSlack: (agentUid) =>
-        hqProPostWithStatus(AGENT_PATHS.slackChannel(agentUid), {}),
+        hqProPostWithStatus(AGENT_PATHS.slackChannel(agentUid), { ...SLACK_ATTACH_BODY }),
       // The token goes in the body only. The path names the bot, nothing else.
       submitSlackAppToken: async (agentUid, appToken) =>
         withoutSecret(

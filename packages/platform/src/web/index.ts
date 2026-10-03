@@ -9,6 +9,7 @@
 
 import {
   AGENT_PATHS,
+  SLACK_ATTACH_BODY,
   DELETE_CHANNEL_UNSUPPORTED_MESSAGE,
   INTEGRATION_PATHS,
   buildReplyThreadPath,
@@ -1003,7 +1004,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
     submitClaudeLoginCode: (agentUid, code) =>
       this.post(WEB_PATHS.agentLoginCode(agentUid), { code }),
     attachSlack: (agentUid) =>
-      this.postWithStatus(AGENT_PATHS.slackChannel(agentUid), {}),
+      this.postWithStatus(AGENT_PATHS.slackChannel(agentUid), { ...SLACK_ATTACH_BODY }),
     // The token goes in the body only. The path names the bot, nothing else.
     submitSlackAppToken: async (agentUid, appToken) =>
       withoutSecret(

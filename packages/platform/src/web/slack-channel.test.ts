@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   AGENT_PATHS,
   REDACTED_SECRET,
+  SLACK_ATTACH_BODY,
   failure,
   ok,
   withHttpStatus,
@@ -120,13 +121,22 @@ describe("withoutSecret", () => {
 });
 
 describe("WebPlatformAdapter agents.attachSlack", () => {
-  it("POSTs an empty object to the bot's Slack channel route", async () => {
+  it("POSTs to the bot's Slack channel route, saying the attach comes from the desktop", async () => {
     const { adapter, calls } = makeAdapter(() => ({ status: 200, body: ATTACHED }));
     const result = await adapter.agents.attachSlack("agt_nova");
     expect(calls.map((c) => [c.method, c.path, c.body])).toEqual([
-      ["POST", "/v1/agents/agt_nova/channels/slack", {}],
+      ["POST", "/v1/agents/agt_nova/channels/slack", { returnTo: "desktop" }],
     ]);
     expect(result).toEqual({ ok: true, value: ATTACHED });
+  });
+
+  it("carries returnTo desktop in the body and nothing else, so the callback can send the person back here", async () => {
+    const { adapter, calls } = makeAdapter(() => ({ status: 200, body: ATTACHED }));
+    await adapter.agents.attachSlack("agt_nova");
+    expect(calls[0]!.body).toEqual(SLACK_ATTACH_BODY);
+    expect(SLACK_ATTACH_BODY).toEqual({ returnTo: "desktop" });
+    // The bot is named in the path only.
+    expect(JSON.stringify(calls[0]!.body)).not.toContain("agt_nova");
   });
 
   it("returns a refusal with the server's code and the HTTP status", async () => {

@@ -1150,6 +1150,14 @@ export interface AgentProfilePatch {
   description?: string;
 }
 
+/**
+ * The body of an attach-Slack request. `returnTo: "desktop"` says the attach
+ * was started from the desktop app: the server's Slack callback can then show
+ * a small "done, go back to HQ Desktop" page instead of the console's setup
+ * page. A server that does not know the field ignores it.
+ */
+export const SLACK_ATTACH_BODY = { returnTo: "desktop" } as const;
+
 export const AGENT_PATHS = {
   provisionOptions: (companyUid: string) =>
     `/v1/agents/provision-options?companyUid=${encodeURIComponent(companyUid)}`,
@@ -1239,9 +1247,12 @@ export interface AgentsApi {
   /** Submit Claude's browser-issued code to the waiting cloud bot. */
   submitClaudeLoginCode?(agentUid: string, code: string): AdapterPromise<Json>;
   /**
-   * POST /v1/agents/{uid}/channels/slack with `{}`: start connecting the bot
-   * to Slack. Owner or admin only. NOT a probe: on most companies it creates
-   * a real Slack app for the bot, so call it only when a person asked.
+   * POST /v1/agents/{uid}/channels/slack with `{ returnTo: "desktop" }`:
+   * start connecting the bot to Slack. Owner or admin only. NOT a probe: on
+   * most companies it creates a real Slack app for the bot, so call it only
+   * when a person asked. `returnTo` tells the server the attach was started
+   * from the desktop app, so Slack's callback can send the person back here
+   * instead of to the console's setup page (see {@link SLACK_ATTACH_BODY}).
    *
    * A failure carries the HTTP status (`status`), the server's `code`
    * (e.g. `SLACK_ATTACH_ALREADY_CONNECTED`, or `http-404` when the body has
