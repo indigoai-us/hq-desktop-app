@@ -258,7 +258,7 @@ describe("shared update store", () => {
       orch({ installDownloadedUpdate: async () => fail("disk full") }),
     );
     expect(updateStore.installPhase).toBe("ready");
-    expect(updateStore.installError).toBe("disk full");
+    expect(updateStore.installError).toBe("Install failed. Try again.");
   });
 
   it("a recording deferral keeps the staged package in its scheduled state", async () => {
@@ -367,7 +367,7 @@ describe("shared update store", () => {
     expect(updateStore.installPhase).toBe("installing");
     reportInstallFailed({ version: "0.10.173", message: "helper exited" });
     expect(updateStore.installPhase).toBe("failed");
-    expect(updateStore.installError).toBe("helper exited");
+    expect(updateStore.installError).toBe("Update failed. Try again.");
   });
 
   it("already-queued auto-update suppresses a second download", async () => {
@@ -660,5 +660,38 @@ describe("shared store keeps pane and popover in lockstep", () => {
       expect(popoverHost.textContent).toContain("sync gap");
       expect(paneHost.querySelector('[data-testid="settings-app-restart"]')).toBeTruthy();
     });
+  });
+});
+
+describe("update store raw errors (AUDIT-3c)", () => {
+  const RAW = '[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}';
+
+  it("a failed download keeps raw text out of installError (button tooltips) and logs it", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await checkDesktopUpdates(orch({ checkForUpdates: async () => pass({ version: "0.10.173" }) }));
+    await downloadDesktopUpdate(orch({ downloadUpdate: async () => fail(RAW) }));
+    expect(updateStore.installPhase).toBe("failed");
+    expect(updateStore.installError).toBe("Download failed. Try again.");
+    expect(warn).toHaveBeenCalledWith("[update] download failed", RAW);
+    warn.mockRestore();
+  });
+
+  it("a failed install keeps raw text out of installError and logs it", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await checkDesktopUpdates(orch({ checkForUpdates: async () => pass({ version: "0.10.173" }) }));
+    await downloadDesktopUpdate(orch({}));
+    await restartToUpdate(orch({ installDownloadedUpdate: async () => fail(RAW) }));
+    expect(updateStore.installError).toBe("Install failed. Try again.");
+    expect(updateStore.installError).not.toContain("boom");
+    expect(warn).toHaveBeenCalledWith("[update] install failed", RAW);
+    warn.mockRestore();
+  });
+
+  it("a host install-failed event keeps raw text out of installError and logs it", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    reportInstallFailed({ message: RAW });
+    expect(updateStore.installError).toBe("Update failed. Try again.");
+    expect(warn).toHaveBeenCalledWith("[update] install failed", RAW);
+    warn.mockRestore();
   });
 });
