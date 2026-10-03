@@ -70,6 +70,8 @@ pub struct CognitoRefreshError {
     pub status_code: Option<u16>,
     pub error_code: Option<String>,
     pub failure_class: CognitoRefreshFailureClass,
+    /// Closed-set attribution only; never contains response text.
+    pub rejection_class: &'static str,
 }
 
 /// Stable, low-cardinality classification for refresh diagnostics.
@@ -103,6 +105,8 @@ pub struct CognitoTokenResolutionError {
     pub message: String,
     pub refresh_failure_class: Option<CognitoRefreshFailureClass>,
     pub requires_reauth: bool,
+    /// Closed-set attribution only; never contains response text.
+    pub rejection_class: &'static str,
 }
 
 impl CognitoTokenResolutionError {
@@ -111,6 +115,7 @@ impl CognitoTokenResolutionError {
             message,
             refresh_failure_class: None,
             requires_reauth: false,
+            rejection_class: "none",
         }
     }
 
@@ -118,11 +123,13 @@ impl CognitoTokenResolutionError {
         message: String,
         failure_class: CognitoRefreshFailureClass,
         requires_reauth: bool,
+        rejection_class: &'static str,
     ) -> Self {
         Self {
             message,
             refresh_failure_class: Some(failure_class),
             requires_reauth,
+            rejection_class,
         }
     }
 }
@@ -250,6 +257,32 @@ fn is_credential_key(key: &str) -> bool {
     )
 }
 
+/// Map refresh response metadata to the closed attribution vocabulary used by
+/// startup telemetry. The response body itself never leaves this classifier.
+pub fn refresh_rejection_class_tag(
+    failure_class: Option<CognitoRefreshFailureClass>,
+    status_code: Option<u16>,
+    error_code: Option<&str>,
+    requires_reauth: bool,
+) -> &'static str {
+    match error_code {
+        Some("invalid_grant") => return "invalid_grant",
+        Some("NotAuthorizedException") => return "not_authorized",
+        _ => {}
+    }
+    if requires_reauth && status_code.is_some_and(|status| (400..500).contains(&status)) {
+        return "other_4xx";
+    }
+    match failure_class {
+        Some(CognitoRefreshFailureClass::Network | CognitoRefreshFailureClass::Timeout) => {
+            "network"
+        }
+        None => "none",
+        Some(CognitoRefreshFailureClass::Unknown) => "unknown",
+        Some(_) => "unknown",
+    }
+}
+
 fn refresh_diagnostic(status: u16, body: &str, refresh_token: &str) -> (Option<String>, String) {
     let code = cognito_error_code(body);
     let message = cognito_error_message(body);
@@ -360,6 +393,26 @@ pub fn startup_token_store_status(read_failed: bool) -> AuthSessionStatus {
         AuthSessionStatus::CredentialsReadError
     } else {
         AuthSessionStatus::CredentialsAbsent
+    }
+}
+
+/// Classify a startup refresh failure using the initial token read and the
+/// resolver's outcome. A marker-filtered empty read is invalid only when the
+/// resolver says the hidden credential was rejected; all other cases preserve
+/// the pre-existing startup classification.
+pub fn classify_startup_refresh_failure(
+    before_present: bool,
+    first_read_failed: bool,
+    requires_reauth: bool,
+    after_present: bool,
+) -> AuthSessionStatus {
+    if !before_present && (first_read_failed || !requires_reauth) {
+        return startup_token_store_status(first_read_failed);
+    }
+    if requires_reauth || !after_present {
+        AuthSessionStatus::CredentialsInvalid
+    } else {
+        AuthSessionStatus::RefreshTemporarilyUnavailable
     }
 }
 
@@ -646,6 +699,7 @@ fn read_tokens_marked_invalidated_from_path(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StartupTokenStoreDiagnostics {
     pub invalidation_marker_present: bool,
+    pub marker_kind: &'static str,
     pub first_read_result: &'static str,
     pub recheck_read_result: &'static str,
 }
@@ -664,20 +718,49 @@ fn startup_token_store_diagnostics_at(path: &Path) -> StartupTokenStoreDiagnosti
     startup_token_store_diagnostics_after_first_at(path, first_read_result)
 }
 
+fn marker_kind_from_contents(contents: Option<&[u8]>) -> &'static str {
+    match contents {
+        None => "none",
+        Some([]) => "cli",
+        Some(contents)
+            if contents == b"refresh-rejected" || contents.starts_with(b"refresh-rejected:") =>
+        {
+            "desktop"
+        }
+        Some(_) => "unknown",
+    }
+}
+
+/// Classify the existing token-generation marker by its exact, bounded
+/// contents. No marker bytes are returned or logged.
+pub fn invalidation_marker_kind_tag(contents: Option<&[u8]>) -> &'static str {
+    marker_kind_from_contents(contents)
+}
+
 fn startup_token_store_diagnostics_after_first_at(
     path: &Path,
     first_read_result: &'static str,
 ) -> StartupTokenStoreDiagnostics {
     let raw_tokens = read_tokens_from_path_raw(path);
-    let invalidation_marker_present = raw_tokens
+    let marker_kind = raw_tokens
         .as_ref()
         .ok()
         .and_then(Option::as_ref)
         .filter(|tokens| !tokens.access_token.is_empty())
-        .is_some_and(|tokens| token_is_invalidated_at(path, &tokens.access_token));
+        .map(|tokens| {
+            let marker = invalidation_path_for_token(path, &tokens.access_token);
+            match std::fs::read(marker) {
+                Ok(contents) => marker_kind_from_contents(Some(&contents)),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => "none",
+                Err(_) => "unknown",
+            }
+        })
+        .unwrap_or("none");
+    let invalidation_marker_present = marker_kind != "none";
     let recheck_read_result = token_read_result_label(read_tokens_from_path(path));
     StartupTokenStoreDiagnostics {
         invalidation_marker_present,
+        marker_kind,
         first_read_result,
         recheck_read_result,
     }
@@ -690,6 +773,7 @@ pub fn startup_token_store_diagnostics() -> StartupTokenStoreDiagnostics {
         Ok(path) => startup_token_store_diagnostics_at(&path),
         Err(_) => StartupTokenStoreDiagnostics {
             invalidation_marker_present: false,
+            marker_kind: "none",
             first_read_result: "err_io",
             recheck_read_result: "err_io",
         },
@@ -705,6 +789,7 @@ pub fn startup_token_store_diagnostics_after_first(
         Ok(path) => startup_token_store_diagnostics_after_first_at(&path, first_read_result),
         Err(_) => StartupTokenStoreDiagnostics {
             invalidation_marker_present: false,
+            marker_kind: "none",
             first_read_result,
             recheck_read_result: "err_io",
         },
@@ -1205,6 +1290,7 @@ async fn resolve_tokens_classified(
                 REAUTH_MESSAGE.to_string(),
                 CognitoRefreshFailureClass::Http4xx,
                 true,
+                "unknown",
             ));
         }
         if !force_refresh && !matching_invalidation && !is_expired(&tokens) {
@@ -1223,6 +1309,7 @@ async fn resolve_tokens_classified(
                             err.message,
                             failure_class,
                             false,
+                            err.rejection_class,
                         ));
                     }
                     let error_code = if err.status_code == Some(401)
@@ -1238,6 +1325,7 @@ async fn resolve_tokens_classified(
                                 message,
                                 failure_class,
                                 requires_reauth,
+                                err.rejection_class,
                             )
                         })?;
                         let path =
@@ -1248,6 +1336,7 @@ async fn resolve_tokens_classified(
                                     message,
                                     failure_class,
                                     requires_reauth,
+                                    err.rejection_class,
                                 )
                             },
                         )?;
@@ -1257,6 +1346,7 @@ async fn resolve_tokens_classified(
                             message,
                             failure_class,
                             requires_reauth,
+                            err.rejection_class,
                         )
                     })? {
                         Some(current) if current != tokens => {
@@ -1270,6 +1360,7 @@ async fn resolve_tokens_classified(
                                 REAUTH_MESSAGE.to_string(),
                                 failure_class,
                                 requires_reauth,
+                                err.rejection_class,
                             ))
                         }
                     }
@@ -1559,6 +1650,7 @@ async fn refresh_access_token_classified_at(
             status_code: Some(400),
             error_code: Some("invalid_client".to_string()),
             failure_class: CognitoRefreshFailureClass::Http4xx,
+            rejection_class: "unknown",
         });
     }
     let client = crate::client_info::build_client();
@@ -1596,6 +1688,7 @@ async fn refresh_access_token_classified_at(
                     } else {
                         CognitoRefreshFailureClass::Network
                     },
+                    rejection_class: "network",
                 };
                 if attempt + 1 < REFRESH_ATTEMPTS {
                     wait_before_refresh_retry(attempt).await;
@@ -1621,6 +1714,12 @@ async fn refresh_access_token_classified_at(
                 status_code: Some(status),
                 error_code,
                 failure_class: refresh_failure_class_from_status(status),
+                rejection_class: refresh_rejection_class_tag(
+                    Some(refresh_failure_class_from_status(status)),
+                    Some(status),
+                    cognito_error_code(&body_text).as_deref(),
+                    requires_reauth,
+                ),
             };
             if invalid_client {
                 eprintln!("Cognito invalid_client: preserving the session and parking refresh for 15 minutes");
@@ -1652,6 +1751,7 @@ async fn refresh_access_token_classified_at(
                     } else {
                         CognitoRefreshFailureClass::ResponseDecode
                     },
+                    rejection_class: if timed_out { "network" } else { "unknown" },
                 };
                 if timed_out && attempt + 1 < REFRESH_ATTEMPTS {
                     wait_before_refresh_retry(attempt).await;
@@ -1680,6 +1780,7 @@ async fn refresh_access_token_classified_at(
         status_code: None,
         error_code: None,
         failure_class: CognitoRefreshFailureClass::Unknown,
+        rejection_class: "unknown",
     })
 }
 
@@ -1692,6 +1793,55 @@ pub async fn refresh_access_token(refresh_token: &str) -> Result<CognitoTokens, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refresh_rejection_class_is_closed_and_uses_only_safe_response_metadata() {
+        let cases = [
+            (
+                Some(CognitoRefreshFailureClass::Http4xx),
+                Some(400),
+                Some("invalid_grant"),
+                true,
+                "invalid_grant",
+            ),
+            (
+                Some(CognitoRefreshFailureClass::Http4xx),
+                Some(400),
+                Some("NotAuthorizedException"),
+                true,
+                "not_authorized",
+            ),
+            (
+                Some(CognitoRefreshFailureClass::Http4xx),
+                Some(403),
+                Some("UnlistedException"),
+                true,
+                "other_4xx",
+            ),
+            (
+                Some(CognitoRefreshFailureClass::Network),
+                None,
+                None,
+                false,
+                "network",
+            ),
+            (None, None, None, false, "none"),
+            (
+                Some(CognitoRefreshFailureClass::Http5xx),
+                Some(503),
+                Some("private response text"),
+                false,
+                "unknown",
+            ),
+        ];
+        for (failure, status, code, requires_reauth, expected) in cases {
+            assert_eq!(
+                refresh_rejection_class_tag(failure, status, code, requires_reauth),
+                expected,
+                "response details must collapse to the closed attribution vocabulary"
+            );
+        }
+    }
 
     #[test]
     fn temporary_refresh_failure_is_not_a_signed_out_startup_verdict() {
@@ -1729,6 +1879,93 @@ mod tests {
         .expect("invalid credentials must route to sign-in");
 
         assert!(!result.authenticated);
+    }
+
+    #[test]
+    fn startup_refresh_failure_changes_only_hidden_rejected_token_classification() {
+        let cases = [
+            // The sole change from main: the marker-filtered first read hides
+            // credentials, but the resolver reports a terminal rejection.
+            (
+                false,
+                false,
+                true,
+                false,
+                AuthSessionStatus::CredentialsInvalid,
+            ),
+            // Preserve main's present-token branch when a failed refresh leaves
+            // no token after resolution.
+            (
+                true,
+                false,
+                false,
+                false,
+                AuthSessionStatus::CredentialsInvalid,
+            ),
+            // Preserve main's empty-store result after a classified failure.
+            (
+                false,
+                false,
+                false,
+                false,
+                AuthSessionStatus::CredentialsAbsent,
+            ),
+            // Preserve main's failed-initial-read result after a classified failure.
+            (
+                false,
+                true,
+                false,
+                false,
+                AuthSessionStatus::CredentialsReadError,
+            ),
+            // The absent/read-error arm on main does not adopt a later token read.
+            (
+                false,
+                false,
+                false,
+                true,
+                AuthSessionStatus::CredentialsAbsent,
+            ),
+            (
+                false,
+                true,
+                false,
+                true,
+                AuthSessionStatus::CredentialsReadError,
+            ),
+            // A still-present saved token after a retryable failure is temporary.
+            (
+                true,
+                false,
+                false,
+                true,
+                AuthSessionStatus::RefreshTemporarilyUnavailable,
+            ),
+            // A terminal refresh rejection remains invalid whether or not the
+            // initial read exposed a token.
+            (
+                true,
+                false,
+                true,
+                false,
+                AuthSessionStatus::CredentialsInvalid,
+            ),
+            (
+                false,
+                false,
+                true,
+                false,
+                AuthSessionStatus::CredentialsInvalid,
+            ),
+        ];
+
+        for (before, read_failed, reauth, after, expected) in cases {
+            assert_eq!(
+                classify_startup_refresh_failure(before, read_failed, reauth, after),
+                expected,
+                "before={before}, read_failed={read_failed}, requires_reauth={reauth}, after={after}"
+            );
+        }
     }
 
     #[test]
@@ -2537,6 +2774,17 @@ mod tests {
         assert!(refresh_rejection_recorded_at(&path, access).unwrap());
         std::fs::write(&marker, b"refresh-rejected").unwrap();
         assert!(refresh_rejection_recorded_at(&path, access).unwrap());
+    }
+
+    #[test]
+    fn marker_kind_maps_legacy_and_reason_suffixed_refresh_rejection_markers() {
+        assert_eq!(marker_kind_from_contents(Some(b"refresh-rejected")), "desktop");
+        assert_eq!(
+            marker_kind_from_contents(Some(b"refresh-rejected:NotAuthorizedException")),
+            "desktop"
+        );
+        assert_eq!(marker_kind_from_contents(Some(b"")), "cli");
+        assert_eq!(marker_kind_from_contents(Some(b"other")), "unknown");
     }
 
     #[test]

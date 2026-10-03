@@ -15,11 +15,11 @@
 use hq_desktop_core::cdp_mirror::{
     hash_identifier, Endpoints, Mirror, MirrorContext, EVENT_ACCOUNT_LINKED,
     EVENT_AGENT_SESSION_LAUNCHED, EVENT_APP_DAILY_ACTIVE, EVENT_APP_FIRST_LAUNCH, EVENT_APP_OPENED,
-    EVENT_COMPANY_CREATED, EVENT_COMPANY_JOINED, EVENT_COMPANY_PROVISIONING_FAILED,
-    EVENT_COMPANY_ROUTE_DECIDED, EVENT_COMPANY_SELF_HEAL, EVENT_FIRST_SYNC_COMPLETED,
-    EVENT_INVITE_FAILED, EVENT_INVITE_SENT, EVENT_LOGIN_COMPLETED, EVENT_ONBOARDING_STEP_SHOWN,
-    EVENT_AUTH_FAILURE, EVENT_AUTH_PROGRESS, EVENT_PLAN_SELECTED, EVENT_SETUP_ABANDONED,
-    EVENT_SYNC_COMPLETED, EVENT_SYNC_FAILED, EVENT_SYNC_STARTED, FLAG_REFRESH_INTERVAL,
+    EVENT_AUTH_FAILURE, EVENT_AUTH_PROGRESS, EVENT_COMPANY_CREATED, EVENT_COMPANY_JOINED,
+    EVENT_COMPANY_PROVISIONING_FAILED, EVENT_COMPANY_ROUTE_DECIDED, EVENT_COMPANY_SELF_HEAL,
+    EVENT_FIRST_SYNC_COMPLETED, EVENT_INVITE_FAILED, EVENT_INVITE_SENT, EVENT_LOGIN_COMPLETED,
+    EVENT_ONBOARDING_STEP_SHOWN, EVENT_PLAN_SELECTED, EVENT_SETUP_ABANDONED, EVENT_SYNC_COMPLETED,
+    EVENT_SYNC_FAILED, EVENT_SYNC_STARTED, FLAG_REFRESH_INTERVAL,
 };
 use hq_desktop_core::first_run::{merge_menubar_flags, read_menubar_obj};
 use hq_desktop_core::lifecycle::LifecycleState;
@@ -47,6 +47,16 @@ pub const EVENT_INSTALL_TAG_READ: &str = "install_tag_read";
 pub const DAILY_ACTIVE_DAY_KEY: &str = "cdpDailyActiveDay";
 /// `userHash|companyHash` last sent as `account_linked`, so a repeat is skipped.
 pub const ACCOUNT_LINKED_KEY: &str = "cdpAccountLinked";
+/// `true` while the first launch's `desktop_app_opened` row has not reached
+/// hq-pro. That route needs a signed-in caller, and a first launch has none.
+pub const FIRST_OPEN_PENDING_KEY: &str = "cdpFirstOpenPending";
+/// Sign-in progress and failure rows emitted before the app had a session.
+/// hq-pro needs a signed-in caller, so they wait here for the next session.
+pub const AUTH_HELD_KEY: &str = "cdpAuthHeld";
+/// Most held sign-in rows kept; the oldest is dropped past this.
+pub const AUTH_HELD_CAP: usize = 20;
+/// Held sign-in rows older than this are dropped unsent.
+pub const AUTH_HELD_TTL_MS: u64 = 3 * 24 * 60 * 60 * 1000;
 
 /// hq-pro operational rows (consent-free) for the funnel events below. Each is
 /// mirrored to the CDP under the unprefixed name by
@@ -101,11 +111,7 @@ pub const OPERATIONAL_MIRRORS: &[(&str, &str, &[&str])] = &[
     ),
     (OP_COMPANY_JOINED, EVENT_COMPANY_JOINED, &["route", "count"]),
     (OP_PLAN_SELECTED, EVENT_PLAN_SELECTED, &["plan"]),
-    (
-        OP_AUTH_PROGRESS,
-        EVENT_AUTH_PROGRESS,
-        &["provider", "step"],
-    ),
+    (OP_AUTH_PROGRESS, EVENT_AUTH_PROGRESS, &["provider", "step"]),
     (
         OP_AUTH_FAILURE,
         EVENT_AUTH_FAILURE,
@@ -327,11 +333,17 @@ fn persist_visitor(anon_id: &str, install_source: Option<&str>) {
 pub fn init(app: &AppHandle, is_first_launch: bool) {
     let telemetry_suppressed = std::env::var("HQ_CI_FIRST_LAUNCH_TELEMETRY_SUPPRESSED")
         .is_ok_and(|value| value == "1");
-    init_mirror(
-        app,
-        should_record_first_launch(is_first_launch, telemetry_suppressed),
-    );
-    emit_operational(OP_APP_OPENED, json!({ "isFirstLaunch": is_first_launch }));
+    let record_first_launch = should_record_first_launch(is_first_launch, telemetry_suppressed);
+    init_mirror(app, record_first_launch);
+    if record_first_launch {
+        // hq-pro only accepts the row from a signed-in caller, so a first
+        // launch holds it until sign-in. The CDP copy is queued now.
+        note_operational_event(OP_APP_OPENED, Some(&json!({ "isFirstLaunch": true })));
+        hold_first_open();
+        flush_pending_first_open();
+    } else {
+        emit_operational(OP_APP_OPENED, json!({ "isFirstLaunch": is_first_launch }));
+    }
     tauri::async_runtime::spawn(async {
         loop {
             note_daily_active_if_new_day();
@@ -374,6 +386,7 @@ fn init_mirror(_app: &AppHandle, is_first_launch: bool) {
     }
     tauri::async_runtime::spawn(mirror.run());
     flush_install_tag_report();
+    flush_held_auth_rows();
 }
 
 /// Queue a named event with extra props. Common props are added by the mirror.
@@ -464,6 +477,283 @@ pub fn note_login_completed(provider: &str) {
     record(EVENT_LOGIN_COMPLETED, props);
     flush_install_tag_report();
     note_account_linked();
+    flush_pending_first_open();
+    flush_held_auth_rows();
+}
+
+/// Hold the first launch's `desktop_app_opened` row for
+/// [`flush_pending_first_open_now`].
+pub fn hold_first_open() {
+    match paths::menubar_json_path() {
+        Ok(path) => {
+            if let Err(err) = merge_menubar_flags(&path, &[(FIRST_OPEN_PENDING_KEY, json!(true))]) {
+                warn_first_open("hold_write_failed", &err);
+            }
+        }
+        Err(err) => warn_first_open("menubar_path_unresolved", &err),
+    }
+}
+
+/// Non-fatal first-open problems go to the local diagnostic log as WARN lines.
+fn warn_first_open(kind: &str, err: &str) {
+    crate::util::logfile::log("cdp", &format!("WARN first_open {kind}: {err}"));
+}
+
+#[cfg(test)]
+pub(crate) struct FirstOpenGuardHook {
+    pub reached: tokio::sync::Notify,
+    pub resume: tokio::sync::Notify,
+}
+
+#[cfg(test)]
+tokio::task_local! {
+    /// Parks a flush between its cheap pending check and the guard, so a test
+    /// can finish a second flush in that window.
+    pub(crate) static FIRST_OPEN_GUARD_HOOK: std::sync::Arc<FirstOpenGuardHook>;
+}
+
+static FIRST_OPEN_FLUSHING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Send the held first-launch `desktop_app_opened` row if there is one.
+/// Returns whether a held row was delivered. The row stays held on failure
+/// (no session yet, network), so the next sign-in sends it.
+pub async fn flush_pending_first_open_now() -> bool {
+    let Ok(path) = paths::menubar_json_path() else {
+        return false;
+    };
+    flush_pending_first_open_at(path).await
+}
+
+/// Capture the install's menubar path before dispatching a background flush.
+/// The task must not resolve HOME after another caller has changed it.
+pub(crate) fn capture_background_flush_path() -> Option<std::path::PathBuf> {
+    paths::menubar_json_path().ok()
+}
+
+pub(crate) fn flush_path_matches_current_home(path: &std::path::Path) -> bool {
+    paths::menubar_json_path().is_ok_and(|current| current == path)
+}
+
+pub(crate) fn pending_first_open_flush_task() -> impl std::future::Future<Output = bool> + Send {
+    let path = capture_background_flush_path();
+    async move {
+        match path {
+            Some(path) => flush_pending_first_open_at(path).await,
+            None => false,
+        }
+    }
+}
+
+async fn flush_pending_first_open_at(path: std::path::PathBuf) -> bool {
+    use std::sync::atomic::Ordering;
+    // Do not send one installation's held row with another installation's
+    // access token if HOME changed before this background task was polled.
+    if !flush_path_matches_current_home(&path) {
+        return false;
+    }
+    let pending = || {
+        read_menubar_obj(&path)
+            .get(FIRST_OPEN_PENDING_KEY)
+            .and_then(Value::as_bool)
+            == Some(true)
+    };
+    if !pending() {
+        return false;
+    }
+    #[cfg(test)]
+    if let Ok(hook) = FIRST_OPEN_GUARD_HOOK.try_with(std::sync::Arc::clone) {
+        hook.reached.notify_one();
+        hook.resume.notified().await;
+    }
+    if FIRST_OPEN_FLUSHING.swap(true, Ordering::SeqCst) {
+        return false;
+    }
+    // Another flush may have sent and cleared the row since the check above.
+    if !pending() {
+        FIRST_OPEN_FLUSHING.store(false, Ordering::SeqCst);
+        return false;
+    }
+    let sent = match super::telemetry::emit_desktop_operational_telemetry_unmirrored(
+        OP_APP_OPENED,
+        json!({ "isFirstLaunch": true }),
+    )
+    .await
+    {
+        Ok(()) => true,
+        Err(err) => {
+            warn_first_open("send_failed_held_for_retry", &err);
+            false
+        }
+    };
+    if sent {
+        if let Err(err) = merge_menubar_flags(&path, &[(FIRST_OPEN_PENDING_KEY, Value::Null)]) {
+            warn_first_open("clear_write_failed", &err);
+        }
+    }
+    FIRST_OPEN_FLUSHING.store(false, Ordering::SeqCst);
+    sent
+}
+
+/// Whether `event_name` is a sign-in row held when there is no session yet.
+pub fn is_held_auth_event(event_name: &str) -> bool {
+    matches!(event_name, OP_AUTH_PROGRESS | OP_AUTH_FAILURE)
+}
+
+fn held_label(props: Option<&Value>, key: &str) -> Option<Value> {
+    props
+        .and_then(|p| p.get(key))
+        .and_then(Value::as_str)
+        .filter(|v| {
+            !v.is_empty()
+                && v.len() <= 64
+                && v.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"_-.".contains(&b))
+        })
+        .map(|v| json!(v))
+}
+
+/// Held rows at `path` still inside [`AUTH_HELD_TTL_MS`] at `now`.
+pub fn held_auth_rows_at(path: &std::path::Path, now: u64) -> Vec<Value> {
+    read_menubar_obj(path)
+        .get(AUTH_HELD_KEY)
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter(|row| {
+                    row.get("heldAtMs")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|at| now.saturating_sub(at) < AUTH_HELD_TTL_MS)
+                })
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Persist one sign-in row for a later session. Only the closed labels
+/// `provider`, `step` and `errorCategory` are kept, never error text. Expired
+/// rows are pruned and the oldest dropped past [`AUTH_HELD_CAP`].
+pub fn hold_auth_row_at(
+    path: &std::path::Path,
+    event_name: &str,
+    properties: Option<&Value>,
+    now: u64,
+) -> Result<(), String> {
+    let mut props = Map::new();
+    for key in ["provider", "step", "errorCategory"] {
+        if let Some(value) = held_label(properties, key) {
+            props.insert(key.into(), value);
+        }
+    }
+    let occurred_at = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(now as i64)
+        .unwrap_or_else(chrono::Utc::now)
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let mut rows = held_auth_rows_at(path, now);
+    rows.push(json!({
+        "eventName": event_name,
+        "properties": props,
+        "occurredAt": occurred_at,
+        "heldAtMs": now,
+        "idempotencyKey": format!("hq-desktop-app:auth-held:{}", uuid::Uuid::new_v4()),
+    }));
+    let excess = rows.len().saturating_sub(AUTH_HELD_CAP);
+    rows.drain(..excess);
+    merge_menubar_flags(path, &[(AUTH_HELD_KEY, Value::Array(rows))])
+}
+
+/// [`hold_auth_row_at`] for this install's `menubar.json`. Failures are
+/// logged by kind only.
+pub fn hold_auth_row(event_name: &str, properties: Option<&Value>) {
+    let held = paths::menubar_json_path()
+        .and_then(|path| hold_auth_row_at(&path, event_name, properties, now_ms()));
+    if held.is_err() {
+        crate::util::logfile::log("cdp", "WARN auth_held hold_write_failed");
+    }
+}
+
+/// Drop the delivered row `key` and any expired rows; keeps rows held meanwhile.
+fn clear_held_auth_row(path: &std::path::Path, key: &str) -> Result<(), String> {
+    let rows: Vec<Value> = held_auth_rows_at(path, now_ms())
+        .into_iter()
+        .filter(|row| row.get("idempotencyKey").and_then(Value::as_str) != Some(key))
+        .collect();
+    let value = if rows.is_empty() {
+        Value::Null
+    } else {
+        Value::Array(rows)
+    };
+    merge_menubar_flags(path, &[(AUTH_HELD_KEY, value)])
+}
+
+static AUTH_HELD_FLUSHING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Send held sign-in rows oldest first, each with its stable idempotencyKey so
+/// a resend is stored once. Stops at the first failure; the rest stay held.
+/// Returns how many were delivered.
+pub async fn flush_held_auth_rows_now() -> usize {
+    let Ok(path) = paths::menubar_json_path() else {
+        return 0;
+    };
+    flush_held_auth_rows_at(path).await
+}
+
+/// Capture the install's menubar path before dispatching a background flush.
+pub(crate) fn held_auth_flush_task() -> impl std::future::Future<Output = usize> + Send {
+    let path = capture_background_flush_path();
+    async move {
+        if let Some(path) = path {
+            flush_held_auth_rows_at(path).await
+        } else {
+            0
+        }
+    }
+}
+
+async fn flush_held_auth_rows_at(path: std::path::PathBuf) -> usize {
+    use std::sync::atomic::Ordering;
+    // The access-token resolver follows current HOME, so leave rows in place
+    // rather than sending them under a different profile's identity.
+    if !flush_path_matches_current_home(&path) {
+        return 0;
+    }
+    if held_auth_rows_at(&path, now_ms()).is_empty()
+        || AUTH_HELD_FLUSHING.swap(true, Ordering::SeqCst)
+    {
+        return 0;
+    }
+    let mut sent = 0;
+    for row in held_auth_rows_at(&path, now_ms()) {
+        let Some(key) = row.get("idempotencyKey").and_then(Value::as_str) else {
+            continue;
+        };
+        if super::telemetry::post_held_auth_row(&row).await.is_err() {
+            crate::util::logfile::log("cdp", "WARN auth_held send_failed_held_for_retry");
+            break;
+        }
+        sent += 1;
+        if clear_held_auth_row(&path, key).is_err() {
+            crate::util::logfile::log("cdp", "WARN auth_held clear_write_failed");
+            break;
+        }
+    }
+    AUTH_HELD_FLUSHING.store(false, Ordering::SeqCst);
+    sent
+}
+
+fn flush_held_auth_rows() {
+    tauri::async_runtime::spawn(held_auth_flush_task());
+}
+
+/// `idempotencyKey` for the first launch's `desktop_app_opened` row: one per
+/// install, so hq-pro stores a repeated send once.
+pub fn first_open_idempotency_key(install_attempt_id: &str) -> String {
+    format!("hq-desktop-app:first-open:{install_attempt_id}")
+}
+
+fn flush_pending_first_open() {
+    tauri::async_runtime::spawn(pending_first_open_flush_task());
 }
 
 /// Send one consent-free hq-pro row; `emit_desktop_operational_telemetry`
@@ -508,19 +798,67 @@ pub fn claim_account_linked_at(path: &std::path::Path, props: &Value) -> bool {
     true
 }
 
-/// Send `account_linked` for the signed-in person (and active company when the
-/// config has one). Called after sign-in and again after the first company
-/// sync, when the company uid is known; the same pair is sent once.
+/// The company for `account_linked`: the uid the caller knows, else
+/// `config.json`'s company when it is a real company (the personal-vault
+/// reconstruction stores the person uid there), else the HQ manifest's `cmp_`
+/// uid when it holds exactly one. The desktop onboarding does not write
+/// `config.json`, so without the last two steps a desktop-only person never
+/// gets a company. With several companies in the manifest there is no way to
+/// tell which one the link belongs to, so none is sent and the first-push hook
+/// names the company.
+pub fn account_linked_company(
+    explicit: Option<&str>,
+    config_company: Option<&str>,
+    person: Option<&str>,
+    manifest_uids: &[String],
+) -> Option<String> {
+    let real = |uid: &&str| uid.starts_with("cmp_") && Some(*uid) != person;
+    explicit
+        .map(str::trim)
+        .filter(real)
+        .or_else(|| config_company.map(str::trim).filter(real))
+        .or_else(|| {
+            let mut companies: Vec<&str> = manifest_uids
+                .iter()
+                .map(String::as_str)
+                .filter(real)
+                .collect();
+            companies.sort_unstable();
+            companies.dedup();
+            match companies.as_slice() {
+                [only] => Some(*only),
+                _ => None,
+            }
+        })
+        .map(str::to_string)
+}
+
+/// `cmp_` cloud uids recorded in `<hq_root>/companies/manifest.yaml`.
+pub fn manifest_company_uids(hq_root: &std::path::Path) -> Vec<String> {
+    match hq_desktop_core::workspaces::read_manifest(hq_root) {
+        hq_desktop_core::workspaces::ManifestLoad::Present(entries) => entries
+            .into_iter()
+            .filter_map(|entry| entry.cloud_uid)
+            .filter(|uid| uid.starts_with("cmp_"))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Send `account_linked` for the signed-in person and their company when one
+/// is known. Called after sign-in, after the first-launch sync, and after a
+/// company's first push (with that company's uid); the same pair is sent once.
 pub fn note_account_linked() {
-    tauri::async_runtime::spawn(async {
+    note_account_linked_for(None);
+}
+
+fn note_account_linked_for(explicit_company: Option<String>) {
+    tauri::async_runtime::spawn(async move {
         let config = hq_desktop_core::config::read_hq_config_lenient()
             .ok()
             .flatten();
         let nonempty = |v: String| Some(v).filter(|v| !v.trim().is_empty());
         let mut person = config.as_ref().and_then(|c| nonempty(c.person_uid.clone()));
-        let company = config
-            .as_ref()
-            .and_then(|c| nonempty(c.company_uid.clone()));
         if person.is_none() {
             if let (Ok(token), Ok(api)) = (
                 super::cognito::get_valid_access_token().await,
@@ -529,6 +867,15 @@ pub fn note_account_linked() {
                 person = super::dm_notify::fetch_person_uid_from_vault(&api, &token).await;
             }
         }
+        let manifest_uids = hq_desktop_core::workspaces::resolve_hq_folder_path()
+            .map(|root| manifest_company_uids(&root))
+            .unwrap_or_default();
+        let company = account_linked_company(
+            explicit_company.as_deref(),
+            config.as_ref().map(|c| c.company_uid.as_str()),
+            person.as_deref(),
+            &manifest_uids,
+        );
         let Some(props) = account_linked_props(person.as_deref(), company.as_deref()) else {
             return;
         };
@@ -697,9 +1044,19 @@ pub fn sync_end_event(
 /// Hook for the runner's terminal seam (`record_sync_run_ended` call sites).
 pub fn note_sync_ended(error_class: Option<&str>) {
     let in_flight = sync_in_flight().take().map(|f| (f.trigger, f.file_count));
+    let links_account = sync_end_links_account(in_flight.map(|f| f.0), error_class);
     if let Some((name, props)) = sync_end_event(in_flight, error_class) {
         emit_operational(name, props);
     }
+    if links_account {
+        note_account_linked();
+    }
+}
+
+/// A successful first-launch sync has put the person's companies in the
+/// manifest, so `account_linked` can carry a company now.
+pub fn sync_end_links_account(trigger: Option<SyncTrigger>, error_class: Option<&str>) -> bool {
+    trigger == Some(SyncTrigger::First) && error_class.is_none()
 }
 
 /// `start_sync` returned an error after the pass was registered (a preflight
@@ -740,11 +1097,18 @@ pub fn note_signin_link_visitor(anon_id: &str) {
     });
 }
 
-/// Hook for the company first push completing. The company uid is in the
-/// config by now, so `account_linked` gets its company hash here.
-pub fn note_first_sync_completed() {
+/// Hook for the company first push completing; `account_linked` gets that
+/// company's hash.
+pub fn note_first_sync_completed(company_uid: &str) {
     record(EVENT_FIRST_SYNC_COMPLETED, Map::new());
-    note_account_linked();
+    note_account_linked_for(Some(company_uid.to_string()));
+}
+
+/// hq-pro funnel rows from [`OPERATIONAL_MIRRORS`]; each carries `appVersion`.
+pub fn is_funnel_operational_row(event_name: &str) -> bool {
+    OPERATIONAL_MIRRORS
+        .iter()
+        .any(|(op, _, _)| *op == event_name)
 }
 
 /// Whether a quit at this point is "setup abandoned": the person has not
@@ -1090,6 +1454,79 @@ mod tests {
     }
 
     #[test]
+    fn account_linked_company_comes_from_the_known_company_not_config_json() {
+        // Regression: the company came only from ~/.hq/config.json, which the
+        // desktop onboarding never writes, so companyHash was never sent.
+        let person = Some("prs_1");
+        assert_eq!(
+            account_linked_company(Some("cmp_new"), None, person, &[]).as_deref(),
+            Some("cmp_new"),
+            "first push passes the pushed company"
+        );
+        assert_eq!(
+            account_linked_company(None, Some("prs_1"), person, &[]),
+            None,
+            "the personal-vault reconstruction stores the person uid as company"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("companies")).unwrap();
+        std::fs::write(
+            dir.path().join("companies/manifest.yaml"),
+            "companies:\n  personal:\n    cloud_uid: prs_1\n  acme:\n    cloud_uid: cmp_acme\n",
+        )
+        .unwrap();
+        let manifest = manifest_company_uids(dir.path());
+        assert_eq!(manifest, vec!["cmp_acme".to_string()]);
+        assert_eq!(
+            account_linked_company(None, Some("prs_1"), person, &manifest).as_deref(),
+            Some("cmp_acme"),
+            "after the first-launch sync the manifest names the company"
+        );
+        let props = account_linked_props(person, Some("cmp_acme")).unwrap();
+        assert_eq!(props["companyHash"], hash_identifier("cmp_acme").unwrap());
+    }
+
+    #[test]
+    fn account_linked_company_is_unknown_when_the_manifest_holds_several_companies() {
+        // Regression: the first manifest company was credited with the link, so
+        // a person in two companies linked the wrong one and then sent a second
+        // account_linked with a different companyHash after first push.
+        let person = Some("prs_1");
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("companies")).unwrap();
+        std::fs::write(
+            dir.path().join("companies/manifest.yaml"),
+            "companies:\n  personal:\n    cloud_uid: prs_1\n  acme:\n    cloud_uid: cmp_acme\n  beta:\n    cloud_uid: cmp_beta\n",
+        )
+        .unwrap();
+        let manifest = manifest_company_uids(dir.path());
+        assert_eq!(manifest.len(), 2);
+        assert_eq!(
+            account_linked_company(None, Some("prs_1"), person, &manifest),
+            None,
+            "two companies: leave the company to the first-push hook"
+        );
+        assert_eq!(
+            account_linked_company(Some("cmp_beta"), None, person, &manifest).as_deref(),
+            Some("cmp_beta"),
+            "first push still names its company"
+        );
+        let props = account_linked_props(person, None).unwrap();
+        assert!(props.get("companyHash").is_none());
+    }
+
+    #[test]
+    fn only_a_successful_first_launch_sync_links_the_account() {
+        assert!(sync_end_links_account(Some(SyncTrigger::First), None));
+        assert!(!sync_end_links_account(
+            Some(SyncTrigger::First),
+            Some("auth_expired")
+        ));
+        assert!(!sync_end_links_account(Some(SyncTrigger::Manual), None));
+        assert!(!sync_end_links_account(None, None));
+    }
+
+    #[test]
     fn daily_active_is_due_once_per_utc_day() {
         assert!(daily_active_due(None, "2026-10-02"));
         assert!(daily_active_due(Some("2026-10-01"), "2026-10-02"));
@@ -1258,7 +1695,7 @@ mod tests {
             .expect("company first push complete emit");
         let tail = after_emit.split("\n    Ok(())").next().unwrap();
         assert!(
-            tail.contains("cdp_mirror::note_first_sync_completed();"),
+            tail.contains("cdp_mirror::note_first_sync_completed(&company.uid);"),
             "first_sync_completed: the company first push must call the mirror"
         );
 

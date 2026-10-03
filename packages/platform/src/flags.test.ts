@@ -3,12 +3,16 @@ import type { FlagClient, FlagSnapshot } from "@indigoai-us/hq-flags-client";
 import { failure, ok } from "./adapter.js";
 import {
   CLAUDE_PROVIDER_FLAG,
+  COMPANY_NAME_PREFILL_FLAG,
+  COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
   DESKTOP_LIMIT_STATUS_PUSH_FLAG,
+  FIRST_LAUNCH_JOIN_KEY_FLAG,
   FLAG_REFRESH_INTERVAL_MS,
   LOGIN_RECEIPT_DURABILITY_FLAG,
   MEETINGS_LEGACY_FLAG,
   MEETINGS_REGISTRY_KEY,
   PERSONAL_WORKSPACE_BOARD_FLAG,
+  PERSONAL_TRANSCRIPTS_FLAG,
   POST_READY_ACTION_TELEMETRY_FLAG,
   READY_FIRST_ACTION_FLAG,
   SETUP_DEPS_TIMEOUT_RETRY_FLAG,
@@ -46,12 +50,24 @@ function deferred<T = void>(): {
 }
 
 describe("registry key mapping", () => {
+  it("maps company name prefill to its hq-flags key", () => {
+    expect(COMPANY_NAME_PREFILL_FLAG).toBe("desktop.company-name-prefill-v1");
+    expect(registryKeyFor(COMPANY_NAME_PREFILL_FLAG)).toBe(COMPANY_NAME_PREFILL_FLAG);
+  });
+
   it("maps the meetings and Claude provider registry flags", () => {
     expect(registryKeyFor("meetings")).toBe(MEETINGS_REGISTRY_KEY);
     expect(registryKeyFor(MEETINGS_LEGACY_FLAG)).toBe("desktop.meetings");
     expect(registryKeyFor(CLAUDE_PROVIDER_FLAG)).toBe(CLAUDE_PROVIDER_FLAG);
     expect(registryKeyFor("is_indigo_user")).toBeUndefined();
     expect(registryKeyFor("anything-else")).toBeUndefined();
+  });
+
+  it("registers the first-launch join-key rollout through the default-off hq-flags mapping", () => {
+    expect(FIRST_LAUNCH_JOIN_KEY_FLAG).toBe("desktop.first-launch-join-key-v1");
+    expect(registryKeyFor(FIRST_LAUNCH_JOIN_KEY_FLAG)).toBe(
+      FIRST_LAUNCH_JOIN_KEY_FLAG,
+    );
   });
 
 
@@ -61,6 +77,15 @@ describe("registry key mapping", () => {
     );
     expect(registryKeyFor(PERSONAL_WORKSPACE_BOARD_FLAG)).toBe(
       PERSONAL_WORKSPACE_BOARD_FLAG,
+    );
+  });
+
+  it("maps personal meeting transcripts to the hq-flags registry", () => {
+    expect(PERSONAL_TRANSCRIPTS_FLAG).toBe(
+      "desktop.meetings-personal-transcripts",
+    );
+    expect(registryKeyFor(PERSONAL_TRANSCRIPTS_FLAG)).toBe(
+      PERSONAL_TRANSCRIPTS_FLAG,
     );
   });
 
@@ -75,6 +100,15 @@ describe("registry key mapping", () => {
     const key = "desktop.first-folder-sync-step-v1";
     expect(key).toMatch(/^[a-z0-9-]+(?:\.[a-z0-9-]+)*$/);
     expect(registryKeyFor(key)).toBe(key);
+  });
+
+  it("maps the company-route lookup retry through its hq-flags registry key", () => {
+    expect(COMPANY_ROUTE_LOOKUP_RETRY_FLAG).toBe(
+      "desktop.company-route-lookup-retry-v1",
+    );
+    expect(registryKeyFor(COMPANY_ROUTE_LOOKUP_RETRY_FLAG)).toBe(
+      COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
+    );
   });
 
 

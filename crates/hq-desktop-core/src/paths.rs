@@ -213,6 +213,104 @@ pub fn managed_npm_prefix_in(root: &Path) -> PathBuf {
     }
 }
 
+/// Managed Windows directories in hq-installer's `extended_search_path()`
+/// order: Node runtime, npm's flat global prefix, then HQ wrappers and Git.
+/// The desktop's fallback search directories use this order.
+pub fn managed_windows_path_dirs_for_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
+    managed_windows_dirs_for_roots(roots, false)
+}
+
+/// Managed Windows directories which lead the HQ settings PATH written by the
+/// settings-PATH repair. npm's flat global prefix comes before `node` so the
+/// delivered `hq.cmd` wins over a stale shim left in the Node directory; `node`
+/// follows so the selected shim still finds its runtime. Only the settings
+/// PATH uses this order; the installer-aligned search order is unchanged.
+pub fn managed_windows_settings_path_dirs_for_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
+    managed_windows_dirs_for_roots(roots, true)
+}
+
+fn managed_windows_dirs_for_roots(roots: &[PathBuf], npm_prefix_first: bool) -> Vec<PathBuf> {
+    let mut dirs = Vec::with_capacity(roots.len() * 5);
+    for root in roots {
+        // This function models the Windows layout independent of the host
+        // running its tests; `managed_npm_prefix_in` follows host cfgs.
+        if npm_prefix_first {
+            dirs.push(root.join("npm-prefix"));
+            dirs.push(managed_node_dir_in(root));
+        } else {
+            dirs.push(managed_node_dir_in(root));
+            dirs.push(root.join("npm-prefix"));
+        }
+        dirs.push(root.join("bin"));
+        dirs.push(root.join("git").join("cmd"));
+        dirs.push(root.join("git").join("mingw64").join("bin"));
+    }
+    dirs
+}
+
+/// Whether the settings-PATH repair has the platform-specific inputs it needs.
+/// Windows writes use LOCALAPPDATA-derived managed roots and the HQ folder;
+/// unlike Unix they do not consume the user's home or login-shell PATH.
+pub fn settings_path_repair_environment_available(
+    is_windows: bool,
+    home_available: bool,
+    hq_root_available: bool,
+    managed_roots_available: bool,
+) -> bool {
+    if is_windows {
+        hq_root_available && managed_roots_available
+    } else {
+        home_available
+    }
+}
+
+/// Compose Windows Claude `env.PATH` with HQ-managed tool directories first.
+/// Windows PATH entries are separated by `;` and compared case-insensitively;
+/// only duplicate entries for the managed directories are removed. All other
+/// existing entries, including their spelling and relative order, are retained.
+/// This function is platform-independent so Windows-shaped cases run in core's
+/// ordinary unit-test lane.
+pub fn compose_windows_settings_env_path(
+    toolchain_roots: &[PathBuf],
+    existing: Option<&str>,
+) -> String {
+    fn windows_path_key(path: &str) -> String {
+        let normalized = path.replace('/', "\\");
+        // `C:\\` is a drive root, while `C:` is drive-relative; don't fold
+        // those distinct Windows paths together when trimming separators.
+        let is_drive_root = normalized.len() == 3
+            && normalized.as_bytes()[1] == b':'
+            && normalized.as_bytes()[2] == b'\\';
+        if is_drive_root {
+            normalized.to_lowercase()
+        } else {
+            normalized.trim_end_matches('\\').to_lowercase()
+        }
+    }
+
+    let managed_dirs = managed_windows_settings_path_dirs_for_roots(toolchain_roots);
+    let mut managed_keys = std::collections::HashSet::new();
+    let mut entries = Vec::with_capacity(managed_dirs.len());
+    for dir in managed_dirs {
+        let entry = dir.to_string_lossy().replace('/', "\\");
+        let key = windows_path_key(&entry);
+        if !entry.is_empty() && managed_keys.insert(key) {
+            entries.push(entry);
+        }
+    }
+
+    if let Some(existing) = existing {
+        for entry in existing.split(';') {
+            if managed_keys.contains(&windows_path_key(entry)) {
+                continue;
+            }
+            entries.push(entry.to_string());
+        }
+    }
+
+    entries.join(";")
+}
+
 /// Directory the managed npm prefix places executable shims in — what goes on
 /// PATH. `<prefix>/bin` on unix; the prefix itself on Windows (its shims are
 /// written flat into the prefix, matching hq-installer-win's layout).
@@ -1513,25 +1611,14 @@ fn extended_search_dirs() -> Vec<PathBuf> {
 fn extended_search_dirs_raw() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
 
-    if let Some(toolchain) = managed_toolchain_dir() {
-        dirs.push(toolchain.join("node"));
-        // Keep this order aligned with hq-installer's
-        // `extended_search_path()`. Windows npm global shims and the
-        // drive-letter-translating rsync wrapper live directly in
-        // `npm-prefix`; the Core rescue must see that wrapper before the raw
-        // rsync.exe in `bin`.
-        dirs.push(toolchain.join("npm-prefix"));
-        dirs.push(toolchain.join("bin"));
-        dirs.push(toolchain.join("git").join("cmd"));
-        dirs.push(toolchain.join("git").join("mingw64").join("bin"));
-    }
-    if let Some(legacy) = legacy_managed_toolchain_dir() {
-        dirs.push(legacy.join("node"));
-        dirs.push(legacy.join("npm-prefix"));
-        dirs.push(legacy.join("bin"));
-        dirs.push(legacy.join("git").join("cmd"));
-        dirs.push(legacy.join("git").join("mingw64").join("bin"));
-    }
+    let managed_roots: Vec<PathBuf> = [managed_toolchain_dir(), legacy_managed_toolchain_dir()]
+        .into_iter()
+        .flatten()
+        .collect();
+    // Keep this order aligned with hq-installer's `extended_search_path()`.
+    // The settings PATH repair uses the same directories with npm's prefix
+    // first (`managed_windows_settings_path_dirs_for_roots`).
+    dirs.extend(managed_windows_path_dirs_for_roots(&managed_roots));
 
     if let Some(home) = home_dir() {
         dirs.push(home.join(".hq").join("bin"));
@@ -2703,6 +2790,86 @@ mod tests {
         );
         let dirs = settings_path_dirs_in(root);
         assert_eq!(dirs, vec![a, b]);
+    }
+
+    #[test]
+    fn windows_settings_path_hoists_managed_dirs_and_preserves_user_entries() {
+        let toolchain = PathBuf::from(r"C:\ProgramData\IndigoHQ\toolchain");
+        let existing = concat!(
+            r"C:\UserCli\npm",
+            ";",
+            r"c:/programdata/indigohq/toolchain/NPM-PREFIX/",
+            ";;",
+            r"C:\Program Files\PowerShell\7",
+            ";",
+            r"C:\UserCli\npm"
+        );
+
+        let composed = compose_windows_settings_env_path(&[toolchain.clone()], Some(existing));
+        assert_eq!(
+            composed,
+            concat!(
+                r"C:\ProgramData\IndigoHQ\toolchain\npm-prefix",
+                ";",
+                r"C:\ProgramData\IndigoHQ\toolchain\node",
+                ";",
+                r"C:\ProgramData\IndigoHQ\toolchain\bin",
+                ";",
+                r"C:\ProgramData\IndigoHQ\toolchain\git\cmd",
+                ";",
+                r"C:\ProgramData\IndigoHQ\toolchain\git\mingw64\bin",
+                ";",
+                r"C:\UserCli\npm",
+                ";;",
+                r"C:\Program Files\PowerShell\7",
+                ";",
+                r"C:\UserCli\npm"
+            )
+        );
+        assert_eq!(composed.matches("npm-prefix").count(), 1);
+        assert_eq!(composed.matches(r"C:\UserCli\npm").count(), 2);
+        assert!(composed.contains(r"C:\UserCli\npm"));
+        assert!(composed.contains(r"C:\Program Files\PowerShell\7"));
+    }
+
+    #[test]
+    fn windows_settings_path_puts_npm_prefix_before_node() {
+        let root = PathBuf::from(r"C:\ProgramData\IndigoHQ\toolchain");
+        let dirs = managed_windows_settings_path_dirs_for_roots(&[root.clone()]);
+
+        assert_eq!(dirs[0], root.join("npm-prefix"));
+        assert_eq!(dirs[1], root.join("node"));
+        assert_eq!(dirs[2], root.join("bin"));
+    }
+
+    #[test]
+    fn windows_search_dirs_keep_installer_node_npm_bin_order() {
+        // The fallback search order stays aligned with hq-installer (node,
+        // npm-prefix, bin); only the settings PATH puts npm-prefix first.
+        // Runs on every host; the Windows-only extended_search_dirs test
+        // checks the same order through the real resolver path.
+        let root = PathBuf::from(r"C:\ProgramData\IndigoHQ\toolchain");
+        let dirs = managed_windows_path_dirs_for_roots(&[root.clone()]);
+
+        assert_eq!(dirs[0], root.join("node"));
+        assert_eq!(dirs[1], root.join("npm-prefix"));
+        assert_eq!(dirs[2], root.join("bin"));
+    }
+
+    #[test]
+    fn windows_settings_path_repair_does_not_require_home() {
+        // Windows' writer ignores home and login_path. With LOCALAPPDATA-backed
+        // roots and an HQ folder available, the repair should still run when
+        // HOME and profile fallback variables are absent.
+        assert!(settings_path_repair_environment_available(
+            true, false, true, true
+        ));
+        assert!(!settings_path_repair_environment_available(
+            true, false, true, false
+        ));
+        assert!(!settings_path_repair_environment_available(
+            true, false, false, true
+        ));
     }
 
     #[test]

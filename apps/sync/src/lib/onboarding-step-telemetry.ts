@@ -32,6 +32,7 @@ import {
   type StageId,
 } from './onboarding-setup';
 import type { WizardStepId } from './onboarding-wizard';
+import type { CompanyNamePrefillStatus } from './company-name-prefill';
 
 const SCHEMA_VERSION = 3;
 const STORAGE_KEY = `hq-sync:onboarding-step-telemetry:v${SCHEMA_VERSION}`;
@@ -82,8 +83,14 @@ export interface OnboardingStepProperties {
   setupRunId?: string;
   /** Company scope for the invite and company steps; never attach invitee data here. */
   companyUid?: string;
+  /** Explicitly marks an invite-step event whose company context was unavailable. */
+  companyUidMissing?: boolean;
+  /** Count of invitations successfully sent from the invite step, bounded to 0..20. */
+  invitesSent?: number;
   /** Company step route decision (look before create). Counts only, never names. */
   existingCompanies?: number;
+  /** Bounded status for the optional name suggestion; never the name itself. */
+  namePrefill?: CompanyNamePrefillStatus;
   paidCompany?: boolean;
   pendingInvites?: number;
   decision?: string;
@@ -106,8 +113,14 @@ export const COMPANY_ROUTE_DECISIONS = [
   'joined_invite',
   'used_existing',
   'created_another',
+  'lookup_failed',
 ] as const;
 const SELF_HEAL_VALUES = ['triggered', 'succeeded', 'failed'] as const;
+const COMPANY_NAME_PREFILL_VALUES: readonly CompanyNamePrefillStatus[] = [
+  'offered_kept',
+  'offered_edited',
+  'not_offered',
+];
 
 export interface OnboardingStepEvent {
   sessionId: string;
@@ -314,6 +327,12 @@ export function desktopPropertiesForOnboardingStep(
     }
   }
   if (typeof event.properties.paidCompany === 'boolean') properties.paidCompany = event.properties.paidCompany;
+  if (
+    event.properties.namePrefill !== undefined &&
+    COMPANY_NAME_PREFILL_VALUES.includes(event.properties.namePrefill)
+  ) {
+    properties.namePrefill = event.properties.namePrefill;
+  }
   if (event.properties.decision !== undefined) {
     properties.decision = (COMPANY_ROUTE_DECISIONS as readonly string[]).includes(event.properties.decision)
       ? event.properties.decision
@@ -338,6 +357,19 @@ export function desktopPropertiesForOnboardingStep(
     event.properties.companyUid.startsWith('cmp_')
   ) {
     properties.companyUid = event.properties.companyUid;
+  }
+  if (event.properties.step === 'invite-teammate') {
+    if (event.properties.companyUidMissing === true) properties.companyUidMissing = true;
+    const invitesSent = event.properties.invitesSent;
+    if (
+      event.properties.action === 'completed' &&
+      typeof invitesSent === 'number' &&
+      Number.isInteger(invitesSent) &&
+      invitesSent >= 0 &&
+      invitesSent <= 20
+    ) {
+      properties.invitesSent = invitesSent;
+    }
   }
   if (event.properties.step === 'connector-import') {
     if (event.properties.outcome !== undefined) {

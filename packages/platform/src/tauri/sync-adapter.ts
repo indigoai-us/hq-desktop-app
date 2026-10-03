@@ -32,12 +32,15 @@ import { TAURI_CAPABILITIES, type Capability } from '../capabilities.js';
 import { WEB_PATHS } from '../web/index.js';
 import {
   CLAUDE_PROVIDER_FLAG,
+  COMPANY_NAME_PREFILL_FLAG,
   DESKTOP_LIMIT_STATUS_PUSH_FLAG,
   FIRST_FOLDER_SYNC_STEP_FLAG,
+  FIRST_LAUNCH_JOIN_KEY_FLAG,
   HUMAN_ONLY_CONVERSATIONS_FLAG,
   HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT,
   LOGIN_RECEIPT_DURABILITY_FLAG,
   PERSONAL_WORKSPACE_BOARD_FLAG,
+  PERSONAL_TRANSCRIPTS_FLAG,
   POST_READY_ACTION_TELEMETRY_FLAG,
   READY_FIRST_ACTION_FLAG,
   SETUP_DEPS_TIMEOUT_RETRY_FLAG,
@@ -187,6 +190,10 @@ export function createSyncPlatformAdapter(
   });
 
   function hasFeatureLegacy(flag: string): AdapterPromise<boolean> {
+    if (flag === COMPANY_NAME_PREFILL_FLAG) {
+      // Company-name suggestions are opt-in; missing registry data stays off.
+      return Promise.resolve(ok(false));
+    }
     if (flag === POST_READY_ACTION_TELEMETRY_FLAG) {
       // The measurement event is opt-in and stays off until the hq-flags
       // registry contains an explicit enabled value.
@@ -210,9 +217,17 @@ export function createSyncPlatformAdapter(
       // a manager explicitly enables its hq-flags value.
       return Promise.resolve(ok(false));
     }
+    if (flag === FIRST_LAUNCH_JOIN_KEY_FLAG) {
+      // Missing or unreadable registry data leaves the new join-key behavior off.
+      return Promise.resolve(ok(false));
+    }
     if (flag === PERSONAL_WORKSPACE_BOARD_FLAG) {
       // Personal board reads stay disabled until the hq-flags registry
       // explicitly enables this rollout.
+      return Promise.resolve(ok(false));
+    }
+    if (flag === PERSONAL_TRANSCRIPTS_FLAG) {
+      // Local transcript rows stay off unless the hq-flags registry explicitly enables them.
       return Promise.resolve(ok(false));
     }
     if (flag === LOGIN_RECEIPT_DURABILITY_FLAG) {
@@ -483,6 +498,8 @@ export function createSyncPlatformAdapter(
     isAvailable: (cap: Capability): boolean => TAURI_CAPABILITIES[cap],
 
     identity: {
+      getAuthSession: () => call('get_auth_session'),
+      refreshFeatureFlags: () => flags.refresh(),
       whoami: async () => {
         type ShellAuthState = {
           authenticated?: boolean;
@@ -1154,6 +1171,7 @@ export function createSyncPlatformAdapter(
         noteLinks: (root, includeSystem, path, targets) =>
           call('vault_note_links', { root, includeSystem, path, targets }),
         readNote: (path) => call('read_vault_note', { path }),
+        readFrontmatter: (path) => call('read_vault_note_frontmatter', { path }),
       },
       getFileContent: (path) => call('get_company_file_content', { path }),
       listVaultPrefix: (companyUid, prefix) =>

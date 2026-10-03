@@ -44,16 +44,16 @@
 
   const held = $derived(reasons.length > 0);
   const restartDeferred = $derived(
-    installError?.includes("HQ will restart to update after your recording finishes") ?? false,
+    installError?.startsWith("HQ will restart to update after") ?? false,
   );
   const holdText = $derived(held ? primaryReason(reasons) : null);
   const secondaryLine = $derived(
     restartDeferred
-      ? "HQ will restart after your recording finishes"
+      ? (installError ?? "")
       : holdText ?? `HQ ${version} is ready to install`,
   );
   const buttonLabel = $derived(
-    restartDeferred ? "Will restart after recording" : installing ? "Restarting…" : "Restart to update",
+    restartDeferred ? "Waiting to restart" : installing ? "Restarting…" : "Restart to update",
   );
   const buttonDisabled = $derived(held || installing || restartDeferred);
   const tooltipText = $derived(holdText ?? null);

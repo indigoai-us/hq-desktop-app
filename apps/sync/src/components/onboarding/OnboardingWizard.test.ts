@@ -21,8 +21,11 @@ const app = vi.hoisted(() => ({
 }));
 const onboardingFlags = vi.hoisted(() => ({
   firstFolderSyncEnabled: false,
+  companyNamePrefillEnabled: false,
+  companyRouteLookupRetryEnabled: false,
   hasFeature: vi.fn(),
   startSync: vi.fn(),
+  refreshFeatureFlags: vi.fn(),
 }));
 
 const httpFetch = vi.hoisted(() =>
@@ -42,6 +45,10 @@ vi.mock('@tauri-apps/plugin-http', () => ({ fetch: httpFetch }));
 vi.mock('@hq/platform', () => ({
   hostComputerNoun: () => 'computer',
   FIRST_FOLDER_SYNC_STEP_FLAG: 'desktop.first-folder-sync-step-v1',
+  COMPANY_NAME_PREFILL_FLAG: 'desktop.company-name-prefill-v1',
+  FIRST_LAUNCH_JOIN_KEY_FLAG: 'desktop.first-launch-join-key-v1',
+  COMPANY_ROUTE_LOOKUP_RETRY_FLAG: 'desktop.company-route-lookup-retry-v1',
+  SETUP_DEPS_TIMEOUT_RETRY_FLAG: 'desktop.setup-deps-timeout-retry-v1',
   retryThrottled: async <T>(
     attempt: (attemptIndex: number) => Promise<T>,
     classify: (result: T) => { status: number | null },
@@ -56,8 +63,16 @@ vi.mock('@hq/platform', () => ({
   },
   createSyncPlatformAdapter: vi.fn(() => ({
     identity: {
+      refreshFeatureFlags: () => onboardingFlags.refreshFeatureFlags(),
       hasFeature: (flag: string) => {
         if (flag === 'desktop.first-folder-sync-step-v1') {
+          return onboardingFlags.hasFeature(flag);
+        }
+        if (
+          flag === 'desktop.first-launch-join-key-v1' ||
+          flag === 'desktop.company-route-lookup-retry-v1' ||
+          flag === 'desktop.company-name-prefill-v1'
+        ) {
           return onboardingFlags.hasFeature(flag);
         }
         return Promise.resolve({ ok: true, value: false });
@@ -437,11 +452,17 @@ beforeEach(() => {
     text: async () => '',
   });
   onboardingFlags.firstFolderSyncEnabled = false;
+  onboardingFlags.companyNamePrefillEnabled = false;
+  onboardingFlags.companyRouteLookupRetryEnabled = false;
+  onboardingFlags.refreshFeatureFlags.mockReset().mockResolvedValue(undefined);
   onboardingFlags.hasFeature.mockReset().mockImplementation(async (flag: string) => ({
     ok: true,
-    value:
-      flag === 'desktop.first-folder-sync-step-v1' &&
-      onboardingFlags.firstFolderSyncEnabled,
+    value: flag === 'desktop.first-folder-sync-step-v1'
+      ? onboardingFlags.firstFolderSyncEnabled
+      : flag === 'desktop.company-name-prefill-v1'
+        ? onboardingFlags.companyNamePrefillEnabled
+        : flag === 'desktop.company-route-lookup-retry-v1' &&
+        onboardingFlags.companyRouteLookupRetryEnabled,
   }));
   onboardingFlags.startSync.mockReset().mockResolvedValue({
     ok: true,
@@ -1830,9 +1851,23 @@ describe('onboarding connector telemetry', () => {
       props: { initialStep: CONNECTOR_IMPORT_STEP_INDEX },
     });
 
-    await flush();
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { step?: string } }).properties?.step === 'connector-import',
+      ),
+    );
     host.querySelector<HTMLButtonElement>('[data-testid="connector-import-import"]')?.click();
-    await flush();
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { step?: string; action?: string } }).properties?.step ===
+            'connector-import' &&
+          (args as { properties?: { action?: string } }).properties?.action === 'failed',
+      ),
+    );
 
     const connectorEvents = tauri.invoke.mock.calls
       .filter(
@@ -1870,7 +1905,13 @@ describe('onboarding connector telemetry', () => {
       props: { initialStep: CONNECTOR_IMPORT_STEP_INDEX },
     });
 
-    await flush();
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.filter(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { step?: string } }).properties?.step === 'connector-import',
+      ).length >= 2,
+    );
 
     const connectorActions = tauri.invoke.mock.calls
       .filter(
@@ -1972,6 +2013,183 @@ describe('anonymous installer step pings', () => {
     expect(envelope.sessionId).toBe(body.installSessionId);
     expect(envelope.properties.step).toBe('welcome-signin');
     expect(envelope.properties.action).toBe('entered');
+  });
+
+  it('uses the persisted install id for the anonymous ping and onboarding session when the first-launch flag is on', async () => {
+    const installAttemptId = '22222222-2222-4222-8222-222222222222';
+    onboardingFlags.hasFeature.mockResolvedValue({ ok: true, value: true });
+    stubOnboardingInvoke({
+      is_first_run: () => true,
+      desktop_install_attempt_id: () => installAttemptId,
+    });
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 0 },
+    });
+
+    await flushUntil(() => httpFetch.mock.calls.length > 0);
+
+    const init = (httpFetch.mock.calls[0] as unknown as [string, RequestInit])[1];
+    const body = JSON.parse(String(init.body)) as { installSessionId: string };
+    const onboardingEvent = tauri.invoke.mock.calls
+      .filter(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { eventName?: string }).eventName === 'desktop_onboarding_step',
+      )
+      .map(([, args]) => args as { sessionId: string })[0];
+    expect(body.installSessionId).toBe(installAttemptId);
+    expect(onboardingEvent?.sessionId).toBe(installAttemptId);
+    const welcomeEntries = tauri.invoke.mock.calls.filter(
+      ([command, args]) =>
+        command === 'emit_desktop_operational_telemetry' &&
+        (args as {
+          eventName?: string;
+          properties?: { step?: string; action?: string };
+        }).eventName === 'desktop_onboarding_step' &&
+        (args as {
+          properties?: { step?: string; action?: string };
+        }).properties?.step === 'welcome-signin' &&
+        (args as {
+          properties?: { step?: string; action?: string };
+        }).properties?.action === 'entered',
+    );
+    expect(welcomeEntries).toHaveLength(1);
+    expect(onboardingFlags.hasFeature).toHaveBeenCalledWith(
+      'desktop.first-launch-join-key-v1',
+    );
+  });
+
+  it('keeps both welcome-signin entered rows on first launch when the join-key flag is off', async () => {
+    onboardingFlags.hasFeature.mockResolvedValue({ ok: true, value: false });
+    stubContinuationInvoke();
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 0 },
+    });
+
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.filter(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as {
+            eventName?: string;
+            properties?: { step?: string; action?: string };
+          }).eventName === 'desktop_onboarding_step' &&
+          (args as {
+            properties?: { step?: string; action?: string };
+          }).properties?.step === 'welcome-signin' &&
+          (args as {
+            properties?: { step?: string; action?: string };
+          }).properties?.action === 'entered',
+      ).length === 2,
+    );
+
+    const welcomeEntries = tauri.invoke.mock.calls
+      .filter(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as {
+            eventName?: string;
+            properties?: { step?: string; action?: string };
+          }).eventName === 'desktop_onboarding_step' &&
+          (args as {
+            properties?: { step?: string; action?: string };
+          }).properties?.step === 'welcome-signin' &&
+          (args as {
+            properties?: { step?: string; action?: string };
+          }).properties?.action === 'entered',
+      )
+      .map(([, args]) => args as { properties: { flow?: string } });
+    expect(welcomeEntries.map((entry) => entry.properties.flow)).toEqual([
+      'first_install',
+      'first_launch',
+    ]);
+  });
+
+  it('emits the flag-off welcome step before continuation identity preparation finishes', async () => {
+    onboardingFlags.hasFeature.mockResolvedValue({ ok: true, value: false });
+    stubContinuationInvoke();
+    let resolveContinuationContext!: (context: typeof CONTINUATION_CONTEXT) => void;
+    const unresolvedContext = new Promise<typeof CONTINUATION_CONTEXT>((resolve) => {
+      resolveContinuationContext = resolve;
+    });
+    const invoke = tauri.invoke.getMockImplementation();
+    if (!invoke) throw new Error('Expected the continuation invoke stub to be installed.');
+    tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) =>
+      command === 'desktop_continuation_context'
+        ? unresolvedContext
+        : invoke(command, args),
+    );
+
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 0 },
+    });
+
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as {
+            eventName?: string;
+            properties?: { step?: string; action?: string };
+          }).eventName === 'desktop_onboarding_step' &&
+          (args as {
+            properties?: { step?: string; action?: string };
+          }).properties?.step === 'welcome-signin' &&
+          (args as {
+            properties?: { step?: string; action?: string };
+          }).properties?.action === 'entered',
+      ),
+    );
+    expect(
+      tauri.invoke.mock.calls.filter(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as { properties?: { flow?: string } }).properties?.flow !== 'first_launch',
+      ),
+    ).toHaveLength(1);
+
+    resolveContinuationContext(CONTINUATION_CONTEXT);
+  });
+
+  it('persists queued step telemetry synchronously on pagehide while identity is unresolved', async () => {
+    const unresolvedIdentity = new Promise<unknown>(() => undefined);
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'is_first_run':
+          return unresolvedIdentity;
+        case 'emit_desktop_operational_telemetry':
+          return unresolvedIdentity;
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        default:
+          return undefined;
+      }
+    });
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 0 },
+    });
+
+    await flush();
+    window.dispatchEvent(new PageTransitionEvent('pagehide'));
+    await flush();
+
+    const stored = JSON.parse(localStorage.getItem(__INTERNALS__.STORAGE_KEY) ?? '{}') as {
+      pending?: Array<{ properties: { step: string; action: string } }>;
+    };
+    expect(stored.pending).toContainEqual(
+      expect.objectContaining({
+        properties: expect.objectContaining({
+          step: 'welcome-signin',
+          action: 'entered',
+        }),
+      }),
+    );
   });
 
   it('leaves the wizard usable when the ping network call fails', async () => {
@@ -2633,7 +2851,7 @@ describe('invite teammate onboarding step', () => {
     await reachInviteScenario();
 
     expect(host.querySelector('[data-testid="onboarding-invite-teammate"]')).not.toBeNull();
-    expect(onboardingFlags.hasFeature).toHaveBeenCalledExactlyOnceWith(
+    expect(onboardingFlags.hasFeature).toHaveBeenCalledWith(
       'desktop.first-folder-sync-step-v1',
     );
   });
@@ -2973,8 +3191,31 @@ describe('invite teammate onboarding step', () => {
     const rows = inviteStepRows();
     expect(rows.map((row) => row.action)).toEqual(['entered', 'completed']);
     expect(rows.every((row) => row.companyUid === 'cmp_demo')).toBe(true);
+    expect(rows.find((row) => row.action === 'completed')?.invitesSent).toBe(1);
     expect(rows.some((row) => 'email' in row || 'inviteeEmail' in row)).toBe(false);
     expect(JSON.stringify(rows)).not.toContain(inviteEmail);
+  });
+
+  it('records a skipped invite step with its company scope', async () => {
+    await reachInviteScenario();
+    clickInviteControl('onboarding-invite-skip');
+    await flush();
+
+    const rows = inviteStepRows();
+    expect(rows.map((row) => row.action)).toEqual(['entered', 'skipped']);
+    expect(rows.every((row) => row.companyUid === 'cmp_demo')).toBe(true);
+  });
+
+  it('records a failed invite step with its company scope', async () => {
+    await reachInviteScenario({
+      inviteResponses: [{ status: 500, body: { error: 'temporary failure' } }],
+    });
+    await submitInvite();
+    await flushUntil(() => host.querySelector('[data-testid="onboarding-invite-error"]') !== null);
+
+    const rows = inviteStepRows();
+    expect(rows.map((row) => row.action)).toEqual(['entered', 'failed']);
+    expect(rows.every((row) => row.companyUid === 'cmp_demo')).toBe(true);
   });
 });
 
@@ -3567,6 +3808,9 @@ describe('company onboarding step', () => {
 
   async function reachCompanyScenario(options: {
     memberships?: Array<Record<string, unknown>>;
+    companyMembers?: Array<Record<string, unknown>>;
+    membershipFailures?: number;
+    companyRouteLookupRetryEnabled?: boolean;
     pendingInvites?: Array<{ slug: string; displayName: string }>;
     checkout?: { status: number; body: unknown };
     /** Whether GET /entity/cmp_new reports the new company provisioned. */
@@ -3587,11 +3831,15 @@ describe('company onboarding step', () => {
     membershipExtra?: Record<string, unknown>;
     /** Answer for check_company_slug; defaults to every handle free. */
     slugAnswer?: (slug: string) => Record<string, unknown>;
+    companyNamePrefillEnabled?: boolean;
   } = {}): Promise<void> {
     onboardingFlags.firstFolderSyncEnabled = false;
+    onboardingFlags.companyNamePrefillEnabled = options.companyNamePrefillEnabled ?? false;
+    onboardingFlags.companyRouteLookupRetryEnabled = options.companyRouteLookupRetryEnabled ?? false;
     let entityPolls = 0;
     let provisionCalled = false;
     let activations = 0;
+    let membershipReads = 0;
     mountWizard(vi.fn(), SETUP_STEP_INDEX);
     tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
       switch (command) {
@@ -3656,6 +3904,10 @@ describe('company onboarding step', () => {
           return { state: 'done' };
         case 'hq_pro_fetch': {
           if (args?.url === '/membership/me') {
+            membershipReads += 1;
+            if (membershipReads <= (options.membershipFailures ?? 0)) {
+              throw new Error('temporary membership lookup failure');
+            }
             return {
               status: 200,
               body: JSON.stringify({ ...(options.membershipExtra ?? {}), memberships: options.memberships ?? [] }),
@@ -3663,6 +3915,9 @@ describe('company onboarding step', () => {
           }
           if (typeof args?.url === 'string' && args.url.startsWith('/membership/me?anonId=')) {
             return { status: 200, body: JSON.stringify(options.anonLookup ?? { memberships: [] }) };
+          }
+          if (args?.url === '/membership/company/cmp_demo' && options.companyMembers) {
+            return { status: 200, body: JSON.stringify({ members: options.companyMembers }) };
           }
           if (args?.url === '/membership/pending-by-email') {
             return { status: 200, body: JSON.stringify({ invites: options.pendingByEmail ?? [] }) };
@@ -3752,6 +4007,42 @@ describe('company onboarding step', () => {
     await flush();
   }
 
+  it('prefills a new company name through the user-edit path so the slug is ready', async () => {
+    await reachCompanyScenario({
+      signedInEmail: 'founder@acme.io',
+      companyNamePrefillEnabled: true,
+    });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')));
+    await settle();
+
+    expect(host.querySelector<HTMLInputElement>('[data-testid="onboarding-company-field-name"]')?.value).toBe('Acme');
+    // The handle field is not shown; the handle made from the prefilled name is checked and submitted.
+    expect(host.querySelector('[data-testid="onboarding-company-field-slug"]')).toBeNull();
+    expect(tauri.invoke).toHaveBeenCalledWith('check_company_slug', { slug: 'acme' });
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="onboarding-company-create"]')?.disabled).toBe(false);
+    click('onboarding-company-create');
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-plan-starter"]')));
+    const submit = tauri.invoke.mock.calls.find(
+      ([command, args]) =>
+        command === 'run_card_action' && (args as { cardId?: string }).cardId === 'card_create_company',
+    );
+    expect((submit?.[1] as { values: Record<string, string> }).values).toMatchObject({ name: 'Acme', slug: 'acme' });
+  });
+
+  it('refreshes the hq-flags snapshot before resolving prefill on a create route after sign-in', async () => {
+    await reachCompanyScenario({
+      signedInEmail: 'founder@acme.io',
+      companyNamePrefillEnabled: true,
+    });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')));
+
+    expect(onboardingFlags.refreshFeatureFlags).toHaveBeenCalledTimes(1);
+    const refreshIndex = onboardingFlags.refreshFeatureFlags.mock.invocationCallOrder[0];
+    const prefillRead = onboardingFlags.hasFeature.mock.invocationCallOrder.find((order, index) =>
+      onboardingFlags.hasFeature.mock.calls[index]?.[0] === 'desktop.company-name-prefill-v1');
+    expect(prefillRead).toBeGreaterThan(refreshIndex);
+  });
+
   it('skips the step for a person who already joined a company and selects it', async () => {
     await reachCompanyScenario({
       memberships: [
@@ -3763,6 +4054,98 @@ describe('company onboarding step', () => {
     expect(tauri.invoke).toHaveBeenCalledWith('set_desktop_active_company', { companySlug: 'demo' });
     const route = companyRows().find((row) => row.decision === 'joined_existing');
     expect(route).toMatchObject({ action: 'skipped', existingCompanies: 1, paidCompany: false, pendingInvites: 0, companyUid: 'cmp_demo' });
+  });
+
+  it('retries one membership lookup failure when the default-off flag is enabled', async () => {
+    await reachCompanyScenario({
+      membershipFailures: 1,
+      companyRouteLookupRetryEnabled: true,
+    });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')));
+
+    expect(
+      tauri.invoke.mock.calls.filter(
+        ([command, args]) => command === 'hq_pro_fetch' && (args as { url?: string })?.url === '/membership/me',
+      ),
+    ).toHaveLength(2);
+    expect(host.querySelector('[data-testid="onboarding-company-field-name"]')).not.toBeNull();
+    expect(onboardingFlags.hasFeature).toHaveBeenCalledWith('desktop.company-route-lookup-retry-v1');
+  });
+
+  it('uses the recovered membership read to resolve the teammate-invite step', async () => {
+    await reachCompanyScenario({
+      memberships: [
+        { companyUid: 'cmp_demo', companySlug: 'demo', personUid: 'prs_me', status: 'active', role: 'owner', bucketName: 'b' },
+      ],
+      companyMembers: [{ companyUid: 'cmp_demo', personUid: 'prs_me', status: 'active' }],
+      membershipFailures: 1,
+      companyRouteLookupRetryEnabled: true,
+    });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-invite-teammate"]')));
+
+    expect(
+      tauri.invoke.mock.calls.filter(
+        ([command, args]) => command === 'hq_pro_fetch' && (args as { url?: string })?.url === '/membership/me',
+      ),
+    ).toHaveLength(2);
+    expect(
+      tauri.invoke.mock.calls.some(
+        ([command, args]) => command === 'hq_pro_fetch' && (args as { url?: string })?.url === '/membership/company/cmp_demo',
+      ),
+    ).toBe(true);
+  });
+
+  it('records lookup_failed after the retry and leaves the existing setup recovery as the path', async () => {
+    await reachCompanyScenario({
+      membershipFailures: 2,
+      companyRouteLookupRetryEnabled: true,
+    });
+    await flushUntil(() => companyRows().some((row) => row.decision === 'lookup_failed'));
+
+    expect(
+      tauri.invoke.mock.calls.filter(
+        ([command, args]) => command === 'hq_pro_fetch' && (args as { url?: string })?.url === '/membership/me',
+      ),
+    ).toHaveLength(2);
+    expect(companyRows()).toContainEqual(expect.objectContaining({
+      action: 'started',
+      outcome: 'route_lookup_failed',
+      decision: 'lookup_failed',
+    }));
+    expect(host.querySelector('[data-testid="onboarding-company"]')).toBeNull();
+    expect(host.querySelector('[data-testid="onboarding-summary"]')?.classList.contains('on')).toBe(true);
+    expect(
+      tauri.invoke.mock.calls.some(
+        ([command, args]) => command === 'run_card_action' && (args as { cardId?: string })?.cardId === 'card_create_company',
+      ),
+    ).toBe(false);
+  });
+
+  it('omits unknown membership counts from lookup-failure telemetry', async () => {
+    await reachCompanyScenario({
+      membershipFailures: 2,
+      companyRouteLookupRetryEnabled: true,
+    });
+    await flushUntil(() => companyRows().some((row) => row.decision === 'lookup_failed'));
+
+    const row = companyRows().find((candidate) => candidate.decision === 'lookup_failed');
+    expect(row).toBeDefined();
+    expect(row).not.toHaveProperty('existingCompanies');
+    expect(row).not.toHaveProperty('paidCompany');
+    expect(row).not.toHaveProperty('pendingInvites');
+  });
+
+  it('keeps the original one-read behavior when the company-route retry flag is off', async () => {
+    await reachCompanyScenario({ membershipFailures: 1 });
+
+    expect(
+      tauri.invoke.mock.calls.filter(
+        ([command, args]) => command === 'hq_pro_fetch' && (args as { url?: string })?.url === '/membership/me',
+      ),
+    ).toHaveLength(1);
+    expect(companyRows().some((row) => row.decision === 'lookup_failed')).toBe(false);
+    expect(host.querySelector('[data-testid="onboarding-company"]')).toBeNull();
+    expect(onboardingFlags.hasFeature).toHaveBeenCalledWith('desktop.company-route-lookup-retry-v1');
   });
 
   it('skips "Name your company" for a paid company and selects it', async () => {
