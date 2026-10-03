@@ -1280,7 +1280,7 @@ describe('embedded Work navigation and lifecycle', () => {
     // route must be queued for the next mounted host rather than dispatched
     // into an unmounted shell and lost.
     warmRoute('settings:appearance');
-    (host.querySelector('[data-testid="hq-work-signed-out"] .secondary') as HTMLButtonElement).click();
+    (host.querySelector('[data-testid="hq-work-signed-out"] [data-testid="sign-in-session-retry"]') as HTMLButtonElement).click();
     await flush(64);
     expect(host.querySelector('[data-testid="settings-host"]')).toBeTruthy();
     expect(
@@ -1491,7 +1491,7 @@ describe('embedded Work navigation and lifecycle', () => {
       reason: null,
     };
     const retry = host.querySelector(
-      '[data-testid="hq-work-signed-out"] button.secondary',
+      '[data-testid="hq-work-signed-out"] [data-testid="sign-in-session-retry"]',
     ) as HTMLButtonElement;
     retry.click();
     await flush(64);

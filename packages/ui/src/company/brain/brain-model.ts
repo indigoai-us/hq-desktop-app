@@ -103,6 +103,22 @@ export function emptyBrainCache(): BrainCache {
   return { knowledge: [], policies: [], skills: [], workers: [] };
 }
 
+/** QA-100: a file-backed list is not loaded, loading (maybe with cached rows), or loaded. */
+export type BrainListLoad = "not-loaded" | "loading" | "loaded";
+
+export interface BrainListView {
+  body: "skeleton" | "rows" | "empty";
+  /** Null while nothing trustworthy is known; a zero only after the read finished. */
+  count: number | null;
+}
+
+/** Cached rows show at once; without them a skeleton shows and no count until the read ends. */
+export function brainListView(load: BrainListLoad, rows: number): BrainListView {
+  if (rows > 0) return { body: "rows", count: rows };
+  if (load === "loaded") return { body: "empty", count: 0 };
+  return { body: "skeleton", count: null };
+}
+
 export function virtualWindow(
   count: number,
   scrollTop: number,
