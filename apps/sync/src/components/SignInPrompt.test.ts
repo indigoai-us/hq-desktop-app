@@ -129,3 +129,38 @@ describe('SignInPrompt browser continuation', () => {
     });
   });
 });
+
+describe('SignInPrompt session retry (OWNER-015)', () => {
+  beforeEach(() => {
+    tauri.invoke.mockImplementation((command: string) =>
+      command === 'desktop_continuation_context' ? Promise.resolve(null) : Promise.resolve(undefined),
+    );
+  });
+
+  it('renders Retry inside the card, after the providers, and makes no data call to show it', async () => {
+    const onretry = vi.fn();
+    component = mount(SignInPrompt, { target: host, props: { onretry } });
+    await flush();
+
+    const card = host.querySelector('.sign-in-card');
+    const retry = host.querySelector<HTMLButtonElement>('[data-testid="sign-in-session-retry"]');
+    expect(retry).not.toBeNull();
+    expect(card?.contains(retry)).toBe(true);
+    expect(retry!.querySelector('svg')).not.toBeNull();
+    const actions = host.querySelector('.sign-in-actions')!;
+    expect(actions.compareDocumentPosition(retry!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    retry!.click();
+    expect(onretry).toHaveBeenCalledTimes(1);
+    const commands = tauri.invoke.mock.calls.map(([command]) => command);
+    expect(commands.every((command) => command === 'desktop_continuation_context')).toBe(true);
+  });
+
+  it('omits Retry when no handler is passed and never renders a password control', async () => {
+    component = mount(SignInPrompt, { target: host });
+    await flush();
+
+    expect(host.querySelector('[data-testid="sign-in-session-retry"]')).toBeNull();
+    expect(host.querySelector('input[type="password"]')).toBeNull();
+  });
+});
