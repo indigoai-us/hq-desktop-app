@@ -23,7 +23,13 @@ function files(n: number): string {
  * `moved` says whether this run moved anything, so a run that ends with
  * nothing to do does not flash a toast.
  */
-export function syncToastCopy(status: SyncStatusState, moved: boolean, paused = false): SyncToastCopy {
+export function syncToastCopy(
+  status: SyncStatusState,
+  moved: boolean,
+  paused = false,
+  /** AUDIT-3: company display name for a slug; null omits the company. */
+  companyName: (slug: string) => string | null = () => null,
+): SyncToastCopy {
   if (paused) {
     return { state: "attention", title: "Sync is paused", detail: "New files will sync when it resumes", progress: null };
   }
@@ -31,7 +37,9 @@ export function syncToastCopy(status: SyncStatusState, moved: boolean, paused = 
     case "syncing": {
       const total = status.planTotal;
       const done = Math.min(status.progressed, total || status.progressed);
-      const where = status.company ? ` for ${status.company}` : "";
+      // Never the raw slug: only a display name the shell knows.
+      const name = status.company ? companyName(status.company)?.trim() : "";
+      const where = name ? ` for ${name}` : "";
       if (total > 0) {
         return {
           state: "busy",

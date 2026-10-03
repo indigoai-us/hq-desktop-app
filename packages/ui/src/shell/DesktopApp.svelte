@@ -1547,7 +1547,9 @@
       if (status.phase === "syncing" && (status.planTotal > 0 || status.progressed > 0)) {
         syncRunMoved = true;
       }
-      const copy = syncToastCopy(status, syncRunMoved);
+      const copy = syncToastCopy(status, syncRunMoved, false, (slug) =>
+        railCompanyRoster.find((company) => company.slug === slug)?.label ?? (slug === "personal" ? "Personal" : null),
+      );
       if (copy.state === "busy" && syncRunMoved) {
         pushToast({ key: SYNC_TOAST_KEY, kind: "sticky", tone: "neutral", testId: "sync-toast", title: copy.title, detail: copy.detail, progress: copy.progress });
       } else if (copy.state === "done") {
