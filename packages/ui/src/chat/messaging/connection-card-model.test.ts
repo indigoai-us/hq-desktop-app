@@ -276,6 +276,31 @@ describe("slackFactsFromStatus", () => {
     expect(slackFactsFromStatus(status({ channels: { slack: true } }))).toEqual({ state: "pending", stage: "finishing" });
   });
 
+  it("says what the server waits on at the last step, and only there", () => {
+    const stored = { workspace: "acme", teamId: "T0ACME", appId: "A0TEST", connectionMode: "socket" };
+    const waitingOnSync = [
+      { name: "audit", status: "waiting", lastError: "NEW_BOX_AUDIT_PENDING: box blueprint failed: component-sync" },
+      { name: "runtime-install", status: "pending" },
+    ];
+    const auditStuck = [
+      { name: "audit", status: "waiting", lastError: "NEW_BOX_AUDIT_PENDING: box blueprint failed: component-brain" },
+      { name: "runtime-install", status: "pending" },
+    ];
+    const at = (slack: Record<string, unknown>, steps: unknown[]) => ({
+      setupState: { phase: "ready", steps },
+      agent: { channels: { slack }, channelDiagnostics: { slack: { inboundCapability: "socket-mode-degraded" } } },
+    });
+    expect(slackFactsFromStatus(at(stored, waitingOnSync))).toEqual({ state: "pending", stage: "finishing", wait: "sync" });
+    expect(slackFactsFromStatus(at(stored, auditStuck))).toEqual({ state: "pending", stage: "finishing", wait: "audit" });
+    // Nothing of the kind in the steps: no wait field at all.
+    expect(slackFactsFromStatus(at(stored, []))).toEqual({ state: "pending", stage: "finishing" });
+    // Earlier steps never carry it, whatever the steps say.
+    expect(slackFactsFromStatus(at({ ...stored, appTokenPendingUrl: "https://api.slack.com/apps/A0TEST" }, waitingOnSync))).toEqual({
+      state: "pending",
+      stage: "token",
+    });
+  });
+
   it("stays connected by the capability alone, whatever the row still says", () => {
     expect(
       slackFactsFromStatus(
@@ -533,6 +558,33 @@ describe("connectionCardView: Slack", () => {
     }
     expect(SLACK_UNFINISHED_LINE).toBe("Setup is not finished.");
     expect(slackPendingHint("approve", " ")).toBe("Approve your bot in Slack.");
+  });
+
+  it("says at the last step what the server waits on, when the status says", () => {
+    const lines: Array<[SlackFacts, string]> = [
+      [
+        { state: "pending", stage: "finishing", wait: "sync" },
+        "Setup is not finished. Slack connects after your company's files finish syncing.",
+      ],
+      [
+        { state: "pending", stage: "finishing", wait: "audit" },
+        "Setup is not finished. HQ is finishing the setup on the bot's machine. This can take a few minutes.",
+      ],
+      [{ state: "pending", stage: "finishing", wait: null }, "Setup is not finished. Connecting."],
+    ];
+    for (const [slack, line] of lines) {
+      const view = connectionCardView("slack", input({ slack }));
+      expect(view.state).toBe("connecting");
+      expect(view.line).toBe(line);
+      expect(view.primaryLabel).toBe("Continue");
+      expect(view.note).toBeNull();
+    }
+    expect(slackPendingHint("finishing", "Nova", "audit")).toBe(
+      "HQ is finishing the setup on the bot's machine. This can take a few minutes.",
+    );
+    // Only the last step reads the wait.
+    expect(slackPendingHint("token", "Nova", "sync")).toBe("Paste the token to finish.");
+    expect(slackPendingHint("approve", "Nova", "audit")).toBe("Approve Nova in Slack.");
   });
 
   it("never times a setup out while the server has one", () => {

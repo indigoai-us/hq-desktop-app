@@ -18,7 +18,17 @@
 
 import type { BrandMark } from "./app-brand-marks.js";
 import type { ConnectTarget } from "./richMessageContent.js";
-import { slackCapabilityFromStatus, slackRowFromStatus, slackRowStage, type SlackPendingStage } from "./slack-status.js";
+import {
+  slackCapabilityFromStatus,
+  slackRowFromStatus,
+  slackRowStage,
+  slackSetupWaitFromSteps,
+  type SlackPendingStage,
+  type SlackSetupWait,
+} from "./slack-status.js";
+
+/** Which wait the server is in at the last step (slack-status.ts). */
+export type SlackSetupWaitKind = SlackSetupWait["kind"];
 
 export type ConnectionCardState = "offered" | "connecting" | "connected" | "declined";
 
@@ -384,6 +394,12 @@ export interface SlackFacts {
    * bot in Slack, the person's token, or the bot's computer connecting.
    */
   stage?: SlackPendingStage;
+  /**
+   * `pending` at the last step only: what the server is waiting on before it
+   * finishes, when the status says (slack-status.ts). The bot's file sync,
+   * or the setup's audit.
+   */
+  wait?: SlackSetupWaitKind | null;
 }
 
 function agentOf(json: unknown): Record<string, unknown> | null {
@@ -412,14 +428,27 @@ export function slackFactsFromStatus(json: unknown): SlackFacts {
   const configured = channels?.slack !== undefined && channels.slack !== null && channels.slack !== false;
   if (!configured) return { state: "none" };
   const row = slackRowFromStatus(json);
-  return { state: "pending", stage: row ? slackRowStage(row) : "finishing" };
+  const stage = row ? slackRowStage(row) : "finishing";
+  const wait = stage === "finishing" ? (slackSetupWaitFromSteps(json)?.kind ?? null) : null;
+  return wait ? { state: "pending", stage, wait } : { state: "pending", stage };
 }
 
+/** The card's line while the server finishes the setup on the bot's computer. */
+export const SLACK_CARD_AUDIT_WAIT_HINT = "HQ is finishing the setup on the bot's machine. This can take a few minutes.";
+/** The card's line while the server waits for the bot's file sync before it finishes. */
+export const SLACK_CARD_SYNC_WAIT_HINT = "Slack connects after your company's files finish syncing.";
+
 /** The Slack card's one-line hint for what a setup that is not finished waits for. */
-export function slackPendingHint(stage: SlackPendingStage | null | undefined, botName: string): string {
+export function slackPendingHint(
+  stage: SlackPendingStage | null | undefined,
+  botName: string,
+  wait: SlackSetupWaitKind | null | undefined = null,
+): string {
   const bot = botName.trim() || "your bot";
   if (stage === "approve") return `Approve ${bot} in Slack.`;
   if (stage === "token") return "Paste the token to finish.";
+  if (wait === "sync") return SLACK_CARD_SYNC_WAIT_HINT;
+  if (wait === "audit") return SLACK_CARD_AUDIT_WAIT_HINT;
   return "Connecting.";
 }
 
@@ -702,7 +731,7 @@ function slackView(input: ConnectionCardInput): ConnectionCardView {
     return {
       ...base,
       state: "connecting",
-      line: `${SLACK_UNFINISHED_LINE} ${slackPendingHint(facts.stage, bot)}`,
+      line: `${SLACK_UNFINISHED_LINE} ${slackPendingHint(facts.stage, bot, facts.wait)}`,
       primaryLabel: "Continue",
       declineLabel: "Not now",
       mark: null,

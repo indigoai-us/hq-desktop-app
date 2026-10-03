@@ -141,3 +141,108 @@ export function slackRowStage(row: SlackRow): SlackPendingStage {
   if (row.tokenPending) return "token";
   return "finishing";
 }
+
+// ── The last step: what the server is waiting on ─────────────────────────
+//
+// Once Slack has the app and the token, the server still has to finish the
+// setup on the bot's computer before messages flow. It does that only after
+// the setup's audit passes, and the audit needs the bot's file sync to be
+// healthy, which for a company with many files is the first full download:
+// many minutes. Read 2026-10-03 from a live status: `setupState.steps` had
+// `channels: done`, `audit: waiting` with a `lastError` naming
+// `component-sync`, `runtime-install: pending`, and `runtime.firstSync` was
+// live. The modal and the card say which of these the person is waiting on.
+
+/** One step of the server's setup list (`setupState.steps[]`). */
+export interface SetupStep {
+  name: string;
+  status: string;
+  lastError: string | null;
+}
+
+/** The setup steps in a status answer, names and statuses lower-cased. Empty when there are none. */
+export function setupStepsFromStatus(json: unknown): SetupStep[] {
+  const root = isRecord(json) ? json : null;
+  if (!root) return [];
+  const agent = isRecord(root.agent) ? root.agent : root;
+  const setup = isRecord(root.setupState) ? root.setupState : isRecord(agent.setupState) ? agent.setupState : null;
+  const steps = Array.isArray(setup?.steps) ? setup.steps : [];
+  return steps.filter(isRecord).map((step) => ({
+    name: text(step.name).toLowerCase(),
+    status: text(step.status).toLowerCase(),
+    lastError: text(step.lastError) || null,
+  }));
+}
+
+/**
+ * What the last step is waiting on, when the status says:
+ *   - `sync`: the bot's computer is still downloading the company's files.
+ *     The server runs the final install once that sync is healthy.
+ *     `percent` is the live download percent when the status has one.
+ *   - `audit`: the setup's audit has stopped on something that is not the
+ *     file sync. The server retries it by itself.
+ */
+export type SlackSetupWait = { kind: "sync"; percent: number | null } | { kind: "audit" };
+
+/** An audit error that names the file sync: the wait is the sync, not a fault. */
+function isSyncAuditError(lastError: string | null): boolean {
+  return lastError !== null && /component-sync/i.test(lastError);
+}
+
+/**
+ * Whether the status has Slack's config stored and nothing left for the
+ * person to do: a team id, no install pending, no token pending, and the
+ * bot still cannot receive. Only then is the last step's wait the server's.
+ */
+function slackConfigStoredNotReceiving(json: unknown): boolean {
+  const agent = agentOf(json);
+  const channels = isRecord(agent?.channels) ? agent.channels : null;
+  const slack = isRecord(channels?.slack) ? channels.slack : null;
+  if (!slack || text(slack.teamId) === "") return false;
+  const row = readSlackRow(slack);
+  if (!row || row.installPending || row.tokenPending) return false;
+  const capability = slackCapabilityFromStatus(json);
+  return capability !== "ok" && capability !== "socket-mode";
+}
+
+/**
+ * Read what the last step is waiting on from the setup steps alone. Null
+ * when the status says nothing of the kind, or when Slack is not at the last
+ * step. The audit's own error wins over the sync wait: a sync error on the
+ * audit is the ordinary wait, anything else is the audit's.
+ *
+ * The sync wait is read two ways. From the steps: `runtime-install` is
+ * `pending` while `audit` is `waiting`. Or from the runtime, by the caller
+ * through {@link slackSetupWaitWithSync}, when the first download is live.
+ */
+export function slackSetupWaitFromSteps(json: unknown): SlackSetupWait | null {
+  if (!slackConfigStoredNotReceiving(json)) return null;
+  const steps = setupStepsFromStatus(json);
+  const audit = steps.find((step) => step.name === "audit") ?? null;
+  const install = steps.find((step) => step.name === "runtime-install") ?? null;
+  if (audit?.lastError && !isSyncAuditError(audit.lastError)) return { kind: "audit" };
+  if (install?.status === "pending" && audit?.status === "waiting") return { kind: "sync", percent: null };
+  return null;
+}
+
+/**
+ * {@link slackSetupWaitFromSteps}, plus the sync wait read from the runtime:
+ * `sync` says whether the first download is live now (the caller reads that
+ * with the sync strip's own rule, so the two never disagree) and its
+ * percent. A sync wait found either way carries that percent.
+ */
+export function slackSetupWaitWithSync(
+  json: unknown,
+  sync: { live: boolean; percent: number | null },
+): SlackSetupWait | null {
+  const fromSteps = slackSetupWaitFromSteps(json);
+  if (fromSteps?.kind === "audit") return fromSteps;
+  if (fromSteps?.kind === "sync") return { kind: "sync", percent: sync.percent };
+  if (!slackConfigStoredNotReceiving(json)) return null;
+  const agent = agentOf(json);
+  const runtime = isRecord(agent?.runtime) ? agent.runtime : null;
+  const snapshot = isRecord(runtime?.firstSync);
+  const syncOk = text(runtime?.syncOkAt) !== "";
+  if (snapshot && sync.live && !syncOk) return { kind: "sync", percent: sync.percent };
+  return null;
+}

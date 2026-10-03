@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   readSlackRow,
+  setupStepsFromStatus,
   slackAppPageUrl,
   slackBotUrlFromStatus,
   slackCapabilityFromStatus,
@@ -9,6 +10,8 @@ import {
   slackRowFromAttach,
   slackRowFromStatus,
   slackRowStage,
+  slackSetupWaitFromSteps,
+  slackSetupWaitWithSync,
 } from "./slack-status.js";
 
 const INSTALL = "https://slack.com/oauth/v2/authorize?client_id=1.2&scope=chat%3Awrite&state=A0TEST";
@@ -183,5 +186,113 @@ describe("the bot's place in Slack", () => {
     expect(slackBotUrlFromStatus(status({ teamId: 1, botUserId: "U0NOVA" }))).toBeNull();
     expect(slackBotUrlFromStatus(status(undefined))).toBeNull();
     expect(slackBotUrlFromStatus(null)).toBeNull();
+  });
+});
+
+describe("the setup steps in a status answer", () => {
+  it("reads name, status and last error, lower-casing the names and statuses", () => {
+    const json = {
+      setupState: {
+        steps: [
+          { name: "Channels", status: "DONE" },
+          { name: "audit", status: "waiting", lastError: " NEW_BOX_AUDIT_PENDING: box blueprint failed: component-sync " },
+          { name: "runtime-install", status: "pending", lastError: "" },
+          "not a step",
+          null,
+        ],
+      },
+    };
+    expect(setupStepsFromStatus(json)).toEqual([
+      { name: "channels", status: "done", lastError: null },
+      { name: "audit", status: "waiting", lastError: "NEW_BOX_AUDIT_PENDING: box blueprint failed: component-sync" },
+      { name: "runtime-install", status: "pending", lastError: null },
+    ]);
+  });
+
+  it("reads the steps under the agent too, and is empty for anything else", () => {
+    expect(setupStepsFromStatus({ agent: { setupState: { steps: [{ name: "sync", status: "done" }] } } })).toEqual([
+      { name: "sync", status: "done", lastError: null },
+    ]);
+    for (const junk of [null, undefined, "x", [], {}, { setupState: {} }, { setupState: { steps: "none" } }]) {
+      expect(setupStepsFromStatus(junk)).toEqual([]);
+    }
+  });
+});
+
+describe("what the server waits on at the last step", () => {
+  const STORED = { workspace: "acme", teamId: "T0ACME", appId: "A0TEST", connectionMode: "socket" };
+  const SYNC_ERROR = "NEW_BOX_AUDIT_PENDING: box blueprint failed: component-sync";
+  const OTHER_ERROR = "NEW_BOX_AUDIT_PENDING: box blueprint failed: component-brain";
+  const waitingOnSync = [
+    { name: "channels", status: "done" },
+    { name: "audit", status: "waiting", lastError: SYNC_ERROR },
+    { name: "runtime-install", status: "pending" },
+  ];
+  const at = (slack: unknown, steps: unknown[], capability = "socket-mode-degraded", runtime: Record<string, unknown> = {}) => ({
+    setupState: { phase: "ready", steps },
+    agent: { runtime, channels: slack === undefined ? null : { slack }, channelDiagnostics: { slack: { inboundCapability: capability } } },
+  });
+
+  it("is the sync while the install waits on an audit that names the sync", () => {
+    expect(slackSetupWaitFromSteps(at(STORED, waitingOnSync))).toEqual({ kind: "sync", percent: null });
+    // The audit may carry no error at all and still be the sync wait.
+    const noError = [{ name: "audit", status: "waiting" }, { name: "runtime-install", status: "pending" }];
+    expect(slackSetupWaitFromSteps(at(STORED, noError))).toEqual({ kind: "sync", percent: null });
+  });
+
+  it("is the audit when its error names something other than the sync", () => {
+    const steps = [{ name: "audit", status: "waiting", lastError: OTHER_ERROR }, { name: "runtime-install", status: "pending" }];
+    expect(slackSetupWaitFromSteps(at(STORED, steps))).toEqual({ kind: "audit" });
+    // The audit's own error wins, whatever the install step says.
+    const failed = [{ name: "audit", status: "failed", lastError: OTHER_ERROR }, { name: "runtime-install", status: "done" }];
+    expect(slackSetupWaitFromSteps(at(STORED, failed))).toEqual({ kind: "audit" });
+  });
+
+  it("is nothing when the steps say nothing of the kind", () => {
+    expect(slackSetupWaitFromSteps(at(STORED, []))).toBeNull();
+    expect(slackSetupWaitFromSteps(at(STORED, [{ name: "audit", status: "done" }, { name: "runtime-install", status: "running" }]))).toBeNull();
+    expect(slackSetupWaitFromSteps(at(STORED, [{ name: "runtime-install", status: "pending" }]))).toBeNull();
+    expect(slackSetupWaitFromSteps(at(STORED, [{ name: "audit", status: "waiting" }]))).toBeNull();
+  });
+
+  it("is nothing unless Slack's config is stored with nothing left for the person, and the bot cannot receive yet", () => {
+    // Connected already.
+    expect(slackSetupWaitFromSteps(at(STORED, waitingOnSync, "socket-mode"))).toBeNull();
+    expect(slackSetupWaitFromSteps(at(STORED, waitingOnSync, "ok"))).toBeNull();
+    // Still to be approved, or still waiting for the token or for access to the app page.
+    expect(slackSetupWaitFromSteps(at({ ...STORED, workspace: "pending-install", installUrl: INSTALL }, waitingOnSync, "pending-install"))).toBeNull();
+    expect(slackSetupWaitFromSteps(at({ ...STORED, appTokenPendingUrl: APP }, waitingOnSync))).toBeNull();
+    expect(slackSetupWaitFromSteps(at({ ...STORED, appTokenAccessPending: "Adding you." }, waitingOnSync))).toBeNull();
+    // No team id: nothing stored yet.
+    expect(slackSetupWaitFromSteps(at({ workspace: "acme", appId: "A0TEST" }, waitingOnSync))).toBeNull();
+    // No Slack at all.
+    expect(slackSetupWaitFromSteps(at(undefined, waitingOnSync))).toBeNull();
+    expect(slackSetupWaitFromSteps(at(true, waitingOnSync))).toBeNull();
+    expect(slackSetupWaitFromSteps(null)).toBeNull();
+  });
+
+  it("adds the live percent to a sync wait read from the steps", () => {
+    expect(slackSetupWaitWithSync(at(STORED, waitingOnSync), { live: true, percent: 88 })).toEqual({ kind: "sync", percent: 88 });
+    expect(slackSetupWaitWithSync(at(STORED, waitingOnSync), { live: false, percent: null })).toEqual({ kind: "sync", percent: null });
+  });
+
+  it("reads a sync wait from a live first download with no good sync yet, when the steps say nothing", () => {
+    const downloading = { firstSync: { phase: "pull", filesTotal: 10, filesDone: 4 } };
+    expect(slackSetupWaitWithSync(at(STORED, [], undefined, downloading), { live: true, percent: 40 })).toEqual({ kind: "sync", percent: 40 });
+    // Not live: a frozen snapshot is not a wait.
+    expect(slackSetupWaitWithSync(at(STORED, [], undefined, downloading), { live: false, percent: null })).toBeNull();
+    // A sync that finished well: the download is over.
+    const synced = { ...downloading, syncOkAt: "2026-10-03T16:00:00.000Z" };
+    expect(slackSetupWaitWithSync(at(STORED, [], undefined, synced), { live: true, percent: 40 })).toBeNull();
+    // No snapshot at all.
+    expect(slackSetupWaitWithSync(at(STORED, []), { live: true, percent: 40 })).toBeNull();
+    // Connected: nothing to wait on.
+    expect(slackSetupWaitWithSync(at(STORED, [], "socket-mode", downloading), { live: true, percent: 40 })).toBeNull();
+  });
+
+  it("keeps the audit over a live download", () => {
+    const steps = [{ name: "audit", status: "waiting", lastError: OTHER_ERROR }, { name: "runtime-install", status: "pending" }];
+    const downloading = { firstSync: { phase: "pull", filesTotal: 10, filesDone: 4 } };
+    expect(slackSetupWaitWithSync(at(STORED, steps, undefined, downloading), { live: true, percent: 40 })).toEqual({ kind: "audit" });
   });
 });
