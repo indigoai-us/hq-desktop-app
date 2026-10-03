@@ -143,7 +143,9 @@
       remember(active);
     } catch (err) {
       if (slug !== active) return;
-      error = err instanceof Error ? err.message : "Goals could not be read.";
+      // AUDIT-3: never paint the transport message; plain copy plus Try again.
+      console.error("GoalsView: goals read failed:", err);
+      error = "Couldn't read this company's goals.";
       if (!objectives) objectives = [];
     } finally {
       if (slug === active) refreshing = false;
@@ -261,8 +263,12 @@
   {:else}
     <div class="canvas">
       <div class="sech">Objectives · {period} <span class="grow"></span><span class="plain">Progress averages each objective's KRs</span></div>
-      {#if error}<p class="empty">{error}</p>{/if}
-      {#if objectives.length === 0}
+      {#if error}
+        <div class="empty load-error" role="alert" data-testid="goals-load-error">
+          <p>{error}</p>
+          <RailButton icon="refresh" data-testid="goals-retry" onclick={() => void refresh(slug)}>Try again</RailButton>
+        </div>
+      {:else if objectives.length === 0}
         <p class="empty" data-testid="empty-goals-state">No goals are available from this company's local board yet.</p>
       {:else if visible.length === 0}
         <!-- QA-067: a period with no goals is not an empty board. -->
@@ -424,6 +430,8 @@
   .bar { flex: 1 1 160px; max-width: 560px; height: 3px; background: var(--line2); border-radius: 2px; overflow: hidden; }
   .bar i { display: block; height: 100%; background: var(--t2); }
   .unl, .glegend, .empty { font-size: 13px; color: var(--t3); }
+  .load-error { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+  .load-error p { margin: 0; }
   .unl { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
   .unl b { color: var(--t2); font-weight: 500; }
   .glegend { display: flex; gap: 14px; margin-top: 16px; padding: 0 8px; }
