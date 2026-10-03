@@ -304,6 +304,32 @@ describe("DesktopApp New bot → Cloud, agents.desktop-agent-creation", () => {
     expect(fetchDmThread).not.toHaveBeenCalled();
   }, 30_000);
 
+  it("flag on: a create after a refusal sends a new idempotency key", async () => {
+    const { fetch, sent } = agentsFetch({
+      status: 409,
+      body: { code: "AGENT_SLUG_TAKEN", error: "That handle is taken." },
+    });
+    mountApp(flaggedAdapter(true, fetch, { runCompanyTabAction: vi.fn(), runCardAction: vi.fn() }), COMPANY_ROW, {
+      companies: [ACME_WORKSPACE],
+    });
+    await createPolar();
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="chat-create-entry-error"]')).toBeTruthy(), {
+      timeout: 10_000,
+      interval: 50,
+    });
+    clickAnywhere('[data-testid="chat-bot-create"]');
+    await vi.waitFor(() => expect(sent.filter((s) => s.path === "/v1/agents").length).toBe(2), {
+      timeout: 10_000,
+      interval: 50,
+    });
+    const keys = sent
+      .filter((s) => s.path === "/v1/agents")
+      .map((s) => (s.body as { idempotencyKey?: string }).idempotencyKey);
+    expect(keys[0]).toMatch(/^desktop-new-bot-/);
+    expect(keys[1]).toMatch(/^desktop-new-bot-/);
+    expect(keys[1]).not.toBe(keys[0]);
+  }, 30_000);
+
   it("flag off: the card sequence runs and nothing is POSTed to /v1/agents", async () => {
     const { fetch, sent } = agentsFetch({ status: 201, body: CREATED });
     const runCompanyTabAction = vi.fn(async () => ok({ cardId: "", actionId: "add_agent", state: "blocked", channelId: "chn_acme", reason: "nope" }));

@@ -215,8 +215,14 @@
   let unavailableCopy = $state<typeof import("@hq/agents").cloudUnavailableCopy | null>(null);
   /** Per-company create availability, filled in once the flag is on. */
   let cloudAvailability = $state<Record<string, CreateAvailability>>({});
-  /** One key for this New bot session: a double-click or a retry replays it. */
-  const cloudIdempotencyKey = newWizardIdempotencyKey();
+  /**
+   * One key per create attempt: a double-click or a retry after a network
+   * failure replays it. A refusal the server answered with a fix (handle
+   * taken, new price, plan) made no bot, so the next create gets a new key
+   * instead of replaying the refusal.
+   */
+  let cloudIdempotencyKey = newWizardIdempotencyKey();
+  let keyRotatedForFix: CreateErrorFix | null = null;
   const companyBlocks = $derived.by<Record<string, CloudUnavailableCopy>>(() => {
     const out: Record<string, CloudUnavailableCopy> = {};
     const cloudUnavailableCopy = unavailableCopy;
@@ -471,6 +477,10 @@
         (option) => option.key === draft.size && option.selectable && option.netMonthlyCents !== null,
       );
       if (draft.companyUid && quotedSize) {
+        if (entryFix && entryFix !== keyRotatedForFix) {
+          keyRotatedForFix = entryFix;
+          cloudIdempotencyKey = newWizardIdempotencyKey();
+        }
         await onCloudCreate?.(draft.companyUid, {
           name: draft.name.trim(),
           handle: botHandle(draft),
