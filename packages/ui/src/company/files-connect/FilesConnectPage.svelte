@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { withReadDeadline } from "../../common/read-deadline.js";
   import RailButton from "../../common/button/RailButton.svelte";
   /**
    * Vault, Integrations, Secrets, Deployments (US-029).
@@ -144,8 +145,15 @@
   });
 
   async function refresh(s: string, alive: () => boolean): Promise<void> {
+    // BLANK-1: the two reads run side by side so each settles within the bound.
+    await Promise.all([refreshSecrets(s, alive), refreshDeployments(s, alive)]);
+    writeFilesConnectCache(s, data);
+  }
+
+  async function refreshSecrets(s: string, alive: () => boolean): Promise<void> {
     try {
-      const loaded = await companyStore.loadSecrets(s, false);
+      // BLANK-1: a read that never answers falls to the failed-read state.
+      const loaded = await withReadDeadline(companyStore.loadSecrets(s, false), "company secrets");
       if (!alive()) return;
       secrets = secretRowsFromSource(Array.isArray(loaded) ? loaded : []);
       secretsError = null;
@@ -155,16 +163,19 @@
       secretsError = "Could not load secrets.";
       secrets = secrets ?? [];
     }
+  }
+
+  async function refreshDeployments(s: string, alive: () => boolean): Promise<void> {
     try {
       // Names come from the real hq-deploy apps (QA-013), else the legacy list.
       const list = listDeployApps ?? adapter?.company?.listDeployApps;
       let rows: DeploymentRowModel[];
       if (list) {
-        const res = await list(s);
+        const res = await withReadDeadline(list(s), "company deployments");
         if (!res.ok) throw new Error(res.message ?? res.reason);
         rows = companyDeploymentRows(res.value as DeployAppsPage, s);
       } else {
-        const loaded = await companyStore.loadDeployments(s, false);
+        const loaded = await withReadDeadline(companyStore.loadDeployments(s, false), "company deployments");
         rows = deploymentRowsFromSource(Array.isArray(loaded) ? loaded : [], s);
       }
       if (!alive()) return;
@@ -176,7 +187,6 @@
       deploymentsError = "Could not load deployments.";
       deployments = deployments ?? [];
     }
-    writeFilesConnectCache(s, data);
   }
 
   // AUDIT-3: Try again after a failed secrets or deployments read.
