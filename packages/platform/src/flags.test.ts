@@ -5,6 +5,7 @@ import {
   CLAUDE_PROVIDER_FLAG,
   COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
   DESKTOP_LIMIT_STATUS_PUSH_FLAG,
+  FIRST_LAUNCH_JOIN_KEY_FLAG,
   FLAG_REFRESH_INTERVAL_MS,
   LOGIN_RECEIPT_DURABILITY_FLAG,
   MEETINGS_LEGACY_FLAG,
@@ -54,6 +55,13 @@ describe("registry key mapping", () => {
     expect(registryKeyFor(CLAUDE_PROVIDER_FLAG)).toBe(CLAUDE_PROVIDER_FLAG);
     expect(registryKeyFor("is_indigo_user")).toBeUndefined();
     expect(registryKeyFor("anything-else")).toBeUndefined();
+  });
+
+  it("registers the first-launch join-key rollout through the default-off hq-flags mapping", () => {
+    expect(FIRST_LAUNCH_JOIN_KEY_FLAG).toBe("desktop.first-launch-join-key-v1");
+    expect(registryKeyFor(FIRST_LAUNCH_JOIN_KEY_FLAG)).toBe(
+      FIRST_LAUNCH_JOIN_KEY_FLAG,
+    );
   });
 
 
