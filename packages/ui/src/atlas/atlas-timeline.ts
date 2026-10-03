@@ -18,6 +18,8 @@ export const ATLAS_TOUCH_WINDOW_DAYS = 7;
 /** Opacity for objects outside the scrubbed moment. */
 export const ATLAS_BORN_HIDDEN = 0.06;
 export const ATLAS_TOUCH_FADED = 0.25;
+/** At the live edge an object counts as active if touched this recently. */
+export const ATLAS_LIVE_WINDOW_MS = 10 * 60_000;
 
 export type AtlasTimeMode = "born" | "touched";
 
@@ -78,18 +80,27 @@ export function atlasScrubLabel(index: number | null, nowMs: number): string {
 }
 
 /**
- * Per-object opacity at a scrubbed day. Returns null at the live edge so the
- * map renders untouched. Objects with no timestamp stay visible.
+ * Per-object opacity at a scrubbed day. At the live edge ("Now") only objects
+ * that are active right now stay bright: someone is live on them, or they were
+ * touched within the live window. Everything else rests at the faded baseline,
+ * so Now has the same depth as every other day. Objects with no timestamp stay
+ * visible when scrubbed back.
  */
 export function atlasTimeOpacity(
   nodes: readonly Pick<AtlasNode, "id" | "created" | "touched">[],
   mode: AtlasTimeMode,
   index: number | null,
   nowMs: number,
-): Map<string, number> | null {
-  if (index == null || index >= ATLAS_TIMELINE_DAYS - 1) return null;
-  const cutoff = atlasDayEnd(index, nowMs);
+  live: ReadonlySet<string> = new Set(),
+): Map<string, number> {
   const out = new Map<string, number>();
+  if (index == null || index >= ATLAS_TIMELINE_DAYS - 1) {
+    for (const n of nodes) {
+      if (!atlasActiveNow(n, nowMs, live)) out.set(n.id, ATLAS_TOUCH_FADED);
+    }
+    return out;
+  }
+  const cutoff = atlasDayEnd(index, nowMs);
   for (const n of nodes) {
     if (mode === "born") {
       if (n.created != null && n.created > cutoff) out.set(n.id, ATLAS_BORN_HIDDEN);
@@ -104,4 +115,15 @@ export function atlasTimeOpacity(
     if (!fresh) out.set(n.id, ATLAS_TOUCH_FADED);
   }
   return out;
+}
+
+/** True when an object is being worked on right now (live presence or a fresh touch). */
+export function atlasActiveNow(
+  n: Pick<AtlasNode, "id" | "touched">,
+  nowMs: number,
+  live: ReadonlySet<string>,
+): boolean {
+  if (live.has(n.id)) return true;
+  const t = n.touched;
+  return t != null && t <= nowMs && nowMs - t <= ATLAS_LIVE_WINDOW_MS;
 }

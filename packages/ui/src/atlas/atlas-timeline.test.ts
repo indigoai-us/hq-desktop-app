@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ATLAS_BORN_HIDDEN,
+  ATLAS_LIVE_WINDOW_MS,
   ATLAS_TIMELINE_DAYS,
   ATLAS_TOUCH_FADED,
   atlasDailyCounts,
@@ -47,14 +48,13 @@ describe("atlas timeline (US-014)", () => {
     expect(atlasScrubLabel(0, NOW)).toBe("Sep 1");
   });
 
-  it("fades objects by opacity only and leaves the map alone at now", () => {
+  it("fades objects by opacity only when scrubbed back", () => {
     const nodes = [
       { id: "old", created: NOW - 60 * DAY, touched: NOW - 20 * DAY },
       { id: "new", created: NOW - DAY, touched: NOW },
       { id: "busy", created: NOW - 60 * DAY, touched: NOW - 11 * DAY },
       { id: "bare" },
     ];
-    expect(atlasTimeOpacity(nodes, "born", null, NOW)).toBeNull();
     const tenDaysAgo = ATLAS_TIMELINE_DAYS - 1 - 10;
     const born = atlasTimeOpacity(nodes, "born", tenDaysAgo, NOW)!;
     expect(born.get("new")).toBe(ATLAS_BORN_HIDDEN);
@@ -64,5 +64,41 @@ describe("atlas timeline (US-014)", () => {
     expect(touched.has("busy")).toBe(false);
     expect(touched.get("old")).toBe(ATLAS_TOUCH_FADED);
     expect(touched.get("new")).toBe(ATLAS_BORN_HIDDEN);
+  });
+
+  it("OWNER-009: Now lights only the active objects and rests the rest at baseline", () => {
+    const nodes = [
+      { id: "live", created: NOW - 60 * DAY, touched: NOW - 20 * DAY },
+      { id: "edited", created: NOW - 60 * DAY, touched: NOW - 2 * 60_000 },
+      { id: "today", created: NOW - DAY, touched: NOW - ATLAS_LIVE_WINDOW_MS - 1 },
+      { id: "old", created: NOW - 60 * DAY, touched: NOW - 20 * DAY },
+      { id: "bare" },
+    ];
+    for (const mode of ["touched", "born"] as const) {
+      for (const index of [null, ATLAS_TIMELINE_DAYS - 1]) {
+        const now = atlasTimeOpacity(nodes, mode, index, NOW, new Set(["live"]));
+        expect(now.has("live")).toBe(false);
+        expect(now.has("edited")).toBe(false);
+        expect(now.get("today")).toBe(ATLAS_TOUCH_FADED);
+        expect(now.get("old")).toBe(ATLAS_TOUCH_FADED);
+        expect(now.get("bare")).toBe(ATLAS_TOUCH_FADED);
+      }
+    }
+  });
+
+  it("OWNER-009: Now with nothing active keeps every object at baseline, never full", () => {
+    const nodes = [
+      { id: "a", created: NOW - 60 * DAY, touched: NOW - DAY },
+      { id: "b", touched: NOW - 3 * DAY },
+      { id: "c" },
+    ];
+    const now = atlasTimeOpacity(nodes, "touched", null, NOW);
+    expect([...now.values()]).toEqual([ATLAS_TOUCH_FADED, ATLAS_TOUCH_FADED, ATLAS_TOUCH_FADED]);
+  });
+
+  it("OWNER-009: past days ignore the live set", () => {
+    const nodes = [{ id: "old", created: NOW - 60 * DAY, touched: NOW - 20 * DAY }];
+    const back = atlasTimeOpacity(nodes, "touched", ATLAS_TIMELINE_DAYS - 11, NOW, new Set(["old"]));
+    expect(back.get("old")).toBe(ATLAS_TOUCH_FADED);
   });
 });

@@ -220,6 +220,9 @@ describe("AtlasView time scrubber and empty company (US-014)", () => {
     const hist = host.querySelector(sel("atlas-scrub-hist")) as HTMLElement;
     const node = () => host.querySelector(sel(`atlas-node-${RAIL}`)) as SVGGElement;
     expect(node().style.getPropertyValue("--t")).toBe("");
+    const policyAtNow = host.querySelector(sel("atlas-node-policy:policies/tenancy.md")) as SVGGElement;
+    expect(policyAtNow.style.getPropertyValue("--t")).toBe("0.25");
+    expect(host.querySelector(sel("atlas-nothing-active"))).toBeNull();
     flushSync(() => {
       hist.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
     });
@@ -231,7 +234,29 @@ describe("AtlasView time scrubber and empty company (US-014)", () => {
       hist.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
     });
     expect(host.querySelector(sel("atlas-scrub-date"))?.textContent).toBe("Now");
-    expect(policy.style.getPropertyValue("--t")).toBe("");
+    expect(policy.style.getPropertyValue("--t")).toBe("0.25");
+    expect(node().style.getPropertyValue("--t")).toBe("");
+  });
+
+  it("OWNER-009: Now with nobody live and no fresh edits stays dim and shows the hint", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(AtlasView, {
+      target: host,
+      props: {
+        companyUid: "cmp_indigo",
+        companyName: "Indigo",
+        cache: createAtlasCache({ fetcher: async () => smokeAtlasGraph() }),
+        nowMs: NOW + 2 * 86_400_000,
+        presence: [],
+        loadDetail: async () => ATLAS_SMOKE_DETAIL,
+      },
+    });
+    await settle();
+    const nodes = [...host.querySelectorAll('[data-testid^="atlas-node-"]')] as SVGGElement[];
+    expect(nodes.length).toBeGreaterThan(2);
+    for (const n of nodes) expect(n.style.getPropertyValue("--t")).toBe("0.25");
+    expect(host.querySelector(sel("atlas-nothing-active"))?.textContent).toBe("Nothing active right now");
   });
 
   it("an empty company shows the dashed ring, six kinds, 0 objects, and Frame all disabled", async () => {

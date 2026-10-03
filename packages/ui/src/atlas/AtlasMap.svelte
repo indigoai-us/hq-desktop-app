@@ -32,6 +32,8 @@
     filterActor?: string | null;
     /** Time scrubber (US-014): per-object opacity at the scrubbed day; null at now. */
     timeOpacity?: Map<string, number> | null;
+    /** Live edge with no active object: show the quiet-map hint. */
+    nothingActive?: boolean;
     nowMs: number;
     view: AtlasView;
     onselect: (id: string | null) => void;
@@ -48,6 +50,7 @@
     filterIds = null,
     filterActor = null,
     timeOpacity = null,
+    nothingActive = false,
     nowMs,
     view,
     onselect,
@@ -254,6 +257,7 @@
   <div class="legend">
     <span><i class="ldot"></i>live</span>
     <span><i class="halo-key"></i>someone here now</span>
+    {#if nothingActive}<span data-testid="atlas-nothing-active">Nothing active right now</span>{/if}
     <span class="hint">drag to pan · wheel to zoom · 0 frames all</span>
   </div>
   <div class="map-tools">

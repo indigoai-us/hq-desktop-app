@@ -110,11 +110,14 @@
   const filterName = $derived(
     filterActor ? (presence.find((p) => p.actorUid === filterActor)?.name ?? null) : null,
   );
-  // Time scrubber (US-014). Null index is the live edge: the map is untouched.
+  // Time scrubber (US-014). Null index is the live edge: only active objects stay bright.
   let timeMode = $state<AtlasTimeMode>("touched");
   let scrubIndex = $state<number | null>(null);
   const dailyCounts = $derived(atlasDailyCounts(graph?.nodes ?? [], timeMode, nowMs));
-  const timeOpacity = $derived(atlasTimeOpacity(graph?.nodes ?? [], timeMode, scrubIndex, nowMs));
+  const timeOpacity = $derived(atlasTimeOpacity(graph?.nodes ?? [], timeMode, scrubIndex, nowMs, live));
+  const nothingActive = $derived(
+    scrubIndex == null && (graph?.nodes ?? []).every((n) => timeOpacity.has(n.id)),
+  );
   const empty = $derived(graph !== null && graph.nodes.length === 0);
   const emptyLabels = ATLAS_RING_ORDER.map((type, i) => {
     const a = -Math.PI / 2 + (i / ATLAS_RING_ORDER.length) * Math.PI * 2;
@@ -323,6 +326,7 @@
           {filterIds}
           {filterActor}
           {timeOpacity}
+          {nothingActive}
           {nowMs}
           {view}
           onselect={(id) => (selected = id)}
