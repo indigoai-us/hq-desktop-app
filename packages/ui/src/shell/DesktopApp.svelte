@@ -79,7 +79,6 @@
     messageMarksSetupDone,
     messageOffersSlackAgent,
     richContentForMessage,
-    suggestionsForMessage,
     type ConnectItem,
     type ConnectTarget,
     type RichBlock,
@@ -88,7 +87,6 @@
     CONNECT_MORE_REQUEST,
     CONNECTING_TIMEOUT_MS,
     connectMoreAnswerIds,
-    connectMoreLabel,
     newestBotMessage,
     companyUidFromStatus,
     connectionActionKey,
@@ -168,7 +166,6 @@
     setupBotIntro,
     setupBotKickoff,
     setupBotNoRuntime,
-    setupSuggestionsDue,
     SETUP_BOT_ALREADY_ELSEWHERE,
     SETUP_BOT_GENERIC_FAILURE,
     SETUP_BOT_MODE,
@@ -2643,15 +2640,16 @@
     if (setupBotDmDone) void loadLocalBotRuntimeReady();
   });
   /**
-   * The setup bot's suggested replies for its newest message: recommended
-   * answers to what it just asked, or next questions. Setup bot only for now.
+   * The bot whose suggested replies the conversation draws, under its newest
+   * message: the setup bot (recommended answers to what it just asked, or
+   * next questions) or the open cloud bot. The conversation itself finds the
+   * message and draws the chips as part of it (ChannelConversation,
+   * `suggestionsFrom`).
    */
-  const setupSuggestedReplies = $derived.by((): string[] => {
+  const suggestionsFromUid = $derived.by((): string | null => {
     const bot = selectedLocalBot;
-    const row = selectedRow;
-    if (!bot || !row || bot.name.trim().toLowerCase() !== SETUP_BOT_NAME) return [];
-    const timeline = liveTimelineId === row.id ? liveTimeline : (messagesByRow?.(row) ?? []);
-    return setupSuggestionsDue(timeline, bot.agentUid, messageHasVisibleContent, suggestionsForMessage);
+    if (bot && bot.name.trim().toLowerCase() === SETUP_BOT_NAME) return bot.agentUid;
+    return dmCloudBotUid;
   });
   /**
    * The finish card, once put away, stays away.
@@ -4622,18 +4620,17 @@
   );
   /**
    * The cards the app attaches when the bot's message carries no connect
-   * block of its own: Slack unless the bot is in Slack, then up to three of
-   * the person's own connected apps the bot cannot use yet, newest first
-   * (integration-cards-model.ts, `appChosenItems`).
-   */
-  /**
+   * block of its own: Slack unless the bot is in Slack, then the person's
+   * own connected apps the bot cannot use yet, newest first, three cards in
+   * all (integration-cards-model.ts, `appChosenItems`).
+   *
    * The chosen set, per bot, for this session. It is worked out again until
    * the company's list is known, then kept: a card the person just acted on
    * (an app they let the bot use, Slack they connected) stays where it is
    * and turns connected, instead of going away.
    */
   const chosenItemsByBot = new Map<string, { withFacts: boolean; items: ConnectItem[] }>();
-  const cloudBotExtraBlocks = $derived.by((): Record<string, RichBlock[]> | null => {
+  const cloudBotExtraCards = $derived.by((): Record<string, RichBlock[]> | null => {
     const ids = [...(cloudBotHelloCardsAt ? [cloudBotHelloCardsAt] : []), ...cloudBotConnectMoreAt];
     if (ids.length === 0) return null;
     const input = cloudBotCardInput;
@@ -4993,7 +4990,7 @@
         if (block.kind === "connect") items.push(...block.items);
       }
     }
-    for (const blocks of Object.values(cloudBotExtraBlocks ?? {})) {
+    for (const blocks of Object.values(cloudBotExtraCards ?? {})) {
       for (const block of blocks) if (block.kind === "connect") items.push(...block.items);
     }
     return items;
@@ -5139,14 +5136,14 @@
     }
   }
   /** Tell the bot, once, that it is in Slack now. */
-  async function announceSlackToBot(agentUid: string): Promise<void> {
+  async function announceSlackToBot(agentUid: string, botName: string): Promise<void> {
     const key = `${agentUid}:slack`;
     if (connectionNoticesInFlight.has(key) || connectionRecords[agentUid]?.slack?.announced) return;
     connectionNoticesInFlight.add(key);
     try {
       const sent = await sendBotNotice(
         agentUid,
-        buildAgentSlackConnectedNotice({ personName: noticePersonName() }),
+        buildAgentSlackConnectedNotice({ personName: noticePersonName(), botName }),
         `new-bot-slack-${agentUid}`,
       );
       if (sent) setBotConnectionRecord(agentUid, markSlackAnnounced(connectionRecords[agentUid]));
@@ -5162,7 +5159,7 @@
     const due = pendingAnnouncements(input.record, input.slack, input.tools);
     if (!due.slack && due.tools.length === 0) return;
     untrack(() => {
-      if (due.slack) void announceSlackToBot(input.uid);
+      if (due.slack) void announceSlackToBot(input.uid, input.botName);
       for (const connection of due.tools) void announceToolToBot(input.uid, connection);
     });
   });
@@ -5418,51 +5415,74 @@
   }
 
   /**
-   * A cloud bot's suggested replies for its newest message, worked out over
-   * the conversation as the person sees it: a notice the app sent the bot is
-   * not the person writing, so it does not put the suggestions away.
+   * When the person last pressed one of this bot's cards, from the device's
+   * record: Slack or tools connecting or declined, an app card, a connection
+   * they let the bot use. Null when they never pressed one here.
    */
-  const cloudBotOwnSuggestedReplies = $derived.by((): string[] => {
+  function lastCardActionAt(record: BotConnectionRecord | null | undefined): number | null {
+    const times = [
+      record?.slack?.since,
+      record?.tools?.since,
+      ...Object.values(record?.apps ?? {}).map((entry) => entry.since),
+      ...Object.values(record?.granted ?? {}).map((entry) => entry.at),
+    ].filter((time): time is number => typeof time === "number" && Number.isFinite(time));
+    return times.length > 0 ? Math.max(...times) : null;
+  }
+  /**
+   * Every card on screen for the open bot is connected or declined. A card
+   * still offered, still connecting, or still being looked up is a decision
+   * the person has not made yet; the app adds nothing next to it.
+   */
+  const cloudBotCardsResolved = $derived.by((): boolean => {
     const uid = dmCloudBotUid;
-    if (!uid) return [];
-    return setupSuggestionsDue(timeline, uid, messageHasVisibleContent, suggestionsForMessage);
+    const cards = cloudBotConnections;
+    if (!uid || !cards) return true;
+    const extra = cloudBotExtraCards;
+    for (const message of timeline) {
+      if ((message.fromPersonUid ?? "").trim() !== uid) continue;
+      const blocks = [...(richContentForMessage(message).rich?.blocks ?? []), ...(extra?.[message.eventId] ?? [])];
+      const items = blocks.flatMap((block) => (block.kind === "connect" ? block.items : []));
+      if (items.length === 0) continue;
+      const set = cards.cardsFor(message);
+      if (set.rowReady && !set.rowReady(items)) return false;
+      for (const item of items) {
+        const view = item.app ? (set.views[item.app] ?? null) : item.domain ? (set.integration?.({ domain: item.domain }) ?? null) : null;
+        if (view && view.state !== "connected" && view.state !== "declined") return false;
+      }
+    }
+    return true;
   });
   /**
-   * The app's own follow-up under the bot's newest message: a way to get the
-   * connection cards back without scrolling up to the first message. Wanted
-   * after any bot answer, until the person writes, unless that answer already
-   * carries the cards.
+   * The bot's newest message gets one suggested reply from the app, "Connect
+   * more tools": a way to get the connection cards back without scrolling up
+   * to the first message. It is drawn as part of that message, with the bot's
+   * own suggestions, through the same path as the cards. Only while the
+   * person has not written after it; never on a message that carries cards
+   * (the bot's own block or the app's: the cards are the decision); and only
+   * once the cards so far are all connected or declined, or the person
+   * pressed a card after the hello. Before this the chip sat next to open
+   * cards in every conversation, which was decision overload (owner, live
+   * walkthrough 2026-10-03).
    */
-  const cloudBotConnectChipWanted = $derived.by((): boolean => {
+  const cloudBotConnectMoreChipAt = $derived.by((): string | null => {
     const uid = dmCloudBotUid;
-    if (!uid) return false;
+    if (!uid) return null;
     const newest = newestBotMessage(timeline, uid, messageHasVisibleContent);
-    if (!newest) return false;
-    return !messageHasConnectBlock(newest) && !cloudBotExtraBlocks?.[newest.eventId];
+    if (!newest || messageHasConnectBlock(newest) || cloudBotExtraCards?.[newest.eventId]) return null;
+    if (cloudBotCardsResolved) return newest.eventId;
+    const record = connectionRecords[uid];
+    const hello = record?.helloEventId ? timeline.find((message) => message.eventId === record.helloEventId) : null;
+    const helloAt = Date.parse(hello?.createdAt ?? "");
+    const actedAt = lastCardActionAt(record);
+    return actedAt !== null && Number.isFinite(helloAt) && actedAt > helloAt ? newest.eventId : null;
   });
-  /**
-   * The extra button's words, or null while it is not shown. The words depend
-   * on what is connected, which is only asked while a bot's cards are on
-   * screen. Then the button waits for that first answer, so its words do not
-   * change under the cursor. A bot whose cards were never on screen is not
-   * asked just for this: its button says "Connect more".
-   */
-  const cloudBotConnectChip = $derived.by((): string | null => {
-    const input = cloudBotCardInput;
-    if (!input || !cloudBotConnectChipWanted) return null;
-    if (cloudBotCardsShown && !botConnectionFacts[input.uid]) return null;
-    return connectMoreLabel(input.slack, input.tools);
+  /** The blocks the app attaches, by message: the connection cards, and the app's suggested reply. */
+  const cloudBotExtraBlocks = $derived.by((): Record<string, RichBlock[]> | null => {
+    const cards = cloudBotExtraCards;
+    const at = cloudBotConnectMoreChipAt;
+    if (!at) return cards;
+    return { ...(cards ?? {}), [at]: [...(cards?.[at] ?? []), { kind: "suggestions", items: [CONNECT_MORE_REQUEST] }] };
   });
-  /** The bot's own suggestions, then the app's button, last in the row. */
-  const cloudBotSuggestedReplies = $derived.by((): string[] => {
-    const chip = cloudBotConnectChip;
-    if (!chip) return cloudBotOwnSuggestedReplies;
-    return [...cloudBotOwnSuggestedReplies.filter((label) => label !== chip), chip];
-  });
-  /** The button sends the request for the cards, not its own words. */
-  const cloudBotSuggestedReplyText = $derived.by((): Record<string, string> | null =>
-    cloudBotConnectChip ? { [cloudBotConnectChip]: CONNECT_MORE_REQUEST } : null,
-  );
   /**
    * The person sent something to a bot that cannot run on this Mac and
    * nothing has come back. The conversation says that plainly — the message
@@ -11126,8 +11146,7 @@
                         : undefined}
                   belowMessages={agentThinkingBelow}
                   aboveMessages={botSyncStrip}
-                  suggestedReplies={setupSuggestedReplies.length > 0 ? setupSuggestedReplies : cloudBotSuggestedReplies}
-                  suggestedReplyText={setupSuggestedReplies.length > 0 ? null : cloudBotSuggestedReplyText}
+                  suggestionsFrom={suggestionsFromUid}
                   connections={cloudBotConnections}
                   extraBlocksByEventId={cloudBotExtraBlocks}
                   draftKey={selectedRow.id}

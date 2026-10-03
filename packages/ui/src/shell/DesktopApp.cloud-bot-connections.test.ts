@@ -506,16 +506,27 @@ describe("DesktopApp connection cards in a cloud bot's direct message", () => {
 
 describe("DesktopApp suggested replies from a cloud bot", () => {
   const SUGGESTIONS = fence([{ kind: "suggestions", items: ["Summarize our company files", "List our open projects"] }]);
+  /** The hello (with the app's cards under it), the person's question, and the bot's answer with its suggestions. */
+  const answered = (): Row[] => [
+    { eventId: "e4", fromPersonUid: NOVA, fromDisplayName: "Nova", body: `Quite a lot already.${SUGGESTIONS}`, createdAt: "2026-10-02T14:01:30.000Z" },
+    { eventId: "e3", fromPersonUid: "prs_me", fromDisplayName: "Corey", body: "What do you know about us?", createdAt: "2026-10-02T14:01:00.000Z" },
+    ...thread(NOVA),
+  ];
+  const messageEl = (eventId: string): HTMLElement =>
+    host.querySelector<HTMLElement>(`[data-testid="conversation-message"][data-event-id="${eventId}"]`)!;
 
-  it("shows the newest message's suggestions as buttons, and a click sends the text", async () => {
-    const w = world({ thread: thread(NOVA, SUGGESTIONS) });
-    await mountNewBotDm(w);
+  it("shows the newest message's suggestions as buttons inside that message, and a click sends the text", async () => {
+    // The bot is in Slack and the person has no apps: no cards, so nothing to decide first.
+    const w = world({ thread: thread(NOVA, SUGGESTIONS), slackCapability: "ok" });
+    await mountRow(w, DM_ROW(NOVA), "Hi Corey, I am Nova.");
     await vi.waitFor(() =>
       expect(chips().map((chip) => chip.textContent?.trim())).toEqual(
         expect.arrayContaining(["Summarize our company files", "List our open projects"]),
       ),
     );
     expect(threadText()).not.toContain("hq-block");
+    // Part of the message, in the thread.
+    expect(messageEl("e2").querySelectorAll('[data-testid="suggested-reply"]').length).toBeGreaterThanOrEqual(2);
     chips()
       .find((chip) => chip.textContent?.trim() === "List our open projects")!
       .click();
@@ -527,17 +538,29 @@ describe("DesktopApp suggested replies from a cloud bot", () => {
     expect((extras as { audience?: string } | undefined)?.audience).toBeUndefined();
   });
 
-  it("keeps the suggestions while the app tells the bot about a connection", async () => {
-    const w = world({ thread: thread(NOVA, SUGGESTIONS), connections: [connection()] });
+  it("shows no suggestions on the message that carries the cards: the cards are the decision", async () => {
+    const w = world({ thread: thread(NOVA, SUGGESTIONS) });
     await mountNewBotDm(w);
+    await vi.waitFor(() => expect(card("slack")).not.toBeNull());
+    await settle(20);
+    expect(chips()).toHaveLength(0);
+    expect(threadText()).not.toContain("hq-block");
+  });
+
+  it("keeps the suggestions while the app tells the bot about a connection", async () => {
+    const w = world({ thread: answered(), connections: [connection()] });
+    window.localStorage.setItem(NEW_BOTS_KEY, JSON.stringify([NOVA]));
+    await mountRow(w, DM_ROW(NOVA), "Quite a lot already.");
     await vi.waitFor(() => expect(appPrimary("linear.app")).not.toBeNull());
+    await vi.waitFor(() => expect(messageEl("e4").querySelectorAll('[data-testid="suggested-reply"]')).toHaveLength(2));
     appPrimary("linear.app")!.click();
     await vi.waitFor(() => expect(hiddenNotices(w)).toHaveLength(1));
     await settle();
-    // The notice is not the person writing: the buttons stay.
+    // The notice is not the person writing: the buttons stay under the bot's newest message.
     expect(chips().map((chip) => chip.textContent?.trim())).toEqual(
       expect.arrayContaining(["Summarize our company files", "List our open projects"]),
     );
+    expect(messageEl("e4").querySelectorAll('[data-testid="suggested-reply"]').length).toBeGreaterThanOrEqual(2);
   });
 });
 

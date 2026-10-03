@@ -215,8 +215,15 @@ describe("DesktopApp sync widget in a cloud bot's direct message", () => {
     expect(now).toBeLessThan(100);
   });
 
-  it("is a strip directly under the header, above the thread, the suggested replies and the message box", async () => {
-    const w = world({ thread: thread(NOVA, SUGGESTIONS) });
+  it("is a strip directly under the header, above the thread with the bot's suggested replies in it, and the message box", async () => {
+    // The bot answered a question with suggestions; the cards sit under the hello, above.
+    const w = world({
+      thread: [
+        { eventId: "e4", fromPersonUid: NOVA, fromDisplayName: "Nova", body: `Quite a lot already.${SUGGESTIONS}`, createdAt: "2026-10-02T14:01:30.000Z" },
+        { eventId: "e3", fromPersonUid: "prs_me", fromDisplayName: "Corey", body: "What do you know about us?", createdAt: "2026-10-02T14:01:00.000Z" },
+        ...thread(NOVA),
+      ],
+    });
     await mountNewBotDm(w);
     await vi.waitFor(() => expect(widget()).not.toBeNull());
     await vi.waitFor(() => expect(chipRow()).not.toBeNull());
@@ -231,9 +238,10 @@ describe("DesktopApp sync widget in a cloud bot's direct message", () => {
     expect(header.textContent).toBe("Nova");
     expect(before(header, el)).toBe(true);
     expect(before(el, threadEl()!)).toBe(true);
-    expect(before(threadEl()!, chipRow()!)).toBe(true);
+    // The chips are part of the bot's newest message, in the thread, above the message box.
+    expect(threadEl()!.contains(chipRow()!)).toBe(true);
+    expect(chipRow()!.closest('[data-testid="conversation-message"]')?.getAttribute("data-event-id")).toBe("e4");
     expect(before(chipRow()!, host.querySelector("textarea")!)).toBe(true);
-    // The chips still work as before.
     expect(chipRow()!.textContent).toContain("Summarize our company files");
   });
 

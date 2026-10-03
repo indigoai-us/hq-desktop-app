@@ -14,10 +14,14 @@ import type { ConversationRow } from "../chat/sidebar-model.js";
 import type { Workspace } from "../chat/workspaces.js";
 
 /**
- * "Connect more": the app adds one button to the suggested replies under a
- * cloud bot's newest message. Pressing it sends "Connect more tools" as the
- * person's own message, and the app draws the two connection cards again
- * under the bot's answer, so nobody scrolls up to the first message.
+ * "Connect more tools": the app adds one suggested reply to a cloud bot's
+ * newest message, drawn as part of that message with the bot's own
+ * suggestions. Pressing it sends "Connect more tools" as the person's own
+ * message, and the app draws the connection cards again under the bot's
+ * answer, so nobody scrolls up to the first message. It is only offered once
+ * the cards so far are all connected or declined, or the person pressed a
+ * card after the hello: next to open cards it was decision overload (owner,
+ * live walkthrough 2026-10-03).
  */
 
 const NOVA = "agt_nova";
@@ -244,30 +248,75 @@ const hidden = (w: World) =>
 const visibleSends = (w: World) =>
   w.sendDm.mock.calls.filter(([, , extras]) => (extras as { audience?: string } | undefined)?.audience !== "agent");
 
+/** The device's record of the bot's cards, as the app stores it. */
+function rememberCards(record: Record<string, unknown>): void {
+  window.localStorage.setItem(BOT_CONNECTION_CARDS_STORAGE_KEY, JSON.stringify({ [NOVA]: { helloEventId: "e2", ...record } }));
+}
+
 describe("DesktopApp Connect more in a cloud bot's direct message", () => {
-  it("offers the button after a bot answer that has no suggestions of its own", async () => {
+  it("is not offered while a card is still waiting for an answer", async () => {
     const w = world();
     await mountNewBotDm(w, "Quite a lot already.");
-    // Nothing is connected yet.
-    await vi.waitFor(() => expect(chips()).toEqual(["Connect Slack or tools"]));
-    // The cards themselves stay where they were, under the first message.
-    expect(cardsIn(message("e2"))).toHaveLength(1);
+    // The Slack card under the first message is still offered: that is the decision.
+    await vi.waitFor(() => expect(cardsIn(message("e2"))).toHaveLength(1));
+    expect(cardIn(message("e2"), "slack").dataset.state).toBe("offered");
+    await settle(20);
+    expect(chips()).toEqual([]);
     expect(cardsIn(message("e4"))).toHaveLength(0);
   });
 
-  it("says Connect more once Slack or a tool is connected", async () => {
+  it("is offered as part of the bot's newest message once nothing is left to decide", async () => {
+    // The bot is in Slack and the person has no apps of their own: no cards at all.
     const w = world({ slackCapability: "ok" });
     await mountNewBotDm(w, "Quite a lot already.");
-    await vi.waitFor(() => expect(chips()).toEqual(["Connect more"]));
+    await vi.waitFor(() => expect(chips()).toEqual(["Connect more tools"]));
+    expect(cardsIn(host)).toHaveLength(0);
+    // In the thread, under the newest message, not pinned above the message box.
+    const row = message("e4").querySelector('[data-testid="suggested-replies"]')!;
+    expect(row).not.toBeNull();
+    expect(host.querySelector('[data-testid="conversation-thread"]')!.contains(row)).toBe(true);
+    expect(host.querySelectorAll('[data-testid="suggested-replies"]')).toHaveLength(1);
   });
 
-  it("comes last, after the bot's own suggestions", async () => {
-    const w = world({ thread: answered(SUGGESTIONS) });
+  it("comes last, after the bot's own suggestions, in the same row", async () => {
+    const w = world({ slackCapability: "ok", thread: answered(SUGGESTIONS) });
     await mountNewBotDm(w, "Quite a lot already.");
     await vi.waitFor(() =>
-      expect(chips()).toEqual(["Summarize our company files", "List our open projects", "Connect Slack or tools"]),
+      expect(chips()).toEqual(["Summarize our company files", "List our open projects", "Connect more tools"]),
     );
+    expect(message("e4").querySelectorAll('[data-testid="suggested-reply"]')).toHaveLength(3);
     expect(threadText()).not.toContain("hq-block");
+  });
+
+  it("is offered once every card is connected or declined", async () => {
+    // The person said Not now to Slack after the hello: nothing is left open.
+    rememberCards({ slack: { state: "declined", since: Date.parse("2026-10-02T14:00:00.000Z") } });
+    const w = world();
+    await mountRow(w, DM_ROW(NOVA), "Quite a lot already.");
+    await vi.waitFor(() => expect(cardIn(message("e2"), "slack").dataset.state).toBe("declined"));
+    await vi.waitFor(() => expect(chips()).toEqual(["Connect more tools"]));
+    expect(message("e4").querySelectorAll('[data-testid="suggested-reply"]')).toHaveLength(1);
+  });
+
+  it("is offered once the person pressed a card after the hello, even while another card is still offered", async () => {
+    // Linear was shared with the bot from its card at 14:00, so it is no longer
+    // offered as a card; Slack is still offered.
+    rememberCards({ granted: { acct_linear: { name: "Linear", at: Date.parse("2026-10-02T14:00:00.000Z") } } });
+    const w = world({ connections: [LINEAR] });
+    await mountRow(w, DM_ROW(NOVA), "Quite a lot already.");
+    await vi.waitFor(() => expect(cardsIn(message("e2"))).toHaveLength(1));
+    expect(cardIn(message("e2"), "slack").dataset.state).toBe("offered");
+    await vi.waitFor(() => expect(chips()).toEqual(["Connect more tools"]));
+  });
+
+  it("is not offered when the person's only card press came before the hello", async () => {
+    rememberCards({ slack: { state: "declined", since: Date.parse("2026-10-02T13:00:00.000Z") } });
+    const w = world();
+    await mountRow(w, DM_ROW(NOVA), "Quite a lot already.");
+    // A Not now older than the message is no answer to it: the card is offered again.
+    await vi.waitFor(() => expect(cardIn(message("e2"), "slack").dataset.state).toBe("offered"));
+    await settle(20);
+    expect(chips()).toEqual([]);
   });
 
   it("is not offered while the newest bot message carries the cards the app put there", async () => {
@@ -278,15 +327,16 @@ describe("DesktopApp Connect more in a cloud bot's direct message", () => {
     expect(chips()).toEqual([]);
   });
 
-  it("is not offered while the newest bot message carries the bot's own connect block", async () => {
+  it("draws no suggestions at all on a message that carries the bot's own connect block: the cards are the decision", async () => {
     const w = world({
+      slackCapability: "ok",
       thread: answered(fence([{ kind: "connect", targets: ["slack"] }, { kind: "suggestions", items: ["List our open projects"] }])),
     });
     await mountNewBotDm(w, "Quite a lot already.");
     await vi.waitFor(() => expect(cardsIn(message("e4"))).toHaveLength(1));
     await settle(20);
-    // The bot's own suggestion stays; the app adds nothing.
-    expect(chips()).toEqual(["List our open projects"]);
+    expect(chips()).toEqual([]);
+    expect(host.querySelector('[data-testid="suggested-replies"]')).toBeNull();
   });
 
   it("goes away once the person has written", async () => {
@@ -296,10 +346,12 @@ describe("DesktopApp Connect more in a cloud bot's direct message", () => {
   });
 
   it("sends exactly one visible message with the request, and exactly one hidden request with the company's apps", async () => {
-    const w = world({ connections: [LINEAR] });
+    // The bot is in Slack; the person's Linear is the one card, already connected.
+    const w = world({ slackCapability: "ok", connections: [LINEAR] });
     await mountNewBotDm(w, "Quite a lot already.");
-    await vi.waitFor(() => expect(chips()).toEqual(["Connect Slack or tools"]));
-    const button = chip("Connect Slack or tools");
+    await vi.waitFor(() => expect(cardsIn(message("e2"))).toHaveLength(1));
+    await vi.waitFor(() => expect(chips()).toEqual(["Connect more tools"]));
+    const button = chip("Connect more tools");
     button.click();
     button.click();
     await vi.waitFor(() => expect(w.sendDm).toHaveBeenCalled());
@@ -315,14 +367,14 @@ describe("DesktopApp Connect more in a cloud bot's direct message", () => {
     expect(hiddenTo).toBe(NOVA);
     expect(hiddenBody).toMatch(/^Automatic message from HQ: Corey just asked to connect more apps/);
     expect(hiddenBody).toContain("- Linear (linear.app): connected, not shared with you");
-    expect(hiddenBody).toContain("Pick up to four apps");
+    expect(hiddenBody).toContain("Pick at most three apps");
     const key = (extras as { audience?: string; idempotencyKey?: string }).idempotencyKey ?? "";
     expect((extras as { audience?: string }).audience).toBe("agent");
     expect(key).toMatch(new RegExp(`^new-bot-connect-more-${NOVA}-sent_`));
     expect(threadText()).not.toContain("Automatic message from HQ");
     // The row is put away, and nothing extra is drawn until the bot answers.
     expect(chips()).toEqual([]);
-    expect(cardsIn(host)).toHaveLength(2);
+    expect(cardsIn(host)).toHaveLength(1);
     // A typed request gets the same hidden request, once per message.
     await settle(20);
     expect(hidden(w)).toHaveLength(1);
@@ -349,7 +401,9 @@ describe("DesktopApp Connect more in a cloud bot's direct message", () => {
     expect(window.localStorage.getItem(BOT_CONNECTION_CARDS_STORAGE_KEY) ?? "").not.toContain("e6");
   });
 
-  it("offers the button again under a later bot message", async () => {
+  it("offers the button again under a later bot message, once the cards it brought are answered", async () => {
+    // The person said Not now after the second set of cards was drawn.
+    rememberCards({ slack: { state: "declined", since: Date.parse("2026-10-02T14:06:00.000Z") } });
     const w = world({
       thread: page(
         HELLO_REQUEST,
@@ -360,11 +414,13 @@ describe("DesktopApp Connect more in a cloud bot's direct message", () => {
         novas("e8", "Tell me what to look at.", 7),
       ),
     });
-    await mountNewBotDm(w, "Tell me what to look at.");
+    await mountRow(w, DM_ROW(NOVA), "Tell me what to look at.");
     // A request typed by hand, in lower case with a full stop, counts too.
     await vi.waitFor(() => expect(cardsIn(message("e6"))).toHaveLength(1));
     expect(cardsIn(message("e8"))).toHaveLength(0);
-    await vi.waitFor(() => expect(chips()).toEqual(["Connect Slack or tools"]));
+    await vi.waitFor(() => expect(cardIn(message("e6"), "slack").dataset.state).toBe("declined"));
+    await vi.waitFor(() => expect(chips()).toEqual(["Connect more tools"]));
+    expect(message("e8").querySelectorAll('[data-testid="suggested-reply"]')).toHaveLength(1);
   });
 
   it("gives no second set to an answer that already has a connect block", async () => {
@@ -415,12 +471,12 @@ describe("DesktopApp Connect more in a cloud bot's direct message", () => {
   it("offers the button for a cloud bot this device has no record of, without asking what is connected", async () => {
     const w = world({ thread: page(mine("e3", "Hello", 1), novas("e4", "Hello Corey.", 1)) });
     await mountRow(w, DM_ROW(NOVA), "Hello Corey.");
-    // Nothing is known about its connections, so the button does not claim that nothing is connected.
-    await vi.waitFor(() => expect(chips()).toEqual(["Connect more"]));
+    // No cards on screen means nothing is left to decide.
+    await vi.waitFor(() => expect(chips()).toEqual(["Connect more tools"]));
     expect(cardsIn(host)).toHaveLength(0);
-    // No cards on screen: the company's connections are not read just to word a button.
+    // No cards on screen: the company's connections are not read just for a button.
     expect(w.listConnections).not.toHaveBeenCalled();
-    chip("Connect more").click();
+    chip("Connect more tools").click();
     await vi.waitFor(() => expect(visibleSends(w)).toHaveLength(1));
     expect(visibleSends(w)[0]![1]).toBe("Connect more tools");
     expect(hidden(w)).toHaveLength(0);

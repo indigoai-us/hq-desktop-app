@@ -2,10 +2,11 @@
 
 /**
  * What sits outside the scroll flow: the host's strip across the top (a
- * bot's file sync), and under the thread the suggested replies and the
- * message box. None of it scrolls with the messages. When the strip or the
- * pinned area grows or shrinks the scroller changes height: a reader at the
- * newest message stays there, and a reader who scrolled up is not moved.
+ * bot's file sync), and under the thread the message box. Neither scrolls
+ * with the messages. A bot's suggested replies are not pinned: they are part
+ * of the bot's newest message, in the thread. When the strip or the pinned
+ * area grows or shrinks the scroller changes height: a reader at the newest
+ * message stays there, and a reader who scrolled up is not moved.
  *
  * happy-dom does no layout, so the scroller's box is stubbed, and a stand-in
  * ResizeObserver lets the test say "the scroller changed height".
@@ -48,13 +49,16 @@ afterEach(async () => {
   globalThis.ResizeObserver = realResizeObserver;
 });
 
+/** The bot's suggested replies, written into its last message. */
+const SUGGESTIONS = '\n```hq-block\n{"v":1,"blocks":[{"kind":"suggestions","items":["Yes","Not yet"]}]}\n```';
+
 function messages(count: number): ConversationMessageWire[] {
   return Array.from({ length: count }, (_, i) => ({
     eventId: `evt_${i + 1}`,
     direction: "in",
     fromPersonUid: "agt_nova",
     fromDisplayName: "Nova",
-    body: `message ${i + 1}`,
+    body: `message ${i + 1}${i === count - 1 ? SUGGESTIONS : ""}`,
     createdAt: new Date(Date.UTC(2026, 9, 2, 14, i)).toISOString(),
   })) as ConversationMessageWire[];
 }
@@ -95,8 +99,8 @@ function resized(): void {
 }
 
 describe("ChannelConversation strip and pinned area", () => {
-  it("draws the host's strip above the thread, then the thread, the suggested replies and the message box", async () => {
-    await mountConversation({ aboveMessages: probe, belowMessages: thinking, header: intro, suggestedReplies: ["Yes", "Not yet"] });
+  it("draws the host's strip above the thread, then the thread with the bot's suggested replies in it, then the message box", async () => {
+    await mountConversation({ aboveMessages: probe, belowMessages: thinking, header: intro, suggestionsFrom: "agt_nova" });
     const strip = host.querySelector<HTMLElement>('[data-testid="strip-probe"]')!;
     expect(strip).not.toBeNull();
     // Not in the scroller: it stays in view while the person scrolls.
@@ -110,11 +114,15 @@ describe("ChannelConversation strip and pinned area", () => {
     // The status row (a bot thinking) is still the last row of the thread itself.
     const lastRow = host.querySelector<HTMLElement>('[data-testid="thinking-probe"]')!;
     expect(thread().contains(lastRow)).toBe(true);
+    // The suggested replies are part of the bot's newest message: in the
+    // thread, under that message, before the thinking row and the message box.
     const chips = host.querySelector<HTMLElement>('[data-testid="suggested-replies"]')!;
     const box = host.querySelector<HTMLElement>('[data-testid="conversation-composer"]')!;
-    expect(thread().contains(chips)).toBe(false);
-    expect(before(lastRow, chips)).toBe(true);
-    expect(before(chips, box)).toBe(true);
+    expect(thread().contains(chips)).toBe(true);
+    expect(chips.closest('[data-testid="conversation-message"]')?.getAttribute("data-event-id")).toBe("evt_30");
+    expect(before(chips, lastRow)).toBe(true);
+    expect(before(thread(), box)).toBe(true);
+    expect(host.querySelectorAll('[data-testid="suggested-replies"]')).toHaveLength(1);
     // The strip is the first thing in the pane, before the scroller's column.
     const pane = host.querySelector<HTMLElement>('[data-testid="conversation-view"]')!;
     const stripSlot = host.querySelector<HTMLElement>('[data-testid="conversation-strip"]')!;
