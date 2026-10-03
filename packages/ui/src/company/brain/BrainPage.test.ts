@@ -371,4 +371,19 @@ describe("US-028 BrainPage", () => {
       expect(document.querySelector("[data-testid='brain-read-error']")).toBeNull();
     });
   });
+
+  it.each([["policies", "No policies yet."], ["skills", "No skills yet."], ["workers", "No workers yet."]])(
+    "AUDIT-3: an empty %s page says so plainly",
+    async (page, copy) => {
+      component = mount(BrainPage, {
+        target: document.body,
+        props: { page, slug: `empty-${page}`, files: null, library: null, shell: null, settings: null },
+      });
+      await vi.waitFor(() => {
+        flushSync();
+        expect(document.querySelector("[data-testid='brain-empty']")?.textContent).toContain(copy);
+      });
+      expect(document.body.textContent).not.toContain("listing");
+    },
+  );
 });

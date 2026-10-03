@@ -511,7 +511,7 @@
             {query}
             filtered={filterActive}
             noun={listNoun}
-            emptyCopy={page === "knowledge" ? "No knowledge files yet." : `Nothing in this ${title.toLowerCase()} listing yet.`}
+            emptyCopy={page === "knowledge" ? "No knowledge files yet." : `No ${title.toLowerCase()} yet.`}
             onclear={clearListFilters}
             testid="brain-empty"
           />
