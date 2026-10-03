@@ -36,6 +36,8 @@ export interface KnowledgeFile {
   folder: string;
   mark: "new" | "upd" | null;
   body: string;
+  /** Last-changed date from frontmatter (YYYY-MM-DD), when the file has one. */
+  changed?: string | null;
 }
 
 export interface PolicyDoc {
@@ -186,7 +188,64 @@ export function knowledgeFromFile(path: string, text: string): KnowledgeFile {
     folder,
     mark,
     body: bodyAfterFm(text),
+    changed: frontmatterDate(meta),
   };
+}
+
+/** Last-changed date from frontmatter fields, newest field first. */
+function frontmatterDate(meta: Record<string, string>): string | null {
+  for (const key of ["updated", "updated_at", "last_updated", "modified", "date", "created", "created_at"]) {
+    const raw = (meta[key] ?? "").replace(/^["']|["']$/g, "").trim();
+    const m = raw.match(/^\d{4}-\d{2}-\d{2}/);
+    if (m) return m[0];
+  }
+  return null;
+}
+
+/** What's fresh: most recently changed first; files without a date last, by title. */
+export function freshKnowledge(rows: readonly KnowledgeFile[]): KnowledgeFile[] {
+  return [...rows].sort((a, b) => {
+    const da = a.changed ?? "";
+    const db = b.changed ?? "";
+    if (da !== db) return da < db ? 1 : -1;
+    return a.title.localeCompare(b.title);
+  });
+}
+
+/** The knowledge folder the tree is rooted at. */
+export function knowledgeTreeRoot(slug: string): string {
+  return ["companies", slug, "knowledge"].join("/");
+}
+
+/** A sync conflict copy (`name.conflict-<time>-<hash>.md`). */
+export function isConflictCopy(name: string): boolean {
+  return name.includes(".conflict-");
+}
+
+/**
+ * One folder of the knowledge tree, listed from the file paths already read
+ * (the Files tree asks for one folder at a time). Folders first, then files,
+ * each by name.
+ */
+export function knowledgeDirListing(
+  paths: readonly string[],
+  dir: string,
+): Array<{ name: string; path: string; isDir: boolean; hasChildren: boolean }> {
+  const prefix = dir ? `${dir}/` : "";
+  const dirs = new Map<string, string>();
+  const files = new Map<string, string>();
+  for (const path of paths) {
+    if (!path.startsWith(prefix)) continue;
+    const rest = path.slice(prefix.length);
+    const slash = rest.indexOf("/");
+    if (slash < 0) files.set(rest, path);
+    else dirs.set(rest.slice(0, slash), `${prefix}${rest.slice(0, slash)}`);
+  }
+  const byName = (a: [string, string], b: [string, string]) => a[0].localeCompare(b[0]);
+  return [
+    ...[...dirs.entries()].sort(byName).map(([name, path]) => ({ name, path, isDir: true, hasChildren: true })),
+    ...[...files.entries()].sort(byName).map(([name, path]) => ({ name, path, isDir: false, hasChildren: false })),
+  ];
 }
 
 export function policyFromFile(path: string, text: string): PolicyDoc {

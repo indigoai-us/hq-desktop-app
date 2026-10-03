@@ -27,9 +27,13 @@
     retryHere?: boolean;
     /** Retries every vault read, not just the tree. */
     onretry?: () => void;
+    /** Open every folder as it loads (a filtered tree shows each match). */
+    revealAll?: boolean;
+    /** A short muted note after a row's name (e.g. "conflict copy"). */
+    noteFor?: (entry: TreeEntry) => string | null;
   }
 
-  let { vault, listDir, activePath, showSystem, reloadKey, onopen, retryHere = true, onretry }: Props = $props();
+  let { vault, listDir, activePath, showSystem, reloadKey, onopen, retryHere = true, onretry, revealAll = false, noteFor }: Props = $props();
 
   let children = $state<Record<string, TreeEntry[]>>({});
   let expanded = $state<Record<string, boolean>>({});
@@ -76,6 +80,13 @@
     }
     const entries = (res.value ?? []).map(toTreeEntry).filter((e): e is TreeEntry => e !== null);
     children = { ...children, [path]: entries };
+    if (revealAll) {
+      const dirs = entries.filter((e) => e.isDir);
+      if (dirs.length) {
+        expanded = { ...expanded, ...Object.fromEntries(dirs.map((d) => [d.path, true])) };
+        for (const d of dirs) if (!children[d.path]) void load(d.path);
+      }
+    }
   }
 
   $effect(() => {
@@ -295,6 +306,7 @@
               <span class="vt-chevron-spacer" aria-hidden="true"></span>
             {/if}
             <span class="vt-name">{displayName(entry)}</span>
+            {#if noteFor?.(entry)}<span class="vt-note-inline">{noteFor(entry)}</span>{/if}
             {#if !entry.isDir && ext && ext !== "md" && ext !== "markdown"}
               <span class="vt-ext">{ext}</span>
             {/if}
@@ -309,6 +321,12 @@
 </div>
 
 <style>
+  .vt-note-inline {
+    flex: none;
+    margin-left: 6px;
+    color: var(--text-3, var(--v4-text-3, currentColor));
+    opacity: 0.75;
+  }
   .vt {
     box-sizing: border-box;
     height: 100%;

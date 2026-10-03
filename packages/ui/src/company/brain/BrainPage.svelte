@@ -12,6 +12,8 @@
   import { loadLibraryCompany } from "../../library/library.js";
   import type { DirEntry } from "../../files/file-tree.js";
   import ShowMoreRow from "../../shell/ShowMoreRow.svelte";
+  import VaultTree from "../../files/explorer/VaultTree.svelte";
+  import type { TreeEntry, Vault } from "../../files/explorer/vault-model.js";
   import ListEmptyState from "../../common/ListEmptyState.svelte";
   import { publishCompanyPageCount } from "../../shell/company-page-counts.svelte.js";
   import { pageRows } from "../../shell/list-paging.js";
@@ -24,6 +26,10 @@
     brainListView,
     emptyBrainCache,
     filterKnowledge,
+    freshKnowledge,
+    isConflictCopy,
+    knowledgeDirListing,
+    knowledgeTreeRoot,
     filterPolicies,
     filterSkills,
     filterWorkers,
@@ -202,6 +208,32 @@
   let pickerQuery = $state("");
 
   const knowledgeRows = $derived(filterKnowledge(cache.knowledge, query));
+  // OWNER-R10: Browse tree is the Files tree, fed from the knowledge paths
+  // already read; What's fresh is the flat list, most recently changed first.
+  const freshRows = $derived(freshKnowledge(knowledgeRows));
+  const knowledgeVault = $derived<Vault>({
+    id: `knowledge:${slug}`,
+    kind: "company",
+    label: "Knowledge",
+    root: knowledgeTreeRoot(slug),
+    slug,
+  });
+  const knowledgePaths = $derived(knowledgeRows.map((row) => row.path));
+  // A new search or a new read rebuilds the tree; switching tabs does not.
+  const treeKey = $derived(`${query.trim()}|${cache.knowledge.length}`);
+  let treeReload = $state(0);
+  let lastTreeKey = "";
+  $effect(() => {
+    const key = treeKey;
+    if (key !== lastTreeKey) {
+      lastTreeKey = key;
+      treeReload += 1;
+    }
+  });
+  async function listKnowledgeDir(dir: string) {
+    return { ok: true as const, value: knowledgeDirListing(knowledgePaths, dir) };
+  }
+  const conflictNote = (entry: TreeEntry) => (!entry.isDir && isConflictCopy(entry.name) ? "conflict copy" : null);
   const policyRows = $derived(filterPolicies(cache.policies, policyFilter, query));
   const skillRows = $derived(filterSkills(cache.skills, skillFilter, query));
   const workerRows = $derived(filterWorkers(cache.workers, workerScope, workerFilter, query));
@@ -559,15 +591,31 @@
               {/each}
             {/if}
           {/each}
-        {:else if page === "knowledge" && lens === "fresh"}
-          <div class="sec">Recent</div>
-          {#each pageRows(knowledgeRows, pages).rows as row (row.path)}
-            <button type="button" class="item" aria-current={selectedFile?.path === row.path} onclick={() => (selected = row.path)}>
-              <span class="name">{row.title}</span>
-              {#if row.mark}<span class="badge" class:hard={row.mark === "new"}>{row.mark}</span>{/if}
-              <span class="meta">{row.path}</span>
-            </button>
-          {/each}
+        {:else if page === "knowledge"}
+          <!-- Kept mounted on What's fresh so the tree's open folders survive a tab switch. -->
+          <div class="ktree" hidden={lens !== "tree"} data-testid="brain-knowledge-tree">
+            <VaultTree
+              vault={knowledgeVault}
+              listDir={listKnowledgeDir}
+              activePath={selectedFile?.path ?? null}
+              showSystem={false}
+              reloadKey={treeReload}
+              revealAll={query.trim() !== ""}
+              noteFor={conflictNote}
+              onopen={(path) => (selected = path)}
+            />
+          </div>
+          {#if lens === "fresh"}
+            <div class="sec">Recent</div>
+            {#each pageRows(freshRows, pages).rows as row (row.path)}
+              <button type="button" class="item" aria-current={selectedFile?.path === row.path} onclick={() => (selected = row.path)} data-testid="brain-fresh-row">
+                <span class="name">{row.title}</span>
+                {#if row.mark}<span class="badge" class:hard={row.mark === "new"}>{row.mark}</span>{/if}
+                {#if isConflictCopy(row.name)}<span class="meta">conflict copy</span>{/if}
+                {#if row.changed}<span class="meta" data-testid="brain-fresh-changed">{row.changed}</span>{/if}
+              </button>
+            {/each}
+          {/if}
         {:else}
           <div style:height={`${windowed.padTop}px`}></div>
           {#each slice as row (page === "skills" ? (row as unknown as SkillRow).path : page === "workers" ? (row as unknown as WorkerRow).path : (row as unknown as KnowledgeFile).path)}
@@ -595,7 +643,7 @@
           {/each}
           <div style:height={`${windowed.padBottom}px`}></div>
         {/if}
-        {#if page !== "policies" && listPage.remaining > 0}
+        {#if page !== "policies" && !(page === "knowledge" && lens === "tree") && listPage.remaining > 0}
           <ShowMoreRow shown={listPage.rows.length} total={listPage.total} next={listPage.next} noun={title.toLowerCase()} testid="brain-show-more" onmore={() => (pages += 1)} />
         {/if}
         {#if listReadFailed}
@@ -855,6 +903,8 @@
   }
   .split { display: grid; grid-template-columns: minmax(280px, 1fr) 380px; flex: 1; min-height: 0; }
   .list, .detail { min-height: 0; overflow: auto; }
+  .ktree { height: 100%; min-height: 240px; }
+  .ktree[hidden] { display: none; }
   .list { padding: 12px 12px 24px; }
   .detail {
     border-left: 1px solid var(--line, var(--v4-rowline));
