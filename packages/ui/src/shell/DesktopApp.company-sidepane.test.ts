@@ -4,7 +4,7 @@
  * console-rail US-007 — the company tile opens the company sidepane.
  */
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import { ok, type PlatformAdapter } from "@hq/platform";
 
@@ -53,6 +53,14 @@ const memoryStorage = installMemoryLocalStorage();
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
+
+// ActivityRailHost loads ActivityView with a lazy import. Under full-suite
+// load that import could resolve after this file's environment was torn
+// down (EnvironmentTeardownError). Load the module up front so the lazy
+// import resolves from the module cache while the test is still running.
+beforeAll(async () => {
+  await import("../activity/ActivityView.svelte");
+});
 
 afterEach(async () => {
   if (component) await unmount(component);
