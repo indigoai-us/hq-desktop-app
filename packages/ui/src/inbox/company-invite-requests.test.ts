@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   companyInvitesFromWorkspaces,
   inviteClaimOutcome,
@@ -117,10 +117,27 @@ describe("company invite requests", () => {
     );
     expect(outcome.ok).toBe(false);
     if (outcome.ok) return;
-    expect(outcome.message).toBe("Your plan limit is reached. Members: 5 of 5 used.");
+    // AUDIT-3c: app copy only; the server sentence goes to the log.
+    expect(outcome.message).toBe("Your plan limit is reached.");
     expect(outcome.message).not.toContain("PLAN_LIMIT_EXCEEDED");
     expect(outcome.message).not.toContain("{");
     expect(outcome.upgradeUrl).toBe(UPGRADE_URL);
+  });
+
+  it("AUDIT-3c: a non-plan refusal shows plain copy, never the server text, and logs it", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const raw = '[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}';
+    const outcome = inviteClaimOutcome(
+      { ok: false, reason: "error", code: "UPSTREAM_500", message: raw },
+      "co_acme",
+      [],
+    );
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.message).not.toContain("HTTP 500");
+    expect(outcome.message).toBe("Couldn't join the company. Try again.");
+    expect(warn).toHaveBeenCalledWith("[company-invite] join failed", "UPSTREAM_500", raw);
+    warn.mockRestore();
   });
 
   it("drops an upgrade link the host did not approve", () => {
