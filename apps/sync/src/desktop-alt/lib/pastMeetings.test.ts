@@ -13,6 +13,7 @@ const transcript = {
   title: 'Personal notes',
   createdAt: '2026-10-02T11:00:00.000Z',
   sourceLabel: 'Personal · Local' as const,
+  personUid: 'prs_fixture',
 };
 
 const desktopSdkSource = parsePersonalMeetingTranscript(
@@ -28,9 +29,15 @@ describe('Past meetings rows', () => {
   });
 
   it('shows a local personal transcript with no ScheduledBot when enabled', () => {
-    expect(buildPastMeetingRows([], [transcript], true)).toEqual([
+    expect(buildPastMeetingRows([], [transcript], true, 'prs_fixture')).toEqual([
       expect.objectContaining({ kind: 'personal', transcript }),
     ]);
+  });
+
+  it('fails closed for local personal notes without an exact signed-in person uid', () => {
+    expect(buildPastMeetingRows([], [{ ...transcript, personUid: 'prs_colleague' }], true, 'prs_fixture')).toEqual([]);
+    expect(buildPastMeetingRows([], [{ ...transcript, personUid: null }], true, 'prs_fixture')).toEqual([]);
+    expect(buildPastMeetingRows([], [transcript], true)).toEqual([]);
   });
 
   it('keeps scheduled-bot rows in both flag states', () => {
@@ -73,8 +80,34 @@ describe('Past meetings rows', () => {
       botId: null,
       recordingId: null,
       personUid: null,
+      provisional: false,
+      sessionStatus: null,
       sourceLabel: 'Personal · Local',
     });
+  });
+
+  it('parses provisional and session status markers for filtering', () => {
+    expect(
+      parsePersonalMeetingTranscript(
+        'personal/sources/meetings/native-active.md',
+        '---\nsource_id: "native-active"\nchannel: "meeting"\nperson_uid: "prs_fixture"\nvisibility: "personal"\nstorage: "local"\nprovisional: true\nsession_status: "active"\n---\n',
+      ),
+    ).toEqual(expect.objectContaining({ provisional: true, sessionStatus: 'active' }));
+  });
+
+  it('omits active, paused, and provisional transcript projections', () => {
+    const rows = buildPastMeetingRows(
+      [],
+      [
+        { ...transcript, sourceId: 'active', sessionStatus: 'active' },
+        { ...transcript, sourceId: 'paused', sessionStatus: 'paused' },
+        { ...transcript, sourceId: 'provisional', provisional: true },
+        { ...transcript, sourceId: 'ended', sessionStatus: 'ended' },
+      ],
+      true,
+      'prs_fixture',
+    );
+    expect(rows.map((row) => row.kind === 'personal' ? row.transcript.sourceId : row.key)).toEqual(['ended']);
   });
 
   it('shows a synced desktop SDK recording without a ScheduledBot and dedupes its recording id', () => {
@@ -85,6 +118,8 @@ describe('Past meetings rows', () => {
       botId: null,
       recordingId: 'sdk-recording-1',
       personUid: 'prs_fixture',
+      provisional: false,
+      sessionStatus: null,
       sourceLabel: 'Desktop recording',
     });
     expect(buildPastMeetingRows([], [desktopSdkSource!], true, 'prs_fixture')).toEqual([

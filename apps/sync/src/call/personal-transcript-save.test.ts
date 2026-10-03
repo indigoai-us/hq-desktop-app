@@ -15,6 +15,7 @@ it('writes only personal own-speaker finals locally and reuses exact content whe
   expect(calls.filter(c=>c.command!=='get_auth_session')).toEqual([]);
   await save.enqueue(row);await save.showInVault();
   const writes=calls.filter(c=>c.command==='meet_personal_transcript_project');expect(writes).toHaveLength(2);
+  expect(writes[0].args!.projection).toEqual(expect.objectContaining({markdown:expect.stringContaining('person_uid: "me"')}));
   expect(writes[0].args!.projection).toEqual(writes[1].args!.projection);
   expect(writes[0].args).not.toHaveProperty('companyUid');expect(JSON.stringify(writes[0])).toContain('## Transcript');expect(save.hasUnsaved()).toBe(false);
  }finally{save.dispose();}

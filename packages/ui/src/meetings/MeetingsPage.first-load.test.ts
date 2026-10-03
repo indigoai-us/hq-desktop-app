@@ -48,6 +48,14 @@ function fakeAdapter(): PlatformAdapter {
     capabilities: {},
     meetings: api,
     feedback: { submitBugReport: () => call("submitBugReport") as never },
+    identity: {
+      whoami: () => Promise.resolve(ok({ personUid: "prs_fixture", email: "" })) as never,
+      hasFeature: () => Promise.resolve(ok(false)) as never,
+    },
+    files: {
+      listDir: () => Promise.resolve(ok([])) as never,
+      vault: { readNote: () => Promise.resolve(ok({ text: "" })) as never },
+    },
   } as unknown as PlatformAdapter;
 }
 
@@ -95,6 +103,28 @@ afterEach(async () => {
 });
 
 describe("MeetingsPage first-load UX (US-010)", () => {
+  it("shows a flagged local personal transcript in the routed Past meetings list without calendar rows", async () => {
+    const adapter = fakeAdapter();
+    adapter.identity.hasFeature = () => Promise.resolve(ok(true)) as never;
+    adapter.files.listDir = (relPath: string) => Promise.resolve(ok(
+      relPath === "personal/sources/meetings"
+        ? [{ path: "personal/sources/meetings/note.md", name: "note.md", isDir: false }]
+        : [],
+    )) as never;
+    adapter.files.vault!.readNote = () => Promise.resolve(ok({ text: `---\nid: "meeting:note"\nsource_id: "note"\nchannel: "meeting"\nperson_uid: "prs_fixture"\nvisibility: "personal"\nstorage: "local"\ntitle: "Personal notes"\ncreated_at: "2026-10-02T11:00:00.000Z"\n---\n` })) as never;
+    call.mockImplementation((method: string) => {
+      if (method === "listCalendars") return Promise.resolve(ok({ calendars: [], selectedCalendarIds: [] }));
+      return Promise.resolve(ok([]));
+    });
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(MeetingsPage, { target: host, props: { adapter } });
+    await vi.waitFor(() => expect(q("meetings-loading")).toBeNull());
+    await q("meetings-tab-past")!.click();
+    await vi.waitFor(() => expect(host.textContent).toContain("Personal notes"));
+    expect(q("meetings-connect-empty")).toBeNull();
+  });
+
   it("shows the skeleton while the first fetch is in flight, then the connect empty state when truly empty", async () => {
     const upcoming = deferred<AdapterResult<unknown>>();
     call.mockImplementation((method: string) => {
