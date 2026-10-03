@@ -104,9 +104,14 @@
   const fields = $derived(inviteRoleFields(draft.role));
   const humans = $derived(view.humans);
   const bots = $derived(view.agents);
+  // BLANK-2: a failed read with nothing loaded shows only the failed line and
+  // Try again; counts and empty lines wait for a read that succeeded.
+  const failedEmpty = $derived(
+    Boolean(view.error) && humans.length === 0 && bots.length === 0 && invites.length === 0,
+  );
   // The sidepane Team row shows this same total (QA-014).
   $effect(() => {
-    if (phase === "ready") publishCompanyPageCount(slug, "team", humans.length + bots.length);
+    if (phase === "ready" && !failedEmpty) publishCompanyPageCount(slug, "team", humans.length + bots.length);
   });
   const showHumans = $derived(filter === "all" || filter === "humans");
   const showBots = $derived(filter === "all" || filter === "bots");
@@ -271,10 +276,12 @@
       {/each}
     </div>
     <span class="grow"></span>
+    {#if !failedEmpty}
     <span class="meta-line" data-meta-line data-testid="team-live-chip">
       <i class="meta-dot dot" class:live={liveMembers > 0}></i>{liveMembers} live
     </span>
     <span class="meta-line" data-meta-line data-testid="team-seat-chip">{seatLine}</span>
+    {/if}
     <RailButton icon="user-plus" type="button" data-testid="invite-teammate" onclick={() => (inviteOpen = true)}>
       Invite teammate
     </RailButton>
@@ -298,6 +305,7 @@
           <RailButton icon="refresh" data-testid="team-retry" onclick={() => (readAttempt += 1)}>Try again</RailButton>
         </div>
       {/if}
+      {#if !failedEmpty}
       {#if showHumans}
         <div class="sech" data-testid="team-section-label">Humans · {humans.length}</div>
         <div class="cols" aria-hidden="true">
@@ -355,6 +363,7 @@
         <ShowMoreRow shown={invitePage.rows.length} total={invitePage.total} next={invitePage.next} noun="invites" onmore={() => (invitePages += 1)} testid="team-invites-more" />
       {/if}
       <p class="note">Invites go through the request-access funnel. Recipients confirm their email and appear here until they sign in.</p>
+      {/if}
     {/if}
   </div>
 
