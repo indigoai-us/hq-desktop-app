@@ -2930,10 +2930,7 @@ pub fn init_with_identity(
     let guard = sentry::init(sentry::ClientOptions {
         dsn,
         release: Some(format!("{}@{release_version}", identity.release_prefix).into()),
-        environment: Some(
-            resolve_sentry_environment(release_version, environment)
-                .into(),
-        ),
+        environment: Some(resolve_sentry_environment(release_version, environment).into()),
         sample_rate: std::env::var("SENTRY_SAMPLE_RATE")
             .ok()
             .and_then(|s| s.parse().ok())
