@@ -7,6 +7,7 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+- Desktop setup invite telemetry now includes the company for each step outcome and the number of invitations sent. It does not include invitee details.
 - The welcome sign-in window now advances when you are already signed in, keeps
   you informed while browser sign-in is in progress, and gives you a clear Try
   again path if it does not finish.
@@ -15,7 +16,6 @@ The release moves it under the version it ships in.
 ## [0.10.386] — 2026-10-03
 
 - "Restart to update" now works while a sync is running. Only a meeting recording, a transcript that is still saving, or an HQ Core update holds a restart you asked for, and the update card says which one. (This fix was listed under 0.10.379 by mistake; it ships in this release.)
-- Desktop setup invite telemetry now includes the company for each step outcome and the number of invitations sent. It does not include invitee details.
 - Checking whether a desktop command is still registered, cancelled, or finished, and registering or removing one, still works after an internal error interrupts that bookkeeping.
 - Internal tests: two more desktop UI tests (message link color, touch quick-react) now render the conversation and reply panel and read the applied styles instead of searching their source text. Nothing changes in the app.
 - When company-name suggestions are enabled, new-company setup can prefill the name from a business email domain. The name remains editable.
