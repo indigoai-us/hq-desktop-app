@@ -55,6 +55,31 @@ describe("US-033 PersonalRailPage", () => {
     expect(target.querySelector("[data-testid='personal-secrets-show-more']")).toBeNull();
   });
 
+  it("QA-058: a secrets search with no hits says no matches, clears the inspector, and clears", async () => {
+    const target = mountPage("secrets");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+    const before = target.querySelectorAll("[data-testid='personal-secrets-list'] .srow").length;
+    expect(before).toBeGreaterThan(0);
+    expect(target.querySelector("[data-testid='secret-inspector'] h2")).not.toBeNull();
+    const search = target.querySelector("input.search") as HTMLInputElement;
+    search.value = "zz-no-qa-match";
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+    expect(target.querySelectorAll("[data-testid='personal-secrets-list'] .srow").length).toBe(0);
+    const empty = target.querySelector("[data-testid='personal-secrets-no-matches']");
+    expect(empty?.textContent).toContain("No matches for 'zz-no-qa-match'");
+    expect(target.querySelector("[data-testid='personal-secrets-no-matches-total']")?.textContent).toBe(
+      `${before} ${before === 1 ? "secret" : "secrets"}`,
+    );
+    expect(target.querySelector("[data-testid='secret-inspector'] h2")).toBeNull();
+    (target.querySelector("[data-testid='personal-secrets-no-matches-clear']") as HTMLButtonElement).click();
+    flushSync();
+    expect(search.value).toBe("");
+    expect(target.querySelectorAll("[data-testid='personal-secrets-list'] .srow").length).toBe(before);
+    expect(target.querySelector("[data-testid='personal-secrets-no-matches']")).toBeNull();
+  });
+
   it("opens on personal-scope secrets and never renders a value", async () => {
     const target = mountPage("secrets");
     await new Promise((resolve) => setTimeout(resolve, 0));
