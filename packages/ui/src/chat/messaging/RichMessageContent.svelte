@@ -75,16 +75,33 @@
     connections = null,
   }: Props = $props();
 
-  /** The cards a `connect` block draws here: the host's view for each target. */
-  function connectCards(block: ConnectBlock): ConnectionCardView[] {
-    const views = connections?.views;
-    if (!views) return [];
-    const out: ConnectionCardView[] = [];
+  /**
+   * The cards a `connect` block draws here: the host's view for each item,
+   * in the block's order. A built-in card by name, an app by domain (null
+   * when the app draws none). A row with apps still being looked up draws
+   * nothing yet, so no card appears and then goes away.
+   */
+  function connectCards(block: ConnectBlock): Array<{ key: string; view: ConnectionCardView }> {
+    const cards = connections;
+    if (!cards) return [];
+    if (cards.rowReady && !cards.rowReady(block.items)) return [];
+    const out: Array<{ key: string; view: ConnectionCardView }> = [];
     for (const item of block.items) {
-      const view = item.app ? views[item.app] : undefined;
-      if (view) out.push(view);
+      if (item.app) {
+        const view = cards.views[item.app];
+        if (view) out.push({ key: item.app, view });
+      } else if (item.domain && cards.integration) {
+        const view = cards.integration({ domain: item.domain, ...(item.why ? { why: item.why } : {}) });
+        if (view) out.push({ key: `domain:${item.domain}`, view });
+      }
     }
     return out;
+  }
+
+  /** The browse-all link is offered under a row with at least one integration card. */
+  function browseAllFor(cards: ReadonlyArray<{ view: ConnectionCardView }>): { url: string; open: () => void } | null {
+    const link = connections?.browseAll ?? null;
+    return link && cards.some((card) => card.view.kind === "integration") ? link : null;
   }
 
   /** Does this block put anything inside the bubble? */
@@ -476,11 +493,29 @@
       </div>
     {:else if block.kind === "connect"}
       {@const cards = connectCards(block)}
+      {@const browse = browseAllFor(cards)}
       {#if cards.length > 0}
-        <div class="rich-connect-row" data-testid="rich-connect">
-          {#each cards as card (card.target)}
-            <ConnectionCard view={card} onaction={connections?.onaction} />
-          {/each}
+        <div class="rich-connect" data-testid="rich-connect-block">
+          <div class="rich-connect-row" data-testid="rich-connect">
+            {#each cards as card, index (card.key)}
+              <ConnectionCard view={card.view} {index} onaction={connections?.onaction} />
+            {/each}
+          </div>
+          {#if browse}
+            <!-- The app's own link, by the company's slug. The host opens it the way every other link here opens. -->
+            <a
+              class="rich-connect-browse"
+              data-testid="rich-connect-browse"
+              href={browse.url}
+              rel="noopener noreferrer"
+              onclick={(event) => {
+                event.preventDefault();
+                browse.open();
+              }}
+            >
+              Browse all in HQ Integrations
+            </a>
+          {/if}
         </div>
       {/if}
     {/if}
@@ -895,11 +930,37 @@
     color: var(--t3, var(--pop-muted));
   }
 
-  /* Connection cards: side by side, wrapping to a stack when narrow. */
-  .rich-connect-row {
+  /* Connection cards: a grid of equal columns, as many as fit at 220px,
+     every card the one fixed height. Narrow: one column. */
+  .rich-connect {
     display: flex;
-    flex-wrap: wrap;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+  }
+  .rich-connect-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
     align-items: stretch;
     gap: 8px;
+    min-width: 0;
+  }
+  /* The quiet way to everything else, after the cards the bot chose. */
+  .rich-connect-browse {
+    align-self: flex-start;
+    font-size: 12px;
+    color: var(--t3, var(--pop-muted));
+    text-decoration: underline;
+    text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
+    text-underline-offset: 2px;
+  }
+  .rich-connect-browse:hover {
+    color: var(--t2, var(--pop-muted));
+    text-decoration-color: currentColor;
+  }
+  .rich-connect-browse:focus-visible {
+    outline: 2px solid var(--vio-ink, #7c5cff);
+    outline-offset: 2px;
+    border-radius: 3px;
   }
 </style>

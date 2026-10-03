@@ -4,10 +4,11 @@
    * modal a card opens, so both show the same mark. Decorative: the title
    * next to it says what it is.
    */
-  import type { ConnectTarget } from "./richMessageContent.js";
+  import type { ConnectionCardTarget } from "./connection-card-model.js";
 
   interface Props {
-    name: ConnectTarget;
+    /** The card. An integration card with no logo gets the generic tools mark. */
+    name: ConnectionCardTarget;
     size?: number;
   }
 

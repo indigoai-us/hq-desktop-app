@@ -27,7 +27,8 @@
   import { suspendShortcuts } from "../../common/keyboard-shortcuts.js";
   import { portal } from "../portal.js";
   import ConnectionCardIcon from "./ConnectionCardIcon.svelte";
-  import type { ConnectTarget } from "./richMessageContent.js";
+  import ConnectionCardLogo from "./ConnectionCardLogo.svelte";
+  import type { ConnectionCardLogo as CardLogo, ConnectionCardTarget } from "./connection-card-model.js";
   import {
     CARD_MODAL_BACKDROP_GUARD_MS,
     cardModalStepIndex,
@@ -46,7 +47,9 @@
     /** The card's title, e.g. "Slack". Names the dialog. */
     title: string;
     /** The card's icon. */
-    icon: ConnectTarget;
+    icon: ConnectionCardTarget;
+    /** An integration card's logo, drawn in place of the icon. */
+    logo?: CardLogo | null;
     /** The card's wallpaper (an image url the app bundled). */
     art: string;
     /** Which part of the wallpaper the hero shows (a CSS background-position). */
@@ -74,6 +77,7 @@
     open,
     title,
     icon,
+    logo = null,
     art,
     artPosition = "center",
     onclose,
@@ -212,7 +216,11 @@
       ></span>
       <header class="card-modal-hero">
         <div class="card-modal-plate">
-          <span class="card-modal-icon" aria-hidden="true"><ConnectionCardIcon name={icon} size={18} /></span>
+          {#if logo}
+            <ConnectionCardLogo {logo} size={34} />
+          {:else}
+            <span class="card-modal-icon" aria-hidden="true"><ConnectionCardIcon name={icon} size={18} /></span>
+          {/if}
           <div class="card-modal-heading">
             <h2 class="card-modal-title" id={titleId} data-testid="card-modal-title">{title}</h2>
             {#if steps && stepAt >= 0}

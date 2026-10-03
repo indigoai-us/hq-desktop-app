@@ -857,8 +857,12 @@ export interface ConnectionCards {
    * goes away. Absent: draw at once.
    */
   rowReady?: ((items: ReadonlyArray<{ app?: ConnectTarget; domain?: string }>) => boolean) | null;
-  /** The page "Browse all in HQ Integrations" opens, or null for no link. */
-  browseAllUrl?: string | null;
+  /**
+   * The quiet "Browse all in HQ Integrations" link under a row with an
+   * integration card in it: the page it names, and how the host opens it.
+   * Null or absent: no link.
+   */
+  browseAll?: { url: string; open: () => void } | null;
   onaction: ConnectionCardActionHandler;
 }
 

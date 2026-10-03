@@ -28,7 +28,8 @@
    */
   import { onDestroy } from "svelte";
   import ConnectionCardIcon from "./ConnectionCardIcon.svelte";
-  import { connectionCardArt } from "./connection-card-art.js";
+  import ConnectionCardLogo from "./ConnectionCardLogo.svelte";
+  import { connectionCardArt, integrationCardArt } from "./connection-card-art.js";
   import {
     connectionActionKey,
     type ConnectionCardAction,
@@ -39,13 +40,20 @@
   interface Props {
     view: ConnectionCardView;
     onaction?: ConnectionCardActionHandler;
+    /** The card's place in its row (0-based). Integration cards take their wallpaper from it. */
+    index?: number;
   }
 
-  let { view, onaction }: Props = $props();
+  let { view, onaction, index = 0 }: Props = $props();
 
-  /** Each card has its own wallpaper, already bundled for the New Bot takeover. */
-  const art = $derived(connectionCardArt(view.target));
+  /**
+   * Each card has its own wallpaper, already bundled for the New Bot
+   * takeover. Integration cards rotate through them by place in the row.
+   */
+  const art = $derived(view.target === "integration" ? integrationCardArt(index) : connectionCardArt(view.target));
   const primaryAction = $derived(view.primaryAction);
+  /** The connection a "Let {bot} use it" main button shares. */
+  const primaryConnectionId = $derived(primaryAction === "allow" ? (view.connectionId ?? undefined) : undefined);
 
   /** Shortest time a pressed button stays disabled: longer than a double click. */
   const PRESS_HOLD_MS = 600;
@@ -59,7 +67,7 @@
   });
 
   function isPressed(action: ConnectionCardAction, connectionId?: string): boolean {
-    return connectionActionKey(view.target, action, connectionId) in pressed;
+    return connectionActionKey(view.target, action, connectionId, view.domain) in pressed;
   }
 
   function release(key: string): void {
@@ -68,7 +76,7 @@
   }
 
   function press(action: ConnectionCardAction, connectionId?: string, button?: HTMLElement | null): void {
-    const key = connectionActionKey(view.target, action, connectionId);
+    const key = connectionActionKey(view.target, action, connectionId, view.domain);
     if (key in pressed) return;
     // WebKit does not focus a button on a mouse press. The dialog returns
     // focus to whatever had it when it opened, so put it on the button first.
@@ -85,7 +93,12 @@
     };
     let result: void | Promise<void>;
     try {
-      result = onaction?.({ target: view.target, action, ...(connectionId ? { connectionId } : {}) });
+      result = onaction?.({
+        target: view.target,
+        action,
+        ...(connectionId ? { connectionId } : {}),
+        ...(view.domain ? { domain: view.domain } : {}),
+      });
     } catch {
       done();
       return;
@@ -122,6 +135,8 @@
   class="connection-card"
   data-testid="connection-card"
   data-target={view.target}
+  data-kind={view.kind}
+  data-domain={view.domain}
   data-state={view.state}
   role="group"
   aria-label={view.title}
@@ -135,9 +150,14 @@
   ></span>
   <div class="connection-card-glass">
     <div class="connection-card-head">
-      <span class="connection-card-icon" aria-hidden="true">
-        <ConnectionCardIcon name={view.target} />
-      </span>
+      {#if view.logo}
+        <!-- The app's logo: the badge at once, the favicon once it has loaded. -->
+        <ConnectionCardLogo logo={view.logo} size={28} />
+      {:else}
+        <span class="connection-card-icon" aria-hidden="true">
+          <ConnectionCardIcon name={view.target} />
+        </span>
+      {/if}
       <span class="connection-card-title">{view.title}</span>
       {#if view.mark}
         <span class="connection-card-mark" data-testid="connection-card-mark">
@@ -199,8 +219,8 @@
           data-testid="connection-card-primary"
           data-action={primaryAction}
           aria-haspopup={primaryAction === "open" ? "dialog" : undefined}
-          disabled={view.primaryPending || (primaryAction !== "open" && isPressed(primaryAction))}
-          onclick={(event) => press(primaryAction, undefined, event.currentTarget)}
+          disabled={view.primaryPending || (primaryAction !== "open" && isPressed(primaryAction, primaryConnectionId))}
+          onclick={(event) => press(primaryAction, primaryConnectionId, event.currentTarget)}
         >
           {view.primaryLabel}
         </button>
