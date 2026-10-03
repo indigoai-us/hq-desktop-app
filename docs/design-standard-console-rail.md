@@ -71,6 +71,8 @@ Weights shipped: Geist 400/500/600 (comment at ChannelConversation.svelte:2714).
 
 Overlay standard (OWNER-006): the values above are measured from the titlebar Launch menu (`.v4-launch-menu`, V4TitleBar.svelte), which the owner confirmed as the reference. `--panel-bg` (rgba(44,44,54,.94)) and `--v4-surface-solid` (#1e1e24) are slate/blue-tinted and must not paint overlays. No per-component greys, hex fills or `--vio-*`/`--ice-*` backgrounds, and no CSS backdrop-filter on rounded overlay cards (WKWebView). Guard: packages/ui/src/common/overlay-surface-guard.test.ts.
 
+Toast layering: a toast never covers an open overlay (sheet, modal, picker, command palette). Toasts stay on their own layer, but any toast whose box meets an open overlay's box is held: hidden, out of the tab order, with its timer paused. Toasts clear of the overlay stay visible around its edges. When the overlay closes, held toasts come back with their actions reachable; a toast is never dropped because an overlay was open. Toast content, focus ring and keyboard behavior are unchanged. Implementation: shell/ToastStack.svelte. Guard: apps/sync/e2e/browser/toast-overlay-layering.spec.ts.
+
 Accent: monochrome. **DEV**: `--accent: var(--vio-ink)` (messaging-tokens.css:48) and `--ice-ink` for links/thread replies (ChannelConversation.svelte:3107; ChatSidebar.svelte:4630). Do not carry violet/ice into the console rail; primary button = `--t1` fill on `--panel-bg` ink (NewChannelSheet.svelte:237).
 
 ## 4. Controls
