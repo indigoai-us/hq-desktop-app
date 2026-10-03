@@ -120,6 +120,8 @@ describe('a manual sign-in invalidates anything continuation is holding', () => 
     // any of those windows must win over the automatic route.
     expect(prepare.match(/manualSignInStarted/g) ?? []).toHaveLength(3);
     expect(prepare).toContain('() => !manualSignInStarted');
+    expect(prepare).not.toContain('loadWebAuthorizeFlag');
+    expect(prepare).not.toContain('web_authorize_enabled');
   });
 
   it('starts explicit OAuth without waiting for continuation preparation on the returning-user surface', () => {
@@ -185,10 +187,18 @@ describe('web authorize is gated and does not replace flag-off OAuth', () => {
     expect(start).not.toContain('hqforwork.com/authorize/desktop');
   });
 
-  it('falls back to provider buttons when web authorize fails', () => {
-    expect(signInPrompt).toContain("webAuthorizeEnabled = false");
-    expect(onboardingWizard).toContain("webAuthorizeEnabled = false");
-    expect(signInPrompt).toContain('Choose your provider and try once more.');
+  it('routes the website page URL through referral attribution and a distinct login method', () => {
+    const start = rustFunction(oauth, 'start_web_authorize');
+    expect(start).toContain('build_authorize_page_url');
+    expect(start).toContain('prepare_desktop_referral_start_url');
+    expect(start.indexOf('build_authorize_page_url')).toBeLessThan(
+      start.indexOf('prepare_desktop_referral_start_url'),
+    );
+    expect(start).toContain('set_pending_referral_nonce');
+    const exchange = rustFunction(oauth, 'oauth_exchange_code');
+    expect(exchange).toContain('"web_authorize"');
+    expect(exchange).toContain('"manual_oauth"');
+    expect(exchange).toContain('"control"');
   });
 });
 

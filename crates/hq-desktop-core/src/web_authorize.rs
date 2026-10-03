@@ -10,12 +10,14 @@ use std::future::Future;
 use std::time::Duration;
 use url::Url;
 
+use crate::continuation_endpoints::{api_base, PRODUCTION_API_BASE};
+use crate::oauth::{
+    COGNITO_CLIENT_ID, DEFAULT_COGNITO_DOMAIN_PREFIX, REGISTERED_LOOPBACK_PORTS,
+};
+
 pub const FLAG_KEY: &str = "desktop.web-authorize";
-pub const FLAG_RESOLVE_URL: &str = "https://hqapi.hq.computer/v1/flags/resolve-public";
 pub const AUTHORIZE_PAGE_URL: &str = "https://hqforwork.com/authorize/desktop";
 pub const CONFIG_TIMEOUT: Duration = Duration::from_millis(1500);
-pub const DESKTOP_COGNITO_CLIENT_ID: &str = crate::oauth::COGNITO_CLIENT_ID;
-pub const ALLOWED_LOOPBACK_PORTS: [u16; 3] = [53682, 8765, 3000];
 
 const DEFAULT_SCOPE: &str = "openid email profile";
 
@@ -49,14 +51,47 @@ pub fn parse_flag(status: u16, body: &str) -> bool {
         == Some(true)
 }
 
-pub fn flag_resolve_url(base: &str, install_id: &str) -> String {
-    let mut url = Url::parse(base).unwrap_or_else(|_| {
-        Url::parse(FLAG_RESOLVE_URL).expect("constant flag resolve URL parses")
+pub fn flag_resolve_endpoint(api_base: &str) -> String {
+    format!("{}/v1/flags/resolve-public", api_base.trim_end_matches('/'))
+}
+
+pub fn flag_resolve_url(api_base: &str, install_id: &str) -> String {
+    let endpoint = flag_resolve_endpoint(api_base);
+    let mut url = Url::parse(&endpoint).unwrap_or_else(|_| {
+        Url::parse(&flag_resolve_endpoint(PRODUCTION_API_BASE))
+            .expect("production flag resolve URL parses")
     });
     url.query_pairs_mut()
         .append_pair("key", FLAG_KEY)
         .append_pair("visitorId", install_id);
     url.into()
+}
+
+/// Staging Cognito must not open production hqforwork.com. Force the flag
+/// off unless a website origin override exists for this build.
+pub fn cognito_env_blocks_web_authorize(client_id: Option<&str>, domain: Option<&str>) -> bool {
+    let client_blocked = client_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some_and(|value| value != COGNITO_CLIENT_ID);
+    let domain_blocked = domain
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some_and(|value| value != DEFAULT_COGNITO_DOMAIN_PREFIX);
+    client_blocked || domain_blocked
+}
+
+pub fn cognito_override_blocks_web_authorize() -> bool {
+    cognito_env_blocks_web_authorize(
+        std::env::var("HQ_COGNITO_CLIENT_ID").ok().as_deref(),
+        std::env::var("HQ_COGNITO_DOMAIN").ok().as_deref(),
+    )
+}
+
+/// Website origin for the authorize page. Production hqforwork.com is the
+/// only built-in origin; a future config field can supply a staging site.
+pub fn authorize_page_url() -> &'static str {
+    AUTHORIZE_PAGE_URL
 }
 
 /// Fail closed: only an explicit enabled true inside the timeout turns the path on.
@@ -65,6 +100,9 @@ where
     F: FnOnce(String) -> Fut,
     Fut: Future<Output = Result<(u16, String), E>>,
 {
+    if cognito_override_blocks_web_authorize() {
+        return false;
+    }
     resolve_with_local(install_id, read_local_override(), fetch).await
 }
 
@@ -83,7 +121,7 @@ where
     let Some(id) = install_id.map(str::trim).filter(|value| !value.is_empty()) else {
         return false;
     };
-    let url = flag_resolve_url(FLAG_RESOLVE_URL, id);
+    let url = flag_resolve_url(&api_base(), id);
     match tokio::time::timeout(CONFIG_TIMEOUT, fetch(url)).await {
         Ok(Ok((status, body))) => parse_flag(status, &body),
         _ => false,
@@ -107,7 +145,7 @@ pub fn is_allowed_loopback_redirect(value: &str) -> bool {
         return false;
     }
     url.port()
-        .is_some_and(|port| ALLOWED_LOOPBACK_PORTS.contains(&port))
+        .is_some_and(|port| REGISTERED_LOOPBACK_PORTS.contains(&port))
 }
 
 /// Rewrite a Cognito authorize URL into the website authorize page, keeping
@@ -137,7 +175,7 @@ pub fn build_authorize_page_url(cognito_authorize_url: &str) -> Option<String> {
     if !is_allowed_loopback_redirect(&redirect) {
         return None;
     }
-    let mut page = Url::parse(AUTHORIZE_PAGE_URL).ok()?;
+    let mut page = Url::parse(authorize_page_url()).ok()?;
     {
         let mut pairs = page.query_pairs_mut();
         for (key, value) in source.query_pairs() {
@@ -165,7 +203,7 @@ mod tests {
     use super::*;
     use crate::oauth::{
         build_authorize_url_from_redirect, compute_code_challenge, generate_code_verifier,
-        AuthorizeRequest, COGNITO_CLIENT_ID,
+        AuthorizeRequest, COGNITO_CLIENT_ID, DEFAULT_COGNITO_DOMAIN_PREFIX,
     };
 
     fn sample_cognito_url() -> String {
@@ -193,9 +231,35 @@ mod tests {
 
     #[test]
     fn flag_url_carries_key_and_visitor() {
-        let url = flag_resolve_url(FLAG_RESOLVE_URL, "11111111-1111-4111-8111-111111111111");
+        let url = flag_resolve_url(
+            PRODUCTION_API_BASE,
+            "11111111-1111-4111-8111-111111111111",
+        );
+        assert!(url.contains("/v1/flags/resolve-public"));
         assert!(url.contains("key=desktop.web-authorize"));
         assert!(url.contains("visitorId=11111111-1111-4111-8111-111111111111"));
+    }
+
+    #[test]
+    fn flag_url_uses_the_supplied_api_base() {
+        let url = flag_resolve_url("https://hqapi.staging.test", "install-1");
+        assert!(url.starts_with("https://hqapi.staging.test/v1/flags/resolve-public?"));
+    }
+
+    #[test]
+    fn staging_cognito_override_forces_flag_off() {
+        assert!(cognito_env_blocks_web_authorize(Some("staging-client"), None));
+        assert!(cognito_env_blocks_web_authorize(
+            None,
+            Some("vault-indigo-hq-staging"),
+        ));
+        assert!(!cognito_env_blocks_web_authorize(
+            Some(COGNITO_CLIENT_ID),
+            Some(DEFAULT_COGNITO_DOMAIN_PREFIX),
+        ));
+        assert!(!cognito_env_blocks_web_authorize(None, None));
+        assert!(!cognito_env_blocks_web_authorize(Some(""), Some("")));
+        assert!(!cognito_env_blocks_web_authorize(Some("  "), None));
     }
 
     #[tokio::test]

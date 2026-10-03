@@ -1587,6 +1587,38 @@ pub fn decode_id_token_claims(id_token: &str) -> Result<IdTokenClaims, String> {
     serde_json::from_slice(&bytes).map_err(|e| format!("id_token: claims json parse failed: {e}"))
 }
 
+fn oidc_nonce_eq(left: &str, right: &str) -> bool {
+    let left = left.as_bytes();
+    let right = right.as_bytes();
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut difference = 0u8;
+    for (a, b) in left.iter().zip(right.iter()) {
+        difference |= a ^ b;
+    }
+    difference == 0
+}
+
+/// When `expected` is Some, the ID token must carry the same `nonce` claim.
+/// A missing token, missing claim, decode failure, or mismatch fails closed.
+pub fn verify_optional_oidc_nonce(
+    id_token: Option<&str>,
+    expected: Option<&str>,
+) -> Result<(), String> {
+    let Some(expected) = expected.filter(|value| !value.is_empty()) else {
+        return Ok(());
+    };
+    let Some(token) = id_token.filter(|value| !value.is_empty()) else {
+        return Err("id_token missing; cannot verify nonce".to_string());
+    };
+    let claims = decode_id_token_claims(token)?;
+    match claims.nonce.as_deref() {
+        Some(actual) if oidc_nonce_eq(actual, expected) => Ok(()),
+        _ => Err("id_token nonce did not match the pending attempt".to_string()),
+    }
+}
+
 fn format_unix_ms_as_iso(ms: i64) -> String {
     let total_secs = ms / 1000;
     let millis = ms % 1000;
@@ -2122,6 +2154,20 @@ mod tests {
             refresh_token: "refresh".to_string(),
             expires_at: i64::MAX,
         }
+    }
+
+    #[test]
+    fn oidc_nonce_match_and_mismatch() {
+        let matching = claims_jwt(serde_json::json!({
+            "sub": "person-a",
+            "nonce": "nonce-token-1"
+        }));
+        assert!(verify_optional_oidc_nonce(Some(&matching), Some("nonce-token-1")).is_ok());
+        assert!(verify_optional_oidc_nonce(Some(&matching), None).is_ok());
+        assert!(verify_optional_oidc_nonce(Some(&matching), Some("nonce-token-2")).is_err());
+        assert!(verify_optional_oidc_nonce(None, Some("nonce-token-1")).is_err());
+        let missing_claim = claims_jwt(serde_json::json!({ "sub": "person-a" }));
+        assert!(verify_optional_oidc_nonce(Some(&missing_claim), Some("nonce-token-1")).is_err());
     }
 
     #[test]
