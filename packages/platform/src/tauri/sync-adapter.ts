@@ -92,6 +92,14 @@ export interface SyncPlatformAdapterConfig {
 /** Request bound for recorded-meeting list and detail reads (native side clamps to 60 s). */
 export const RECORDED_DETAIL_TIMEOUT_SECS = 45;
 
+/**
+ * OWNER-R15: GET /v1/integrations/admin for Indigo (135 connections plus the
+ * audit list) answered in 7-10 s warm on 2026-10-03, close to the native
+ * client's shared 15 s bound, so a cold read failed as "Could not load
+ * connected apps." The company integrations read asks for a longer bound.
+ */
+export const COMPANY_INTEGRATIONS_TIMEOUT_SECS = 45;
+
 const NOT_MAPPED = unavailable(
   'not-yet-mapped',
   'This capability is not yet mapped on the Sync host.',
@@ -1153,7 +1161,7 @@ export function createSyncPlatformAdapter(
     company: {
       getDeployments: (slug) => call('get_company_deployments', { slug }),
       listIntegrations: (companyUid) =>
-        hqProJson('GET', COMPANY_INTEGRATION_PATHS.list(companyUid)),
+        hqProJson('GET', COMPANY_INTEGRATION_PATHS.list(companyUid), undefined, COMPANY_INTEGRATIONS_TIMEOUT_SECS),
       listDeployApps: (scope) => call('list_deploy_apps', { scope }),
       deployAccessRequest: (scope, method, path, body) =>
         call('deploy_access_request', { scope, method, path, body: body ?? null }),
