@@ -35,7 +35,7 @@ describe("recorded meeting detail read bound", () => {
     expect(RECORDED_DETAIL_TIMEOUT_SECS).toBeGreaterThanOrEqual(30);
   });
 
-  it("other hq-pro reads keep the shared bound", async () => {
+  it("the past-meetings list read gets the same bound; other reads keep the shared one", async () => {
     const calls: Invocation[] = [];
     const adapter = createSyncPlatformAdapter({
       fetch: (() => {
@@ -43,11 +43,13 @@ describe("recorded meeting detail read bound", () => {
       }) as unknown as typeof globalThis.fetch,
       invoke: async (cmd, args) => {
         calls.push({ cmd, args });
-        if (cmd === "hq_pro_fetch") return { status: 200, body: JSON.stringify({ meetings: [] }) };
+        if (cmd === "hq_pro_fetch") return { status: 200, body: JSON.stringify({ meetings: [], flags: {} }) };
         throw new Error(`unexpected ${cmd}`);
       },
     });
     await adapter.meetings.listRecorded("cmp_EXAMPLE");
-    expect(calls.find((c) => c.cmd === "hq_pro_fetch")?.args).not.toHaveProperty("timeoutSecs");
+    expect(calls.at(-1)?.args?.timeoutSecs).toBe(RECORDED_DETAIL_TIMEOUT_SECS);
+    await adapter.identity.hasFeature("agents.claude-provider");
+    expect(calls.at(-1)?.args).not.toHaveProperty("timeoutSecs");
   });
 });

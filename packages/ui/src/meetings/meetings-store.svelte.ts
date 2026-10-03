@@ -442,6 +442,7 @@ async function refreshOnce(refreshRevision: number, epoch: number): Promise<void
       recorded = onlyOwnMeetings(recordedResult.rows, fullBots ?? allBots, evts ?? []);
     }
     recordedError = recordedResult.error;
+    if (recordedResult.retry.length) void retryRecordedScopes(meetings, recordedResult.retry, epoch);
     fetchError = nextFetchError;
     refreshBlocked = nextRefreshBlocked;
     lastRefreshErrorRaw = nextLastRefreshErrorRaw;
@@ -594,12 +595,39 @@ function onlyOwnMeetings(
  * scopes that answered still paint, and a total failure returns null so the
  * caller keeps its cached rows.
  */
+/**
+ * OWNER-R1: list scopes that answered with a lasting refusal this session
+ * (company gone, not found, no access). They are skipped quietly until the
+ * session changes; each was logged once with its reason.
+ */
+let unavailableRecordedScopes = new Map<string, string>();
+/** Quiet retries for a list scope that failed for a passing reason. */
+let recordedListRetryDelaysMs: readonly number[] = [1500, 4000];
+
+/** Test hook: shorten the quiet retry delays. */
+export function setRecordedListRetryDelaysForTests(delays: readonly number[]): void {
+  recordedListRetryDelaysMs = delays;
+}
+
+/**
+ * A lasting refusal for this person (the company no longer exists, the
+ * meeting list is not found or not allowed) versus a passing failure
+ * (network, timeout, 5xx, throttling) worth trying again.
+ */
+export function recordedListFailureIsLasting(err: unknown): boolean {
+  const text = String(err instanceof Error ? err.message : err ?? "").toLowerCase();
+  if (/^http-(400|401|403|404|410|422)\b/.test(text)) return true;
+  return /^[a-z_-]*(not-found|not_found|forbidden|not-enabled|not-entitled|no-access|access-denied)[a-z_-]*:/.test(text);
+}
+
+const sleepMs = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
 async function loadRecordedMeetings(
   meetings: MeetingsApi,
   members: CompanyMembership[],
   /** BLANK-3: rows from the scopes that have answered so far, as each answers. */
   onPartial?: (rows: RecordedMeeting[]) => void,
-): Promise<{ rows: RecordedMeeting[] | null; error: string }> {
+): Promise<{ rows: RecordedMeeting[] | null; error: string; retry: Array<string | null> }> {
   const companyIds = Array.from(
     new Set(
       members
@@ -607,26 +635,84 @@ async function loadRecordedMeetings(
         .map((m) => m.companyUid),
     ),
   );
-  const scopes: Array<string | null> = [null, ...companyIds];
-  let failed = 0;
+  const scopes: Array<string | null> = [null, ...companyIds].filter(
+    (companyId) => !unavailableRecordedScopes.has(companyId ?? "personal"),
+  );
+  const failing: Array<string | null> = [];
   const answered: RecordedMeeting[][] = [];
   const lists = await Promise.all(
     scopes.map(async (companyId) => {
-      try {
-        const list = parseRecordedMeetings(unwrap(await meetings.listRecorded(companyId)));
-        answered.push(list);
-        if (onPartial && list.length > 0) onPartial(mergeRecordedMeetings(answered));
-        return list;
-      } catch (err) {
-        failed += 1;
-        console.error(`meetings listRecorded failed for ${companyId ?? "personal"}:`, err);
+      const outcome = await readRecordedScope(meetings, companyId);
+      if (outcome === "failed") {
+        failing.push(companyId);
         return [] as RecordedMeeting[];
       }
+      answered.push(outcome);
+      if (onPartial && outcome.length > 0) onPartial(mergeRecordedMeetings(answered));
+      return outcome;
     }),
   );
-  const error = failed ? "Some past meetings could not load." : "";
-  if (failed === scopes.length) return { rows: null, error };
-  return { rows: mergeRecordedMeetings(lists), error };
+  // Every source failed: the full failed state, at once.
+  if (scopes.length > 0 && failing.length === scopes.length) {
+    return { rows: null, error: "Some past meetings could not load.", retry: [] };
+  }
+  // Passing failures are retried in the background; the line waits for them.
+  return { rows: mergeRecordedMeetings(lists), error: "", retry: failing };
+}
+
+/**
+ * One list scope: its rows, [] for a lasting refusal (logged once and not
+ * asked again this session), or "failed" for a passing failure.
+ */
+async function readRecordedScope(
+  meetings: MeetingsApi,
+  companyId: string | null,
+): Promise<RecordedMeeting[] | "failed"> {
+  const key = companyId ?? "personal";
+  try {
+    return parseRecordedMeetings(unwrap(await meetings.listRecorded(companyId)));
+  } catch (err) {
+    if (recordedListFailureIsLasting(err)) {
+      unavailableRecordedScopes.set(key, String(err));
+      console.warn(`[meetings] past meetings from ${key} are not available, skipped:`, err);
+      return [];
+    }
+    console.warn(`[meetings] past meetings from ${key} failed:`, err);
+    return "failed";
+  }
+}
+
+/**
+ * Quiet background retries for list scopes that failed for a passing reason.
+ * Rows that arrive are merged in; "Some past meetings could not load." shows
+ * only if a scope still fails after its last retry.
+ */
+async function retryRecordedScopes(meetings: MeetingsApi, failing: Array<string | null>, epoch: number): Promise<void> {
+  let pending = failing;
+  for (const delay of recordedListRetryDelaysMs) {
+    await sleepMs(delay);
+    if (epoch !== sessionEpoch) return;
+    const still: Array<string | null> = [];
+    const arrived: RecordedMeeting[][] = [];
+    await Promise.all(
+      pending.map(async (companyId) => {
+        const outcome = await readRecordedScope(meetings, companyId);
+        if (outcome === "failed") still.push(companyId);
+        else arrived.push(outcome);
+      }),
+    );
+    if (epoch !== sessionEpoch) return;
+    if (arrived.length) {
+      recorded = onlyOwnMeetings(mergeRecordedMeetings([recorded, ...arrived]), allBots, events);
+      persistSnapshot();
+    }
+    pending = still;
+    if (!pending.length) return;
+  }
+  for (const companyId of pending) {
+    console.error(`meetings listRecorded failed for ${companyId ?? "personal"} after retries`);
+  }
+  recordedError = "Some past meetings could not load.";
 }
 
 async function loadCalendarsForAccounts(
@@ -1289,6 +1375,7 @@ export function stopMeetingsStore(): void {
   storeStorageHandler = null;
   finishCalendarConnect(null);
   sessionEpoch += 1;
+  unavailableRecordedScopes = new Map();
   started = false;
   viewActive = false;
   hydratedFromCache = false;

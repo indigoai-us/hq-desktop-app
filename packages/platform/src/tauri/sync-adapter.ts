@@ -89,7 +89,7 @@ export interface SyncPlatformAdapterConfig {
   requestPolicy?: RequestPolicyOptions;
 }
 
-/** Request bound for one recorded-meeting detail read (native side clamps to 60 s). */
+/** Request bound for recorded-meeting list and detail reads (native side clamps to 60 s). */
 export const RECORDED_DETAIL_TIMEOUT_SECS = 45;
 
 const NOT_MAPPED = unavailable(
@@ -977,6 +977,9 @@ export function createSyncPlatformAdapter(
       listMemberships: () => call('meetings_list_memberships'),
       listUpcoming: () => call('meetings_list_upcoming'),
       listScheduledBots: () => call('meetings_list_scheduled_bots'),
+      // OWNER-R1: the list for a company with many meetings takes up to
+      // ~10 s alone and longer while every scope loads at once; the 15 s
+      // shared bound turned those into "could not load".
       listRecorded: (companyId) =>
         hqProJson(
           'GET',
@@ -984,6 +987,8 @@ export function createSyncPlatformAdapter(
             companyId: companyId || undefined,
             limit: 50,
           }),
+          undefined,
+          RECORDED_DETAIL_TIMEOUT_SECS,
         ),
       // OWNER-019: a company meeting detail with signals answers in 14-16 s
       // (hq-pro presigns every signal), past the shared 15 s bound.
