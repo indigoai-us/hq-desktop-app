@@ -8,7 +8,7 @@
  * restart. The host must retry a failed fetch on a bounded backoff and
  * re-fetch on `sync:company-provisioned` / `sync:all-complete`.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const nativeEvents = vi.hoisted(() => ({
   handlers: new Map<string, Array<(event: { payload: unknown }) => void>>(),
@@ -158,7 +158,17 @@ async function flush(times = 40): Promise<void> {
 let host: HTMLElement;
 let component: ReturnType<typeof mount> | null = null;
 
+// QA-075: plan-limit notices render only inside the open company's pane, so
+// these roster tests open Acme's pane by default.
+beforeEach(() => {
+  (globalThis as Record<string, unknown>).__harnessInitialActiveCompany = {
+    uid: 'cmp_acme',
+    slug: 'acme',
+  };
+});
+
 afterEach(async () => {
+  delete (globalThis as Record<string, unknown>).__harnessInitialActiveCompany;
   if (component) await unmount(component);
   component = null;
   host?.remove();

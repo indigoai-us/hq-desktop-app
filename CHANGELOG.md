@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Cognito refresh failures now log the status and sanitized provider error details. HTTP 401, invalid_grant, and Cognito NotAuthorizedException responses require sign-in; invalid_client keeps the session and parks retries for 15 minutes. Other failures retry with bounded backoff. The shared token lock uses the CLI-compatible PID-file protocol.
+- The main window no longer shows a stack of "New files are paused" notices, one per company, with other apps showing through behind them. A paused company now gets one small notice inside its own pane, personal pages show none, and Dismiss hides it for the rest of the session. The window stays solid at full opacity.
 
 ## [0.10.382] — 2026-10-03
 

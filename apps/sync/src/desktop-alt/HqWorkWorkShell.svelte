@@ -210,14 +210,41 @@
   }
   let planLimitNotices = $state<PlanLimitNotice[]>([]);
   let watcherLockNotice = $state<string | null>(null);
-  // Notices the person dismissed while the pause is still in effect. A
-  // dismissal lasts until the company's uploads resume (it leaves the native
-  // snapshot), so a pause that comes back later is shown again.
+  // QA-075: companies whose notice the person dismissed. A dismissal is per
+  // company and lasts for the session (cleared only on an account change).
   const dismissedPlanLimitKeys = new Set<string>();
 
   function planLimitKey(notice: PlanLimitNotice): string {
-    return `${notice.company}\n${notice.upgradeUrl ?? ''}`;
+    return notice.company.trim().toLowerCase();
   }
+
+  // QA-075: a company's notice shows only inside that company's pane. The
+  // shell reports the open company pane (null on personal pages), and at most
+  // one notice renders. Other companies' limits are summarized in the account
+  // menu (Core popover), never as stacked banners.
+  let activeCompanyPane = $state<{ uid: string | null; slug: string } | null>(null);
+  function setActiveCompanyPane(next: { uid: string | null; slug: string } | null): void {
+    if (
+      next?.uid === activeCompanyPane?.uid &&
+      next?.slug === activeCompanyPane?.slug &&
+      (next === null) === (activeCompanyPane === null)
+    ) {
+      return;
+    }
+    activeCompanyPane = next ? { uid: next.uid, slug: next.slug } : null;
+  }
+  const visiblePlanLimitNotice = $derived.by<PlanLimitNotice | null>(() => {
+    const active = activeCompanyPane;
+    if (!active) return null;
+    const slug = active.slug.trim().toLowerCase();
+    return (
+      planLimitNotices.find(
+        (notice) =>
+          (active.uid !== null && notice.companyUid === active.uid) ||
+          (slug !== '' && notice.company.trim().toLowerCase() === slug),
+      ) ?? null
+    );
+  });
 
   /** Server link → desktop-attributed, approved link (or null). */
   function planLimitUpgradeLink(raw: unknown): string | null {
@@ -251,10 +278,6 @@
         exposureId: `exposure:${crypto.randomUUID()}`,
         upgradeUrl: planLimitUpgradeLink(rec.upgradeUrl),
       });
-    }
-    const live = new Set(next.map(planLimitKey));
-    for (const key of [...dismissedPlanLimitKeys]) {
-      if (!live.has(key)) dismissedPlanLimitKeys.delete(key);
     }
     planLimitNotices = next.filter((notice) => !dismissedPlanLimitKeys.has(planLimitKey(notice)));
   }
@@ -421,10 +444,6 @@
   ] as const;
 
   function removeStatusPushNotice(company: string): void {
-    const existing = planLimitNotices.filter(
-      (notice) => notice.company === company && notice.statusPush,
-    );
-    for (const notice of existing) dismissedPlanLimitKeys.delete(planLimitKey(notice));
     planLimitNotices = planLimitNotices.filter(
       (notice) => notice.company !== company || !notice.statusPush,
     );
@@ -1276,11 +1295,14 @@
         {watcherLockNotice}
       </div>
     {/if}
-    {#if planLimitNotices.length > 0}
-      <div class="plan-limit-notices" data-testid="sync-plan-limit-notice" role="status">
-        {#each planLimitNotices as notice (planLimitKey(notice))}
+    <div class="work-shell-frame">
+    {#if visiblePlanLimitNotice}
+      {@const notice = visiblePlanLimitNotice}
+      {#key planLimitKey(notice)}
+        <div class="plan-limit-notices" data-testid="sync-plan-limit-notice" role="status">
           <div class="plan-limit-notice" use:trackPlanLimitNoticeExposure={notice}>
-            <span>New files are paused for {notice.company}.</span>
+            <span class="plan-limit-dot" aria-hidden="true"></span>
+            <span class="plan-limit-text">New files are paused for {notice.company}.</span>
             {#if notice.upgradeUrl}
               <PlanUpgradeAction
                 upgradeUrl={notice.upgradeUrl}
@@ -1297,13 +1319,12 @@
               Dismiss
             </button>
           </div>
-        {/each}
-        {#if planLimitOpenError}
-          <p class="plan-limit-open-error" role="alert">{planLimitOpenError}</p>
-        {/if}
-      </div>
+          {#if planLimitOpenError}
+            <p class="plan-limit-open-error" role="alert">{planLimitOpenError}</p>
+          {/if}
+        </div>
+      {/key}
     {/if}
-    <div class="work-shell-frame">
     {#key authGeneration}
       <WorkShell
         data={{ user: capabilities.hostIdentity }}
@@ -1327,6 +1348,7 @@
         onopenurl={openBrowserUrl}
         {notificationWakeSeq}
         onactivethreadchange={setActiveReplyThread}
+        onactivecompanychange={setActiveCompanyPane}
         {extraPages}
         {postReadyActionReady}
         {setupInstallGuide}
@@ -1388,9 +1410,25 @@
      .desktop-shell) is the single layer that scales with the Appearance
      window-opacity setting. A second full-window fill at this level (PR #772's
      staged backing, alpha floor .72/.78) stacked under that ground and made
-     the window read as solid at every slider value. */
+     the window read as solid at every slider value.
+
+     OWNER-002: at 100% opacity (the default, and the value when the setting
+     is unset) the host still paints a solid floor. Any host region the shell
+     ground does not cover (old stacked plan-limit notices, warnings, a
+     modal's backdrop) otherwise showed other apps through the window. The
+     floor's alpha is 1 only when the transparency factor is 0, so below 100%
+     it is fully transparent and does not stack under the shell ground. */
   .hq-work-embedded {
-    background: transparent;
+    --hq-work-solid-floor-alpha: clamp(
+      0%,
+      calc(100% - var(--hq-window-transparency-factor, 0) * 10000%),
+      100%
+    );
+    background: color-mix(
+      in srgb,
+      var(--v4-reading-surface, #111111) var(--hq-work-solid-floor-alpha),
+      transparent
+    );
   }
 
   .lifecycle-state {
@@ -1449,32 +1487,49 @@
     background: var(--v4-surface-solid, #282828);
   }
 
+  /* QA-075: one contained notice in the company pane, on the dark surface. */
   .plan-limit-notices {
-    flex: 0 0 auto;
+    position: absolute;
+    right: 16px;
+    bottom: 16px;
+    z-index: 20;
+    max-width: min(480px, calc(100% - 32px));
     display: grid;
     gap: 4px;
-    padding: 8px 16px;
-    border-bottom: 1px solid var(--v4-divider, var(--c-divider));
-    color: var(--v4-text-1, var(--c-text, currentColor));
+    padding: 8px 12px;
+    border: 1px solid var(--v4-divider, rgba(255, 255, 255, 0.08));
+    border-radius: 8px;
+    background: var(--v4-surface-solid, #282828);
+    color: var(--v4-text-1, #e6e6e6);
     font-size: 13px;
     line-height: 18px;
   }
 
   .plan-limit-notice {
     display: flex;
-    flex-wrap: wrap;
     align-items: center;
     gap: 8px;
+  }
+
+  .plan-limit-dot {
+    flex: 0 0 auto;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--v4-warn, #d97706);
+  }
+
+  .plan-limit-text {
+    min-width: 0;
   }
 
   .plan-limit-dismiss {
     border: 0;
     padding: 4px 6px;
     background: transparent;
-    color: var(--v4-text-2, var(--c-muted, currentColor));
+    color: var(--v4-text-2, #b0b0b0);
     font: inherit;
     cursor: pointer;
-    text-decoration: underline;
   }
 
   .plan-limit-open-error {
@@ -1483,6 +1538,7 @@
   }
 
   .work-shell-frame {
+    position: relative;
     flex: 1;
     min-height: 0;
     min-width: 0;
