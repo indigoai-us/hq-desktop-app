@@ -9,6 +9,10 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 - Desktop Core baseline refresh now retries GitHub timeouts before reporting a pending baseline; persistent timeouts remain reported.
 
+- The Meet native Windows test build now pins its signing and Rust toolchain actions to exact versions. Nothing changes in the app.
+- CI launches of the desktop app no longer add first-run rows to the install funnel, including through the CDP mirror.
+- Internal tests: four desktop tests that only searched the source text for strings now check what the code does. Nothing changes in the app.
+
 ## [0.10.385] — 2026-10-03
 
 - The vyg CDP mirror now also records app opens (every launch), one daily-active row per day, account linking after sign-in (sha256 hashes of the person and company ids only), Claude/Codex/Grok session launches, sync start and end, teammate invites, joining a company from an invite, and the plan picked during setup. The same rows go to HQ's operational telemetry. The `desktop.cdp-mirror` flag is now re-checked every 6 hours, so turning it on or off no longer needs a relaunch.
