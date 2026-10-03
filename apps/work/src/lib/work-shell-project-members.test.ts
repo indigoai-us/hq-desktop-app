@@ -24,7 +24,7 @@ describe("WorkShell project member callback", () => {
     );
 
     expect(match, "WorkShell must keep the project member callback").not.toBeNull();
-    const mockedAdd: AddProjectMember = vi.fn(async () => "added");
+    const mockedAdd: AddProjectMember = vi.fn(async (): Promise<"added" | "not-enabled"> => "added");
     const makeCallback = new Function(
       "addLiveProjectMember",
       "workFetch",
