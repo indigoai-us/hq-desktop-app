@@ -479,9 +479,32 @@ pub fn note_login_completed(provider: &str) {
 /// Hold the first launch's `desktop_app_opened` row for
 /// [`flush_pending_first_open_now`].
 pub fn hold_first_open() {
-    if let Ok(path) = paths::menubar_json_path() {
-        let _ = merge_menubar_flags(&path, &[(FIRST_OPEN_PENDING_KEY, json!(true))]);
+    match paths::menubar_json_path() {
+        Ok(path) => {
+            if let Err(err) = merge_menubar_flags(&path, &[(FIRST_OPEN_PENDING_KEY, json!(true))]) {
+                warn_first_open("hold_write_failed", &err);
+            }
+        }
+        Err(err) => warn_first_open("menubar_path_unresolved", &err),
     }
+}
+
+/// Non-fatal first-open problems go to the local diagnostic log as WARN lines.
+fn warn_first_open(kind: &str, err: &str) {
+    crate::util::logfile::log("cdp", &format!("WARN first_open {kind}: {err}"));
+}
+
+#[cfg(test)]
+pub(crate) struct FirstOpenGuardHook {
+    pub reached: tokio::sync::Notify,
+    pub resume: tokio::sync::Notify,
+}
+
+#[cfg(test)]
+tokio::task_local! {
+    /// Parks a flush between its cheap pending check and the guard, so a test
+    /// can finish a second flush in that window.
+    pub(crate) static FIRST_OPEN_GUARD_HOOK: std::sync::Arc<FirstOpenGuardHook>;
 }
 
 static FIRST_OPEN_FLUSHING: std::sync::atomic::AtomicBool =
@@ -495,27 +518,53 @@ pub async fn flush_pending_first_open_now() -> bool {
     let Ok(path) = paths::menubar_json_path() else {
         return false;
     };
-    if read_menubar_obj(&path)
-        .get(FIRST_OPEN_PENDING_KEY)
-        .and_then(Value::as_bool)
-        != Some(true)
-    {
+    let pending = || {
+        read_menubar_obj(&path)
+            .get(FIRST_OPEN_PENDING_KEY)
+            .and_then(Value::as_bool)
+            == Some(true)
+    };
+    if !pending() {
         return false;
+    }
+    #[cfg(test)]
+    if let Ok(hook) = FIRST_OPEN_GUARD_HOOK.try_with(std::sync::Arc::clone) {
+        hook.reached.notify_one();
+        hook.resume.notified().await;
     }
     if FIRST_OPEN_FLUSHING.swap(true, Ordering::SeqCst) {
         return false;
     }
-    let sent = super::telemetry::emit_desktop_operational_telemetry_unmirrored(
+    // Another flush may have sent and cleared the row since the check above.
+    if !pending() {
+        FIRST_OPEN_FLUSHING.store(false, Ordering::SeqCst);
+        return false;
+    }
+    let sent = match super::telemetry::emit_desktop_operational_telemetry_unmirrored(
         OP_APP_OPENED,
         json!({ "isFirstLaunch": true }),
     )
     .await
-    .is_ok();
+    {
+        Ok(()) => true,
+        Err(err) => {
+            warn_first_open("send_failed_held_for_retry", &err);
+            false
+        }
+    };
     if sent {
-        let _ = merge_menubar_flags(&path, &[(FIRST_OPEN_PENDING_KEY, Value::Null)]);
+        if let Err(err) = merge_menubar_flags(&path, &[(FIRST_OPEN_PENDING_KEY, Value::Null)]) {
+            warn_first_open("clear_write_failed", &err);
+        }
     }
     FIRST_OPEN_FLUSHING.store(false, Ordering::SeqCst);
     sent
+}
+
+/// `idempotencyKey` for the first launch's `desktop_app_opened` row: one per
+/// install, so hq-pro stores a repeated send once.
+pub fn first_open_idempotency_key(install_attempt_id: &str) -> String {
+    format!("hq-desktop-app:first-open:{install_attempt_id}")
 }
 
 fn flush_pending_first_open() {
@@ -568,9 +617,12 @@ pub fn claim_account_linked_at(path: &std::path::Path, props: &Value) -> bool {
 
 /// The company for `account_linked`: the uid the caller knows, else
 /// `config.json`'s company when it is a real company (the personal-vault
-/// reconstruction stores the person uid there), else the first `cmp_` uid in
-/// the HQ manifest. The desktop onboarding does not write `config.json`, so
-/// without the last two steps a desktop-only person never gets a company.
+/// reconstruction stores the person uid there), else the HQ manifest's `cmp_`
+/// uid when it holds exactly one. The desktop onboarding does not write
+/// `config.json`, so without the last two steps a desktop-only person never
+/// gets a company. With several companies in the manifest there is no way to
+/// tell which one the link belongs to, so none is sent and the first-push hook
+/// names the company.
 pub fn account_linked_company(
     explicit: Option<&str>,
     config_company: Option<&str>,
@@ -582,7 +634,19 @@ pub fn account_linked_company(
         .map(str::trim)
         .filter(real)
         .or_else(|| config_company.map(str::trim).filter(real))
-        .or_else(|| manifest_uids.iter().map(String::as_str).find(real))
+        .or_else(|| {
+            let mut companies: Vec<&str> = manifest_uids
+                .iter()
+                .map(String::as_str)
+                .filter(real)
+                .collect();
+            companies.sort_unstable();
+            companies.dedup();
+            match companies.as_slice() {
+                [only] => Some(*only),
+                _ => None,
+            }
+        })
         .map(str::to_string)
 }
 
@@ -1237,6 +1301,35 @@ mod tests {
         );
         let props = account_linked_props(person, Some("cmp_acme")).unwrap();
         assert_eq!(props["companyHash"], hash_identifier("cmp_acme").unwrap());
+    }
+
+    #[test]
+    fn account_linked_company_is_unknown_when_the_manifest_holds_several_companies() {
+        // Regression: the first manifest company was credited with the link, so
+        // a person in two companies linked the wrong one and then sent a second
+        // account_linked with a different companyHash after first push.
+        let person = Some("prs_1");
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("companies")).unwrap();
+        std::fs::write(
+            dir.path().join("companies/manifest.yaml"),
+            "companies:\n  personal:\n    cloud_uid: prs_1\n  acme:\n    cloud_uid: cmp_acme\n  beta:\n    cloud_uid: cmp_beta\n",
+        )
+        .unwrap();
+        let manifest = manifest_company_uids(dir.path());
+        assert_eq!(manifest.len(), 2);
+        assert_eq!(
+            account_linked_company(None, Some("prs_1"), person, &manifest),
+            None,
+            "two companies: leave the company to the first-push hook"
+        );
+        assert_eq!(
+            account_linked_company(Some("cmp_beta"), None, person, &manifest).as_deref(),
+            Some("cmp_beta"),
+            "first push still names its company"
+        );
+        let props = account_linked_props(person, None).unwrap();
+        assert!(props.get("companyHash").is_none());
     }
 
     #[test]

@@ -1224,6 +1224,12 @@ fn build_desktop_telemetry_event(
             .and_then(Value::as_str)
             .filter(|value| is_safe_label_value(value))
             .map(str::to_string)
+    } else if event_name == crate::commands::cdp_mirror::OP_APP_OPENED
+        && properties["isFirstLaunch"].as_bool() == Some(true)
+    {
+        crate::commands::first_run::install_attempt_id()
+            .filter(|id| is_safe_label_value(id))
+            .map(|id| crate::commands::cdp_mirror::first_open_idempotency_key(&id))
     } else {
         None
     };
@@ -3897,6 +3903,8 @@ mod codex_telemetry_tests {
 
     #[tokio::test]
     async fn test_operational_telemetry_rejects_non_operational_event_names() {
+        // Builds mint the install id under the current HOME.
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let server = MockServer::start().await;
         let vault = VaultClient::new(server.uri(), "test-jwt");
 
@@ -3990,6 +3998,8 @@ mod codex_telemetry_tests {
 
     #[test]
     fn funnel_operational_rows_carry_the_trusted_app_version() {
+        // Builds mint the install id under the current HOME.
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         // Regression: the PR 1264 funnel rows reached hq-pro with no version.
         for (op, _, _) in crate::commands::cdp_mirror::OPERATIONAL_MIRRORS {
             let event = build_desktop_telemetry_event(
@@ -4007,18 +4017,44 @@ mod codex_telemetry_tests {
         }
     }
 
+    async fn first_open_posts(server: &MockServer) -> Vec<Value> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|request| request.method == wiremock::http::Method::POST)
+            .map(|request| serde_json::from_slice::<Value>(&request.body).unwrap())
+            // HQ_VAULT_API_URL is process-wide, so a test running alongside
+            // can post its own rows here; count only the first-open rows.
+            .filter(|body| body["events"][0]["eventName"] == "desktop_app_opened")
+            .collect()
+    }
+
+    async fn first_open_server(status: u16) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/telemetry/events"))
+            .respond_with(ResponseTemplate::new(status).set_body_string("{}"))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    fn first_open_held(home: &std::path::Path) -> bool {
+        hq_desktop_core::first_run::read_menubar_obj(&home.join(".hq/menubar.json"))
+            .get(crate::commands::cdp_mirror::FIRST_OPEN_PENDING_KEY)
+            .and_then(Value::as_bool)
+            == Some(true)
+    }
+
     #[tokio::test]
     async fn first_launch_app_opened_is_held_until_a_session_exists() {
         // Regression: the first launch has no session, so its
         // `desktop_app_opened isFirstLaunch=true` row was dropped and only
         // signed-in relaunches (`false`) ever reached hq-pro.
         let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/v1/telemetry/events"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
-            .mount(&server)
-            .await;
+        let server = first_open_server(200).await;
         let home = setup_home();
         write_menubar(home.path(), "{}");
         let _home = scoped_home(home.path());
@@ -4029,40 +4065,20 @@ mod codex_telemetry_tests {
 
         let without_session = crate::commands::cdp_mirror::flush_pending_first_open_now().await;
         assert!(!without_session, "no session: the row stays held");
+        assert!(first_open_held(home.path()));
         write_valid_access_token(home.path());
-        // Other tests' sign-in hooks spawn the same flush in the background,
-        // so retry briefly instead of relying on this call winning the guard.
-        let menubar = home.path().join(".hq/menubar.json");
-        let held = || {
-            hq_desktop_core::first_run::read_menubar_obj(&menubar)
-                .get(crate::commands::cdp_mirror::FIRST_OPEN_PENDING_KEY)
-                .and_then(Value::as_bool)
-                == Some(true)
-        };
-        for _ in 0..50 {
-            if !held() {
-                break;
-            }
-            crate::commands::cdp_mirror::flush_pending_first_open_now().await;
-            if held() {
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
-        }
-        assert!(!held(), "the held row is sent once a session exists");
+        assert!(
+            crate::commands::cdp_mirror::flush_pending_first_open_now().await,
+            "the held row is sent once a session exists"
+        );
+        assert!(!first_open_held(home.path()));
         assert!(
             !crate::commands::cdp_mirror::flush_pending_first_open_now().await,
             "sent once"
         );
         std::env::remove_var("HQ_VAULT_API_URL");
 
-        let posts: Vec<Value> = server
-            .received_requests()
-            .await
-            .unwrap()
-            .iter()
-            .filter(|request| request.method == wiremock::http::Method::POST)
-            .map(|request| serde_json::from_slice(&request.body).unwrap())
-            .collect();
+        let posts = first_open_posts(&server).await;
         assert_eq!(posts.len(), 1);
         let event = &posts[0]["events"][0];
         assert_eq!(event["eventName"], "desktop_app_opened");
@@ -4071,6 +4087,153 @@ mod codex_telemetry_tests {
             event["properties"]["appVersion"],
             crate::app_version::current()
         );
+    }
+
+    #[tokio::test]
+    async fn overlapping_first_open_flushes_send_one_row() {
+        // Regression: a flush checked the pending flag before taking the guard,
+        // so a flush that checked, then took the guard after another flush had
+        // sent and released it, sent the row a second time.
+        use crate::commands::cdp_mirror::{
+            flush_pending_first_open_now, FirstOpenGuardHook, FIRST_OPEN_GUARD_HOOK,
+        };
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = first_open_server(200).await;
+        let home = setup_home();
+        write_menubar(home.path(), "{}");
+        let _home = scoped_home(home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+        write_valid_access_token(home.path());
+        crate::commands::cdp_mirror::hold_first_open();
+
+        let hook = std::sync::Arc::new(FirstOpenGuardHook {
+            reached: tokio::sync::Notify::new(),
+            resume: tokio::sync::Notify::new(),
+        });
+        let late =
+            tokio::spawn(FIRST_OPEN_GUARD_HOOK.scope(hook.clone(), flush_pending_first_open_now()));
+        // `late` has seen the pending row and is parked before the guard.
+        hook.reached.notified().await;
+        let early = flush_pending_first_open_now().await;
+        hook.resume.notify_one();
+        let late = late.await.unwrap();
+        std::env::remove_var("HQ_VAULT_API_URL");
+
+        assert!(early, "the first flush sends the row");
+        assert!(!late, "the overlapping flush finds it already sent");
+        assert!(!first_open_held(home.path()));
+        let posts = first_open_posts(&server).await;
+        assert_eq!(posts.len(), 1, "exactly one POST");
+        let install = crate::commands::first_run::install_attempt_id().unwrap();
+        assert_eq!(
+            posts[0]["events"][0]["idempotencyKey"],
+            crate::commands::cdp_mirror::first_open_idempotency_key(&install)
+        );
+    }
+
+    #[test]
+    fn first_launch_app_opened_carries_a_stable_install_idempotency_key() {
+        // Regression: the held first-launch row had no idempotencyKey, so a
+        // repeated send was stored twice by hq-pro.
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        write_menubar(home.path(), "{}");
+        let _home = scoped_home(home.path());
+        let build = |first: bool| {
+            build_desktop_telemetry_event(
+                "desktop_app_opened".to_string(),
+                Some(json!({ "isFirstLaunch": first })),
+                None,
+                None,
+                "no-consent",
+            )
+        };
+        let first = build(true);
+        let retry = build(true);
+        let install = crate::commands::first_run::install_attempt_id().unwrap();
+        let key = first.idempotency_key.clone().unwrap();
+        assert_eq!(key, format!("hq-desktop-app:first-open:{install}"));
+        assert_eq!(retry.idempotency_key.as_deref(), Some(key.as_str()));
+        // hq-pro's envelope accepts [A-Za-z0-9_.:#-]{1,200} for idempotencyKey.
+        assert!(key.len() <= 200);
+        assert!(key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_.:#-".contains(&b)));
+        assert_eq!(
+            serde_json::to_value(&first).unwrap()["idempotencyKey"],
+            json!(key)
+        );
+        assert!(
+            build(false).idempotency_key.is_none(),
+            "relaunch rows are not deduped"
+        );
+    }
+
+    fn first_open_warnings(log: &std::path::Path) -> Vec<String> {
+        std::fs::read_to_string(log)
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| line.contains("[cdp] WARN first_open"))
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn first_open_failures_are_logged_as_warnings() {
+        // Regression: the hold write, the send and the clear write each
+        // dropped their error without a trace.
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let logs = TempDir::new().unwrap();
+        let log = logs.path().join("hq-sync.log");
+        let _log = hq_desktop_core::logfile::LogOverrideGuard::new(log.clone());
+        let server = first_open_server(500).await;
+        let home = setup_home();
+        let _home = scoped_home(home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        // Hold: menubar.json is a directory, so the write fails.
+        std::fs::create_dir_all(home.path().join(".hq/menubar.json")).unwrap();
+        crate::commands::cdp_mirror::hold_first_open();
+        let warnings = first_open_warnings(&log);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("hold_write_failed"), "{warnings:?}");
+        std::fs::remove_dir_all(home.path().join(".hq/menubar.json")).unwrap();
+
+        // Send: hq-pro answers 500; the row stays held.
+        write_menubar(home.path(), "{}");
+        write_valid_access_token(home.path());
+        crate::commands::cdp_mirror::hold_first_open();
+        assert!(!crate::commands::cdp_mirror::flush_pending_first_open_now().await);
+        assert!(first_open_held(home.path()));
+        let warnings = first_open_warnings(&log);
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(
+            warnings[1].contains("send_failed_held_for_retry"),
+            "{warnings:?}"
+        );
+
+        // Clear: the send succeeds but the config directory is read-only.
+        #[cfg(unix)]
+        {
+            server.reset().await;
+            Mock::given(method("POST"))
+                .and(path("/v1/telemetry/events"))
+                .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+                .mount(&server)
+                .await;
+            crate::commands::first_run::install_attempt_id().unwrap();
+            let hq_dir = home.path().join(".hq");
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hq_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+            let sent = crate::commands::cdp_mirror::flush_pending_first_open_now().await;
+            std::fs::set_permissions(&hq_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::env::remove_var("HQ_VAULT_API_URL");
+            assert!(sent);
+            let warnings = first_open_warnings(&log);
+            assert_eq!(warnings.len(), 3, "{warnings:?}");
+            assert!(warnings[2].contains("clear_write_failed"), "{warnings:?}");
+        }
+        std::env::remove_var("HQ_VAULT_API_URL");
     }
 
     #[test]
