@@ -1,0 +1,190 @@
+// @vitest-environment happy-dom
+
+/** AUDIT-3c: a failed identity lookup never shows transport text on screen. */
+
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+const nativeEvents = vi.hoisted(() => ({
+  handlers: new Map<string, Array<(event: { payload: unknown }) => void>>(),
+}));
+
+vi.mock('svelte', async () => {
+  // @ts-expect-error client entry has no public type export.
+  return await import('../../node_modules/svelte/src/index-client.js');
+});
+
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn(async () => {
+    throw new Error('tests must inject invokeFn');
+  }),
+}));
+
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: vi.fn(async (event: string, handler: (event: { payload: unknown }) => void) => {
+    const list = nativeEvents.handlers.get(event) ?? [];
+    list.push(handler);
+    nativeEvents.handlers.set(event, list);
+    return () => {
+      nativeEvents.handlers.set(
+        event,
+        (nativeEvents.handlers.get(event) ?? []).filter((current) => current !== handler),
+      );
+    };
+  }),
+}));
+
+vi.mock('@tauri-apps/api/app', () => ({
+  getVersion: vi.fn(async () => '0.10.178'),
+  setTheme: vi.fn(async () => {}),
+}));
+
+vi.mock('@hq/work/WorkShell', async () => {
+  const { default: WorkShellShellReadyHarness } = await import(
+    './WorkShellShellReadyHarness.svelte'
+  );
+  return { default: WorkShellShellReadyHarness };
+});
+
+import { flushSync, mount, unmount } from 'svelte';
+import HqWorkWorkShell from './HqWorkWorkShell.svelte';
+import type { SyncInvokeFn } from '@hq/platform';
+
+const WHOAMI = {
+  personUid: 'prs_ada',
+  email: 'ada@getindigo.ai',
+  displayName: 'Ada',
+};
+
+function mockInvoke(
+  overrides: Partial<Record<string, (args?: Record<string, unknown>) => unknown>> = {},
+): { invokeFn: SyncInvokeFn; calls: string[] } {
+  const calls: string[] = [];
+  const invokeFn: SyncInvokeFn = async (cmd, args) => {
+    calls.push(cmd);
+    const override = overrides[cmd];
+    if (override) return override(args);
+    switch (cmd) {
+      case 'get_auth_state':
+        return {
+          authenticated: true,
+          accountId: 'acct_ada',
+          email: WHOAMI.email,
+          displayName: WHOAMI.displayName,
+        };
+      case 'get_auth_session':
+        return null;
+      case 'whoami':
+        return WHOAMI;
+      case 'list_syncable_workspaces':
+        return {
+          workspaces: [
+            {
+              slug: 'indigo',
+              cloudUid: 'cmp_indigo',
+              role: 'owner',
+              membershipStatus: 'active',
+            },
+          ],
+        };
+      case 'list_channels':
+        return {
+          channels: [
+            { channelId: 'chn_1', id: 'chn_1', name: 'general', scope: 'company' },
+          ],
+        };
+      case 'fetch_channel_directory':
+        return {
+          contractVersion: 2,
+          snapshot: true,
+          cursor: 'testcursor00000000000000000000000000000',
+          cursorExpiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+          rows: [
+            {
+              channelId: 'chn_1',
+              name: 'general',
+              scope: 'company',
+              type: 'chat',
+            },
+          ],
+        };
+      case 'list_contacts':
+        return { contacts: [] };
+      case 'list_dm_requests':
+        return { requests: [] };
+      case 'desktop_alt_consume_pending_route':
+        return null;
+      case 'meetings_take_pending_focus':
+        return null;
+      case 'shell_ready':
+        return null;
+      default:
+        return null;
+    }
+  };
+  return { invokeFn, calls };
+}
+
+async function flush(times = 40): Promise<void> {
+  for (let i = 0; i < times; i += 1) await Promise.resolve();
+  flushSync();
+}
+
+let host: HTMLElement;
+let component: ReturnType<typeof mount> | null = null;
+
+afterEach(async () => {
+  if (component) await unmount(component);
+  component = null;
+  host?.remove();
+  nativeEvents.handlers.clear();
+});
+
+const RAW = '[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}';
+
+function warnedRaw(warn: ReturnType<typeof vi.spyOn>): boolean {
+  return warn.mock.calls.some((args) =>
+    args.some((a) => (a instanceof Error ? a.message : String(a)).includes(RAW)),
+  );
+}
+
+describe('HqWorkWorkShell raw error text', () => {
+  it('a thrown identity lookup shows plain copy with Retry and logs the raw text', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    const { invokeFn } = mockInvoke({
+      whoami: () => {
+        throw new Error(RAW);
+      },
+    });
+    component = mount(HqWorkWorkShell, { target: host, props: { invokeFn } });
+    await flush();
+    const card = host.querySelector('[data-testid="hq-work-identity-error"]');
+    expect(card).toBeTruthy();
+    expect(card!.textContent).toContain('Couldn’t verify your account. Try again.');
+    expect(host.innerHTML).not.toContain('HTTP 500');
+    expect(host.innerHTML).not.toContain('boom');
+    expect(card!.querySelector('button')?.textContent).toContain('Retry');
+    expect(warnedRaw(warn)).toBe(true);
+    warn.mockRestore();
+  });
+
+  it('an identity failure result shows plain copy and logs the raw text', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    const { invokeFn } = mockInvoke({
+      get_auth_session: () => {
+        throw new Error(RAW);
+      },
+    });
+    component = mount(HqWorkWorkShell, { target: host, props: { invokeFn } });
+    await flush();
+    const card = host.querySelector('[data-testid="hq-work-identity-error"]');
+    expect(card).toBeTruthy();
+    expect(card!.textContent).toContain('Couldn’t verify your account. Try again.');
+    expect(host.innerHTML).not.toContain('HTTP 500');
+    expect(warnedRaw(warn)).toBe(true);
+    warn.mockRestore();
+  });
+});

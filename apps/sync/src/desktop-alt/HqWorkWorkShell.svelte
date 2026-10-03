@@ -443,8 +443,10 @@
 
   const HOST_REQUEST_TIMEOUT_MS = 15_000;
 
-  function readableError(error: unknown, fallback: string): string {
-    return error instanceof Error && error.message ? error.message : fallback;
+  // AUDIT-3c: never show thrown transport text; log it and show app copy.
+  function readableError(error: unknown, fallback: string, what = 'request'): string {
+    console.warn(`[hq-work] ${what} failed`, error);
+    return fallback;
   }
 
   function isUnauthenticated(result: { code?: string; message?: string }): boolean {
@@ -710,7 +712,7 @@
       return true;
     } catch (error) {
       if (!isCurrent()) return true;
-      workspaceError = readableError(error, 'Couldn’t load company workspaces.');
+      workspaceError = readableError(error, 'Couldn’t load company workspaces.', 'workspace load');
       return false;
     }
   }
@@ -761,7 +763,8 @@
           signedOutReason = 'expired';
           lifecycle = 'signed-out';
         } else {
-          identityError = who.message ?? 'Couldn’t verify your account.';
+          console.warn('[hq-work] identity lookup failed', who.code, who.message);
+          identityError = 'Couldn’t verify your account. Try again.';
           lifecycle = 'identity-error';
         }
         return;
@@ -790,7 +793,7 @@
       sendQueuedCompanyInvites();
     } catch (error) {
       if (request !== hydration || expectedGeneration !== authGeneration) return;
-      identityError = readableError(error, 'Couldn’t verify your account.');
+      identityError = readableError(error, 'Couldn’t verify your account. Try again.', 'identity lookup');
       lifecycle = 'identity-error';
     }
 
@@ -839,7 +842,7 @@
       signedOutReason = 'signed-out';
       lifecycle = 'signed-out';
     } catch (error) {
-      signOutError = readableError(error, 'Couldn’t sign out. Please try again.');
+      signOutError = readableError(error, 'Couldn’t sign out. Try again.', 'sign out');
     } finally {
       signingOut = false;
     }
