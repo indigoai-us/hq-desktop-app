@@ -93,6 +93,7 @@
   // QA-100: "ready" can mean cached rows; only `load` says the read finished.
   let load = $state<BrainListLoad>("not-loaded");
   let status = $state("");
+  let readError = $state("");
   let query = $state("");
   let lens = $state<"tree" | "fresh">("tree");
   let policyFilter = $state<PolicyFilter>("all");
@@ -197,8 +198,13 @@
     workerFilter = "all";
   }
 
+  // AUDIT-3: Try again after a partial read re-runs the load below.
+  let readAttempt = $state(0);
+
   $effect(() => {
     const key = slug;
+    void readAttempt;
+    readError = "";
     const hit = readBrainCache(key);
     query = "";
     selected = null;
@@ -235,7 +241,7 @@
         readPolicies(files, `companies/${key}/policies`),
       ]);
       if ((knowledge === null || policies === null) && slug === key) {
-        status = "Some company files could not be read. Try again in a moment.";
+        readError = "Some company files could not be read.";
       }
       next.knowledge = knowledge ?? next.knowledge;
       next.policies = policies ?? next.policies;
@@ -580,6 +586,12 @@
     </div>
   {/if}
 
+  {#if readError}
+    <div class="status load-error" role="alert" data-testid="brain-read-error">
+      <p>{readError}</p>
+      <RailButton icon="refresh" data-testid="brain-retry" onclick={() => (readAttempt += 1)}>Try again</RailButton>
+    </div>
+  {/if}
   {#if status}<p class="status" data-testid="brain-status">{status}</p>{/if}
 
   {#if sheet}
@@ -816,4 +828,6 @@
   .opt { text-align: left; padding: 6px 8px; border-color: var(--line2, var(--v4-control-border)); }
   .sub { display: flex; justify-content: space-between; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--v4-rowline); }
   .brain { position: relative; }
+  .load-error { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+  .load-error p { margin: 0; }
 </style>
