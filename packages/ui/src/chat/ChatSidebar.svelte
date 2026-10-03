@@ -882,6 +882,7 @@
       .map((w) => ({
         companyUid: w.cloudUid as string,
         label: w.displayName?.trim() || w.slug,
+        slug: w.slug,
         // Every-plan company icon (NOT gated on brandingEnabled).
         iconUrl: w.iconUrl ?? null,
       })),
