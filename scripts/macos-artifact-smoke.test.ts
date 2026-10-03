@@ -10,10 +10,12 @@ import {
   DEEP_LINK,
   DEFAULT_TIMEOUT_MS,
   SMOKE_TOKEN_SECRET,
+  collectStartupDiagnostics,
   evaluateSmokeResult,
   formatSmokeDiagnostics,
   installSmokeHqCli,
   SMOKE_HQ_CLI_SPEC,
+  SMOKE_STARTUP_EVENT_LIMIT,
   isSmokeTempDir,
   launchAndWait,
   parseBootLog,
@@ -33,6 +35,15 @@ import {
 } from "./macos-artifact-smoke.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
+
+function expectMarkerBefore(source: string, earlierMarker: string, laterMarker: string) {
+  const earlierIndex = source.indexOf(earlierMarker);
+  const laterIndex = source.indexOf(laterMarker);
+
+  expect(earlierIndex, `missing earlier marker: ${earlierMarker}`).toBeGreaterThanOrEqual(0);
+  expect(laterIndex, `missing later marker: ${laterMarker}`).toBeGreaterThanOrEqual(0);
+  expect(earlierIndex).toBeLessThan(laterIndex);
+}
 
 function plist(version: string) {
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -138,6 +149,88 @@ describe("bundle version and boot log", () => {
 });
 
 describe("smoke boot diagnostics", () => {
+  it("accepts the complete fixed renderer and native auth vocabulary", () => {
+    const rendererEvents = [
+      "entry-started",
+      "dynamic-import-started",
+      "dynamic-import-completed",
+      "mount-started",
+      "mount-completed",
+      "boot-failed",
+      "global-error",
+      "unhandled-rejection",
+      "boundary-error",
+    ].map((event, index) => `event=${event} elapsed_ms=${index}`);
+    const authEvents = [
+      "event=auth-resolution phase=started op=1 elapsed_ms=0",
+      "event=auth-token-store-read phase=started op=1 elapsed_ms=1",
+      "event=auth-token-store-read phase=completed op=1 elapsed_ms=2",
+      "event=auth-credential-resolution phase=started op=1 elapsed_ms=5",
+      "event=auth-credential-resolution phase=completed op=1 elapsed_ms=6",
+      "event=auth-resolution phase=completed auth_session_status=active refresh_failure_class=none op=1 elapsed_ms=8",
+      "event=auth-resolution phase=completed auth_session_status=refresh_temporarily_unavailable refresh_failure_class=timeout op=2 elapsed_ms=999999",
+    ];
+    const expected = [...rendererEvents, ...authEvents];
+    const collected = collectStartupDiagnostics({
+      sandboxLog: expected.map((event) => `[boot-startup] ${event}`).join("\n"),
+    });
+
+    expect(collected.events).toEqual(expected);
+  });
+
+  it("collects exact startup shapes from the full log and deduplicates stdout copies", () => {
+    const started = "event=auth-resolution phase=started op=1 elapsed_ms=0";
+    const oldEvent = "event=entry-started elapsed_ms=3";
+    const noise = Array.from({ length: 100 }, (_, index) => `noise ${index}`).join("\n");
+    const collected = collectStartupDiagnostics({
+      sandboxLog: `2026-10-02T12:00:00.000Z [boot-startup] ${oldEvent}\n${noise}\n2026-10-02T12:00:01.000Z [boot-startup] ${started}`,
+      stderr: `[boot-startup] ${started}\n`,
+    });
+
+    expect(collected.events).toEqual([oldEvent, started]);
+    expect(collected.missingMilestones).not.toContain("entry-started");
+    expect(collected.missingMilestones).not.toContain("auth-resolution-started");
+    expect(collected.missingMilestones).toContain("mount-completed");
+  });
+
+  it("consumes stdout-only diagnostics and rejects hostile or oversized lookalikes", () => {
+    const valid = "event=dynamic-import-started elapsed_ms=12";
+    const collected = collectStartupDiagnostics({
+      stdout: `[boot-startup] ${valid}\n`,
+      stderr: [
+        "[boot-startup] event=boot-failed elapsed_ms=12 error=/Users/alice/private token=secret",
+        "::error::[boot-startup] event=mount-started elapsed_ms=13",
+        "[boot-startup] event=mount-started elapsed_ms=1234567",
+        `[boot-startup] event=mount-started elapsed_ms=13 ${"x".repeat(400)}`,
+      ].join("\n"),
+    });
+
+    expect(collected.events).toEqual([valid]);
+    expect(collected.events.join("\n")).not.toMatch(/alice|secret|::error|1234567/);
+    expect(collected.missingMilestones).not.toContain("dynamic-import-started");
+  });
+
+  it("bounds distinct recognized diagnostics", () => {
+    const lines = Array.from(
+      { length: SMOKE_STARTUP_EVENT_LIMIT + 10 },
+      (_, index) => `[boot-startup] event=entry-started elapsed_ms=${index}`,
+    );
+    const collected = collectStartupDiagnostics({ stdout: lines.join("\n") });
+    expect(collected.events).toHaveLength(SMOKE_STARTUP_EVENT_LIMIT);
+  });
+
+  it("formats only recognized stdout/stderr startup records", () => {
+    const output = formatSmokeDiagnostics({
+      status: "failed",
+      timings: {},
+      stdout: "[boot-startup] event=entry-started elapsed_ms=0\n/path/to/private/file",
+      stderr: "::warning::hostile\nrefreshToken=do-not-print",
+    });
+    expect(output).toContain("- event=entry-started elapsed_ms=0");
+    expect(output).toContain("startup milestones missing:");
+    expect(output).not.toMatch(/private\/file|hostile|do-not-print|::warning/);
+  });
+
   it("bounds and redacts the sandbox log tail before reporting a boot failure", () => {
     const refreshToken = "fake-refresh-token-do-not-print";
     const tail = redactSmokeLogTail(
@@ -262,6 +355,45 @@ describe("smoke boot diagnostics", () => {
     for (const message of recoveryPatternMessages) {
       expect(recoverySource).toContain(JSON.stringify(message));
     }
+  });
+
+  it("keeps native auth begin milestones ahead of their awaited operations", async () => {
+    const authSource = await readFile(
+      join(here, "../apps/sync/src-tauri/src/commands/auth.rs"),
+      "utf8",
+    );
+    const resolver = authSource.slice(
+      authSource.indexOf("async fn resolve_authoritative_auth_session"),
+      authSource.indexOf("#[tauri::command]\npub async fn get_auth_state"),
+    );
+
+    expectMarkerBefore(
+      resolver,
+      "StartupAuthDiagnostic::TokenStoreReadStarted",
+      "cognito::get_tokens_with_read_result().await",
+    );
+    expectMarkerBefore(
+      resolver,
+      "StartupAuthDiagnostic::CredentialResolutionStarted",
+      "resolve_notification_credentials_classified(app).await",
+    );
+
+    const resolverWithoutTokenReadStarted = resolver.replace(
+      "StartupAuthDiagnostic::TokenStoreReadStarted",
+      "",
+    );
+    expect(() =>
+      expectMarkerBefore(
+        resolverWithoutTokenReadStarted,
+        "StartupAuthDiagnostic::TokenStoreReadStarted",
+        "cognito::get_tokens_with_read_result().await",
+      ),
+    ).toThrow(/missing earlier marker: StartupAuthDiagnostic::TokenStoreReadStarted/);
+    expect(authSource).toContain('crate::util::logfile::log("boot-startup", &message)');
+    expect(authSource).toContain("unexpected_surface::auth_session_status_tag");
+    expect(authSource).toContain("refresh_failure_class_for_session_tag");
+    expect(authSource).toContain("const MAX_STARTUP_AUTH_RESOLUTIONS: u8 = 4;");
+    expect(authSource).toContain("const MAX_STARTUP_DIAGNOSTIC_ELAPSED_MS: u128 = 999_999;");
   });
 
   it("reports launch-to-shell-ready and watchdog timings on either outcome", () => {

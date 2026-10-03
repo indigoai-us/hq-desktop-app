@@ -25,6 +25,7 @@ The release moves it under the version it ships in.
 
 ## [0.10.384] — 2026-10-03
 
+- Startup failures now leave a bounded, non-sensitive trail through native credential resolution and desktop rendering, and the macOS artifact smoke reports which fixed milestones were observed or missing without printing arbitrary app output.
 - Release builds: the macOS release check now confirms its test sign-in is still valid before it opens the app. An expired test sign-in failed v0.10.383 with a message that looked like the app was stuck loading; it now says the test sign-in expired and how to renew it.
 - Desktop onboarding step telemetry now includes the install-attempt identifier so sign-in progress can be joined to that installation’s first launch.
 

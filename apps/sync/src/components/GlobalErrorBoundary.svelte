@@ -8,9 +8,14 @@
   interface Props {
     component: Component<any>;
     windowLabel?: string;
+    onStartupBoundaryError?: () => void;
   }
 
-  let { component: RootComponent, windowLabel = 'main' }: Props = $props();
+  let {
+    component: RootComponent,
+    windowLabel = 'main',
+    onStartupBoundaryError,
+  }: Props = $props();
 
   let boundaryError = $state<unknown>(null);
   let recoveredPath = $state<string | null>(null);
@@ -87,6 +92,7 @@
   function handleBoundaryError(error: unknown, reset: () => void): void {
     void reset;
     boundaryError = error;
+    onStartupBoundaryError?.();
     // A fatal error during boot rolls back a UI hot bundle (no-op otherwise).
     reportUiBootFailure(invoke, errorMessage(error));
     const code = svelteErrorCode(error);

@@ -36,6 +36,8 @@ export const DEEP_LINK = "hqwork://open?channel=setup";
 export const SMOKE_TEMP_PREFIX = "hq-release-smoke-";
 export const CHILD_STOP_WAIT_MS = 1_000;
 export const SMOKE_LOG_TAIL_LINES = 80;
+export const SMOKE_STARTUP_EVENT_LIMIT = 40;
+export const SMOKE_STARTUP_LINE_MAX_CHARS = 320;
 /** npm spec for the CLI the app looks for; the same spec the app installs. */
 export const SMOKE_HQ_CLI_SPEC = "@indigoai-us/hq-cli";
 export const HQ_CLI_INSTALL_TIMEOUT_MS = 180_000;
@@ -233,6 +235,83 @@ const SAFE_BOOT_LOG_PATTERNS = [
   new RegExp(`^shell ready during recovery auto-check; not opening recovery window \\(trigger=(?:${SAFE_RECOVERY_TRIGGERS})\\)$`),
 ];
 
+const SAFE_STARTUP_ELAPSED = "(?:0|[1-9]\\d{0,5})";
+const SAFE_STARTUP_OPERATION = "[1-4]";
+const SAFE_AUTH_SESSION_STATUS = "active|credentials_absent|credentials_read_error|credentials_invalid|refresh_temporarily_unavailable|non_human_principal";
+const SAFE_REFRESH_FAILURE_CLASS = "none|network|timeout|http_4xx|http_5xx|http_other|response_decode|unknown";
+const SAFE_RENDERER_STARTUP_EVENT = "entry-started|dynamic-import-started|dynamic-import-completed|mount-started|mount-completed|boot-failed|global-error|unhandled-rejection|boundary-error";
+const SAFE_STARTUP_DIAGNOSTIC_PATTERNS = [
+  new RegExp(`^event=(?:${SAFE_RENDERER_STARTUP_EVENT}) elapsed_ms=${SAFE_STARTUP_ELAPSED}$`),
+  new RegExp(`^event=auth-resolution phase=started op=${SAFE_STARTUP_OPERATION} elapsed_ms=${SAFE_STARTUP_ELAPSED}$`),
+  new RegExp(`^event=auth-token-store-read phase=started op=${SAFE_STARTUP_OPERATION} elapsed_ms=${SAFE_STARTUP_ELAPSED}$`),
+  new RegExp(`^event=auth-token-store-read phase=completed op=${SAFE_STARTUP_OPERATION} elapsed_ms=${SAFE_STARTUP_ELAPSED}$`),
+  new RegExp(`^event=auth-credential-resolution phase=started op=${SAFE_STARTUP_OPERATION} elapsed_ms=${SAFE_STARTUP_ELAPSED}$`),
+  new RegExp(`^event=auth-credential-resolution phase=completed op=${SAFE_STARTUP_OPERATION} elapsed_ms=${SAFE_STARTUP_ELAPSED}$`),
+  new RegExp(`^event=auth-resolution phase=completed auth_session_status=(?:${SAFE_AUTH_SESSION_STATUS}) refresh_failure_class=(?:${SAFE_REFRESH_FAILURE_CLASS}) op=${SAFE_STARTUP_OPERATION} elapsed_ms=${SAFE_STARTUP_ELAPSED}$`),
+];
+
+const REQUIRED_STARTUP_MILESTONES = [
+  "auth-resolution-started",
+  "auth-token-store-read-started",
+  "auth-token-store-read-completed",
+  "auth-credential-resolution-started",
+  "auth-credential-resolution-completed",
+  "auth-resolution-completed",
+  "entry-started",
+  "dynamic-import-started",
+  "dynamic-import-completed",
+  "mount-started",
+  "mount-completed",
+];
+
+function safeStartupDiagnostic(line) {
+  if (typeof line !== "string" || line.length > SMOKE_STARTUP_LINE_MAX_CHARS) return null;
+  const match = /^(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z )?\[boot-startup\] (.*)$/.exec(line);
+  if (!match) return null;
+  return SAFE_STARTUP_DIAGNOSTIC_PATTERNS.some((pattern) => pattern.test(match[1]))
+    ? match[1]
+    : null;
+}
+
+function startupMilestone(message) {
+  const renderer = /^event=([a-z-]+) elapsed_ms=/.exec(message);
+  if (renderer) return renderer[1];
+  const auth = /^event=(auth-[a-z-]+) phase=(started|completed) /.exec(message);
+  return auth ? `${auth[1]}-${auth[2]}` : null;
+}
+
+/**
+ * Scan every captured source, but retain only a small deduplicated set of
+ * exact fixed-shape startup records. No unmatched source text is returned.
+ */
+export function collectStartupDiagnostics({
+  sandboxLog = "",
+  stdout = "",
+  stderr = "",
+  maxEvents = SMOKE_STARTUP_EVENT_LIMIT,
+} = {}) {
+  const boundedMax = Number.isInteger(maxEvents) && maxEvents > 0
+    ? Math.min(maxEvents, SMOKE_STARTUP_EVENT_LIMIT)
+    : SMOKE_STARTUP_EVENT_LIMIT;
+  const events = [];
+  const seen = new Set();
+  for (const source of [sandboxLog, stdout, stderr]) {
+    for (const line of String(source ?? "").split(/\r?\n/)) {
+      const diagnostic = safeStartupDiagnostic(line);
+      if (!diagnostic || seen.has(diagnostic)) continue;
+      seen.add(diagnostic);
+      if (events.length < boundedMax) events.push(diagnostic);
+    }
+  }
+  const observedMilestones = new Set(events.map(startupMilestone).filter(Boolean));
+  return {
+    events,
+    missingMilestones: REQUIRED_STARTUP_MILESTONES.filter(
+      (milestone) => !observedMilestones.has(milestone),
+    ),
+  };
+}
+
 const CREDENTIAL_SHAPES = [
   /\b(?:password|passwd|secret|api[_-]?key|(?:id|access|refresh)[_-]?token|token|gh[_-]?token|github[_-]?token|client[_-]?secret|credential|private[_-]?key|cookie|set-cookie|authorization|proxy-authorization)\s*[:=]\s*\S+/i,
   /\b(?:bearer|basic)\s+\S+/i,
@@ -272,7 +351,15 @@ function formatElapsed(value) {
 }
 
 /** Format launch milestones for both smoke outcomes; include logs only on failure. */
-export function formatSmokeDiagnostics({ status, timings, sandboxLog = "", refreshToken } = {}) {
+export function formatSmokeDiagnostics({
+  status,
+  timings,
+  sandboxLog = "",
+  stdout = "",
+  stderr = "",
+  refreshToken,
+} = {}) {
+  const startup = collectStartupDiagnostics({ sandboxLog, stdout, stderr });
   const lines = [
     `macos-artifact-smoke timings (${status})`,
     `launch_to_window_created_ms=${formatElapsed(timings?.launchToWindowCreatedMs)}`,
@@ -280,7 +367,16 @@ export function formatSmokeDiagnostics({ status, timings, sandboxLog = "", refre
     `launch_to_watchdog_timeout_ms=${formatElapsed(timings?.launchToWatchdogTimeoutMs)}`,
     `launch_to_recovery_opened_ms=${formatElapsed(timings?.launchToRecoveryOpenedMs)}`,
     `smoke_terminal_observed_ms=${formatElapsed(timings?.terminalObservedMs)}`,
+    `startup diagnostics recognized (${startup.events.length}/${SMOKE_STARTUP_EVENT_LIMIT} max):`,
   ];
+  if (startup.events.length === 0) {
+    lines.push("- none");
+  } else {
+    for (const event of startup.events) lines.push(`- ${event}`);
+  }
+  lines.push(
+    `startup milestones missing: ${startup.missingMilestones.length > 0 ? startup.missingMilestones.join(",") : "none"}`,
+  );
   if (status !== "passed") {
     lines.push("sandbox hq-sync.log tail (up to 80 lines; only known-safe boot events shown):");
     for (const line of redactSmokeLogTail(sandboxLog, { refreshToken })) {
@@ -720,7 +816,7 @@ export async function runArtifactSmoke({
   try {
     const { logPath } = await writeSmokeHome({ home, refreshToken });
     installHqCliImpl({ home });
-    const { log, timedOut, launchError, sandboxLog, timings } = await launchAndWait({
+    const { log, timedOut, launchError, stdout, stderr, sandboxLog, timings } = await launchAndWait({
       appPath: resolvedApp,
       home,
       logPath,
@@ -739,7 +835,13 @@ export async function runArtifactSmoke({
         expectedVersion: version,
         timedOut,
       });
-      diagnostic(formatSmokeDiagnostics({ status: "passed", timings }));
+      diagnostic(formatSmokeDiagnostics({
+        status: "passed",
+        timings,
+        sandboxLog,
+        stdout,
+        stderr,
+      }));
       return result;
     } catch (error) {
       diagnostic(
@@ -747,6 +849,8 @@ export async function runArtifactSmoke({
           status: "failed",
           timings,
           sandboxLog,
+          stdout,
+          stderr,
           refreshToken,
         }),
       );
