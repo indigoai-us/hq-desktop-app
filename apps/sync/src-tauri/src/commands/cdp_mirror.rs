@@ -62,6 +62,10 @@ pub const OP_INVITE_SENT: &str = "desktop_invite_sent";
 pub const OP_INVITE_FAILED: &str = "desktop_invite_failed";
 pub const OP_COMPANY_JOINED: &str = "desktop_company_joined";
 pub const OP_PLAN_SELECTED: &str = "desktop_plan_selected";
+/// Sign-in funnel stages before the app has an authenticated account.
+pub const OP_AUTH_PROGRESS: &str = "desktop_auth_progress";
+/// Sanitized sign-in failures, never a provider response, callback code, or token.
+pub const OP_AUTH_FAILURE: &str = "desktop_auth_failure";
 
 /// `(hq-pro operational row, CDP event, props carried over)`. Telemetry tests
 /// check every row name is on the operational allow-list and every prop on the
@@ -97,6 +101,16 @@ pub const OPERATIONAL_MIRRORS: &[(&str, &str, &[&str])] = &[
     ),
     (OP_COMPANY_JOINED, EVENT_COMPANY_JOINED, &["route", "count"]),
     (OP_PLAN_SELECTED, EVENT_PLAN_SELECTED, &["plan"]),
+    (
+        OP_AUTH_PROGRESS,
+        EVENT_AUTH_PROGRESS,
+        &["provider", "step"],
+    ),
+    (
+        OP_AUTH_FAILURE,
+        EVENT_AUTH_FAILURE,
+        &["provider", "step", "errorCategory"],
+    ),
 ];
 
 /// How long an app-initiated quit waits for the final flush.
@@ -1016,6 +1030,16 @@ mod tests {
                 OP_PLAN_SELECTED,
                 EVENT_PLAN_SELECTED,
                 json!({"plan": "workforce"}),
+            ),
+            (
+                OP_AUTH_PROGRESS,
+                EVENT_AUTH_PROGRESS,
+                json!({"provider": "google", "step": "callback_received", "code": "secret"}),
+            ),
+            (
+                OP_AUTH_FAILURE,
+                EVENT_AUTH_FAILURE,
+                json!({"provider": "google", "step": "provider_page_opened", "errorCategory": "network", "message": "secret"}),
             ),
         ];
         assert_eq!(cases.len(), OPERATIONAL_MIRRORS.len());
