@@ -747,6 +747,8 @@ export function createSyncPlatformAdapter(
           idempotencyKey: args.idempotencyKey ?? null,
         }),
       checkCompanySlug: (slug) => call('check_company_slug', { slug }),
+      activateCompanyCloud: (companyUid) =>
+        call('activate_company_cloud', { companyUid }),
       getCompanyTab: (companyUid, tab) =>
         call('get_company_tab', { companyUid, tab }),
       runCompanyTabAction: (args) =>
@@ -1083,7 +1085,7 @@ export function createSyncPlatformAdapter(
       getTeamTelemetry: (slug) =>
         call('get_company_team_telemetry', { slug }),
       claimPendingInvite: (slug) =>
-        call('claim_pending_company_invite', { slug }),
+        call('claim_pending_company_invite', { slug, route: 'company_page' }),
       connectToCloud: (slug) =>
         call('connect_workspace_to_cloud', { slug }),
       getSummary: (slug) => call('get_company_summary', { slug }),

@@ -129,6 +129,7 @@
   import {
     openCreateCompanyDraft,
     submitCreateCompany,
+    provisionCompanyCloud,
     type CompanyCreateSeam,
   } from "../chat/create-company/create-company-flow.js";
   import {
@@ -599,6 +600,7 @@
   } from "./palette-rows.js";
   import {
     joinableMemberships,
+    needsCloudProvisioning,
     type Workspace,
     type WorkspacesResult,
   } from "../chat/workspaces.js";
@@ -647,6 +649,11 @@
     loadFilePreview?: (item: ChannelFileItemModel) => Promise<ChannelFilePreview>;
     /** Platform seam for opening an external URL (run-card preview/diff). */
     onopenurl?: (url: string) => void;
+    /**
+     * Host-owned notification rows (paused uploads) open through the host, so
+     * it can record the engagement and open only an approved link.
+     */
+    onopenhostnotification?: (id: string, url: string) => void;
     /** Bubbled lifecycle-card action (host posts in US-009). */
     oncardaction?: (event: LifecycleCardActionEvent) => void;
     /** Wake events (host bridges MeshClient → bus); null when offline. */
@@ -798,6 +805,12 @@
     ) => void;
     /** Persist the conversation the user just opened (fresh-load restore). */
     onselectrow?: (row: ConversationRow) => void;
+    /**
+     * QA-075: the company whose pane is open (a company or project channel),
+     * or null on personal pages and every non-conversation view. Hosts use it
+     * to scope per-company notices to that company's pane.
+     */
+    onactivecompanychange?: (company: { uid: string | null; slug: string } | null) => void;
     /** Desktop: PUT attachment bytes outside the webview (no S3 CORS). */
     putAttachmentObject?: PutChatAttachment;
     /**
@@ -927,6 +940,7 @@
     filesByRow,
     loadFilePreview,
     onopenurl,
+    onopenhostnotification,
     oncardaction,
     wakes = null,
     companies = null,
@@ -967,6 +981,7 @@
     hydrateLiveMessages = false,
     onlivemessages,
     onselectrow,
+    onactivecompanychange,
     putAttachmentObject,
     getAttachmentObject,
     bootTimeoutMs = DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
@@ -1282,6 +1297,20 @@
     membershipSyncError = null;
     membershipSyncTarget = target.slug;
     try {
+      // A company you own with no vault bucket was created without its cloud
+      // provisioning, and its sync can only fail with "not provisioned".
+      // Provision first (idempotent, owner-only), so Try again repairs it.
+      if (needsCloudProvisioning(target) && conversationApi.activateCompanyCloud) {
+        const provisioned = await provisionCompanyCloud(
+          conversationApi,
+          target.cloudUid!,
+        );
+        if (!provisioned.ok) {
+          membershipSyncError = provisioned.reason;
+          membershipSyncPending = false;
+          return;
+        }
+      }
       // Scoped to the company the banner names — an unscoped call is
       // SyncRunScope::All, which syncs every workspace on the machine and is
       // not what "pull it onto this machine" promises. Matches CompanyPage.
@@ -3551,6 +3580,18 @@
       ""
     );
   });
+  const activeCompanyPane = $derived.by(() => {
+    if (view !== "conversation" || selectedRow?.kind !== "channel") return null;
+    const scope = (selectedRow.channelScope ?? "").trim();
+    if (scope !== "company" && scope !== "project" && !selectedHomeCompany) return null;
+    const uid = (selectedRow.companyUid ?? selectedHomeCompany?.cloudUid ?? "").trim() || null;
+    const slug = selectedCompanySlug.trim();
+    return uid || slug ? { uid, slug } : null;
+  });
+  $effect(() => {
+    const active = activeCompanyPane;
+    onactivecompanychange?.(active ? { uid: active.uid, slug: active.slug } : null);
+  });
 
   /** "Indigo · project channel" style subtitle under the channel name. */
   const channelSubtitle = $derived.by(() => {
@@ -5459,6 +5500,10 @@
       ? async (slug: string) =>
           unwrapAdapter(await adapter.messaging.checkCompanySlug!(slug))
       : undefined,
+    activateCompanyCloud: adapter.messaging.activateCompanyCloud
+      ? async (companyUid: string) =>
+          unwrapAdapter(await adapter.messaging.activateCompanyCloud!(companyUid))
+      : undefined,
     getCompanyTab: adapter.messaging.getCompanyTab
       ? async (companyUid, tabId) =>
           unwrapAdapter(await adapter.messaging.getCompanyTab!(companyUid, tabId))
@@ -5829,12 +5874,13 @@
           checkSlug: conversationApi.checkCompanySlug
             ? (slug: string) => conversationApi.checkCompanySlug!(slug)
             : null,
-          submit: async (form, values, invites) => {
+          submit: async (form, values, invites, onPhase) => {
             const result = await submitCreateCompany(
               conversationApi,
               form,
               values,
               invites,
+              { onPhase },
             );
             if (result.ok) {
               createCompanyRequested = true;
@@ -5851,6 +5897,8 @@
             }
             return result;
           },
+          provision: (companyUid: string) =>
+            provisionCompanyCloud(conversationApi, companyUid),
         }
       : null,
   );
@@ -8192,6 +8240,11 @@
       handleSelect(existing ?? stub, {
         replyRootEventId: dest.replyRootEventId,
       });
+      return;
+    }
+    if (dest.kind === "external") {
+      if (onopenhostnotification) onopenhostnotification(dest.id, dest.url);
+      else onopenurl?.(dest.url);
       return;
     }
     if (dest.kind === "files") {

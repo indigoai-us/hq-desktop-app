@@ -2862,7 +2862,10 @@ fn person_uid_from_memberships(
     })
 }
 
-async fn fetch_person_uid_from_vault(base_url: &str, access_token: &str) -> Option<String> {
+pub(crate) async fn fetch_person_uid_from_vault(
+    base_url: &str,
+    access_token: &str,
+) -> Option<String> {
     let vault = crate::commands::vault_client::VaultClient::new(base_url, access_token);
     match vault.list_entities_by_type("person").await {
         Ok(persons) => {

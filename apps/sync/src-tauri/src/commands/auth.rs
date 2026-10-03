@@ -540,7 +540,10 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
                 )
             } else {
                 (
-                    signed_out_state(),
+                    after
+                        .as_ref()
+                        .map(authenticated_state_from_tokens)
+                        .unwrap_or_else(signed_out_state),
                     AuthSessionStatus::RefreshTemporarilyUnavailable,
                     preserved_account,
                     Some("HQ Work could not refresh credentials while offline or unavailable."),
@@ -580,6 +583,7 @@ pub async fn get_auth_state(app: AppHandle) -> Result<AuthState, String> {
         // receipt and sending it. Retries are native and non-blocking, so the
         // renderer never receives a bearer token or waits on analytics.
         crate::commands::desktop_auth::flush_pending_authenticated_desktop_receipts();
+        crate::commands::desktop_auth::flush_pending_desktop_referrals(&app);
     }
     startup_auth_state_result(state, &envelope.status)
 }
@@ -683,6 +687,23 @@ mod tests {
             result.is_err(),
             "a saved session with a transient refresh failure must reach the renderer retry path"
         );
+    }
+
+    #[test]
+    fn temporary_refresh_failure_keeps_a_stored_session_authenticated() {
+        let tokens = cognito::CognitoTokens {
+            access_token: "expired-access".to_string(),
+            id_token: None,
+            refresh_token: "refresh".to_string(),
+            expires_at: 0,
+        };
+        let state = authenticated_state_from_tokens(&tokens);
+        assert!(state.authenticated);
+        assert!(startup_auth_state_result(
+            state,
+            &AuthSessionStatus::RefreshTemporarilyUnavailable,
+        )
+        .is_err(), "the renderer gets the temporary-retry surface while the session stays authenticated");
     }
 
     #[test]

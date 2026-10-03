@@ -19,6 +19,10 @@ function parseStructuredOAuthError(
 export function mapSignInError(message: string, provider?: SignInProvider): string {
   const structured = parseStructuredOAuthError(message);
 
+  if (structured?.code === 'OAUTH_REFERRAL_PERSIST_FAILED') {
+    return 'We couldn’t finish preparing sign-in. Please try again.';
+  }
+
   if (structured?.code === 'OAUTH_PORT_IN_USE') {
     return (
       structured.message ||
