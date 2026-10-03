@@ -101,7 +101,7 @@ describe("BLANK-1-31 company Activity reads company telemetry", () => {
   });
 
   it("shows the failed line with Try again, never the empty copy, and retries", async () => {
-    const read = vi.fn(async () => failure("network", "HTTP 502 Bad Gateway"));
+    const read = vi.fn(async (): Promise<unknown> => failure("network", "HTTP 502 Bad Gateway"));
     const target = mountWith(read);
     await settle();
     expect(target.querySelector("[data-testid='activity-failed']")?.textContent).toContain("Could not load activity.");
