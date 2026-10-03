@@ -30,6 +30,13 @@ describe("Settings › Bots New bot uses the shared Messages modal", () => {
     expect(settings).toMatch(/<BotsSettingsPane[^>]*\{onnewbot\}/);
   });
 
+  it("every direct cloud create reads the flag for the chosen company", () => {
+    const fn = shell.slice(shell.indexOf("async function createCloudBotDirect"));
+    const body = fn.slice(0, fn.indexOf("\n  }\n"));
+    expect(body).toContain("runCompanyDirectCloudCreate(");
+    expect(shell).not.toMatch(/\brunDirectCloudCreate\(/);
+  });
+
   it("Settings has no cloud create of its own", () => {
     expect(shell).not.toMatch(/oncreatecloudbot=/);
     expect(pane).not.toMatch(/onCloudCreate=\{(?!null)/);

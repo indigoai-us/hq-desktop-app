@@ -221,7 +221,7 @@
   } from "../chat/lifecycle-entry-points.js";
   import {
     createDirectCloudCreate,
-    runDirectCloudCreate,
+    runCompanyDirectCloudCreate,
   } from "../chat/create-bot/cloud-create.js";
   import {
     openCreateCompanyDraft,
@@ -6549,8 +6549,10 @@
     }
     const companyLabel =
       (companies ?? []).find((c) => c.cloudUid === companyUid)?.displayName?.trim() || undefined;
-    const result = await runDirectCloudCreate(
-      directCloudCreate.client,
+    // The flag is read for this company on every direct create, not only by
+    // the surface that offered Cloud.
+    const result = await runCompanyDirectCloudCreate(
+      directCloudCreate,
       companyUid,
       {
         name: draft.name,

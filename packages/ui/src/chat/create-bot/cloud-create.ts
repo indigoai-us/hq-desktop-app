@@ -138,3 +138,25 @@ export async function runDirectCloudCreate(
     fix: copy.fix,
   };
 }
+
+/**
+ * The direct create for one company, gated on the flag for THAT company. A
+ * person in a flagged company and an unflagged one gets no POST for the
+ * unflagged one, whichever surface asked.
+ */
+export async function runCompanyDirectCloudCreate(
+  seam: Pick<DirectCloudCreate, "isEnabled" | "client">,
+  companyUid: string,
+  draft: DirectCloudDraft,
+  context: { companyLabel?: string } = {},
+): Promise<DirectCloudCreateResult> {
+  if (!(await seam.isEnabled(companyUid))) {
+    return {
+      ok: false,
+      reason: "Adding cloud bots this way isn't on for this company yet.",
+      blocked: true,
+      fix: null,
+    };
+  }
+  return runDirectCloudCreate(seam.client, companyUid, draft, context);
+}

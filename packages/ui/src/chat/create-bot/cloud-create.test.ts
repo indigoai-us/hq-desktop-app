@@ -9,6 +9,7 @@ import {
   DESKTOP_NEW_BOT_SURFACE,
   createDirectCloudCreate,
   newWizardIdempotencyKey,
+  runCompanyDirectCloudCreate,
   runDirectCloudCreate,
   type DirectCloudDraft,
 } from "./cloud-create.js";
@@ -200,6 +201,26 @@ describe("runDirectCloudCreate (web adapter, mocked API)", () => {
     const { adapter, seen } = webAdapter(() => ({ status: 403, body: { error: "Forbidden: createAgents capability required" } }));
     await expect(createDirectCloudCreate(adapter)!.availability(INDIGO)).resolves.toEqual({ state: "role", admins: [] });
     expect(seen[0]?.path).toBe(`/v1/agents/provision-options?companyUid=${INDIGO}`);
+  });
+});
+
+describe("runCompanyDirectCloudCreate: the flag is checked for the chosen company", () => {
+  it("a person in a flagged company plus an unflagged one cannot direct-create in the unflagged one", async () => {
+    const { adapter, seen } = webAdapter((method, path) =>
+      method === "GET" && path.startsWith("/v1/flags/resolve")
+        ? flags(path.includes(`companyUid=${INDIGO}`))
+        : { status: 201, body: CREATED },
+    );
+    const seam = createDirectCloudCreate(adapter)!;
+    await expect(seam.anyEnabled(["cmp_other", INDIGO])).resolves.toBe(true);
+    seen.length = 0;
+
+    const refused = await runCompanyDirectCloudCreate(seam, "cmp_other", DRAFT);
+    expect(refused).toMatchObject({ ok: false, blocked: true, fix: null });
+    expect(seen.filter((s) => s.method === "POST")).toEqual([]);
+
+    await expect(runCompanyDirectCloudCreate(seam, INDIGO, DRAFT)).resolves.toMatchObject({ ok: true, agentUid: "agt_ada" });
+    expect(seen.filter((s) => s.method === "POST").map((s) => (s.body as { companyUid: string }).companyUid)).toEqual([INDIGO]);
   });
 });
 
