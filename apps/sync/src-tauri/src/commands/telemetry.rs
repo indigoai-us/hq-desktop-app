@@ -863,6 +863,8 @@ const ALLOWED_DESKTOP_PROPERTY_KEYS: &[&str] = &[
     "requiredGitVersion",
     "detectedGitVersion",
     "found",
+    "companyUidMissing",
+    "invitesSent",
     // Company step route decision + provisioning + self-heal (look before create).
     "existingCompanies",
     "paidCompany",
@@ -1100,8 +1102,13 @@ fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
                         | "paidCompany"
                         | "success"
                         | "isFirstLaunch"
+                        | "companyUidMissing"
                 )
                 .then_some(value),
+                ("invitesSent", Value::Number(number)) => number
+                    .as_u64()
+                    .filter(|count| *count <= 20)
+                    .map(|_| Value::Number(number.clone())),
                 (_, Value::Number(n)) => {
                     (n.as_i64().is_some() || n.as_u64().is_some()).then_some(value)
                 }
@@ -1116,13 +1123,16 @@ fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
     Value::Object(out)
 }
 
-/// Onboarding rows that may name their company: the company step, and the
-/// missing-bucket self-heal (any step).
+/// Onboarding rows that may name their company: company and invite-teammate
+/// steps, plus the missing-bucket self-heal (any step).
 fn properties_company_scoped(input: Option<&Map<String, Value>>) -> bool {
     let Some(input) = input else {
         return false;
     };
-    input.get("step").and_then(Value::as_str) == Some("company")
+    matches!(
+        input.get("step").and_then(Value::as_str),
+        Some("company" | "invite-teammate")
+    )
         || input.get("selfHeal").and_then(Value::as_str).is_some()
 }
 
@@ -2871,6 +2881,55 @@ mod codex_telemetry_tests {
         assert_eq!(event.properties["pendingInvites"], 1);
         assert!(event.properties.get("email").is_none());
         assert!(event.properties.get("companyUid").is_none());
+    }
+
+    #[test]
+    fn invite_teammate_outcomes_lift_company_uid_and_missing_company_is_explicit() {
+        for action in ["entered", "completed", "skipped", "failed"] {
+            let event = build_desktop_telemetry_event(
+                "desktop_onboarding_step".to_string(),
+                Some(json!({
+                    "step": "invite-teammate",
+                    "action": action,
+                    "companyUid": "cmp_company-1",
+                })),
+                Some("session-1".to_string()),
+                None,
+                "no-consent",
+            );
+            assert_eq!(event.company_uid.as_deref(), Some("cmp_company-1"), "{action}");
+        }
+
+        let missing = build_desktop_telemetry_event(
+            "desktop_onboarding_step".to_string(),
+            Some(json!({
+                "step": "invite-teammate",
+                "action": "entered",
+                "companyUidMissing": true,
+            })),
+            Some("session-2".to_string()),
+            None,
+            "no-consent",
+        );
+        assert!(missing.company_uid.is_none());
+        assert_eq!(missing.properties["companyUidMissing"], true);
+    }
+
+    #[test]
+    fn invite_step_sent_count_is_bounded_to_twenty() {
+        let valid = sanitize_desktop_properties(Some(json!({
+            "step": "invite-teammate",
+            "action": "completed",
+            "invitesSent": 20,
+        })));
+        assert_eq!(valid["invitesSent"], 20);
+
+        let too_large = sanitize_desktop_properties(Some(json!({
+            "step": "invite-teammate",
+            "action": "completed",
+            "invitesSent": 21,
+        })));
+        assert!(too_large.get("invitesSent").is_none());
     }
 
     #[test]

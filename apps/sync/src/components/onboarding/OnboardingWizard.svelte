@@ -580,6 +580,7 @@
         action,
         ...details,
         ...(companyUid ? { companyUid } : {}),
+        ...(stepId === 'invite-teammate' && !companyUid ? { companyUidMissing: true } : {}),
         appVersion: onboardingAppVersion,
         flow: flow ?? onboardingFlow,
       },
@@ -1568,6 +1569,7 @@
       void emitDesktopOperationalTelemetry(inviteSentEvent());
       recordStep(INVITE_TEAMMATE_STEP_INDEX, 'completed', {
         outcome: alreadyInvited ? 'resent' : 'ok',
+        invitesSent: 1,
       });
     } catch (error) {
       console.warn('onboarding: invite teammate request failed', error);
