@@ -9,6 +9,22 @@ interface Invocation {
   args?: Record<string, unknown>;
 }
 
+/** A flag client whose unlisted methods are inert. */
+function fakeClient(over: Partial<FlagClient>): FlagClient {
+  return {
+    ready: async () => {},
+    snapshot: () => null,
+    isEnabled: () => false,
+    refresh: async () => {},
+    explain: () => ({ value: false, source: "fallback" }),
+    observeVersion: () => {},
+    onSnapshotChange: () => () => {},
+    version: () => 1,
+    close: () => {},
+    ...over,
+  } as FlagClient;
+}
+
 describe("TauriPlatformAdapter hasFeature", () => {
   it("personal transcript flag fails closed when its registry is unavailable", async () => {
     const calls: Invocation[] = [];
