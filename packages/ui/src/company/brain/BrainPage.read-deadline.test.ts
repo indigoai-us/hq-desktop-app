@@ -40,6 +40,8 @@ describe("BrainPage read deadline (BLANK-1)", () => {
       expect(document.querySelector("[data-testid='brain-read-error']")?.textContent).toContain("Some company files could not be read.");
       expect(document.querySelector("[data-testid='brain-retry']")).toBeTruthy();
       expect(warn).toHaveBeenCalled();
+      // BLANK-2: no zero count next to the failed read.
+      expect(document.querySelector(".toolbar")?.textContent).not.toMatch(/\b0 (files|skills|workers|hard)\b/);
     },
   );
 });

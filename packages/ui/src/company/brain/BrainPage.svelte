@@ -405,27 +405,28 @@
   <header class="toolbar">
     <h1>{title}</h1>
     {#if page === "policies"}
-      <span class="meta-line" data-meta-line>{policyGroups.hard.length} hard · {policyGroups.soft.length} soft</span>
+      <!-- BLANK-2: counts wait for a read that succeeded. -->
+      {#if !listReadFailed}<span class="meta-line" data-meta-line>{policyGroups.hard.length} hard · {policyGroups.soft.length} soft</span>{/if}
       <div class="tabs" role="tablist">
         {#each ["all", "hard", "soft"] as id (id)}
           <button type="button" role="tab" class="tab" aria-selected={policyFilter === id} onclick={() => (policyFilter = id as PolicyFilter)}>{id === "all" ? "All" : id === "hard" ? "Hard" : "Soft"}</button>
         {/each}
       </div>
     {:else if page === "skills"}
-      {#if listView.count !== null}<span class="meta-line" data-meta-line>{listView.count} skills</span>{/if}
+      {#if listView.count !== null && !listReadFailed}<span class="meta-line" data-meta-line>{listView.count} skills</span>{/if}
       <div class="tabs" role="tablist">
         <button type="button" role="tab" class="tab" aria-selected={skillTab === "library"} onclick={() => (skillTab = "library")}>Library</button>
         <button type="button" role="tab" class="tab" aria-selected={skillTab === "usage"} onclick={() => (skillTab = "usage")}>Usage</button>
       </div>
     {:else if page === "workers"}
-      <span class="meta-line" data-meta-line data-testid="brain-worker-count">{workerRows.length} workers</span>
+      {#if !listReadFailed}<span class="meta-line" data-meta-line data-testid="brain-worker-count">{workerRows.length} workers</span>{/if}
       <div class="tabs" role="tablist">
         {#each [["all", "All"], ["company", "Company"], ["personal", "Personal overlay"]] as [id, label] (id)}
           <button type="button" role="tab" class="tab" aria-selected={workerScope === id} onclick={() => (workerScope = id as WorkerScopeFilter)}>{label}</button>
         {/each}
       </div>
     {:else}
-      {#if listView.count !== null}<span class="meta-line" data-meta-line data-testid="brain-knowledge-count">{listView.count} {listView.count === 1 ? "file" : "files"}</span>{/if}
+      {#if listView.count !== null && !listReadFailed}<span class="meta-line" data-meta-line data-testid="brain-knowledge-count">{listView.count} {listView.count === 1 ? "file" : "files"}</span>{/if}
       <div class="tabs" role="tablist">
         <button type="button" role="tab" class="tab" aria-selected={lens === "fresh"} onclick={() => (lens = "fresh")}>What's fresh</button>
         <button type="button" role="tab" class="tab" aria-selected={lens === "tree"} onclick={() => (lens = "tree")}>Browse tree</button>
