@@ -785,6 +785,8 @@ async fn run_replace_from_staging_observed(
                 // Staging updates never run the production managed-Git retry.
                 managed_git_retry:
                     crate::commands::hq_core_state::ManagedGitRetryOutcome::NotNeeded,
+                release_fetch:
+                    crate::commands::hq_core_state::ReleaseFetchDiagnostics::default(),
             },
             crate::commands::telemetry::emit_desktop_telemetry_best_effort,
         ),

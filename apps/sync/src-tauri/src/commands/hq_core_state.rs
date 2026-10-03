@@ -62,6 +62,11 @@ use crate::commands::hq_core_drift::{
     normalized_or_raw_drift_sha, path_in_excluded_scope, path_in_locked_scope, read_locked_paths,
     walk_local_under_scope, BaselineStatus, DriftEntry, DriftReport,
 };
+mod release_fetch_diagnostics;
+pub(crate) use release_fetch_diagnostics::{
+    ReleaseFetchDiagnostics, ReleaseFetchOutcome, ReleaseFetchTransportClass,
+};
+
 use crate::commands::hq_core_staging;
 use crate::commands::hq_core_update::get_local_version;
 use crate::util::logfile::log;
@@ -219,6 +224,7 @@ pub(crate) struct CoreUpdateError {
     managed_git_retry: ManagedGitRetryOutcome,
     pre_rescue_materialization: bool,
     rescue_telemetry: Option<CoreUpdateRescueTelemetry>,
+    release_fetch: ReleaseFetchDiagnostics,
 }
 
 impl CoreUpdateError {
@@ -230,6 +236,7 @@ impl CoreUpdateError {
             managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
             pre_rescue_materialization: false,
             rescue_telemetry: None,
+            release_fetch: ReleaseFetchDiagnostics::default(),
         }
     }
 
@@ -248,6 +255,11 @@ impl CoreUpdateError {
 
     pub(crate) fn with_pre_rescue_materialization(mut self) -> Self {
         self.pre_rescue_materialization = true;
+        self
+    }
+
+    pub(crate) fn with_release_fetch(mut self, diagnostics: ReleaseFetchDiagnostics) -> Self {
+        self.release_fetch = diagnostics;
         self
     }
 
@@ -1829,6 +1841,7 @@ pub(crate) struct CoreUpdateFailureDetails<'a> {
     pub(crate) pre_rescue_materialization: bool,
     pub(crate) npx_resolution: Option<CoreUpdateNpxResolution>,
     pub(crate) managed_git_retry: ManagedGitRetryOutcome,
+    pub(crate) release_fetch: ReleaseFetchDiagnostics,
 }
 
 pub(crate) fn core_update_failure_details(error: &CoreUpdateError) -> CoreUpdateFailureDetails<'_> {
@@ -1849,6 +1862,7 @@ pub(crate) fn core_update_failure_details(error: &CoreUpdateError) -> CoreUpdate
         pre_rescue_materialization: error.pre_rescue_materialization,
         npx_resolution: error.npx_resolution(),
         managed_git_retry: error.managed_git_retry(),
+        release_fetch: error.release_fetch,
     }
 }
 
@@ -2540,6 +2554,28 @@ fn core_update_failed_properties(
         "errorCategory".to_string(),
         Value::String(details.rescue_failure_category.label().to_string()),
     );
+    properties.insert(
+        "release_fetch_outcome".to_string(),
+        Value::String(details.release_fetch.outcome.label().to_string()),
+    );
+    if let Some(class) = details.release_fetch.transport_class {
+        properties.insert(
+            "release_fetch_transport_class".to_string(),
+            Value::String(class.label().to_string()),
+        );
+    }
+    if let Some(status) = details.release_fetch.http_status {
+        properties.insert(
+            "release_fetch_http_status".to_string(),
+            Value::Number(status.into()),
+        );
+    }
+    if let Some(present) = details.release_fetch.rate_limit_header_present {
+        properties.insert(
+            "release_fetch_rate_limit_header_present".to_string(),
+            Value::Bool(present),
+        );
+    }
     if let Some(npx_resolution) = details.npx_resolution {
         properties.insert(
             "npxResolved".to_string(),
@@ -2644,6 +2680,7 @@ struct CoreUpdateSentryFailureReport {
     rescue_telemetry: CoreUpdateRescueTelemetry,
     npx_resolution: Option<CoreUpdateNpxResolution>,
     managed_git_retry: ManagedGitRetryOutcome,
+    release_fetch: ReleaseFetchDiagnostics,
 }
 
 fn core_update_sentry_error_kind(error_kind: &'static str) -> &'static str {
@@ -2772,6 +2809,22 @@ fn send_core_update_failure_report(
                 sentry_scope.set_fingerprint(Some(&fingerprint));
                 sentry_scope.set_tag("errorKind", report.error_kind);
                 sentry_scope.set_tag("errorCategory", report.error_category.label());
+                sentry_scope.set_tag(
+                    "release_fetch_outcome",
+                    report.release_fetch.outcome.label(),
+                );
+                if let Some(class) = report.release_fetch.transport_class {
+                    sentry_scope.set_tag("release_fetch_transport_class", class.label());
+                }
+                if let Some(status) = report.release_fetch.http_status {
+                    sentry_scope.set_tag("release_fetch_http_status", status.to_string());
+                }
+                if let Some(present) = report.release_fetch.rate_limit_header_present {
+                    sentry_scope.set_tag(
+                        "release_fetch_rate_limit_header_present",
+                        present.to_string(),
+                    );
+                }
                 sentry_scope.set_tag("channel", channel_label(report.channel));
                 sentry_scope.set_tag("platform", core_update_sentry_platform());
                 sentry_scope.set_tag("source", core_update_sentry_source(report.source));
@@ -2987,6 +3040,7 @@ fn core_update_sentry_failure_report(
         rescue_telemetry,
         npx_resolution: details.npx_resolution,
         managed_git_retry: details.managed_git_retry,
+        release_fetch: details.release_fetch,
     }
 }
 
@@ -7352,6 +7406,7 @@ mod tests {
                 pre_rescue_materialization: false,
                 npx_resolution: Some(npx_resolution),
                 managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
+                release_fetch: ReleaseFetchDiagnostics::default(),
             },
         );
 
@@ -8567,6 +8622,7 @@ error: clone failed";
             pre_rescue_materialization: false,
             npx_resolution: None,
             managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
+            release_fetch: ReleaseFetchDiagnostics::default(),
         };
 
         let report = core_update_sentry_failure_report(
@@ -8965,6 +9021,7 @@ error: clone failed";
                     pre_rescue_materialization: false,
                     npx_resolution: None,
                     managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
+                    release_fetch: ReleaseFetchDiagnostics::default(),
                 },
             );
             assert_eq!(
@@ -8989,6 +9046,7 @@ error: clone failed";
                 pre_rescue_materialization: false,
                 npx_resolution: None,
                 managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
+                release_fetch: ReleaseFetchDiagnostics::default(),
             },
         );
 
@@ -9024,6 +9082,7 @@ error: clone failed";
                 pre_rescue_materialization: false,
                 npx_resolution: None,
                 managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
+                release_fetch: ReleaseFetchDiagnostics::default(),
             },
         );
         assert_eq!(report.rescue_telemetry.rescue_step, "snapshot");
@@ -9045,6 +9104,7 @@ error: clone failed";
                 pre_rescue_materialization: false,
                 npx_resolution: None,
                 managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
+                release_fetch: ReleaseFetchDiagnostics::default(),
             },
         );
 
@@ -9072,6 +9132,7 @@ error: clone failed";
                 pre_rescue_materialization: false,
                 npx_resolution: None,
                 managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
+                release_fetch: ReleaseFetchDiagnostics::default(),
             },
         );
 
@@ -9152,6 +9213,7 @@ error: clone failed";
             rescue_telemetry: telemetry,
             npx_resolution: None,
             managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
+            release_fetch: ReleaseFetchDiagnostics::default(),
         };
         let events = sentry::test::with_captured_events_options(
             || send_core_update_failure_report(report, 0),
@@ -9216,6 +9278,7 @@ error: clone failed";
             // This fixture models a directly reported failure, before any
             // managed-Git retry can have been attempted.
             managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
+            release_fetch: ReleaseFetchDiagnostics::default(),
         };
         let events = sentry::test::with_captured_events_options(
             || {
@@ -9294,6 +9357,7 @@ error: clone failed";
             },
             npx_resolution: None,
             managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
+            release_fetch: ReleaseFetchDiagnostics::default(),
         };
         let start = Instant::now();
         let events = sentry::test::with_captured_events_options(
@@ -9336,6 +9400,7 @@ error: clone failed";
             rescue_telemetry: telemetry.clone(),
             npx_resolution: None,
             managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
+            release_fetch: ReleaseFetchDiagnostics::default(),
         };
 
         let first = report("rescue_spawn", RescueFailureCategory::MissingDependency);
@@ -9371,6 +9436,7 @@ error: clone failed";
             rescue_telemetry: telemetry.clone(),
             npx_resolution: None,
             managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
+            release_fetch: ReleaseFetchDiagnostics::default(),
         };
         let start = Instant::now();
         let events = sentry::test::with_captured_events_options(
@@ -9970,6 +10036,7 @@ error: clone failed";
             pre_rescue_materialization: false,
             npx_resolution: None,
             managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
+            release_fetch: ReleaseFetchDiagnostics::default(),
         }
     }
 
@@ -9996,6 +10063,7 @@ error: clone failed";
                 pre_rescue_materialization: false,
                 npx_resolution: None,
                 managed_git_retry: ManagedGitRetryOutcome::Failed,
+                release_fetch: ReleaseFetchDiagnostics::default(),
             },
         );
     }
@@ -10160,6 +10228,7 @@ error: clone failed";
                         pre_rescue_materialization: false,
                         npx_resolution: None,
                         managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
+                        release_fetch: ReleaseFetchDiagnostics::default(),
                     },
                     move |event_name, properties| {
                         telemetry_for_report
@@ -10211,9 +10280,15 @@ error: clone failed";
             });
 
         assert_eq!(events.len(), 1);
+        let release_outcome_tag = events[0].tags.get("release_fetch_outcome");
+        assert_eq!(
+            release_outcome_tag.map(String::as_str),
+            Some("not_attempted")
+        );
         let telemetry = telemetry.lock().unwrap();
         assert_eq!(telemetry.len(), 1);
         assert_eq!(telemetry[0].0, "core_update_failed");
+        assert_eq!(telemetry[0].1["release_fetch_outcome"], "not_attempted");
     }
 
     #[test]
@@ -10397,6 +10472,7 @@ error: clone failed";
                 pre_rescue_materialization: false,
                 npx_resolution: Some(npx_resolution),
                 managed_git_retry: ManagedGitRetryOutcome::NotNeeded,
+                release_fetch: ReleaseFetchDiagnostics::default(),
             },
         );
         let mut missing: Vec<&str> = properties

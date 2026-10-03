@@ -338,6 +338,9 @@ The release moves it under the version it ships in.
 
 ## [0.10.359] — 2026-09-29
 
+- Failed Desktop Core updates now report which latest-release lookup step
+  failed, without including request URLs or transport error text.
+
 - First-time setup is now one five-screen welcome flow that fills the screen
   (everything below the menu bar and beside the Dock) with no window
   shadow. On macOS the background is your own desktop wallpaper, blurred
