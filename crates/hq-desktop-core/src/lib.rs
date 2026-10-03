@@ -93,6 +93,7 @@ pub mod notify_authz;
 pub mod notify_prefs;
 pub mod microsoft_org;
 pub mod oauth;
+pub mod web_authorize;
 pub mod package_use_lease;
 pub mod paths;
 pub mod plan_limit;

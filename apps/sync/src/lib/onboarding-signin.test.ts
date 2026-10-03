@@ -45,6 +45,14 @@ describe('mapSignInError', () => {
     ).toBe('We could not identify your Microsoft account. Check your connection and retry.');
   });
 
+  it('maps a nonce mismatch to the web authorize fallback sentence', () => {
+    expect(
+      mapSignInError(
+        '{"code":"OAUTH_NONCE_MISMATCH","message":"id_token nonce did not match the pending attempt"}',
+      ),
+    ).toBe('That sign-in did not finish. Choose your provider and try once more.');
+  });
+
   it('maps token exchange failures to retryable copy', () => {
     expect(mapSignInError('token exchange failed: 400 invalid_grant', 'Google')).toBe(
       "We couldn't finish sign-in after the browser step. Check your connection and retry.",

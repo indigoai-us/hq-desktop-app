@@ -700,6 +700,8 @@ fn main() {
             commands::new_files::open_new_files_detail,
             commands::new_files::detail_window_ready,
             commands::oauth::start_oauth_login,
+            commands::oauth::web_authorize_enabled,
+            commands::oauth::start_web_authorize,
             commands::oauth::oauth_listen_for_code,
             commands::oauth::oauth_exchange_code,
             // Browser session continuation. Inert until the backend's rollout

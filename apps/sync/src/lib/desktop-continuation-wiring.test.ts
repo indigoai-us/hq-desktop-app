@@ -120,6 +120,8 @@ describe('a manual sign-in invalidates anything continuation is holding', () => 
     // any of those windows must win over the automatic route.
     expect(prepare.match(/manualSignInStarted/g) ?? []).toHaveLength(3);
     expect(prepare).toContain('() => !manualSignInStarted');
+    expect(prepare).not.toContain('loadWebAuthorizeFlag');
+    expect(prepare).not.toContain('web_authorize_enabled');
   });
 
   it('starts explicit OAuth without waiting for continuation preparation on the returning-user surface', () => {
@@ -168,6 +170,35 @@ describe('Microsoft work accounts are not sent to MicrosoftPersonal', () => {
     expect(onboardingWizard).toContain("provider === 'Microsoft' && microsoftEmail.trim() === ''");
     expect(signInPrompt).toContain('data-testid="microsoft-email"');
     expect(onboardingWizard).toContain('data-testid="microsoft-email"');
+  });
+});
+
+describe('web authorize is gated and does not replace flag-off OAuth', () => {
+  it('registers the new commands next to today\'s OAuth commands', () => {
+    expect(main).toContain('commands::oauth::start_oauth_login');
+    expect(main).toContain('commands::oauth::web_authorize_enabled');
+    expect(main).toContain('commands::oauth::start_web_authorize');
+  });
+
+  it('does not change start_oauth_login to open the website page', () => {
+    const start = rustFunction(oauth, 'start_oauth_login');
+    expect(start).toContain('arm_oauth_flow');
+    expect(start).not.toContain('build_authorize_page_url');
+    expect(start).not.toContain('hqforwork.com/authorize/desktop');
+  });
+
+  it('routes the website page URL through referral attribution and a distinct login method', () => {
+    const start = rustFunction(oauth, 'start_web_authorize');
+    expect(start).toContain('build_authorize_page_url');
+    expect(start).toContain('prepare_desktop_referral_start_url');
+    expect(start.indexOf('build_authorize_page_url')).toBeLessThan(
+      start.indexOf('prepare_desktop_referral_start_url'),
+    );
+    expect(start).toContain('set_pending_referral_nonce');
+    const exchange = rustFunction(oauth, 'oauth_exchange_code');
+    expect(exchange).toContain('"web_authorize"');
+    expect(exchange).toContain('"manual_oauth"');
+    expect(exchange).toContain('"control"');
   });
 });
 

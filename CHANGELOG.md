@@ -7,6 +7,7 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+- Sign-in can open an HQ web Authorize page (behind the `desktop.web-authorize` flag, off by default) so a browser that is already signed in to HQ can approve HQ Desktop. If that path fails, the existing Google and Microsoft buttons remain. Turn it on for one machine with `"webAuthorize": true` in `~/.hq/menubar.json` (the install id is `installAttemptId` in that file). Then a few people with `rolloutPercentage` on the public flag row (sticky by install UUID). Then everyone with `rolloutPercentage: 100` or `defaultValue: true`.
 - Startup diagnostics now classify reason-suffixed refresh-rejection markers as desktop-origin markers.
 - Sign-in telemetry from a first sign-in is no longer dropped. Progress and failure rows sent before the app has a session are kept on this Mac (closed labels only, at most 20 rows, for 3 days) and sent once the user signs in, each with a stable key so a resend is stored once.
 - The welcome sign-in window now advances when you are already signed in, keeps
