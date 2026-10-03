@@ -308,3 +308,104 @@ export async function loadRecordedSignals(
 ): Promise<RecordedSignals> {
   return recordedSignalsFromPages(await loadNextRecordedSignalPage({ refs, texts: [] }, readText));
 }
+
+// ── Document-shaped meetings (`sourceShape: "markdown"`) ──────────────────
+//
+// Newer hq-pro detail responses carry no notes/transcript/participants
+// fields. The meeting is one markdown document (frontmatter, then sections
+// such as `## Transcript`) behind `source.presigned_url`; `hq meetings
+// notes` and `hq meetings transcript` both print that document.
+
+export interface RecordedDocumentRef {
+  url: string;
+}
+
+/** The document ref when the detail is document-shaped, else null. */
+export function parseRecordedDocumentRef(raw: unknown): RecordedDocumentRef | null {
+  const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : null;
+  const source =
+    record?.source && typeof record.source === "object"
+      ? (record.source as Record<string, unknown>)
+      : null;
+  if (!source) return null;
+  if (record?.sourceShape !== "markdown" && !source.frontmatter) return null;
+  const url = str(source.presigned_url);
+  return url ? { url } : null;
+}
+
+export interface DocumentTurn {
+  id: string;
+  speaker: string;
+  at: string;
+  text: string;
+}
+
+export interface RecordedDocument {
+  /** Transcript turns from the `## Transcript` section. */
+  transcript: DocumentTurn[];
+  /** Text of every other section, one entry per section. */
+  notes: { id: string; author: string; text: string }[];
+  /** Distinct speakers, in first-spoken order. */
+  participants: string[];
+}
+
+// "**Richard** · `[00:01:49–00:01:54]`" (separator and dash vary).
+const TURN_HEADER = /^\*\*(.+?)\*\*\s*(?:[·\-–—:]\s*)?(?:`\[([^\]]*)\]`)?\s*$/;
+
+/** Split a meeting document into transcript turns, other sections and speakers. */
+export function parseRecordedDocument(markdown: string): RecordedDocument {
+  const body = markdown.replace(/^﻿?---\r?\n[\s\S]*?\r?\n---\r?\n?/, "");
+  const sections: { heading: string; lines: string[] }[] = [];
+  let current: { heading: string; lines: string[] } = { heading: "", lines: [] };
+  for (const line of body.split(/\r?\n/)) {
+    const h = /^#{1,3}\s+(.*)$/.exec(line);
+    if (h) {
+      sections.push(current);
+      current = { heading: h[1].trim(), lines: [] };
+    } else current.lines.push(line);
+  }
+  sections.push(current);
+
+  const transcript: DocumentTurn[] = [];
+  const notes: RecordedDocument["notes"] = [];
+  for (const section of sections) {
+    if (/^transcript$/i.test(section.heading)) {
+      let turn: DocumentTurn | null = null;
+      for (const line of section.lines) {
+        const m = TURN_HEADER.exec(line.trim());
+        if (m) {
+          if (turn?.text) transcript.push(turn);
+          turn = { id: `doc-${transcript.length}`, speaker: m[1].trim(), at: (m[2] ?? "").split(/[–-]/)[0].trim(), text: "" };
+        } else if (turn && line.trim()) {
+          turn.text = turn.text ? `${turn.text} ${line.trim()}` : line.trim();
+        }
+      }
+      if (turn?.text) transcript.push(turn);
+      continue;
+    }
+    const text = section.lines.map((l) => l.trim()).filter(Boolean).join(" ");
+    if (text) notes.push({ id: `doc-note-${notes.length}`, author: section.heading, text });
+  }
+  const participants = Array.from(new Set(transcript.map((t) => t.speaker)));
+  return { transcript, notes, participants };
+}
+
+/**
+ * Merge a loaded document into the event the canvas renders. Transcript rows
+ * go where `transcriptTurns` reads them; other sections become notes; when
+ * the calendar gave no attendees, the document's speakers stand in.
+ */
+export function withRecordedDocument(event: MeetingEvent, doc: RecordedDocument | null | undefined): MeetingEvent {
+  if (!doc) return event;
+  const signals =
+    event.signals && typeof event.signals === "object" ? (event.signals as Record<string, unknown>) : {};
+  const hasAttendees = (event.attendees ?? []).length > 0;
+  return {
+    ...event,
+    signals: doc.transcript.length ? { ...signals, transcript: doc.transcript } : event.signals,
+    notes: (event.notes ?? []).length ? event.notes : doc.notes,
+    attendees: hasAttendees
+      ? event.attendees
+      : doc.participants.map((name) => ({ displayName: name })),
+  };
+}

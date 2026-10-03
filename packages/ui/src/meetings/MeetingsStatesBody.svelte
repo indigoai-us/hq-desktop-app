@@ -91,8 +91,14 @@
   const place = $derived(event ? locationLabel(event) : "");
   // A cached event from before the host passed details through has no
   // attendees field; hold a skeleton while the first refresh is in flight.
+  // Recorded meetings never get attendees from a calendar refresh: they wait
+  // only for their own notes load, then show names or "Attendees unavailable".
   const detailsPending = $derived(
-    !!event && event.attendees === undefined && meetingsStore.loading && meetingsStore.lastSyncedAt === 0,
+    !!event &&
+      event.attendees === undefined &&
+      (event.recorded
+        ? notesLoading
+        : meetingsStore.loading && meetingsStore.lastSyncedAt === 0),
   );
   let query = $state("");
   let jumped = $state<string | null>(null);
@@ -397,7 +403,7 @@
         {:else}
           {#each attendees as person (person.key)}
             <div class="att" data-testid="meeting-attendee" title={person.email || undefined}><span class="mini">{initialsOf(person.name || "?")}</span><span class="an">{person.name}{#if person.organizer}<span class="q">Organizer</span>{/if}</span><span class="meta">{person.response}</span></div>
-          {:else}<p class="muted">No attendees on the calendar event.</p>{/each}
+          {:else}<p class="muted" data-testid="meeting-attendees-unavailable">{event.recorded || event.attendees === undefined ? "Attendees unavailable" : "No attendees on the calendar event."}</p>{/each}
         {/if}
         {#if organizer || place}
           <h2 class="sh">Details</h2>

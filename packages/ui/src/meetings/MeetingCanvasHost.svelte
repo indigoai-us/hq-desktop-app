@@ -17,7 +17,7 @@
   } from "./active-meetings";
   import MeetingCanvas from "./MeetingCanvas.svelte";
   import { meetingsStore } from "./meetings-store.svelte";
-  import { withRecordedEvents } from "./recorded-meetings";
+  import { withRecordedDocument, withRecordedEvents } from "./recorded-meetings";
   import { meetingsRailState } from "./meetings-rail-state.svelte";
   import { defaultMeetingId, meetingsRailSections } from "./meetings-rail-model";
   import { botForEvent, pickLiveMeeting } from "./meetings-model";
@@ -84,7 +84,9 @@
   });
   const notesEntry = $derived(recordedId ? meetingsStore.recordedNotes[recordedId] : undefined);
   const shownEvent = $derived(
-    event && notesEntry?.signals ? { ...event, signals: notesEntry.signals } : event,
+    event && notesEntry?.signals
+      ? withRecordedDocument({ ...event, signals: notesEntry.signals }, notesEntry.document)
+      : event,
   );
   const notesLoading = $derived(Boolean(recordedId) && (!notesEntry || notesEntry.status === "loading"));
   const companyName = $derived(
