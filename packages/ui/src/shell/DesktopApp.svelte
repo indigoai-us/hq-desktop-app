@@ -98,6 +98,7 @@
   import Sidepane from "./Sidepane.svelte";
   import { SidepaneScrollMemory, sidepaneModelKey } from "./sidepane-models.js";
   import CompanySidepane from "./CompanySidepane.svelte";
+  import { configureCompanyApi } from "../company/company-store.svelte.js";
   import {
     companyPagePlaceholderForPage,
     companyRowDestination,
@@ -3658,6 +3659,13 @@
    * page loads. Cache-first — the last list stays searchable while a refresh
    * runs on each palette open, so an open project is never missing.
    */
+  // OWNER-R32: the company store backs personal Secrets and the company
+  // Files, Secrets and Deployments reads. Configure it for the whole window,
+  // not only while the company sidepane is mounted (collapsed sidebar, personal scope).
+  $effect.pre(() => {
+    if (adapter.company) configureCompanyApi(adapter.company);
+  });
+
   let paletteProjects = $state<Project[]>([]);
   let paletteProjectsLoading = false;
   async function refreshPaletteProjects(): Promise<void> {
@@ -10770,6 +10778,7 @@
             activeCompany={railCompanyRoster.find((company) => company.uid === tenantCompanyId) ?? null}
             onopenintegrations={openCompanyIntegrations}
             integrationsApi={adapter.agents ?? null}
+            companyApi={adapter.company ?? null}
             openExternal={onopenurl}
           />
         {:else if railPlaceholder?.id === "outpost"}
