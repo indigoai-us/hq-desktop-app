@@ -39,7 +39,7 @@ describe("US-017 new channel sheet", () => {
         api,
         rows: [row("prs_eric", "Eric"), row("prs_maggie", "Maggie")],
         contacts: [],
-        companies: [{ companyUid: "cmp_indigo", label: "Indigo" }],
+        companies: [{ companyUid: "cmp_indigo", label: "Indigo", slug: "indigo" }],
         activeCompanyUid: "cmp_indigo",
         onclose,
         aftercreate: () => {},
@@ -74,5 +74,32 @@ describe("US-017 new channel sheet", () => {
       companyUid: "cmp_indigo",
     });
     await unmount(component);
+  });
+
+  it("uses the company's configured slug in the folder hint when name and slug differ (QA-101)", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    const component = mount(NewChannelSheet, {
+      target: host,
+      props: {
+        api: { createChannel: vi.fn() } as unknown as ChatSidebarApi,
+        rows: [],
+        contacts: [],
+        companies: [{ companyUid: "cmp_acme", label: "Northwind", slug: "acme-ops" }],
+        activeCompanyUid: "cmp_acme",
+        onclose: () => {},
+        aftercreate: () => {},
+      },
+    });
+    await tick();
+    const path = () => document.querySelector('[data-testid="new-channel-path"]')?.textContent ?? "";
+    expect(path()).toBe("companies/acme-ops/channels/");
+    const name = document.querySelector<HTMLInputElement>('[data-testid="new-channel-name"]')!;
+    name.value = "Launch Plan";
+    name.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+    expect(path()).toBe("companies/acme-ops/channels/launch-plan");
+    expect(path()).not.toContain("northwind");
+    unmount(component);
   });
 });

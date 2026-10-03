@@ -20,6 +20,7 @@
  * different bot.
  */
 
+import type { AgentCreateQuote, CreateErrorFix } from "@hq/agents";
 import type { CardActionResult, ConversationApi } from "./chat-api.js";
 import { cardActionFailureMessage } from "./card-action.js";
 import {
@@ -60,6 +61,12 @@ export type EntryPointResult =
       reason: string;
       /** True when the server refused (permission / plan), not a transport error. */
       blocked: boolean;
+      /**
+       * The one action that fixes a refusal (checkout, fresh quote, another
+       * handle). Only the direct create (`agents.desktop-agent-creation`)
+       * sets it; the card driver never does.
+       */
+      fix?: CreateErrorFix | null;
     };
 
 export type EntryPointApi = Pick<ConversationApi, "runCardAction">;
@@ -202,24 +209,22 @@ export interface CloudBotDraft {
   title?: string;
   runtime?: BotRuntime;
   size?: "basic" | "power" | "dev";
-  authMode?: "subscription" | "apiKey";
-  /** Write-only create input; never copied into lifecycle card state. */
-  apiKey?: string;
+  /**
+   * Direct create only (`agents.desktop-agent-creation` on): one key per New
+   * bot session, and the size and price the person saw. The card driver
+   * ignores both.
+   */
+  idempotencyKey?: string;
+  quote?: AgentCreateQuote;
 }
 
 /** Console page where a newly-created Claude subscription can be authorized. */
 export function claudeSubscriptionSignInUrl(
-  draft: Pick<CloudBotDraft, "runtime" | "authMode">,
+  draft: Pick<CloudBotDraft, "runtime">,
   agentUid: string,
 ): string | null {
   const uid = agentUid.trim();
-  if (
-    draft.runtime !== "claude" ||
-    (draft.authMode ?? "subscription") !== "subscription" ||
-    !uid
-  ) {
-    return null;
-  }
+  if (draft.runtime !== "claude" || !uid) return null;
   return `https://hq.getindigo.ai/resolve/agents/${encodeURIComponent(uid)}`;
 }
 
@@ -417,14 +422,6 @@ function valuesForCard(
     else if (field.id === "size" && draft.size) value = draft.size;
     if (!value && field.required) return null;
     values[field.id] = value;
-  }
-  // Auth is carried only on the final create action. In particular, the API
-  // key never enters a lifecycle field or a card snapshot.
-  if (card.fields.some((field) => field.id === "size")) {
-    values.authMode = draft.authMode ?? "subscription";
-    if (values.authMode === "apiKey" && draft.apiKey) {
-      values.apiKey = draft.apiKey;
-    }
   }
   return values;
 }

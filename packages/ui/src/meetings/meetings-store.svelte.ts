@@ -36,10 +36,22 @@ import {
 } from "./meetings-model";
 import { takeAgendaWindow } from "./meetings-view-model";
 import {
+  loadNextRecordedSignalPage,
   mergeRecordedMeetings,
+  ownRecordedMeetings,
+  parseRecordedDetail,
+  parseRecordedDocument,
+  parseRecordedDocumentRef,
+  type RecordedDocument,
+  recordedSignalsFromPages,
+  recordedSignalsRemaining,
+  type RecordedSignalPages,
+  type RecordedSignals,
   parseRecordedMeetings,
   type RecordedMeeting,
 } from "./recorded-meetings";
+import { get } from "svelte/store";
+import { activeMeetings } from "./active-meetings";
 import type {
   CompanyMembership,
   GoogleAccount,
@@ -194,6 +206,18 @@ let memberships = $state<CompanyMembership[]>([]);
 // Recorded meeting history across every scope the caller can read.
 let recorded = $state<RecordedMeeting[]>([]);
 let recordedError = $state("");
+/** Saved notes per recorded meeting id, loaded when a past meeting opens. */
+export interface RecordedNotesEntry {
+  status: "loading" | "ready" | "error";
+  signals?: RecordedSignals;
+  /** Saved notes not read yet; "Load more" reads the next page. */
+  remaining?: number;
+  loadingMore?: boolean;
+  pages?: RecordedSignalPages;
+  /** Document-shaped meetings: the parsed markdown document. */
+  document?: RecordedDocument | null;
+}
+let recordedNotes = $state<Record<string, RecordedNotesEntry>>({});
 let membershipsError = $state("");
 let fetchError = $state("");
 let refreshBlocked = $state(false);
@@ -254,7 +278,8 @@ function hydrateFromCache() {
     snapshot.scheduledBots ??
     (snapshot.botsByEventId ?? []).map(([, bot]) => bot);
   companyNamesByUid = new Map(snapshot.companyNamesByUid ?? []);
-  recorded = parseRecordedMeetings(snapshot.recorded ?? []);
+  // Older caches stored every readable meeting; re-apply the attendee rule.
+  recorded = onlyOwnMeetings(parseRecordedMeetings(snapshot.recorded ?? []), allBots, events);
   accounts = snapshot.accounts ?? [];
   accountEmailById = new Map(snapshot.accountEmailById ?? []);
   calendarsByAccount = new Map(snapshot.calendarsByAccount ?? []);
@@ -390,7 +415,9 @@ async function refreshOnce(refreshRevision: number, epoch: number): Promise<void
     calendarSummaryByKey = calendarSnapshot.calendarSummaryByKey;
     membershipsError = nextMembershipsError;
     // A failed history fetch keeps the cached rows instead of blanking them.
-    if (recordedResult.rows) recorded = recordedResult.rows;
+    if (recordedResult.rows) {
+      recorded = onlyOwnMeetings(recordedResult.rows, fullBots ?? allBots, evts ?? []);
+    }
     recordedError = recordedResult.error;
     fetchError = nextFetchError;
     refreshBlocked = nextRefreshBlocked;
@@ -438,6 +465,91 @@ async function reportRefreshProblem(): Promise<ToastDescriptor> {
       text: friendlyError(err, "Could not file the report — try /hq-bug."),
     };
   }
+}
+
+async function readSignalBody(url: string): Promise<string> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`signal body ${res.status}`);
+  return res.text();
+}
+
+/**
+ * Load a recorded meeting's saved notes once per session. The detail call
+ * lists signal refs; bodies are read from their presigned URLs, capped per
+ * meeting. A failure leaves an "error" entry so the canvas does not retry in
+ * a loop; the next session (or refresh of the app) tries again.
+ */
+async function loadRecordedNotes(meetingId: string, companyUid: string | null): Promise<void> {
+  if (recordedNotes[meetingId]) return;
+  const epoch = sessionEpoch;
+  recordedNotes = { ...recordedNotes, [meetingId]: { status: "loading" } };
+  try {
+    const detail = unwrap(await requireApi().meetings.getRecorded(meetingId, companyUid));
+    const refs = parseRecordedDetail(detail);
+    // OWNER-019: document-shaped meetings keep notes and transcript in one
+    // markdown file behind `source.presigned_url`, not in detail fields.
+    const docRef = parseRecordedDocumentRef(detail);
+    const [pages, document] = await Promise.all([
+      loadNextRecordedSignalPage({ refs, texts: [] }, readSignalBody),
+      docRef ? readSignalBody(docRef.url).then(parseRecordedDocument) : Promise.resolve(null),
+    ]);
+    if (epoch !== sessionEpoch) return;
+    recordedNotes = { ...recordedNotes, [meetingId]: { ...notesEntryFor(pages), document } };
+  } catch (err) {
+    console.error(`meetings getRecorded failed for ${meetingId}:`, err);
+    if (epoch !== sessionEpoch) return;
+    recordedNotes = { ...recordedNotes, [meetingId]: { status: "error" } };
+  }
+}
+
+function notesEntryFor(pages: RecordedSignalPages): RecordedNotesEntry {
+  return {
+    status: "ready",
+    signals: recordedSignalsFromPages(pages),
+    remaining: recordedSignalsRemaining(pages),
+    pages,
+  };
+}
+
+/**
+ * Read the next page of an opened meeting's saved notes. Pages append in ref
+ * order, so with every page read the recap matches the full set. A failed
+ * page keeps the notes already shown and leaves "Load more" to try again.
+ */
+async function loadMoreRecordedNotes(meetingId: string): Promise<void> {
+  const entry = recordedNotes[meetingId];
+  if (!entry?.pages || entry.loadingMore || !entry.remaining) return;
+  const epoch = sessionEpoch;
+  recordedNotes = { ...recordedNotes, [meetingId]: { ...entry, loadingMore: true } };
+  try {
+    const pages = await loadNextRecordedSignalPage(entry.pages, readSignalBody);
+    if (epoch !== sessionEpoch) return;
+    recordedNotes = { ...recordedNotes, [meetingId]: { ...notesEntryFor(pages), document: entry.document } };
+  } catch (err) {
+    console.error(`meetings load more notes failed for ${meetingId}:`, err);
+    if (epoch !== sessionEpoch) return;
+    recordedNotes = { ...recordedNotes, [meetingId]: { ...entry, loadingMore: false } };
+  }
+}
+
+/**
+ * Recorded meetings the signed-in person attended or recorded. hq-pro's list
+ * is ACL-filtered, so an owner or admin reads every member's recordings; this
+ * narrows it to the caller's own bots, calendar invites and device recordings.
+ */
+function onlyOwnMeetings(
+  rows: RecordedMeeting[],
+  bots: readonly ScheduledBot[],
+  calendarEvents: readonly MeetingEvent[],
+): RecordedMeeting[] {
+  const localRecordingIds = get(activeMeetings)
+    .map((m) => m.recordingId)
+    .filter((id): id is string => Boolean(id));
+  return ownRecordedMeetings(rows, {
+    botIds: bots.map((b) => b.botId),
+    calendarEvents,
+    localRecordingIds,
+  });
 }
 
 /**
@@ -1170,6 +1282,7 @@ function resetTenantSession(): void {
   membershipsError = "";
   recorded = [];
   recordedError = "";
+  recordedNotes = {};
   fetchError = "";
   refreshBlocked = false;
   refreshFailureCount = 0;
@@ -1241,6 +1354,12 @@ export const meetingsStore = {
   get recorded() {
     return recorded;
   },
+  /** Saved notes per recorded meeting id (see loadRecordedNotes). */
+  get recordedNotes() {
+    return recordedNotes;
+  },
+  loadRecordedNotes,
+  loadMoreRecordedNotes,
   /** Plain-language note when some or all history scopes failed. */
   get recordedError() {
     return recordedError;

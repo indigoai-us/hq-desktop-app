@@ -121,7 +121,7 @@ struct ScheduledBotRest {
     calendar_event_id: Option<String>,
     #[serde(default)]
     calendar_series_id: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_false")]
     recurring_meeting: bool,
     #[serde(default)]
     scheduled_start_time: Option<String>,
@@ -131,12 +131,22 @@ struct ScheduledBotRest {
     updated_at: Option<String>,
     #[serde(default, alias = "company")]
     company_id: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_false")]
     auto_scheduled: bool,
     #[serde(default)]
     error_message: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_false")]
     source_landed: bool,
+}
+
+/// hq-pro sends `null` for unset booleans on older bot rows (e.g.
+/// `recurringMeeting: null`). Treat null like an absent key so the row parses
+/// instead of being dropped by [`scheduled_bots_from_values`].
+fn null_as_false<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<bool>::deserialize(deserializer)?.unwrap_or(false))
 }
 
 impl From<ScheduledBotWire> for ScheduledBot {
@@ -863,6 +873,47 @@ mod tests {
             "expected skip log, got: {log}"
         );
         assert!(log.contains("botId=bot-bad"), "expected bot id in skip log");
+    }
+
+    /// OWNER-019: hq-pro sends `null` for unset booleans on older bot rows.
+    /// Before the fix every such row was skipped with
+    /// "invalid type: null, expected a boolean" (22k log lines per pass).
+    #[test]
+    fn bots_response_tolerates_null_booleans() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let log_path = tmp.path().join("hq-sync.log");
+        let _guard = crate::logfile::LogOverrideGuard::new(log_path.clone());
+        let json = r#"{
+            "bots": [
+                {
+                    "botId": "00a409b1-c4f0-4301-803f-3737e124dd0f",
+                    "status": "done",
+                    "meetingUrl": "https://zoom.us/j/1",
+                    "platform": "zoom",
+                    "recurringMeeting": null,
+                    "autoScheduled": null,
+                    "sourceLanded": null,
+                    "calendarEventId": null,
+                    "companyId": "cmp_01KQ7P52H2T70HAWX9E65Z2BZV"
+                },
+                {
+                    "botId": "bot-true",
+                    "status": "done",
+                    "meetingUrl": "https://zoom.us/j/2",
+                    "platform": "zoom",
+                    "recurringMeeting": true,
+                    "autoScheduled": true,
+                    "sourceLanded": true
+                }
+            ]
+        }"#;
+        let parsed: BotsResponse = serde_json::from_str(json).expect("parse");
+        assert_eq!(parsed.bots.len(), 2, "null-boolean row must not be dropped");
+        let b = &parsed.bots[0];
+        assert!(!b.recurring_meeting && !b.auto_scheduled && !b.source_landed);
+        assert!(parsed.bots[1].recurring_meeting && parsed.bots[1].source_landed);
+        let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+        assert!(!log.contains("malformed scheduled-bot"), "unexpected skip: {log}");
     }
 
     /// The cancel response shares the same `recallBotId` alias, so it must also

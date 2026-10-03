@@ -150,7 +150,8 @@ export function judgeRail(summaries, reference, rail) {
 
   // Initial JS is the entry chunk plus its static imports. Lazy chunks only
   // download when a door opens, so they do not count. The reference is the
-  // branch point's total, which equals its initial graph (it had no splits).
+  // initial JS of the latest main merge base (re-baselined 2026-10-03 at
+  // 4b8f6137b), so growth that shipped on main is not charged to the rail.
   const initialJs = Number.isFinite(rail.lazyChunks?.initialJsBytes)
     ? rail.lazyChunks.initialJsBytes
     : summaries["bundle.jsBytes"]?.median;

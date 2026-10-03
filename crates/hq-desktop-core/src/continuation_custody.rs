@@ -51,18 +51,36 @@ pub struct PendingCredentials {
     /// impl below. It is `Some` for the whole useful life of the value.
     tokens: Option<CognitoTokens>,
     identity: VerifiedIdentity,
+    referral_nonce: Option<String>,
 }
 
 impl PendingCredentials {
     pub fn new(tokens: CognitoTokens, identity: VerifiedIdentity) -> Self {
+        Self::new_with_referral_nonce(tokens, identity, None)
+    }
+
+    pub fn new_with_referral_nonce(
+        tokens: CognitoTokens,
+        identity: VerifiedIdentity,
+        referral_nonce: Option<String>,
+    ) -> Self {
         Self {
             tokens: Some(tokens),
             identity,
+            referral_nonce,
         }
     }
 
     pub fn identity(&self) -> &VerifiedIdentity {
         &self.identity
+    }
+
+    pub fn referral_nonce(&self) -> Option<&str> {
+        self.referral_nonce.as_deref()
+    }
+
+    fn take_referral_nonce(&mut self) -> Option<String> {
+        self.referral_nonce.take()
     }
 
     /// Consume custody and hand the tokens to the writer. The only way out.
@@ -101,7 +119,7 @@ impl Drop for PendingCredentials {
         let Some(tokens) = self.tokens.as_mut() else {
             return; // handed to the writer; not ours to scrub.
         };
-        let mut scrub = |field: &mut String| {
+        let scrub = |field: &mut String| {
             let len = field.len();
             field.clear();
             field.push_str(&"\0".repeat(len));
@@ -174,14 +192,19 @@ impl ContinuationCustody {
 
     /// Something changed the signed-in account. Any pending attempt is now
     /// stale, and its credentials go without being written.
-    pub fn bump_generation(&mut self, end: AttemptEnd) -> u64 {
+    pub fn bump_generation(&mut self, end: AttemptEnd) -> (u64, Option<String>) {
         self.generation += 1;
+        let referral_nonce = self
+            .entry
+            .as_mut()
+            .and_then(|entry| entry.credentials.as_mut())
+            .and_then(PendingCredentials::take_referral_nonce);
         if let Some(entry) = self.entry.as_mut() {
             entry.attempt.end(end);
             entry.credentials = None;
         }
         self.entry = None;
-        self.generation
+        (self.generation, referral_nonce)
     }
 
     pub fn active_attempt_id(&self) -> Option<&str> {
@@ -205,6 +228,18 @@ impl ContinuationCustody {
             .map(|entry| entry.attempt.state())
     }
 
+    /// Referral nonce held with the active attempt's unwritten credentials.
+    /// Cancellation callers use this only to remove the already-persisted
+    /// unbound receipt; it never authorizes or transfers the receipt.
+    pub fn active_referral_nonce_for(&self, attempt_id: &str) -> Option<&str> {
+        self.entry
+            .as_ref()
+            .filter(|entry| !entry.attempt.is_finished())
+            .filter(|entry| entry.attempt.attempt_id() == attempt_id)
+            .and_then(|entry| entry.credentials.as_ref())
+            .and_then(PendingCredentials::referral_nonce)
+    }
+
     pub fn holds_credentials(&self) -> bool {
         self.entry
             .as_ref()
@@ -213,11 +248,18 @@ impl ContinuationCustody {
 
     /// Begin an attempt, superseding any attempt already in custody.
     ///
-    /// Returns how the previous attempt ended, if there was one.
-    pub fn begin(&mut self, attempt: ContinuationAttempt) -> Option<AttemptEnd> {
+    /// Returns how the previous attempt ended and its exact referral nonce, if
+    /// credentials had reached custody. The caller can conditionally discard
+    /// that nonce's still-unbound durable receipt after the in-memory overwrite.
+    pub fn begin(&mut self, attempt: ContinuationAttempt) -> (Option<AttemptEnd>, Option<String>) {
+        let mut referral_nonce = None;
         let previous = self.entry.take().map(|mut entry| {
             // Dropping `entry` drops its credentials, which is the discard.
             let end = entry.attempt.end(AttemptEnd::Superseded);
+            referral_nonce = entry
+                .credentials
+                .as_mut()
+                .and_then(PendingCredentials::take_referral_nonce);
             entry.credentials = None;
             end
         });
@@ -225,7 +267,7 @@ impl ContinuationCustody {
             attempt,
             credentials: None,
         });
-        previous
+        (previous, referral_nonce)
     }
 
     /// Fold in the passage of time and clear anything that expired.
@@ -400,6 +442,40 @@ mod tests {
         assert_eq!(custody.active_state_for("attempt-1"), None);
     }
 
+    #[test]
+    fn cancellation_can_identify_only_its_own_held_referral_nonce() {
+        let mut custody = ContinuationCustody::new();
+        custody.begin(attempt(&custody, "attempt-1"));
+        custody
+            .hold(
+                "attempt-1",
+                Some("nonce-value"),
+                PendingCredentials::new_with_referral_nonce(
+                    CognitoTokens {
+                        access_token: "placeholder-access-value".to_string(),
+                        id_token: Some("placeholder-id-value".to_string()),
+                        refresh_token: "placeholder-refresh-value".to_string(),
+                        expires_at: NOW + 3_600_000,
+                    },
+                    VerifiedIdentity {
+                        email: "a@example.test".to_string(),
+                        display_name: None,
+                    },
+                    Some("referral-a".to_string()),
+                ),
+                NOW,
+            )
+            .expect("hold");
+
+        assert_eq!(
+            custody.active_referral_nonce_for("attempt-1"),
+            Some("referral-a")
+        );
+        assert_eq!(custody.active_referral_nonce_for("stale-attempt"), None);
+        custody.cancel("attempt-1", AttemptEnd::Cancelled);
+        assert_eq!(custody.active_referral_nonce_for("attempt-1"), None);
+    }
+
     fn holding(id: &str) -> ContinuationCustody {
         let mut custody = ContinuationCustody::new();
         let started = attempt(&custody, id);
@@ -568,7 +644,7 @@ mod tests {
             custody.generation(),
             NOW,
         );
-        assert_eq!(custody.begin(second), Some(AttemptEnd::Superseded));
+        assert_eq!(custody.begin(second), (Some(AttemptEnd::Superseded), None));
 
         // The first attempt's held credentials are gone, not merely shadowed.
         assert!(!custody.holds_credentials());
@@ -577,6 +653,80 @@ mod tests {
             CustodyError::NoSuchAttempt
         );
         assert_eq!(custody.active_attempt_id(), Some("attempt-2"));
+    }
+
+    #[test]
+    fn supersession_returns_the_exact_referral_nonce_before_dropping_custody() {
+        let mut custody = ContinuationCustody::new();
+        custody.begin(attempt(&custody, "attempt-1"));
+        custody
+            .hold(
+                "attempt-1",
+                Some("nonce-value"),
+                PendingCredentials::new_with_referral_nonce(
+                    CognitoTokens {
+                        access_token: "placeholder-access-value".to_string(),
+                        id_token: Some("placeholder-id-value".to_string()),
+                        refresh_token: "placeholder-refresh-value".to_string(),
+                        expires_at: NOW + 3_600_000,
+                    },
+                    VerifiedIdentity {
+                        email: "a@example.test".to_string(),
+                        display_name: None,
+                    },
+                    Some("referral-exact".to_string()),
+                ),
+                NOW,
+            )
+            .expect("hold");
+
+        let next = ContinuationAttempt::start(
+            "attempt-2",
+            "state-two",
+            "nonce-two",
+            custody.generation(),
+            NOW,
+        );
+        assert_eq!(
+            custody.begin(next),
+            (
+                Some(AttemptEnd::Superseded),
+                Some("referral-exact".to_string())
+            )
+        );
+        assert!(!custody.holds_credentials());
+    }
+
+    #[test]
+    fn auth_transition_returns_the_referral_nonce_it_discards() {
+        let mut custody = ContinuationCustody::new();
+        custody.begin(attempt(&custody, "attempt-1"));
+        custody
+            .hold(
+                "attempt-1",
+                Some("nonce-value"),
+                PendingCredentials::new_with_referral_nonce(
+                    CognitoTokens {
+                        access_token: "placeholder-access-value".to_string(),
+                        id_token: Some("placeholder-id-value".to_string()),
+                        refresh_token: "placeholder-refresh-value".to_string(),
+                        expires_at: NOW + 3_600_000,
+                    },
+                    VerifiedIdentity {
+                        email: "a@example.test".to_string(),
+                        display_name: None,
+                    },
+                    Some("referral-auth-transition".to_string()),
+                ),
+                NOW,
+            )
+            .expect("hold");
+
+        assert_eq!(
+            custody.bump_generation(AttemptEnd::SignedOut),
+            (1, Some("referral-auth-transition".to_string()))
+        );
+        assert!(!custody.holds_credentials());
     }
 
     #[test]

@@ -1,66 +1,67 @@
-import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, relative, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { readRepoFile } from './harness';
 
-function sourceFiles(root: string): string[] {
-  return readdirSync(root).flatMap((entry) => {
-    const path = join(root, entry);
-    if (statSync(path).isDirectory()) {
-      return entry === '__tests__' ? [] : sourceFiles(path);
-    }
-    if (!/\.(?:ts|svelte)$/.test(entry) || /\.(?:test|spec)\.ts$/.test(entry)) {
-      return [];
-    }
-    return [path];
-  });
-}
-
-function hasDirectSaveSettingsWriter(source: string): boolean {
-  return /(['"])save_settings\1/.test(source);
-}
+import {
+  SettingsMutationQueue,
+  updateSettings,
+  type SettingsInvoker,
+} from '../../../../packages/platform/src/tauri/settings-mutations';
 
 describe('settings write boundary', () => {
-  it('detects the save_settings command independently of the local callee name', () => {
-    expect(hasDirectSaveSettingsWriter("invokeFn('save_settings', {})")).toBe(true);
-    expect(hasDirectSaveSettingsWriter('tauriInvoke("save_settings", {})')).toBe(true);
+  it('persists a patch through updateSettings by merging it over the latest prefs', async () => {
+    const invoke = (async (command: string, args?: Record<string, unknown>) => {
+      if (command === 'get_settings') return { theme: 'dark', keep: true };
+      if (command === 'save_settings') return undefined;
+      throw new Error(`unexpected command ${command} ${JSON.stringify(args)}`);
+    }) as SettingsInvoker;
+    const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
+    const recording: SettingsInvoker = (async (command, args) => {
+      calls.push({ command, args });
+      return invoke(command, args);
+    }) as SettingsInvoker;
+
+    await updateSettings({ theme: 'light' }, recording);
+
+    expect(calls.map((call) => call.command)).toEqual(['get_settings', 'save_settings']);
+    expect(calls[1]?.args).toEqual({ prefs: { theme: 'light', keep: true } });
   });
 
-  it('does not mistake the VersionPopout save_settings log for a writer', () => {
-    expect(
-      hasDirectSaveSettingsWriter(
-        "console.error('save_settings (autoUpdate) failed:', err)",
-      ),
-    ).toBe(false);
+  it('serializes SettingsMutationQueue patches so the second save sees the first', async () => {
+    let stored: Record<string, unknown> = { keep: true };
+    let releaseFirstGet: () => void = () => {};
+    const firstGetBlocked = new Promise<void>((resolve) => {
+      releaseFirstGet = resolve;
+    });
+    let gets = 0;
+    const calls: string[] = [];
+    const invoke = (async (command: string, args?: Record<string, unknown>) => {
+      calls.push(command);
+      if (command === 'get_settings') {
+        gets += 1;
+        if (gets === 1) await firstGetBlocked;
+        return { ...stored };
+      }
+      if (command === 'save_settings') {
+        stored = { ...(args?.prefs as Record<string, unknown>) };
+        return undefined;
+      }
+      throw new Error(`unexpected command ${command}`);
+    }) as SettingsInvoker;
+
+    const queue = new SettingsMutationQueue(invoke);
+    const first = queue.update({ a: 1 });
+    const second = queue.update({ b: 2 });
+    releaseFirstGet();
+    await first;
+    await second;
+
+    expect(stored).toEqual({ keep: true, a: 1, b: 2 });
+    expect(calls).toEqual(['get_settings', 'save_settings', 'get_settings', 'save_settings']);
   });
 
-  it('keeps the direct save_settings call in the shared serialized mutation owner', () => {
-    const srcRoot = join(process.cwd(), 'src');
-    const writers = sourceFiles(srcRoot)
-      .filter((path) =>
-        hasDirectSaveSettingsWriter(readFileSync(path, 'utf8')),
-      )
-      .map((path) => relative(srcRoot, path))
-      .sort();
-
-    expect(
-      writers,
-      `Sync source must delegate save_settings to the shared mutation owner; found: ${writers.join(', ') || 'none'}`,
-    ).toEqual([]);
-    expect(
-      readFileSync(
-        resolve(process.cwd(), '../../packages/platform/src/tauri/settings-mutations.ts'),
-        'utf8',
-      ),
-    ).toContain("'save_settings'");
-    // The app-local wrapper (updateInjectedSettings) went with the
-    // unreachable shell; the shared owner in @hq/platform exports the
-    // serialized writer directly.
-    expect(readRepoFile('../../packages/platform/src/tauri/settings-mutations.ts')).toContain(
-      'export function updateSettings(',
-    );
-    expect(readRepoFile('../../packages/platform/src/tauri/settings-mutations.ts')).toContain(
-      'export class SettingsMutationQueue',
+  it('rejects a queue update when no command invoker was injected', async () => {
+    const queue = new SettingsMutationQueue();
+    await expect(queue.update({ a: 1 })).rejects.toThrow(
+      'Settings mutations require an injected command invoker.',
     );
   });
 });

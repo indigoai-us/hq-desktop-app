@@ -27,7 +27,6 @@ export type CreateBotStep = "kind" | "home" | "details";
 export type BotKindChoice = "blank" | "template";
 export type BotHome = "local" | "cloud";
 export type BotRuntime = LocalBotCreateInput["runtime"];
-export type CloudBotAuthMode = "subscription" | "apiKey";
 export type BotMemory = "synced" | "local";
 /** Who a Local bot acts as (bot-kinds): the owner, or itself inside its companies. */
 export type BotScope = LocalBotKind;
@@ -39,8 +38,6 @@ export interface CreateBotDraft {
   runtime: BotRuntime;
   /** Cloud-only size rung, chosen from the current company quote. */
   size: "basic" | "power" | "dev" | "";
-  /** Cloud-only provider credential mode. */
-  authMode: CloudBotAuthMode;
   companyUid?: string;
   /** Local only: personal (acts as you) or company (acts as itself). */
   scope: BotScope;
@@ -91,10 +88,15 @@ export interface CreateBotContext {
   templates: readonly LocalBotWorkerOption[];
   /** Server-resolved hq-flags value. Claude stays hidden until this is true. */
   claudeProviderEnabled?: boolean;
+  /**
+   * `agents.desktop-agent-creation` is on for a company in this modal. Cloud
+   * bots then default to Claude, with Codex and Grok offered, and Claude needs
+   * no second flag.
+   */
+  directCloudOn?: boolean;
   /** Tenant-specific options from GET /v1/agents/provision-options. */
   cloudProvisionOptions?: AgentProvisionOptionsView | null;
   cloudQuoteStatus?: "loading" | "ready" | "error";
-  cloudApiKeyPresent?: boolean;
   /**
    * Plain-language name for the host machine ("Mac", "PC", or "computer")
    * from `hostComputerNoun`. Absent means "not ready"; the copy stays neutral.
@@ -144,7 +146,7 @@ export const BOT_NAME_SUGGESTIONS: readonly string[] = [
 
 export function initialDraft(
   ctx: Pick<CreateBotContext, "canLocal" | "canCloud" | "existingNames" | "companies" | "runtimeReady"> &
-    Partial<Pick<CreateBotContext, "ownerCompanies">>,
+    Partial<Pick<CreateBotContext, "ownerCompanies" | "claudeProviderEnabled" | "directCloudOn">>,
   preferredCompanyUid: string | null = null,
   preferredCompanySlug: string | null = null,
 ): CreateBotDraft {
@@ -159,9 +161,8 @@ export function initialDraft(
   return {
     kind: "blank",
     home: ctx.canLocal ? "local" : "cloud",
-    runtime: ctx.canLocal ? firstReadyRuntime(ctx.runtimeReady) : "codex",
+    runtime: ctx.canLocal ? firstReadyRuntime(ctx.runtimeReady) : defaultCloudRuntime(ctx),
     size: "",
-    authMode: "subscription",
     companyUid: preferred?.companyUid ?? ctx.companies[0]?.companyUid,
     scope: ownerSlug ? "company" : "personal",
     companySlugs: ownerSlug ? [ownerSlug] : [],
@@ -173,6 +174,20 @@ export function initialDraft(
     model: "",
     memory: "synced",
   };
+}
+
+/** Claude can run a Cloud bot: the direct-create flag is on, or the Claude provider flag is. */
+export function claudeAllowedForCloud(
+  ctx: Partial<Pick<CreateBotContext, "claudeProviderEnabled" | "directCloudOn">>,
+): boolean {
+  return ctx.directCloudOn === true || ctx.claudeProviderEnabled === true;
+}
+
+/** The brain a new Cloud bot starts on: Claude when allowed, otherwise Codex. */
+export function defaultCloudRuntime(
+  ctx: Partial<Pick<CreateBotContext, "claudeProviderEnabled" | "directCloudOn">>,
+): "claude" | "codex" {
+  return claudeAllowedForCloud(ctx) ? "claude" : "codex";
 }
 
 /** The first signed-in runtime in picker order; claude when nothing is known. */
@@ -521,7 +536,7 @@ export function stepIssue(step: CreateBotStep, draft: CreateBotDraft, ctx: Creat
         const fieldsIssue =
           cloudNameIssue(draft.name) ?? handleIssue(draft) ?? titleIssue(draft.title);
         if (fieldsIssue) return fieldsIssue;
-        if (draft.runtime === "claude" && ctx.claudeProviderEnabled !== true) {
+        if (draft.runtime === "claude" && !claudeAllowedForCloud(ctx)) {
           return "Claude isn’t available for this account.";
         }
         if (ctx.cloudQuoteStatus !== "ready" || !ctx.cloudProvisionOptions) {
@@ -534,9 +549,6 @@ export function stepIssue(step: CreateBotStep, draft: CreateBotDraft, ctx: Creat
         );
         if (!quotedSize?.selectable || quotedSize.netMonthlyCents === null) {
           return "Choose an available size.";
-        }
-        if (draft.authMode === "apiKey" && !ctx.cloudApiKeyPresent) {
-          return "Enter an API key to continue.";
         }
         return null;
       }

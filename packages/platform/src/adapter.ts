@@ -335,10 +335,19 @@ export interface SelectAgentAvatarResult {
   slackUpdated?: boolean;
 }
 
+/** Evaluation context for a feature flag. */
+export interface FeatureScope {
+  companyUid?: string | null;
+}
+
 export interface IdentityApi {
   whoami(): AdapterPromise<WhoAmI>;
   isAdmin(): AdapterPromise<boolean>;
-  hasFeature(flag: string): AdapterPromise<boolean>;
+  /**
+   * `scope.companyUid` evaluates the flag in that company's context, which is
+   * the only way a company-targeted flag reads as on. Omitted → person-only.
+   */
+  hasFeature(flag: string, scope?: FeatureScope): AdapterPromise<boolean>;
   /**
    * Optional live subscription to a feature flag. When the underlying flag
    * registry publishes a fresh snapshot, `onChange` fires with the resolved
@@ -888,6 +897,12 @@ export interface MeetingsApi {
    * envelope; callers coerce rows at their parse boundary.
    */
   listRecorded(companyId?: string | null): AdapterPromise<Json>;
+  /**
+   * One recorded meeting (`GET /v1/meetings/{id}`): source frontmatter plus
+   * its signals grouped by type, each with a presigned body URL. Raw
+   * envelope; callers coerce it.
+   */
+  getRecorded(meetingId: string, companyId?: string | null): AdapterPromise<Json>;
   inviteBot(payload: Json): AdapterPromise<Json>;
   cancelBot(id: string): AdapterPromise<void>;
   /** Same payload as inviteBot — hq-pro `POST /v1/bot/join-now`. */
@@ -1281,7 +1296,23 @@ export interface AgentProvisionOptionsView {
   options: readonly AgentProvisionSizeOption[];
 }
 
+/**
+ * Raw hq-pro REST transport for framework-free clients (`@hq/agents`). Paths
+ * are relative (`/v1/agents`); the adapter owns the base URL and the auth.
+ * Non-2xx answers resolve with their status, never throw, so callers can read
+ * the server's refusal body. Only a transport failure rejects.
+ */
+export type HqProFetch = (
+  path: string,
+  init: { method: string; headers?: Record<string, string>; body?: string },
+) => Promise<{ status: number; text(): Promise<string> }>;
+
 export interface AgentsApi {
+  /**
+   * The REST transport `@hq/agents` runs on. Absent on adapters that cannot
+   * reach hq-pro; callers keep their older path then.
+   */
+  fetch?: HqProFetch;
   /** GET /v1/agents/provision-options?companyUid= — tenant-priced sizes. */
   getProvisionOptions(
     companyUid: string,

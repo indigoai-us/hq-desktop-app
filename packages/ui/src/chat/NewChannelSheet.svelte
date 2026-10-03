@@ -4,6 +4,7 @@
   import { channelSlug } from "./create-flow.js";
   import {
     channelPathPreview,
+    companyFolderSlug,
     entriesFromDirectory,
     loadPickerRoster,
     readPickerRoster,
@@ -63,11 +64,9 @@
     };
   });
   const entries = $derived(entriesFromDirectory({ rows, contacts, groups, guests, roster }));
-  const companyLabel = $derived(
-    companies.find((company) => company.companyUid === companyUid)?.label ?? "Personal",
-  );
+  const company = $derived(companies.find((entry) => entry.companyUid === companyUid) ?? null);
   const slug = $derived(channelSlug(name));
-  const path = $derived(channelPathPreview(companyLabel, name));
+  const path = $derived(channelPathPreview(companyFolderSlug(company), name));
   const humans = $derived(selected.filter((id) => !id.startsWith("agt_")).length);
 
   async function create(): Promise<void> {
@@ -121,7 +120,7 @@
   <header class="sh">
     New channel
     <span class="sub"
-      >{#if companyUid}<CompanyLabel name={companyLabel} {companyUid} />{:else}Personal{/if}</span
+      >{#if companyUid}<CompanyLabel name={company?.label ?? "Personal"} {companyUid} />{:else}Personal{/if}</span
     >
     <span class="grow"></span>
     <button type="button" class="icon" aria-label="Close" onclick={() => onclose()}>

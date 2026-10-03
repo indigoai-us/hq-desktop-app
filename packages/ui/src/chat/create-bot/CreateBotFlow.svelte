@@ -34,13 +34,18 @@
   import type { RuntimeSignInApi } from "./RuntimeSignIn.svelte";
   import type { RuntimeStatus } from "./runtime-status.js";
   import type { CloudBotDraft } from "../lifecycle-entry-points.js";
+  import type { CloudUnavailableCopy, CreateAvailability, CreateErrorFix } from "@hq/agents";
+  import type { DirectCloudFlowSeam } from "./direct-cloud-lazy.js";
+  import { newWizardIdempotencyKey } from "./wizard-key.js";
   import {
     STEP_TITLES,
     botDisplayName,
     botHandle,
     canAdvance,
     canCreate,
+    claudeAllowedForCloud,
     companyTemplates,
+    defaultCloudRuntime,
     firstBlockingStep,
     initialDraft,
     nextStep,
@@ -101,6 +106,15 @@
     onback?: (() => void) | null;
     entryBusy?: "bot" | "agent" | string | null;
     entryError?: string | null;
+    /** The action that fixes `entryError` (direct cloud create only). */
+    entryFix?: CreateErrorFix | null;
+    /**
+     * `agents.desktop-agent-creation`: when the flag is on, Cloud is always
+     * shown (disabled with the reason and the fix when it cannot be used) and
+     * the cloud draft carries a per-session idempotency key and the quote.
+     * Absent or flag off → the older behaviour, unchanged.
+     */
+    directCloud?: DirectCloudFlowSeam | null;
     signInApi?: RuntimeSignInApi | null;
     onsignin?: ((runtime: BotRuntime) => void | Promise<void>) | null;
     onsignedin?: ((runtime: BotRuntime) => void | Promise<void>) | null;
@@ -159,6 +173,8 @@
     onback = null,
     entryBusy = null,
     entryError = null,
+    entryFix = null,
+    directCloud = null,
     signInApi = null,
     onsignin = null,
     onsignedin = null,
@@ -193,11 +209,46 @@
   const companies = $derived(agentTargets ?? []);
   const ownerCompanies = $derived(botCompanies ?? []);
   const canLocal = $derived(!!oncreate);
-  const canCloud = $derived(!!onCloudCreate && companies.length > 0);
+  /** `agents.desktop-agent-creation` resolved on for this person or one of their companies. */
+  let directCloudOn = $state(false);
+  /** `@hq/agents` copy for an unavailable Cloud, loaded with the flag (kept off the startup bundle). */
+  let unavailableCopy = $state<typeof import("@hq/agents").cloudUnavailableCopy | null>(null);
+  /** Per-company create availability, filled in once the flag is on. */
+  let cloudAvailability = $state<Record<string, CreateAvailability>>({});
+  /**
+   * One key per create attempt: a double-click or a retry after a network
+   * failure replays it. A refusal the server answered with a fix (handle
+   * taken, new price, plan) made no bot, so the next create gets a new key
+   * instead of replaying the refusal.
+   */
+  let cloudIdempotencyKey = newWizardIdempotencyKey();
+  let keyRotatedForFix: CreateErrorFix | null = null;
+  const companyBlocks = $derived.by<Record<string, CloudUnavailableCopy>>(() => {
+    const out: Record<string, CloudUnavailableCopy> = {};
+    const cloudUnavailableCopy = unavailableCopy;
+    if (!directCloudOn || !cloudUnavailableCopy) return out;
+    for (const company of companies) {
+      const copy = cloudUnavailableCopy(cloudAvailability[company.companyUid] ?? null, {
+        companyLabel: company.label,
+        companies: companies.length,
+      });
+      if (copy) out[company.companyUid] = copy;
+    }
+    return out;
+  });
+  /** Why Cloud cannot be used at all (flag on only): no company, or every company refuses. */
+  const cloudBlocked = $derived.by<CloudUnavailableCopy | null>(() => {
+    const cloudUnavailableCopy = unavailableCopy;
+    if (!directCloudOn || !cloudUnavailableCopy) return null;
+    if (companies.length === 0) return cloudUnavailableCopy(null, { companies: 0 });
+    if (!onCloudCreate) return null;
+    const blocked = companies.map((c) => companyBlocks[c.companyUid]);
+    return blocked.every(Boolean) ? (blocked[0] ?? null) : null;
+  });
+  const canCloud = $derived(!!onCloudCreate && companies.length > 0 && !cloudBlocked);
   let claudeProviderEnabled = $state(false);
   let cloudProvisionOptions = $state<AgentProvisionOptionsView | null>(null);
   let cloudQuoteStatus = $state<"loading" | "ready" | "error">("loading");
-  let cloudApiKey = $state("");
   let quoteReloadToken = $state(0);
   let quoteGeneration = 0;
 
@@ -211,9 +262,9 @@
     ownerCompanies,
     templates,
     claudeProviderEnabled,
+    directCloudOn,
     cloudProvisionOptions,
     cloudQuoteStatus,
-    cloudApiKeyPresent: cloudApiKey.trim().length > 0,
     hostNoun,
   });
 
@@ -224,6 +275,8 @@
   let pickedAvatarSrc = $state<string | null>(null);
   /** The user answered "who is it for?" themselves; templates no longer pick for them. */
   let scopeAnswered = $state(false);
+  /** The user picked a brain themselves; the Cloud default no longer changes it. */
+  let runtimeAnswered = false;
 
   const busy = $derived(entryBusy !== null && entryBusy !== undefined);
   const steps = $derived(stepsFor(draft));
@@ -254,13 +307,52 @@
   );
 
   onMount(() => {
+    const seam = directCloud;
+    if (!seam) return;
+    let active = true;
+    const uids = untrack(() => companies.map((c) => c.companyUid));
+    void seam.anyEnabled(uids).then(async (on) => {
+      if (!active || !on) return;
+      const agents = await import("@hq/agents");
+      if (!active) return;
+      unavailableCopy = agents.cloudUnavailableCopy;
+      directCloudOn = true;
+      const entries = await Promise.all(
+        uids.map(async (uid) => [uid, await seam.availability(uid)] as const),
+      );
+      if (!active) return;
+      cloudAvailability = Object.fromEntries(entries);
+    });
+    return () => {
+      active = false;
+    };
+  });
+
+  // The direct-create flag resolves after the draft is seeded: a Cloud bot the
+  // user has not picked a brain for moves to the Claude default then.
+  $effect(() => {
+    if (!directCloudOn || draft.home !== "cloud" || untrack(() => runtimeAnswered)) return;
+    if (draft.runtime !== "claude") draft = { ...draft, runtime: "claude" };
+  });
+
+  // A company that cannot take a cloud bot is never the selected one while
+  // another can.
+  $effect(() => {
+    if (!directCloudOn || draft.home !== "cloud") return;
+    const uid = draft.companyUid ?? "";
+    if (uid && !companyBlocks[uid]) return;
+    const open = companies.find((c) => !companyBlocks[c.companyUid]);
+    if (open && open.companyUid !== uid) draft = { ...draft, companyUid: open.companyUid };
+  });
+
+  onMount(() => {
     if (!loadClaudeProviderFlag) return;
     let active = true;
     void loadClaudeProviderFlag()
       .then((result) => {
         if (!active) return;
         claudeProviderEnabled = result.ok && result.value === true;
-        if (!claudeProviderEnabled && draft.home === "cloud" && draft.runtime === "claude") {
+        if (!claudeAllowedForCloud(ctx) && draft.home === "cloud" && draft.runtime === "claude") {
           draft = { ...draft, runtime: "codex" };
         }
         if (!result.ok && result.reason === "error") {
@@ -337,21 +429,12 @@
 
   function patch(p: Partial<CreateBotDraft>): void {
     if (busy) return;
-    const oldHome = draft.home;
-    const oldCompanyUid = draft.companyUid;
-    const oldRuntime = draft.runtime;
-    const oldAuthMode = draft.authMode;
     draft = { ...draft, ...p };
-    if (p.home === "cloud" && draft.runtime === "claude" && claudeProviderEnabled !== true) {
+    if (p.runtime !== undefined) runtimeAnswered = true;
+    if (p.home === "cloud" && !runtimeAnswered) {
+      draft = { ...draft, runtime: defaultCloudRuntime(ctx) };
+    } else if (p.home === "cloud" && draft.runtime === "claude" && !claudeAllowedForCloud(ctx)) {
       draft = { ...draft, runtime: "codex" };
-    }
-    if (
-      oldHome !== draft.home ||
-      oldCompanyUid !== draft.companyUid ||
-      oldRuntime !== draft.runtime ||
-      oldAuthMode !== draft.authMode
-    ) {
-      cloudApiKey = "";
     }
     if (p.scope !== undefined) scopeAnswered = true;
     // A company template is a company bot for that company unless the user
@@ -394,14 +477,26 @@
         (option) => option.key === draft.size && option.selectable && option.netMonthlyCents !== null,
       );
       if (draft.companyUid && quotedSize) {
+        if (entryFix && entryFix !== keyRotatedForFix) {
+          keyRotatedForFix = entryFix;
+          cloudIdempotencyKey = newWizardIdempotencyKey();
+        }
         await onCloudCreate?.(draft.companyUid, {
           name: draft.name.trim(),
           handle: botHandle(draft),
           runtime: draft.runtime,
           size: quotedSize.key,
-          authMode: draft.authMode,
-          ...(draft.authMode === "apiKey" && cloudApiKey ? { apiKey: cloudApiKey } : {}),
           ...(title ? { title } : {}),
+          ...(directCloudOn && cloudProvisionOptions && quotedSize.netMonthlyCents !== null
+            ? {
+                idempotencyKey: cloudIdempotencyKey,
+                quote: {
+                  instanceType: quotedSize.instanceType,
+                  netMonthlyCents: quotedSize.netMonthlyCents,
+                  catalogVersion: cloudProvisionOptions.catalogVersion,
+                },
+              }
+            : {}),
         });
       }
       return;
@@ -504,6 +599,9 @@
           {draft}
           {canLocal}
           {canCloud}
+          cloudAlwaysShown={directCloudOn}
+          cloudBlocked={cloudBlocked}
+          {companyBlocks}
           runtimeReady={botRuntimeReady}
           runtimeStatus={botRuntimeStatus}
           {companies}
@@ -524,11 +622,9 @@
         <CloudDetailsStep
           {draft}
           companyLabel={cloudCompany?.label ?? "your company"}
-          claudeProviderEnabled={claudeProviderEnabled}
+          claudeProviderEnabled={claudeAllowedForCloud(ctx)}
           cloudProvisionOptions={cloudProvisionOptions}
           cloudQuoteStatus={cloudQuoteStatus}
-          apiKey={cloudApiKey}
-          onapikey={(value) => (cloudApiKey = value)}
           onretryquote={() => (quoteReloadToken += 1)}
           disabled={busy}
           onpatch={patch}
@@ -550,7 +646,16 @@
     </div>
 
     {#if entryError}
-      <p class="flow-error" role="alert" data-testid="chat-create-entry-error">{entryError}</p>
+      <p class="flow-error" role="alert" data-testid="chat-create-entry-error">
+        {entryError}
+        {#if entryFix?.kind === "checkout"}
+          <a class="flow-error-fix" href={entryFix.url} target="_blank" rel="noopener noreferrer" data-testid="chat-create-entry-fix">{entryFix.label}</a>
+        {:else if entryFix?.kind === "reload_quote"}
+          <button type="button" class="flow-error-fix" data-testid="chat-create-entry-fix" disabled={busy} onclick={() => (quoteReloadToken += 1)}>Get the new price</button>
+        {:else if entryFix?.kind === "edit_handle" && step !== "details"}
+          <button type="button" class="flow-error-fix" data-testid="chat-create-entry-fix" disabled={busy} onclick={() => goTo("details")}>Change handle</button>
+        {/if}
+      </p>
     {/if}
 
     <div class="flow-footer">
@@ -686,6 +791,17 @@
     color: var(--v4-error, #d9534f);
     font-size: 13px;
     line-height: 1.45;
+  }
+  .flow-error-fix {
+    margin-left: 6px;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    font-weight: 500;
+    text-decoration: underline;
+    cursor: pointer;
   }
   .flow-footer {
     display: flex;

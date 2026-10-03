@@ -17,6 +17,8 @@
     repoAccess?: boolean;
     sessions?: readonly PortfolioSessionRef[];
     ownerName?: string;
+    /** File to select when the pane opens, e.g. from a README link (QA-104). */
+    openPath?: string | null;
   }
 
   let {
@@ -26,6 +28,7 @@
     repoAccess = true,
     sessions = [],
     ownerName = "You",
+    openPath = null,
   }: Props = $props();
 
   let mod = $state<BodyModule | null>(null);
@@ -58,6 +61,7 @@
       {prdPath}
       {repoAccess}
       {sessions}
+      {openPath}
       {ownerName}
     />
   {:else}

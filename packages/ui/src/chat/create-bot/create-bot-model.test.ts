@@ -81,7 +81,6 @@ function ctx(over: Partial<CreateBotContext> = {}): CreateBotContext {
     templates: WORKERS,
     claudeProviderEnabled: true,
     cloudQuoteStatus: "ready",
-    cloudApiKeyPresent: true,
     cloudProvisionOptions: {
       defaultInstanceType: "t4g.medium",
       catalogVersion: "test",
@@ -123,9 +122,18 @@ describe("initialDraft", () => {
 
   it("opens on Cloud when this Mac cannot host a bot", () => {
     expect(initialDraft(ctx({ canLocal: false })).home).toBe("cloud");
-    expect(initialDraft(ctx({ canLocal: false })).runtime).toBe("codex");
+    expect(initialDraft(ctx({ canLocal: false })).runtime).toBe("claude");
+    expect(initialDraft(ctx({ canLocal: false, claudeProviderEnabled: false })).runtime).toBe("codex");
     expect(firstReadyRuntime(null)).toBe("claude");
     expect(firstReadyRuntime({ claude: false, codex: false, grok: false })).toBe("claude");
+  });
+
+  it("starts a Cloud bot on Claude when agents.desktop-agent-creation is on, with no Claude flag", () => {
+    const on = ctx({ canLocal: false, claudeProviderEnabled: false, directCloudOn: true });
+    expect(initialDraft(on).runtime).toBe("claude");
+    expect(stepIssue("details", draft({ home: "cloud", runtime: "claude", name: "scout", handle: "scout" }, on), on)).not.toBe(
+      "Claude isn’t available for this account.",
+    );
   });
 });
 
@@ -337,7 +345,6 @@ describe("steps", () => {
     expect(stepIssue("details", base, ctx({ claudeProviderEnabled: false }))).toContain("Claude isn’t available");
     expect(stepIssue("details", { ...base, runtime: "codex" }, ctx({ cloudQuoteStatus: "loading" }))).toContain("Checking company pricing");
     expect(stepIssue("details", { ...base, runtime: "codex", size: "power" }, ctx())).toBe("Choose an available size.");
-    expect(stepIssue("details", { ...base, runtime: "codex", authMode: "apiKey" }, ctx({ cloudApiKeyPresent: false }))).toBe("Enter an API key to continue.");
     expect(stepIssue("details", { ...base, runtime: "codex" }, ctx())).toBeNull();
   });
 

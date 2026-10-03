@@ -105,6 +105,8 @@ export interface OutpostCache {
   retryAttempt: number;
   /** When this data last came from the Outpost (ISO). null = never refreshed. */
   fetchedAt: string | null;
+  /** True when the host read but the jobs read failed, so jobs and runs are unknown, not empty. */
+  jobsUnavailable?: boolean;
 }
 
 /** Reads the current state from the Outpost. Rejects when it cannot. */

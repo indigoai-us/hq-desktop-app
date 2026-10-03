@@ -135,6 +135,22 @@ describe("Outpost live read (QA-069)", () => {
     expect(target.querySelector("[data-testid='outpost-no-runs']")?.textContent).toBe("No runs yet");
   });
 
+  it("keeps the host when only the jobs read fails, and offers Try again for that section (QA-084)", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const target = await mountWith({
+      api: api(ok(STATUS as unknown as Json), { ok: false, reason: "error", code: "http-502", message: "Bad gateway {\"x\":1}" }),
+    });
+    expect(target.querySelector("[data-testid='outpost-load-error']")).toBeNull();
+    expect(target.querySelector("[data-testid='outpost-loading']")).toBeNull();
+    expect(target.querySelector("[data-testid='outpost-host']")).not.toBeNull();
+    const jobs = target.querySelector("[data-testid='outpost-jobs-error']");
+    expect(jobs?.textContent).toContain("Couldn't load scheduled jobs");
+    expect(jobs?.querySelector("button")?.textContent).toContain("Try again");
+    expect(target.querySelector("[data-testid='outpost-no-jobs']")).toBeNull();
+    expect(target.querySelector("[data-testid='outpost-no-runs']")).toBeNull();
+    expect(target.textContent).not.toMatch(/http-502|Bad gateway|\{/);
+  });
+
   it("rejects instead of inventing data when the client is missing or a read fails", async () => {
     await expect(createOutpostRefresher(null)()).rejects.toThrow("no Outpost API");
     await expect(

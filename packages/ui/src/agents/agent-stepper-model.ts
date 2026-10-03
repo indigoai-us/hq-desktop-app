@@ -271,7 +271,6 @@ export function toCloudDraft(draft: AgentStepperDraft): CloudBotDraft {
     ...(title ? { title } : {}),
     runtime: draft.runtime,
     size: draft.size,
-    authMode: "subscription",
   };
 }
 

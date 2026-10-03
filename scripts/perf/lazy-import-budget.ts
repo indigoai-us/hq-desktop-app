@@ -21,8 +21,11 @@ export interface StaticImportFinding {
 // `import type` / `export type` statements are erased at build time and add
 // no runtime bytes, so they are not static bindings. Inline `{ type X }`
 // specifiers inside a value import still count: the statement survives.
+// The binding list may span lines (`import {\n  a,\n  b,\n} from "x"`); it
+// cannot contain a quote or a semicolon, so a match never runs past its own
+// statement.
 const STATIC_FROM =
-  /\b(?:import|export)\s+(?!type[\s{*])(?:[^'"\n]*?\s+from\s+)?["']([^"']+)["']/g;
+  /\b(?:import|export)\s+(?!type[\s{*])(?:[^'";]*?\s+from\s+)?["']([^"']+)["']/g;
 
 const HEAVY = [
   { kind: "atlas" as const, needle: "/atlas/" },
@@ -31,7 +34,13 @@ const HEAVY = [
 
 /** Specifiers that are real static bindings. `import()` is not in this set. */
 export function staticSpecifiers(content: string): string[] {
-  const withoutDynamic = content.replace(/\bimport\s*\(/g, "dynamic(");
+  // Comments go first: the binding list may span lines, so prose such as
+  // "the import graph" in a comment above a statement must not start a match.
+  // A `//` after `:` is a URL inside a string, not a comment.
+  const withoutComments = content
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/(^|[^:\\])\/\/[^\n]*/g, "$1");
+  const withoutDynamic = withoutComments.replace(/\bimport\s*\(/g, "dynamic(");
   const specs: string[] = [];
   for (const match of withoutDynamic.matchAll(STATIC_FROM)) {
     specs.push(match[1]);

@@ -34,6 +34,8 @@
      *  resolve to files under `scopeRoot` when it is set. */
     onopenpath?: (path: string) => void;
     scopeRoot?: string | null;
+    /** Noun for the missing-link note: "isn't in this {scopeLabel}". */
+    scopeLabel?: string;
   }
 
   interface AuthorizedFilePreview {
@@ -41,7 +43,7 @@
     dataBase64: string;
   }
 
-  let { adapter, path, onopenpath, scopeRoot = null }: Props = $props();
+  let { adapter, path, onopenpath, scopeRoot = null, scopeLabel = "project" }: Props = $props();
   /** Plain-language note when a relative link points at a missing file. */
   let linkNote = $state<string | null>(null);
 
@@ -204,7 +206,7 @@
     const exists = inScope(target) && (await linkTargetExists(target));
     if (path !== from) return;
     if (!exists) {
-      linkNote = `${name} isn't in this project`;
+      linkNote = `${name} isn't in this ${scopeLabel}`;
       return;
     }
     onopenpath?.(target);

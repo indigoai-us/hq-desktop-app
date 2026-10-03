@@ -104,6 +104,17 @@
   );
   const selectedGrant = $derived(sharedGrantPreview(cache.grants, selectedGrantId));
 
+  /** A relative Markdown link in the preview selects that library file (QA-104). */
+  function openLibraryPath(target: string): void {
+    const file = cache.files.find((f) => f.path === target);
+    if (file) {
+      selectedFileId = file.id;
+      return;
+    }
+    const grant = cache.grants.find((g) => g.path === target);
+    if (grant) selectedGrantId = grant.id;
+  }
+
   function selectSection(next: PersonalLibrarySection, slug: string | null = null): void {
     section = next;
     companySlug = slug;
@@ -239,7 +250,7 @@
     {#if adapter?.files && typeof adapter.files.getFileContent === "function"}
       <!-- FilePreviewPane carries the name, path and its own Open / Copy path
            / Reveal actions; repeating them here showed every action twice. -->
-      <FilePreviewPane {adapter} {path} />
+      <FilePreviewPane {adapter} {path} scopeLabel="library" onopenpath={openLibraryPath} />
       <div class="act solo" data-testid="library-preview-actions">
         <RailButton icon="link" data-testid="library-preview-share" onclick={() => (shareFor = { path, grant })}>Share</RailButton>
       </div>

@@ -198,9 +198,17 @@ export function entriesFromDirectory(args: {
   return [...byId.values()];
 }
 
+/**
+ * The `companies/<x>/` folder segment for a company record: its configured
+ * slug, never one derived from the display name (QA-101). No company → personal.
+ */
+export function companyFolderSlug(company: { slug?: string | null } | null | undefined): string {
+  return company?.slug?.trim() || "personal";
+}
+
 /** `companies/<slug>/channels/<name>` shown under the channel name field. */
-export function channelPathPreview(companyLabel: string, name: string): string {
-  const company = channelSlug(companyLabel) || "personal";
+export function channelPathPreview(companySlug: string, name: string): string {
+  const company = companySlug.trim() || "personal";
   const slug = channelSlug(name);
   return slug ? `companies/${company}/channels/${slug}` : `companies/${company}/channels/`;
 }

@@ -183,13 +183,13 @@
     "bundle.jsBytes": {
       "n": 1,
       "discarded": 0,
-      "median": 2582555,
-      "p95": 2582555,
-      "min": 2582555,
-      "max": 2582555,
+      "median": 2636981,
+      "p95": 2636981,
+      "min": 2636981,
+      "max": 2636981,
       "stdev": 0,
       "samples": [
-        2582555
+        2636981
       ]
     }
   },
@@ -219,5 +219,5 @@
       "telemetryInitial": []
     }
   },
-  "note": "Console-rail reference recorded at the feat/console-rail branch point. Shared scripts/fixtures/perf-baseline.json is unchanged. Regenerate with `pnpm perf:rail -- --record-reference`."
+  "note": "Console-rail reference recorded at the feat/console-rail branch point. bundle.jsBytes was re-baselined on 2026-10-03 to the initial JS of the main merge base 4b8f6137b (2,636,981 bytes); timing metrics are unchanged from the branch-point recording. Shared scripts/fixtures/perf-baseline.json is unchanged. Regenerate with `pnpm perf:rail -- --record-reference`."
 }

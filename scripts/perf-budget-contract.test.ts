@@ -800,6 +800,23 @@ const h = setInterval(tick, options.pollMs);`;
     ]);
   });
 
+  it("static heavy imports: reads multi-line binding lists and skips comments", () => {
+    const content = `
+      /** Keep this off the import graph. */
+      // import nothing from "../atlas/Commented.svelte";
+      import {
+        a,
+        b,
+      } from "../telemetry/telemetry-lazy-value.js";
+      import type {
+        C,
+      } from "@hq/agents";
+    `;
+    expect(staticSpecifiers(content)).toEqual([
+      "../telemetry/telemetry-lazy-value.js",
+    ]);
+  });
+
   it("static heavy imports: ignores type-only imports, which build away", () => {
     const content = `
       import type { MyTelemetryApi } from "../telemetry/telemetry-me.js";
@@ -855,6 +872,8 @@ describe("first-frame-of-Home budget: lazy doors stay lazy", () => {
     "packages/ui/src/chat/NewMessageSheet.svelte",
     "packages/ui/src/chat/NewChannelSheet.svelte",
     "packages/ui/src/chat/PeoplePicker.svelte",
+    // The New bot flow loads when the create modal opens (lazy-doors.ts).
+    "packages/ui/src/chat/create-bot/CreateBotFlow.svelte",
     "packages/ui/src/agents/agent-stepper-model.ts",
     // US-040 gate: Atlas, telemetry, meetings, create sheets, company pages
     // and personal pages load behind their own doors.
@@ -899,6 +918,31 @@ describe("first-frame-of-Home budget: lazy doors stay lazy", () => {
     const reachable = staticReachable(files, ["a/Shell.svelte"]);
     expect(reachable.has("a/Heavy.svelte")).toBe(true);
     expect(reachable.has("a/Lazy.svelte")).toBe(false);
+  });
+});
+
+describe("cloud bot create stays off the shell entry", () => {
+  // Owner budget: the console-rail Initial JS limit has a few KB of headroom.
+  // The direct cloud create (cloud-create.ts and @hq/agents) loads when the
+  // New bot flow opens, through import(). Type-only imports build away.
+  it("@hq/agents and cloud-create.ts are not in the shell's static import graph", () => {
+    const entries = [
+      "packages/ui/src/index.ts",
+      "packages/ui/src/shell/DesktopApp.svelte",
+    ].filter((path) => uiScriptFiles.some((file) => file.path === path));
+    const reachable = staticReachable(uiScriptFiles, entries);
+    expect(reachable.has("packages/ui/src/shell/DesktopApp.svelte")).toBe(true);
+    const offenders: string[] = [];
+    for (const file of uiScriptFiles) {
+      if (!reachable.has(file.path)) continue;
+      for (const spec of staticSpecifiers(file.content)) {
+        if (spec === "@hq/agents" || spec.startsWith("@hq/agents/") || /create-bot\/cloud-create(\.js|\.ts)?$/.test(spec)) {
+          offenders.push(`${file.path} -> ${spec}`);
+        }
+      }
+    }
+    expect(offenders, offenders.join("\n")).toEqual([]);
+    expect(reachable.has("packages/ui/src/chat/create-bot/cloud-create.ts")).toBe(false);
   });
 });
 

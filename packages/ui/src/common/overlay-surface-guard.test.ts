@@ -40,6 +40,7 @@ const OVERLAYS = [
   "shell/AccountMenu.svelte",
   "shell/MoreCompaniesPopover.svelte",
   "shell/new-company/NewCompanySheet.svelte",
+  "shell/ToastStack.svelte",
   "shell/profile-panes/EditBotSheet.svelte",
 ];
 
@@ -95,6 +96,22 @@ describe("overlay surface guard (OWNER-006)", () => {
     expect(block).toMatch(/background:\s*var\(--overlay-bg\);/);
     expect(block).toMatch(/border:\s*1px solid var\(--overlay-border\);/);
     expect(block).toMatch(/box-shadow:\s*var\(--overlay-shadow\);/);
+  });
+
+  it("the toast card and its buttons paint the overlay tokens and OWNER-007 specs (OWNER-017)", () => {
+    const css = styleOf(readFileSync(join(src, "shell/ToastStack.svelte"), "utf8"));
+    const card = css.match(/\.ts-toast\s*\{([^}]*background[^}]*)\}/)?.[1] ?? "";
+    expect(card).toMatch(/background:\s*var\(--overlay-bg\);/);
+    expect(card).toMatch(/border:\s*1px solid var\(--overlay-border\);/);
+    expect(card).toMatch(/box-shadow:\s*var\(--overlay-shadow\);/);
+    const act = css.match(/\.ts-act\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(act).toMatch(/border-radius:\s*8px;/);
+    expect(act).toMatch(/border:\s*1px solid var\(--line2\b/);
+    expect(act).toMatch(/font:\s*500 12px\/16px/);
+    const primary = css.match(/\.ts-act\.primary\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(primary).toMatch(/background:\s*var\(--t1\b/);
+    expect(primary).toMatch(/color:\s*var\(--overlay-bg\);/);
+    expect(css).not.toMatch(/--v4-surface-solid/);
   });
 
   it("the guard catches a slate panel, a literal fill and a violet tint", () => {
