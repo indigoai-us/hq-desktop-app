@@ -142,6 +142,8 @@
   .ctx, .row { display: flex; align-items: center; gap: 8px; }
   .ctx { padding: 4px 8px 6px; color: var(--v4-text-2); border-bottom: 1px solid var(--v4-rowline); }
   .t { flex: 1; }
+  /* QA-107: border-box so full-width rows and the search field stay inside the popover. */
+  .row, .search { box-sizing: border-box; }
   .x, .row, .search { font: inherit; color: inherit; background: transparent; border: 0; }
   .search {
     width: 100%;

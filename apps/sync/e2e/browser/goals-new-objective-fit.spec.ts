@@ -1,9 +1,13 @@
 import { expect, test } from '@playwright/test';
+import { innerFitViolations } from './sheet-inner-fit';
 
 /**
  * QA-105: Goals > New objective > + Link. The sheet and the nested project
  * picker fit the window at 1440x900 and 1000x700, header and footer stay
  * visible, Escape closes the picker first and then the sheet.
+ * QA-107: every input and control inside the sheet and the picker sits inside
+ * its parent's content box, sibling inputs do not intersect, and the sheet body
+ * does not scroll sideways.
  */
 for (const [width, height] of [[1440, 900], [1000, 700]] as const) {
   test(`New objective and its project picker fit ${width}x${height}`, async ({ page }) => {
@@ -16,6 +20,12 @@ for (const [width, height] of [[1440, 900], [1000, 700]] as const) {
     await page.getByTestId('new-objective').click();
     const sheet = page.getByRole('dialog', { name: 'New objective' });
     await expect(sheet).toBeVisible();
+    expect(await innerFitViolations(page, '[role="dialog"][aria-label="New objective"]'), 'sheet inner boxes').toEqual([]);
+    const body = await page.evaluate(() => {
+      const sb = document.querySelector('[role="dialog"][aria-label="New objective"] .sb') as HTMLElement;
+      return { scrollWidth: sb.scrollWidth, clientWidth: sb.clientWidth };
+    });
+    expect(body.scrollWidth, 'sheet body scrollWidth').toBe(body.clientWidth);
     await page.getByTestId('new-goal-link').click();
     const picker = page.getByTestId('link-picker');
     await expect(picker).toBeVisible();
@@ -43,6 +53,8 @@ for (const [width, height] of [[1440, 900], [1000, 700]] as const) {
       expect(b.bottom, `${key} bottom`).toBeLessThanOrEqual(boxes.vh);
       expect(b.right, `${key} right`).toBeLessThanOrEqual(boxes.vw);
     }
+
+    expect(await innerFitViolations(page, '[data-testid="link-picker"]'), 'picker inner boxes').toEqual([]);
 
     await page.keyboard.press('Escape');
     await expect(picker).toHaveCount(0);
