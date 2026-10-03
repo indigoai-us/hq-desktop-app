@@ -6,6 +6,7 @@
 
 <script lang="ts">
   import DayGroupHeader from "./DayGroupHeader.svelte";
+  import ReadLoader from "../common/ReadLoader.svelte";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   /**
    * Chat-first unified conversation sidebar (US-003).
@@ -3282,12 +3283,7 @@
     aria-busy={allRows.length === 0 && (!firstRefreshSettled || loading)}
   >
     {#if allRows.length === 0 && (!firstRefreshSettled || loading)}
-      <div class="sidebar-skeleton" role="status" aria-label="Loading conversations" data-testid="sidebar-loading">
-        <span class="sr-only">Loading conversations…</span>
-        {#each Array(10) as _, index}
-          <div class="skeleton-row" aria-hidden="true"><span class="skeleton-icon"></span><span class="skeleton-line" style:width={`${45 + (index % 3) * 15}%`}></span></div>
-        {/each}
-      </div>
+      <ReadLoader testid="sidebar-loading" />
     {:else}
     {#if pendingRequestCount > 0}
       <button
@@ -4611,10 +4607,6 @@
     position: relative;
   }
 
-  .sidebar-skeleton { padding: 12px 8px; }
-  .skeleton-row { display: flex; align-items: center; gap: 10px; height: 36px; }
-  .skeleton-icon { width: 20px; height: 20px; border-radius: 5px; background: var(--line); }
-  .skeleton-line { height: 10px; border-radius: 4px; background: var(--line); }
   .chat-scroll {
     display: flex;
     flex: 1 1 auto;
@@ -5352,18 +5344,18 @@
     border-radius: 12px;
     /* Near-opaque popover tier: without a backdrop blur the translucent
        --panel-bg let the timeline read straight through the menu. */
-    background: var(--v4-popover-strong, var(--panel-bg));
+    background: var(--overlay-bg);
     box-shadow: var(--panel-shadow);
   }
 
   :global(:root[data-force-theme="dark"]) .chat-popover,
   :global(.dark) .chat-popover {
-    background: var(--v4-popover-strong, var(--panel-bg));
+    background: var(--overlay-bg);
   }
 
   @media (prefers-color-scheme: dark) {
     :global(:root:not([data-force-theme="light"])) .chat-popover {
-      background: var(--v4-popover-strong, var(--panel-bg));
+      background: var(--overlay-bg);
     }
   }
 
@@ -5550,7 +5542,7 @@
     padding: 6px;
     border: 1px solid var(--panel-border);
     border-radius: 12px;
-    background: var(--v4-popover-strong, var(--panel-bg));
+    background: var(--overlay-bg);
     box-shadow: var(--panel-shadow);
   }
 

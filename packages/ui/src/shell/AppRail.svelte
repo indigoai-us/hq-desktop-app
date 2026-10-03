@@ -159,6 +159,8 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="12" r="4" /><path d="M12 12h9M18 12v3M15 12v2" /></svg>
         {:else if item.id === "connections"}
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7H7a4 4 0 0 0 0 8h2M15 7h2a4 4 0 0 1 0 8h-2M8 11h8" /></svg>
+        {:else if item.kind === "marketplace"}
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9l2-4h12l2 4" /><path d="M4 9h16" /><path d="M5 9v10h14V9" /><path d="M10 19v-5h4v5" /></svg>
         {:else if item.id === "outpost"}
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="6" rx="1.5" /><rect x="3" y="13" width="18" height="6" rx="1.5" /><path d="M7 8h.01M7 16h.01" /></svg>
         {:else if item.kind === "you"}

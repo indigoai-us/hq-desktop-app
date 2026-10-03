@@ -17,6 +17,7 @@
     type NewCompanyPlan,
     type ProjectTemplate,
   } from "./new-company.js";
+  import ReadLoader from "../../common/ReadLoader.svelte";
 
   interface Created {
     companyUid: string | null;
@@ -236,7 +237,7 @@
             <p class="hint">{plan === "workforce" ? "HQ Workforce" : "Free"} · {slug}</p>
           </div>
           {#if busy}
-            <span class="shimmer" data-testid="new-company-shimmer"></span>
+            <ReadLoader testid="new-company-loading" />
           {:else}
             <span class="chip">Owner · you</span>
           {/if}
@@ -426,10 +427,6 @@
     padding: 4px 8px; border-radius: 4px; cursor: pointer;
   }
   .tab[aria-selected="true"] { background: var(--v4-active-row); color: var(--v4-text-1); }
-  .shimmer {
-    width: 72px; height: 14px; border-radius: 4px;
-    background: linear-gradient(90deg, var(--v4-control-faint, transparent), var(--v4-active-row), var(--v4-control-faint, transparent));
-  }
   .sf {
     flex: none; display: flex; align-items: center; gap: 8px;
     padding: 12px 20px; border-top: 1px solid var(--v4-hairline);

@@ -12,6 +12,7 @@ import { mount, unmount } from "svelte";
 import { ok, type PlatformAdapter } from "@hq/platform";
 
 import PrototypeSettingsPanes from "./PrototypeSettingsPanes.svelte";
+import { chooseDropdown, dropdownOptions, dropdownValue } from "../test-support/dropdown.js";
 import { installMemoryLocalStorage } from "../test-support/memory-local-storage.js";
 import { resetUpdateStore, setBackgroundUpdatesOff } from "./update-store.svelte";
 
@@ -133,32 +134,22 @@ describe("Updates pane: release channel selector", () => {
   it("renders host-permitted channels with the stored one selected", async () => {
     const { adapter } = updatesAdapter();
     mountUpdates(adapter);
-    const select = await vi.waitFor(() => {
-      const el = host.querySelector<HTMLSelectElement>(
-        '[data-testid="settings-release-channel"]',
-      );
-      expect(el).toBeTruthy();
-      expect(el!.options.length).toBe(3);
-      return el!;
-    });
-    await vi.waitFor(() => expect(select.value).toBe("beta"));
+    await vi.waitFor(async () =>
+      expect(await dropdownValue(host, "settings-release-channel")).toBe("beta"),
+    );
+    expect(await dropdownOptions(host, "settings-release-channel")).toHaveLength(3);
   });
 
   it("persists a selection and immediately re-checks on the new channel", async () => {
     const { adapter, updateSettings } = updatesAdapter();
     mountUpdates(adapter);
     const updates = adapter.updates as unknown as Record<string, ReturnType<typeof vi.fn>>;
-    const select = await vi.waitFor(() => {
-      const el = host.querySelector<HTMLSelectElement>(
-        '[data-testid="settings-release-channel"]',
-      );
-      expect(el?.value).toBe("beta");
-      return el!;
-    });
+    await vi.waitFor(async () =>
+      expect(await dropdownValue(host, "settings-release-channel")).toBe("beta"),
+    );
     const before = updates.checkForUpdates.mock.calls.length;
 
-    select.value = "alpha";
-    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await chooseDropdown(host, "settings-release-channel", "alpha");
 
     await vi.waitFor(() => {
       expect(updateSettings).toHaveBeenCalledWith({ releaseChannel: "alpha" });

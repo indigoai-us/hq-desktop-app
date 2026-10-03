@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Dropdown from "../common/LazyDropdown.svelte";
   import { onMount } from "svelte";
   import type { AdapterResult, PlatformAdapter } from "@hq/platform";
   import type {
@@ -2119,23 +2120,24 @@
                       >Stable is the default. Opt into Beta for pre-release builds.</small
                     ></span
                   >
-                  <select
+                  <Dropdown
+                    label="Release channel"
+                    testid="settings-release-channel-select"
                     disabled={isSettingsControlPending("release-channel") ||
                       availableChannels.length <= 1 ||
                       coreInstalling}
-                    aria-busy={isSettingsControlPending("release-channel") ||
-                      coreInstalling}
-                    bind:value={releaseChannel}
-                    onchange={() =>
+                    value={releaseChannel ?? ""}
+                    options={[
+                      { value: "", label: `Default (${displayedChannel})` },
+                      ...availableChannels.map((channel) => ({ value: channel, label: channel })),
+                    ]}
+                    onchange={(v) => {
+                      releaseChannel = (v || null) as typeof releaseChannel;
                       void persistSettingsControl("release-channel", {
                         releaseChannel,
-                      })}
-                  >
-                    <option value={null}>Default ({displayedChannel})</option>
-                    {#each availableChannels as channel (channel)}
-                      <option value={channel}>{channel}</option>
-                    {/each}
-                  </select>
+                      });
+                    }}
+                  />
                 </label>
                 <div class="setting-row">
                   <span>
@@ -2819,30 +2821,24 @@
                       >Attribution for new recordings. Changeable per-recording.</small
                     ></span
                   >
-                  <select
+                  <Dropdown
+                    label="Default recording company"
+                    testid="settings-default-recording-company"
                     value={defaultRecordingCompanyUid ?? ""}
-                    aria-label="Default recording company"
                     disabled={isSettingsControlPending(
                       "default-recording-company",
                     )}
-                    aria-busy={isSettingsControlPending(
-                      "default-recording-company",
-                    )}
-                    onchange={(event) => {
-                      const v = event.currentTarget.value;
+                    options={[
+                      { value: "", label: "Personal" },
+                      ...memberships.map((m) => ({ value: m.companyUid, label: m.companyName?.trim() || "Company" })),
+                    ]}
+                    onchange={(v) => {
                       defaultRecordingCompanyUid = v === "" ? null : v;
                       void persistSettingsControl("default-recording-company", {
                         defaultRecordingCompanyUid,
                       });
                     }}
-                  >
-                    <option value="">Personal</option>
-                    {#each memberships as m (m.companyUid)}
-                      <option value={m.companyUid}
-                        >{m.companyName?.trim() || "Company"}</option
-                      >
-                    {/each}
-                  </select>
+                  />
                 </label>
               {/if}
               <!-- Meeting permissions monitor — the only place to grant the macOS TCC

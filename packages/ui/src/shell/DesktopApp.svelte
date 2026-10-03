@@ -34,12 +34,15 @@
     type UpdateGateStatus,
 } from "@hq/platform";
   import V4TitleBar from "../home/V4TitleBar.svelte";
-  import ChannelSkeleton from "./ChannelSkeleton.svelte";
+  import ReadLoader from "../common/ReadLoader.svelte";
   import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
   import AppRail from "./AppRail.svelte";
   import LazyDoor from "./LazyDoor.svelte";
+  import { callerRole, loadCallerRole } from "../company/company-roles.svelte.js";
   import {
     brainPageDoor,
+    teamPageDoor,
+    vaultExplorerDoor,
     filesConnectDoor,
     meetingCanvasDoor,
     meetingsSidepaneDoor,
@@ -56,7 +59,6 @@
     RAIL_ATLAS_FLAG,
     RAIL_DEPLOYMENTS_ACTIONS_FLAG,
     RAIL_OUTPOST_FLAG,
-    RAIL_SHORTCUT_EDITING_FLAG,
     RAIL_TELEMETRY_FLAG,
     RAIL_WORKFORCE_LIMITS_FLAG,
     isIndigoCompany,
@@ -73,11 +75,9 @@
   import type { AtlasLocalSource, AtlasVaultSource } from "./atlas-landing.js";
   import ActivityRailHost from "./ActivityRailHost.svelte";
   import GoalsRailHost from "./GoalsRailHost.svelte";
-  import TeamPage from "../company/TeamPage.svelte";
   import BotsPage from "../company/BotsPage.svelte";
   import { botSubjectName, profileViewingCompanyUid } from "./profile-panes/bot-subject-name.js";
   import CompanySettingsHost from "./CompanySettingsHost.svelte";
-  import AccountHost from "./AccountHost.svelte";
   import {
     atlasLiveActors,
     atlasRoster,
@@ -98,6 +98,7 @@
   import Sidepane from "./Sidepane.svelte";
   import { SidepaneScrollMemory, sidepaneModelKey } from "./sidepane-models.js";
   import CompanySidepane from "./CompanySidepane.svelte";
+  import { configureCompanyApi } from "../company/company-store.svelte.js";
   import {
     companyPagePlaceholderForPage,
     companyRowDestination,
@@ -270,7 +271,6 @@
   import NotificationsView from "../inbox/NotificationsView.svelte";
   import ToastStack from "./ToastStack.svelte";
   import SharedFilesOverlay from "../inbox/SharedFilesOverlay.svelte";
-  import VaultExplorer from "../files/explorer/VaultExplorer.svelte";
   import PageHeader from "./PageHeader.svelte";
   import ProjectsHome from "../projects/ProjectsHome.svelte";
   import CompanyProjectsPage from "../projects/CompanyProjectsPage.svelte";
@@ -313,6 +313,7 @@
     dismissRecommendBanner,
     installRecommendedUpdate,
     orchestrationAdapterFrom,
+    setUpdateHoldReasons,
     updateStore,
     type UpdateStoreAdapter,
   } from "../settings/update-store.svelte";
@@ -395,7 +396,6 @@
     destinationLabel,
     extraParamCompanyKey,
     historyNeighbor,
-    priorNonLibraryIndex,
     type NavigationDestination,
     type NavigationEntry,
     type NavigationScrollState,
@@ -949,7 +949,7 @@
     /**
      * Bound for first-paint optional fetches (directory, contacts, DM
      * threads). Tests pass a short value so a hung/404 call cannot leave the
-     * conversation pane on a skeleton.
+     * conversation pane on its loader.
      */
     bootTimeoutMs?: number;
     /** First successful conversation/empty paint — host reports `shell_ready`. */
@@ -1259,7 +1259,6 @@
   const UPDATE_TOAST_KEY = "app-update";
 
   let updatePendingVersion = $state<string | null>(null);
-  let updateHoldReasons = $state<string[]>([]);
   let updateInstalling = $state(false);
   let updateInstallError = $state<string | null>(null);
 
@@ -1277,9 +1276,11 @@
     // QA-051: Settings → About reads the update store, so the version the
     // Home banner offers must land there too, dismissed or not.
     applyAvailableUpdate(v);
+    // Item 8: the hold reasons live in the shared update store so Settings >
+    // Updates names the same reason as this toast, snoozed or not.
+    setUpdateHoldReasons(status.reasons);
     if (isDismissed(v)) return;
     const isNew = v !== updatePendingVersion;
-    updateHoldReasons = status.reasons ?? [];
     if (isNew) {
       // Version changed: update and allow aria-live to announce.
       updatePendingVersion = v;
@@ -1363,7 +1364,6 @@
     }
     snoozedUpdateVersion = version;
     updatePendingVersion = null;
-    updateHoldReasons = [];
     updateInstallError = null;
   }
 
@@ -1382,7 +1382,7 @@
     }
     const copy = updateToastCopy({
       version,
-      reasons: updateHoldReasons,
+      reasons: [...updateStore.holdReasons],
       installing: updateInstalling,
       installError: updateInstallError,
       phase: storeBusy ? phase : undefined,
@@ -1402,7 +1402,8 @@
       actions: [
         {
           label: copy.installLabel,
-          primary: true,
+          // A disabled action is never drawn as the filled primary button.
+          primary: !copy.installDisabled,
           disabled: copy.installDisabled,
           keepOpen: true,
           testId: "update-install",
@@ -1790,6 +1791,27 @@
    * same-origin proxy; desktop uses the bounded Rust byte hop passed by its
    * host.
    */
+  /** OWNER-R17: reads for the Files and Vault right pane's Access section (read-only). */
+  const filesAccess = $derived({
+    companyUidFor: (v: { kind: string; slug: string | null }) =>
+      (companies ?? []).find((w) => (v.kind === "company" ? w.slug === v.slug : w.kind === "personal"))?.cloudUid ?? null,
+    readTree: adapter.files?.getAccessTree ? (uid: string, prefix: string) => adapter.files.getAccessTree!(uid, prefix) : null,
+    readGroups: adapter.files?.listAccessGroups ? (uid: string) => adapter.files.listAccessGroups!(uid) : null,
+  });
+
+  /** OWNER-R13: a vault file that is not on this Mac, read through the vault. */
+  async function vaultCloudRead(companyUid: string | null, key: string): Promise<string | null> {
+    const files = adapter.files;
+    if (!companyUid || !files?.presignVaultGet) return null;
+    const signed = await files.presignVaultGet(companyUid, key);
+    if (!signed.ok) throw new Error(`vault presign ${signed.code ?? signed.reason}`);
+    const url = presignUrlFromResult(signed.value)?.url;
+    if (!url) return null;
+    const res = await getVaultBytesForHost(url, MAX_CHANNEL_FILE_PREVIEW_BYTES);
+    if (!res.ok) throw new Error(`vault read http ${res.status}`);
+    return await res.text();
+  }
+
   async function getVaultBytesForHost(
     url: string,
     maxBytes = MAX_CHANNEL_FILE_PREVIEW_BYTES,
@@ -1890,7 +1912,7 @@
   let extraPageParam = $state<string | null>(null);
   /** Which pending request the Requests panel should bring into view first. */
   let dmRequestsFocusPairKey = $state<string | null>(null);
-  let libraryTab = $state<LibraryTab>("skills");
+  let libraryTab = $state<LibraryTab>("marketplace");
   let libraryItemId = $state<string | null>(null);
   let settingsSection = $state<EmbeddedSettingsSection | null>(null);
   let meetingFocusRequest = $state<{
@@ -1907,7 +1929,6 @@
   } | null>(null);
   let navigationCanGoBack = $state(false);
   let navigationCanGoForward = $state(false);
-  let libraryBackTargetIndex = $state<number | null>(null);
   let navigationBackLabel = $state("");
   let navigationForwardLabel = $state("");
   let pendingRestoreScroll = $state<NavigationScrollState | null>(null);
@@ -2409,7 +2430,10 @@
     }
   }
   // Lazy surfaces (profile panes, popovers, create sheets) warm once the first
-  // frame is up, so the first click rarely shows their skeleton.
+  // frame is up, so the first click rarely shows their loader.
+  // The Files explorer is its own chunk; fetch it at once so Files still
+  // opens in the click frame.
+  onMount(() => vaultExplorerDoor.preload());
   onMount(() => preloadDoorsWhenIdle());
   // Markdown previews route http(s) links through the host opener (QA-094).
   onMount(() => {
@@ -3657,6 +3681,13 @@
    * page loads. Cache-first — the last list stays searchable while a refresh
    * runs on each palette open, so an open project is never missing.
    */
+  // OWNER-R32: the company store backs personal Secrets and the company
+  // Files, Secrets and Deployments reads. Configure it for the whole window,
+  // not only while the company sidepane is mounted (collapsed sidebar, personal scope).
+  $effect.pre(() => {
+    if (adapter.company) configureCompanyApi(adapter.company);
+  });
+
   let paletteProjects = $state<Project[]>([]);
   let paletteProjectsLoading = false;
   async function refreshPaletteProjects(): Promise<void> {
@@ -3761,13 +3792,17 @@
         },
       });
     }
-    nav.push({
-      id: "command-go-library",
-      label: "Library",
-      detail: "Open skills available to you",
-      shortcut: shortcutLabel("view.library"),
-      action: () => openLibrary("skills"),
-    });
+    // OWNER-R33: the Library page is the Marketplace. Desktop lists it once
+    // as command-go-marketplace below; web has no install, so it lists it here.
+    if (isWeb) {
+      nav.push({
+        id: "command-go-library",
+        label: "Marketplace",
+        detail: "Browse packs from creators",
+        shortcut: shortcutLabel("view.library"),
+        action: () => openLibrary("marketplace"),
+      });
+    }
     nav.push({
       id: "command-go-settings",
       label: "Settings",
@@ -3788,7 +3823,7 @@
       nav.push({
         id: "command-go-marketplace",
         label: "Marketplace",
-        detail: "Open marketplace in the library",
+        detail: "Browse packs and see what you have installed",
         shortcut: shortcutLabel("view.marketplace"),
         action: () => openLibrary("marketplace"),
       });
@@ -5256,7 +5291,7 @@
    * The bot's name for a profile opened from a DM header, resolved from its
    * UID: the local bot record, then the channel roster, then the rail row's
    * own title. Never the conversation placeholder (QA-087); an unknown name
-   * stays empty so the pane shimmers until its status refresh names it.
+   * stays empty so the pane shows its loader until its status refresh names it.
    */
   function headerAgentName(uid: string): string {
     const bot = localBots.find((b) => b.agentUid === uid);
@@ -7356,7 +7391,6 @@
     const snap = navigationHistory.snapshot();
     navigationCanGoBack = navigationHistory.canGoBack();
     navigationCanGoForward = navigationHistory.canGoForward();
-    libraryBackTargetIndex = priorNonLibraryIndex(snap);
     const back = historyNeighbor(snap, "back");
     const forward = historyNeighbor(snap, "forward");
     navigationBackLabel = back ? destinationLabel(back.destination) : "";
@@ -7626,14 +7660,6 @@
   function leaveCurrentDestination() {
     if (navigationHistory.canGoBack()) return goBack();
     return navigate({ kind: "messages" });
-  }
-
-  function leaveLibrary(): void {
-    if (libraryBackTargetIndex != null) {
-      void navigation.backTo(libraryBackTargetIndex);
-      return;
-    }
-    void navigate({ kind: "messages" });
   }
 
   $effect(() => {
@@ -8975,7 +9001,7 @@
     }
   }
 
-  function openLibrary(next: LibraryTab = "skills"): void {
+  function openLibrary(next: LibraryTab = "marketplace"): void {
     void navigate({ kind: "library", tab: next });
   }
 
@@ -9043,7 +9069,7 @@
     );
   });
   const activeRailId = $derived(
-    activeRailItemId({ view, tenantCompanyId, extraPageId, settingsSection }),
+    activeRailItemId({ view, tenantCompanyId, extraPageId, settingsSection, libraryTab }),
   );
   const railPlaceholder = $derived(
     view === "extra"
@@ -9064,53 +9090,30 @@
         railPlaceholder?.id === "connections" ||
         railPlaceholder?.id === "outpost"),
   );
-  // QA-048: Profile reads the signed-in person's role from each company's
-  // member roster, the same source Team lists, so the two views agree. The
-  // last roster read paints first; every member company is then re-read. A
-  // company with no roster role shows a dash, never the cached membership role.
-  let accountRosterRoles = $state<Record<string, string | null>>({});
-  const accountProfileOpen = $derived(
-    view === "extra" && accountPlaceholderForPage(extraPageId)?.id === "profile",
+  // OWNER-R36: these personal pages have no side pane at all, so the title
+  // bar's sidebar toggle is hidden there instead of toggling an empty column.
+  const pageHasNoSidepane = $derived(
+    view === "extra" &&
+      (extraPageId === "rail-deployments" ||
+        railPlaceholder?.id === "telemetry" ||
+        railPlaceholder?.id === "secrets" ||
+        railPlaceholder?.id === "connections"),
   );
+  // OWNER-R20: Profile's Companies and roles read the caller's role from each
+  // company's membership roster (GET /membership/company/{uid}); the contacts
+  // read used before carries no role and leaves the caller out, so every row
+  // was a dash. Owner rows first, then by name.
+  const profileOpen = $derived(view === "settings" && (settingsSection == null || settingsSection === "profile"));
   $effect(() => {
-    if (!accountProfileOpen) return;
-    const selfUid = self?.uid?.trim() ?? "";
-    const selfEmail = self?.email?.trim() ?? "";
-    const uids = railCompanyRoster.map((company) => company.uid);
-    if (!selfUid || uids.length === 0) return;
-    accountRosterRoles = readRosterRolesCache(selfUid);
-    let cancelled = false;
-    for (const companyUid of uids) {
-      void adapter.messaging
-        .listContacts({ companyUid })
-        .then((res) => {
-          if (cancelled) return;
-          if (!res.ok) {
-            console.warn("[account] company roster read failed", companyUid, res.message ?? res.reason);
-            return;
-          }
-          const role = selfRoleFromRoster(res.value, selfUid, selfEmail);
-          if (accountRosterRoles[companyUid] === role) return;
-          accountRosterRoles = { ...accountRosterRoles, [companyUid]: role };
-          writeRosterRolesCache(selfUid, accountRosterRoles);
-        })
-        .catch((err: unknown) => {
-          console.warn("[account] company roster read failed", companyUid, err);
-        });
+    if (!profileOpen) return;
+    for (const company of railCompanyRoster) {
+      loadCallerRole({ companyUid: company.uid, selfUid: self?.uid ?? null, selfEmail: self?.email ?? null, company: adapter.company ?? null });
     }
-    return () => {
-      cancelled = true;
-    };
   });
-  const accountRoles = $derived(
-    accountRoleRows(
-      railCompanyRoster.map((company) => ({
-        uid: company.uid,
-        label: company.label,
-        role: null,
-      })),
-      accountRosterRoles,
-    ),
+  const profileCompanies = $derived(
+    railCompanyRoster
+      .map((company) => ({ uid: company.uid, label: company.label, role: callerRole(company.uid) ?? null }))
+      .sort((x, y) => (x.role === "Owner") === (y.role === "Owner") ? x.label.localeCompare(y.label) : x.role === "Owner" ? -1 : 1),
   );
   const youPresence = $derived(
     ownLiveWork(
@@ -9201,6 +9204,14 @@
     }
   });
 
+  /**
+   * OWNER-R8: viewers and guests see the objective pane read-only. A role the
+   * roster has not answered yet adds no restriction.
+   */
+  function canEditGoals(role: string | null | undefined): boolean {
+    return !/^(viewer|guest|read[-_ ]?only)$/i.test((role ?? "").trim());
+  }
+
   function selectCompanyPaneRow(rowId: string): void {
     if (!tenantCompanyId) return;
     if (rowId.startsWith("person:")) {
@@ -9219,6 +9230,14 @@
   }
   /** Bumped by the sidepane Invite a teammate row; TeamPage opens its sheet. */
   let teamInviteSeq = $state(0);
+  // OWNER-R24: the caller's role in the open company, from the membership
+  // roster. Grants and Billing show only to owners and admins.
+  const companyPaneRole = $derived(callerRole(companyPaneCompany?.uid));
+  $effect(() => {
+    const uid = companyPaneCompany?.uid;
+    if (!uid) return;
+    loadCallerRole({ companyUid: uid, selfUid: self?.uid ?? null, selfEmail: self?.email ?? null, company: adapter.company ?? null });
+  });
 
   function placeMoreCompanies(): void {
     const button = document.querySelector("[data-testid='rail-more-companies']");
@@ -9251,7 +9270,8 @@
 
   function openAccountPage(page: AccountPageId): void {
     accountMenuOpen = false;
-    void navigate({ kind: "extra", page: accountPageId(page) });
+    // OWNER-R21: Profile and Billing are items in the one Settings list.
+    void navigate({ kind: "settings", section: page === "billing" ? "billing" : "profile" });
   }
 
   function toggleMoreCompanies(): void {
@@ -9994,6 +10014,15 @@
       window.removeEventListener("pointerdown", onPointerDown, true);
     };
   });
+
+  /** OWNER-R4: the web Atlas people read, last 30 days of company telemetry. */
+  async function loadAtlasPeople(slug: string): Promise<unknown> {
+    const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+    const now = Date.now();
+    const res = await adapter.company.getTeamTelemetry(slug, { from: day(now - 29 * 86_400_000), to: day(now) });
+    if (!res.ok) throw Object.assign(new Error(res.message ?? res.reason), { code: res.reason });
+    return res.value;
+  }
 </script>
 
 {#snippet meetingsAgenda()}
@@ -10064,11 +10093,12 @@
     {brandCompanyName}
     onopenSync={() => openSettings("sync")}
     {sidebarCollapsed}
+    sidebarToggleHidden={pageHasNoSidepane}
     coreUseFixtures={coreFixtures}
     ontogglesidebar={() => (sidebarCollapsed = !sidebarCollapsed)}
     onopenNotifications={toggleNotifications}
     onOpenSettings={() => openSettings()}
-    onopenLibrary={() => openLibrary("skills")}
+    onopenLibrary={() => openLibrary("marketplace")}
     onopenMarketplace={isWeb ? undefined : () => openLibrary("marketplace")}
     {onopenurl}
     canGoBack={navigationCanGoBack}
@@ -10171,9 +10201,10 @@
           <div
             role="dialog"
             aria-label="New company"
-            data-testid="new-company-skeleton"
-            style="position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:480px;height:240px;background:var(--v4-popover);border:1px solid var(--v4-hairline);border-radius:8px;z-index:71"
-          ></div>
+            style="position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:480px;padding:16px;box-sizing:border-box;background:var(--v4-popover);border:1px solid var(--v4-hairline);border-radius:8px;z-index:71"
+          >
+            <ReadLoader testid="new-company-loading" />
+          </div>
         {/snippet}
       </LazyDoor>
     {/if}
@@ -10327,6 +10358,13 @@
           {version}
           initialSection={settingsSection}
           onsectionchange={(section) => openSettings(section)}
+          openExternal={onopenurl}
+          {profileCompanies}
+          oncompany={(uid) => {
+            companyPaneOpen = true;
+            changeTenantCompany(uid);
+            void navigate(companyRowDestination("general", uid));
+          }}
           onback={closeSettings}
           onsignout={onsignout ? signOutWithImageCleanup : undefined}
           onopenconsole={onOpenConsole
@@ -10346,6 +10384,18 @@
       {/await}
       {/key}
     </div>
+  {:else if view === "library"}
+    <!-- OWNER-R33: the Marketplace is a full destination in the body, under
+         the top bar, like Settings and Files. It is not a layer over the
+         shell, so the top bar's menus open above it. -->
+    <div class="desktop-body" data-testid="marketplace-host">
+      <LibraryOverlay
+        {adapter}
+        tab={libraryTab}
+        {packagesEvents}
+        onnavigatetab={(next) => void navigate({ kind: "library", tab: next })}
+      />
+    </div>
   {:else if view === "explorer"}
     <!-- Full destination, like Settings. -->
     <div class="desktop-body" data-testid="files-host">
@@ -10357,13 +10407,17 @@
           backTestId="files-back"
         />
         <div class="explorer-host" data-testid="explorer-host">
-          <VaultExplorer
-            {adapter}
-            {companies}
-            vaultId={explorerVault}
-            path={explorerPath}
-            onlocationchange={(loc) => {
-              void navigate({ kind: "explorer", vault: loc.vaultId, path: loc.path });
+          <LazyDoor
+            door={vaultExplorerDoor}
+            props={{
+              adapter,
+              companies,
+              vaultId: explorerVault,
+              path: explorerPath,
+              access: filesAccess,
+              onlocationchange: (loc: { vaultId: string; path: string | null }) => {
+                void navigate({ kind: "explorer", vault: loc.vaultId, path: loc.path });
+              },
             }}
           />
         </div>
@@ -10378,6 +10432,7 @@
         {#if companyPaneCompany}
           <CompanySidepane
             company={companyPaneCompany}
+            canManage={companyPaneRole === "Owner" || companyPaneRole === "Admin"}
             selectedId={companyPaneSelectedId}
             onselect={selectCompanyPaneRow}
             memory={sidepaneScrollMemory}
@@ -10388,13 +10443,13 @@
           />
         {:else if view === "meetings"}
           <!-- US-021: Meetings owns the shared 260 px sidepane while it is the
-               destination. The host body loads behind a door; the skeleton
-               paints the click frame. -->
+               destination. The host body loads behind a door; the shared
+               loader paints the click frame. -->
           <LazyDoor door={meetingsSidepaneDoor} props={{ memory: sidepaneScrollMemory }}>
             {#snippet skeleton()}
               <Sidepane modelKey="meetings" memory={sidepaneScrollMemory} label="Meetings">
-                <div class="meetings-door-skeleton" data-testid="meetings-sidepane-door-skeleton" aria-busy="true">
-                  <span></span><span></span><span></span>
+                <div class="meetings-door-loading">
+                  <ReadLoader testid="meetings-sidepane-door-loading" />
                 </div>
               </Sidepane>
             {/snippet}
@@ -10537,6 +10592,7 @@
           <!-- RELEASE-001: with Atlas closed for this company, its landing
                shows company Activity instead. -->
           <ActivityRailHost
+            {adapter}
             slug={companyPaneCompany.slug ?? ""}
             companyLabel={companyPaneCompany.label}
           />
@@ -10552,6 +10608,7 @@
             companyUid={companyPaneCompany?.uid ?? null}
             atlasSource={atlasVaultSource}
             atlasLocal={atlasLocalSource}
+            loadPeople={companyPaneCompany?.slug ? () => loadAtlasPeople(companyPaneCompany?.slug ?? "") : null}
             actors={atlasActors}
             filterActor={atlasFilterActor}
             onclearfilter={() => (atlasFilterActor = null)}
@@ -10564,19 +10621,28 @@
             }}
           />
         {:else if railPlaceholder?.id === "team" && companyPaneCompany}
-          <TeamPage
-            slug={companyPaneCompany.slug ?? ""}
-            companyUid={companyPaneCompany.uid}
-            company={adapter.company ?? null}
-            messaging={adapter.messaging ?? null}
-            senderName={resolvedAccountLabel ?? "you"}
-            agents={adapter.agents ?? null}
-            inviteSeq={teamInviteSeq}
-            onaddagent={addAgentFromTeam}
-            onmessage={(uid) => {
-              messagePersonByUid(uid, { companyUid: companyPaneCompany?.uid });
+          <LazyDoor
+            door={teamPageDoor}
+            props={{
+              slug: companyPaneCompany.slug ?? "",
+              companyUid: companyPaneCompany.uid,
+              company: adapter.company ?? null,
+              messaging: adapter.messaging ?? null,
+              senderName: resolvedAccountLabel ?? "you",
+              agents: adapter.agents ?? null,
+              inviteSeq: teamInviteSeq,
+              onaddagent: addAgentFromTeam,
+              onmessage: (uid: string) => {
+                messagePersonByUid(uid, { companyUid: companyPaneCompany?.uid });
+              },
+              selfUid: self?.uid ?? null,
+              selfEmail: self?.email ?? null,
             }}
-          />
+          >
+            {#snippet skeleton()}
+              <ReadLoader testid="team-page-loading" surface="team" />
+            {/snippet}
+          </LazyDoor>
         {:else if railPlaceholder?.id === "projects" && companyPaneCompany}
           <!-- US-039: the sidepane Projects row opens the US-023 board for
                this company instead of the placeholder. -->
@@ -10592,8 +10658,12 @@
               }}
             />
           </div>
-        {:else if railPlaceholder?.id === "company-settings" && companyPaneCompany}
+        {:else if (railPlaceholder?.id === "general" || railPlaceholder?.id === "brand" || railPlaceholder?.id === "groups" || railPlaceholder?.id === "grants" || railPlaceholder?.id === "billing") && companyPaneCompany}
+          <!-- OWNER-R24: company settings are panel panes (General, Brand,
+               Billing under Settings; Groups, Grants under People). -->
           <CompanySettingsHost
+            section={railPlaceholder.id}
+            role={companyPaneRole ?? null}
             slug={companyPaneCompany.slug ?? ""}
             companyLabel={companyPaneCompany.label}
             openExternal={onopenurl}
@@ -10617,6 +10687,7 @@
           />
         {:else if railPlaceholder?.id === "activity" && companyPaneCompany}
           <ActivityRailHost
+            {adapter}
             slug={companyPaneCompany.slug ?? ""}
             companyLabel={companyPaneCompany.label}
           />
@@ -10624,6 +10695,10 @@
           <GoalsRailHost
             {adapter}
             slug={companyPaneCompany.slug ?? ""}
+            canEdit={canEditGoals(companyPaneRole)}
+            onopenproject={(project) => {
+              void navigate({ kind: "projects", company: companyPaneCompany?.slug ?? null, project });
+            }}
           />
         {:else if (railPlaceholder?.id === "knowledge" || railPlaceholder?.id === "policies" || railPlaceholder?.id === "skills" || railPlaceholder?.id === "workers") && companyPaneCompany}
           <LazyDoor
@@ -10637,12 +10712,18 @@
               settings: adapter.settings ?? null,
               appShell: adapter.appShell ?? null,
               onopenpage: selectCompanyPaneRow,
+              adapter,
+              usage: {
+                team: adapter.company?.getTeamTelemetry ? (s: string, r: { from: string; to: string }) => adapter.company.getTeamTelemetry(s, r) : null,
+                mine: adapter.agents?.getMyTelemetry ? (f: string, t: string) => adapter.agents.getMyTelemetry!(f, t) : null,
+              },
             }}
           >
             {#snippet skeleton()}
-              <div class="rail-placeholder" data-testid="brain-door-skeleton" aria-busy="true">
+              <div class="rail-placeholder" aria-busy="true">
                 <h1>{railPlaceholder.title}</h1>
                 <p>{railPlaceholder.summary}</p>
+                <ReadLoader testid="brain-door-loading" />
               </div>
             {/snippet}
           </LazyDoor>
@@ -10651,14 +10732,18 @@
                roots and tree, the reading view, and file actions. -->
           <div class="explorer-host rail-files" data-testid="rail-files-host">
             {#if adapter.files}
-              <VaultExplorer
-                {adapter}
-                {companies}
-                vaultId={explorerVault}
-                path={explorerPath}
-                onlocationchange={(loc) => {
-                  explorerVault = loc.vaultId;
-                  explorerPath = loc.path;
+              <LazyDoor
+                door={vaultExplorerDoor}
+                props={{
+                  adapter,
+                  companies,
+                  vaultId: explorerVault,
+                  path: explorerPath,
+                  access: filesAccess,
+                  onlocationchange: (loc: { vaultId: string; path: string | null }) => {
+                    explorerVault = loc.vaultId;
+                    explorerPath = loc.path;
+                  },
                 }}
               />
             {:else}
@@ -10689,49 +10774,24 @@
               adapter,
               companyUid: companyPaneCompany.uid ?? null,
               deployActions: railGate(RAIL_DEPLOYMENTS_ACTIONS_FLAG),
+              companyLabel: companyPaneCompany.label,
+              vaultCloudRead: (key: string) => vaultCloudRead(companyPaneCompany?.uid ?? null, key),
             }}
           >
             {#snippet skeleton()}
-              <div class="rail-placeholder" data-testid="files-connect-door-skeleton" aria-busy="true">
+              <div class="rail-placeholder" aria-busy="true">
                 <h1>{railPlaceholder.title}</h1>
                 <p>{railPlaceholder.summary}</p>
+                <ReadLoader testid="files-connect-door-loading" />
               </div>
             {/snippet}
           </LazyDoor>
-        {:else if view === "extra" && accountPlaceholderForPage(extraPageId)}
-          <AccountHost
-            page={accountPlaceholderForPage(extraPageId)!.id}
-            name={resolvedAccountLabel ?? "You"}
-            email={self?.email ?? ""}
-            initials={resolvedAccountInitials ?? ""}
-            live={youPresence.live}
-            roles={accountRoles}
-            openExternal={onopenurl}
-            shortcutEditing={railGate(RAIL_SHORTCUT_EDITING_FLAG)}
-            onsignout={() => {
-              void onsignout?.();
-            }}
-            oncompany={(uid) => {
-              companyPaneOpen = true;
-              changeTenantCompany(uid);
-              void navigate(companyRowDestination("company-settings", uid));
-            }}
-            onsettingssection={(section) => {
-              if (
-                section === "sync" ||
-                section === "notifications" ||
-                section === "updates" ||
-                section === "general" ||
-                section === "appearance" ||
-                section === "meetings"
-              ) {
-                openSettings(section);
-              }
-            }}
-          />
         {:else if railPlaceholder?.id === "telemetry"}
           {#if telemetryVisible}
-            <TelemetryRailHost agents={adapter.agents ?? null} />
+            <TelemetryRailHost
+              agents={adapter.agents ?? null}
+              onopenthread={(path) => void navigate({ kind: "explorer", vault: "personal", path })}
+            />
           {/if}
         {:else if railPlaceholder?.id === "secrets" || railPlaceholder?.id === "connections"}
           <PersonalRailHost
@@ -10740,6 +10800,7 @@
             activeCompany={railCompanyRoster.find((company) => company.uid === tenantCompanyId) ?? null}
             onopenintegrations={openCompanyIntegrations}
             integrationsApi={adapter.agents ?? null}
+            companyApi={adapter.company ?? null}
             openExternal={onopenurl}
           />
         {:else if railPlaceholder?.id === "outpost"}
@@ -10797,8 +10858,8 @@
             }}
           >
             {#snippet skeleton()}
-              <div class="meetings-door-skeleton canvas" data-testid="meetings-canvas-door-skeleton" aria-busy="true">
-                <span></span><span></span><span></span>
+              <div class="meetings-door-loading canvas">
+                <ReadLoader testid="meetings-canvas-door-loading" />
               </div>
               <div style:display="none">{@render meetingsAgenda()}</div>
             {/snippet}
@@ -11691,7 +11752,7 @@
                     }}
                   >
                     {#snippet skeleton()}
-                      <div class="profile-pane-skeleton" data-testid="profile-pane-skeleton" aria-busy="true"></div>
+                      <div class="profile-pane-loading"><ReadLoader testid="profile-pane-loading" /></div>
                     {/snippet}
                   </LazyDoor>
                   <div class="legacy-detail" inert aria-hidden="true">
@@ -11734,7 +11795,7 @@
                     }}
                   >
                     {#snippet skeleton()}
-                      <div class="profile-pane-skeleton" data-testid="profile-pane-skeleton" aria-busy="true"></div>
+                      <div class="profile-pane-loading"><ReadLoader testid="profile-pane-loading" /></div>
                     {/snippet}
                   </LazyDoor>
                   <div class="legacy-detail" inert aria-hidden="true">
@@ -11788,7 +11849,7 @@
                     }}
                   >
                     {#snippet skeleton()}
-                      <div class="profile-pane-skeleton" data-testid="profile-pane-skeleton" aria-busy="true"></div>
+                      <div class="profile-pane-loading"><ReadLoader testid="profile-pane-loading" /></div>
                     {/snippet}
                   </LazyDoor>
                   <div class="legacy-detail" inert aria-hidden="true">
@@ -11901,24 +11962,13 @@
             Couldn’t load conversations.
           </div>
         {:else}
-          <!-- Pre-selection boot state: skeleton, not a "No data" flash. -->
-          <ChannelSkeleton />
+          <!-- Pre-selection boot state: the shared loader, not a "No data" flash. -->
+          <div class="channel-loading chat-shell">
+            <ReadLoader testid="channel-loading" />
+          </div>
         {/if}
       </main>
     </div>
-  {/if}
-
-  {#if view === "library" && !navigationUnavailable}
-    <LibraryOverlay
-      {adapter}
-      tab={libraryTab}
-      itemId={libraryItemId}
-      {packagesEvents}
-      onback={leaveLibrary}
-      onnavigatetab={(next) => void navigate({ kind: "library", tab: next })}
-      onnavigateitem={(id) =>
-        void navigate({ kind: "library", tab: libraryTab, itemId: id })}
-    />
   {/if}
 
   {#if paletteOpen || paletteMounted}
@@ -12047,29 +12097,16 @@
     overflow: hidden;
   }
 
-  .meetings-door-skeleton {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
+  .meetings-door-loading {
     padding: 16px 12px;
   }
 
-  .meetings-door-skeleton.canvas {
+  .meetings-door-loading.canvas {
     padding: 24px;
   }
 
-  .meetings-door-skeleton span {
-    height: 12px;
-    border-radius: 6px;
-    background: var(--v4-control-bg);
-  }
-
-  .meetings-door-skeleton span:nth-child(2) {
-    width: 70%;
-  }
-
-  .meetings-door-skeleton span:nth-child(3) {
-    width: 45%;
+  .channel-loading {
+    padding: 16px 24px;
   }
 
   .rail-placeholder {
@@ -12312,9 +12349,11 @@
   }
 
   /* First frame of a profile pane while its chunk loads (lazy-doors.ts). */
-  .profile-pane-skeleton {
+  .profile-pane-loading {
     flex: 1 1 auto;
     min-height: 0;
+    padding: 16px;
+    box-sizing: border-box;
     background: var(--v4-secondary-sidebar, var(--side-bg));
   }
 

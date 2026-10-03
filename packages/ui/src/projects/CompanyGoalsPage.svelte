@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ReadLoader from "../common/ReadLoader.svelte";
   /**
    * Company Goals — portfolio list + stable selected-goal detail (DESKTOP-007).
    *
@@ -697,11 +698,7 @@
         testid="goals-unavailable"
       />
     {:else if loading}
-      <div class="goals-loading" aria-busy="true" data-testid="goals-loading">
-        {#each [0, 1, 2] as row (row)}
-          <div class="goal-skeleton"></div>
-        {/each}
-      </div>
+      <ReadLoader testid="goals-loading" />
     {:else if objectives.length === 0}
       <div class="empty-state" data-testid="empty-goals-state">
         <span>No goals yet</span>
@@ -1487,35 +1484,8 @@
     margin: 0;
   }
 
-  .goals-loading {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    min-width: 0;
-    padding: 6px 0;
-  }
-
-  .goal-skeleton {
-    height: 48px;
-    border: 0;
-    border-bottom: 1px solid var(--v4-rowline);
-    border-radius: 0;
-    background: transparent;
-    animation: goals-skeleton-pulse 1.3s ease-in-out infinite;
-  }
-
   .goals-footnote {
     flex: 0 0 auto;
-  }
-
-  @keyframes goals-skeleton-pulse {
-    0%,
-    100% {
-      opacity: 0.5;
-    }
-    50% {
-      opacity: 1;
-    }
   }
 
   @media (max-width: 820px) {
@@ -1556,10 +1526,6 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .goal-skeleton {
-      animation: none;
-    }
-
     .goal-list-row {
       transition: none;
     }

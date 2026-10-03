@@ -1,7 +1,8 @@
 <script lang="ts">
   import { dismissable } from "../../common/dismissable.js";
+  import ReadLoader from "../../common/ReadLoader.svelte";
   /**
-   * First-frame door for the resolve-conflicts sheet. The skeleton paints
+   * First-frame door for the resolve-conflicts sheet. The loader paints
    * immediately; the body chunk loads after.
    */
   import { onMount } from "svelte";
@@ -44,9 +45,7 @@
     data-testid="resolve-conflicts-sheet"
   >
     <header class="rc-h">Resolve conflicts<span class="sub">Loading choices</span></header>
-    <div class="shimmer"></div>
-    <div class="shimmer"></div>
-    <div class="shimmer"></div>
+    <ReadLoader testid="resolve-conflicts-loading" />
   </div>
 {/if}
 
@@ -68,16 +67,11 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
-    background: var(--v4-popover);
+    background: var(--overlay-bg, var(--v4-popover));
     border: 1px solid var(--v4-hairline);
     border-radius: 8px;
     color: var(--v4-text-1);
   }
   .rc-h { display: flex; gap: 8px; font-size: 15px; font-weight: 600; }
   .sub { font-weight: 400; color: var(--v4-text-3); font-size: 13px; }
-  .shimmer {
-    height: 36px;
-    border-radius: 6px;
-    background: var(--v4-control-faint, var(--v4-hover));
-  }
 </style>

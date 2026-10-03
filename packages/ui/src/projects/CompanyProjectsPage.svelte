@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ReadLoader from "../common/ReadLoader.svelte";
   /**
    * Company Projects — portfolio Kanban (DESKTOP-004).
    *
@@ -8,7 +9,6 @@
    * filter share one control row; New project remains the primary action.
    */
   import { onMount } from "svelte";
-  import { withReadDeadline } from "../common/read-deadline.js";
   import RailButton from "../common/button/RailButton.svelte";
   import { publishCompanyPageCount } from "../shell/company-page-counts.svelte.js";
   import type { PlatformAdapter } from "@hq/platform";
@@ -79,6 +79,9 @@
     type NewProjectDraft,
   } from "./new-project.js";
   import ProvenanceLine from "../common/ProvenanceLine.svelte";
+  import Dropdown from "../common/LazyDropdown.svelte";
+  import { personMatches, uniquePeople } from "../common/people/people.js";
+  import { loadPeople, peopleFor, setActivePeopleCompany } from "../common/people/people-roster.svelte.js";
   import UnavailableNote from "../common/UnavailableNote.svelte";
   import "../home/tokens.css";
   import "../common/button/rail-type.css";
@@ -488,12 +491,28 @@
     return [...names].sort((a, b) => a.localeCompare(b));
   });
 
+  // OWNER-R5: people resolve through the company roster (Team read), so one
+  // person under several keys (id, email, handle, name) is one filter entry.
+  $effect(() => {
+    setActivePeopleCompany(slug);
+    void loadPeople({ slug, companyUid, company: adapter.company, messaging: adapter.messaging });
+  });
+  const roster = $derived(peopleFor(slug));
+  const personOptions = $derived([
+    { value: "", label: "Anyone", detail: null },
+    ...uniquePeople(roster.index, ownerOptions, { loading: roster.loading }).map((p) => ({
+      value: p.key,
+      label: p.name,
+      detail: p.detail,
+    })),
+  ]);
+
   const filteredCompanyProjects = $derived(
     companyProjects.filter((project) => {
       if (!matchesProjectFilter(project, projectFilter)) return false;
       const col = resolveColumn(project);
       if (!matchesPortfolioStateFilter(col, stateFilter)) return false;
-      if (ownerFilter && leadLabel(project) !== ownerFilter) return false;
+      if (ownerFilter && !personMatches(roster.index, leadLabel(project), ownerFilter, { loading: roster.loading })) return false;
       const q = searchQuery.trim().toLowerCase();
       if (!q) return true;
       const name = projectDisplayName(project).toLowerCase();
@@ -591,21 +610,23 @@
 
     void (async () => {
       try {
-        // BLANK-1: a read that never answers falls to the failed-read state.
-        const [goals, allProjects] = await withReadDeadline(Promise.all([
-          // A goals read failure keeps the cached goals; it never blanks the board.
-          loadCompanyGoals(activeSlug).catch((err: unknown) => {
-            console.warn(`loadCompanyGoals(${activeSlug}) failed:`, err);
-            return null;
-          }),
-          loadLocalProjects(),
-        ]), "company projects");
+        // A goals read failure keeps the cached goals; it never blanks the board.
+        const goalsRead = loadCompanyGoals(activeSlug).catch((err: unknown) => {
+          console.warn(`loadCompanyGoals(${activeSlug}) failed:`, err);
+          return null;
+        });
+        const allProjects = await loadLocalProjects();
         if (cancelled) return;
         const cachedGoals = readGoalsCache(goalsStorage, activeSlug);
-        objectives = goals
-          ? mergeGoalsWithCache(goals.objectives, cachedGoals)
-          : (cachedGoals?.objectives ?? []);
+        // BLANK-3: the board shows as soon as the projects answer; a slow goals
+        // read fills its links in afterwards instead of holding the board.
+        objectives = cachedGoals?.objectives ?? objectives;
         projects = allProjects;
+        loading = false;
+        void goalsRead.then((goals) => {
+          if (cancelled || !goals) return;
+          objectives = mergeGoalsWithCache(goals.objectives, readGoalsCache(goalsStorage, activeSlug));
+        });
         if (!companyChanged && selected) {
           const selectedIdentity = projectIdentity(selected);
           const refreshed =
@@ -987,7 +1008,7 @@
     <header class="projects-header">
       <div class="projects-heading">
         <h2 id="company-projects-title">Projects</h2>
-        {#if !failedEmpty}
+        {#if !failedEmpty && !loading}
         <span
           class="projects-count meta-line"
           data-meta-line
@@ -1041,38 +1062,20 @@
         />
       </label>
 
-      <label class="tool-select">
-        <span class="visually-hidden">Filter by state</span>
-        <select
-          bind:value={stateFilter}
-          data-testid="portfolio-state-filter"
-          aria-label="Filter by project state"
-        >
-          {#each PORTFOLIO_STATE_FILTER_OPTIONS as option (option.value)}
-            <option value={option.value}>{option.label}</option>
-          {/each}
-        </select>
-        <svg class="select-caret" viewBox="0 0 16 16" aria-hidden="true">
-          <path d="M4.5 6.5 8 10l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
-      </label>
+      <Dropdown
+        bind:value={stateFilter}
+        options={PORTFOLIO_STATE_FILTER_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+        label="Filter by project state"
+        testid="portfolio-state-filter"
+      />
 
-      <label class="tool-select">
-        <span class="visually-hidden">Filter by owner or creator</span>
-        <select
-          bind:value={ownerFilter}
-          data-testid="portfolio-owner-filter"
-          aria-label="Filter by project owner or creator"
-        >
-          <option value="">Person · Anyone</option>
-          {#each ownerOptions as owner (owner)}
-            <option value={owner}>{owner}</option>
-          {/each}
-        </select>
-        <svg class="select-caret" viewBox="0 0 16 16" aria-hidden="true">
-          <path d="M4.5 6.5 8 10l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
-      </label>
+      <Dropdown
+        bind:value={ownerFilter}
+        options={personOptions}
+        label="Filter by project owner or creator"
+        prefix="Person"
+        testid="portfolio-owner-filter"
+      />
 
       <!-- Legacy cycle filter (All / Active / Needs link) for link handoff + contracts. -->
       <button
@@ -1128,19 +1131,7 @@
           testid="projects-unavailable"
         />
       {:else if loading}
-        <div
-          class="board-loading"
-          aria-busy="true"
-          aria-label="Loading projects"
-        >
-          {#each PORTFOLIO_COLUMNS as column (column)}
-            <div class="skeleton-column">
-              <div class="skeleton-header"></div>
-              <div class="skeleton-card"></div>
-              <div class="skeleton-card"></div>
-            </div>
-          {/each}
-        </div>
+        <ReadLoader testid="projects-loader" onretry={() => (loadAttempt += 1)} />
       {:else if failedEmpty}
         <!-- BLANK-2: the failed line above stands in for the empty board. -->
       {:else if companyProjects.length === 0}
@@ -1426,7 +1417,7 @@
     <NewProjectSheet
       company={newProjectDefaultCompany(slug, sheetCompanies)}
       companies={sheetCompanies}
-      owners={ownerOptions}
+      owners={personOptions.slice(1).filter((o) => o.label !== "Unknown person" && o.label !== "Unknown bot" && o.label !== "…").map((o) => o.label)}
       {objectives}
       onclose={() => (newProjectOpen = false)}
       oncreate={submitNewProject}
@@ -2119,34 +2110,6 @@
     margin: 4px 0 0;
     color: var(--v4-text-3);
     font-size: 13px;
-  }
-
-  .board-loading {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 10px;
-    min-width: 0;
-  }
-
-  .skeleton-column {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-
-  .skeleton-header {
-    height: 36px;
-    border-radius: 0;
-    background: var(--v4-control-faint);
-    opacity: 0.48;
-  }
-
-  .skeleton-card {
-    height: 96px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: 8px;
-    background: var(--v4-control-faint);
-    opacity: 0.48;
   }
 
   @media (prefers-reduced-motion: reduce) {

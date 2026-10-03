@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Dropdown from "../common/LazyDropdown.svelte";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import { onMount, untrack } from "svelte";
   import { dismissToastByKey, pushToast } from "../shell/toast-stack.svelte.js";
@@ -57,7 +58,6 @@
   import {
     MEETINGS_CONNECT_EMPTY_BODY,
     MEETINGS_CONNECT_EMPTY_TITLE,
-    MEETINGS_LOADING_LABEL,
     MEETINGS_PAGE_DEK,
     MEETINGS_PAST_EMPTY,
     MEETINGS_UPCOMING_EMPTY,
@@ -68,6 +68,7 @@
   } from "./meetings-view-model";
   import { HQ_CONSOLE_INTEGRATIONS_URL } from "../common/hq-console";
   import PageHeader from "../shell/PageHeader.svelte";
+  import ReadLoader from "../common/ReadLoader.svelte";
   import "../chat/tokens.css";
   import "../chat/chat-tokens.css";
 
@@ -205,7 +206,7 @@
   );
   const agendaTitle = $derived(agendaTab === "past" ? "Past" : "Upcoming");
 
-  // US-010: first paint. Skeleton until we have either a cache snapshot or a
+  // US-010: first paint. Loader until we have either a cache snapshot or a
   // settled first refresh; then, if there is genuinely nothing AND no calendar
   // account is linked (and the emptiness is not a fetch failure), lead with
   // the connect-a-calendar state instead of "no meetings".
@@ -937,17 +938,14 @@
         <!-- Destination picker. Only renders once the user starts typing —
              keeps the idle bar clean. `null` = Personal (the default). -->
         <span class="url-invite-company-wrap">
-          <select
-            class="url-invite-company"
-            aria-label="Save bot to"
-            bind:value={urlInputCompanyId}
+          <Dropdown
+            testid="url-invite-company"
+            label="Save bot to"
+            value={urlInputCompanyId ?? ""}
+            onchange={(v) => (urlInputCompanyId = v || null)}
             disabled={urlInviting}
-          >
-            <option value={null}>Personal</option>
-            {#each [...companyNamesByUid.entries()] as [uid, name] (uid)}
-              <option value={uid}>{name}</option>
-            {/each}
-          </select>
+            options={[{ value: "", label: "Personal" }, ...[...companyNamesByUid.entries()].map(([uid, name]) => ({ value: uid, label: name }))]}
+          />
           <span class="url-invite-company-chevron" aria-hidden="true">›</span>
         </span>
       {/if}
@@ -1117,15 +1115,7 @@
         aria-busy="true"
         data-testid="meetings-loading"
       >
-        <p class="loading-label">{MEETINGS_LOADING_LABEL}</p>
-        <div class="skeleton-rows" aria-hidden="true">
-          {#each Array.from({ length: 4 }) as _row, i (i)}
-            <div class="skeleton-row">
-              <span class="skeleton-bar skeleton-time"></span>
-              <span class="skeleton-bar skeleton-title"></span>
-            </div>
-          {/each}
-        </div>
+        <ReadLoader testid="meetings-loader" surface="meetings" />
       </section>
     {:else if showConnectEmpty}
       <!-- US-010: settled + truly empty + no linked account → connect-first. -->
@@ -1713,38 +1703,9 @@
     font-size: var(--type-body, 13px);
     line-height: 18px;
   }
-  /* US-010: first-load skeleton — quiet muted bars, no motion needed. */
+  /* US-010: first load shows the shared loader. */
   .agenda-loading {
     padding: 12px 0;
-  }
-  .loading-label {
-    margin: 0 0 10px;
-    color: var(--v4-text-3);
-    font-size: var(--type-body, 13px);
-    line-height: 18px;
-  }
-  .skeleton-rows {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-  }
-  .skeleton-row {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-  }
-  .skeleton-bar {
-    display: inline-block;
-    height: 10px;
-    border-radius: 5px;
-    background: var(--v4-text-3);
-    opacity: 0.18;
-  }
-  .skeleton-time {
-    width: 64px;
-  }
-  .skeleton-title {
-    width: min(46%, 320px);
   }
   /* US-010: connect-first empty state. */
   .connect-empty {

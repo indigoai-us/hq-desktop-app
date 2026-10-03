@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Dropdown from "../common/LazyDropdown.svelte";
   import { type AdapterResult } from "./update-orchestration";
   import {
     appRowActions,
@@ -6,6 +7,7 @@
     appRowStatusLabel,
     isRecordingRestartDeferral,
   } from "./update-presentation";
+  import { heldRestartTitle, holdReasonText } from "../shell/update-toast";
   import {
     checkDesktopUpdates,
     downloadDesktopUpdate,
@@ -288,12 +290,17 @@
   const appIdleHint = $derived(appRowIdleHint(updateStore.idleWaitRemainingSecs));
   // #1237: the host's deferral sentence names what holds a requested restart
   // (a recording, a transcript still saving, or an HQ Core update).
+  // Item 8: otherwise, while the native gate holds the update (an upload, a
+  // recording), the same reason sentence the update toast shows, from the same
+  // store value, so the pane and the toast never disagree.
   const appDeferralReason = $derived(
     updateStore.installPhase === "deferred" &&
       updateStore.installError &&
       isRecordingRestartDeferral(updateStore.installError)
       ? updateStore.installError
-      : null,
+      : appRowLabel !== "UP TO DATE" && updateStore.installPhase !== "installing"
+        ? holdReasonText([...updateStore.holdReasons])
+        : null,
   );
   // Release channel (Stable / Beta / Alpha). The native host owns the
   // semantics — this is the persisted `releaseChannel` pref in menubar.json
@@ -1567,19 +1574,14 @@
       {:else if companies === null}
         <span class="val" data-testid="recording-company-membership-pending">Memberships loading…</span>
       {:else if recordingCompanies.length > 0}
-        <label class="sr-only" for="recording-company">Recording company</label>
-        <select
-          id="recording-company"
-          class="mono-select"
+        <Dropdown
+          label="Recording company"
+          testid="recording-company"
           value={native.defaultRecordingCompanyUid ?? ""}
           disabled={!nativeLoaded || pending("recording-company")}
-          onchange={(event) => void setRecordingCompany(event.currentTarget.value)}
-        >
-          <option value="">Personal</option>
-          {#each recordingCompanies as row (row.id)}
-            <option value={row.id}>{row.name}</option>
-          {/each}
-        </select>
+          options={[{ value: "", label: "Personal" }, ...recordingCompanies.map((row) => ({ value: row.id, label: row.name }))]}
+          onchange={(v) => void setRecordingCompany(v)}
+        />
       {:else}
         <span class="val" data-testid="recording-company-personal">Personal</span>
       {/if}
@@ -1708,7 +1710,8 @@
             type="button"
             class="chip"
             data-testid="settings-app-restart"
-            title={updateStore.installError ?? undefined}
+            disabled={!!appDeferralReason}
+            title={appDeferralReason ? heldRestartTitle(appDeferralReason) : (updateStore.installError ?? undefined)}
             onclick={() => void restartDesktopUpdate()}
           >Restart to update</button>
         {/if}
@@ -1779,20 +1782,14 @@
           <div class="sd" role="alert" data-testid="settings-channel-error">{channelError}</div>
         {/if}
       </div>
-      <select
-        class="chip"
-        data-testid="settings-release-channel"
-        aria-label="Release channel"
-        aria-busy={channelSaving}
+      <Dropdown
+        testid="settings-release-channel"
+        label="Release channel"
         disabled={channelSaving || versionsRefreshing || releaseChannelOptions.length <= 1}
         value={selectedReleaseChannel}
-        onchange={(e) =>
-          void selectReleaseChannel((e.currentTarget as HTMLSelectElement).value)}
-      >
-        {#each releaseChannelOptions as option (option.id)}
-          <option value={option.id}>{option.label}</option>
-        {/each}
-      </select>
+        options={releaseChannelOptions.map((option) => ({ value: option.id, label: option.label }))}
+        onchange={(v) => void selectReleaseChannel(v)}
+      />
     </div>
     <div class="set-row">
       <div><div class="sn">Update status</div><div class="sd">Refreshes when you open this window or an update arrives.</div></div>

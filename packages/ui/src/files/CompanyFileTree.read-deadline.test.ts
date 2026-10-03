@@ -6,7 +6,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, unmount } from "svelte";
-import { READ_DEADLINE_MS } from "../common/read-deadline.js";
+import { expectPendingRead } from "../common/read-loader.test-support.js";
 import { fileTreeErrorReason } from "./company-read-scope.js";
 import CompanyFileTree from "./CompanyFileTree.svelte";
 
@@ -20,8 +20,8 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-describe("CompanyFileTree read deadline (BLANK-1)", () => {
-  it("a listing that never answers ends in the failed-read state", async () => {
+describe("CompanyFileTree pending read (BLANK-3)", () => {
+  it("a listing that never answers keeps loading with a waiting line and Try again, never a failed state", async () => {
     vi.useFakeTimers();
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     component = mount(CompanyFileTree, {
@@ -30,12 +30,7 @@ describe("CompanyFileTree read deadline (BLANK-1)", () => {
     });
     flushSync();
     expect(document.querySelector("[data-testid='file-tree-loading']")).toBeTruthy();
-    await vi.advanceTimersByTimeAsync(READ_DEADLINE_MS + 10);
-    flushSync();
-    expect(document.querySelector("[data-testid='file-tree-loading']")).toBeNull();
-    expect(document.querySelector("[data-testid='file-tree-error-reason']")?.textContent).toBe("Could not read this folder.");
-    expect(document.querySelector("[data-testid='file-tree-root-retry']")).toBeTruthy();
-    expect(logged).toHaveBeenCalled();
+    await expectPendingRead(document, "file-tree-loader");
   });
 
   it("a 403-shaped refusal reads as no access", () => {

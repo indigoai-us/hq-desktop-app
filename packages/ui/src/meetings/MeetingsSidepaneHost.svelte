@@ -5,6 +5,7 @@
 -->
 <script lang="ts">
   import MeetingsSidepane from "./MeetingsSidepane.svelte";
+  import InviteNotetakerSheet from "./InviteNotetakerSheet.svelte";
   import { meetingsStore } from "./meetings-store.svelte";
   import { withRecordedEvents } from "./recorded-meetings";
   import { meetingsRailState } from "./meetings-rail-state.svelte";
@@ -13,15 +14,15 @@
 
   interface Props {
     memory?: SidepaneScrollMemory;
-    onnewmeeting?: () => void;
   }
 
-  let { memory, onnewmeeting }: Props = $props();
+  let { memory }: Props = $props();
+  let inviting = $state(false);
 
   // Recomputed when the snapshot changes; the minute clock lives in the store refresh.
   const events = $derived(
     withRecordedEvents(
-      [...meetingsRailState.localMeetings, ...meetingsStore.events],
+      meetingsStore.events,
       meetingsStore.recorded,
     ),
   );
@@ -51,6 +52,9 @@
   {memory}
   onselect={(id) => meetingsRailState.select(id)}
   onfilter={(next) => meetingsRailState.setFilter(next)}
-  onnewmeeting={() => (onnewmeeting ? onnewmeeting() : meetingsRailState.openSheet(true))}
+  oninvite={() => (inviting = true)}
   onearlier={() => meetingsRailState.showAgenda()}
 />
+{#if inviting}
+  <InviteNotetakerSheet onclose={() => (inviting = false)} />
+{/if}

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { dismissable } from "../common/dismissable.js";
+  import ReadLoader from "../common/ReadLoader.svelte";
   /**
    * Link picker (US-026). Search projects, then attach the chosen project
    * to a key result. Shared by Link project and New objective.
@@ -76,8 +77,7 @@
         {#if onretry}<button type="button" class="act" onclick={onretry}>Try again</button>{/if}
       </div>
     {:else if projects === null}
-      <p class="foot" data-testid="link-picker-loading">Loading projects…</p>
-      {#each [0, 1] as i (i)}<div class="shimmer"></div>{/each}
+      <ReadLoader testid="link-picker-loading" {onretry} />
     {:else}
       {#each visible as project (projectIdentity(project))}
         <button
@@ -142,6 +142,8 @@
   .ctx, .row { display: flex; align-items: center; gap: 8px; }
   .ctx { padding: 4px 8px 6px; color: var(--v4-text-2); border-bottom: 1px solid var(--v4-rowline); }
   .t { flex: 1; }
+  /* QA-107: border-box so full-width rows and the search field stay inside the popover. */
+  .row, .search { box-sizing: border-box; }
   .x, .row, .search { font: inherit; color: inherit; background: transparent; border: 0; }
   .search {
     width: 100%;
@@ -170,7 +172,6 @@
   .row b { font-weight: 600; color: var(--v4-text-1); }
   .row[aria-pressed="true"] { background: var(--v4-active-row); color: var(--v4-text-1); }
   .row:hover:not(:disabled) { background: var(--v4-hover); }
-  .shimmer { height: 22px; margin: 4px 8px; border-radius: 6px; background: var(--v4-hover); }
   .act { font: inherit; color: var(--v4-text-1); background: transparent; border: 0; padding: 0 0 0 6px; cursor: pointer; text-decoration: underline; }
   .foot { font-size: 12px; color: var(--v4-text-3); padding: 4px 8px; }
 </style>

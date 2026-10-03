@@ -1,6 +1,6 @@
 /**
  * Presentation model for Meetings states (US-022): past recap, in-app
- * transcript, upcoming brief, empty canvas, and the new-meeting draft.
+ * transcript, upcoming brief, and empty canvas.
  * Pure. No Svelte, no fetches.
  */
 
@@ -45,22 +45,6 @@ export interface TranscriptTurn {
   text: string;
   /** Gutter jump target, when this line produced a signal. */
   signal: string | null;
-}
-
-export type MeetingLinkKind = "zoom" | "meet" | "paste" | "none";
-export type MeetingDurationMin = 30 | 45 | 60;
-
-export interface NewMeetingDraft {
-  title: string;
-  date: string;
-  time: string;
-  durationMin: MeetingDurationMin;
-  attendeeIds: string[];
-  notetaker: boolean;
-  link: MeetingLinkKind;
-  /** Room used as is when link is "paste" (US-042). */
-  pastedUrl: string;
-  agenda: string;
 }
 
 /** Join stays disabled until this many minutes before start (storyboard). */
@@ -131,7 +115,8 @@ function bucket(raw: unknown, key: string): Record<string, unknown>[] {
 function itemFrom(row: Record<string, unknown>, kind: RecapItemKind, index: number): RecapItem | null {
   const title = textOf(row);
   if (!title) return null;
-  const owner = typeof row.owner === "string" && row.owner.trim() ? row.owner.trim() : "—";
+  // OWNER-R25: an empty owner is empty, not a dash placeholder.
+  const owner = typeof row.owner === "string" && row.owner.trim() ? row.owner.trim() : "";
   const bot = owner.toLowerCase() === "deacon" || row.kind === "bot";
   return {
     id: String(row.id ?? `${kind}-${index}`),
@@ -139,7 +124,7 @@ function itemFrom(row: Record<string, unknown>, kind: RecapItemKind, index: numb
     title,
     detail: typeof row.detail === "string" ? row.detail : typeof row.quote === "string" ? row.quote : "",
     owner,
-    ownerInitials: owner === "—" ? "—" : initialsOf(owner),
+    ownerInitials: owner ? initialsOf(owner) : "",
     bot,
     when: typeof row.when === "string" ? row.when : typeof row.at === "string" ? row.at : "",
     status: typeof row.status === "string" ? row.status : kind === "question" ? "Unanswered" : "Open",
@@ -162,7 +147,7 @@ export function recapModel(event: MeetingEvent, bot?: ScheduledBot): RecapModel 
 
 export function recapPlainText(model: RecapModel, title: string): string {
   const lines = [title, "", "Summary", model.summary, "", "Decisions"];
-  for (const item of model.decisions) lines.push(`- ${item.title}${item.owner !== "—" ? ` (${item.owner})` : ""}`);
+  for (const item of model.decisions) lines.push(`- ${item.title}${item.owner ? ` (${item.owner})` : ""}`);
   lines.push("", "Action items");
   for (const item of model.actions) lines.push(`- ${item.title} [${item.status}]`);
   return lines.join("\n");
@@ -195,49 +180,6 @@ export function filterTranscript(turns: readonly TranscriptTurn[], query: string
   const q = query.trim().toLowerCase();
   if (!q) return [...turns];
   return turns.filter((turn) => `${turn.speaker} ${turn.text} ${turn.signal ?? ""}`.toLowerCase().includes(q));
-}
-
-export function emptyNewMeetingDraft(now = new Date()): NewMeetingDraft {
-  const next = new Date(now.getTime() + 60 * 60_000);
-  next.setMinutes(0, 0, 0);
-  const y = next.getFullYear();
-  const m = String(next.getMonth() + 1).padStart(2, "0");
-  const d = String(next.getDate()).padStart(2, "0");
-  return {
-    title: "",
-    date: `${y}-${m}-${d}`,
-    time: clockLabel(next),
-    durationMin: 30,
-    attendeeIds: [],
-    notetaker: true,
-    link: "zoom",
-    pastedUrl: "",
-    agenda: "",
-  };
-}
-
-export function draftToEvent(draft: NewMeetingDraft, id: string): MeetingEvent | null {
-  const title = draft.title.trim();
-  if (!title) return null;
-  const start = new Date(`${draft.date}T${draft.time}:00`);
-  if (Number.isNaN(start.getTime())) return null;
-  const end = new Date(start.getTime() + draft.durationMin * 60_000);
-  const lines = draft.agenda.split("\n").map((line) => line.replace(/^\d+\.\s*/, "").trim()).filter(Boolean);
-  return {
-    id,
-    summary: title,
-    status: "confirmed",
-    start: { dateTime: start.toISOString() },
-    end: { dateTime: end.toISOString() },
-    meetingUrl:
-      draft.link === "paste"
-        ? draft.pastedUrl.trim() || null
-        : draft.link === "meet"
-          ? "https://meet.google.com/new"
-          : null,
-    outline: lines.map((line, i) => ({ id: `${id}-ag-${i}`, title: line, state: "todo" as const })),
-    notes: [],
-  };
 }
 
 export function relativeUntil(start: Date, now: Date): string {

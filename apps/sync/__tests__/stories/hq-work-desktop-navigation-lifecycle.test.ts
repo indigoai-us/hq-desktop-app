@@ -514,12 +514,20 @@ describe('embedded Work navigation and lifecycle', () => {
       host.querySelector('[data-testid="library-nav-installed"]')?.getAttribute('aria-current'),
     ).toBe('page');
 
+    // OWNER-R33: the retired Library Workers tab lands on Marketplace Browse.
     warmRoute('library:workers');
     await flush();
     expect(
-      host.querySelector('[data-testid="library-nav-workers"]')?.getAttribute('aria-current'),
+      host.querySelector('[data-testid="library-nav-marketplace"]')?.getAttribute('aria-current'),
     ).toBe('page');
-    expect(host.querySelector('[data-testid="library-workers-panel"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="library-nav-workers"]')).toBeNull();
+    expect(host.querySelector('[data-testid="library-workers-panel"]')).toBeNull();
+
+    warmRoute('marketplace:installed');
+    await flush();
+    expect(
+      host.querySelector('[data-testid="library-nav-installed"]')?.getAttribute('aria-current'),
+    ).toBe('page');
 
     warmRoute('library:marketplace');
     await flush();
@@ -535,18 +543,19 @@ describe('embedded Work navigation and lifecycle', () => {
     ).toBe('page');
     expect(host.querySelector('[data-testid="library-submit-panel"]')).toBeTruthy();
 
+    // OWNER-R23: the creator profile moved to Settings > Public profile.
     warmRoute('library:profile');
     await flush();
-    expect(
-      host.querySelector('[data-testid="library-nav-profile"]')?.getAttribute('aria-current'),
-    ).toBe('page');
-    expect(host.querySelector('[data-testid="library-profile-panel"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="library-nav-profile"]')).toBeNull();
+    expect(host.querySelector('[data-testid="library-overlay"]')).toBeNull();
 
+    // OWNER-R33: bare Library (was Skills) redirects to Marketplace Browse.
     warmRoute('library');
     await flush();
     expect(
-      host.querySelector('[data-testid="library-nav-skills"]')?.getAttribute('aria-current'),
+      host.querySelector('[data-testid="library-nav-marketplace"]')?.getAttribute('aria-current'),
     ).toBe('page');
+    expect(host.querySelector('[data-testid="library-nav-skills"]')).toBeNull();
 
     warmRoute('settings');
     await flush();
@@ -720,7 +729,7 @@ describe('embedded Work navigation and lifecycle', () => {
     expect(hqProPaths.some((path) => path.startsWith('/v1/files/shared-with-me'))).toBe(true);
   });
 
-  it('shows Workers only through the Sync host and opens its real native detail command', async () => {
+  it('the old Library Workers route opens Marketplace Browse and reads no worker tree', async () => {
     const invocations: Array<{ command: string; args?: Record<string, unknown> }> = [];
     await mountShell({
       invocations,
@@ -750,16 +759,15 @@ describe('embedded Work navigation and lifecycle', () => {
       },
     });
 
+    // OWNER-R33: Workers left this page (company Brain panes own them), so the
+    // old route lands on Marketplace Browse and reads no local worker tree.
     warmRoute('library:workers');
     await flush(64);
-    expect(host.querySelector('[data-testid="library-nav-workers"]')).toBeTruthy();
-    (host.querySelector('[data-testid="library-worker-card"]') as HTMLButtonElement).click();
-    await flush(64);
-
-    expect(
-      invocations.find((entry) => entry.command === 'get_library_worker_detail')?.args,
-    ).toEqual({ workerPath: 'workers/planner' });
-    expect(host.querySelector('[data-testid="library-detail-panel"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="library-nav-workers"]')).toBeNull();
+    expect(host.querySelector('[data-testid="library-worker-card"]')).toBeNull();
+    expect(host.querySelector('[data-testid="library-marketplace-panel"]')).toBeTruthy();
+    expect(invocations.some((entry) => entry.command === 'get_library_root')).toBe(false);
+    expect(invocations.some((entry) => entry.command === 'get_library_worker_detail')).toBe(false);
   });
 
   it('preserves Submit and Profile mutations through the mounted Sync-to-Tauri seam', async () => {

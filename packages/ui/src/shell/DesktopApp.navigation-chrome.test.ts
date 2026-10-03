@@ -79,6 +79,11 @@ function libraryAdapter(): PlatformAdapter {
       getWorkerDetail: async () => ok({}),
       getSkillDetail: async () => ok({}),
     },
+    marketplace: {
+      listListings: async () => ok({ listings: [] }),
+      myListings: async () => ok({ listings: [] }),
+    },
+    packages: { listPackages: async () => ok([]) },
   } as unknown as PlatformAdapter;
 }
 
@@ -136,7 +141,9 @@ async function goTo(page: "alpha" | "bravo"): Promise<void> {
   await tick();
 }
 
-async function goToLibrary(tab: "skills" | "workers"): Promise<void> {
+async function goToLibrary(
+  tab: "skills" | "workers" | "marketplace" | "installed" | "submit",
+): Promise<void> {
   dispatchEmbeddedNavigation({ kind: "library", tab });
   await tick();
   await tick();
@@ -151,107 +158,53 @@ function extraPage(): string | null {
 }
 
 describe("DesktopApp title-bar back/forward", () => {
-  it("Library Back skips Library tab history and returns to the prior app route", async () => {
+  // OWNER-R33: the Marketplace (was Library) is a top-level destination with a
+  // rail entry. It has no page Back button; the top bar's Back and Forward
+  // walk its tab history like any other route.
+  it("Marketplace has no page Back; the top bar Back walks its tabs, then the prior route", async () => {
     await mountShell(libraryAdapter());
     await goTo("alpha");
-    await goToLibrary("workers");
-    host.querySelector<HTMLButtonElement>(
-      '[data-testid="library-nav-skills"]',
-    )?.click();
+    await goToLibrary("marketplace");
+    expect(host.querySelector('[data-testid="library-overlay"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="library-back"]')).toBeNull();
+    host.querySelector<HTMLButtonElement>('[data-testid="library-nav-installed"]')?.click();
     await tick();
     await tick();
+    expect(host.querySelector('[data-testid="library-installed-panel"]')).not.toBeNull();
+    expect(
+      host.querySelector('[data-testid="titlebar-back"]')?.getAttribute("title"),
+    ).toBe("Marketplace");
 
-    expect(host.querySelector('[data-testid="library-skills-panel"]')).not.toBeNull();
-    const skillsPanel = host.querySelector<HTMLElement>(
-      '[data-testid="library-skills-panel"]',
-    );
-    if (skillsPanel) {
-      skillsPanel.scrollTop = 900;
-      skillsPanel.dispatchEvent(new Event("scroll", { bubbles: true }));
-    }
-
-    host.querySelector<HTMLButtonElement>(
-      '[data-testid="library-back"]',
-    )?.click();
+    host.querySelector<HTMLButtonElement>('[data-testid="titlebar-back"]')?.click();
     await tick();
     await tick();
-
+    expect(host.querySelector('[data-testid="library-marketplace-panel"]')).not.toBeNull();
+    host.querySelector<HTMLButtonElement>('[data-testid="titlebar-back"]')?.click();
+    await tick();
+    await tick();
     expect(host.querySelector('[data-testid="library-overlay"]')).toBeNull();
     expect(extraPage()).toBe("alpha");
-  });
-
-  it("Library Back from the first app route returns to Messages after tab changes", async () => {
-    await mountShell(libraryAdapter());
-    await goToLibrary("skills");
-    host.querySelector<HTMLButtonElement>(
-      '[data-testid="library-nav-workers"]',
-    )?.click();
-    await tick();
-    await tick();
-    host.querySelector<HTMLButtonElement>(
-      '[data-testid="library-nav-skills"]',
-    )?.click();
-    await tick();
-    await tick();
-
-    expect(host.querySelector('[data-testid="library-skills-panel"]')).not.toBeNull();
-    host.querySelector<HTMLButtonElement>(
-      '[data-testid="library-back"]',
-    )?.click();
-    await tick();
-    await tick();
-
-    expect(host.querySelector('[data-testid="library-overlay"]')).toBeNull();
-    expect(
-      host.querySelector<HTMLButtonElement>('[data-testid="titlebar-back"]')
-        ?.disabled,
-    ).toBe(true);
     expect(
       host.querySelector('[data-testid="titlebar-forward"]')?.getAttribute("title"),
-    ).toBe("Library · Skills");
+    ).toBe("Marketplace");
   });
 
-  it("Library Back returns to Messages when Library is the only history route", async () => {
+  it("the old Library Skills and Workers routes redirect to Marketplace Browse", async () => {
     seededLibraryHistory.enabled = true;
     try {
       await mountShell(libraryAdapter());
     } finally {
       seededLibraryHistory.enabled = false;
     }
-
-    await goToLibrary("skills");
-    host.querySelector<HTMLButtonElement>(
-      '[data-testid="library-nav-workers"]',
-    )?.click();
-    await tick();
-    await tick();
-    host.querySelector<HTMLButtonElement>(
-      '[data-testid="library-nav-skills"]',
-    )?.click();
-    await tick();
-    await tick();
-
-    expect(
-      host.querySelector('[data-testid="library-skills-panel"]'),
-    ).not.toBeNull();
-    expect(
-      host.querySelector('[data-testid="library-overlay"]'),
-    ).not.toBeNull();
-    expect(
-      host.querySelector('[data-testid="library-back"]'),
-    ).not.toBeNull();
-    host.querySelector<HTMLButtonElement>(
-      '[data-testid="library-back"]',
-    )?.click();
-    await tick();
-    await tick();
-
-    expect(host.querySelector('[data-testid="library-overlay"]')).toBeNull();
-    expect(
-      host
-        .querySelector('[data-testid="titlebar-back"]')
-        ?.getAttribute("title"),
-    ).toBe("Library · Skills");
+    for (const tab of ["skills", "workers"] as const) {
+      await goToLibrary(tab);
+      expect(host.querySelector('[data-testid="library-marketplace-panel"]')).not.toBeNull();
+      expect(host.querySelector('[data-testid="library-nav-skills"]')).toBeNull();
+      expect(host.querySelector('[data-testid="library-nav-workers"]')).toBeNull();
+      expect(
+        host.querySelector('[data-testid="rail-marketplace"]')?.getAttribute("aria-current"),
+      ).toBe("page");
+    }
   });
 
   it("Given history A→B, when the user clicks Back then Forward, then selection returns to A then B and button disabled states match the stack", async () => {

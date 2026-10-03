@@ -457,6 +457,19 @@ describe("DesktopApp update-available card", () => {
     }
   });
 
+  it("while held, Restart is disabled, not drawn as primary, and says when it will work", async () => {
+    const events = createSyncEventHost();
+    await mountApp(events.host);
+    events.emit("update-gate://deferred", gatePayload(VERSION_A, ["UploadInFlight"]));
+    await settle();
+    const install = document.querySelector<HTMLButtonElement>('[data-testid="update-install"]')!;
+    expect(install.disabled).toBe(true);
+    expect(install.classList.contains("primary")).toBe(false);
+    expect(install.getAttribute("title")).toBe(
+      "Waiting for an upload to finish. Restart becomes available when it finishes.",
+    );
+  });
+
   it("Later snoozes the version for this session only", async () => {
     const events = createSyncEventHost();
     await mountApp(events.host);

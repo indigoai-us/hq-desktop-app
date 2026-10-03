@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Dropdown from "../common/LazyDropdown.svelte";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   /**
    * ChannelStatusPopover (US-005) — opened from the channel-header member pill.
@@ -273,16 +274,12 @@
     <div class="p-item kv static">
       <span class="k">Branch</span>
       {#if currentBranches.length > 1}
-        <select
-          class="status-branch-select"
-          data-testid="status-branch-select"
-          aria-label="Project branches"
+        <Dropdown
+          testid="status-branch-select"
+          label="Project branches"
           bind:value={selectedBranch}
-        >
-          {#each currentBranches as branch (branch)}
-            <option value={branch}>{branch}</option>
-          {/each}
-        </select>
+          options={currentBranches.map((branch) => ({ value: branch, label: branch }))}
+        />
       {:else}
         <span class="val" data-testid="status-branch">{shownBranch ?? "—"}</span
         >

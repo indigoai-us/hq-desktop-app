@@ -79,7 +79,8 @@ describe("normalizeCompanyTeamTelemetry presence honesty", () => {
 });
 
 describe("displayNameFromMember", () => {
-  it("prefers genuine identity fields, then the source UID, then an explicit unavailable state", () => {
+  // OWNER-R5: never the source UID; an unresolved member is "Unknown person" / "Unknown bot".
+  it("prefers genuine identity fields, then Unknown person or Unknown bot, never the source UID", () => {
     expect(
       displayNameFromMember({
         displayName: "Ada",
@@ -90,8 +91,9 @@ describe("displayNameFromMember", () => {
     expect(
       displayNameFromMember({ email: "a@x.com", personUid: "prs_1" }),
     ).toBe("a@x.com");
-    expect(displayNameFromMember({ personUid: "prs_1" })).toBe("prs_1");
-    expect(displayNameFromMember({})).toBe("Identity unavailable");
+    expect(displayNameFromMember({ personUid: "prs_1" })).toBe("Unknown person");
+    expect(displayNameFromMember({ personUid: "agt_1" })).toBe("Unknown bot");
+    expect(displayNameFromMember({})).toBe("Unknown person");
     expect(
       displayNameFromMember(
         { personUid: "prs_1" },
@@ -233,7 +235,7 @@ describe("normalizeCompanyTeamTelemetry", () => {
     ]);
   });
 
-  it("uses identities returned with telemetry before falling back to a source UID", () => {
+  it("uses identities returned with telemetry before falling back to Unknown person (never the source UID)", () => {
     const view = normalizeCompanyTeamTelemetry({
       members: [
         {
@@ -280,7 +282,7 @@ describe("normalizeCompanyTeamTelemetry", () => {
       members: [{ personUid: "prs_source_only" }],
       identities: { persons: {}, agents: {} },
     });
-    expect(sourceOnly.members[0]?.displayName).toBe("prs_source_only");
+    expect(sourceOnly.members[0]?.displayName).toBe("Unknown person");
   });
 
   it("collapses only exact duplicate member UIDs without hiding same-name people", () => {

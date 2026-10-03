@@ -67,16 +67,21 @@ describe("desktop visual hierarchy regressions", () => {
     }
   });
 
-  it("keeps detached menus legible with the PR772 reference material", () => {
+  // OWNER-R16 (08f5424a2): detached menus use the neutral Core menu surface.
+  // The PR772 tinted values (252 252 253 / 44 44 54) were replaced on purpose;
+  // the floor alpha keeps menus legible at the most transparent setting.
+  it("keeps detached menus legible on the neutral Core menu surface", () => {
     expect(tokens).toContain(
       "--v4-glass-filter-popover: blur(40px) saturate(124%) contrast(104%);",
     );
     expect(tokens).toContain(
-      "--v4-popover-strong: rgb(252 252 253 / clamp(0.90, calc(0.96 + 0.65 - var(--hq-window-transparency-factor, 0)), 1));",
+      "--v4-popover-strong: rgb(250 250 250 / clamp(0.7, calc(1 - var(--hq-window-transparency-factor, 0) * 0.308), 1));",
     );
     expect(tokens).toContain(
-      "--v4-popover-strong: rgb(44 44 54 / clamp(0.90, calc(0.94 + 0.65 - var(--hq-window-transparency-factor, 0)), 1));",
+      "--v4-popover-strong: rgb(36 36 36 / clamp(0.72, calc(1 - var(--hq-window-transparency-factor, 0) * 0.277), 1));",
     );
+    expect(tokens).not.toContain("rgb(44 44 54");
+    expect(tokens).not.toContain("rgb(252 252 253");
   });
 
   it(

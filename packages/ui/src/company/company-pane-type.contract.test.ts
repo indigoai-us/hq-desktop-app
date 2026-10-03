@@ -25,12 +25,12 @@ const PAGES = [
 ];
 
 /**
- * The sidepane section label (and its loading skeleton) copies the Messages
+ * The sidepane section label (and its loading-state label) copies the Messages
  * sidebar section label exactly: 10px Geist Mono caps. The owner's rule is
  * that shipped Messages wins, so the sidepane matches it.
  */
 const MESSAGES_SECTION_LABEL: Record<string, string> = {
-  "shell/CompanySidepane.svelte": ".sk-label",
+  "shell/CompanySidepane.svelte": ".roster-label",
 };
 
 function styleOf(file: string): string {

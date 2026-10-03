@@ -71,6 +71,8 @@ Weights shipped: Geist 400/500/600 (comment at ChannelConversation.svelte:2714).
 
 Overlay standard (OWNER-006): the values above are measured from the titlebar Launch menu (`.v4-launch-menu`, V4TitleBar.svelte), which the owner confirmed as the reference. `--panel-bg` (rgba(44,44,54,.94)) and `--v4-surface-solid` (#1e1e24) are slate/blue-tinted and must not paint overlays. No per-component greys, hex fills or `--vio-*`/`--ice-*` backgrounds, and no CSS backdrop-filter on rounded overlay cards (WKWebView). Guard: packages/ui/src/common/overlay-surface-guard.test.ts.
 
+Toast layering: a toast never covers an open overlay (sheet, modal, picker, command palette). Toasts stay on their own layer, but any toast whose box meets an open overlay's box is held: hidden, out of the tab order, with its timer paused. Toasts clear of the overlay stay visible around its edges. When the overlay closes, held toasts come back with their actions reachable; a toast is never dropped because an overlay was open. Toast content, focus ring and keyboard behavior are unchanged. Implementation: shell/ToastStack.svelte. Guard: apps/sync/e2e/browser/toast-overlay-layering.spec.ts.
+
 Accent: monochrome. **DEV**: `--accent: var(--vio-ink)` (messaging-tokens.css:48) and `--ice-ink` for links/thread replies (ChannelConversation.svelte:3107; ChatSidebar.svelte:4630). Do not carry violet/ice into the console rail; primary button = `--t1` fill on `--panel-bg` ink (NewChannelSheet.svelte:237).
 
 ## 4. Controls
@@ -177,9 +179,8 @@ Each key is also an hq-flags registry row (`packages/platform/src/flags.ts`). A 
 | Gate key | Hidden for non-Indigo companies | Fallback | Follow-up that removes the gate |
 |---|---|---|---|
 | `desktop.rail-telemetry-v1` | Personal Telemetry page and its data calls | Hidden (OWNER-D 3) for people who are not Indigo members: no rail item and no palette entry; a deep link or open page falls back to the open company's landing, or Home with no company open | Company-scoped telemetry read in hq-pro and the QA-068 fixes |
-| `desktop.rail-outpost-v1` | Scheduled jobs, job editing, Runs history and Logs on Outpost | Status card and host Settings stay; Overview adds one "Coming soon" line | Job writes persisted through hq-pro and live runs/logs endpoints |
+| `desktop.rail-outpost-v1` | Read-only Scheduled jobs and Runs on Outpost (OWNER-R19: managing, including job editing, happens in the web console via Open console) | Status view only, no sub-nav | Nothing; the lists read hq-pro `/outpost/jobs/status` |
 | `desktop.rail-deployments-actions-v1` | Redeploy (personal and company Deployments), the "Your bots" filter, the Selected people access mode | Controls hidden; list, links and the other access modes stay | Desktop redeploy route, bot-owner attribution and selected-people grants in hq-deploy |
-| `desktop.rail-shortcut-editing-v1` | Edit shortcuts sheet in Settings | Read-only shortcut list | Persist edited shortcuts and apply them to the key handler |
 | `desktop.rail-workforce-limits-v1` | Plan seat-limit line on the Workforce card ("of N" and the limits-unavailable note) | Seat count from Team stays | Plan limits read from hq-billing for every plan |
 | `desktop.rail-atlas-v1` | Atlas company landing (on for everyone by default) | Company Activity | hq-pro Atlas endpoint for large companies; then delete the key |
 

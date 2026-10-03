@@ -13,6 +13,7 @@ import type { NavigationDestination } from "./navigation-history.js";
 import {
   COMPANY_SETTINGS_ROW,
   COMPANY_SIDEPANE_SECTIONS,
+  MANAGER_ONLY_ROWS,
   companySidepaneModel,
   type SidepaneCompany,
   type SidepaneListModel,
@@ -44,26 +45,38 @@ const PAGE_INFO: Record<string, { story: string; summary: string }> = {
   integrations: { story: "US-029", summary: "Apps connected to this company." },
   secrets: { story: "US-029", summary: "Company secrets, metadata only." },
   deployments: { story: "US-029", summary: "What this company has deployed or shared." },
-  "company-settings": { story: "US-030", summary: "Company name, members, and billing." },
+  groups: { story: "OWNER-R24", summary: "Groups that share file and secret access." },
+  grants: { story: "OWNER-R24", summary: "Folder grants and when they expire." },
+  general: { story: "OWNER-R24", summary: "Company name, slug, and defaults for members." },
+  brand: { story: "OWNER-R24", summary: "Logo, accent color, and voice." },
+  billing: { story: "OWNER-R24", summary: "Plan, seats, and payment." },
 };
 
 const ROW_LABELS: ReadonlyMap<string, string> = new Map(
-  [...COMPANY_SIDEPANE_SECTIONS.flatMap((s) => s.rows), COMPANY_SETTINGS_ROW].map(
-    (r) => [r.id, r.label],
-  ),
+  COMPANY_SIDEPANE_SECTIONS.flatMap((s) => s.rows).map((r) => [r.id, r.label]),
 );
 
-/** Every row id the company pane routes, footer included. */
+/**
+ * OWNER-R24: old routes kept as redirects. The Company settings page and its
+ * own tabs are now panel panes; an old link lands on the pane it pointed at.
+ */
+export const LEGACY_COMPANY_ROWS: Readonly<Record<string, string>> = {
+  [COMPANY_SETTINGS_ROW.id]: "general",
+  workforce: "billing",
+};
+
+/** Every row id the company pane routes. */
 export const COMPANY_PANE_ROW_IDS: readonly string[] = [...ROW_LABELS.keys()];
 
 export function companyPageId(rowId: string): string {
-  return `${COMPANY_PAGE_PREFIX}${rowId}`;
+  return `${COMPANY_PAGE_PREFIX}${LEGACY_COMPANY_ROWS[rowId] ?? rowId}`;
 }
 
 /** Row id for a company page id, or null when the page is not one. */
 export function companyRowForPage(page: string | null | undefined): string | null {
   if (!page || !page.startsWith(COMPANY_PAGE_PREFIX)) return null;
-  const id = page.slice(COMPANY_PAGE_PREFIX.length);
+  const raw = page.slice(COMPANY_PAGE_PREFIX.length);
+  const id = LEGACY_COMPANY_ROWS[raw] ?? raw;
   return ROW_LABELS.has(id) ? id : null;
 }
 
@@ -118,8 +131,13 @@ export function companyPaneModel(
   summary: CompanyPaneSummary | null | undefined,
   selectedId: string | null,
   pageCounts: Readonly<Record<string, number>> = {},
+  /** OWNER-R24: false hides Grants and Billing (owners and admins only). */
+  canManage = false,
 ): SidepaneListModel {
   const model = companySidepaneModel(company, selectedId);
+  if (!canManage) {
+    for (const section of model.sections) section.rows = section.rows.filter((row) => !MANAGER_ONLY_ROWS.has(row.id));
+  }
   const counts = { ...companyPaneCounts(summary), ...pageCounts };
   for (const section of model.sections) {
     for (const row of section.rows) {

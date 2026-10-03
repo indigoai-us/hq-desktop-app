@@ -74,10 +74,10 @@ describe("GoalsView first load (AUDIT-3)", () => {
     });
     flushSync();
     await expect.poll(() => release !== null).toBe(true);
-    expect(host.querySelector("[data-testid='goals-skeleton']")).not.toBeNull();
+    expect(host.querySelector("[data-testid='goals-loader']")).not.toBeNull();
     expect(host.querySelector("[data-testid='empty-goals-state']")).toBeNull();
     release!();
     await expect.poll(() => host?.textContent ?? "").toContain("Ship the beta");
-    expect(host.querySelector("[data-testid='goals-skeleton']")).toBeNull();
+    expect(host.querySelector("[data-testid='goals-loader']")).toBeNull();
   });
 });

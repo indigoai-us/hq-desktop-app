@@ -101,7 +101,7 @@
     border: 1px solid var(--pop-border);
     border-radius: 6px;
     /* Attribution must remain readable over a translucent chat window. */
-    background: var(--v4-surface-solid, #ffffff);
+    background: var(--overlay-bg, var(--v4-surface-solid, #ffffff));
     color: var(--pop-text);
     text-align: left;
     line-height: 1.4;

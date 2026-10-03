@@ -6,7 +6,7 @@ import type { SettingsApi, ShellApi } from "@hq/platform";
 import { ok } from "@hq/platform";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { READ_DEADLINE_MS } from "../../common/read-deadline.js";
+import { expectPendingRead } from "../../common/read-loader.test-support.js";
 import FilesConnectPage from "./FilesConnectPage.svelte";
 
 vi.mock("../company-store.svelte.js", () => ({
@@ -28,11 +28,11 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-describe("FilesConnectPage read deadline (BLANK-1)", () => {
+describe("FilesConnectPage pending read (BLANK-3)", () => {
   it.each([
     ["secrets", "Could not load secrets."],
     ["deployments", "Could not load deployments."],
-  ] as const)("a %s read that never answers ends in the failed-read state", async (page, copy) => {
+  ] as const)("a %s read that never answers keeps loading with a waiting line and Try again, never a failed state", async (page, copy) => {
     vi.useFakeTimers();
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     component = mount(FilesConnectPage, {
@@ -49,21 +49,18 @@ describe("FilesConnectPage read deadline (BLANK-1)", () => {
       } as never,
     });
     flushSync();
-    expect(document.querySelector("[data-testid='files-connect-skeleton']")).toBeTruthy();
-    await vi.advanceTimersByTimeAsync(READ_DEADLINE_MS + 20);
-    flushSync();
-    expect(document.querySelector("[data-testid='files-connect-skeleton']")).toBeNull();
-    expect(document.body.textContent).toContain(copy);
-    expect([...document.querySelectorAll("button")].some((b) => /Try again/.test(b.textContent ?? ""))).toBe(true);
-    expect(logged).toHaveBeenCalled();
+    expect(document.querySelector(`[data-testid='${page}-loader']`)).toBeTruthy();
+    await expectPendingRead(document, `${page}-loader`);
+    expect(document.body.textContent).not.toContain(copy);
+    expect(logged).not.toHaveBeenCalled();
     // BLANK-2: no zero count next to the failed read.
     expect(document.querySelector("[data-testid='secrets-count'],[data-testid='deployments-count']")).toBeNull();
     expect(document.body.textContent).not.toMatch(/(Secrets|Deployments) · 0\b/);
   });
 });
 
-describe("FilesConnectPage vault summary deadline (BLANK-1)", () => {
-  it("the folder summary line does not stay on Reading folder…", async () => {
+describe("FilesConnectPage vault summary pending read (BLANK-3)", () => {
+  it("a pending vault read shows the loader, not a bare Reading folder… line", async () => {
     vi.useFakeTimers();
     vi.spyOn(console, "error").mockImplementation(() => {});
     const never = () => new Promise(() => {});
@@ -80,8 +77,8 @@ describe("FilesConnectPage vault summary deadline (BLANK-1)", () => {
       } as never,
     });
     flushSync();
-    await vi.advanceTimersByTimeAsync(READ_DEADLINE_MS + 10);
-    flushSync();
-    expect(document.querySelector("[data-testid='vault-summary']")?.textContent ?? "").not.toContain("Reading folder…");
+    // OWNER-R13: the Vault is the Files explorer; its tree read owns the loader.
+    await expectPendingRead(document, "vault-tree-loader");
+    expect(document.body.textContent ?? "").not.toContain("Reading folder…");
   });
 });

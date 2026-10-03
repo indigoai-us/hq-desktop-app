@@ -2,10 +2,15 @@
   /**
    * The one shared toast layer (OWNER-003). Mounted once at the app root and
    * portaled to <body>, fixed to the window's lower right above
-   * sheets, popovers and dialogs. Newest on top, at most three visible; the
+   * the shell. Newest on top, at most three visible; the
    * rest collapse into a "+N more" row. Escape is never handled here, so the
    * nested Escape layer keeps working. Solid surface (no backdrop-filter:
    * WKWebView paints it as a square behind rounded cards).
+   *
+   * A toast never covers an open overlay (sheet, modal, picker, command
+   * palette). A toast whose box meets an open overlay's box is held: hidden
+   * and its timer paused until the overlay closes, then it shows again with
+   * its actions reachable. Toasts clear of the overlay stay visible.
    */
   import { onDestroy } from "svelte";
   import {
@@ -45,6 +50,63 @@
   // reduced motion drops it.
   const reduced = reducedMotion();
 
+  /** Open overlays a toast must not cover. The toast layer itself is excluded. */
+  const OVERLAY_SELECTOR = '[role="dialog"], [aria-modal="true"]';
+  let stackEl: HTMLElement | null = $state(null);
+  let heldIds = $state<string[]>([]);
+
+  function overlaps(a: DOMRect, b: DOMRect): boolean {
+    return Math.min(a.right, b.right) > Math.max(a.left, b.left) &&
+      Math.min(a.bottom, b.bottom) > Math.max(a.top, b.top);
+  }
+
+  function measureHeld(): void {
+    if (!stackEl || typeof document === "undefined") return;
+    const overlays = Array.from(document.querySelectorAll(OVERLAY_SELECTOR))
+      .filter((el) => !stackEl!.contains(el))
+      .map((el) => el.getBoundingClientRect())
+      .filter((r) => r.width > 0 && r.height > 0);
+    const next: string[] = [];
+    if (overlays.length) {
+      for (const el of Array.from(stackEl.querySelectorAll<HTMLElement>("[data-toast-id]"))) {
+        const box = el.getBoundingClientRect();
+        if (overlays.some((o) => overlaps(o, box))) next.push(el.dataset.toastId!);
+      }
+    }
+    if (next.join() !== heldIds.join()) heldIds = next;
+  }
+
+  // Re-measure when the DOM or the window changes, at most once per frame.
+  $effect(() => {
+    if (!stackEl || typeof window === "undefined" || typeof MutationObserver === "undefined") return;
+    let frame = 0;
+    const schedule = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        measureHeld();
+      });
+    };
+    const observer = new MutationObserver(schedule);
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["role", "aria-modal", "style", "class", "hidden"] });
+    window.addEventListener("resize", schedule);
+    schedule();
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", schedule);
+      if (frame) cancelAnimationFrame(frame);
+    };
+  });
+
+  // A held toast keeps its timer paused so it cannot expire unseen.
+  let pausedByHold: string[] = [];
+  $effect(() => {
+    const held = heldIds;
+    for (const id of held) if (!pausedByHold.includes(id)) pauseToast(id);
+    for (const id of pausedByHold) if (!held.includes(id)) resumeToast(id);
+    pausedByHold = [...held];
+  });
+
   function close(toast: ToastItem): void {
     toast.onDismiss?.();
     dismissToast(toast.id);
@@ -55,6 +117,7 @@
 <div
   class="ts-stack"
   use:toBody
+  bind:this={stackEl}
   aria-live="polite"
   data-testid="toast-stack"
   data-reduced-motion={reduced ? "true" : "false"}
@@ -67,10 +130,15 @@
       role={toast.tone === "err" ? "alert" : "status"}
       data-testid={toast.testId ?? "toast"}
       data-toast-key={toast.key}
+      data-toast-id={toast.id}
+      class:held={heldIds.includes(toast.id)}
+      aria-hidden={heldIds.includes(toast.id) ? "true" : undefined}
       data-kind={toast.kind}
       data-tone={toast.tone}
       onmouseenter={() => pauseToast(toast.id)}
-      onmouseleave={() => resumeToast(toast.id)}
+      onmouseleave={() => {
+        if (!heldIds.includes(toast.id)) resumeToast(toast.id);
+      }}
     >
       <div class="ts-b">
         <span class="ts-title">{toast.title}</span>
@@ -156,6 +224,12 @@
     gap: 8px;
     width: 360px;
     max-width: calc(100vw - 32px);
+    pointer-events: none;
+  }
+
+  /* Held under an open overlay: invisible, unclickable, out of the tab order. */
+  .ts-toast.held {
+    visibility: hidden;
     pointer-events: none;
   }
 

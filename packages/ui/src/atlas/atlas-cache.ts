@@ -34,15 +34,15 @@ export function atlasEndpoint(consoleBase: string, companyUid: string): string {
   return `${consoleBase.replace(/\/$/, "")}/api/companies/${encodeURIComponent(companyUid)}/atlas`;
 }
 
-/** Longest an Atlas refresh may run before it counts as failed (QA-016). */
-export const ATLAS_REFRESH_TIMEOUT_MS = 15_000;
-
 /**
- * Ceiling for the full load once a partial map is on screen. The first-page
- * timeout above is what decides "the map didn't load"; this only stops a
- * stuck full load from spinning forever.
+ * BLANK-3 (owner, 2026-10-03): no timer turns a pending Atlas read into a
+ * failure. By default a refresh has no time limit: the view keeps the shared
+ * loader (waiting lines, then Try again) until the map arrives, and only a
+ * real failure shows "The map didn't load". A caller may still pass explicit
+ * limits (tests do).
  */
-export const ATLAS_FULL_LOAD_TIMEOUT_MS = 120_000;
+export const ATLAS_REFRESH_TIMEOUT_MS: number | null = null;
+export const ATLAS_FULL_LOAD_TIMEOUT_MS: number | null = null;
 
 /** Why a refresh failed, in terms the failed state can explain to a person. */
 export type AtlasFailReason = "signed-out" | "no-access" | "timeout" | "offline" | "unavailable";
@@ -77,11 +77,11 @@ export function reasonForError(err: unknown): AtlasFailReason {
 export function consoleAtlasFetcher(
   consoleBase: string,
   fetchImpl: typeof fetch = (input, init) => fetch(input, init),
-  timeoutMs = ATLAS_REFRESH_TIMEOUT_MS,
+  timeoutMs: number | null = ATLAS_REFRESH_TIMEOUT_MS,
 ): AtlasFetcher {
   return async (companyUid) => {
-    const controller = typeof AbortController === "undefined" ? null : new AbortController();
-    const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+    const controller = typeof AbortController === "undefined" || timeoutMs === null ? null : new AbortController();
+    const timer = controller && timeoutMs !== null ? setTimeout(() => controller.abort(), timeoutMs) : null;
     try {
       const res = await fetchImpl(atlasEndpoint(consoleBase, companyUid), {
         credentials: "include",
@@ -152,7 +152,8 @@ export function localAtlasFetcher(
 }
 
 /** Reject when `job` has not settled within `ms`; the job itself is left alone. */
-function withTimeout<T>(job: Promise<T>, ms: number): Promise<T> {
+function withTimeout<T>(job: Promise<T>, ms: number | null): Promise<T> {
+  if (ms === null) return job;
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => reject(new AtlasLoadError("timeout", "atlas refresh timed out")), ms);
     job.then(
@@ -173,10 +174,10 @@ export type AtlasPartialListener = (graph: AtlasGraph) => void;
 export function createAtlasCache(input: {
   fetcher: AtlasFetcher | AtlasStagedFetcher;
   storage?: AtlasCacheStorage | null;
-  /** Upper bound for the first paint (or the whole refresh without a first page). */
-  timeoutMs?: number;
-  /** Upper bound for the full load once a partial map is showing. */
-  fullTimeoutMs?: number;
+  /** Upper bound for the first paint (or the whole refresh without a first page); none by default. */
+  timeoutMs?: number | null;
+  /** Upper bound for the full load once a partial map is showing; none by default. */
+  fullTimeoutMs?: number | null;
 }) {
   const timeoutMs = input.timeoutMs ?? ATLAS_REFRESH_TIMEOUT_MS;
   const fullTimeoutMs = input.fullTimeoutMs ?? ATLAS_FULL_LOAD_TIMEOUT_MS;

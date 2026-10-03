@@ -1,12 +1,13 @@
 <script lang="ts">
+  import ReadLoader from "../common/ReadLoader.svelte";
   import RailButton from "../common/button/RailButton.svelte";
-  import { dismissable } from "../common/dismissable.js";
   /**
-   * Personal Outpost (US-034).
-   * First frame is the cache. Refresh runs after paint, then every 60 s while
+   * Personal Outpost (US-034). OWNER-R19: a status view; managing the
+   * Outpost (terminal, updates, restarts, jobs) happens in the web console,
+   * which "Open console" opens. First frame is the cache. Refresh runs after paint, then every 60 s while
    * visible; relative times re-render every 30 s from absolute timestamps
    * (QA-069). A failed refresh keeps the cache and says so in the header.
-   * Offline disables host actions and shows the retry countdown.
+   * An unreachable host shows one state, "Unreachable since <date>", and Retry now.
    */
   import { untrack } from "svelte";
   import { startNowTicker } from "../common/now-ticker.js";
@@ -15,10 +16,8 @@
   import "../chat/chat-tokens.css";
   import {
     alertLabel,
-    clampJobAlert,
     filterJobs,
     filterRuns,
-    blankJob,
     freshnessLabel,
     lastReportCopy,
     lastResultLabel,
@@ -26,23 +25,18 @@
     nextRunLabel,
     OUTPOST_REFRESH_MS,
     runWhenLabel,
-    presetCron,
-    previewCron,
     readOutpostCache,
-    visibleLogWindow,
-    withReadTimeout,
     writeOutpostCache,
-    OUTPOST_READ_TIMEOUT_MS,
-    type JobAlert,
-    type JobCadence,
-    type JobRunMode,
     type OutpostCache,
-    type OutpostJob,
     type OutpostRefresher,
     type OutpostTab,
   } from "./outpost-model.js";
   import { outpostFilterLabel } from "./outpost-model.js";
   import { createOutpostRefresher, noOutpost, OUTPOST_SETUP_URL, type OutpostReadApi } from "./outpost-live.js";
+  import { HQ_CONSOLE_BASE } from "../common/hq-console.js";
+
+  /** The web console's Outpost page; it has no per-outpost route. */
+  export const OUTPOST_CONSOLE_URL = `${HQ_CONSOLE_BASE}/personal/outpost`;
 
   export { metadata };
 
@@ -67,22 +61,7 @@
   let tab = $state<OutpostTab>("overview");
   let jobFilter = $state<"all" | "active" | "paused" | "failing">("all");
   let runFilter = $state<"all" | "ok" | "failed" | "running">("all");
-  let logFilter = $state<"all" | "info" | "warn" | "err">("all");
-  let selectedJob = $state("");
-  let sheet = $state<OutpostJob | null>(null);
-  let draftName = $state("");
-  let draftCadence = $state<JobCadence>("hourly");
-  let draftCron = $state("0 * * * *");
-  let draftMode = $state<JobRunMode>("prompt");
-  let draftAlert = $state<JobAlert>("dm");
-  let draftPrompt = $state("");
-  let draftSkill = $state("");
-  let draftArgs = $state("");
-  let logScroll = $state(0);
-  let notice = $state("");
-
-  const ROW = 22;
-  const VIEW = 280;
+  let copied = $state(false);
 
   let now = $state(Date.now());
   let refreshFailed = $state(false);
@@ -97,14 +76,18 @@
       if (cached) data = cached;
     });
     let live = true;
-    let settled = false;
+    // BLANK-3: no timer ends a pending read. One read at a time: a background
+    // refresh skips while a read is still out; Try again starts a fresh one.
+    let inflight = false;
     // The visibility gate only skips background refreshes. The first read always
     // runs: a window macOS reports hidden (occluded, behind another app) must
     // still leave "Reading your Outpost…" (QA-084).
     const run = async (background = false): Promise<void> => {
       if (background && typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      if (background && inflight) return;
+      inflight = true;
       try {
-        const next = await withReadTimeout(read());
+        const next = await read();
         if (!live) return;
         const merged = { ...next, fetchedAt: next.fetchedAt ?? new Date().toISOString() };
         writeOutpostCache("personal", merged);
@@ -114,20 +97,13 @@
         console.error("[outpost] refresh failed", err);
         if (live) refreshFailed = true;
       } finally {
-        settled = true;
+        inflight = false;
         if (live) now = Date.now();
       }
     };
     void run();
     retry = () => void run();
     const timer = setInterval(() => void run(true), OUTPOST_REFRESH_MS);
-    // Backstop: whatever happens to the read, loading ends within the bound.
-    const deadline = setTimeout(() => {
-      if (live && !settled && data.provisioned === null) {
-        console.error("[outpost] first read did not settle in time");
-        refreshFailed = true;
-      }
-    }, OUTPOST_READ_TIMEOUT_MS + 1_000);
     const onVisible = () => {
       if (document.visibilityState === "visible") void run(true);
     };
@@ -136,7 +112,6 @@
     return () => {
       live = false;
       clearInterval(timer);
-      clearTimeout(deadline);
       if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVisible);
       stopTick();
     };
@@ -149,129 +124,66 @@
 
   const jobs = $derived(filterJobs(data.jobs, jobFilter));
   const runs = $derived(filterRuns(data.runs, runFilter));
-  const filteredLogs = $derived(
-    data.logs.filter((line) => logFilter === "all" || line.level === logFilter),
-  );
-  const logWindow = $derived(visibleLogWindow(filteredLogs.length, logScroll, VIEW, ROW));
-  const paintedLogs = $derived(filteredLogs.slice(logWindow.start, logWindow.end));
-  const cronPreview = $derived(previewCron(draftCron, new Date(now), 5));
   const provisioned = $derived(data.provisioned === true);
   const offline = $derived(!provisioned || data.unreachable || !data.host.online);
 
-  // QA-053: New job opens a blank sheet; Edit keeps the job's values.
-  const sheetIsNew = $derived(sheet != null && !data.jobs.some((job) => job.id === sheet?.id));
 
-  function openNew(): void {
-    openEdit(blankJob());
+  // One state (OWNER-R19): the instance line never repeats a running/stopped
+  // word next to the reachability state.
+  const sizeLine = $derived(
+    data.host.instance
+      .split(" · ")
+      .filter((part) => !/^(running|pending|stopped|stopping|ready|provisioning|terminated)$/i.test(part.trim()))
+      .join(" · "),
+  );
+  // A raw instance id is never the title: show the name, else "Outpost" and the region.
+  const rawId = $derived(/^outpost-[0-9a-f-]{8,}$/i.test(data.host.name.trim()) ? data.host.name.trim() : "");
+  const title = $derived(rawId || !data.host.name.trim() ? ["Outpost", data.host.region].filter(Boolean).join(" · ") : data.host.name);
+  const since = $derived(
+    data.host.lastHeartbeatIso && !Number.isNaN(Date.parse(data.host.lastHeartbeatIso))
+      ? new Date(data.host.lastHeartbeatIso).toLocaleDateString(undefined, { month: "short", day: "numeric" })
+      : "",
+  );
+  const stateLabel = $derived(offline ? (since ? `Unreachable since ${since}` : "Unreachable") : "Online");
+  const tabs = $derived<[OutpostTab, string][]>(
+    full ? [["overview", "Overview"], ["jobs", "Scheduled jobs"], ["runs", "Runs"]] : [["overview", "Overview"]],
+  );
+
+  function openConsole(): void {
+    openExternal?.(OUTPOST_CONSOLE_URL);
   }
 
-  function openEdit(job: OutpostJob): void {
-    sheet = job;
-    draftName = job.name;
-    draftCadence = job.cadence;
-    draftCron = job.cron;
-    draftMode = job.mode;
-    draftAlert = clampJobAlert(job.alert);
-    draftPrompt = job.prompt;
-    draftSkill = job.skill;
-    draftArgs = job.args;
-  }
-
-  function setCadence(next: JobCadence): void {
-    draftCadence = next;
-    if (next !== "custom") draftCron = presetCron(next);
-  }
-
-  function saveJob(): void {
-    if (!sheet) return;
-    if (draftCadence === "custom" && !cronPreview.ok) {
-      notice = cronPreview.error;
-      return;
+  async function copyId(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(rawId);
+      copied = true;
+      setTimeout(() => (copied = false), 1500);
+    } catch (err) {
+      console.error("[outpost] copy id failed", err);
     }
-    const alert = clampJobAlert(draftAlert);
-    if (sheetIsNew) {
-      const name = draftName.trim();
-      if (!name) {
-        notice = "Name the job before saving.";
-        return;
-      }
-      data = {
-        ...data,
-        jobs: [
-          ...data.jobs,
-          {
-            ...sheet,
-            name,
-            cadence: draftCadence,
-            cadenceLabel: draftCadence === "custom" ? draftCron : draftCadence,
-            cron: draftCron,
-            mode: draftMode,
-            alert,
-            prompt: draftPrompt,
-            skill: draftSkill,
-            args: draftArgs,
-          },
-        ],
-      };
-      writeOutpostCache("personal", data);
-      notice = "";
-      sheet = null;
-      return;
-    }
-    data = {
-      ...data,
-      jobs: data.jobs.map((job) =>
-        job.id === sheet?.id
-          ? {
-              ...job,
-              cadence: draftCadence,
-              cron: draftCron,
-              mode: draftMode,
-              alert,
-              prompt: draftPrompt,
-              skill: draftSkill,
-              args: draftArgs,
-            }
-          : job,
-      ),
-    };
-    writeOutpostCache("personal", data);
-    notice = "";
-    sheet = null;
   }
-
-  function togglePause(job: OutpostJob): void {
-    if (offline) return;
-    data = {
-      ...data,
-      jobs: data.jobs.map((row) => (row.id === job.id ? { ...row, paused: !row.paused, nextRun: row.paused ? "" : "paused" } : row)),
-    };
-    writeOutpostCache("personal", data);
-  }
-
 </script>
 
-<div class="page" data-testid="outpost-page" data-tab={tab} data-offline={offline ? "true" : "false"}>
+<div class="page" class:single={tabs.length === 1} data-testid="outpost-page" data-tab={tab} data-offline={offline ? "true" : "false"}>
+  {#if tabs.length > 1}
   <aside class="pane" aria-label="Outpost">
-    <div class="pane-head"><span class="status" data-testid="outpost-pane-host" title={provisioned ? `${data.host.name} · ${offline ? "Down" : "Up"}` : undefined}><span class="dot" class:live={!offline} class:err={offline}></span><span class="label">{provisioned ? `${data.host.name} · ${offline ? "Down" : "Up"}` : "Outpost"}</span></span></div>
+    <div class="pane-head"><span class="status" data-testid="outpost-pane-host" title={provisioned ? `${title} · ${stateLabel}` : undefined}><span class="dot" class:live={!offline} class:err={offline}></span><span class="label">{provisioned ? title : "Outpost"}</span></span></div>
     <nav>
-      {#each [["overview", "Overview"], ["jobs", "Scheduled jobs"], ["runs", "Runs"], ["logs", "Logs"], ["settings", "Settings"]].filter((item) => full || item[0] === "overview" || item[0] === "settings") as item (item[0])}
-        <button type="button" class:on={tab === item[0]} aria-current={tab === item[0] ? "true" : undefined} onclick={() => (tab = item[0] as OutpostTab)}><span class="label">{item[1]}</span></button>
+      {#each tabs as item (item[0])}
+        <button type="button" class:on={tab === item[0]} aria-current={tab === item[0] ? "true" : undefined} onclick={() => (tab = item[0])}><span class="label">{item[1]}</span></button>
       {/each}
     </nav>
   </aside>
+  {/if}
   <main>
     <header class="toolbar">
-      <h1>{tab === "overview" ? "Outpost" : tab === "jobs" ? "Scheduled jobs" : tab === "runs" ? "Runs" : tab === "logs" ? "Logs" : "Settings"}</h1>
+      <h1 data-testid="outpost-title">{tab === "overview" ? (provisioned ? title : "Outpost") : tab === "jobs" ? "Scheduled jobs" : "Runs"}</h1>
       {#if provisioned}
-        <span class="meta-line" data-meta-line data-testid="outpost-host">{[data.host.name, data.host.region, data.host.instance].filter(Boolean).join(" · ")}</span>
-        <span class="meta-line" data-meta-line data-testid="outpost-online"><span class="meta-dot dot" class:live={!offline} class:err={offline}></span>{offline ? "Offline" : "Online"}</span>
+        <span class="meta-line" data-meta-line data-testid="outpost-online"><span class="meta-dot dot" class:live={!offline} class:err={offline}></span>{stateLabel}</span>
       {/if}
       <span class="meta-line" data-meta-line class:err={refreshFailed} data-testid="outpost-freshness">{freshness}</span>
       <span class="grow"></span>
-      <RailButton icon="external" type="button" disabled={offline} onclick={() => (notice = "terminal")}>Open terminal</RailButton>
-      <RailButton icon="download" type="button" disabled={offline}>Self-update</RailButton>
-      <RailButton icon="refresh" type="button" disabled={offline}>Restart</RailButton>
+      <RailButton icon="external" variant="primary" type="button" data-testid="outpost-open-console" onclick={openConsole}>Open console</RailButton>
     </header>
 
     {#if data.provisioned === false}
@@ -285,8 +197,8 @@
         <span class="nm">Couldn't read your Outpost</span>
         <RailButton icon="refresh" type="button" data-testid="outpost-try-again" onclick={() => retry()}>Try again</RailButton>
       </div>
-    {:else if data.provisioned === null && tab !== "logs"}
-      <div class="empty sub" data-testid="outpost-loading">Reading your Outpost…</div>
+    {:else if data.provisioned === null}
+      <div class="empty sub" data-testid="outpost-loading"><ReadLoader testid="outpost-loader" onretry={() => retry()} /></div>
     {:else if offline}
       <div class="banner" role="alert" data-testid="outpost-offline-banner" title={lastReport.title}>
         {lastReport.text}
@@ -294,37 +206,39 @@
       </div>
     {/if}
 
-    {#if provisioned && !full && tab === "overview"}
-      <p class="sub" data-testid="outpost-coming-soon">Coming soon. Scheduled jobs, runs and logs are on their way.</p>
+    {#if provisioned && tab === "overview"}
+      <section class="facts" data-testid="outpost-facts">
+        {#if data.host.region || sizeLine}<p class="sub" data-testid="outpost-host">{[data.host.region, sizeLine].filter(Boolean).join(" · ")}</p>{/if}
+        {#if data.host.diskUsed}<p class="sub">Disk {data.host.diskUsed} used of {data.host.diskTotal}</p>{/if}
+        {#if rawId}
+          <p class="sub id-line" data-testid="outpost-id"><span class="mono">{rawId}</span>
+            <button type="button" class="copy" data-testid="outpost-copy-id" aria-label="Copy Outpost id" onclick={() => void copyId()}>{copied ? "Copied" : "Copy"}</button>
+          </p>
+        {/if}
+      </section>
     {/if}
 
     {#if provisioned && full}
-
     {#if tab === "overview" || tab === "jobs"}
       <section>
         <div class="tabs">
           {#each ["all", "active", "paused", "failing"] as name (name)}
             <button type="button" class:on={jobFilter === name} onclick={() => (jobFilter = name as typeof jobFilter)}>{outpostFilterLabel(name)}</button>
           {/each}
-          <RailButton icon="plus" variant="primary" type="button" disabled={offline} data-testid="new-job" onclick={openNew}>New job</RailButton>
         </div>
-        <div class="jrow hd"><span>Job</span><span>Cadence</span><span>Next run</span><span>Last result</span><span>Alerts</span><span></span></div>
+        <div class="jrow hd"><span>Job</span><span>Cadence</span><span>Next run</span><span>Last result</span><span>Alerts</span></div>
         {#if data.jobsUnavailable}
           {@render jobsError("outpost-jobs-error", "Couldn't load scheduled jobs")}
         {:else if data.jobs.length === 0}
           <p class="sub" data-testid="outpost-no-jobs">No scheduled jobs</p>
         {/if}
         {#each jobs as job (job.id)}
-          <div class="jrow" class:paused={job.paused} aria-current={selectedJob === job.id ? "true" : undefined} role="button" tabindex="0" onclick={() => (selectedJob = job.id)} onkeydown={(e) => e.key === "Enter" && (selectedJob = job.id)}>
+          <div class="jrow" class:paused={job.paused}>
             <span class="cell"><span class="nm">{job.name}</span><small>{job.detail}</small></span>
             <span>{job.cadenceLabel}</span>
             <span data-testid="job-next-run">{nextRunLabel(job, now)}</span>
             <span class="st result {job.status}" data-testid="job-last-result" title={lastResultLabel(job, now)}>{lastResultLabel(job, now)}</span>
             <span data-testid="job-alert">{alertLabel(job.alert, job.alertWhen)}</span>
-            <span class="act">
-              <button type="button" class="tab" disabled={offline} onclick={(e) => { e.stopPropagation(); togglePause(job); }}>{job.paused ? "Resume" : "Pause"}</button>
-              <button type="button" class="tab" onclick={(e) => { e.stopPropagation(); openEdit(job); }}>Edit</button>
-            </span>
           </div>
         {/each}
       </section>
@@ -347,105 +261,8 @@
         {/each}
       </section>
     {/if}
-
-    {/if}
-
-    {#if full && tab === "logs" && data.provisioned !== false && !(data.provisioned === null && refreshFailed)}
-      <section data-testid="outpost-logs">
-        <div class="tabs">
-          {#each ["all", "info", "warn", "err"] as name (name)}
-            <button type="button" class:on={logFilter === name} onclick={() => (logFilter = name as typeof logFilter)}>{name}</button>
-          {/each}
-        </div>
-        {#if data.logs.length === 0}
-          <p class="sub" data-testid="outpost-no-logs">No logs from the Outpost yet</p>
-        {/if}
-        <div
-          class="log-view"
-          data-testid="log-view"
-          style="height:{VIEW}px"
-          onscroll={(e) => (logScroll = (e.currentTarget as HTMLDivElement).scrollTop)}
-        >
-          <div style="height:{logWindow.heightPx}px; position:relative">
-            <div style="transform:translateY({logWindow.offsetPx}px)">
-              {#each paintedLogs as line (line.id)}
-                <div class="ln {line.level}" style="height:{ROW}px" data-testid="log-line"><span class="mono">{line.t}</span> {line.job} {line.message}</div>
-              {/each}
-            </div>
-          </div>
-        </div>
-      </section>
-    {/if}
-
-    {#if provisioned && tab === "settings"}
-      <section data-testid="outpost-settings">
-        <h2>Host</h2>
-        <p>{data.host.name}{data.host.hostname ? ` · ${data.host.hostname}` : ""}</p>
-        <p>{data.host.instance}</p>
-        {#if data.host.diskUsed}<p>Disk {data.host.diskUsed} of {data.host.diskTotal}</p>{/if}
-        <p>Per-job alerts are dm or none. Secret values are not stored on the Outpost disk.</p>
-      </section>
     {/if}
   </main>
-
-  {#if sheet && full}
-    <div class="ov" data-testid="edit-job-sheet">
-      <div class="sheet" role="dialog" aria-label={sheetIsNew ? "New job" : "Edit job"} use:dismissable={{ onclose: () => (sheet = null), outside: true }}>
-        <header>{sheetIsNew ? "New job" : "Edit job"} <span class="sub">{sheetIsNew ? data.host.name : `${sheet.name} · ${data.host.name}`}</span>
-          <button type="button" aria-label="Close" onclick={() => (sheet = null)}>✕</button>
-        </header>
-        <div class="body">
-          {#if sheetIsNew}
-            <label class="lbl" for="job-name">Name</label>
-            <input id="job-name" data-testid="job-name-input" bind:value={draftName} />
-          {/if}
-          <span class="lbl">Cadence</span>
-          <div class="seg">
-            {#each ["hourly", "daily", "weekdays", "weekly", "custom"] as name (name)}
-              <button type="button" class:on={draftCadence === name} onclick={() => setCadence(name as JobCadence)}>{name}</button>
-            {/each}
-          </div>
-          {#if draftCadence === "custom"}
-            <label class="lbl" for="cron">Cron expression</label>
-            <input id="cron" data-testid="cron-input" bind:value={draftCron} />
-            {#if cronPreview.ok}
-              <ol data-testid="cron-next">
-                {#each cronPreview.next as when, i (i)}
-                  <li>{when.toISOString()}</li>
-                {/each}
-              </ol>
-            {:else}
-              <p class="err" data-testid="cron-error">{cronPreview.error}</p>
-            {/if}
-          {:else}
-            <p class="mono">cron {draftCron}</p>
-          {/if}
-          <span class="lbl">Run</span>
-          <div class="seg">
-            <button type="button" class:on={draftMode === "prompt"} onclick={() => (draftMode = "prompt")}>Prompt</button>
-            <button type="button" class:on={draftMode === "skill"} onclick={() => (draftMode = "skill")}>Skill</button>
-          </div>
-          {#if draftMode === "skill"}
-            <input data-testid="skill-input" bind:value={draftSkill} />
-            <input data-testid="args-input" bind:value={draftArgs} />
-            <p class="mono">$ hq run {draftSkill} {draftArgs}</p>
-          {:else}
-            <textarea data-testid="prompt-input" bind:value={draftPrompt}></textarea>
-          {/if}
-          <span class="lbl">Alerts</span>
-          <div class="seg" data-testid="alert-seg">
-            <button type="button" class:on={draftAlert === "dm"} onclick={() => (draftAlert = "dm")}>DM</button>
-            <button type="button" class:on={draftAlert === "none"} onclick={() => (draftAlert = "none")}>None</button>
-          </div>
-          {#if notice}<p class="err">{notice}</p>{/if}
-        </div>
-        <footer>
-          <button type="button" onclick={() => (sheet = null)}>Cancel</button>
-          <RailButton icon="check" variant="primary" type="button" data-testid="save-job" onclick={saveJob}>Save</RailButton>
-        </footer>
-      </div>
-    </div>
-  {/if}
 </div>
 
 {#snippet jobsError(testid: string, title: string)}
@@ -457,6 +274,11 @@
 
 <style>
   .section-error { display: flex; align-items: center; gap: 8px; }
+  .page.single { grid-template-columns: minmax(0, 1fr); }
+  .facts p { margin: 0 0 4px; }
+  .id-line { display: flex; align-items: center; gap: 8px; }
+  .copy { background: transparent; border: 0; color: var(--t2, var(--v4-text-2)); padding: 0 4px; border-radius: 4px; }
+  .copy:hover { background: var(--hover, var(--v4-hover)); }
   /* Console-rail chrome measured from Messages (docs/design-standard-console-rail.md):
      one 20px/500 title, 13px Geist everywhere else, 31px rows, status as dot plus
      text, mono only for the fingerprint, cron, commands and log lines. */
@@ -469,13 +291,12 @@
   .pane .label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   nav button { display: flex; align-items: center; min-width: 0; }
   h1 { font-size: var(--type-title, 20px); font-weight: var(--type-title-weight, 500); line-height: var(--type-title-line, 1.25); margin: 0 4px 0 0; }
-  h2 { font-size: 13px; font-weight: 500; color: var(--t2, var(--v4-text-2)); margin: 16px 0 4px; }
   nav { display: flex; flex-direction: column; gap: 1px; margin-top: 4px; }
   button { font: inherit; font-size: 13px; cursor: pointer; }
-  nav button, .tabs button, .seg button, .tab, .sheet header button, .sheet footer button { background: transparent; color: var(--t2, var(--v4-text-2)); border: 0; border-radius: 6px; text-align: left; padding: 0 8px; height: 26px; }
+  nav button, .tabs button { background: transparent; color: var(--t2, var(--v4-text-2)); border: 0; border-radius: 6px; text-align: left; padding: 0 8px; height: 26px; }
   nav button { height: 31px; padding: 7px 8px; border-radius: 8px; }
-  nav button.on, .jrow[aria-current="true"], .tabs button.on { background: var(--sel, var(--v4-active-row)); color: var(--t1, var(--v4-text-1)); box-shadow: none; }
-  nav button:hover, .jrow:hover, .tab:hover, .tabs button:hover { background: var(--hover, var(--v4-hover)); }
+  nav button.on, .tabs button.on { background: var(--sel, var(--v4-active-row)); color: var(--t1, var(--v4-text-1)); box-shadow: none; }
+  nav button:hover, .tabs button:hover { background: var(--hover, var(--v4-hover)); }
   main { min-width: 0; overflow: auto; padding: 0 20px 24px; }
   .toolbar { display: flex; align-items: center; gap: 8px; height: 52px; margin: 0 -20px 12px; padding: 0 20px; box-sizing: border-box; border-bottom: 1px solid var(--line, var(--v4-rowline)); }
   section { margin-bottom: 20px; }
@@ -493,7 +314,7 @@
   .banner { display: flex; gap: 8px; align-items: center; min-height: 40px; margin: 0 0 12px; padding: 0 12px; background: var(--raised, var(--v4-control-faint)); border-radius: 8px; }
   .tabs { display: flex; align-items: center; gap: 2px; margin-bottom: 4px; }
   .tabs :global([data-rail-btn]) { margin-left: auto; }
-  .jrow { display: grid; grid-template-columns: minmax(0, 1.8fr) 120px 100px minmax(0, 1fr) 90px 120px; gap: 8px; align-items: center; height: 31px; box-sizing: border-box; padding: 0 8px; border-radius: 8px; cursor: pointer; }
+  .jrow { display: grid; grid-template-columns: minmax(0, 1.8fr) 120px 100px minmax(0, 1fr) 90px; gap: 8px; align-items: center; height: 31px; box-sizing: border-box; padding: 0 8px; border-radius: 8px; }
   .jrow > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* QA-052: at narrow widths the last result wraps instead of clipping the
      time, duration, and failure streak. The row grows to fit. */
@@ -501,23 +322,7 @@
   .jrow > .st.result { display: block; white-space: normal; overflow: visible; overflow-wrap: anywhere; }
   .jrow.paused { color: var(--t3, var(--v4-text-3)); }
   .jrow.hd { color: var(--t3, var(--v4-text-3)); cursor: default; }
-  .jrow.hd:hover { background: transparent; }
-  .act { display: flex; gap: 2px; justify-content: flex-end; }
   .run { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto; gap: 8px; align-items: center; height: 31px; padding: 0 8px; }
   .run > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .log-view { overflow: auto; border-top: 1px solid var(--line, var(--v4-rowline)); font-family: var(--font-mono, "Geist Mono", ui-monospace, monospace); font-size: 12px; }
-  .seg { display: inline-flex; gap: 2px; padding: 2px; width: max-content; border: 1px solid var(--panel-border, var(--v4-control-border)); border-radius: 6px; background: var(--hover, var(--v4-control-faint)); }
-  .seg button { height: auto; padding: 4px 8px; border-radius: 4px; }
-  .seg button.on { background: var(--sel, var(--v4-active-row)); color: var(--t1, var(--v4-text-1)); }
-  .ov { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(0, 0, 0, 0.45); }
-  .sheet { width: 480px; max-height: calc(100% - 48px); overflow: auto; background: var(--panel-bg, var(--v4-popover)); border: 1px solid var(--panel-border, var(--v4-hairline)); border-radius: 8px; box-shadow: var(--panel-shadow, var(--v4-shadow-popover)); }
-  .sheet header { display: flex; align-items: center; gap: 8px; height: 52px; padding: 0 10px 0 20px; font-weight: 500; border-bottom: 1px solid var(--line, var(--v4-hairline)); }
-  .sheet header button { margin-left: auto; width: 24px; padding: 0; text-align: center; }
-  .sheet footer { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--line, var(--v4-hairline)); }
-  .body { padding: 12px 20px 16px; display: flex; flex-direction: column; gap: 8px; }
-  .lbl { color: var(--t2, var(--v4-text-2)); }
-  input, textarea { background: var(--btn-bg, var(--v4-control-faint)); color: var(--t1, var(--v4-text-1)); border: 1px solid var(--line2, var(--v4-control-border)); border-radius: 6px; padding: 0 8px; font: inherit; font-size: 13px; }
-  input { height: 28px; box-sizing: border-box; }
-  textarea { padding: 6px 8px; min-height: 80px; }
   button:disabled { opacity: 0.45; cursor: default; }
 </style>

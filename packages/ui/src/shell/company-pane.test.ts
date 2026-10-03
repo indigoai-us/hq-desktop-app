@@ -14,22 +14,42 @@ import { flattenSections } from "./sidepane-models.js";
 const summary = { board: 7, activity: { last7d: 12 }, deployments: 3, secrets: 0 };
 
 describe("company sidepane (console-rail US-007)", () => {
-  it("lists all 15 rows in the decided groups with Company settings in the footer", () => {
-    const model = companyPaneModel({ uid: "co_indigo", label: "Indigo", liveCount: 4 }, null, null);
+  // OWNER-R24: Groups and Grants sit under People, a Settings heading holds
+  // General, Brand and Billing, and there is no Company settings footer.
+  it("lists every row in the decided groups, Settings last, and no footer (OWNER-R24)", () => {
+    const model = companyPaneModel({ uid: "co_indigo", label: "Indigo", liveCount: 4 }, null, null, {}, true);
     const rows = flattenSections(model.sections);
     expect(rows.filter((i) => i.type === "section").map((i) => i.type === "section" && i.label)).toEqual([
       "People",
       "Brain",
       "Files and connect",
+      "Settings",
     ]);
     expect(rows.flatMap((i) => (i.type === "row" ? [i.row.label] : []))).toEqual([
       "Atlas", "Projects", "Activity", "Goals",
-      "Team", "Bots",
+      "Team", "Bots", "Groups", "Grants",
       "Knowledge", "Policies", "Skills", "Workers",
       "Vault", "Integrations", "Secrets", "Deployments",
+      "General", "Brand", "Billing",
     ]);
-    expect(model.footerRow?.label).toBe("Company settings");
-    expect(COMPANY_PANE_ROW_IDS).toHaveLength(15);
+    expect(model.footerRow).toBeNull();
+    expect(COMPANY_PANE_ROW_IDS).toHaveLength(19);
+  });
+
+  it("hides Grants and Billing from people who cannot open them (OWNER-R24)", () => {
+    const model = companyPaneModel({ uid: "co", label: "Indigo", liveCount: 0 }, null, null, {}, false);
+    const ids = model.sections.flatMap((s) => s.rows.map((r) => r.id));
+    expect(ids).not.toContain("grants");
+    expect(ids).not.toContain("billing");
+    expect(ids).toContain("groups");
+    expect(ids).toContain("general");
+    expect(ids).toContain("brand");
+  });
+
+  it("old Company settings routes redirect to the pane they pointed at (OWNER-R24)", () => {
+    expect(companyRowForPage("company-page-company-settings")).toBe("general");
+    expect(companyRowForPage("company-page-workforce")).toBe("billing");
+    expect(companyRowDestination("company-settings", "co")).toEqual({ kind: "extra", page: "company-page-general", companyUid: "co" });
   });
 
   it("fills row counts from the cached summary and the live count on Atlas", () => {
@@ -52,7 +72,7 @@ describe("company sidepane (console-rail US-007)", () => {
       expect(companyRowForPage(companyPageId(id))).toBe(id);
       const placeholder = companyPagePlaceholderForPage(companyPageId(id));
       expect(placeholder?.id).toBe(id);
-      expect(placeholder?.story).toMatch(/^US-\d{3}$/);
+      expect(placeholder?.story).toMatch(/^(US-\d{3}|OWNER-R24)$/);
     }
     expect(companyPagePlaceholderForPage("company-page-nope")).toBeNull();
     expect(companyRowForPage("rail-telemetry")).toBeNull();

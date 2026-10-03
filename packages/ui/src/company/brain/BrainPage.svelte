@@ -1,20 +1,26 @@
 <script lang="ts">
+  import ReadLoader from "../../common/ReadLoader.svelte";
   import RailButton from "../../common/button/RailButton.svelte";
-  import { withReadDeadline } from "../../common/read-deadline.js";
   import { dismissable } from "../../common/dismissable.js";
   /**
    * Company Brain (US-028): Knowledge, Policies, Skills, Workers.
-   * First frame is the cache or a shimmer. Refresh runs after paint.
+   * First frame is the cache or a loader. Refresh runs after paint.
    * Heavy enough to stay behind a lazy door.
    */
-  import type { AppShellApi, FilesApi, LibraryApi, SettingsApi, ShellApi } from "@hq/platform";
+  import type { AppShellApi, FilesApi, LibraryApi, PlatformAdapter, SettingsApi, ShellApi } from "@hq/platform";
   import { openAgentWorkflow } from "../agent-workflow.js";
   import { loadLibraryCompany } from "../../library/library.js";
   import type { DirEntry } from "../../files/file-tree.js";
   import ShowMoreRow from "../../shell/ShowMoreRow.svelte";
+  import VaultTree from "../../files/explorer/VaultTree.svelte";
+  import WorkerDetailPane from "./WorkerDetailPane.svelte";
+  import { workerStatusLabel } from "./worker-detail.js";
+  import type { TreeEntry, Vault } from "../../files/explorer/vault-model.js";
   import ListEmptyState from "../../common/ListEmptyState.svelte";
   import { publishCompanyPageCount } from "../../shell/company-page-counts.svelte.js";
   import { pageRows } from "../../shell/list-paging.js";
+  import type { AdapterPromise, Json } from "@hq/platform";
+  import { lastRunCell, mySkillUsage, runsCell, skillUsageRows, teamSkillUsage, type TeamSkillUsage } from "./skill-usage.js";
   import "../../home/tokens.css";
   import "../../common/button/rail-type.css";
   import "../../chat/chat-tokens.css";
@@ -22,6 +28,10 @@
     brainListView,
     emptyBrainCache,
     filterKnowledge,
+    freshKnowledge,
+    isConflictCopy,
+    knowledgeDirListing,
+    knowledgeTreeRoot,
     filterPolicies,
     filterSkills,
     filterWorkers,
@@ -39,7 +49,6 @@
     virtualWindow,
     workerCreatePrompt,
     workerRowFromLibrary,
-    workerRunPrompt,
     writeBrainCache,
     type BrainListLoad,
     type BrainPageId,
@@ -76,6 +85,16 @@
      */
     appShell?: Pick<AppShellApi, "setActiveCompany"> | null;
     onopenpage?: (rowId: string) => void;
+    /** OWNER-R12: the worker pane opens files in the Files preview, which reads through the adapter. */
+    adapter?: PlatformAdapter | null;
+    /**
+     * OWNER-R11: usage reads for the Skills Usage tab. `team` is hq-pro
+     * company telemetry (the web Activity read); `mine` is /v1/telemetry/me.
+     */
+    usage?: {
+      team?: ((slug: string, range: { from: string; to: string }) => AdapterPromise<Json>) | null;
+      mine?: ((from: string, to: string) => AdapterPromise<Json>) | null;
+    } | null;
   }
 
   let {
@@ -87,6 +106,8 @@
     settings,
     appShell = null,
     onopenpage,
+    usage = null,
+    adapter = null,
   }: Props = $props();
 
   let cache = $state(emptyBrainCache());
@@ -117,6 +138,54 @@
   }
   let shareOpen = $state(false);
 
+  // OWNER-R11: each read has its own state, so one failing never blanks the other.
+  type UsageRead<T> = { state: "idle" | "loading" | "ok" | "failed"; data: T | null };
+  let teamUsage = $state<UsageRead<Map<string, TeamSkillUsage>>>({ state: "idle", data: null });
+  let myUsage = $state<UsageRead<Map<string, number>>>({ state: "idle", data: null });
+  let usageNonce = $state(0);
+  const usageDays = { "7d": 7, "30d": 30, "90d": 90 } as const;
+  const isoDay = (ms: number) => new Date(ms).toISOString().split("T")[0]!;
+
+  async function readUsage<T>(
+    run: (() => AdapterPromise<Json>) | null,
+    parse: (body: unknown) => T,
+    set: (next: UsageRead<T>) => void,
+    alive: () => boolean,
+  ): Promise<void> {
+    if (!run) {
+      set({ state: "failed", data: null });
+      return;
+    }
+    set({ state: "loading", data: null });
+    try {
+      const res = await run();
+      if (!res.ok) throw new Error(res.message ?? res.reason);
+      const data = parse(res.value);
+      if (alive()) set({ state: "ok", data });
+    } catch (err) {
+      console.error("skill usage read failed:", err);
+      if (alive()) set({ state: "failed", data: null });
+    }
+  }
+
+  // The Usage tab and the skill detail both show usage; read once either is open.
+  const wantUsage = $derived(page === "skills" && (skillTab === "usage" || selected !== null));
+  $effect(() => {
+    if (!wantUsage) return;
+    const activeSlug = slug;
+    const activeRange = usageRange;
+    void usageNonce;
+    const now = Date.now();
+    const from = isoDay(now - (usageDays[activeRange] - 1) * 86_400_000);
+    const to = isoDay(now);
+    const alive = () => slug === activeSlug && usageRange === activeRange;
+    const team = usage?.team ?? null;
+    const mine = usage?.mine ?? null;
+    void readUsage(team && activeSlug ? () => team(activeSlug, { from, to }) : null, teamSkillUsage, (n) => (teamUsage = n), alive);
+    void readUsage(mine ? () => mine(from, to) : null, mySkillUsage, (n) => (myUsage = n), alive);
+  });
+
+
   let policyDraft = $state<PolicyDraft>({
     title: "",
     enforcement: "hard",
@@ -143,6 +212,32 @@
   let pickerQuery = $state("");
 
   const knowledgeRows = $derived(filterKnowledge(cache.knowledge, query));
+  // OWNER-R10: Browse tree is the Files tree, fed from the knowledge paths
+  // already read; What's fresh is the flat list, most recently changed first.
+  const freshRows = $derived(freshKnowledge(knowledgeRows));
+  const knowledgeVault = $derived<Vault>({
+    id: `knowledge:${slug}`,
+    kind: "company",
+    label: "Knowledge",
+    root: knowledgeTreeRoot(slug),
+    slug,
+  });
+  const knowledgePaths = $derived(knowledgeRows.map((row) => row.path));
+  // A new search or a new read rebuilds the tree; switching tabs does not.
+  const treeKey = $derived(`${query.trim()}|${cache.knowledge.length}`);
+  let treeReload = $state(0);
+  let lastTreeKey = "";
+  $effect(() => {
+    const key = treeKey;
+    if (key !== lastTreeKey) {
+      lastTreeKey = key;
+      treeReload += 1;
+    }
+  });
+  async function listKnowledgeDir(dir: string) {
+    return { ok: true as const, value: knowledgeDirListing(knowledgePaths, dir) };
+  }
+  const conflictNote = (entry: TreeEntry) => (!entry.isDir && isConflictCopy(entry.name) ? "conflict copy" : null);
   const policyRows = $derived(filterPolicies(cache.policies, policyFilter, query));
   const skillRows = $derived(filterSkills(cache.skills, skillFilter, query));
   const workerRows = $derived(filterWorkers(cache.workers, workerScope, workerFilter, query));
@@ -175,6 +270,8 @@
   // QA-102: the inspector reads the filtered rows, so a search or filter that
   // hides the selection never leaves its detail and actions on screen.
   const selectedSkill = $derived(inspectedRow(skillRows, selected));
+  const usageRows = $derived(skillUsageRows(skillRows, teamUsage.data, myUsage.data));
+  const selectedUsage = $derived(selectedSkill ? skillUsageRows([selectedSkill], teamUsage.data, myUsage.data)[0] : null);
   const selectedWorker = $derived(inspectedRow(workerRows, selected));
   const selectedPolicy = $derived(inspectedRow(policyRows, selected));
   const selectedFile = $derived(inspectedRow(knowledgeRows, selected));
@@ -224,8 +321,7 @@
       phase = "shimmer";
     }
     let live = true;
-    // BLANK-1: a read that never answers falls to the failed-read state.
-    void withReadDeadline(refresh(key), "company files")
+    void refresh(key)
       .catch((err) => {
         console.warn("[brain] company files read did not finish", err);
         if (!live || slug !== key) return;
@@ -244,11 +340,15 @@
 
   async function refresh(key: string): Promise<void> {
     const next = readBrainCache(key) ?? emptyBrainCache();
-    if (files && key) {
-      if (appShell) {
-        const bound = await appShell.setActiveCompany(key);
-        if (!bound.ok) console.warn("[brain] could not bind company scope", bound.message);
-      }
+    if (files && key && appShell) {
+      const bound = await appShell.setActiveCompany(key);
+      if (!bound.ok) console.warn("[brain] could not bind company scope", bound.message);
+    }
+    // The file lists and the library read are independent; run them side by
+    // side so a slow read does not make Skills and Workers wait on Knowledge
+    // and Policies (BLANK-3: under slow reads the data renders when it lands).
+    const readFiles = async (): Promise<void> => {
+      if (!files || !key) return;
       const [knowledge, policies] = await Promise.all([
         readKnowledge(files, `companies/${key}/knowledge`),
         readPolicies(files, `companies/${key}/policies`),
@@ -259,8 +359,9 @@
       }
       next.knowledge = knowledge ?? next.knowledge;
       next.policies = policies ?? next.policies;
-    }
-    if (library && key) {
+    };
+    const readLibrary = async (): Promise<void> => {
+      if (!library || !key) return;
       const result = await loadLibraryCompany(library, key);
       if (result.ok) {
         next.skills = result.value.skills.map((skill) => skillRowFromLibrary(skill, key));
@@ -272,7 +373,8 @@
           failedLists = [...failedLists, "skills", "workers"];
         }
       }
-    }
+    };
+    await Promise.all([readFiles(), readLibrary()]);
     writeBrainCache(key, next);
     if (slug === key) cache = next;
   }
@@ -311,16 +413,17 @@
       return depth === 0 ? null : [];
     }
     const entries = res.value as unknown as DirEntry[];
-    const filesOut: string[] = [];
-    for (const entry of entries) {
-      if (!entry || typeof entry.path !== "string" || typeof entry.name !== "string") continue;
-      if (!keep(entry.name, entry.isDir)) continue;
-      if (entry.isDir) filesOut.push(...((await collectFiles(api, entry.path, depth + 1, keep)) ?? []));
-      else if (entry.name.endsWith(".md") || entry.name.endsWith(".yaml") || entry.name.endsWith(".yml")) {
-        filesOut.push(entry.path);
-      }
-    }
-    return filesOut;
+    // Subfolders are listed side by side; the result keeps listing order.
+    const parts = await Promise.all(
+      entries.map(async (entry): Promise<string[]> => {
+        if (!entry || typeof entry.path !== "string" || typeof entry.name !== "string") return [];
+        if (!keep(entry.name, entry.isDir)) return [];
+        if (entry.isDir) return (await collectFiles(api, entry.path, depth + 1, keep)) ?? [];
+        if (entry.name.endsWith(".md") || entry.name.endsWith(".yaml") || entry.name.endsWith(".yml")) return [entry.path];
+        return [];
+      }),
+    );
+    return parts.flat();
   }
 
   async function runPrompt(prompt: string, label: string): Promise<void> {
@@ -405,28 +508,28 @@
   <header class="toolbar">
     <h1>{title}</h1>
     {#if page === "policies"}
-      <!-- BLANK-2: counts wait for a read that succeeded. -->
-      {#if !listReadFailed}<span class="meta-line" data-meta-line>{policyGroups.hard.length} hard · {policyGroups.soft.length} soft</span>{/if}
+      <!-- BLANK-2: counts wait for a read that succeeded (BLANK-3: not while loading). -->
+      {#if !listReadFailed && listView.body !== "skeleton"}<span class="meta-line" data-meta-line>{policyGroups.hard.length} hard · {policyGroups.soft.length} soft</span>{/if}
       <div class="tabs" role="tablist">
         {#each ["all", "hard", "soft"] as id (id)}
           <button type="button" role="tab" class="tab" aria-selected={policyFilter === id} onclick={() => (policyFilter = id as PolicyFilter)}>{id === "all" ? "All" : id === "hard" ? "Hard" : "Soft"}</button>
         {/each}
       </div>
     {:else if page === "skills"}
-      {#if listView.count !== null && !listReadFailed}<span class="meta-line" data-meta-line>{listView.count} skills</span>{/if}
+      {#if listView.count !== null && !listReadFailed && listView.body !== "skeleton"}<span class="meta-line" data-meta-line>{listView.count} skills</span>{/if}
       <div class="tabs" role="tablist">
         <button type="button" role="tab" class="tab" aria-selected={skillTab === "library"} onclick={() => (skillTab = "library")}>Library</button>
         <button type="button" role="tab" class="tab" aria-selected={skillTab === "usage"} onclick={() => (skillTab = "usage")}>Usage</button>
       </div>
     {:else if page === "workers"}
-      {#if !listReadFailed}<span class="meta-line" data-meta-line data-testid="brain-worker-count">{workerRows.length} workers</span>{/if}
+      {#if !listReadFailed && listView.body !== "skeleton"}<span class="meta-line" data-meta-line data-testid="brain-worker-count">{workerRows.length} workers</span>{/if}
       <div class="tabs" role="tablist">
         {#each [["all", "All"], ["company", "Company"], ["personal", "Personal overlay"]] as [id, label] (id)}
           <button type="button" role="tab" class="tab" aria-selected={workerScope === id} onclick={() => (workerScope = id as WorkerScopeFilter)}>{label}</button>
         {/each}
       </div>
     {:else}
-      {#if listView.count !== null && !listReadFailed}<span class="meta-line" data-meta-line data-testid="brain-knowledge-count">{listView.count} {listView.count === 1 ? "file" : "files"}</span>{/if}
+      {#if listView.count !== null && !listReadFailed && listView.body !== "skeleton"}<span class="meta-line" data-meta-line data-testid="brain-knowledge-count">{listView.count} {listView.count === 1 ? "file" : "files"}</span>{/if}
       <div class="tabs" role="tablist">
         <button type="button" role="tab" class="tab" aria-selected={lens === "fresh"} onclick={() => (lens = "fresh")}>What's fresh</button>
         <button type="button" role="tab" class="tab" aria-selected={lens === "tree"} onclick={() => (lens = "tree")}>Browse tree</button>
@@ -447,9 +550,9 @@
   </header>
 
   {#if listView.body === "skeleton"}
-    <div class="shimmer" data-testid="brain-shimmer" aria-busy="true">
-      <div class="bar"></div><div class="bar"></div><div class="bar short"></div>
+    <div class="loading" data-testid="brain-loading" aria-busy="true">
       <p class="reading" role="status">Reading {listNoun[1]}…</p>
+      <ReadLoader testid="brain-loader" onretry={() => (readAttempt += 1)} />
     </div>
   {:else if page === "skills" && skillTab === "usage"}
     <div class="usage" data-testid="skills-usage">
@@ -458,18 +561,28 @@
           <button type="button" role="tab" class="tab" aria-selected={usageRange === range} onclick={() => (usageRange = range as typeof usageRange)}>{range}</button>
         {/each}
         <span class="grow"></span>
-        <span class="meta">Sort · runs</span>
+        <span class="meta">Sort · team runs</span>
       </div>
-      <div class="head usage-grid"><span>Skill</span><span>Runs</span><span>Last run</span></div>
-      {#each pageRows(skillRows, pages).rows as row (row.path)}
-        <div class="row usage-grid">
+      {#if teamUsage.state === "failed"}
+        <p class="note" data-testid="skills-usage-team-failed">Team runs could not be read. Only company owners and admins can see them. <button type="button" class="link" onclick={() => (usageNonce += 1)}>Try again</button></p>
+      {/if}
+      {#if myUsage.state === "failed"}
+        <p class="note" data-testid="skills-usage-mine-failed">Your runs could not be read. <button type="button" class="link" onclick={() => (usageNonce += 1)}>Try again</button></p>
+      {/if}
+      <div class="head usage-grid">
+        <span>Skill</span><span>Team runs</span><span title="Across all of your companies">Your runs (all companies)</span><span>People</span><span title="The day of the latest run; the read does not say who ran it">Last run (date)</span>
+      </div>
+      {#each pageRows(usageRows, pages).rows as row (row.path)}
+        <div class="row usage-grid" data-testid="skills-usage-row">
           <span class="name">{row.name}</span>
-          <span class="meta">{row.runs}</span>
-          <span class="meta">{row.lastRun || "No runs in this window"}</span>
+          <span class="meta">{teamUsage.state === "loading" ? "…" : runsCell(row.teamRuns)}</span>
+          <span class="meta">{myUsage.state === "loading" ? "…" : runsCell(row.yourRuns)}</span>
+          <span class="meta">{teamUsage.state === "loading" ? "…" : runsCell(row.people)}</span>
+          <span class="meta">{teamUsage.state === "loading" ? "…" : lastRunCell(row.lastDay)}</span>
         </div>
       {/each}
       {#if skillRows.length === 0}
-        <p class="empty">No skill runs in this window yet. Usage fills in from the library listing.</p>
+        <p class="empty">No skills in this company yet.</p>
       {/if}
     </div>
   {:else}
@@ -488,15 +601,31 @@
               {/each}
             {/if}
           {/each}
-        {:else if page === "knowledge" && lens === "fresh"}
-          <div class="sec">Recent</div>
-          {#each pageRows(knowledgeRows, pages).rows as row (row.path)}
-            <button type="button" class="item" aria-current={selectedFile?.path === row.path} onclick={() => (selected = row.path)}>
-              <span class="name">{row.title}</span>
-              {#if row.mark}<span class="badge" class:hard={row.mark === "new"}>{row.mark}</span>{/if}
-              <span class="meta">{row.path}</span>
-            </button>
-          {/each}
+        {:else if page === "knowledge"}
+          <!-- Kept mounted on What's fresh so the tree's open folders survive a tab switch. -->
+          <div class="ktree" hidden={lens !== "tree"} data-testid="brain-knowledge-tree">
+            <VaultTree
+              vault={knowledgeVault}
+              listDir={listKnowledgeDir}
+              activePath={selectedFile?.path ?? null}
+              showSystem={false}
+              reloadKey={treeReload}
+              revealAll={query.trim() !== ""}
+              noteFor={conflictNote}
+              onopen={(path) => (selected = path)}
+            />
+          </div>
+          {#if lens === "fresh"}
+            <div class="sec">Recent</div>
+            {#each pageRows(freshRows, pages).rows as row (row.path)}
+              <button type="button" class="item" aria-current={selectedFile?.path === row.path} onclick={() => (selected = row.path)} data-testid="brain-fresh-row">
+                <span class="name">{row.title}</span>
+                {#if row.mark}<span class="badge" class:hard={row.mark === "new"}>{row.mark}</span>{/if}
+                {#if isConflictCopy(row.name)}<span class="meta">conflict copy</span>{/if}
+                {#if row.changed}<span class="meta" data-testid="brain-fresh-changed">{row.changed}</span>{/if}
+              </button>
+            {/each}
+          {/if}
         {:else}
           <div style:height={`${windowed.padTop}px`}></div>
           {#each slice as row (page === "skills" ? (row as unknown as SkillRow).path : page === "workers" ? (row as unknown as WorkerRow).path : (row as unknown as KnowledgeFile).path)}
@@ -512,7 +641,7 @@
               <button type="button" class="item" class:muted={worker.parked} aria-current={selectedWorker?.path === worker.path} onclick={() => (selected = worker.path)} data-testid="worker-row">
                 <span class="name">{worker.name}</span>
                 <span class="meta">{worker.description}</span>
-                <span class="meta" class:live={worker.live}>{worker.live ? "Live" : worker.lastRun || worker.scope}</span>
+                <span class="meta" class:live={worker.live} data-testid="worker-row-status">{worker.live ? "Live" : workerStatusLabel(worker.status)}</span>
               </button>
             {:else}
               {@const file = row as KnowledgeFile}
@@ -524,7 +653,7 @@
           {/each}
           <div style:height={`${windowed.padBottom}px`}></div>
         {/if}
-        {#if page !== "policies" && listPage.remaining > 0}
+        {#if page !== "policies" && !(page === "knowledge" && lens === "tree") && listPage.remaining > 0}
           <ShowMoreRow shown={listPage.rows.length} total={listPage.total} next={listPage.next} noun={title.toLowerCase()} testid="brain-show-more" onmore={() => (pages += 1)} />
         {/if}
         {#if listReadFailed}
@@ -549,31 +678,31 @@
           <h2>{selectedSkill.name}</h2>
           <p class="path">{selectedSkill.path}</p>
           <p>{selectedSkill.description}</p>
+          {#if usage && selectedUsage}
+            <dl class="skill-usage" data-testid="skill-usage-block">
+              <div><dt>Team runs</dt><dd>{runsCell(selectedUsage.teamRuns)}</dd></div>
+              <div><dt>Your runs</dt><dd>{runsCell(selectedUsage.yourRuns)}</dd></div>
+              <div><dt>People</dt><dd>{runsCell(selectedUsage.people)}</dd></div>
+              <div><dt>Last run</dt><dd>{lastRunCell(selectedUsage.lastDay)}</dd></div>
+            </dl>
+          {/if}
           <div class="actions">
             <RailButton icon="play" variant="primary" data-testid="skill-run" onclick={() => runPrompt(skillRunPrompt(selectedSkill.name), selectedSkill.name)}>Run</RailButton>
             <RailButton icon="claude-code" onclick={() => openInClaude(selectedSkill.path)}>Open in Claude Code</RailButton>
             <RailButton icon="link" onclick={() => (shareOpen = true)}>Share</RailButton>
           </div>
         {:else if page === "workers" && selectedWorker}
-          <div class="detail-head">
-            <h2>{selectedWorker.name}</h2>
-            <button type="button" class="icon-btn" onclick={() => (sheet = "picker")}>⋯</button>
-            <button type="button" class="icon-btn" onclick={() => (selected = null)} aria-label="Close">✕</button>
-          </div>
-          <p class="kind">{selectedWorker.scope}</p>
-          <p class="path">{selectedWorker.path}</p>
-          <p>{selectedWorker.description}</p>
-          <div class="actions">
-            <RailButton icon="play" variant="primary" data-testid="worker-run" onclick={() => runPrompt(workerRunPrompt(selectedWorker.id), selectedWorker.name)}>Run</RailButton>
-            <RailButton icon="claude-code" onclick={() => openInClaude(selectedWorker.path)}>Open in Claude Code</RailButton>
-            <RailButton icon="pencil" onclick={() => openPath(selectedWorker.path)}>Edit worker.yaml</RailButton>
-          </div>
-          {#each selectedWorker.skills as name (name)}
-            <div class="sub">
-              <span>{name}</span>
-              <RailButton icon="play" onclick={() => runPrompt(skillRunPrompt(name), name)}>Run</RailButton>
-            </div>
-          {/each}
+          <WorkerDetailPane
+            worker={selectedWorker}
+            {slug}
+            {files}
+            {adapter}
+            onrun={(prompt, label) => void runPrompt(prompt, label)}
+            onopenclaude={(path) => void openInClaude(path)}
+            onedit={(path) => void openPath(path)}
+            onclose={() => (selected = null)}
+            onmore={() => (sheet = "picker")}
+          />
         {:else if page === "policies" && selectedPolicy}
           <p class="path">{selectedPolicy.path}</p>
           <h2>{selectedPolicy.title}</h2>
@@ -776,6 +905,8 @@
   }
   .split { display: grid; grid-template-columns: minmax(280px, 1fr) 380px; flex: 1; min-height: 0; }
   .list, .detail { min-height: 0; overflow: auto; }
+  .ktree { height: 100%; min-height: 240px; }
+  .ktree[hidden] { display: none; }
   .list { padding: 12px 12px 24px; }
   .detail {
     border-left: 1px solid var(--line, var(--v4-rowline));
@@ -809,20 +940,15 @@
   .body { white-space: pre-wrap; color: var(--t2, var(--v4-text-2)); line-height: 1.45; margin-top: 12px; }
   .gate { padding: 10px 12px; border-radius: 8px; background: var(--raised, var(--v4-control-faint)); color: var(--t2, var(--v4-text-2)); }
   .usage { padding: 12px 20px; overflow: auto; }
-  .usage-grid { display: grid; grid-template-columns: 1fr 80px 180px; gap: 12px; padding: 8px; }
+  .usage-grid { display: grid; grid-template-columns: minmax(0, 1fr) 80px 120px 64px 110px; gap: 12px; padding: 8px; }
+  .note { margin: 4px 8px; color: var(--v4-text-2, inherit); }
+  .link { background: none; border: 0; padding: 0; color: inherit; text-decoration: underline; cursor: pointer; font: inherit; min-height: 28px; }
+  .skill-usage { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 12px; margin: 8px 0; }
+  .skill-usage dt { color: var(--v4-text-2, inherit); }
+  .skill-usage dd { margin: 0; }
   .head { color: var(--t3, var(--v4-text-3)); border-bottom: 1px solid var(--line, var(--v4-rowline)); }
-  .shimmer { padding: 20px; display: grid; gap: 8px; }
-  .bar {
-    height: 14px;
-    border-radius: 6px;
-    background: linear-gradient(90deg, var(--v4-hover), var(--v4-control-faint), var(--v4-hover));
-    background-size: 200% 100%;
-    animation: shine 1.2s linear infinite;
-  }
-  .bar.short { width: 40%; }
+  .loading { padding: 20px; display: grid; gap: 8px; }
   .reading { margin: 4px 0 0; color: var(--t3, var(--v4-text-3)); }
-  @media (prefers-reduced-motion: reduce) { .bar { animation: none; } }
-  @keyframes shine { from { background-position: 100% 0; } to { background-position: -100% 0; } }
   .scrim { position: absolute; inset: 0; background: var(--v4-scrim, rgba(0, 0, 0, 0.35)); }
   .sheet {
     position: absolute;
@@ -851,7 +977,6 @@
     padding: 4px 8px;
   }
   .opt { text-align: left; padding: 6px 8px; border-color: var(--line2, var(--v4-control-border)); }
-  .sub { display: flex; justify-content: space-between; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--v4-rowline); }
   .brain { position: relative; }
   .load-error { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
   .load-error p { margin: 0; }

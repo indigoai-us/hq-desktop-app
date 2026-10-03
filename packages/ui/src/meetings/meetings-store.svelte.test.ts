@@ -20,6 +20,7 @@ import {
   configureMeetingsApi,
   meetingsStore,
   prefetchMeetings,
+  setRecordedListRetryDelaysForTests,
   startMeetingsStore,
   stopMeetingsStore,
 } from "./meetings-store.svelte";
@@ -166,6 +167,7 @@ beforeEach(() => {
   meetingsStore.stopCalendarConnectWatch();
   meetingsStore.clearConnectNotice();
   localStorage.removeItem(SETTINGS_PREFS_KEY);
+  setRecordedListRetryDelaysForTests([0, 0]);
   wireApi();
 });
 
@@ -1459,6 +1461,88 @@ describe("meetings store recorded history", () => {
     await meetingsStore.refresh();
 
     expect(meetingsStore.recorded.map((m) => m.meetingId)).toEqual([indigoRow.meetingId]);
-    expect(meetingsStore.recordedError).toBe("Some past meetings could not load.");
+    // OWNER-R1: a 500 is retried quietly first; the line follows the last retry.
+    await vi.waitFor(() => expect(meetingsStore.recordedError).toBe("Some past meetings could not load."));
+  });
+
+  /**
+   * OWNER-R1, from the per-scope reads on 2026-10-03 with the owner's
+   * session: 20 active memberships; 19 lists answered 200 (most with no
+   * meetings); one membership points at a company hq-pro no longer has and
+   * answers 422 company-not-found on every read. The app logged 41 list
+   * network failures that day (15 s bound) and showed "Some past meetings
+   * could not load." on every open.
+   */
+  describe("sources that are not available to this person (OWNER-R1)", () => {
+    const memberships = [
+      { companyUid: "cmp_indigo", companyName: "Indigo", status: "active" },
+      { companyUid: "cmp_empty", companyName: "Empty", status: "active" },
+      { companyUid: "cmp_removed", companyName: "Removed", status: "active" },
+    ];
+
+    it("a company that no longer exists is skipped with no line, and is not asked again", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      call.mockImplementation((method: string, payload?: unknown) => {
+        if (method === "listMemberships") return Promise.resolve(ok(memberships));
+        if (method === "listScheduledBots") return Promise.resolve(ok(ownBots));
+        if (method === "listRecorded") {
+          if (payload === "cmp_removed") return Promise.resolve(failure("company-not-found", "Company entity not found"));
+          return Promise.resolve(ok({ meetings: payload === "cmp_indigo" ? [indigoRow] : payload === "cmp_empty" ? [] : [personalRow] }));
+        }
+        return Promise.resolve(ok([]));
+      });
+
+      await meetingsStore.refresh();
+      expect(meetingsStore.recordedError).toBe("");
+      expect(meetingsStore.recorded).toHaveLength(2);
+      expect(warn.mock.calls.some(([m]) => String(m).includes("cmp_removed"))).toBe(true);
+
+      await meetingsStore.refresh();
+      const removedReads = call.mock.calls.filter(([m, p]) => m === "listRecorded" && p === "cmp_removed");
+      expect(removedReads).toHaveLength(1);
+      expect(meetingsStore.recordedError).toBe("");
+      warn.mockRestore();
+    });
+
+    it("a passing failure is retried quietly and the rows show with no line", async () => {
+      let indigoReads = 0;
+      call.mockImplementation((method: string, payload?: unknown) => {
+        if (method === "listMemberships") return Promise.resolve(ok(memberships.slice(0, 1)));
+        if (method === "listScheduledBots") return Promise.resolve(ok(ownBots));
+        if (method === "listRecorded") {
+          if (payload === "cmp_indigo" && ++indigoReads === 1) {
+            return Promise.resolve(failure("network", "Network error: operation timed out"));
+          }
+          return Promise.resolve(ok({ meetings: payload === "cmp_indigo" ? [indigoRow] : [personalRow] }));
+        }
+        return Promise.resolve(ok([]));
+      });
+
+      await meetingsStore.refresh();
+      expect(meetingsStore.recordedError).toBe("");
+      await vi.waitFor(() => expect(meetingsStore.recorded.map((m) => m.companyUid)).toContain("cmp_indigo"));
+      expect(indigoReads).toBe(2);
+      expect(meetingsStore.recordedError).toBe("");
+    });
+
+    it("a source that keeps failing after its retries shows the line, with the rows that loaded", async () => {
+      call.mockImplementation((method: string, payload?: unknown) => {
+        if (method === "listMemberships") return Promise.resolve(ok(memberships.slice(0, 1)));
+        if (method === "listScheduledBots") return Promise.resolve(ok(ownBots));
+        if (method === "listRecorded") {
+          return Promise.resolve(
+            payload === "cmp_indigo" ? failure("http-503", "Service Unavailable") : ok({ meetings: [personalRow] }),
+          );
+        }
+        return Promise.resolve(ok([]));
+      });
+
+      await meetingsStore.refresh();
+      expect(meetingsStore.recordedError).toBe("");
+      expect(meetingsStore.recorded.map((m) => m.meetingId)).toEqual([personalRow.meetingId]);
+      await vi.waitFor(() => expect(meetingsStore.recordedError).toBe("Some past meetings could not load."));
+      expect(call.mock.calls.filter(([m, p]) => m === "listRecorded" && p === "cmp_indigo")).toHaveLength(3);
+      expect(meetingsStore.recorded.map((m) => m.meetingId)).toEqual([personalRow.meetingId]);
+    });
   });
 });

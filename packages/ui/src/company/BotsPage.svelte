@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { withReadDeadline } from "../common/read-deadline.js";
+  import ReadLoader from "../common/ReadLoader.svelte";
+  import ListEmptyState from "../common/ListEmptyState.svelte";
   import RailButton from "../common/button/RailButton.svelte";
   /**
    * Company Bots page (console-rail US-027).
@@ -81,6 +82,9 @@
   }
 
   const rows = $derived(filterBots([...localRows(), ...cloud], filter));
+  // QA-106: the company total, so a filter that hides every bot can say so.
+  const totalBots = $derived(localRows().length + cloud.length);
+  const filteredOut = $derived(filter !== "all" && rows.length === 0 && totalBots > 0);
   // The sidepane Bots row shows this same total, before the filter (QA-014).
   $effect(() => {
     if (cloudPhase === "ready" && !cloudFailed) publishCompanyPageCount(companyUid, "bots", localRows().length + cloud.length);
@@ -104,8 +108,7 @@
     cloudFailed = false;
     cloudPhase = "shimmer";
     try {
-      // BLANK-1: a read that never answers falls to the failed-read state.
-      const result = await withReadDeadline(agents.listMobileRoster(companyUid), "cloud bots");
+      const result = await agents.listMobileRoster(companyUid);
       if (cancelled) return;
       if (result.ok) {
         cloud = cloudBotsFromRoster(result.value, { companies }).map((bot) => ({
@@ -176,9 +179,10 @@
       {/each}
     </div>
     <span class="grow"></span>
-    <!-- BLANK-2: no "0 bots" next to a failed read with nothing loaded. -->
-    {#if !(cloudFailed && rows.length === 0)}
-      <span class="meta-line" data-meta-line data-testid="bots-count">{rows.length === 1 ? "1 bot" : `${rows.length} bots`}</span>
+    <!-- BLANK-2: no "0 bots" next to a failed read with nothing loaded.
+         BLANK-3: nor while the first read is still loading. -->
+    {#if !(cloudFailed && rows.length === 0) && !(cloudPhase === "shimmer" && rows.length === 0)}
+      <span class="meta-line" data-meta-line data-testid="bots-count">{rows.length === totalBots ? (rows.length === 1 ? "1 bot" : `${rows.length} bots`) : `${rows.length} of ${totalBots} bots`}</span>
     {/if}
     <RailButton icon="plus" variant="primary" type="button" data-testid="bots-new" onclick={() => onaddbot?.()}>New bot</RailButton>
   </div>
@@ -194,10 +198,9 @@
   {:else}
     <div class="split">
       <div class="roster" role="list">
-        {#if cloudPhase === "shimmer" && rows.length === 0}
-          <div class="shimmer" data-testid="bots-shimmer" aria-hidden="true">
-            {#each [0, 1, 2] as i (i)}<div class="shimmer-row"><span class="sk sk-av"></span><span class="sk"></span></div>{/each}
-          </div>
+        {#if cloudPhase === "shimmer"}<ReadLoader testid="bots-loader" onretry={() => void loadCloud()} />{/if}
+        {#if filteredOut}
+          <ListEmptyState total={totalBots} shown={0} filtered noun={["bot", "bots"]} scope="in this company" clearLabel="Show all bots" onclear={() => (filter = "all")} testid="bots-filter-empty" />
         {/if}
         {#each page.rows as row (row.uid)}
           <button
@@ -245,7 +248,7 @@
               }}
             >
               {#snippet skeleton()}
-                <div class="profile-skeleton" data-testid="bot-profile-skeleton" aria-busy="true"></div>
+                <div class="profile-loading"><ReadLoader testid="bot-profile-loading" /></div>
               {/snippet}
             </LazyDoor>
           {/key}
@@ -328,7 +331,7 @@
   .sheet {
     width: 480px;
     max-width: calc(100% - 32px);
-    background: var(--panel-bg);
+    background: var(--overlay-bg, var(--panel-bg));
     border: 1px solid var(--panel-border);
     border-radius: 8px;
     box-shadow: var(--panel-shadow);
@@ -356,7 +359,7 @@
   .split { display: flex; min-height: 0; flex: 1; }
   .roster { flex: 1; min-width: 0; min-height: 0; overflow: auto; padding: 12px; display: flex; flex-direction: column; }
   .inspector { flex: 0 0 340px; width: 340px; min-height: 0; border-left: 1px solid var(--line); display: flex; flex-direction: column; }
-  .profile-skeleton { height: 100%; }
+  .profile-loading { height: 100%; padding: 12px; box-sizing: border-box; }
   .bot-row {
     display: grid;
     grid-template-columns: 20px minmax(120px, 2fr) 56px minmax(80px, 2fr) minmax(70px, 1fr);
@@ -391,7 +394,4 @@
   }
   .nm { color: var(--t1); }
   .state { display: inline-flex; align-items: center; gap: 6px; color: var(--t2); justify-content: flex-end; }
-  .shimmer-row { display: flex; align-items: center; gap: 8px; height: 31px; padding: 0 8px; }
-  .sk { display: inline-block; width: 160px; height: 10px; border-radius: 4px; background: var(--line); }
-  .sk-av { width: 20px; height: 20px; border-radius: 5px; }
 </style>

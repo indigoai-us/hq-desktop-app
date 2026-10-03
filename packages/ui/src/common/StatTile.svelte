@@ -1,4 +1,6 @@
 <script lang="ts">
+  import ReadLoader from "./ReadLoader.svelte";
+
   interface Props {
     label: string;
     value: string | number;
@@ -11,8 +13,8 @@
 
 <article class="stat-tile" aria-busy={loading}>
   {#if loading}
-    <span class="skeleton label-skeleton" aria-hidden="true"></span>
-    <span class="skeleton value-skeleton" aria-hidden="true"></span>
+    <span class="stat-label">{label}</span>
+    <ReadLoader testid="stat-tile-loading" />
   {:else}
     <span class="stat-label">{label}</span>
     <strong>{value}</strong>
@@ -64,44 +66,4 @@
     font-weight: 600;
   }
 
-  .skeleton {
-    display: block;
-    overflow: hidden;
-    border-radius: 999px;
-    background: linear-gradient(
-      90deg,
-      var(--v4-control-faint) 0%,
-      var(--v4-hairline) 46%,
-      var(--v4-control-faint) 100%
-    );
-    background-size: 180% 100%;
-    animation: skeleton-pulse 1100ms ease-in-out infinite;
-  }
-
-  .label-skeleton {
-    width: 72%;
-    height: 14px;
-  }
-
-  .value-skeleton {
-    width: 46%;
-    height: 28px;
-    margin-top: 4px;
-  }
-
-  @keyframes skeleton-pulse {
-    from {
-      background-position: 100% 0;
-    }
-
-    to {
-      background-position: 0 0;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .skeleton {
-      animation: none;
-    }
-  }
 </style>

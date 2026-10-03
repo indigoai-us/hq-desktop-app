@@ -301,6 +301,7 @@
   }
   .hint { font-size: 13px; color: var(--t3, var(--v4-text-3)); line-height: 1.4; margin: 6px 0 0; }
   .ta {
+    box-sizing: border-box;
     width: 100%;
     min-height: 60px;
     border: 1px solid var(--overlay-field-border);

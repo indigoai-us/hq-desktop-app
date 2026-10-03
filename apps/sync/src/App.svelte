@@ -935,7 +935,14 @@
         return;
       }
       if (action === 'open') {
-        await invoke('show_main_window');
+        // OWNER-R3: the body click opens Meetings in the HQ window, where the
+        // detected meeting has Start recording. Popover when it can't open.
+        try {
+          await invoke('open_desktop_alt_window', { route: bannerOpenRoute('meeting', data) ?? 'meetings' });
+        } catch (err) {
+          console.warn('[meetings] open Meetings from the banner failed', err);
+          await invoke('show_main_window');
+        }
         void invoke('meetings_clear_prompt_badge').catch(() => {});
         return;
       }
@@ -2230,7 +2237,7 @@
     margin: 0;
     padding: 8px 12px;
     border-radius: 8px;
-    background: var(--popover-surface, #17171b);
+    background: var(--popover-surface, #191919);
     color: var(--popover-text, #e0e0e0);
     font-size: 12px;
     text-align: center;

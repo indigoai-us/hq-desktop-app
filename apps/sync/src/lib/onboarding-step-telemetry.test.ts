@@ -361,6 +361,36 @@ describe('onboarding step telemetry', () => {
     expect(JSON.stringify(properties)).not.toContain('work.example');
   });
 
+  it('keeps only bounded company name-prefill status, never a suggested value', () => {
+    const properties = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-10-03T10:00:00.000Z',
+      properties: {
+        step: 'company',
+        action: 'completed',
+        namePrefill: 'offered_kept',
+        companyUid: 'cmp_test',
+        surface: 'desktop_installer',
+        platform: 'windows',
+      },
+    });
+    expect(properties.namePrefill).toBe('offered_kept');
+    expect(JSON.stringify(properties)).not.toContain('Acme');
+
+    const invalid = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-10-03T10:00:00.000Z',
+      properties: {
+        step: 'company',
+        action: 'completed',
+        namePrefill: 'Acme Corporation',
+        surface: 'desktop_installer',
+        platform: 'windows',
+      } as never,
+    });
+    expect(invalid).not.toHaveProperty('namePrefill');
+  });
+
   it('keeps an opaque setup run identifier across its events and changes it for a new run', async () => {
     const telemetry = createTelemetry({
       newSessionId: () => '11111111-1111-4111-8111-111111111111',

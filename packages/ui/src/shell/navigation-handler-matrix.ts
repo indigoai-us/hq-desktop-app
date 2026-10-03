@@ -89,7 +89,6 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   goBack: "replace",
   goForward: "replace",
   leaveCurrentDestination: "replace",
-  leaveLibrary: "replace",
   handleRecommendedUpdateNow: "none",
   applyFetchedTimeline: "none",
   openMemberProfile: "none",
@@ -338,7 +337,7 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
   {
     id: "open-library",
     file: SHARED_SHELL_FILE,
-    needle: "function openLibrary(next: LibraryTab = \"skills\")",
+    needle: "function openLibrary(next: LibraryTab = \"marketplace\")",
     destinationKind: "library",
     history: "push",
     host: "shared-shell",
@@ -558,7 +557,7 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
   {
     id: "titlebar-library",
     file: SHARED_SHELL_FILE,
-    needle: 'onopenLibrary={() => openLibrary("skills")}',
+    needle: 'onopenLibrary={() => openLibrary("marketplace")}',
     destinationKind: "library",
     history: "push",
     host: "shared-shell",
@@ -809,16 +808,6 @@ export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
     id: "library-overlay",
     file: SHARED_SHELL_FILE,
     needle: 'onnavigatetab={(next) => void navigate({ kind: "library", tab: next })}',
-    destinationKind: "library",
-    history: "push",
-    host: "shared-shell",
-    inScope: true,
-  },
-  {
-    id: "library-item-select",
-    file: SHARED_SHELL_FILE,
-    needle:
-      "void navigate({ kind: \"library\", tab: libraryTab, itemId: id })",
     destinationKind: "library",
     history: "push",
     host: "shared-shell",

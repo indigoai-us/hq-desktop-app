@@ -6,7 +6,7 @@
 
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { READ_DEADLINE_MS } from "../../common/read-deadline.js";
+import { expectPendingRead } from "../../common/read-loader.test-support.js";
 import BrainPage from "./BrainPage.svelte";
 
 let component: Record<string, unknown> | null = null;
@@ -19,9 +19,9 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-describe("BrainPage read deadline (BLANK-1)", () => {
+describe("BrainPage pending read (BLANK-3)", () => {
   it.each(["knowledge", "policies", "skills", "workers"] as const)(
-    "a %s read that never answers ends in the failed-read state",
+    "a %s read that never answers keeps loading with a waiting line and Try again, never a failed state",
     async (page) => {
       vi.useFakeTimers();
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -33,13 +33,8 @@ describe("BrainPage read deadline (BLANK-1)", () => {
         props: { page, slug: `blank-1-${page}`, files: files as never, library: library as never, shell: null, settings: null },
       });
       flushSync();
-      expect(document.querySelector("[data-testid='brain-shimmer']")).toBeTruthy();
-      await vi.advanceTimersByTimeAsync(READ_DEADLINE_MS + 10);
-      flushSync();
-      expect(document.querySelector("[data-testid='brain-shimmer']")).toBeNull();
-      expect(document.querySelector("[data-testid='brain-read-error']")?.textContent).toContain("Some company files could not be read.");
-      expect(document.querySelector("[data-testid='brain-retry']")).toBeTruthy();
-      expect(warn).toHaveBeenCalled();
+      expect(document.querySelector("[data-testid='brain-loading']")).toBeTruthy();
+      await expectPendingRead(document, "brain-loader");
       // BLANK-2: no zero count next to the failed read.
       expect(document.querySelector(".toolbar")?.textContent).not.toMatch(/\b0 (files|skills|workers|hard)\b/);
     },

@@ -1,8 +1,9 @@
 <script lang="ts">
   /**
-   * Rail mount for personal Deployments. Skeleton first, page chunk after.
+   * Rail mount for personal Deployments. Loader first, page chunk after.
    */
   import { onMount } from "svelte";
+  import ReadLoader from "../common/ReadLoader.svelte";
   import type { Component } from "svelte";
   import type { AdapterPromise, Json } from "@hq/platform";
   import type { Workspace } from "../chat/workspaces.js";
@@ -39,30 +40,13 @@
   {#if Page}
     <Page {accountId} {listDeployApps} {companies} {openExternal} {actions} />
   {:else}
-    <div class="skeleton" data-testid="personal-deployments-skeleton" aria-busy="true">
-      <aside><div class="bar"></div><div class="bar"></div></aside>
-      <main><div class="title"></div><div class="body"></div></main>
+    <div class="loading" aria-busy="true">
+      <ReadLoader testid="personal-deployments-loading" />
     </div>
   {/if}
 </div>
 
 <style>
   .host { height: 100%; min-height: 0; }
-  .skeleton {
-    display: grid;
-    grid-template-columns: 200px minmax(0, 1fr);
-    height: 100%;
-    gap: 16px;
-    padding: 16px;
-  }
-  .bar, .title, .body {
-    border-radius: 6px;
-    background: linear-gradient(90deg, var(--v4-control-faint), var(--v4-hover), var(--v4-control-faint));
-    background-size: 200% 100%;
-    animation: dep-skel 1.1s linear infinite;
-  }
-  .bar { height: 28px; margin-bottom: 8px; }
-  .title { height: 28px; width: 180px; }
-  .body { height: 120px; margin-top: 16px; }
-  @keyframes dep-skel { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+  .loading { padding: 8px; }
 </style>

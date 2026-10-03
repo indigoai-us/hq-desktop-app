@@ -2,15 +2,15 @@
   Company sidepane (console-rail US-007).
 
   Header: circle company mark, name, and the live count chip from the presence
-  snapshot. Body: the Console-aligned sections. Footer: Company settings,
-  pinned so it never scrolls. Row counts paint from the cached company summary
+  snapshot. Body: the Console-aligned sections, ending with Settings
+  (General, Brand, Billing) since OWNER-R24; there is no footer row. Row counts paint from the cached company summary
   and refresh in the background; nothing here blocks the first frame.
 -->
 <script lang="ts">
   import Sidepane from "./Sidepane.svelte";
+  import ReadLoader from "../common/ReadLoader.svelte";
   import SidepaneList from "./SidepaneList.svelte";
   import {
-    COMPANY_SETTINGS_ROW,
     atlasSidepaneModel,
     type SidepaneRosterEntry,
     type SidepaneScrollMemory,
@@ -34,10 +34,12 @@
     companyApi?: CompanyApi | null;
     /** Atlas (US-009): Live now and Idle rosters follow the sections. */
     roster?: readonly SidepaneRosterEntry[];
-    /** Atlas (US-009): names still loading; draw skeleton roster rows. */
+    /** Atlas (US-009): names still loading; show the loader under the roster label. */
     rosterLoading?: boolean;
     /** Atlas (US-013): roster person filtering the map; highlighted instead of Atlas. */
     rosterSelected?: string | null;
+    /** OWNER-R24: owner or admin; false hides Grants and Billing. */
+    canManage?: boolean;
   }
 
   let {
@@ -49,6 +51,7 @@
     roster = [],
     rosterLoading = false,
     rosterSelected = null,
+    canManage = false,
   }: Props = $props();
 
   // Same wiring the old company Overview did, minus the poller: counts load once per
@@ -87,6 +90,7 @@
       summary.summary,
       selectedId,
       { ...storeCounts, ...companyPageCounts(company.slug, company.uid) },
+      canManage,
     );
     if (!atlasActive || rosterLoading) return base;
     // Same pane key either way, so landing on Atlas keeps scroll memory.
@@ -122,29 +126,15 @@
       </span>
     </div>
   {/snippet}
-  {#snippet footer()}
-    <button
-      type="button"
-      class="footer-row"
-      class:is-selected={selectedId === COMPANY_SETTINGS_ROW.id}
-      aria-current={selectedId === COMPANY_SETTINGS_ROW.id ? "page" : undefined}
-      data-testid="company-sidepane-settings"
-      onclick={() => onselect?.(COMPANY_SETTINGS_ROW.id)}
-    >
-      {COMPANY_SETTINGS_ROW.label}
-    </button>
-  {/snippet}
   <SidepaneList
     sections={model.sections}
     selectedId={model.selectedId}
     onselect={(row) => onselect?.(row.id)}
   />
   {#if atlasActive && rosterLoading}
-    <div class="roster-skeleton" data-testid="company-sidepane-roster-skeleton" aria-hidden="true">
-      <div class="sk-label">People</div>
-      {#each [78, 64, 58, 84, 60, 70] as width, i (i)}
-        <div class="sk-row"><span class="sk sk-mark"></span><span class="sk" style:width={`${width}px`}></span></div>
-      {/each}
+    <div class="roster-loading">
+      <div class="roster-label">People</div>
+      <ReadLoader testid="company-sidepane-roster-loading" />
     </div>
   {/if}
 </Sidepane>
@@ -208,7 +198,7 @@
     background: var(--ok);
   }
 
-  .sk-label {
+  .roster-label {
     height: 30px;
     box-sizing: border-box;
     padding: 12px 8px 4px;
@@ -219,73 +209,7 @@
     text-transform: uppercase;
   }
 
-  .sk-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    height: 31px;
-    padding: 0 8px;
-  }
 
-  .sk {
-    display: inline-block;
-    height: 10px;
-    border-radius: 4px;
-    background: var(--line);
-    animation: sidepane-sk 1.8s ease-in-out infinite;
-  }
 
-  .sk-mark {
-    flex: none;
-    width: 16px;
-    height: 16px;
-    border-radius: 50%;
-  }
 
-  @keyframes sidepane-sk {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.45;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .sk {
-      animation: none;
-    }
-  }
-
-  .footer-row {
-    display: flex;
-    align-items: center;
-    width: 100%;
-    height: 31px;
-    box-sizing: border-box;
-    padding: 7px 8px;
-    border: 0;
-    border-radius: 8px;
-    background: transparent;
-    color: var(--t1);
-    font: inherit;
-    font-size: 13px;
-    line-height: 17px;
-    text-align: left;
-    cursor: pointer;
-  }
-
-  .footer-row:hover {
-    background: var(--hover);
-  }
-
-  .footer-row.is-selected {
-    background: var(--sel);
-  }
-
-  .footer-row:focus-visible {
-    outline: 1px solid var(--line2);
-    outline-offset: -1px;
-  }
 </style>

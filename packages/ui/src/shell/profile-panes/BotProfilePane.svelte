@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ReadLoader from "../../common/ReadLoader.svelte";
   import CompanyLabel from "../../company/CompanyLabel.svelte";
   /**
    * 340 px bot profile. Follows the Messages profile pane rhythm
@@ -94,11 +95,8 @@
     <button type="button" class="icon" data-testid="bot-profile-close" aria-label="Close profile" onclick={() => onclose?.()}>×</button>
   </header>
   {#if phase === "shimmer" || !snapshot}
-    <div class="body" data-testid="bot-profile-shimmer" aria-busy="true">
-      <div class="shimmer id"></div>
-      <div class="shimmer row"></div>
-      <div class="shimmer row"></div>
-      <div class="shimmer block"></div>
+    <div class="body" aria-busy="true">
+      <ReadLoader testid="bot-profile-loading" />
     </div>
   {:else}
     <div class="body">
@@ -190,7 +188,7 @@
         <section class="g" data-testid="bot-profile-usage" data-state={usage.status}>
           <div class="k">Bot · 30d usage</div>
           {#if usage.status === "loading"}
-            <div class="shimmer row" aria-busy="true"></div>
+            <ReadLoader testid="bot-profile-usage-loading" />
           {:else if usage.status === "unavailable"}
             <div class="m">{usage.message ?? "Not available yet."}</div>
           {:else}
@@ -336,8 +334,4 @@
   .err { margin: 0; color: var(--v4-error); }
   .spark { display: flex; align-items: flex-end; gap: 2px; height: 28px; margin-top: 8px; }
   .spark i { flex: 1; min-width: 2px; border-radius: 1px; background: var(--v4-control-bg); }
-  .shimmer { border-radius: 6px; background: var(--v4-control-faint, var(--line)); }
-  .shimmer.id { height: 44px; }
-  .shimmer.row { height: 14px; }
-  .shimmer.block { height: 72px; }
 </style>

@@ -18,7 +18,9 @@
     zoomAt,
     type AtlasPlaced,
     type AtlasRegion,
+    type AtlasScreenLabel,
     type AtlasView,
+    ATLAS_TYPE_TINT,
   } from "./atlas-layout.js";
 
   interface Props {
@@ -94,11 +96,48 @@
     // Fallback is a generous per-character width so estimates never under-count.
     return Math.ceil(measured && measured > 0 ? measured : text.length * ATLAS_LABEL_PX * 0.62);
   }
+  // QA-109: the legend, help text and zoom controls are fixed over the map, so
+  // their boxes (in map screen space) are reserved like section names: no item
+  // label or section name is drawn under them at any zoom.
+  let legendEl = $state<HTMLElement | null>(null);
+  let toolsEl = $state<HTMLElement | null>(null);
+  let fixedBoxes = $state<AtlasScreenLabel["box"][]>([]);
+  function measureFixed(): void {
+    const origin = svgEl?.getBoundingClientRect();
+    if (!origin) return;
+    const next: AtlasScreenLabel["box"][] = [];
+    for (const el of [legendEl, toolsEl]) {
+      const r = el?.getBoundingClientRect();
+      if (!r || r.width === 0 || r.height === 0) continue;
+      next.push({ left: r.left - origin.left, top: r.top - origin.top, right: r.right - origin.left, bottom: r.bottom - origin.top });
+    }
+    fixedBoxes = next;
+  }
+  $effect(() => {
+    void nothingActive;
+    void mapWidth;
+    void mapHeight;
+    if (!legendEl || typeof ResizeObserver === "undefined") {
+      measureFixed();
+      return;
+    }
+    const observer = new ResizeObserver(() => measureFixed());
+    observer.observe(legendEl);
+    if (toolsEl) observer.observe(toolsEl);
+    measureFixed();
+    return () => observer.disconnect();
+  });
+  const meets = (a: AtlasScreenLabel["box"], b: AtlasScreenLabel["box"]) =>
+    a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
   const districts = $derived(atlasDistrictShapes(placed, regions));
-  const districtLabels = $derived(districts.map((d) => atlasDistrictLabel(d, view, measureLabel)));
+  const districtLabels = $derived(
+    districts
+      .map((d) => atlasDistrictLabel(d, view, measureLabel))
+      .filter((d) => !fixedBoxes.some((f) => meets(d.box, f))),
+  );
   const labels = $derived(
     atlasScreenLabels({
-      reserved: districtLabels.map((d) => d.box),
+      reserved: [...fixedBoxes, ...districtLabels.map((d) => d.box)],
       placed,
       selected,
       hovered,
@@ -121,7 +160,7 @@
 
   export function frame(): void {
     const box = svgEl?.getBoundingClientRect();
-    onview(frameAll(placed, box?.width ?? 800, box?.height ?? 560));
+    onview(frameAll([...placed, ...districts], box?.width ?? 800, box?.height ?? 560));
   }
 
   /**
@@ -217,7 +256,7 @@
           cx={district.x}
           cy={district.y}
           r={district.r}
-          vector-effect="non-scaling-stroke"
+          style:--c={ATLAS_TYPE_TINT[district.type]}
         />
       {/each}
       {#each shownEdges as edge (`${edge.kind}:${edge.source}>${edge.target}`)}
@@ -244,6 +283,7 @@
           data-testid={`atlas-node-${node.id}`}
           data-kind={node.type}
           data-atlas-node={node.id}
+          style:--c={ATLAS_TYPE_TINT[node.type]}
           role="button"
           tabindex="-1"
           aria-label={node.label}
@@ -305,13 +345,13 @@
       {/each}
     </g>
   </svg>
-  <div class="legend">
+  <div class="legend" bind:this={legendEl}>
     <span><i class="ldot"></i>live</span>
     <span><i class="halo-key"></i>someone here now</span>
     {#if nothingActive}<span data-testid="atlas-nothing-active">Nothing active right now</span>{/if}
     <span class="hint">Drag to pan · Scroll to zoom · Press 0 to frame all</span>
   </div>
-  <div class="map-tools">
+  <div class="map-tools" bind:this={toolsEl}>
     <button type="button" class="zoom-btn" aria-label="Zoom out" onclick={() => zoomBy(1 / 1.25)}>−</button>
     <button type="button" class="zoom-btn" aria-label="Zoom in" onclick={() => zoomBy(1.25)}>+</button>
   </div>
@@ -347,12 +387,12 @@
     stroke-width: 3px;
     pointer-events: none;
   }
-  /* OWNER-D 7: shaded section, neutral tokens in both themes (no accent). */
+  /* OWNER-R4: each section is tinted with the web type colour; no outline. */
   .district {
-    fill: var(--v4-text-1);
-    fill-opacity: 0.045;
-    stroke: var(--v4-hairline);
-    stroke-width: 1px;
+    /* Pulled toward the ink so the pale web colours still read on a light ground. */
+    fill: var(--c);
+    fill-opacity: 0.2;
+    stroke: none;
     pointer-events: none;
   }
   .edge {
@@ -366,8 +406,9 @@
     opacity: var(--t, 1);
     transition: opacity 160ms ease;
   }
+  /* Type colour, pulled toward the ink so it reads in light and dark. */
   .dot {
-    fill: var(--v4-text-3);
+    fill: color-mix(in srgb, var(--c) 80%, var(--v4-text-1));
     transition: fill 120ms ease;
   }
   .node:hover .dot,
@@ -442,6 +483,12 @@
     font-size: 11px;
     color: var(--v4-text-3);
     pointer-events: none;
+    /* QA-109: an opaque backplate in the map's ground colour, so nothing drawn
+       on the map ever reads through the fixed legend and help text. */
+    padding: 4px 8px;
+    border-radius: var(--v4-radius-button, 6px);
+    background: var(--v4-ground);
+    background: rgb(from var(--v4-ground) r g b);
   }
   .legend span {
     display: inline-flex;

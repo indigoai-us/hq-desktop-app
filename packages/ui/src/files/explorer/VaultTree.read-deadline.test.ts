@@ -6,7 +6,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, unmount } from "svelte";
-import { READ_DEADLINE_MS } from "../../common/read-deadline.js";
+import { expectPendingRead } from "../../common/read-loader.test-support.js";
 import VaultTree from "./VaultTree.svelte";
 import type { Vault } from "./vault-model.js";
 
@@ -22,8 +22,8 @@ afterEach(async () => {
 
 const ACME: Vault = { id: "company:acme", kind: "company", label: "Acme", root: "companies/acme", slug: "acme" };
 
-describe("VaultTree read deadline (BLANK-1)", () => {
-  it("a root read that never answers ends in the failed-read state", async () => {
+describe("VaultTree pending read (BLANK-3)", () => {
+  it("a root read that never answers keeps loading with a waiting line and Try again, never a failed state", async () => {
     vi.useFakeTimers();
     const logged = vi.spyOn(console, "warn").mockImplementation(() => {});
     component = mount(VaultTree, {
@@ -38,12 +38,6 @@ describe("VaultTree read deadline (BLANK-1)", () => {
       },
     });
     flushSync();
-    expect(document.querySelector(".vt-skeleton")).toBeTruthy();
-    await vi.advanceTimersByTimeAsync(READ_DEADLINE_MS + 10);
-    flushSync();
-    expect(document.querySelector(".vt-skeleton")).toBeNull();
-    expect(document.querySelector("[data-testid='vault-tree-error']")?.textContent).toContain("Couldn't read this vault.");
-    expect(document.querySelector("[data-testid='vault-tree-retry']")).toBeTruthy();
-    expect(logged).toHaveBeenCalled();
+    await expectPendingRead(document, "vault-tree-loader");
   });
 });

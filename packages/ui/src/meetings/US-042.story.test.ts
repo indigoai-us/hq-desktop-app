@@ -2,7 +2,7 @@
 /**
  * US-042: Meetings toolbar calendar chip and paste-a-link (storyboard
  * revision 10). Chip states, link detection and matching, the no-calendar
- * first-run canvas, and the New meeting Link field.
+ * and first-run canvas.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, tick, unmount } from "svelte";
@@ -31,7 +31,6 @@ vi.mock("./meetings-store.svelte", () => ({ meetingsStore: store }));
 import MeetingsStatesBody from "./MeetingsStatesBody.svelte";
 import MeetingsToolbarControls from "./MeetingsToolbarControls.svelte";
 import { calendarChipLabel, detectMeetingProvider, matchUpcomingMeeting, zoomMeetingLabel } from "./meeting-link";
-import { draftToEvent, emptyNewMeetingDraft } from "./meeting-states-model";
 
 const now = new Date(2026, 9, 1, 10, 12);
 const flow: MeetingEvent = {
@@ -104,7 +103,7 @@ describe("US-042 calendar chip", () => {
     const el = render(MeetingsToolbarControls, {});
     (el.querySelector('[data-testid="meetings-calendar-chip"]') as HTMLButtonElement).click();
     flushSync();
-    expect(el.querySelector('[data-testid="meetings-toolbar-skeleton"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="meetings-toolbar-loading"]')).not.toBeNull();
     await opened(el, "calendar-connect-google");
     const panel = el.querySelector('[data-testid="meetings-calendar-panel"]')!;
     expect(panel.textContent).toContain("corey@getindigo.ai");
@@ -155,7 +154,7 @@ describe("US-042 paste detection", () => {
     const el = render(MeetingsToolbarControls, { openExternal });
     (el.querySelector('[data-testid="meetings-paste-link"]') as HTMLButtonElement).click();
     flushSync();
-    expect(el.querySelector('[data-testid="meetings-toolbar-skeleton"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="meetings-toolbar-loading"]')).not.toBeNull();
     await opened(el, "paste-link-input");
     const input = el.querySelector('[data-testid="paste-link-input"]') as HTMLInputElement;
     input.value = zoom;
@@ -167,7 +166,7 @@ describe("US-042 paste detection", () => {
     flushSync();
     const list = el.querySelector('[data-testid="paste-link-attach-list"]')!;
     expect(list.textContent).toContain("suggested");
-    expect(list.textContent).toContain("New meeting with this link");
+    expect(list.textContent).not.toContain("New meeting");
     (el.querySelector('[data-testid="paste-link-join"]') as HTMLButtonElement).click();
     await settle();
     expect(openExternal).toHaveBeenCalledWith(zoom);
@@ -202,41 +201,6 @@ describe("US-042 no-calendar canvas", () => {
     store.initialLoadPending = true;
     const loading = render(MeetingsStatesBody, { mode: "empty", sections: [], now });
     expect(loading.querySelector('[data-testid="meetings-no-calendar"]')).toBeNull();
-  });
-});
-
-describe("US-042 New meeting link field", () => {
-  it("offers New Zoom, New Meet, Paste link, None; pasting selects Paste link and shows the provider", () => {
-    store.accounts = [{ accountId: "a1" }];
-    const el = render(MeetingsStatesBody, { mode: "empty", sheetOpen: true, sections: [], now });
-    const tabs = el.querySelector('[data-testid="link-tabs"]')!;
-    expect([...tabs.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["New Zoom", "New Meet", "Paste link", "None"]);
-    const sheet = el.querySelector('[data-testid="new-meeting-sheet"]')!;
-    const paste = new Event("paste", { bubbles: true, cancelable: true }) as Event & { clipboardData?: unknown };
-    Object.defineProperty(paste, "clipboardData", { value: { getData: () => "https://teams.microsoft.com/l/meetup-join/19%3Ameeting_N2E" } });
-    sheet.dispatchEvent(paste);
-    flushSync();
-    expect(tabs.querySelector('[aria-pressed="true"]')?.textContent).toBe("Paste link");
-    expect(el.querySelector('[data-testid="sheet-paste-provider"]')?.textContent).toContain("Teams");
-    expect((el.querySelector('[data-testid="sheet-paste-input"]') as HTMLInputElement).value).toContain("teams.microsoft.com");
-  });
-
-  it("seeds the sheet from New meeting with this link and keeps the room as is", () => {
-    store.accounts = [{ accountId: "a1" }];
-    const el = render(MeetingsStatesBody, { mode: "empty", sheetOpen: true, sheetLink: zoom, sections: [], now });
-    expect(el.querySelector('[data-testid="link-tabs"] [aria-pressed="true"]')?.textContent).toBe("Paste link");
-    const draft = { ...emptyNewMeetingDraft(now), title: "Sync", link: "paste" as const, pastedUrl: zoom };
-    expect(draftToEvent(draft, "x")?.meetingUrl).toBe(zoom);
-  });
-});
-
-describe("New meeting sheet Escape (QA-017)", () => {
-  it("asks the host to close the sheet on Escape", () => {
-    store.accounts = [{ accountId: "a1" }];
-    const oncloseSheet = vi.fn();
-    render(MeetingsStatesBody, { mode: "empty", sheetOpen: true, sections: [], now, oncloseSheet });
-    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
-    expect(oncloseSheet).toHaveBeenCalledTimes(1);
   });
 });
 

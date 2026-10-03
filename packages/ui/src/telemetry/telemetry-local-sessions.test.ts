@@ -1,0 +1,53 @@
+// OWNER-R27: session history from the HQ workspace folder, in the shape the
+// native list_local_sessions command returns (placeholder ids and titles).
+import { ok, failure } from "@hq/platform";
+import { describe, expect, it, vi } from "vitest";
+import { createLocalSessionsReader, formatGap, formatLength, localSessionsFromNative, localSessionsWindow } from "./telemetry-local-sessions";
+
+export const NATIVE_PAGE = {
+  total: 3,
+  medianGapMinutes: 42.5,
+  rows: [
+    { sessionId: "00000000-0000-4000-8000-000000000003", startedAt: "2026-10-03T10:00:00Z", company: "acme", project: "proj-a", title: "Title A", lastAt: "2026-10-03T11:20:00Z", outcome: "Handed off", threadPath: "workspace/threads/T-20261003-112000-a.json" },
+    { sessionId: "00000000-0000-4000-8000-000000000002", startedAt: "2026-10-02T09:00:00Z", company: null, project: "proj-b", title: null, lastAt: null, outcome: null, threadPath: null },
+    { sessionId: "00000000-0000-4000-8000-000000000001", startedAt: "2026-10-01T08:00:00Z", company: null, project: null, title: null, lastAt: "2026-10-01T08:00:30Z", outcome: "Checkpointed", threadPath: "workspace/threads/T-2026-10-01-0800-b.json" },
+  ],
+};
+
+describe("OWNER-R27 local session history", () => {
+  it("parses rows with real lengths and outcomes only where a record exists; never a token number", () => {
+    const page = localSessionsFromNative(NATIVE_PAGE);
+    expect(page.total).toBe(3);
+    expect(page.medianGapMinutes).toBe(42.5);
+    expect(page.rows.map((r) => [r.company, r.project, r.title, r.length, r.outcome, r.threadPath])).toEqual([
+      ["acme", "proj-a", "Title A", "1h 20m", "Handed off", "workspace/threads/T-20261003-112000-a.json"],
+      ["", "proj-b", "proj-b", "", "", ""],
+      ["", "", "", "<1m", "Checkpointed", "workspace/threads/T-2026-10-01-0800-b.json"],
+    ]);
+    expect(Object.keys(page.rows[0]!)).not.toContain("tokens");
+    expect(() => localSessionsFromNative({})).toThrow();
+  });
+
+  it("asks the native command for the chosen range and page", async () => {
+    const listLocalSessions = vi.fn(async () => ok(NATIVE_PAGE));
+    const read = createLocalSessionsReader({ listLocalSessions }, () => Date.UTC(2026, 9, 3, 12))!;
+    await read("7d", { offset: 0, limit: 10 });
+    expect(listLocalSessions).toHaveBeenCalledWith({ from: "2026-09-27", to: "2026-10-03" }, { offset: 0, limit: 10 });
+    expect(localSessionsWindow("90d", Date.UTC(2026, 9, 3)).from).toBe("2026-07-06");
+  });
+
+  it("fails plainly and is absent on hosts without the command", async () => {
+    expect(createLocalSessionsReader({})).toBeNull();
+    const read = createLocalSessionsReader({ listLocalSessions: async () => failure("unavailable", "no") })!;
+    await expect(read("30d", { offset: 0, limit: 10 })).rejects.toThrow();
+  });
+
+  it("formats lengths and the median gap", () => {
+    expect(formatLength("2026-10-03T10:00:00Z", "2026-10-03T10:45:00Z")).toBe("45m");
+    expect(formatLength("2026-10-03T10:00:00Z", "2026-10-03T12:00:00Z")).toBe("2h");
+    expect(formatLength("2026-10-03T10:00:00Z", "bad")).toBe("");
+    expect(formatGap(2.3)).toBe("2m");
+    expect(formatGap(95)).toBe("1h 35m");
+    expect(formatGap(null)).toBe("");
+  });
+});

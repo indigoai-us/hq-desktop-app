@@ -5,6 +5,7 @@ import { mount, tick, unmount } from "svelte";
 import { failure, ok, type LocalBotRow, type PlatformAdapter } from "@hq/platform";
 
 import LocalBotDetailPanel from "./LocalBotDetailPanel.svelte";
+import { chooseDropdown, dropdownButton, dropdownOptions, dropdownValue } from "../test-support/dropdown.js";
 
 function bot(patch: Partial<LocalBotRow> = {}): LocalBotRow {
   return {
@@ -237,17 +238,17 @@ describe("LocalBotDetailPanel — model and thinking", () => {
     mountPanel({ bot: bot({ model: undefined, effort: "medium", effortIsDefault: true }), bots: botsApi({ configure: vi.fn(async () => ok({})) }) });
     await tick();
     expect(host.querySelector('[data-testid="local-bot-detail-model"]')?.textContent).toBe("Claude Code's default · thinking Medium");
-    const model = host.querySelector<HTMLSelectElement>('[data-testid="local-bot-detail-model-select"]')!;
-    const effort = host.querySelector<HTMLSelectElement>('[data-testid="local-bot-detail-effort-select"]')!;
-    expect(model.value).toBe("");
-    expect(Array.from(model.options).map((o) => o.textContent)).toEqual([
+    const model = await dropdownOptions(host, "local-bot-detail-model-select");
+    const effort = await dropdownOptions(host, "local-bot-detail-effort-select");
+    expect(await dropdownValue(host, "local-bot-detail-model-select")).toBe("");
+    expect(model.map((o) => o.label)).toEqual([
       "Claude Code's default",
       "Opus 5.5",
       "Opus 5",
       "Sonnet 5",
       "Haiku 4.5",
     ]);
-    expect(Array.from(model.options).map((o) => o.value)).toEqual([
+    expect(model.map((o) => o.value)).toEqual([
       "",
       "claude-opus-5-5",
       "claude-opus-5",
@@ -255,9 +256,9 @@ describe("LocalBotDetailPanel — model and thinking", () => {
       "claude-haiku-4-5-20251001",
     ]);
     expect(host.querySelector('[data-testid="local-bot-detail-model-hint"]')).toBeNull();
-    expect(effort.value).toBe("medium");
-    expect(Array.from(effort.options).map((o) => o.value)).toEqual(["low", "medium", "high", "xhigh", "max"]);
-    expect(Array.from(effort.options).find((o) => o.value === "medium")?.textContent).toBe("Medium (default)");
+    expect(await dropdownValue(host, "local-bot-detail-effort-select")).toBe("medium");
+    expect(effort.map((o) => o.value)).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    expect(effort.find((o) => o.value === "medium")?.label).toBe("Medium (default)");
     expect(host.querySelector<HTMLButtonElement>('[data-testid="local-bot-detail-settings-save"]')!.disabled).toBe(true);
   });
 
@@ -267,9 +268,8 @@ describe("LocalBotDetailPanel — model and thinking", () => {
     expect(host.querySelector('[data-testid="local-bot-detail-model"]')?.textContent).toBe(
       "Opus (latest in Claude Code) · thinking Medium",
     );
-    const model = host.querySelector<HTMLSelectElement>('[data-testid="local-bot-detail-model-select"]')!;
-    expect(model.value).toBe("opus");
-    const labels = Array.from(model.options).map((o) => o.textContent);
+    expect(await dropdownValue(host, "local-bot-detail-model-select")).toBe("opus");
+    const labels = (await dropdownOptions(host, "local-bot-detail-model-select")).map((o) => o.label);
     expect(labels).toContain("Opus (latest in Claude Code)");
     expect(labels).not.toContain("Sonnet (latest in Claude Code)");
   });
@@ -277,16 +277,14 @@ describe("LocalBotDetailPanel — model and thinking", () => {
   it("explains that a specific model may need a newer coding tool, only when one is chosen", async () => {
     mountPanel({ bot: bot({ model: undefined }), bots: botsApi({ configure: vi.fn(async () => ok({})) }) });
     await tick();
-    const model = host.querySelector<HTMLSelectElement>('[data-testid="local-bot-detail-model-select"]')!;
+    await dropdownButton(host, "local-bot-detail-model-select");
     expect(host.querySelector('[data-testid="local-bot-detail-model-hint"]')).toBeNull();
-    model.value = "claude-opus-5-5";
-    model.dispatchEvent(new Event("change", { bubbles: true }));
+    await chooseDropdown(host, "local-bot-detail-model-select", "claude-opus-5-5");
     await tick();
     expect(host.querySelector('[data-testid="local-bot-detail-model-hint"]')?.textContent).toBe(
       "If a bot can't start with this model, update Claude Code.",
     );
-    model.value = "";
-    model.dispatchEvent(new Event("change", { bubbles: true }));
+    await chooseDropdown(host, "local-bot-detail-model-select", "");
     await tick();
     expect(host.querySelector('[data-testid="local-bot-detail-model-hint"]')).toBeNull();
   });
@@ -294,9 +292,8 @@ describe("LocalBotDetailPanel — model and thinking", () => {
   it("offers each runtime's own thinking levels and keeps a custom model it already uses", async () => {
     mountPanel({ bot: bot({ runtime: "grok", model: "grok-beta-x", effort: "high" }), bots: botsApi({ configure: vi.fn(async () => ok({})) }) });
     await tick();
-    const model = host.querySelector<HTMLSelectElement>('[data-testid="local-bot-detail-model-select"]')!;
-    expect(model.value).toBe("grok-beta-x");
-    expect(Array.from(host.querySelector<HTMLSelectElement>('[data-testid="local-bot-detail-effort-select"]')!.options).map((o) => o.value)).toEqual([
+    expect(await dropdownValue(host, "local-bot-detail-model-select")).toBe("grok-beta-x");
+    expect((await dropdownOptions(host, "local-bot-detail-effort-select")).map((o) => o.value)).toEqual([
       "low",
       "medium",
       "high",
@@ -309,12 +306,10 @@ describe("LocalBotDetailPanel — model and thinking", () => {
     const onchanged = vi.fn();
     mountPanel({ bot: bot({ model: "claude-opus-5-5", effort: "high" }), bots: botsApi({ configure }), onchanged });
     await tick();
-    const model = host.querySelector<HTMLSelectElement>('[data-testid="local-bot-detail-model-select"]')!;
-    const effort = host.querySelector<HTMLSelectElement>('[data-testid="local-bot-detail-effort-select"]')!;
+    await dropdownButton(host, "local-bot-detail-model-select");
     const save = host.querySelector<HTMLButtonElement>('[data-testid="local-bot-detail-settings-save"]')!;
 
-    effort.value = "max";
-    effort.dispatchEvent(new Event("change", { bubbles: true }));
+    await chooseDropdown(host, "local-bot-detail-effort-select", "max");
     await tick();
     expect(save.disabled).toBe(false);
     save.click();
@@ -323,10 +318,8 @@ describe("LocalBotDetailPanel — model and thinking", () => {
     await vi.waitFor(() => expect(host.querySelector('[data-testid="local-bot-detail-settings-note"]')?.textContent).toContain("next message"));
     expect(onchanged).toHaveBeenCalled();
 
-    model.value = "";
-    model.dispatchEvent(new Event("change", { bubbles: true }));
-    effort.value = "medium";
-    effort.dispatchEvent(new Event("change", { bubbles: true }));
+    await chooseDropdown(host, "local-bot-detail-model-select", "");
+    await chooseDropdown(host, "local-bot-detail-effort-select", "medium");
     await tick();
     save.click();
     await vi.waitFor(() => expect(configure).toHaveBeenCalledTimes(2));
@@ -337,14 +330,12 @@ describe("LocalBotDetailPanel — model and thinking", () => {
     const configure = vi.fn(async () => failure("unavailable", "--effort for claude must be one of low, medium"));
     mountPanel({ bot: bot({ effort: "medium" }), bots: botsApi({ configure }) });
     await tick();
-    const effort = host.querySelector<HTMLSelectElement>('[data-testid="local-bot-detail-effort-select"]')!;
-    effort.value = "high";
-    effort.dispatchEvent(new Event("change", { bubbles: true }));
+    await chooseDropdown(host, "local-bot-detail-effort-select", "high");
     await tick();
     host.querySelector<HTMLButtonElement>('[data-testid="local-bot-detail-settings-save"]')!.click();
     await vi.waitFor(() => expect(host.querySelector('[data-testid="local-bot-detail-error"]')?.textContent).toContain("Could not change what assistant thinks with. Try again."));
     expect(host.textContent).not.toContain("must be one of");
-    expect(effort.value).toBe("high");
+    expect(await dropdownValue(host, "local-bot-detail-effort-select")).toBe("high");
   });
 
   it("hosts without configure show the line but no controls", async () => {
@@ -382,7 +373,7 @@ describe("bot kinds (personal vs company)", () => {
     ];
     mountPanel({ bot: bot({ kind: "company", companies: ["ridge"] }), bots: botsApi({ promote: vi.fn() }), companies });
     await tick();
-    const options = Array.from(host.querySelectorAll<HTMLOptionElement>('[data-testid="local-bot-promotion"] option')).map((o) => o.value);
+    const options = (await dropdownOptions(host, "local-bot-promotion-company")).map((o) => o.value);
     expect(options).toEqual(["", "cmp_RIDGE"]);
   });
 
@@ -402,12 +393,11 @@ describe("local bot cloud promotion", () => {
     const open = vi.fn();
     mountPanel({ bot: current, bots: { promote } as unknown as NonNullable<PlatformAdapter["bots"]>, companies: [{ uid: "cmp_TEST", name: "Test company" }], onopenurl: open });
     await tick();
-    const select = q<HTMLSelectElement>('[aria-label="Promotion company"]')!;
-    const button = q<HTMLButtonElement>('[data-testid="local-bot-promotion"] button')!;
+    await dropdownButton(host, "local-bot-promotion-company");
+    const button = q<HTMLButtonElement>('[data-testid="local-bot-promotion"] button:not([aria-haspopup="listbox"])')!;
     expect(button.disabled).toBe(true);
-    await vi.waitFor(() => expect(select.options.length).toBe(2));
-    select.options[1].selected = true;
-    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await vi.waitFor(async () => expect((await dropdownOptions(host, "local-bot-promotion-company")).length).toBe(2));
+    await chooseDropdown(host, "local-bot-promotion-company", (await dropdownOptions(host, "local-bot-promotion-company"))[1]!.value);
     await tick();
     await vi.waitFor(() => expect(button.disabled).toBe(false));
     button.click();
@@ -427,10 +417,8 @@ describe("promotion failure handling", () => {
     const promote = vi.fn(() => new Promise<ReturnType<typeof failure>>(resolve => { finish = resolve; }));
     mountPanel({ bot: bot(), bots: botsApi({ promote }), companies: [{ uid: "cmp_TEST", name: "Test" }] });
     await tick();
-    const select = q<HTMLSelectElement>('[aria-label="Promotion company"]')!;
-    select.value = "cmp_TEST";
-    select.dispatchEvent(new Event("change", { bubbles: true }));
-    const button = q<HTMLButtonElement>('[data-testid="local-bot-promotion"] button')!;
+    await chooseDropdown(host, "local-bot-promotion-company", "cmp_TEST");
+    const button = q<HTMLButtonElement>('[data-testid="local-bot-promotion"] button:not([aria-haspopup="listbox"])')!;
     await vi.waitFor(() => expect(button.disabled).toBe(false));
     button.click();
     await vi.waitFor(() => expect(button.disabled).toBe(true));
@@ -447,8 +435,8 @@ describe("promotion failure handling", () => {
 it("reopens a held bot with local controls disabled and the saved destination", async () => {
   mountPanel({ bot: bot({ promotionHold: { companyUid: "cmp_TEST" } }), bots: botsApi({ promote: vi.fn() }), companies: [{ uid: "cmp_TEST", name: "Test" }] });
   await tick();
-  const select = q<HTMLSelectElement>('[aria-label="Promotion company"]')!;
-  expect(select.value).toBe("cmp_TEST");
+  const select = await dropdownButton(host, "local-bot-promotion-company");
+  expect(select.dataset.value).toBe("cmp_TEST");
   expect(select.disabled).toBe(true);
   expect(q<HTMLButtonElement>('[data-testid="local-bot-detail-stop"]')!.disabled).toBe(true);
   expect(host.textContent).toContain("Check progress");
@@ -483,7 +471,7 @@ it("shows a worker failure and stops automatic retries", async () => {
     expect(host.textContent).toContain("Cloud computer could not finish");
     await vi.advanceTimersByTimeAsync(60_000);
     expect(promote).toHaveBeenCalledTimes(1);
-    expect(q<HTMLButtonElement>('[data-testid="local-bot-promotion"] button')!.disabled).toBe(false);
+    expect(q<HTMLButtonElement>('[data-testid="local-bot-promotion"] button:not([aria-haspopup="listbox"])')!.disabled).toBe(false);
   } finally { vi.useRealTimers(); }
 });
 
@@ -493,7 +481,7 @@ it("explains a blocked file transfer beside promotion without exposing paths as 
   const promote = vi.fn(async () => failure("unknown", "Bot continuity: unsafe or private path: ../Library/private-template"));
   mountPanel({ bot: current, bots: botsApi({ promote }), companies: [{ uid: "cmp_TEST", name: "Test" }] });
   await tick();
-  q<HTMLButtonElement>('[data-testid="local-bot-promotion"] button')!.click();
+  q<HTMLButtonElement>('[data-testid="local-bot-promotion"] button:not([aria-haspopup="listbox"])')!.click();
   await vi.waitFor(() => expect(host.textContent).toContain("This requires an HQ update"));
   expect(q('[data-testid="local-bot-promotion-error"] details')?.hasAttribute("open")).toBe(false);
   expect(q('[data-testid="local-bot-detail-actions"]')?.textContent).not.toContain("unsafe or private path");

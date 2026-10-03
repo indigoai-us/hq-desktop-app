@@ -1,15 +1,16 @@
 <!--
   Meetings sidepane (console-rail US-021).
 
-  Sidepane host with the Messages grammar: header with Filter and New meeting,
+  Sidepane host with the Messages grammar: header with Filter and Invite notetaker,
   then Live, Today, Tomorrow, then one day header per past day (the shared
   Messages day-group header). Rows are a time slot, title, an optional
   company mark, and a notes mark on past rows with a recap. Sections derive
   from the meetings-store snapshot, which hydrates from meetings-cache before
   the first refresh, so the pane paints from cache in the first frame and
-  shows shimmer rows only on a true cold start.
+  shows the loader only on a true cold start.
 -->
 <script lang="ts">
+  import ReadLoader from "../common/ReadLoader.svelte";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import DayGroupHeader from "../chat/DayGroupHeader.svelte";
   import Sidepane from "../shell/Sidepane.svelte";
@@ -37,7 +38,8 @@
     memory?: SidepaneScrollMemory;
     onselect?: (id: string) => void;
     onfilter?: (next: MeetingsFilter) => void;
-    onnewmeeting?: () => void;
+    /** Opens "Invite notetaker to a meeting" for a link not on the calendar. */
+    oninvite?: () => void;
     onearlier?: () => void;
   }
 
@@ -53,7 +55,7 @@
     memory,
     onselect,
     onfilter,
-    onnewmeeting,
+    oninvite,
     onearlier,
   }: Props = $props();
 
@@ -88,15 +90,18 @@
       >
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4" /></svg>
       </button>
-      <button
-        type="button"
-        class="icon-btn"
-        aria-label="New meeting"
-        data-testid="meetings-new-button"
-        onclick={() => onnewmeeting?.()}
-      >
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
-      </button>
+      {#if oninvite}
+        <button
+          type="button"
+          class="icon-btn"
+          aria-label="Invite notetaker to a meeting"
+          title="Invite notetaker to a meeting"
+          data-testid="meetings-invite-notetaker"
+          onclick={() => oninvite?.()}
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+        </button>
+      {/if}
       {#if filterOpen}
         <div class="popover" role="dialog" aria-label="Filter meetings" data-testid="meetings-filter-popover">
           <div class="pop-sec">Company</div>
@@ -130,11 +135,8 @@
   {/snippet}
 
   {#if loading && sections.length === 0}
-    <div class="skeleton" data-testid="meetings-sidepane-skeleton" aria-hidden="true">
-      {#each [40, 0, 0, 40, 0, 0, 0] as label, i (i)}
-        {#if label}<div class="sk-label"><span class="sk" style:width="40%"></span></div>
-        {:else}<div class="sk-row"><span class="sk" style:width="34px"></span><span class="sk" style:width={`${110 + ((i * 37) % 60)}px`}></span></div>{/if}
-      {/each}
+    <div aria-busy="true">
+      <ReadLoader testid="meetings-loader" surface="meetings" onretry={onretry ? () => onretry() : null} />
     </div>
   {:else if sections.length === 0 && error}
     <div class="empty" data-testid="meetings-sidepane-error">
@@ -204,9 +206,9 @@
     position: absolute;
     inset: min(0px, calc(50% - 14px));
   }
-  /* Filter and New meeting are 26 px with a 2 px gap: each pads 2 px on its
-     outer side only, so both reach 28 px and the two hit areas meet at the
-     gap without overlapping. */
+  /* Filter and Invite notetaker are 26 px with a 2 px gap: each pads 2 px on
+     its outer side only, so both reach 28 px and the two hit areas meet at
+     the gap without overlapping. */
   .pane-head .icon-btn::after { inset: -1px 0 -1px -2px; }
   .pane-head .icon-btn + .icon-btn::after { inset: -1px -2px -1px 0; }
   .pane-head {
@@ -394,7 +396,7 @@
     padding: 6px;
     border: 1px solid var(--line);
     border-radius: 8px;
-    background: var(--v4-popover, var(--side-bg));
+    background: var(--overlay-bg, var(--v4-popover, var(--side-bg)));
     box-shadow: var(--v4-shadow-popover);
   }
 
@@ -464,41 +466,4 @@
     cursor: pointer;
   }
 
-  .sk-label {
-    height: 30px;
-    box-sizing: border-box;
-    padding: 14px 8px 4px;
-  }
-
-  .sk-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    height: 30px;
-    padding: 0 8px;
-  }
-
-  .sk {
-    display: inline-block;
-    height: 10px;
-    border-radius: 4px;
-    background: var(--line);
-    animation: meetings-sk 1.8s ease-in-out infinite;
-  }
-
-  @keyframes meetings-sk {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.45;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .sk {
-      animation: none;
-    }
-  }
 </style>

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { withReadDeadline } from "../common/read-deadline.js";
+  import ReadLoader from "../common/ReadLoader.svelte";
   /**
    * CompanyFileTree — Obsidian-style collapsible folder tree (US-002, made LAZY
    * in US-010; DESKTOP-008 keyboard + filter).
@@ -104,8 +104,7 @@
     focusedPath = null;
 
     let cancelled = false;
-    // BLANK-1: a read that never answers falls to the failed-read state.
-    void withReadDeadline(loadChildren(base), "folder listing")
+    void loadChildren(base)
       .then((entries) => {
         if (!cancelled && generation === treeGeneration) {
           roots = entries.map(dirEntryToLazyNode);
@@ -328,11 +327,10 @@
     <div
       class="ft-status"
       aria-label="Loading files"
+      aria-busy="true"
       data-testid="file-tree-loading"
     >
-      {#each [0, 1, 2, 3] as row (row)}
-        <span class="ft-skel" style={`width:${78 - row * 8}%`}></span>
-      {/each}
+      <ReadLoader testid="file-tree-loader" onretry={() => (rootRetryNonce += 1)} />
     </div>
   {:else if rootError}
     <div
@@ -549,14 +547,6 @@
     height: 6px;
     border-radius: 50%;
     background: var(--v4-ok);
-  }
-
-  .ft-skel {
-    display: block;
-    height: 12px;
-    margin: 6px 8px;
-    border-radius: 4px;
-    background: var(--v4-control-faint);
   }
 
   .ft-copy {

@@ -10,6 +10,7 @@
 
 import type { CompanyApi, MessagingApi } from "@hq/platform";
 import {
+  joinedLabel,
   memberKindFromUid,
   normalizeCompanyTeamTelemetry,
   type TeamMember,
@@ -35,18 +36,9 @@ export type BotFilter = (typeof BOT_FILTERS)[number];
 export const JOB_ALERTS = ["dm", "none"] as const;
 export type JobAlert = (typeof JOB_ALERTS)[number];
 
-const teamCache = new Map<string, { view: TeamTelemetryView; invites: PendingInvite[] }>();
-
-export function readTeamCache(slug: string): { view: TeamTelemetryView; invites: PendingInvite[] } | null {
-  return teamCache.get(slug) ?? null;
-}
-
-export function writeTeamCache(
-  slug: string,
-  value: { view: TeamTelemetryView; invites: PendingInvite[] },
-): void {
-  if (slug) teamCache.set(slug, value);
-}
+// The Team cache lives in a tiny module so the shared people display can read
+// it without pulling this file into the start-up bundle.
+export { readTeamCache, writeTeamCache } from "./team-cache.js";
 
 export interface PendingInvite {
   id: string;
@@ -238,7 +230,8 @@ export function mergeRosterIntoTeamView(view: TeamTelemetryView, roster: readonl
     const role = str(rec.role) || str(rec.membershipRole) || undefined;
     added.push({
       id,
-      displayName: str(rec.displayName) || str(rec.name) || email || id,
+      // OWNER-R5: never the raw id as a name.
+      displayName: str(rec.displayName) || str(rec.name) || email || (kind === "agent" ? "Unknown bot" : "Unknown person"),
       email,
       kind,
       role,
@@ -279,13 +272,124 @@ export interface CompanyTeamRead {
  * (contacts scoped to the company uid, else the members route by slug).
  * Team and Company settings share this read and the Team cache.
  */
+/** OWNER-R9: membership rows from `GET /membership/company/{uid}`. */
+export interface MembershipRow {
+  membershipKey: string;
+  personUid: string;
+  role: string;
+  acceptedAt?: string;
+  personName?: string;
+  personEmail?: string;
+  origin?: string;
+}
+
+export function membershipRows(payload: unknown): MembershipRow[] {
+  const rec = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+  const list = Array.isArray(rec.members) ? rec.members : Array.isArray(payload) ? (payload as unknown[]) : [];
+  const out: MembershipRow[] = [];
+  for (const raw of list) {
+    if (!raw || typeof raw !== "object") continue;
+    const r = raw as Record<string, unknown>;
+    const personUid = str(r.personUid);
+    const membershipKey = str(r.membershipKey);
+    if (!personUid || !membershipKey) continue;
+    out.push({
+      membershipKey,
+      personUid,
+      role: str(r.role),
+      acceptedAt: str(r.acceptedAt) || str(r.invitedAt) || undefined,
+      personName: str(r.personName) || undefined,
+      personEmail: str(r.personEmail) || undefined,
+      origin: str(r.origin) || (str(r.invitedBy) === "request-access" ? "self-serve" : undefined),
+    });
+  }
+  return out;
+}
+
+const ROLE_LABEL: Record<string, string> = { owner: "Owner", admin: "Admin", member: "Member", guest: "Guest" };
+
+export function roleLabel(role: string | undefined | null): string {
+  const key = (role ?? "").trim().toLowerCase();
+  return ROLE_LABEL[key] ?? (role ?? "").trim();
+}
+
+/** OWNER-R9: fold role, joined date, badge and membershipKey into the Team view. */
+export function applyMemberships(view: TeamTelemetryView, rows: readonly MembershipRow[]): TeamTelemetryView {
+  if (rows.length === 0) return view;
+  const byUid = new Map(rows.map((row) => [row.personUid, row]));
+  const known = new Set(view.members.map((m) => m.id));
+  const apply = (member: TeamMember): TeamMember => {
+    const row = byUid.get(member.id);
+    if (!row) return member;
+    return {
+      ...member,
+      role: roleLabel(row.role) || member.role,
+      joined: joinedLabel({ joinedAt: row.acceptedAt }) ?? member.joined,
+      membershipKey: row.membershipKey,
+      badge: row.origin === "self-serve" ? "Self-serve" : member.badge,
+      email: member.email ?? row.personEmail,
+      displayName:
+        (member.displayName === "Unknown person" || member.displayName === "Unknown bot" || member.displayName === member.email) && row.personName
+          ? row.personName
+          : member.displayName,
+    };
+  };
+  const added: TeamMember[] = rows
+    .filter((row) => !known.has(row.personUid))
+    .map((row) => ({
+      id: row.personUid,
+      displayName: row.personName || row.personEmail || (memberKindFromUid(row.personUid) === "agent" ? "Unknown bot" : "Unknown person"),
+      email: row.personEmail,
+      kind: memberKindFromUid(row.personUid),
+      role: roleLabel(row.role) || undefined,
+      joined: joinedLabel({ joinedAt: row.acceptedAt }),
+      membershipKey: row.membershipKey,
+      badge: row.origin === "self-serve" ? "Self-serve" : undefined,
+      topSkills: [],
+      activeProjects: [],
+    }));
+  const members = [...view.members.map(apply), ...added];
+  return {
+    ...view,
+    members,
+    humans: members.filter((m) => m.kind !== "agent"),
+    agents: members.filter((m) => m.kind === "agent"),
+    empty: members.length === 0,
+  };
+}
+
+/** OWNER-R9: pending invites from `GET /membership/company/{uid}/pending`. */
+export function pendingFromMemberships(payload: unknown): PendingInvite[] {
+  const rec = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+  const list = Array.isArray(rec.pending) ? rec.pending : [];
+  const out: PendingInvite[] = [];
+  for (const raw of list) {
+    if (!raw || typeof raw !== "object") continue;
+    const r = raw as Record<string, unknown>;
+    const key = str(r.membershipKey);
+    const email = str(r.inviteeEmail) || str(r.personEmail);
+    if (!key || !email) continue;
+    const role = (INVITE_ROLES as readonly string[]).includes(str(r.role)) ? (str(r.role) as InviteRole) : "member";
+    const sent = joinedLabel({ joinedAt: str(r.invitedAt) });
+    out.push({ id: key, email, role, prefixes: [], groups: [], sentLabel: sent ?? "recently", sentBy: "" });
+  }
+  return out;
+}
+
 export async function readCompanyTeam(opts: {
   slug: string;
   companyUid?: string | null;
-  company: Pick<CompanyApi, "getTeamTelemetry" | "listMembers">;
+  company: Pick<CompanyApi, "getTeamTelemetry" | "listMembers"> & Partial<Pick<CompanyApi, "listCompanyMemberships" | "listPendingMemberships">>;
   messaging?: Pick<MessagingApi, "listContacts"> | null;
+  /**
+   * BLANK-3: the roster answers in about 0.3 s while the telemetry route can
+   * take several seconds (3-4 s for 58 members, more under load). Called with
+   * the roster-only view as soon as the roster arrives, so the page can show
+   * people without waiting; the returned read still carries the full view.
+   */
+  onRoster?: (view: TeamTelemetryView) => void;
 }): Promise<CompanyTeamRead> {
-  const { slug, companyUid, company, messaging } = opts;
+  const { slug, companyUid, company, messaging, onRoster } = opts;
   const empty: TeamTelemetryView = { members: [], humans: [], agents: [], error: null, empty: true };
   const rosterRead = async (): Promise<unknown[]> => {
     if (messaging && companyUid) {
@@ -299,7 +403,44 @@ export async function readCompanyTeam(opts: {
     });
     return res && res.ok && Array.isArray(res.value) ? res.value : [];
   };
-  const [rawRes, roster] = await Promise.all([company.getTeamTelemetry(slug), rosterRead()]);
+  let telemetrySettled = false;
+  // A rejected telemetry read counts as a failed one, so it never fails the roster.
+  const telemetry = Promise.resolve(company.getTeamTelemetry(slug))
+    .catch((err: unknown) => {
+      console.warn("[team] telemetry read rejected", err);
+      return { ok: false as const, reason: "network" as const, message: "telemetry read rejected" };
+    })
+    .finally(() => {
+      telemetrySettled = true;
+    });
+  const rosterFirst = rosterRead().then((rows) => {
+    if (!telemetrySettled && rows.length > 0) onRoster?.(mergeRosterIntoTeamView(empty, rows));
+    return rows;
+  });
+  // OWNER-R9: role, joined date and badge come from the membership roster.
+  const membershipRead = companyUid && company.listCompanyMemberships
+    ? Promise.resolve(company.listCompanyMemberships(companyUid))
+        .then((res) => {
+          if (!res.ok) console.warn("[team] membership read failed", res.message ?? res.reason);
+          return res.ok ? membershipRows(res.value) : [];
+        })
+        .catch((err: unknown) => {
+          console.warn("[team] membership read rejected", err);
+          return [] as MembershipRow[];
+        })
+    : Promise.resolve([] as MembershipRow[]);
+  const pendingRead = companyUid && company.listPendingMemberships
+    ? Promise.resolve(company.listPendingMemberships(companyUid))
+        .then((res) => {
+          if (!res.ok) console.warn("[team] pending invites read failed", res.message ?? res.reason);
+          return res.ok ? pendingFromMemberships(res.value) : null;
+        })
+        .catch((err: unknown) => {
+          console.warn("[team] pending invites read rejected", err);
+          return null;
+        })
+    : Promise.resolve(null);
+  const [rawRes, roster, memberships, pending] = await Promise.all([telemetry, rosterFirst, membershipRead, pendingRead]);
   const labels: Record<string, { email?: string | null; displayName?: string | null }> = {};
   for (const row of roster) {
     if (!row || typeof row !== "object") continue;
@@ -311,7 +452,7 @@ export async function readCompanyTeam(opts: {
       displayName: typeof rec.displayName === "string" ? rec.displayName : null,
     };
   }
-  if (!rawRes.ok && roster.length === 0) {
+  if (!rawRes.ok && roster.length === 0 && memberships.length === 0) {
     console.warn("[team] telemetry read failed", rawRes.message ?? rawRes.reason);
     return { view: empty, invites: [], error: "Could not read the team." };
   }
@@ -320,8 +461,8 @@ export async function readCompanyTeam(opts: {
     ? normalizeCompanyTeamTelemetry(rawRes.value, { memberLabelsById: labels })
     : empty;
   return {
-    view: mergeRosterIntoTeamView(fromTelemetry, roster),
-    invites: rawRes.ok ? pendingInvitesFromTelemetry(rawRes.value) : [],
+    view: applyMemberships(mergeRosterIntoTeamView(fromTelemetry, roster), memberships),
+    invites: pending ?? (rawRes.ok ? pendingInvitesFromTelemetry(rawRes.value) : []),
     error: null,
   };
 }

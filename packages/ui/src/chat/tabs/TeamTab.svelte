@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Dropdown from "../../common/LazyDropdown.svelte";
   /**
    * Team tab — humans, agents, permissions as current-state rows (US-015).
    * Removing an agent and changing an owner role require a second click
@@ -110,17 +111,13 @@
                 {:else if field.control === "select" && row.viewer.canAct}
                   <label class="team-sel-wrap">
                     <span class="visually-hidden">{field.label}</span>
-                    <select
-                      class="team-sel"
-                      data-testid={"team-field-" + row.cardId + "-" + field.id}
+                    <Dropdown
+                      testid={"team-field-" + row.cardId + "-" + field.id}
+                      label={field.label}
                       value={rowValues(row)[field.id] ?? field.value}
-                      onchange={(e) =>
-                        setField(row.cardId, field.id, e.currentTarget.value)}
-                    >
-                      {#each field.options ?? [] as opt (opt.id)}
-                        <option value={opt.id}>{opt.label}</option>
-                      {/each}
-                    </select>
+                      options={(field.options ?? []).map((opt) => ({ value: opt.id, label: opt.label }))}
+                      onchange={(v) => setField(row.cardId, field.id, v)}
+                    />
                   </label>
                 {:else if field.id === "name"}
                   <span class="team-name">{field.value}</span>

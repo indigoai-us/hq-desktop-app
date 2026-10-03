@@ -152,9 +152,9 @@ describe("US-024 task view pane", () => {
     );
   });
 
-  it("paints a skeleton, never a blank pane, while the first read loads", () => {
+  it("paints the loader, never a blank pane, while the first read loads", () => {
     const host = pane({ stories: [], loading: true });
-    expect(host.querySelector('[data-testid="task-view-skeleton"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="task-view-loading"]')).not.toBeNull();
   });
 
   it("hands Mark done and Open project to the board", () => {

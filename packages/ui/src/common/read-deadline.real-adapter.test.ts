@@ -5,12 +5,13 @@
 // apps/work WorkShell and apps/sync HqWorkWorkShell), whose every read is a
 // Tauri `invoke`. Here that invoke never settles, the page is mounted through
 // the same host / lazy door DesktopApp mounts, with the props DesktopApp
-// passes, and the shared read deadline must move it to its failed-read state.
+// passes. BLANK-3: no timer turns the pending read into a failure; the page
+// keeps its loader, adds a waiting line and then a quiet Try again.
 
 import { createSyncPlatformAdapter, type PlatformAdapter } from "@hq/platform";
 import { flushSync, mount, unmount, type Component } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { READ_DEADLINE_MS } from "./read-deadline.js";
+import { expectPendingRead } from "./read-loader.test-support.js";
 import { brainPageDoor, filesConnectDoor } from "../shell/lazy-doors.js";
 import { configureCompanyApi, stopCompanyStore } from "../company/company-store.svelte.js";
 import { clearPersonalRailCache } from "../personal/personal-rail-model.js";
@@ -101,23 +102,16 @@ async function until(ready: string | (() => boolean)): Promise<void> {
   throw new Error(`page never mounted: ${String(ready)}`);
 }
 
-async function pastDeadline(): Promise<void> {
-  await vi.advanceTimersByTimeAsync(READ_DEADLINE_MS + 50);
-  flushSync();
-}
 
 /** Mount a shell host or page with the props DesktopApp passes it. */
 function mountInBody(c: unknown, props: Record<string, unknown>): void {
   component = mount(c as Component<Record<string, unknown>>, { target: document.body, props });
 }
 
-function hasButton(re: RegExp): boolean {
-  return [...document.querySelectorAll("button")].some((b) => re.test(b.textContent ?? ""));
-}
 
-describe("read deadline through the real desktop adapter (BLANK-1)", () => {
+describe("pending reads through the real desktop adapter (BLANK-3)", () => {
   it.each(["knowledge", "policies", "skills", "workers"] as const)(
-    "company %s (BrainPage via brainPageDoor) ends in the failed-read state",
+    "company %s (BrainPage via brainPageDoor) keeps loading, never a failed state",
     async (page) => {
       quiet();
       await brainPageDoor.load();
@@ -136,32 +130,23 @@ describe("read deadline through the real desktop adapter (BLANK-1)", () => {
           onopenpage: () => {},
         },
       });
-      await until("[data-testid='brain-shimmer']");
+      await until("[data-testid='brain-loading']");
       expect(commands).toContain("set_desktop_active_company");
-      await pastDeadline();
-      expect(document.querySelector("[data-testid='brain-shimmer']")).toBeNull();
-      expect(document.querySelector("[data-testid='brain-read-error']")?.textContent).toContain(
-        "Some company files could not be read.",
-      );
-      expect(document.querySelector("[data-testid='brain-retry']")).toBeTruthy();
+      await expectPendingRead(document, "brain-loader");
     },
   );
 
-  it("company Goals (GoalsRailHost -> GoalsView) ends in the failed-read state", async () => {
+  it("company Goals (GoalsRailHost -> GoalsView) keeps loading, never a failed state", async () => {
     quiet();
     await import("../goals/GoalsView.svelte");
     fakeTimers();
     const { adapter: a, commands } = hungAdapter();
     mountInBody(GoalsRailHost, { adapter: a, slug: "real-goals" });
     await until(() => commands.includes("get_local_company_goals"));
-    await pastDeadline();
-    expect(document.querySelector("[data-testid='goals-load-error']")?.textContent).toContain(
-      "Couldn't read this company's goals.",
-    );
-    expect(document.querySelector("[data-testid='goals-retry']")).toBeTruthy();
+    await expectPendingRead(document, "goals-loader");
   });
 
-  it("company Projects (ProjectsHome -> CompanyProjectsPage) ends in the failed-read state", async () => {
+  it("company Projects (ProjectsHome -> CompanyProjectsPage) keeps loading, never a failed state", async () => {
     quiet();
     fakeTimers();
     const { adapter: a, commands } = hungAdapter();
@@ -173,17 +158,12 @@ describe("read deadline through the real desktop adapter (BLANK-1)", () => {
       preferredSlug: ACME.slug,
       onslugchange: () => {},
     });
-    await until(".board-loading");
+    await until("[data-testid='projects-loader']");
     expect(commands).toContain("get_local_projects");
-    await pastDeadline();
-    expect(document.querySelector(".board-loading")).toBeNull();
-    expect(document.querySelector("[data-testid='projects-load-error']")?.textContent).toContain(
-      "Couldn't read this company's projects.",
-    );
-    expect(document.querySelector("[data-testid='projects-retry']")).toBeTruthy();
+    await expectPendingRead(document, "projects-loader");
   });
 
-  it("company Vault (FilesConnectPage via filesConnectDoor) ends in the failed-read state", async () => {
+  it("company Vault (FilesConnectPage via filesConnectDoor) keeps loading, never a failed state", async () => {
     quiet();
     await filesConnectDoor.load();
     fakeTimers();
@@ -204,20 +184,11 @@ describe("read deadline through the real desktop adapter (BLANK-1)", () => {
         deployActions: true,
       },
     });
-    await until("[data-testid='file-tree-loading']");
+    // OWNER-R13: the Vault is the Files explorer; its tree read owns the loader.
+    await until("[data-testid='vault-tree-loader']");
     expect(commands).toContain("set_desktop_active_company");
-    expect(document.querySelector("[data-testid='vault-summary']")?.textContent).toContain("Reading folder…");
-    await pastDeadline();
-    // Folder listing (CompanyFileTree).
-    expect(document.querySelector("[data-testid='file-tree-loading']")).toBeNull();
-    expect(document.querySelector("[data-testid='file-tree-error-reason']")?.textContent).toBe(
-      "Could not read this folder.",
-    );
-    expect(document.querySelector("[data-testid='file-tree-root-retry']")).toBeTruthy();
-    // Folder summary line (FilesConnectPage).
-    expect(document.querySelector("[data-testid='vault-summary']")?.textContent ?? "").not.toContain(
-      "Reading folder…",
-    );
+    await expectPendingRead(document, "vault-tree-loader");
+    expect(document.querySelector("[data-testid='vault-tree-loader-retry']")).toBeTruthy();
   });
 
   it.each([
@@ -225,8 +196,8 @@ describe("read deadline through the real desktop adapter (BLANK-1)", () => {
     ["deployments", "Could not load deployments.", "list_deploy_apps"],
     ["integrations", "Could not load connected apps.", "hq_pro_fetch /v1/integrations/admin?companyUid=cmp_real_integrations"],
   ] as const)(
-    "company %s (FilesConnectPage via filesConnectDoor) ends in the failed-read state",
-    async (page, copy, command) => {
+    "company %s (FilesConnectPage via filesConnectDoor) keeps loading, never a failed state",
+    async (page, _copy, command) => {
       quiet();
       await filesConnectDoor.load();
       fakeTimers();
@@ -248,16 +219,13 @@ describe("read deadline through the real desktop adapter (BLANK-1)", () => {
           deployActions: true,
         },
       });
-      await until("[data-testid='files-connect-skeleton']");
+      await until(`[data-testid='${page}-loader']`);
       expect(commands).toContain(command);
-      await pastDeadline();
-      expect(document.querySelector("[data-testid='files-connect-skeleton']")).toBeNull();
-      expect(document.body.textContent).toContain(copy);
-      expect(hasButton(/Try again/)).toBe(true);
+      await expectPendingRead(document, `${page}-loader`);
     },
   );
 
-  it("company Team (TeamPage) ends in the failed-read state", async () => {
+  it("company Team (TeamPage) keeps loading, never a failed state", async () => {
     quiet();
     fakeTimers();
     const { adapter: a, commands } = hungAdapter();
@@ -272,17 +240,12 @@ describe("read deadline through the real desktop adapter (BLANK-1)", () => {
       onaddagent: () => {},
       onmessage: () => {},
     });
-    await until("[data-testid='team-shimmer']");
+    await until("[data-testid='team-loader']");
     expect(commands).toContain("get_company_team_telemetry");
-    await pastDeadline();
-    expect(document.querySelector("[data-testid='team-shimmer']")).toBeNull();
-    expect(document.querySelector("[data-testid='team-load-error']")?.textContent).toContain(
-      "Could not read the team.",
-    );
-    expect(document.querySelector("[data-testid='team-retry']")).toBeTruthy();
+    await expectPendingRead(document, "team-loader");
   });
 
-  it("company Bots (BotsPage) ends in the failed-read state", async () => {
+  it("company Bots (BotsPage) keeps loading, never a failed state", async () => {
     quiet();
     fakeTimers();
     const { adapter: a, commands } = hungAdapter();
@@ -296,17 +259,12 @@ describe("read deadline through the real desktop adapter (BLANK-1)", () => {
       onmessage: () => {},
       onaddbot: () => {},
     });
-    await until("[data-testid='bots-shimmer']");
+    await until("[data-testid='bots-loader']");
     expect(commands.some((c) => c.startsWith("hq_pro_fetch") && c.includes("cmp_real_bots"))).toBe(true);
-    await pastDeadline();
-    expect(document.querySelector("[data-testid='bots-shimmer']")).toBeNull();
-    expect(document.querySelector("[data-testid='bots-load-error']")?.textContent).toContain(
-      "Couldn't read this company's cloud bots.",
-    );
-    expect(document.querySelector("[data-testid='bots-retry']")).toBeTruthy();
+    await expectPendingRead(document, "bots-loader");
   });
 
-  it("personal Library (VaultExplorer + VaultTree) ends in the failed-read state", async () => {
+  it("personal Library (VaultExplorer + VaultTree) keeps loading, never a failed state", async () => {
     quiet();
     fakeTimers();
     const { adapter: a, commands } = hungAdapter();
@@ -318,23 +276,12 @@ describe("read deadline through the real desktop adapter (BLANK-1)", () => {
       onlocationchange: () => {},
     });
     await until(() => commands.includes("vault_summary") && commands.includes("list_hq_dir"));
-    expect(document.querySelector(".vt-skeleton")).toBeTruthy();
-    expect(document.querySelector(".vx-count")?.textContent).toContain("Indexing…");
-    await pastDeadline();
-    // Rail tree (VaultTree).
-    expect(document.querySelector(".vt-skeleton")).toBeNull();
-    expect(document.querySelector("[data-testid='vault-tree-error']")?.textContent).toContain(
-      "Couldn't read this vault.",
-    );
-    // Home summary (VaultExplorer).
-    expect(document.querySelector(".vx-count")?.textContent ?? "").not.toContain("Indexing…");
-    expect(document.querySelector("[data-testid='vault-home-error']")?.textContent).toContain(
-      "Couldn't read this vault.",
-    );
-    expect(document.querySelector("[data-testid='vault-home-retry']")).toBeTruthy();
+    await expectPendingRead(document, "vault-tree-loader");
+    expect(document.querySelector("[data-testid='vault-home-loader']")).toBeTruthy();
+    expect(document.querySelector("[data-testid='vault-home-loader-retry']")).toBeTruthy();
   });
 
-  it("personal Deployments (DeploymentsRailHost -> PersonalDeploymentsPage) ends in the failed-read state", async () => {
+  it("personal Deployments (DeploymentsRailHost -> PersonalDeploymentsPage) keeps loading, never a failed state", async () => {
     quiet();
     await import("../library/PersonalDeploymentsPage.svelte");
     fakeTimers();
@@ -346,17 +293,12 @@ describe("read deadline through the real desktop adapter (BLANK-1)", () => {
       openExternal: () => {},
       actions: true,
     });
-    await until("[data-testid='deploy-skeleton']");
+    await until("[data-testid='deploy-loader']");
     expect(commands).toContain("list_deploy_apps");
-    await pastDeadline();
-    expect(document.querySelector("[data-testid='deploy-skeleton']")).toBeNull();
-    expect(document.querySelector("[data-testid='deploy-load-error']")?.textContent).toContain(
-      "Couldn't read your deployments.",
-    );
-    expect(document.querySelector("[data-testid='deploy-retry']")).toBeTruthy();
+    await expectPendingRead(document, "deploy-loader");
   });
 
-  it("personal Secrets (PersonalRailHost -> PersonalRailPage) ends in the failed-read state", async () => {
+  it("personal Secrets (PersonalRailHost -> PersonalRailPage) keeps loading, never a failed state", async () => {
     quiet();
     await loadPersonalRail();
     fakeTimers();
@@ -370,17 +312,12 @@ describe("read deadline through the real desktop adapter (BLANK-1)", () => {
       integrationsApi: a.agents ?? null,
       openExternal: () => {},
     });
-    await until("[data-testid='personal-secrets-skeleton']");
+    await until("[data-testid='personal-secrets-loader']");
     expect(commands).toContain("get_company_secrets");
-    await pastDeadline();
-    expect(document.querySelector("[data-testid='personal-secrets-skeleton']")).toBeNull();
-    expect(document.querySelector("[data-testid='personal-secrets-error']")?.textContent).toContain(
-      "Could not reach your vault.",
-    );
-    expect(document.querySelector("[data-testid='personal-secrets-retry']")).toBeTruthy();
+    await expectPendingRead(document, "personal-secrets-loader");
   });
 
-  it("personal Connections (PersonalRailHost -> PersonalRailPage) ends in the failed-read state", async () => {
+  it("personal Connections (PersonalRailHost -> PersonalRailPage) keeps loading, never a failed state", async () => {
     quiet();
     await loadPersonalRail();
     fakeTimers();
@@ -394,14 +331,9 @@ describe("read deadline through the real desktop adapter (BLANK-1)", () => {
       integrationsApi: a.agents ?? null,
       openExternal: () => {},
     });
-    await until("[data-testid='personal-integrations-skeleton']");
+    await until("[data-testid='personal-integrations-loader']");
     await until(() => commands.includes("hq_pro_fetch /v1/google/accounts"));
     expect(commands).toContain("hq_pro_fetch /v1/slack/personal/accounts");
-    await pastDeadline();
-    expect(document.querySelector("[data-testid='personal-integrations-skeleton']")).toBeNull();
-    expect(document.querySelector("[data-testid='personal-integrations-error']")?.textContent).toContain(
-      "Could not load your connections.",
-    );
-    expect(document.querySelector("[data-testid='personal-integrations-retry']")).toBeTruthy();
+    await expectPendingRead(document, "personal-integrations-loader");
   });
 });

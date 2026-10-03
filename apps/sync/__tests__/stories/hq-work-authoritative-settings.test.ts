@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 vi.mock('svelte', async () => {
   // @ts-expect-error Vitest needs Svelte's browser entry for happy-dom mounts.
@@ -14,6 +14,13 @@ import { createSyncPlatformAdapter, type SyncInvokeFn } from '@hq/platform';
 import CompaniesSettingsPane from '../../../../packages/ui/src/settings/CompaniesSettingsPane.svelte';
 import PrototypeSettingsPanes from '../../../../packages/ui/src/settings/PrototypeSettingsPanes.svelte';
 import { resetUpdateStore } from '../../../../packages/ui/src/settings/update-store.svelte';
+
+// The recording-company control is the lazily loaded shared Dropdown. Load
+// its module up front so the door opens from the module cache instead of
+// racing a cold import on a slow CI runner.
+beforeAll(async () => {
+  await import('../../../../packages/ui/src/common/Dropdown.svelte');
+});
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -343,17 +350,25 @@ describe('embedded HQ Work authoritative settings', () => {
         ],
       },
     });
+    // OWNER-R6: the native select was replaced by the shared Dropdown
+    // (button + listbox); drive and assert it through that surface.
     await vi.waitFor(() => {
-      const select = host.querySelector<HTMLSelectElement>('#recording-company');
-      expect(select?.value).toBe('');
-      expect(select?.disabled).toBe(false);
+      const button = host.querySelector<HTMLButtonElement>('[data-testid="recording-company"]');
+      expect(button?.getAttribute('data-value')).toBe('');
+      expect(button?.disabled).toBe(false);
+    }, { timeout: 5000 });
+    expect(host.querySelector('select')).toBeNull();
+    host.querySelector<HTMLButtonElement>('[data-testid="recording-company"]')?.click();
+    const menu = await vi.waitFor(() => {
+      const el = host.querySelector<HTMLElement>('[data-testid="recording-company-menu"]');
+      if (!el) throw new Error('recording company menu did not open');
+      return el;
     });
-    expect(host.textContent).toContain('Acme');
-    expect(host.textContent).not.toContain('Other');
-    const recording = host.querySelector<HTMLSelectElement>('#recording-company');
-    if (!recording) throw new Error('recording company select was not rendered');
-    recording.value = 'co_acme';
-    recording.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(menu.textContent).toContain('Acme');
+    expect(menu.textContent).not.toContain('Other');
+    const acme = menu.querySelector<HTMLElement>('[role="option"][data-value="co_acme"]');
+    if (!acme) throw new Error('Acme recording company option was not rendered');
+    acme.click();
     await vi.waitFor(() => expect(persisted().defaultRecordingCompanyUid).toBe('co_acme'));
     host.querySelector<HTMLButtonElement>('[aria-label="Detected-meeting alerts"]')?.click();
     await vi.waitFor(() => {

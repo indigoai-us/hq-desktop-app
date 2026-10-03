@@ -1,14 +1,13 @@
 // @vitest-environment happy-dom
 /**
  * US-022: a past row opens the recap with Summary, Decisions, and Action items.
- * Transcript stays in-app. Upcoming Join follows the 10-minute lead. The new
- * meeting sheet has the storyboard fields.
+ * Transcript stays in-app. Upcoming Join follows the 10-minute lead.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, unmount } from "svelte";
 import MeetingsStatesBody from "./MeetingsStatesBody.svelte";
 import { defaultMeetingId, meetingsRailSections } from "./meetings-rail-model";
-import { draftToEvent, emptyNewMeetingDraft, joinAvailable, meetingPhase, recapModel } from "./meeting-states-model";
+import { joinAvailable, meetingPhase, recapModel } from "./meeting-states-model";
 import type { MeetingEvent } from "./meetings-model";
 
 const now = new Date(2026, 9, 1, 10, 14);
@@ -95,25 +94,6 @@ describe("US-022 meeting states", () => {
     expect(openExternal).toHaveBeenCalledWith("https://zoom.us/j/2");
   });
 
-  it("opens the new meeting sheet with title, when, people, notetaker, link, and agenda", () => {
-    const oncreate = vi.fn();
-    const el = render({ mode: "empty", sheetOpen: true, now, sections: [], oncreate, people: [{ id: "p1", kind: "person", name: "Eric B.", detail: "", meta: "", live: false, companyUid: null }] });
-    const sheet = el.querySelector('[data-testid="new-meeting-sheet"]');
-    expect(sheet?.textContent).toContain("Title");
-    expect(sheet?.querySelector('[data-testid="duration-tabs"]')?.textContent).toContain("45");
-    expect(sheet?.querySelector('[data-testid="people-picker"]')).not.toBeNull();
-    expect(sheet?.textContent).toContain("Notetaker");
-    expect(sheet?.querySelector('[data-testid="link-tabs"]')?.textContent).toContain("Zoom");
-    expect(sheet?.querySelector('[aria-label="Agenda"]')).not.toBeNull();
-    const title = sheet?.querySelector("input.field") as HTMLInputElement;
-    title.value = "Desktop storyboard review";
-    title.dispatchEvent(new Event("input", { bubbles: true }));
-    flushSync();
-    (sheet?.querySelector('[data-testid="create-meeting"]') as HTMLButtonElement).click();
-    flushSync();
-    expect(oncreate).toHaveBeenCalledWith(expect.objectContaining({ summary: "Desktop storyboard review" }));
-  });
-
   it("does not auto-select a past or upcoming row when nothing is live", () => {
     const sections = meetingsRailSections({
       events: [past, later],
@@ -131,7 +111,4 @@ describe("US-022 meeting states", () => {
     expect(el.querySelector('[data-testid="meetings-empty"]')?.textContent).toContain("Nestlé copy sync");
   });
 
-  it("rejects a draft with no title", () => {
-    expect(draftToEvent(emptyNewMeetingDraft(now), "x")).toBeNull();
-  });
 });

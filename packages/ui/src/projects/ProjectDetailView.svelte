@@ -1446,7 +1446,7 @@
     list-style: none;
     border: 1px solid var(--v4-hairline);
     border-radius: var(--v4-radius-popover);
-    background: var(--v4-popover);
+    background: var(--overlay-bg, var(--v4-popover));
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
     box-shadow:

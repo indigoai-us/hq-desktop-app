@@ -11,16 +11,21 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
+// OWNER-R24: each settings area is its own company panel pane; the seat
+// card (formerly HQ Workforce) sits at the top of Billing.
+const current = $state({ section: "general" });
 function render(props: Record<string, unknown>) {
   const target = document.createElement("div");
   document.body.appendChild(target);
-  mounted.push(mount(CompanySettingsPage, { target, props: { companyLabel: "Unicom", ...props } as never }));
+  current.section = "general";
+  const all = { companyLabel: "Unicom", ...props, get section() { return current.section; } };
+  mounted.push(mount(CompanySettingsPage, { target, props: all as never }));
   flushSync();
   return target;
 }
 
-function openWorkforce(target: HTMLElement): void {
-  (target.querySelector("[data-testid='settings-tab-workforce']") as HTMLButtonElement).click();
+function openWorkforce(_target: HTMLElement): void {
+  current.section = "billing";
   flushSync();
 }
 
@@ -52,7 +57,7 @@ describe("CompanySettingsPage HQ Workforce seats (QA-046)", () => {
     expect(messaging.listContacts).toHaveBeenCalledWith({ companyUid: "cmp_unicom" });
 
     roster = [...roster, { personUid: "prs_cy", displayName: "Cy" }];
-    (target.querySelector("[data-testid='settings-tab-general']") as HTMLButtonElement).click();
+    current.section = "general";
     flushSync();
     openWorkforce(target);
     await vi.waitFor(() => {

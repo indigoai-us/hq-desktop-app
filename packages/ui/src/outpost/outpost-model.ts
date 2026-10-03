@@ -115,18 +115,6 @@ export type OutpostRefresher = () => Promise<OutpostCache>;
 /** Refresh cadence while the page is visible (QA-069). */
 export const OUTPOST_REFRESH_MS = 60_000;
 
-/** A single Outpost read settles within this bound or counts as failed (QA-084). */
-export const OUTPOST_READ_TIMEOUT_MS = 10_000;
-
-/** Reject when `work` has not settled within `ms`, so a hung read cannot pin the loading state. */
-export function withReadTimeout<T>(work: Promise<T>, ms: number = OUTPOST_READ_TIMEOUT_MS): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`outpost read timed out after ${ms} ms`)), ms);
-  });
-  return Promise.race([work, timeout]).finally(() => clearTimeout(timer));
-}
-
 /** "19m ago" from an absolute ISO time. Empty when unreadable. */
 export function agoLabel(iso: string | undefined, now: number): string {
   const at = iso ? Date.parse(iso) : Number.NaN;
@@ -297,7 +285,9 @@ function longAgo(at: number, now: number): string {
 export function lastReportCopy(iso: string | undefined, now: number): LastReportCopy {
   const at = iso ? Date.parse(iso) : Number.NaN;
   if (Number.isNaN(at)) return { text: "Host unreachable. No report received yet." };
-  return { text: `Host unreachable. No report since ${longAgo(at, now)}.`, title: new Date(at).toLocaleString() };
+  // OWNER-R19: "No report for 24 days.", never "No report since 24 days ago."
+  const span = longAgo(at, now).replace(/ ago$/, "");
+  return { text: `Host unreachable. No report for ${span}.`, title: new Date(at).toLocaleString() };
 }
 
 export function offlineBanner(cache: OutpostCache, now: number = Date.now()): string {

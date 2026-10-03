@@ -1,7 +1,7 @@
 <script lang="ts">
   /**
    * Renders a door's body once it has loaded. Until then it renders the
-   * caller's skeleton synchronously, so the click paints its frame at once.
+   * caller's loading frame (the `skeleton` snippet) synchronously, so the click paints its frame at once.
    */
   import type { Snippet } from "svelte";
   import type { Door } from "./lazy-doors.js";

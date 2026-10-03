@@ -250,7 +250,7 @@
   .tab { border: 0; background: transparent; color: var(--t2, inherit); font: inherit; font-size: 13px; padding: 4px 8px; border-radius: 4px; flex: 0 0 auto; white-space: nowrap; }
   .tab[aria-selected="true"] { background: var(--v4-active-row, var(--hover)); color: var(--t1, inherit); }
   .ta {
-    width: 100%; min-height: 60px; border: 1px solid var(--panel-border); border-radius: 6px;
+    box-sizing: border-box; width: 100%; min-height: 60px; border: 1px solid var(--panel-border); border-radius: 6px;
     background: transparent; color: inherit; font: inherit; font-size: 13px; padding: 6px 10px;
   }
   .inl { display: flex; align-items: center; gap: 8px; font-size: 13px; }

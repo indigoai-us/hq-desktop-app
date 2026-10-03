@@ -2838,7 +2838,7 @@
     padding: 6px;
     border-radius: 8px;
     border: 1px solid var(--pop-border);
-    background: var(--pop-bg);
+    background: var(--overlay-bg, var(--pop-bg));
     box-shadow: var(--pop-shadow), inset 0 1px 0 var(--pop-highlight);
   }
   .filter-actions {

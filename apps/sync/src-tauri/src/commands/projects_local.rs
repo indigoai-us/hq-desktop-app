@@ -148,6 +148,36 @@ pub async fn get_local_projects() -> Result<Vec<LocalProject>, String> {
     .map_err(|error| format!("projects scan task join: {error}"))
 }
 
+/// OWNER-R27: My Telemetry session history from the HQ workspace folder on
+/// this Mac (`workspace/sessions` + `workspace/threads`). Read-only; no
+/// transcript text leaves Rust. Company-tagged sessions are limited to the
+/// companies this person belongs to.
+#[tauri::command]
+pub async fn list_local_sessions(
+    from: String,
+    to: String,
+    offset: Option<usize>,
+    limit: Option<usize>,
+) -> Result<hq_desktop_core::local_sessions::LocalSessionsPage, String> {
+    if !crate::util::feature_gate::desktop_features_enabled().await {
+        return Err("session history requires a signed-in user".to_string());
+    }
+    let is_day = |s: &str| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok();
+    if !is_day(&from) || !is_day(&to) {
+        return Err("session range must be YYYY-MM-DD".to_string());
+    }
+    let (hq, workspaces) = hydrated_project_context().await?;
+    let mut allowed = authorized_company_slugs(&workspaces);
+    allowed.insert("personal".to_string());
+    let offset = offset.unwrap_or(0);
+    let limit = limit.unwrap_or(50).clamp(1, 500);
+    tauri::async_runtime::spawn_blocking(move || {
+        hq_desktop_core::local_sessions::scan_local_sessions(&hq, &from, &to, Some(&allowed), offset, limit)
+    })
+    .await
+    .map_err(|error| format!("session history task join: {error}"))
+}
+
 #[tauri::command]
 pub async fn get_local_project_prd(prd_path: String) -> Result<LocalProjectPrd, String> {
     if !crate::util::feature_gate::desktop_features_enabled().await {

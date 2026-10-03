@@ -1,9 +1,10 @@
 <script lang="ts">
   /**
-   * First frame of the Project Files tab. The skeleton paints before the
+   * First frame of the Project Files tab. The loader paints before the
    * body chunk loads (US-025). Nothing here imports ProjectFilesBody.
    */
   import { onMount } from "svelte";
+  import ReadLoader from "../common/ReadLoader.svelte";
   import type { PlatformAdapter } from "@hq/platform";
   import { loadProjectFiles } from "./project-files-lazy.js";
   import type { PortfolioSessionRef } from "./projects-model.js";
@@ -65,46 +66,11 @@
       {ownerName}
     />
   {:else}
-    <div class="files-skel" data-testid="project-files-skeleton" aria-label="Loading project files">
-      <div class="skel-tree">
-        {#each [0, 1, 2, 3, 4, 5] as row (row)}
-          <span class="bar" style={`width:${72 - row * 6}%`}></span>
-        {/each}
-      </div>
-      <div class="skel-preview">
-        <span class="bar wide"></span>
-        <span class="bar"></span>
-        <span class="bar"></span>
-      </div>
-    </div>
+    <ReadLoader testid="project-files-loading" />
   {/if}
 </div>
 
 <style>
   .files-host { position: relative; height: 100%; min-height: 280px; }
   .files-empty { padding: 24px 0; color: var(--v4-text-3); }
-  .files-skel {
-    display: grid;
-    grid-template-columns: minmax(220px, 32%) minmax(0, 1fr);
-    height: 100%;
-    border-top: 1px solid var(--v4-hairline);
-    gap: 16px;
-    padding: 16px 0;
-  }
-  .skel-tree, .skel-preview { display: grid; gap: 8px; align-content: start; }
-  .bar {
-    display: block;
-    height: 12px;
-    border-radius: 4px;
-    background: var(--v4-control-faint);
-    animation: files-pulse 1.3s ease-in-out infinite;
-  }
-  .bar.wide { width: 40%; }
-  @keyframes files-pulse {
-    0%, 100% { opacity: 0.55; }
-    50% { opacity: 1; }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .bar { animation: none; }
-  }
 </style>

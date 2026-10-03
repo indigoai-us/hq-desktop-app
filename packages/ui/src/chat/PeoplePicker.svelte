@@ -123,6 +123,7 @@
   .pp-n { margin-left: auto; align-self: center; font-size: 13px; color: var(--t3, var(--v4-text-3)); }
   .pp-q { display: block; margin: 8px 10px 2px; }
   .pp-q input {
+    box-sizing: border-box;
     width: 100%;
     height: 28px;
     border: 1px solid var(--overlay-field-border);

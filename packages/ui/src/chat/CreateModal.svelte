@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { isDropdownOpen } from "../common/dropdown-open.js";
+  import Dropdown from "../common/LazyDropdown.svelte";
   /**
    * The unified create modal — one search-first dialog behind the sidebar "+".
    *
@@ -1447,6 +1449,8 @@
         return;
       }
       if (event.key !== "Escape") return;
+      // OWNER-R6: Escape in an open dropdown closes only the menu.
+      if (isDropdownOpen()) return;
       event.preventDefault();
       event.stopPropagation();
       if (confirmSubject) {
@@ -2456,19 +2460,15 @@
                 >{field.label}</span
               >
               {#if field.control === "select"}
-                <select
-                  class="create-select"
-                  data-testid={`chat-create-company-field-${field.id}`}
-                  aria-labelledby={`create-company-${field.id}-label`}
+                <Dropdown
+                  block
+                  testid={`chat-create-company-field-${field.id}`}
+                  label={field.label}
                   disabled={companyBusy}
                   value={companyValues[field.id] ?? ""}
-                  onchange={(event) =>
-                    setCompanyValue(field.id, event.currentTarget.value)}
-                >
-                  {#each field.options as option (option.id)}
-                    <option value={option.id}>{option.label}</option>
-                  {/each}
-                </select>
+                  options={field.options.map((option) => ({ value: option.id, label: option.label }))}
+                  onchange={(v) => setCompanyValue(field.id, v)}
+                />
               {:else}
                 <input
                   class="create-input"
@@ -2555,16 +2555,14 @@
             </div>
             <div class="create-field">
               <span class="create-label" id="create-company-role-label">Role</span>
-              <select
-                class="create-select"
-                data-testid="chat-create-company-role"
-                aria-labelledby="create-company-role-label"
+              <Dropdown
+                block
+                testid="chat-create-company-role"
+                label="Role"
                 disabled={companyBusy}
                 bind:value={companyRole}
-              >
-                <option value="member">Member</option>
-                <option value="owner">Owner</option>
-              </select>
+                options={[{ value: "member", label: "Member" }, { value: "owner", label: "Owner" }]}
+              />
             </div>
             <p class="create-help">
               Each address gets an invite once the company exists. Nobody is
@@ -2870,24 +2868,17 @@
         {#if scopeMode === "company"}
           <div class="create-field">
             <span class="create-label" id="create-company-label">Company</span>
-            <select
-              class="create-select"
-              data-testid="chat-channel-scope"
-              aria-labelledby="create-company-label"
+            <Dropdown
+              block
+              testid="chat-channel-scope"
+              label="Company"
               disabled={creating}
               bind:value={companyUid}
-            >
-              {#each targetCompanies as company (company.companyUid)}
-                {@const blocked = scopeUnavailable.find(
-                  (row) => row.company.companyUid === company.companyUid,
-                )}
-                <option value={company.companyUid} disabled={Boolean(blocked)}>
-                  {blocked
-                    ? `${company.label} — ${blocked.reason}`
-                    : company.label}
-                </option>
-              {/each}
-            </select>
+              options={targetCompanies.map((company) => {
+                const blocked = scopeUnavailable.find((row) => row.company.companyUid === company.companyUid);
+                return { value: company.companyUid, label: company.label, detail: blocked?.reason ?? null, disabled: Boolean(blocked) };
+              })}
+            />
           </div>
         {/if}
         {#if scopeMode === "company" && scopeUnavailable.length > 0}

@@ -3,14 +3,17 @@
    * Company Goals mount. The page module loads after the first frame.
    */
   import { onMount } from "svelte";
+  import ReadLoader from "../common/ReadLoader.svelte";
   import type { PlatformAdapter } from "@hq/platform";
 
   interface Props {
     adapter: PlatformAdapter;
     slug: string;
+    canEdit?: boolean;
+    onopenproject?: (projectId: string) => void;
   }
 
-  let { adapter, slug }: Props = $props();
+  let { adapter, slug, canEdit = true, onopenproject }: Props = $props();
 
   let View = $state<typeof import("../goals/GoalsView.svelte").default | null>(null);
 
@@ -23,24 +26,15 @@
 
 <div class="host" data-testid="goals-host">
   {#if View}
-    <View {adapter} {slug} />
+    <View {adapter} {slug} {canEdit} {onopenproject} />
   {:else}
-    <div class="skeleton" data-testid="goals-skeleton" aria-busy="true">
-      <div class="title"></div>
-      <div class="row"></div>
-      <div class="row"></div>
+    <div class="loading" aria-busy="true">
+      <ReadLoader testid="goals-loading" />
     </div>
   {/if}
 </div>
 
 <style>
   .host { height: 100%; min-height: 0; }
-  .skeleton { padding: 16px; }
-  .title, .row {
-    border-radius: 6px;
-    background: linear-gradient(90deg, var(--v4-control-faint), var(--v4-hover), var(--v4-control-faint));
-    background-size: 200% 100%;
-  }
-  .title { height: 28px; width: 160px; }
-  .row { height: 64px; margin-top: 10px; }
+  .loading { padding: 16px; }
 </style>

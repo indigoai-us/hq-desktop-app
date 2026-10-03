@@ -78,7 +78,9 @@
   use:focusReturn
   style="left: {anchorLeft}px; bottom: {anchorBottom}px;"
 >
-  <div class="who">
+  <!-- OWNER-R21: the name block opens Settings at Profile; Profile and
+       Billing are items in the one Settings list, not separate entries. -->
+  <button type="button" class="who" role="menuitem" data-testid="account-identity" onclick={() => choose("profile")}>
     <span class="avatar" aria-hidden="true">
       {mark()}
       {#if live}<span class="live" data-testid="account-menu-live"></span>{/if}
@@ -90,14 +92,6 @@
     {#if live}
       <span class="chip" data-testid="account-menu-live-chip" title={work || undefined}><i aria-hidden="true"></i>{work || "Live"}</span>
     {/if}
-  </div>
-  <button type="button" class="row" role="menuitem" data-testid="account-profile" onclick={() => choose("profile")}>
-    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4" /><path d="M4 21a8 8 0 0 1 16 0" /></svg>
-    <span class="t">Profile</span>
-  </button>
-  <button type="button" class="row" role="menuitem" data-testid="account-billing" onclick={() => choose("billing")}>
-    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="18" height="12" rx="2" /><path d="M3 10h18M7 15h3" /></svg>
-    <span class="t">Billing</span>
   </button>
   <button type="button" class="row" role="menuitem" data-testid="account-settings" onclick={() => choose("settings")}>
     <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1" /></svg>
@@ -135,7 +129,16 @@
     color: var(--v4-text-1);
   }
 
+  .who:hover { background: var(--overlay-hover); }
   .who {
+    width: 100%;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    border-radius: 6px;
     display: flex;
     gap: 10px;
     align-items: center;

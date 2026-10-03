@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Dropdown from "../common/LazyDropdown.svelte";
   /**
    * Right-hand profile sheet for one of the user's LOCAL bots (this Mac, the
    * user's own Claude Code / Codex / Grok login). Mirrors AgentDetailPanel's
@@ -327,38 +328,36 @@
         <h3 class="ad-kicker">Model and thinking</h3>
         <label class="ad-field">
           <span>Model</span>
-          <select
-            data-testid="local-bot-detail-model-select"
+          <Dropdown
+            block
+            testid="local-bot-detail-model-select"
+            label="Model"
             value={modelValue}
             disabled={savingSettings || promoting || Boolean(promotionPhase)}
-            onchange={(event) => {
-              draftModel = (event.currentTarget as HTMLSelectElement).value;
+            options={modelChoices.map((choice) => ({ value: choice.value, label: choice.label }))}
+            onchange={(v) => {
+              draftModel = v;
               settingsNote = null;
             }}
-          >
-            {#each modelChoices as choice (choice.value)}
-              <option value={choice.value}>{choice.label}</option>
-            {/each}
-          </select>
+          />
         </label>
         {#if modelHint}
           <p class="ad-muted" data-testid="local-bot-detail-model-hint">{modelHint}</p>
         {/if}
         <label class="ad-field">
           <span>Thinking</span>
-          <select
-            data-testid="local-bot-detail-effort-select"
+          <Dropdown
+            block
+            testid="local-bot-detail-effort-select"
+            label="Thinking"
             value={effortValue}
             disabled={savingSettings || promoting || Boolean(promotionPhase)}
-            onchange={(event) => {
-              draftEffort = (event.currentTarget as HTMLSelectElement).value;
+            options={effortChoices.map((level) => ({ value: level, label: effortLabel(level) }))}
+            onchange={(v) => {
+              draftEffort = v;
               settingsNote = null;
             }}
-          >
-            {#each effortChoices as level (level)}
-              <option value={level}>{effortLabel(level)}</option>
-            {/each}
-          </select>
+          />
         </label>
         <div class="ad-danger-row">
           <button
@@ -387,10 +386,7 @@
         <h3 class="ad-kicker">Cloud hosting</h3>
         <p class="ad-muted">Your bot keeps its identity, conversation, skills, and memory. We prepare its cloud computer, ask you to connect ChatGPT, then move this conversation over.</p>
         <label class="ad-field"><span>Company</span>
-          <select value={promotionCompany} onchange={(event) => { promotionCompany = event.currentTarget.value; }} disabled={promoting || Boolean(promotionPhase)} aria-label="Promotion company">
-            <option value="">Choose company</option>
-            {#each promotionCompanies as company (company.uid)}<option value={company.uid}>{company.name}</option>{/each}
-          </select>
+          <Dropdown block testid="local-bot-promotion-company" label="Promotion company" value={promotionCompany} onchange={(v) => { promotionCompany = v; }} disabled={promoting || Boolean(promotionPhase)} options={[{ value: "", label: "Choose company" }, ...promotionCompanies.map((company) => ({ value: company.uid, label: company.name }))]} />
         </label>
         {#if promotionPhase || promoting}
           <p role="status"><strong>{promotionError ? "Promotion paused" : promotionStatus}</strong></p>
