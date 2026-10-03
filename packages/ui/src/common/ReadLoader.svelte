@@ -13,6 +13,7 @@
     LOADING_RETRY_AFTER_MS,
   } from "./read-deadline.js";
   import { loadingMessages, type LoadingSurface } from "./loading-messages.js";
+  import { beginLoaderWait, endLoaderWait } from "./read-loader-handoff.js";
 
   interface Props {
     /** Starts a fresh read; offered after LOADING_RETRY_AFTER_MS. */
@@ -30,19 +31,25 @@
   onMount(() => {
     let index = Math.floor(Math.random() * lines.length);
     let rotate: ReturnType<typeof setInterval> | null = null;
-    const first = setTimeout(() => {
+    // A page often hands its wait from one loader to the next (the lazy
+    // door's loader, then the page's own). The wait the person sees started
+    // with the first one, so the thresholds count from there.
+    const elapsed = Date.now() - beginLoaderWait();
+    const showLine = () => {
       line = lines[index % lines.length]!;
       rotate = setInterval(() => {
         if (typeof document !== "undefined" && document.hidden) return;
         index += 1;
         line = lines[index % lines.length]!;
       }, LOADING_MESSAGE_ROTATE_MS);
-    }, LOADING_MESSAGE_AFTER_MS);
-    const long = setTimeout(() => (longWait = true), LOADING_RETRY_AFTER_MS);
+    };
+    const first = setTimeout(showLine, Math.max(0, LOADING_MESSAGE_AFTER_MS - elapsed));
+    const long = setTimeout(() => (longWait = true), Math.max(0, LOADING_RETRY_AFTER_MS - elapsed));
     return () => {
       clearTimeout(first);
       clearTimeout(long);
       if (rotate) clearInterval(rotate);
+      endLoaderWait();
     };
   });
 </script>
