@@ -14,7 +14,7 @@ The release moves it under the version it ships in.
 - Referral links now carry through desktop sign-in regardless of the signup experiment. HQ retries referral confirmation after connection failures or a restart and keeps each referral tied to the account that signed in.
 - Release builds: a daily check now fails, and opens an issue, once the release test sign-in is 25 days old, five days before it expires, so it is renewed before a release depends on it. The renewal steps no longer need AWS keys or a shared GitHub token.
 - The updater now refuses a beta or alpha build unless you chose that release channel in Settings. People on the stable channel stay on stable releases even if a test build is ever published by mistake.
-- Behind `agents.desktop-agent-creation` (Indigo only): New bot → Cloud creates the bot directly, without Slack, and opens its DM. Cloud stays visible when it can't be used and says why (admin role, plan, or no company), and Settings › Bots can create cloud bots too.
+- Behind `agents.desktop-agent-creation` (Indigo only): New bot in Messages is one three-step flow (what kind, where it runs, its details). Choosing Cloud creates the bot directly, without Slack, and opens its DM. New cloud bots start on Claude, with Codex and Grok offered. Cloud stays visible when it can't be used and says why (admin role, plan, or no company). Settings › Bots › New bot closes Settings and opens the same flow. The flag is checked for the company you pick, and the cloud create code loads only when the flow opens, so startup is not slower.
 
 ## [0.10.384] — 2026-10-03
 
