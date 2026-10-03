@@ -48,10 +48,6 @@
   const storage = typeof localStorage === "undefined" ? null : localStorage;
 
   let tab = $state<ActivityTab>("team");
-  // OWNER-R31: Live shows only when the read carries live sessions; this app's
-  // read has none today, so the tab is not offered (and falls back to Team).
-  const hasLive = $derived((snapshot?.live.length ?? 0) > 0);
-  const shownTab = $derived(tab === "live" && !hasLive ? "team" : tab);
   let range = $state<ActivityRange>("30d");
   let snapshot = $state<ActivitySnapshot | null>(null);
   let refreshing = $state(false);
@@ -82,6 +78,10 @@
     dayBars(range, snapshot?.dayWeights ?? []),
   );
   const weekendCount = $derived(bars.filter((bar) => bar.weekend).length);
+  // OWNER-R31: Live shows only when the read carries live sessions; this app's
+  // read has none today, so the tab is not offered (and falls back to Team).
+  const hasLive = $derived((snapshot?.live.length ?? 0) > 0);
+  const shownTab = $derived(tab === "live" && !hasLive ? "team" : tab);
   const liveCount = $derived(snapshot?.live.filter((row) => row.live).length ?? 0);
   // The sidepane Activity row shows the team rows this page lists (QA-014).
   $effect(() => {
