@@ -60,6 +60,8 @@ export type IntegrationAuthClass = "none" | "oauth" | "key";
  * is no badge made from the name: a card never shows a made-up logo.
  */
 export interface ConnectionCardLogo {
+  /** The app's bundled mark (app-brand-marks.ts), or null when it has none. */
+  mark: BrandMark | null;
   /** Image URLs the app built from the domain, tried in order. Never from the bot. */
   sources: string[];
 }
@@ -68,8 +70,6 @@ export interface ConnectionCardLogo {
  * The cards whose main button opens a modal instead of connecting at once.
  *
  * This is the one place a target is marked as "has a modal". Add the target
-  /** The app's bundled mark (app-brand-marks.ts), or null when it has none. */
-  mark: BrandMark | null;
  * here and register its content in card-modal-registry.ts: the card's main
  * button then sends `open` and the shell shows that content in a CardModal.
  * A target listed here with no registered content has a button that does
