@@ -210,6 +210,11 @@
           onerror: (err) => console.warn('onboarding: company handle check failed', err),
         })
       : null;
+    if (prefilledCompanyName && form.nameFieldId) {
+      // Use the same edit path as typing so the derived slug and availability
+      // check are populated before the create button is evaluated.
+      setValue(form.nameFieldId, prefilledCompanyName);
+    }
     phase = 'details';
   }
 

@@ -1300,6 +1300,9 @@
 
   async function resolveCompanyNamePrefillFlag(): Promise<boolean> {
     try {
+      // A create route can follow an account switch. Refresh before reading so
+      // this suggestion uses the newly authenticated person's flag snapshot.
+      await onboardingFeatureFlags.identity.refreshFeatureFlags?.();
       const result = await onboardingFeatureFlags.identity.hasFeature(COMPANY_NAME_PREFILL_FLAG);
       if (!result.ok) {
         console.warn(

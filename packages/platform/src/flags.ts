@@ -149,6 +149,8 @@ export type FeatureFlagFallback = () => AdapterPromise<boolean>;
 
 export interface FeatureFlagGate {
   resolve(flag: string, fallback: FeatureFlagFallback): AdapterPromise<boolean>;
+  /** Bypass the normal refresh cadence when identity changes before a gated route. */
+  refresh(): Promise<void>;
   /** Notify when the registry client publishes a refreshed snapshot. */
   subscribe(
     flag: string,
@@ -288,6 +290,9 @@ export function createFeatureFlagGate(
   }
 
   const gate: FeatureFlagGate = {
+    refresh() {
+      return getClient().refresh();
+    },
     subscribe(flag, fallback, onChange) {
       const key = registryKeyFor(flag);
       if (!key) return () => {};
