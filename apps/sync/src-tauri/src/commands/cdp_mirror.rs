@@ -527,8 +527,12 @@ pub async fn flush_pending_first_open_now() -> bool {
 
 /// Capture the install's menubar path before dispatching a background flush.
 /// The task must not resolve HOME after another caller has changed it.
+pub(crate) fn capture_background_flush_path() -> Option<std::path::PathBuf> {
+    paths::menubar_json_path().ok()
+}
+
 pub(crate) fn pending_first_open_flush_task() -> impl std::future::Future<Output = bool> + Send {
-    let path = paths::menubar_json_path().ok();
+    let path = capture_background_flush_path();
     async move {
         match path {
             Some(path) => flush_pending_first_open_at(path).await,
@@ -688,7 +692,7 @@ pub async fn flush_held_auth_rows_now() -> usize {
 
 /// Capture the install's menubar path before dispatching a background flush.
 pub(crate) fn held_auth_flush_task() -> impl std::future::Future<Output = usize> + Send {
-    let path = paths::menubar_json_path().ok();
+    let path = capture_background_flush_path();
     async move {
         if let Some(path) = path {
             flush_held_auth_rows_at(path).await
