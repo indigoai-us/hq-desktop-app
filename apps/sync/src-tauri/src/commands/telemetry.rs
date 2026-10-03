@@ -3167,6 +3167,12 @@ mod codex_telemetry_tests {
                 "requiredGitVersion",
                 "detectedGitVersion",
                 "found",
+                "existingCompanies",
+                "paidCompany",
+                "pendingInvites",
+                "decision",
+                "provisioningStep",
+                "selfHeal",
             ]
         );
         for key in ALLOWED_DESKTOP_PROPERTY_KEYS {
