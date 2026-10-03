@@ -7,10 +7,12 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+- Desktop Core baseline refresh now retries GitHub timeouts before reporting a pending baseline; persistent timeouts remain reported.
 
 - Shelltest builds now report to a separate Sentry environment; release telemetry remains in production.
-
+- Desktop sign-in now records each stage from choosing a provider through the browser callback and token exchange. When it fails, HQ records only the failing stage and a safe error category, so the download-to-sign-in drop can be measured without collecting sign-in details.
 - The Meet native Windows test build now pins its signing and Rust toolchain actions to exact versions. Nothing changes in the app.
+- Setup failure events now fill a missing stage from the bounded component and keep error categories on the closed list.
 - CI launches of the desktop app no longer add first-run rows to the install funnel, including through the CDP mirror.
 - Internal tests: four desktop tests that only searched the source text for strings now check what the code does. Nothing changes in the app.
 
