@@ -177,7 +177,7 @@ export function botMembershipsFromPayload(payload: unknown): ProfileCompany[] | 
   return rows.length ? rows : null;
 }
 
-export { botSubjectName } from "./bot-subject-name.js";
+export { botSubjectName, profileViewingCompanyUid } from "./bot-subject-name.js";
 
 /** Display name from an hq-pro agent status/roster payload, when it has one. */
 export function botNameFromPayload(payload: unknown): string {
@@ -296,3 +296,4 @@ export function transcriptWindow(
     padBottom: Math.max(0, (count - last) * rowHeight),
   };
 }
+

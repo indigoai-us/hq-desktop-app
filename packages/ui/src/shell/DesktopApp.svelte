@@ -61,7 +61,7 @@
   import GoalsRailHost from "./GoalsRailHost.svelte";
   import TeamPage from "../company/TeamPage.svelte";
   import BotsPage from "../company/BotsPage.svelte";
-  import { botSubjectName } from "./profile-panes/bot-subject-name.js";
+  import { botSubjectName, profileViewingCompanyUid } from "./profile-panes/bot-subject-name.js";
   import CompanySettingsHost from "./CompanySettingsHost.svelte";
   import AccountHost from "./AccountHost.svelte";
   import {
@@ -5176,12 +5176,20 @@
    * through to "This destination is no longer available" (QA-090). With cold
    * caches the DM opens from a synthesized row and the conversation hydrates.
    */
+  /** Company each DM was opened from (Bots / Team / Atlas Message), by UID. */
+  let dmOriginCompany = $state<Record<string, string>>({});
+  const profileCompanyUid = $derived(
+    profileViewingCompanyUid(selectedRow?.companyUid, selectedRow?.personUid, dmOriginCompany),
+  );
+
   function messagePersonByUid(
     personUid: string,
     options: { name?: string | null; companyUid?: string | null } = {},
   ): void {
     const uid = personUid.trim();
     if (!uid) return;
+    const origin = options.companyUid?.trim();
+    if (origin) dmOriginCompany = { ...dmOriginCompany, [uid]: origin };
     const existing = [...railRows, ...searchRows].find(
       (row) => row.kind === "dm" && row.personUid === uid && !row.channelId,
     );
@@ -11501,11 +11509,11 @@
                       name: openAgentMember.displayName,
                       email: openAgentMember.email,
                       owner: self?.displayName ?? null,
-                      company: selectedRow.companyUid ? companyDisplayName(selectedRow.companyUid, companyNames) : null,
+                      company: profileCompanyUid ? companyDisplayName(profileCompanyUid, companyNames) : null,
                       live: openAgentMember.online,
                       agentUid: openLocalBot.agentUid,
                       runtimeKind: "local",
-                      companyUid: selectedRow.companyUid,
+                      companyUid: profileCompanyUid,
                       agents: adapter.agents ?? null,
                       onclose: closeAgentDetail,
                       onmessage: () => messageMemberDirectly(openAgentMember!),
@@ -11544,11 +11552,11 @@
                       name: openAgentMember.displayName,
                       email: openAgentMember.email,
                       role: openAgentMember.role,
-                      company: selectedRow.companyUid ? companyDisplayName(selectedRow.companyUid, companyNames) : null,
+                      company: profileCompanyUid ? companyDisplayName(profileCompanyUid, companyNames) : null,
                       live: openAgentMember.online,
                       agentUid: openAgentMember.personUid,
                       runtimeKind: "cloud",
-                      companyUid: promotedBotCompany(localBotRecords, openAgentMember.personUid) ?? selectedRow.companyUid,
+                      companyUid: promotedBotCompany(localBotRecords, openAgentMember.personUid) ?? profileCompanyUid,
                       agents: adapter.agents ?? null,
                       onclose: closeAgentDetail,
                       onmessage: () => messageMemberDirectly(openAgentMember!),

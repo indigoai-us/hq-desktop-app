@@ -23,3 +23,20 @@ export function botSubjectName(
   }
   return "";
 }
+
+/**
+ * The company a profile opened from a conversation is viewed in (QA-087).
+ * A 1:1 DM row usually has no company of its own, so a bot reached through a
+ * company's Bots page Message keeps that company as its viewing company
+ * instead of falling back to a generic "Company" label.
+ */
+export function profileViewingCompanyUid(
+  rowCompanyUid: string | null | undefined,
+  personUid: string | null | undefined,
+  dmOrigins: Readonly<Record<string, string>>,
+): string | null {
+  const own = rowCompanyUid?.trim();
+  if (own) return own;
+  const uid = personUid?.trim();
+  return (uid && dmOrigins[uid]?.trim()) || null;
+}
