@@ -9202,6 +9202,14 @@
     }
   });
 
+  /**
+   * OWNER-R8: viewers and guests see the objective pane read-only. A role the
+   * roster has not answered yet adds no restriction.
+   */
+  function canEditGoals(role: string | null | undefined): boolean {
+    return !/^(viewer|guest|read[-_ ]?only)$/i.test((role ?? "").trim());
+  }
+
   function selectCompanyPaneRow(rowId: string): void {
     if (!tenantCompanyId) return;
     if (rowId.startsWith("person:")) {
@@ -10637,6 +10645,10 @@
           <GoalsRailHost
             {adapter}
             slug={companyPaneCompany.slug ?? ""}
+            canEdit={canEditGoals(accountRosterRoles[companyPaneCompany.uid])}
+            onopenproject={(project) => {
+              void navigate({ kind: "projects", company: companyPaneCompany?.slug ?? null, project });
+            }}
           />
         {:else if (railPlaceholder?.id === "knowledge" || railPlaceholder?.id === "policies" || railPlaceholder?.id === "skills" || railPlaceholder?.id === "workers") && companyPaneCompany}
           <LazyDoor

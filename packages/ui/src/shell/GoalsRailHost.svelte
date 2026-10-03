@@ -8,9 +8,11 @@
   interface Props {
     adapter: PlatformAdapter;
     slug: string;
+    canEdit?: boolean;
+    onopenproject?: (projectId: string) => void;
   }
 
-  let { adapter, slug }: Props = $props();
+  let { adapter, slug, canEdit = true, onopenproject }: Props = $props();
 
   let View = $state<typeof import("../goals/GoalsView.svelte").default | null>(null);
 
@@ -23,7 +25,7 @@
 
 <div class="host" data-testid="goals-host">
   {#if View}
-    <View {adapter} {slug} />
+    <View {adapter} {slug} {canEdit} {onopenproject} />
   {:else}
     <div class="skeleton" data-testid="goals-skeleton" aria-busy="true">
       <div class="title"></div>
