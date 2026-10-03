@@ -29,6 +29,7 @@ import {
   type StatusMemberInput,
   type StatusPresenceInput,
   type VaultFilePreviewRequest,
+  type ProjectMemberAddResult,
 } from "@hq/ui";
 import { hqProFetch, type HqProFetch } from "./hq-pro-client.js";
 
@@ -63,7 +64,7 @@ export async function addLiveProjectMember(
   projectId: string,
   personUid: string,
   fetchImpl: HqProFetch = hqProFetch,
-): Promise<void> {
+): Promise<ProjectMemberAddResult> {
   const path = `/v1/work-mesh/projects/${encodeURIComponent(projectId)}/members`;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     let response: Response;
@@ -78,7 +79,8 @@ export async function addLiveProjectMember(
       await new Promise((resolve) => setTimeout(resolve, 150 * (attempt + 1)));
       continue;
     }
-    if (response.ok) return;
+    if (response.ok) return "added";
+    if (response.status === 404) return "not-enabled";
     if (response.status < 500 && response.status !== 429) {
       throw new Error("Could not add project member");
     }

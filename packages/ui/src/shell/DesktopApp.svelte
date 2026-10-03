@@ -486,6 +486,7 @@
     ConversationApi,
     ConversationMessageWire,
     NotificationsApi,
+    ProjectMemberAddResult,
     ReplyThreadScope,
     ReplyThreadResponse,
   } from "../chat/chat-api.js";
@@ -645,7 +646,7 @@
     /** Resolve the (injected) Board fixture for a row (columns + stories). */
     boardByRow?: (row: ConversationRow) => BoardTabData | null;
     /** Add an active company member to a project row through the host API. */
-    addProjectMember?: (row: ConversationRow, personUid: string) => Promise<void>;
+    addProjectMember?: (row: ConversationRow, personUid: string) => Promise<ProjectMemberAddResult>;
     /** Resolve the (injected) Files fixture rows for a row. */
     filesByRow?: (row: ConversationRow) => ChannelFileItemModel[];
     loadFilePreview?: (item: ChannelFileItemModel) => Promise<ChannelFilePreview>;
@@ -10254,6 +10255,8 @@
             <BoardTab
               columns={board?.columns ?? []}
               stories={board?.stories ?? {}}
+              companyUid={selectedRow?.companyUid ?? null}
+              listCompanyMembers={sidebarApi.listCompanyMembers}
               onAddMember={selectedRow && addProjectMember
                 ? (personUid) => addProjectMember(selectedRow!, personUid)
                 : undefined}

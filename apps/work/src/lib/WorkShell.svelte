@@ -48,6 +48,7 @@
     type SetupRunApi,
     type Workspace,
     type WorkMeshThread,
+    type ProjectMemberAddResult,
     conversationDeepLinkFromLocation,
     conversationRowForDeepLink,
     attachmentVaultScopeUid,
@@ -904,7 +905,7 @@
     // work-mesh activity as Board tasks.
     return ensureProjectMeta(row)?.board ?? null;
   });
-  const addProjectMember = async (row: ConversationRow, personUid: string) => {
+  const addProjectMember = async (row: ConversationRow, personUid: string): Promise<ProjectMemberAddResult> => {
     const companyUid = (row.companyUid ?? "").trim();
     const projectId = (row.projectId ?? "").trim();
     if (!companyUid || !projectId) throw new Error("This row is not a company project");
