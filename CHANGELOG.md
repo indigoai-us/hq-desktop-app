@@ -50,7 +50,8 @@ This beta brings the new HQ interface. A rail on the left holds your companies, 
 - Outpost always reads your Outpost when the page opens, even if the window is behind another app. If the read fails it shows Couldn't read your Outpost with Try again instead of loading forever, and if only the jobs fail to load, the host stays on screen and Jobs and Runs show Try again.
 - Deployments lists the company's deployed apps with their links and access.
 - Access on a company deployment now opens. If it can't load, it says so in plain words.
-- When Projects, Goals, Team, Bots, Files, Knowledge, Policies, Skills, Workers, Secrets, Deployments or the Library can't be read, the page says so in plain words with Try again, instead of showing the empty-page line or raw error text.
+- When company Projects, Goals, Team, Bots, Files, Knowledge, Policies, Skills, Workers, Secrets or Deployments, Personal Deployments, or the Choose folder sheet can't be read, the page says so in plain words with Try again, instead of showing the empty-page line or raw error text.
+- When the Library can't be read, it shows one Try again, which reloads both the folder tree and the vault home.
 - Goals shows a loading skeleton on first load instead of briefly showing the empty line.
 - Pages with nothing in them yet use plain empty copy.
 - Library and Settings text uses the app's standard sizes and weights.
