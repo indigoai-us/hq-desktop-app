@@ -23,6 +23,7 @@ The release moves it under the version it ships in.
 - Release builds: the macOS release check now confirms its test sign-in is still valid before it opens the app. An expired test sign-in failed v0.10.383 with a message that looked like the app was stuck loading; it now says the test sign-in expired and how to renew it.
 - Add bounded marker and refresh rejection attribution to unexpected startup diagnostics.
 - Startup diagnostics now distinguish a rejected saved session from an empty credential store.
+- Desktop CLI updates now wait for running CLI commands to finish before replacing shared package files.
 - Shelltest builds now report to a separate Sentry environment; release telemetry remains in production.
 - Past meetings can list local personal notes and your own desktop recordings, behind the desktop.meetings-personal-transcripts flag (off by default).
 - Desktop sign-in now records each stage from choosing a provider through the browser callback and token exchange. When it fails, HQ records only the failing stage and a safe error category, so the download-to-sign-in drop can be measured without collecting sign-in details.
@@ -77,6 +78,8 @@ The release moves it under the version it ships in.
 ## [0.10.379] — 2026-10-02
 
 - Closing the main window no longer logs an error.
+
+- "Restart to update" works again while sync is running. Only a meeting recording, a transcript that is still saving, or an HQ Core update holds a restart you asked for, and the update card now says which one instead of always mentioning a recording.
 
 - When hq-flags enables `desktop.setup-deps-timeout-retry-v1`, a dependency setup timeout gets one automatic retry before setup is marked passed with that step skipped.
 
