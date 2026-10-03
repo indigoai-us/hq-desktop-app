@@ -11,9 +11,11 @@
     /** The desktop hq-pro client (adapter.agents). */
     api?: OutpostReadApi | null;
     openExternal?: (url: string) => void;
+    /** RELEASE-001 gate: false keeps only the status card and host settings. */
+    full?: boolean;
   }
 
-  let { api = null, openExternal }: Props = $props();
+  let { api = null, openExternal, full = true }: Props = $props();
 
   let Body = $state<typeof import("../outpost/OutpostPage.svelte").default | null>(null);
 
@@ -26,7 +28,7 @@
 
 <div class="host" data-testid="outpost-rail-host">
   {#if Body}
-    <Body {api} {openExternal} />
+    <Body {api} {openExternal} {full} />
   {:else}
     <div class="skeleton" data-testid="outpost-skeleton" aria-busy="true">
       <aside>

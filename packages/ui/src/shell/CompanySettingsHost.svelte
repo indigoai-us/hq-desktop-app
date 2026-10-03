@@ -14,9 +14,11 @@
     companyUid?: string | null;
     company?: CompanyApi | null;
     messaging?: MessagingApi | null;
+    /** RELEASE-001 gate for the Workforce seat-limit line. */
+    seatLimit?: boolean;
   }
 
-  let { slug, companyLabel, openExternal, companyUid = null, company = null, messaging = null }: Props = $props();
+  let { slug, companyLabel, openExternal, companyUid = null, company = null, messaging = null, seatLimit = true }: Props = $props();
 
   let View = $state<typeof import("../company/CompanySettingsPage.svelte").default | null>(null);
 
@@ -29,7 +31,7 @@
 
 <div class="host" data-testid="company-settings-host">
   {#if View}
-    <View {slug} {companyLabel} {openExternal} {companyUid} {company} {messaging} />
+    <View {slug} {companyLabel} {openExternal} {companyUid} {company} {messaging} {seatLimit} />
   {:else}
     <div class="skeleton" data-testid="company-settings-skeleton" aria-busy="true">
       <div class="title"></div>

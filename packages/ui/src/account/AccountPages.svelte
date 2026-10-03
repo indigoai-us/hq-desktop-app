@@ -36,6 +36,8 @@
     onsignout?: () => void;
     oncompany?: (uid: string) => void;
     onsettingssection?: (section: string) => void;
+    /** RELEASE-001 gate: the Edit shortcuts sheet does not persist yet. */
+    shortcutEditing?: boolean;
   }
 
   let {
@@ -49,6 +51,7 @@
     onsignout,
     oncompany,
     onsettingssection,
+    shortcutEditing = true,
   }: Props = $props();
 
   let view = $state<AccountPageId>(page);
@@ -275,7 +278,9 @@
               <kbd>{row.keys}</kbd>
             </div>
           {/each}
-          <button type="button" class="link" data-testid="edit-shortcuts" onclick={() => (shortcutsOpen = true)}>Edit shortcuts</button>
+          {#if shortcutEditing}
+            <button type="button" class="link" data-testid="edit-shortcuts" onclick={() => (shortcutsOpen = true)}>Edit shortcuts</button>
+          {/if}
           <div class="sech">HQ settings</div>
           {#each ACCOUNT_SETTINGS_SECTIONS as section (section.id)}
             <button type="button" class="srow" data-testid="settings-section" data-section={section.id} onclick={() => onsettingssection?.(section.id)}>
@@ -324,7 +329,7 @@
     </div>
   {/if}
 
-  {#if shortcutsOpen}
+  {#if shortcutsOpen && shortcutEditing}
     <div class="scrim" data-testid="shortcuts-editor">
       <div class="sheet" role="dialog" aria-label="Keyboard shortcuts">
         <h2>Keyboard shortcuts</h2>

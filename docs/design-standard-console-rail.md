@@ -147,3 +147,20 @@ SVG stroke only, 14px in 24px buttons, stroke-width 1.3 (ChatSidebar.svelte:2812
 | Detail panes: 12px 14px header with `--line` bottom, 13px title, 24px close, 20px side padding | Bespoke pane chrome; detail panes must match Messages thread/profile pane rhythm |
 | SVG stroke icons, 14px in 24px hit targets, stroke 1.3 | Emoji or filled glyph icons in chrome |
 | Empty state: one 13px `--t3` line, centered | Illustrations, large headings, or CTA stacks in empty states |
+
+## Indigo-only gates (RELEASE-001)
+
+Surfaces that are not finished ship to every company in a finished fallback state and in full only when the open company is Indigo. One helper decides: `isIndigoOnlySurface(key, activeCompany, registry)` in `packages/ui/src/shell/indigo-only-gates.ts`. It keys on the company open in the rail, not on the person's memberships, so an Indigo member who opens another company sees that company's fallback. The personal scope (no open company) gets the fallback.
+
+Each key is also an hq-flags registry row (`packages/platform/src/flags.ts`). A configured `true` opens the surface to every company without a release; `false` keeps it Indigo-only. With no configured row, an offline start, or before the registry answers, a key uses its everyone-default: closed for all keys except Atlas.
+
+| Gate key | Hidden for non-Indigo companies | Fallback | Follow-up that removes the gate |
+|---|---|---|---|
+| `desktop.rail-telemetry-v1` | Personal Telemetry page and its data calls | Rail item stays; the page shows "Coming soon" with one sentence | Company-scoped telemetry read in hq-pro and the QA-068 fixes |
+| `desktop.rail-outpost-v1` | Scheduled jobs, job editing, Runs history and Logs on Outpost | Status card and host Settings stay; Overview adds one "Coming soon" line | Job writes persisted through hq-pro and live runs/logs endpoints |
+| `desktop.rail-deployments-actions-v1` | Redeploy (personal and company Deployments), the "Your bots" filter, the Selected people access mode | Controls hidden; list, links and the other access modes stay | Desktop redeploy route, bot-owner attribution and selected-people grants in hq-deploy |
+| `desktop.rail-shortcut-editing-v1` | Edit shortcuts sheet in Settings | Read-only shortcut list | Persist edited shortcuts and apply them to the key handler |
+| `desktop.rail-workforce-limits-v1` | Plan seat-limit line on the Workforce card ("of N" and the limits-unavailable note) | Seat count from Team stays | Plan limits read from hq-billing for every plan |
+| `desktop.rail-atlas-v1` | Atlas company landing (on for everyone by default) | Company Activity | hq-pro Atlas endpoint for large companies; then delete the key |
+
+When a gate's follow-up ships, set its registry value to `true`, then remove the key, its branch at each call site and its row here in the next release.

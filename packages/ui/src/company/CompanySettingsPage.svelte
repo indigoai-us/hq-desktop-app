@@ -38,9 +38,11 @@
     companyUid?: string | null;
     company?: CompanyApi | null;
     messaging?: MessagingApi | null;
+    /** RELEASE-001 gate: false hides the plan seat-limit line on Workforce. */
+    seatLimit?: boolean;
   }
 
-  let { slug, companyLabel, openExternal, companyUid = null, company = null, messaging = null }: Props = $props();
+  let { slug, companyLabel, openExternal, companyUid = null, company = null, messaging = null, seatLimit = true }: Props = $props();
 
   let tab = $state<SettingsTab>("general");
   let grantFilter = $state<GrantFilter>("all");
@@ -284,7 +286,7 @@
       </div>
       <div class="plan">
         <div data-testid="workforce-seats">
-          <b>{rosterHumans ?? "–"}</b>{#if snap.seatsLimit !== null} of {snap.seatsLimit}{/if}<span>Seats used · humans on Team</span>
+          <b>{rosterHumans ?? "–"}</b>{#if seatLimit && snap.seatsLimit !== null}<span data-testid="workforce-seat-limit"> of {snap.seatsLimit}</span>{/if}<span>Seats used · humans on Team</span>
         </div>
         <div data-testid="workforce-agents">
           <b>{hostedAgentCount}</b>{#if snap.agentsLimit !== null} of {snap.agentsLimit}{/if}<span>Hosted agents · counted separately</span>
@@ -293,7 +295,7 @@
       {#if rosterError}
         <p class="note" data-testid="workforce-error">{rosterError}</p>
       {/if}
-      {#if snap.seatsLimit === null}
+      {#if seatLimit && snap.seatsLimit === null}
         <p class="note" data-testid="workforce-limit-unavailable">Plan limits are not available yet. Counts come from the Team roster.</p>
       {/if}
       {#each snap.agents as a (a.id)}

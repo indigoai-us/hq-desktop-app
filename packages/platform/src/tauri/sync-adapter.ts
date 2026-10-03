@@ -34,6 +34,7 @@ import { TAURI_CAPABILITIES, type Capability } from '../capabilities.js';
 import { WEB_PATHS } from '../web/index.js';
 import {
   CLAUDE_PROVIDER_FLAG,
+  RAIL_GATE_EVERYONE_DEFAULT,
   DESKTOP_LIMIT_STATUS_PUSH_FLAG,
   FIRST_FOLDER_SYNC_STEP_FLAG,
   HUMAN_ONLY_CONVERSATIONS_FLAG,
@@ -231,6 +232,11 @@ export function createSyncPlatformAdapter(
     }
     if (flag === CLAUDE_PROVIDER_FLAG) {
       return Promise.resolve(ok(false));
+    }
+    if (flag in RAIL_GATE_EVERYONE_DEFAULT) {
+      // Console-rail gates: without a configured registry row the surface
+      // keeps its everyone-default (Indigo-only for all but Atlas).
+      return Promise.resolve(ok(RAIL_GATE_EVERYONE_DEFAULT[flag] === true));
     }
     if (flag === 'meetings') {
       return call<boolean>('meetings_feature_enabled');

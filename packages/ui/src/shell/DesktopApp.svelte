@@ -52,6 +52,21 @@
   import { pinCompany, type MoreCompany } from "./more-companies.js";
   import type { NewCompanyPlan, ProjectTemplate } from "./new-company/new-company.js";
   import TelemetryRailHost from "./TelemetryRailHost.svelte";
+  import ComingSoon from "./ComingSoon.svelte";
+  import {
+    COMING_SOON_COPY,
+    RAIL_ATLAS_FLAG,
+    RAIL_DEPLOYMENTS_ACTIONS_FLAG,
+    RAIL_OUTPOST_FLAG,
+    RAIL_SHORTCUT_EDITING_FLAG,
+    RAIL_TELEMETRY_FLAG,
+    RAIL_WORKFORCE_LIMITS_FLAG,
+    isIndigoOnlySurface,
+    watchIndigoOnlyGates,
+    type GateCompany,
+    type GateRegistryValues,
+    type IndigoOnlyGateKey,
+  } from "./indigo-only-gates.js";
   import DeploymentsRailHost from "./DeploymentsRailHost.svelte";
   import PersonalRailHost from "./PersonalRailHost.svelte";
   import OutpostRailHost from "./OutpostRailHost.svelte";
@@ -2057,6 +2072,18 @@
       cancelled = true;
       unsubscribe?.();
     };
+  });
+
+  // RELEASE-001: Indigo-only rail gates. Registry answers keep each key
+  // current; until they arrive every key uses its everyone-default.
+  let railGateValues = $state<GateRegistryValues>({});
+  $effect(() => {
+    const identity = adapter?.identity;
+    return untrack(() =>
+      watchIndigoOnlyGates(identity, (values) => {
+        railGateValues = values;
+      }),
+    );
   });
 
   // ── Personal local bots (local-bots US-009) ────────────────────────────────
@@ -9013,6 +9040,17 @@
       }
     );
   });
+  /**
+   * The open company for the Indigo-only gates: the company the rail has
+   * selected, or null in the personal scope. Not the person's memberships.
+   */
+  const gateCompany = $derived.by((): GateCompany | null => {
+    if (!tenantCompanyId) return null;
+    const hit = railCompanyRoster.find((company) => company.uid === tenantCompanyId);
+    return hit ? { uid: hit.uid, slug: hit.slug ?? null } : { uid: tenantCompanyId, slug: null };
+  });
+  const railGate = (key: IndigoOnlyGateKey): boolean =>
+    isIndigoOnlySurface(key, gateCompany, railGateValues);
   const companyPaneSelectedId = $derived(
     view === "extra" ? companyRowForPage(extraPageId) : null,
   );
@@ -10375,6 +10413,13 @@
               void leaveCurrentDestination();
             }}
           />
+        {:else if railPlaceholder?.id === "atlas" && companyPaneCompany && !railGate(RAIL_ATLAS_FLAG)}
+          <!-- RELEASE-001: with Atlas closed for this company, its landing
+               shows company Activity instead. -->
+          <ActivityRailHost
+            slug={companyPaneCompany.slug ?? ""}
+            companyLabel={companyPaneCompany.label}
+          />
         {:else if railPlaceholder?.id === "atlas" && companyPaneCompany}
           <!-- Props read companyPaneCompany through getters that can run once
                more while this branch tears down (switching rail items), so
@@ -10435,6 +10480,7 @@
             companyUid={companyPaneCompany.uid}
             company={adapter.company ?? null}
             messaging={adapter.messaging ?? null}
+            seatLimit={railGate(RAIL_WORKFORCE_LIMITS_FLAG)}
           />
         {:else if railPlaceholder?.id === "bots" && companyPaneCompany}
           <BotsPage
@@ -10507,6 +10553,7 @@
             listDeployApps={adapter.company?.listDeployApps}
             companies={memberCompanies(companies)}
             openExternal={onopenurl}
+            actions={railGate(RAIL_DEPLOYMENTS_ACTIONS_FLAG)}
           />
         {:else if (railPlaceholder?.id === "vault" || railPlaceholder?.id === "integrations" || railPlaceholder?.id === "secrets" || railPlaceholder?.id === "deployments") && companyPaneCompany}
           <LazyDoor
@@ -10521,6 +10568,7 @@
               listDeployApps: adapter.company?.listDeployApps,
               adapter,
               companyUid: companyPaneCompany.uid ?? null,
+              deployActions: railGate(RAIL_DEPLOYMENTS_ACTIONS_FLAG),
             }}
           >
             {#snippet skeleton()}
@@ -10539,6 +10587,7 @@
             live={youPresence.live}
             roles={accountRoles}
             openExternal={onopenurl}
+            shortcutEditing={railGate(RAIL_SHORTCUT_EDITING_FLAG)}
             onsignout={() => {
               void onsignout?.();
             }}
@@ -10561,7 +10610,11 @@
             }}
           />
         {:else if railPlaceholder?.id === "telemetry"}
-          <TelemetryRailHost agents={adapter.agents ?? null} />
+          {#if railGate(RAIL_TELEMETRY_FLAG)}
+            <TelemetryRailHost agents={adapter.agents ?? null} />
+          {:else}
+            <ComingSoon title="Telemetry" body={COMING_SOON_COPY[RAIL_TELEMETRY_FLAG]} testid="telemetry-coming-soon" />
+          {/if}
         {:else if railPlaceholder?.id === "secrets" || railPlaceholder?.id === "connections"}
           <PersonalRailHost
             page={railPlaceholder.id}
@@ -10572,7 +10625,7 @@
             openExternal={onopenurl}
           />
         {:else if railPlaceholder?.id === "outpost"}
-          <OutpostRailHost api={adapter.agents ?? null} openExternal={onopenurl} />
+          <OutpostRailHost api={adapter.agents ?? null} openExternal={onopenurl} full={railGate(RAIL_OUTPOST_FLAG)} />
         {:else if railPlaceholder}
           <section
             class="rail-placeholder"

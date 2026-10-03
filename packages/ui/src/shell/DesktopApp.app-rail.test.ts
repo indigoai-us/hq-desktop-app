@@ -240,7 +240,12 @@ describe("DesktopApp app rail (console-rail US-003)", () => {
   });
 
   it("opens telemetry through the lazy host instead of the placeholder", async () => {
-    await mountShell();
+    // RELEASE-001: Telemetry is Indigo-only; the registry opens it here.
+    const adapter = webAdapter();
+    (adapter as unknown as { identity: unknown }).identity = {
+      hasFeature: async (flag: string) => ok(flag === "desktop.rail-telemetry-v1"),
+    };
+    await mountShell(adapter);
     click("rail-telemetry");
     await settle();
     expect(host.querySelector('[data-testid="telemetry-host"]')).not.toBeNull();
@@ -248,6 +253,17 @@ describe("DesktopApp app rail (console-rail US-003)", () => {
     expect(host.querySelector('[data-testid="rail-placeholder"]')).toBeNull();
     expect(current()).toBe("telemetry");
     await lazyBodiesLoaded(loadTelemetry);
+  });
+
+  it("shows Coming soon for Telemetry outside Indigo, with no telemetry host or data load (RELEASE-001)", async () => {
+    await mountShell();
+    click("rail-telemetry");
+    await settle();
+    expect(current()).toBe("telemetry");
+    expect(host.querySelector('[data-testid="telemetry-host"]')).toBeNull();
+    expect(host.querySelector('[data-testid="telemetry-coming-soon"]')?.textContent).toContain(
+      "Coming soon. Usage and session telemetry is on its way to your company.",
+    );
   });
 
   it("shows one sidepane: personal pages and Meetings replace the Messages list", async () => {

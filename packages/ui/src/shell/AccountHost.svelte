@@ -18,6 +18,8 @@
     onsignout?: () => void;
     oncompany?: (uid: string) => void;
     onsettingssection?: (section: string) => void;
+    /** RELEASE-001 gate for the Edit shortcuts sheet. */
+    shortcutEditing?: boolean;
   }
 
   let {
@@ -31,6 +33,7 @@
     onsignout,
     oncompany,
     onsettingssection,
+    shortcutEditing = true,
   }: Props = $props();
 
   let Body = $state<typeof import("../account/AccountPages.svelte").default | null>(null);
@@ -55,6 +58,7 @@
       {onsignout}
       {oncompany}
       {onsettingssection}
+      {shortcutEditing}
     />
   {:else}
     <div class="skeleton" data-testid="account-skeleton" aria-busy="true">

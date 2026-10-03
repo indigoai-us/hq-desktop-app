@@ -12,9 +12,11 @@
     listDeployApps?: (scope: string) => AdapterPromise<Json>;
     companies?: Pick<Workspace, "slug" | "displayName" | "kind" | "state">[];
     openExternal?: (url: string) => void;
+    /** RELEASE-001 gate for Redeploy and the "Your bots" filter. */
+    actions?: boolean;
   }
 
-  let { accountId = "local", listDeployApps, companies = [], openExternal }: Props = $props();
+  let { accountId = "local", listDeployApps, companies = [], openExternal, actions = true }: Props = $props();
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let Page = $state<Component<any> | null>(null);
@@ -35,7 +37,7 @@
 
 <div class="host" data-testid="personal-deployments-host">
   {#if Page}
-    <Page {accountId} {listDeployApps} {companies} {openExternal} />
+    <Page {accountId} {listDeployApps} {companies} {openExternal} {actions} />
   {:else}
     <div class="skeleton" data-testid="personal-deployments-skeleton" aria-busy="true">
       <aside><div class="bar"></div><div class="bar"></div></aside>

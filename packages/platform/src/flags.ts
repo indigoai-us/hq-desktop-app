@@ -95,6 +95,35 @@ export const HUMAN_ONLY_CONVERSATIONS_FLAG =
  */
 export const HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT = true;
 
+/**
+ * Console-rail surfaces that are Indigo-only until they land (RELEASE-001).
+ * The UI reads them through `isIndigoOnlySurface` in
+ * `packages/ui/src/shell/indigo-only-gates.ts`, keyed to the open company.
+ * A configured registry value of `true` opens a surface to every company;
+ * `false` keeps it Indigo-only. See docs/design-standard-console-rail.md.
+ */
+export const RAIL_TELEMETRY_FLAG = "desktop.rail-telemetry-v1";
+export const RAIL_OUTPOST_FLAG = "desktop.rail-outpost-v1";
+export const RAIL_DEPLOYMENTS_ACTIONS_FLAG =
+  "desktop.rail-deployments-actions-v1";
+export const RAIL_SHORTCUT_EDITING_FLAG = "desktop.rail-shortcut-editing-v1";
+export const RAIL_WORKFORCE_LIMITS_FLAG = "desktop.rail-workforce-limits-v1";
+export const RAIL_ATLAS_FLAG = "desktop.rail-atlas-v1";
+
+/**
+ * Value each rail gate takes for non-Indigo companies when the registry has
+ * no configured row, is unreachable, or has not loaded yet. Atlas is open to
+ * everyone (owner call); the rest stay closed.
+ */
+export const RAIL_GATE_EVERYONE_DEFAULT: Readonly<Record<string, boolean>> = {
+  [RAIL_TELEMETRY_FLAG]: false,
+  [RAIL_OUTPOST_FLAG]: false,
+  [RAIL_DEPLOYMENTS_ACTIONS_FLAG]: false,
+  [RAIL_SHORTCUT_EDITING_FLAG]: false,
+  [RAIL_WORKFORCE_LIMITS_FLAG]: false,
+  [RAIL_ATLAS_FLAG]: true,
+};
+
 /** Caller-visible names that may consult the registry. */
 export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
   meetings: "desktop.meetings",
@@ -109,6 +138,12 @@ export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
   [HUMAN_ONLY_CONVERSATIONS_FLAG]: HUMAN_ONLY_CONVERSATIONS_FLAG,
   "desktop.mirror-quarantine-move-not-deletion":
     "desktop.mirror-quarantine-move-not-deletion",
+  [RAIL_TELEMETRY_FLAG]: RAIL_TELEMETRY_FLAG,
+  [RAIL_OUTPOST_FLAG]: RAIL_OUTPOST_FLAG,
+  [RAIL_DEPLOYMENTS_ACTIONS_FLAG]: RAIL_DEPLOYMENTS_ACTIONS_FLAG,
+  [RAIL_SHORTCUT_EDITING_FLAG]: RAIL_SHORTCUT_EDITING_FLAG,
+  [RAIL_WORKFORCE_LIMITS_FLAG]: RAIL_WORKFORCE_LIMITS_FLAG,
+  [RAIL_ATLAS_FLAG]: RAIL_ATLAS_FLAG,
 };
 
 export const MEETINGS_LEGACY_FLAG = "meetings";

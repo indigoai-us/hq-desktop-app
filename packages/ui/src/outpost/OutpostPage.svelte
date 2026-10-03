@@ -50,9 +50,14 @@
     /** The desktop hq-pro client; the page reads the user's Outpost through it. */
     api?: OutpostReadApi | null;
     openExternal?: (url: string) => void;
+    /**
+     * RELEASE-001 gate. False keeps the status card and host settings and
+     * hides scheduled jobs, job editing, run history and logs.
+     */
+    full?: boolean;
   }
 
-  let { refresh, api = null, openExternal }: Props = $props();
+  let { refresh, api = null, openExternal, full = true }: Props = $props();
 
   // First frame is the cache from the last real read, or an unknown state.
   // Nothing here is sample data: rows only come from hq-pro.
@@ -230,7 +235,7 @@
   <aside class="pane" aria-label="Outpost">
     <div class="pane-head"><span class="status" data-testid="outpost-pane-host" title={provisioned ? `${data.host.name} · ${offline ? "Down" : "Up"}` : undefined}><span class="dot" class:live={!offline} class:err={offline}></span><span class="label">{provisioned ? `${data.host.name} · ${offline ? "Down" : "Up"}` : "Outpost"}</span></span></div>
     <nav>
-      {#each [["overview", "Overview"], ["jobs", "Scheduled jobs"], ["runs", "Runs"], ["logs", "Logs"], ["settings", "Settings"]] as item (item[0])}
+      {#each [["overview", "Overview"], ["jobs", "Scheduled jobs"], ["runs", "Runs"], ["logs", "Logs"], ["settings", "Settings"]].filter((item) => full || item[0] === "overview" || item[0] === "settings") as item (item[0])}
         <button type="button" class:on={tab === item[0]} aria-current={tab === item[0] ? "true" : undefined} onclick={() => (tab = item[0] as OutpostTab)}><span class="label">{item[1]}</span></button>
       {/each}
     </nav>
@@ -269,7 +274,11 @@
       </div>
     {/if}
 
-    {#if provisioned}
+    {#if provisioned && !full && tab === "overview"}
+      <p class="sub" data-testid="outpost-coming-soon">Coming soon. Scheduled jobs, runs and logs are on their way.</p>
+    {/if}
+
+    {#if provisioned && full}
 
     {#if tab === "overview" || tab === "jobs"}
       <section>
@@ -317,7 +326,7 @@
 
     {/if}
 
-    {#if tab === "logs" && data.provisioned !== false && !(data.provisioned === null && refreshFailed)}
+    {#if full && tab === "logs" && data.provisioned !== false && !(data.provisioned === null && refreshFailed)}
       <section data-testid="outpost-logs">
         <div class="tabs">
           {#each ["all", "info", "warn", "err"] as name (name)}
@@ -355,7 +364,7 @@
     {/if}
   </main>
 
-  {#if sheet}
+  {#if sheet && full}
     <div class="ov" data-testid="edit-job-sheet">
       <div class="sheet" role="dialog" aria-label={sheetIsNew ? "New job" : "Edit job"} use:dismissable={{ onclose: () => (sheet = null), outside: true }}>
         <header>{sheetIsNew ? "New job" : "Edit job"} <span class="sub">{sheetIsNew ? data.host.name : `${sheet.name} · ${data.host.name}`}</span>

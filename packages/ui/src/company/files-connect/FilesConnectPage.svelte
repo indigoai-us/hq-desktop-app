@@ -81,9 +81,11 @@
     listDeployApps?: (scope: string) => AdapterPromise<Json>;
     /** hq-deploy access routes for the Access sheet (QA-059). */
     deployAccessRequest?: DeployAccessRequest;
+    /** RELEASE-001 gate: false hides Redeploy and the Selected people access mode. */
+    deployActions?: boolean;
   }
 
-  let { page, slug, files, shell, settings, openExternal, adapter = null, companyUid = null, listDeployApps, deployAccessRequest }: Props = $props();
+  let { page, slug, files, shell, settings, openExternal, adapter = null, companyUid = null, listDeployApps, deployAccessRequest, deployActions = true }: Props = $props();
 
   const workflow = $derived({ settings, shell } as AgentWorkflowApi);
 
@@ -867,7 +869,7 @@
               {#if deployCurrent.url}<p class="mono meta url">{deployCurrent.url}</p>{/if}
               <div class="actions">
                 <RailButton icon="external" disabled={!deployCurrent.url} onclick={() => openExternal?.(deployCurrent.url)}>Open</RailButton>
-                <RailButton icon="refresh" data-testid="redeploy" onclick={() => askRedeploy(deployCurrent)}>Redeploy</RailButton>
+                {#if deployActions}<RailButton icon="refresh" data-testid="redeploy" onclick={() => askRedeploy(deployCurrent)}>Redeploy</RailButton>{/if}
                 <RailButton icon="key" data-testid="deploy-access" onclick={openDeployAccess}>Access</RailButton>
               </div>
             </div>
@@ -899,6 +901,7 @@
         {companyUid}
         hint={deployCurrent.accessHint}
         members={members}
+        selectedPeople={deployActions}
         onclose={closeSheet}
         ondone={(message) => (status = message)}
       />

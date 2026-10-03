@@ -34,10 +34,11 @@
     accountId?: string;
     listDeployApps?: (scope: string) => AdapterPromise<Json>;
     companies?: Pick<Workspace, "slug" | "displayName" | "kind" | "state">[];
-    openExternal?: (url: string) => void;
+    openExternal?: (url: string) => void;    /** RELEASE-001 gate: false hides Redeploy and the "Your bots" filter. */
+    actions?: boolean;
   }
 
-  let { accountId = "local", listDeployApps, companies = [], openExternal }: Props = $props();
+  let { accountId = "local", listDeployApps, companies = [], openExternal, actions = true }: Props = $props();
 
   /** Rows painted per step; the rest arrive on "Show more". */
   const PAGE = 200;
@@ -158,7 +159,7 @@
 
 <div class="page" data-testid="personal-deployments">
   <aside class="pane" aria-label="Deployments">
-    {#each filters as item (item.id)}
+    {#each filters.filter((item) => actions || item.id !== "by-bots") as item (item.id)}
       <button type="button" class="row" class:active={filter === item.id} aria-current={filter === item.id ? "true" : undefined} onclick={() => pick(item.id)}>
         {item.label}
       </button>
@@ -251,7 +252,7 @@
           {/if}
           <div class="act">
             <RailButton icon="external" disabled={!selected.url} onclick={() => selected?.url && openExternal?.(selected.url)}>Visit</RailButton>
-            <RailButton icon="upload" onclick={redeploy} data-testid="deploy-redeploy">Redeploy</RailButton>
+            {#if actions}<RailButton icon="upload" onclick={redeploy} data-testid="deploy-redeploy">Redeploy</RailButton>{/if}
           </div>
           {#if notice}<p class="notice" role="status" data-testid="deploy-redeploy-notice">{notice}</p>{/if}
           <dl>

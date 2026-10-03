@@ -41,9 +41,11 @@
     members?: AccessMember[] | null;
     onclose: () => void;
     ondone?: (message: string) => void;
+    /** RELEASE-001: false hides the unfinished Selected people mode. */
+    selectedPeople?: boolean;
   }
 
-  let { appId, appName, scope, request, companyUid = null, hint = {}, members = null, onclose, ondone }: Props = $props();
+  let { appId, appName, scope, request, companyUid = null, hint = {}, members = null, onclose, ondone, selectedPeople = true }: Props = $props();
 
   const client = $derived(request ? deployAccessClient(request, scope) : null);
 
@@ -153,7 +155,7 @@
     <div class="fr top">
       <span class="lb">Who can open</span>
       <div class="modes" role="radiogroup" aria-label="Who can open">
-        {#each ACCESS_MODES as mode (mode)}
+        {#each ACCESS_MODES.filter((mode) => selectedPeople || mode !== "selected" || current?.mode === mode) as mode (mode)}
           <button
             class="mode"
             type="button"
