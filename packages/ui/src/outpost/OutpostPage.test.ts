@@ -67,7 +67,7 @@ describe("US-034 OutpostPage", () => {
     const target = mountPage();
     const banner = target.querySelector("[data-testid='outpost-offline-banner']");
     expect(banner?.textContent).toContain("No report since 10:52");
-    const terminal = [...target.querySelectorAll("button")].find((b) => b.textContent === "Open terminal");
+    const terminal = [...target.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Open terminal");
     expect(terminal?.hasAttribute("disabled")).toBe(true);
   });
 
@@ -99,7 +99,7 @@ describe("US-034 OutpostPage", () => {
     const prompt = sheet?.querySelector("textarea") as HTMLTextAreaElement | null;
     if (prompt) expect(prompt.value).toBe("");
     // Saving without a name is refused; with a name it adds a new job.
-    const save = () => [...target.querySelectorAll("button")].find((b) => b.textContent === "Save")?.click();
+    const save = () => [...target.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Save")?.click();
     save();
     flushSync();
     expect(target.querySelector("[data-testid='edit-job-sheet']")).not.toBeNull();

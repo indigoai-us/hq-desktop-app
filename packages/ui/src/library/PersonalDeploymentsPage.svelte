@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailButton from "../common/button/RailButton.svelte";
   /**
    * Personal Deployments (US-031). Real hq-deploy apps across the personal
    * scope and every cloud company. Paints the cached list first (skeleton on
@@ -8,6 +9,7 @@
   import ListEmptyState from "../common/ListEmptyState.svelte";
   import { startNowTicker } from "../common/now-ticker.js";
   import "../home/tokens.css";
+  import "../common/button/rail-type.css";
   import "../chat/chat-tokens.css";
   import type { AdapterPromise, Json } from "@hq/platform";
   import type { Workspace } from "../chat/workspaces.js";
@@ -166,11 +168,11 @@
     <div class="toolbar">
       <h1>Deployments</h1>
       {#if cache}
-        <span class="chip" data-testid="deploy-count">{countLabel}</span>
-        <span class="chip status"><span class="dot live"></span>{activeCount.toLocaleString()} active</span>
-        {#if deployingCount > 0}<span class="chip">{deployingCount} deploying</span>{/if}
+        <span class="meta-line" data-meta-line data-testid="deploy-count">{countLabel}</span>
+        <span class="meta-line" data-meta-line><span class="meta-dot dot live"></span>{activeCount.toLocaleString()} active</span>
+        {#if deployingCount > 0}<span class="meta-line" data-meta-line>{deployingCount} deploying</span>{/if}
       {/if}
-      {#if refreshing}<span class="chip" aria-live="polite">Refreshing…</span>{/if}
+      {#if refreshing}<span class="meta-line" data-meta-line aria-live="polite">Refreshing…</span>{/if}
       <span class="grow"></span>
       <input class="search" type="search" placeholder="Search subdomains" aria-label="Search subdomains" bind:value={query} oninput={() => (limit = PAGE)} />
     </div>
@@ -248,8 +250,8 @@
             </div>
           {/if}
           <div class="act">
-            <button type="button" class="btn" disabled={!selected.url} onclick={() => selected?.url && openExternal?.(selected.url)}>Visit</button>
-            <button type="button" class="btn" onclick={redeploy} data-testid="deploy-redeploy">Redeploy</button>
+            <RailButton icon="external" disabled={!selected.url} onclick={() => selected?.url && openExternal?.(selected.url)}>Visit</RailButton>
+            <RailButton icon="upload" onclick={redeploy} data-testid="deploy-redeploy">Redeploy</RailButton>
           </div>
           {#if notice}<p class="notice" role="status" data-testid="deploy-redeploy-notice">{notice}</p>{/if}
           <dl>
@@ -310,8 +312,6 @@
   .toolbar { padding: 12px 16px 8px; }
   h1 { font-size: var(--type-title, 20px); line-height: var(--type-title-line, 1.25); margin: 0; font-weight: var(--type-title-weight, 500); }
   .grow { flex: 1; }
-  .chip { color: var(--t3); }
-  .status { display: inline-flex; align-items: center; gap: 6px; }
   .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--t3); flex: none; }
   .dot.live { background: var(--ok, var(--ok-ink)); }
   .search {
@@ -376,12 +376,6 @@
   .steps .done { color: var(--t2); }
   .steps .now { color: var(--t1); }
   .prog p { margin: 8px 0 0; color: var(--t2); font-size: 13px; }
-  .btn {
-    height: 28px; padding: 0 12px; border: none; border-radius: 8px;
-    background: var(--btn-bg); color: var(--t1); font: inherit; cursor: pointer;
-  }
-  .btn:hover { background: var(--sel); }
-  .btn:disabled { opacity: 0.5; cursor: default; }
   dl { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 6px 10px; margin: 0; }
   dt { color: var(--t3); }
   dd { margin: 0; color: var(--t2); overflow-wrap: anywhere; }

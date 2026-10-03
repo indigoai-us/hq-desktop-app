@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailButton from "../common/button/RailButton.svelte";
   import { dismissable } from "../common/dismissable.js";
   /**
    * Personal Secrets and Connections (US-033).
@@ -285,10 +286,10 @@
         <span class="sub">Values never shown</span>
         <span class="grow"></span>
         <input class="search" placeholder="Search by name" bind:value={query} />
-        <button class="btn" type="button" data-testid="secrets-exec" onclick={() => secretCurrent && copyExec(secretCurrent.name)}>
+        <RailButton icon="copy" type="button" data-testid="secrets-exec" onclick={() => secretCurrent && copyExec(secretCurrent.name)}>
           {copied || "hq secrets exec…"}
-        </button>
-        <button class="btn primary" type="button" data-testid="new-secret" onclick={() => (sheet = "new-secret")}>New secret</button>
+        </RailButton>
+        <RailButton icon="plus" variant="primary" type="button" data-testid="new-secret" onclick={() => (sheet = "new-secret")}>New secret</RailButton>
       </header>
       <div class="split secrets">
         <div class="list" data-testid="personal-secrets-list">
@@ -296,7 +297,7 @@
           {#if secretsError && secretsState === "ready"}
             <p class="meta" data-testid="personal-secrets-stale">
               Showing saved rows. {secretsError}
-              <button class="btn tiny-btn" type="button" onclick={() => void refresh(true)}>Retry</button>
+              <RailButton icon="refresh" size="compact" type="button" onclick={() => void refresh(true)}>Retry</RailButton>
             </p>
           {/if}
           <p class="sec">Personal</p>
@@ -307,7 +308,7 @@
           {:else if secretsState === "error"}
             <div class="state" role="alert" data-testid="personal-secrets-error">
               <p>{secretsError}</p>
-              <button class="btn" type="button" data-testid="personal-secrets-retry" onclick={() => void refresh(true)}>Retry</button>
+              <RailButton icon="refresh" type="button" data-testid="personal-secrets-retry" onclick={() => void refresh(true)}>Retry</RailButton>
             </div>
           {:else if data.secrets.length === 0}
             <p class="state" data-testid="personal-secrets-empty">
@@ -344,9 +345,9 @@
               <dt>Used by</dt><dd>{secretCurrent.usedBy}</dd>
             </dl>
             <div class="act">
-              <button class="btn primary" type="button" data-testid="rotate-secret" onclick={() => (sheet = "rotate")}>Rotate</button>
-              <button class="btn" type="button" data-testid="bind-secret" onclick={() => (sheet = "bind")}>Bind to app</button>
-              <button class="btn" type="button" data-testid="share-secret" onclick={() => (sheet = "share-secret")}>Share read</button>
+              <RailButton icon="refresh" variant="primary" type="button" data-testid="rotate-secret" onclick={() => (sheet = "rotate")}>Rotate</RailButton>
+              <RailButton icon="link" type="button" data-testid="bind-secret" onclick={() => (sheet = "bind")}>Bind to app</RailButton>
+              <RailButton icon="user-plus" type="button" data-testid="share-secret" onclick={() => (sheet = "share-secret")}>Share read</RailButton>
             </div>
             <p class="meta">Who can read · {secretCurrent.readers}</p>
           {/if}
@@ -357,14 +358,14 @@
         <h1>Connections</h1>
         <span class="sub">Apps connected to you, usable across your sessions, never owned by a company</span>
         <span class="grow"></span>
-        <button class="btn primary" type="button" data-testid="add-integration" onclick={openConsoleIntegrations}>Add integration</button>
+        <RailButton icon="plus" variant="primary" type="button" data-testid="add-integration" onclick={openConsoleIntegrations}>Add integration</RailButton>
       </header>
       <div class="split">
         <div class="list" data-testid="personal-integrations-list">
           {#if integrationsError && integrationsState === "ready"}
             <p class="meta" data-testid="personal-integrations-stale">
               Showing saved rows. {integrationsError}
-              <button class="btn tiny-btn" type="button" onclick={() => void refreshIntegrations()}>Retry</button>
+              <RailButton icon="refresh" size="compact" type="button" onclick={() => void refreshIntegrations()}>Retry</RailButton>
             </p>
           {/if}
           {#if integrationsState === "loading"}
@@ -374,12 +375,12 @@
           {:else if integrationsState === "error"}
             <div class="state" role="alert" data-testid="personal-integrations-error">
               <p>{integrationsError}</p>
-              <button class="btn" type="button" data-testid="personal-integrations-retry" onclick={() => void refreshIntegrations()}>Retry</button>
+              <RailButton icon="refresh" type="button" data-testid="personal-integrations-retry" onclick={() => void refreshIntegrations()}>Retry</RailButton>
             </div>
           {:else if integrations.length === 0}
             <div class="state empty" data-testid="personal-integrations-empty">
               <p>No personal connections yet</p>
-              <button class="btn" type="button" onclick={openConsoleIntegrations}>Add integration</button>
+              <RailButton icon="plus" type="button" onclick={openConsoleIntegrations}>Add integration</RailButton>
             </div>
           {:else}
             <div class="head irow"><span>App</span><span>Account</span><span>Status</span><span>Connected</span></div>
@@ -411,8 +412,8 @@
               </ul>
             {/if}
             <div class="act">
-              <button class="btn" type="button" data-testid="integration-manage" onclick={openConsoleIntegrations}>Manage</button>
-              <button class="btn" type="button" data-testid="integration-disconnect" onclick={() => { disconnectError = ""; sheet = "confirm-integration-disconnect"; }}>Disconnect</button>
+              <RailButton icon="external" type="button" data-testid="integration-manage" onclick={openConsoleIntegrations}>Manage</RailButton>
+              <RailButton icon="x" type="button" data-testid="integration-disconnect" onclick={() => { disconnectError = ""; sheet = "confirm-integration-disconnect"; }}>Disconnect</RailButton>
             </div>
           {/if}
         </aside>
@@ -424,7 +425,7 @@
         <span class="status"><span class="dot" data-status="connected"></span>{connectedCount} connected</span>
         {#if attentionCount > 0}<span class="status"><span class="dot" data-status="reconnect"></span>{attentionCount} needs attention</span>{/if}
         <span class="grow"></span>
-        <button class="btn primary" type="button" data-testid="add-connection" onclick={() => (sheet = "connect")}>Add connection</button>
+        <RailButton icon="plus" variant="primary" type="button" data-testid="add-connection" onclick={() => (sheet = "connect")}>Add connection</RailButton>
       </header>
       <div class="split">
         <div class="list" data-testid="connections-list">
@@ -489,10 +490,10 @@
             <h2>{connectionCurrent.name}</h2>
             <p class="meta">{connectionCurrent.account}</p>
             <div class="act">
-              <button class="btn" type="button" data-testid="reconnect" onclick={() => openConnect(connectionCurrent.name)}>
+              <RailButton icon="plug" type="button" data-testid="reconnect" onclick={() => openConnect(connectionCurrent.name)}>
                 {connectionCurrent.status === "available" ? "Connect" : "Reconnect"}
-              </button>
-              <button class="btn" type="button" data-testid="disconnect" onclick={() => (sheet = "confirm-disconnect")}>Disconnect</button>
+              </RailButton>
+              <RailButton icon="x" type="button" data-testid="disconnect" onclick={() => (sheet = "confirm-disconnect")}>Disconnect</RailButton>
             </div>
             <dl class="kv">
               <dt>Scopes</dt><dd>{connectionCurrent.scopes}</dd>
@@ -546,22 +547,22 @@
         <p class="meta">The binding stores the name, not the value.</p>
       {:else if sheet === "connect"}
         <h2>Add connection</h2>
-        <button class="btn primary" type="button" data-testid="connect-open" onclick={() => openConnect(query || "Notion")}>Open in browser</button>
+        <RailButton icon="external" variant="primary" type="button" data-testid="connect-open" onclick={() => openConnect(query || "Notion")}>Open in browser</RailButton>
       {:else if sheet === "connect-waiting" && connect}
         <h2 data-testid="connect-waiting">Waiting for {connect.app}</h2>
         <p>Finish sign-in in the browser. This sheet stays until the deep link returns.</p>
-        <button class="btn" type="button" data-testid="connect-return" onclick={simulateReturn}>Deep link returned</button>
+        <RailButton icon="check" type="button" data-testid="connect-return" onclick={simulateReturn}>Deep link returned</RailButton>
       {:else if sheet === "confirm-integration-disconnect" && integrationCurrent}
         <h2>Disconnect {integrationCurrent.app}?</h2>
         <p class="meta">{integrationCurrent.identity}. HQ stops reading this account until you connect it again.</p>
         {#if disconnectError}<p class="meta" role="alert" data-testid="integration-disconnect-error">{disconnectError}</p>{/if}
-        <button class="btn danger" type="button" data-testid="confirm-integration-disconnect" disabled={disconnecting} onclick={() => void confirmDisconnect(integrationCurrent)}>{disconnecting ? "Disconnecting…" : "Disconnect"}</button>
+        <RailButton icon="x" variant="danger" type="button" data-testid="confirm-integration-disconnect" disabled={disconnecting} onclick={() => void confirmDisconnect(integrationCurrent)}>{disconnecting ? "Disconnecting…" : "Disconnect"}</RailButton>
       {:else if sheet === "confirm-disconnect"}
         <h2>Disconnect {connectionCurrent?.name}?</h2>
         <p class="meta">Bots lose this connection on their next run.</p>
-        <button class="btn danger" type="button" data-testid="confirm-disconnect" onclick={() => connectionCurrent && disconnect(connectionCurrent.id)}>Disconnect</button>
+        <RailButton icon="x" variant="danger" type="button" data-testid="confirm-disconnect" onclick={() => connectionCurrent && disconnect(connectionCurrent.id)}>Disconnect</RailButton>
       {/if}
-      <button class="btn" type="button" onclick={() => (sheet = null)}>Close</button>
+      <RailButton icon="x" type="button" onclick={() => (sheet = null)}>Close</RailButton>
     </div>
   {/if}
 </section>
@@ -592,9 +593,6 @@
   .dot[data-status="connected"] { background: var(--ok, var(--v4-ok)); }
   .dot[data-status="reconnect"] { background: var(--red, var(--v4-error)); }
   .search, .secret { height: 28px; box-sizing: border-box; border-radius: 6px; border: 1px solid var(--line2, var(--v4-control-border)); background: var(--btn-bg, var(--v4-control-faint)); color: var(--t1, var(--v4-text-1)); padding: 0 8px; font: inherit; font-size: 13px; }
-  .btn { height: 28px; box-sizing: border-box; border: 1px solid var(--line2, var(--v4-control-border)); border-radius: 6px; padding: 0 10px; background: var(--btn-bg, var(--v4-control-faint)); color: var(--t1, var(--v4-text-1)); white-space: nowrap; cursor: pointer; flex: none; }
-  .btn.primary { background: var(--v4-primary-bg); color: var(--v4-primary-fg); border-color: transparent; }
-  .btn.danger { color: var(--red, var(--v4-error)); }
   .link { height: 26px; border: 0; border-radius: 6px; padding: 0 8px; background: transparent; color: var(--t2, var(--v4-text-2)); cursor: pointer; justify-self: end; white-space: nowrap; }
   .split { display: grid; grid-template-columns: minmax(0, 1fr) 320px; min-height: 0; flex: 1; }
   .list, .inspector { min-height: 0; overflow: auto; }
@@ -631,8 +629,7 @@
   .state.empty { text-align: center; padding: 48px 16px; color: var(--t3, var(--v4-text-3)); }
   .state { padding: 16px 8px; color: var(--t2, var(--v4-text-2)); }
   .state p { margin: 0 0 8px; }
-  .state .btn { margin: 0 8px 8px 0; }
-  .tiny-btn { height: 26px; padding: 0 8px; margin-left: 6px; }
+  .state :global([data-rail-btn]) { margin: 0 8px 8px 0; }
   .skel { height: 31px; margin: 0 0 2px; border-radius: 8px; background: linear-gradient(90deg, var(--btn-bg, var(--v4-control-faint)), var(--hover, var(--v4-hover)), var(--btn-bg, var(--v4-control-faint))); background-size: 200% 100%; animation: personal-row-skel 1.1s linear infinite; }
   @keyframes personal-row-skel { from { background-position: 100% 0; } to { background-position: -100% 0; } }
 </style>

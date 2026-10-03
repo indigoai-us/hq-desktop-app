@@ -6,6 +6,7 @@
   cached; the board refreshes them in the background.
 -->
 <script lang="ts">
+  import RailButton from "../common/button/RailButton.svelte";
   import type { PortfolioSessionRef } from "../chat/portfolio-session.js";
   import BoardFaces from "./BoardFaces.svelte";
   import { boardFaces, facesCaption } from "./board-faces.js";
@@ -225,18 +226,12 @@
             <dd class="mono">{branch ?? "Not set"}</dd>
           </dl>
           <div class="actions">
-            <button
-              type="button"
-              class="btn primary"
-              onclick={() => onopenproject(selected?.id ?? null)}>Open task</button
-            >
+            <RailButton icon="external" variant="primary"
+              onclick={() => onopenproject(selected?.id ?? null)}>Open task</RailButton>
             {#if !selected.passes && onmarkdone && project.prdPath}
-              <button
-                type="button"
-                class="btn"
+              <RailButton icon="check"
                 data-testid="task-view-mark-done"
-                onclick={() => selected && onmarkdone?.(selected)}>Mark done</button
-              >
+                onclick={() => selected && onmarkdone?.(selected)}>Mark done</RailButton>
             {/if}
           </div>
         </div>
@@ -489,22 +484,7 @@
     margin-top: 12px;
   }
 
-  .btn {
-    padding: 5px 10px;
-    border: 1px solid var(--v4-control-border);
-    border-radius: 6px;
-    background: transparent;
-    color: var(--v4-text-1);
-    font: inherit;
-    font-size: 13px;
-    cursor: default;
-  }
 
-  .btn.primary {
-    background: var(--v4-primary-bg);
-    color: var(--v4-primary-fg);
-    border-color: transparent;
-  }
 
   .sk-row {
     height: 12px;

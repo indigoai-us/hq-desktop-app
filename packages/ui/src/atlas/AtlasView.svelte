@@ -1,4 +1,6 @@
 <script lang="ts">
+  import RailButton from "../common/button/RailButton.svelte";
+  import "../common/button/rail-type.css";
   /**
    * Company Atlas view (US-012): toolbar, ring map, inspector. Paints the
    * cached graph for the company in the first frame, then refreshes from the
@@ -259,16 +261,16 @@
   <div class="toolbar">
     <h1>Atlas</h1>
     {#if working.length}
-      <span class="chip live"><i class="ldot"></i>{working.length} live</span>
+      <span class="meta-line live" data-meta-line><i class="meta-dot ldot"></i>{working.length} live</span>
     {/if}
     {#if graph}
-      <span class="chip" data-testid="atlas-object-count">{graph.nodes.length} objects</span>
+      <span class="meta-line" data-meta-line data-testid="atlas-object-count">{graph.nodes.length} objects</span>
     {/if}
     {#if partial && !refreshError}
-      <span class="chip" data-testid="atlas-loading-more" aria-live="polite">loading more</span>
+      <span class="meta-line" data-meta-line data-testid="atlas-loading-more" aria-live="polite">loading more</span>
     {/if}
     {#if refreshError && graph}
-      <span class="chip" title={partial ? "Only part of the map loaded" : "Showing the last saved map"}>{partial ? "partial map" : "offline copy"}</span>
+      <span class="meta-line" data-meta-line title={partial ? "Only part of the map loaded" : "Showing the last saved map"}>{partial ? "partial map" : "offline copy"}</span>
     {/if}
     {#if filterActor}
       <span class="chip" data-testid="atlas-filter-chip">
@@ -277,13 +279,11 @@
       </span>
     {/if}
     <div class="grow"></div>
-    <button
-      type="button"
-      class="btn"
+    <RailButton icon="eye"
       data-testid="atlas-frame-all"
       disabled={!graph || empty}
       onclick={frame}
-    >Frame all</button>
+    >Frame all</RailButton>
   </div>
   <div class="atlas">
     <div class="map-col">
@@ -336,7 +336,7 @@
         <div class="empty" data-testid="atlas-error" role="alert">
           <div class="empty-center">
             <div class="empty-ctr" data-reason={refreshError}><b>The map didn't load</b>{FAIL_COPY[refreshError ?? "unavailable"]}</div>
-            <button type="button" class="btn" data-testid="atlas-retry" disabled={retrying} onclick={retry}>{retrying ? "Trying again" : "Retry"}</button>
+            <RailButton icon="refresh" data-testid="atlas-retry" disabled={retrying} onclick={retry}>{retrying ? "Trying again" : "Retry"}</RailButton>
           </div>
         </div>
       {:else}
@@ -426,22 +426,6 @@
     height: 6px;
     border-radius: 50%;
     background: var(--v4-ok);
-  }
-  .btn {
-    height: 26px;
-    box-sizing: border-box;
-    padding: 0 10px;
-    border: 1px solid var(--line2, var(--v4-control-border));
-    border-radius: 6px;
-    background: var(--btn-bg, var(--v4-control-bg));
-    color: var(--t1, var(--v4-text-1));
-    font: inherit;
-    font-size: 13px;
-    cursor: pointer;
-  }
-  .btn:disabled {
-    opacity: 0.5;
-    cursor: default;
   }
   .atlas {
     display: grid;

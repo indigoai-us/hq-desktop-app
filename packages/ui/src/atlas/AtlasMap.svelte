@@ -261,8 +261,8 @@
     <span class="hint">drag to pan · wheel to zoom · 0 frames all</span>
   </div>
   <div class="map-tools">
-    <button type="button" class="btn" aria-label="Zoom out" onclick={() => zoomBy(1 / 1.25)}>−</button>
-    <button type="button" class="btn" aria-label="Zoom in" onclick={() => zoomBy(1.25)}>+</button>
+    <button type="button" class="zoom-btn" aria-label="Zoom out" onclick={() => zoomBy(1 / 1.25)}>−</button>
+    <button type="button" class="zoom-btn" aria-label="Zoom in" onclick={() => zoomBy(1.25)}>+</button>
   </div>
 </div>
 
@@ -406,7 +406,7 @@
     display: flex;
     gap: 4px;
   }
-  .btn {
+  .zoom-btn {
     padding: 4px 8px;
     border: 1px solid var(--v4-control-border);
     border-radius: var(--v4-radius-button);
@@ -416,7 +416,7 @@
     font-size: var(--type-metadata);
     cursor: pointer;
   }
-  .btn:hover {
+  .zoom-btn:hover {
     background: var(--v4-hover, var(--v4-control-faint));
   }
 </style>

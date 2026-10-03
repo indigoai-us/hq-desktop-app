@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailButton from "../common/button/RailButton.svelte";
   /**
    * Profile, Billing (invoice pane), and Settings (US-035).
    * First frame is the account cache. Stripe opens only through approved URLs.
@@ -181,7 +182,7 @@
         <span class="sub">Your identity across HQ</span>
         <span class="grow"></span>
         <span class="sub">{savedLabel}</span>
-        <button type="button" class="btn primary" data-testid="profile-save" onclick={() => save(data)}>Save</button>
+        <RailButton icon="check" variant="primary" type="button" data-testid="profile-save" onclick={() => save(data)}>Save</RailButton>
       </div>
       <div class="canvas">
         <div class="sech">Identity</div>
@@ -218,7 +219,7 @@
         <h1>Billing</h1>
         {#if invoice}<span class="sub">› Invoice</span>{/if}
         <span class="grow"></span>
-        <button type="button" class="btn" data-testid="manage-payment" onclick={() => openUrl(managePaymentUrl())}>Manage payment</button>
+        <RailButton icon="external" type="button" data-testid="manage-payment" onclick={() => openUrl(managePaymentUrl())}>Manage payment</RailButton>
       </div>
       <div class="split" class:open={invoice != null} data-testid="billing-split">
         <div class="canvas">
@@ -251,8 +252,8 @@
             <p class="sub">{invoice.summary}</p>
             <p class="status"><span class="dot" class:live={invoice.status.toLowerCase() === "paid"}></span>{invoice.status}</p>
             <div class="acts">
-              <button type="button" class="btn primary" data-testid="invoice-pdf" onclick={() => openUrl(invoicePdfUrl(invoice.id))}>Download PDF</button>
-              <button type="button" class="btn" data-testid="invoice-stripe" onclick={() => openUrl(invoiceStripeUrl(invoice.id))}>Open in Stripe</button>
+              <RailButton icon="download" variant="primary" type="button" data-testid="invoice-pdf" onclick={() => openUrl(invoicePdfUrl(invoice.id))}>Download PDF</RailButton>
+              <RailButton icon="external" type="button" data-testid="invoice-stripe" onclick={() => openUrl(invoiceStripeUrl(invoice.id))}>Open in Stripe</RailButton>
             </div>
             </div>
           </aside>
@@ -290,13 +291,12 @@
               <p>{updateStore.availableVersion ?? "A new version"} is ready. Restart to finish installing.</p>
               <div class="bar" style="width: {updateStore.downloadPercent ?? 100}%"></div>
               <div class="acts">
-                <button type="button" class="btn" data-testid="update-later" onclick={() => (updateDeferred = true)}>Later</button>
-                <button
+                <RailButton icon="x" type="button" data-testid="update-later" onclick={() => (updateDeferred = true)}>Later</RailButton>
+                <RailButton icon="refresh" variant="primary"
                   type="button"
-                  class="btn primary"
                   data-testid="restart-to-update"
                   onclick={() => void restartToUpdate({ installDownloadedUpdate: async () => ({ ok: true, value: null }) })}
-                >Restart to update</button>
+                >Restart to update</RailButton>
               </div>
             </div>
           {:else if ready}
@@ -316,8 +316,8 @@
         <p>This removes your personal vault, secrets, and sessions. Type delete to confirm. You will land on sign-in.</p>
         <input class="fld" data-testid="delete-phrase" bind:value={deleteTyped} />
         <div class="acts">
-          <button type="button" class="btn" onclick={() => (confirmDelete = false)}>Cancel</button>
-          <button type="button" class="btn del" data-testid="delete-confirm" disabled={!deleteConfirmed(deleteTyped)} onclick={confirmDeleteAccount}>Delete account</button>
+          <RailButton icon="x" type="button" onclick={() => (confirmDelete = false)}>Cancel</RailButton>
+          <RailButton icon="trash" variant="danger" type="button" data-testid="delete-confirm" disabled={!deleteConfirmed(deleteTyped)} onclick={confirmDeleteAccount}>Delete account</RailButton>
         </div>
       </div>
     </div>
@@ -332,7 +332,7 @@
             <span>{row.label}</span>
             {#if recordingId === row.id}
               <span class="fld" data-testid="shortcut-recording">Press keys… {draftKeys}</span>
-              <button type="button" class="btn" onclick={() => (recordingId = null)}>Cancel</button>
+              <RailButton icon="x" type="button" onclick={() => (recordingId = null)}>Cancel</RailButton>
             {:else}
               <kbd>{row.keys}</kbd>
               <button type="button" class="link" data-testid="shortcut-edit" onclick={() => { recordingId = row.id; draftKeys = ""; conflict = null; }}>Edit</button>
@@ -341,8 +341,8 @@
         {/each}
         {#if conflict}<p class="hint" data-testid="shortcut-conflict">{conflict}</p>{/if}
         <div class="acts">
-          <button type="button" class="btn" onclick={() => (shortcutsOpen = false)}>Cancel</button>
-          <button type="button" class="btn primary" data-testid="shortcut-save" onclick={() => { commitRecording(); shortcutsOpen = false; }}>Save</button>
+          <RailButton icon="x" type="button" onclick={() => (shortcutsOpen = false)}>Cancel</RailButton>
+          <RailButton icon="check" variant="primary" type="button" data-testid="shortcut-save" onclick={() => { commitRecording(); shortcutsOpen = false; }}>Save</RailButton>
         </div>
       </div>
     </div>
@@ -483,18 +483,6 @@
     color: var(--t3, var(--v4-text-3));
   }
   .del { height: 28px; padding: 0 10px; border-radius: 6px; color: var(--red, var(--v4-error)); background: none; border: 0; font-weight: 500; cursor: pointer; white-space: nowrap; }
-  .btn {
-    height: 28px; box-sizing: border-box;
-    border: 1px solid var(--line2, var(--v4-control-border));
-    background: var(--btn-bg, var(--v4-control-faint));
-    color: var(--t1, var(--v4-text-1));
-    border-radius: 6px;
-    padding: 0 10px;
-    white-space: nowrap;
-    cursor: pointer;
-  }
-  .btn.primary { background: var(--v4-primary-bg); color: var(--v4-primary-fg); border-color: transparent; }
-  .btn.del { color: var(--red, var(--v4-error)); }
   .invoice { min-width: 0; overflow: auto; }
   .ph { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--line, var(--v4-rowline)); }
   .ph h2 { flex: 1; margin: 0; font-size: 13px; font-weight: 500; color: var(--t1, var(--v4-text-1)); }

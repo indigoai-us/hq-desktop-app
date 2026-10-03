@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailButton from "../common/button/RailButton.svelte";
   /**
    * Company Goals (US-026). Paints the cached board objectives on the first
    * frame, then refreshes from get_local_company_goals. New objective and
@@ -8,6 +9,7 @@
   import { onMount } from "svelte";
   import type { PlatformAdapter } from "@hq/platform";
   import "../home/tokens.css";
+  import "../common/button/rail-type.css";
   import "../chat/scroll-perf.css";
   import {
     configureProjectsApi,
@@ -245,11 +247,11 @@
     </div>
     <span class="grow"></span>
     {#if objectives}
-      <span class="chip">{visible.length} objectives · {krCount(visible)} KRs</span>
-      {#if summary}<span class="chip">{summary}</span>{/if}
+      <span class="meta-line" data-meta-line>{visible.length} objectives · {krCount(visible)} KRs</span>
+      {#if summary}<span class="meta-line" data-meta-line>{summary}</span>{/if}
     {/if}
-    <button type="button" class="btn" data-testid="link-project" onclick={() => { sheet = false; picker = true; }}>Link project</button>
-    <button type="button" class="btn primary" data-testid="new-objective" onclick={() => { picker = false; sheet = true; }}>New objective</button>
+    <RailButton icon="link" data-testid="link-project" onclick={() => { sheet = false; picker = true; }}>Link project</RailButton>
+    <RailButton icon="plus" variant="primary" data-testid="new-objective" onclick={() => { picker = false; sheet = true; }}>New objective</RailButton>
   </header>
 
   {#if !objectives}
@@ -299,7 +301,7 @@
         <div class="unl">
           <b>Unlinked projects · {unlinked.length}</b>
           <span>{unlinked.map((project) => projectDisplayName(project)).join(" · ")}</span>
-          <button type="button" class="btn" onclick={() => (picker = true)}>Link to a KR</button>
+          <RailButton icon="link" onclick={() => (picker = true)}>Link to a KR</RailButton>
         </div>
       {/if}
       <div class="glegend">{#each ["on track", "at risk", "off track", "complete"] as label (label)}<span><i class="sdot" data-status={label}></i>{label}</span>{/each}</div>
@@ -388,12 +390,10 @@
   .toolbar { display: flex; align-items: center; gap: 8px; height: 52px; box-sizing: border-box; padding: 0 20px; flex: none; border-bottom: 1px solid var(--line); }
   .toolbar h1 { margin: 0; font-size: var(--type-title, 20px); font-weight: var(--type-title-weight, 500); line-height: var(--type-title-line, 1.25); }
   .tabs { display: flex; gap: 2px; margin-left: 12px; background: var(--hover); border: 1px solid var(--panel-border); border-radius: 6px; padding: 2px; }
-  .tab, .btn { font: inherit; background: transparent; border: 0; color: var(--v4-text-2); }
+  .tab { font: inherit; background: transparent; border: 0; color: var(--v4-text-2); }
   .tab { padding: 4px 8px; border-radius: 4px; font-size: 13px; cursor: pointer; }
   .tab[aria-selected="true"] { background: var(--sel); color: var(--t1); }
   .grow { flex: 1; }
-  .btn { height: 26px; box-sizing: border-box; border: 1px solid var(--line2); border-radius: 6px; padding: 0 10px; background: var(--btn-bg); color: var(--t1); font-size: 13px; cursor: pointer; }
-  .btn.primary { background: var(--t1); color: var(--badge-fg); border-color: transparent; }
   .chip { font-size: 13px; color: var(--t2); font-variant-numeric: tabular-nums; }
   .canvas { padding: 16px 12px 24px; overflow: auto; min-height: 0; font-size: 13px; }
   .sech {

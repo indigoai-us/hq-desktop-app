@@ -6,6 +6,7 @@
    * unfiltered list has nothing in it.
    */
   import { listEmptyState, type ListEmptyInput } from "./list-empty-state.js";
+  import RailButton from "./button/RailButton.svelte";
 
   interface Props extends ListEmptyInput {
     /** Clears the query and filters. The button hides without it. */
@@ -23,11 +24,13 @@
   <div class="list-empty" data-testid={testid} data-kind={view.kind} role="status">
     <p class="title">{view.title}</p>
     {#if view.kind === "no-matches"}
-      <p class="total" data-testid={`${testid}-total`}>{view.totalLabel}</p>
+      <p class="total meta-line" data-meta-line data-testid={`${testid}-total`}>{view.totalLabel}</p>
       {#if onclear}
-        <button type="button" class="clear" data-testid={`${testid}-clear`} onclick={() => onclear?.()}>
-          {clearLabel ?? (input.query?.trim() ? "Clear search" : "Clear filters")}
-        </button>
+        <span class="clear">
+          <RailButton icon="x" data-testid={`${testid}-clear`} onclick={() => onclear?.()}>
+            {clearLabel ?? (input.query?.trim() ? "Clear search" : "Clear filters")}
+          </RailButton>
+        </span>
       {/if}
     {/if}
   </div>
@@ -50,18 +53,8 @@
   }
   .total {
     margin: 0;
-    font-size: 13px;
-    color: var(--t3);
   }
   .clear {
-    margin-top: 4px;
-    padding: 4px 10px;
-    border: 1px solid var(--border, rgba(127, 127, 127, 0.3));
-    border-radius: 6px;
-    background: transparent;
-    color: var(--t1);
-    font: inherit;
-    font-size: 13px;
-    cursor: pointer;
+    display: contents;
   }
 </style>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailButton from "../common/button/RailButton.svelte";
   /**
    * Settings → Bots — the one pane for every bot the user works with.
    *
@@ -591,14 +592,13 @@
             </div>
             {#if remoteFailure !== "server-unsupported"}
               <div class="actions">
-                <button
-                  type="button"
+                <RailButton icon="refresh"
                   data-testid="settings-bots-remote-recheck"
                   disabled={restoreBusy || Boolean(adoptBusy)}
                   onclick={() => void loadRemote()}
                 >
                   Check again
-                </button>
+                </RailButton>
               </div>
             {/if}
           </div>

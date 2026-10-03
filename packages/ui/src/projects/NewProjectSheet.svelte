@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailButton from "../common/button/RailButton.svelte";
   /**
    * New project sheet (US-023, storyboard new-project): name, company, repo or
    * vault-only, owner, linked KR through LinkPicker, and start from Blank,
@@ -231,14 +232,11 @@
     <span class="hint">
       {#if error}{error}{:else}Creates the folder, the board card{#if command}, and the {start === "prd" ? "PRD" : "brainstorm"} session{/if}{/if}
     </span>
-    <button type="button" class="btn" onclick={() => close()}>Cancel</button>
-    <button
-      type="button"
-      class="btn primary"
+    <RailButton icon="x" onclick={() => close()}>Cancel</RailButton>
+    <RailButton icon="check" variant="primary"
       data-testid="new-project-create"
       disabled={creating || !id}
-      onclick={() => void create()}>{creating ? "Creating…" : "Create project"}</button
-    >
+      onclick={() => void create()}>{creating ? "Creating…" : "Create project"}</RailButton>
   </footer>
   {#if confirmingDiscard}
     <div
@@ -250,8 +248,8 @@
     >
       <span>Discard draft?</span>
       <span class="grow"></span>
-      <button type="button" class="btn" onclick={() => (confirmingDiscard = false)}>Keep editing</button>
-      <button type="button" class="btn primary" data-testid="new-project-discard-confirm" onclick={discard}>Discard</button>
+      <RailButton icon="pencil" onclick={() => (confirmingDiscard = false)}>Keep editing</RailButton>
+      <RailButton icon="trash" variant="primary" data-testid="new-project-discard-confirm" onclick={discard}>Discard</RailButton>
     </div>
   {/if}
 </div>
@@ -311,12 +309,6 @@
   .opt .m { margin-top: 2px; font-size: 13px; line-height: 1.4; color: var(--v4-text-3); }
   .sf { flex: none; display: flex; align-items: center; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--v4-hairline); }
   .sf .hint { flex: 1; margin: 0; }
-  .btn {
-    border: 1px solid var(--v4-control-border); background: var(--v4-control-bg); color: inherit;
-    border-radius: 6px; padding: 6px 10px; font: inherit; font-size: 13px;
-  }
-  .btn.primary { background: var(--v4-primary-bg); color: var(--v4-primary-fg); border-color: transparent; }
-  .btn:disabled { opacity: 0.45; }
   .restored {
     display: flex; align-items: center; gap: 4px; padding: 6px 20px; font-size: 13px;
     color: var(--v4-text-3); border-bottom: 1px solid var(--v4-hairline);

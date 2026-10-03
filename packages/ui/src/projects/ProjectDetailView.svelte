@@ -57,9 +57,14 @@
   import ProjectFilesHost from "./ProjectFilesHost.svelte";
   import StoryPanel from "../home/StoryPanel.svelte";
   import "../home/tokens.css";
-  import Caret from "../common/Caret.svelte";
+  import RailButton from "../common/button/RailButton.svelte";
+  import RailIcon from "../common/button/RailIcon.svelte";
+  import CompanyIcon from "../company/CompanyIcon.svelte";
+  import "../common/button/rail-type.css";
 
   interface Props {
+    /** Presigned favicon for the project's company, if the caller has one. */
+    companyIconUrl?: string | null;
     /** Platform seam — projects/files/settings/shell slices + capabilities. */
     adapter: PlatformAdapter;
     /** The project whose detail to show. */
@@ -129,6 +134,7 @@
     sessions: sessionInput = [],
     repoAccess = true,
     initialTab = null,
+    companyIconUrl = null,
   }: Props = $props();
 
   function configureProjectsApiIfNeeded(): void {
@@ -702,6 +708,7 @@
         <button
           type="button"
           class="status-badge status-{currentStatus}"
+          data-rail-btn
           data-testid="status-trigger"
           aria-haspopup="listbox"
           aria-expanded={statusOpen}
@@ -716,7 +723,7 @@
               : EDITABLE_PROJECT_STATUS_LABEL[currentStatus]}
           </span>
           {#if !statusSaving}
-            <Caret tone="var(--v4-text-3)" />
+            <RailIcon name="chevron-down" size={14} />
           {/if}
         </button>
         {#if statusOpen}
@@ -745,7 +752,7 @@
       </div>
 
       {#if planStatusLabel}
-        <span class="badge plan-status" data-testid="plan-status">{planStatusLabel}</span>
+        <span class="info-pill plan-status" data-testid="plan-status">{planStatusLabel}</span>
       {/if}
 
       {#if statusError}
@@ -755,7 +762,8 @@
       {/if}
 
       {#if project.company}
-        <span class="badge company-badge" data-testid="company-badge">
+        <span class="info-pill company-badge" data-testid="company-badge">
+          <CompanyIcon iconUrl={companyIconUrl} size={12} label={project.company} />
           {project.company}
         </span>
       {/if}
@@ -829,15 +837,14 @@
       {#if claudeMessage}
         <span class="action-status" role="status">{claudeMessage}</span>
       {/if}
-      <button
-        type="button"
-        class="toolbar-action"
+      <RailButton
+        icon="claude-code"
         data-testid="open-project-claude"
         disabled={claudeBusy}
         onclick={() => void openProjectInClaude()}
       >
         {claudeBusy ? "Opening…" : "Open in Claude Code"}
-      </button>
+      </RailButton>
     </div>
 
     <!-- Compact summary strip — progress + task roll-up counts. -->
@@ -1337,19 +1344,20 @@
     flex: 1 1 auto;
   }
 
-  .badge,
   .status-badge {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    height: 24px;
-    padding: 0 9px;
+    gap: 8px;
+    box-sizing: border-box;
+    height: 36px;
+    padding: 0 16px;
     border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-pill);
+    border-radius: 8px;
     background: var(--v4-control-faint);
     color: var(--v4-text-2);
     font: inherit;
-    font-size: 13px;
+    font-size: 12px; /* OWNER-007 labelled button */
+    line-height: 16px;
     font-weight: 500;
     white-space: nowrap;
   }
@@ -1358,40 +1366,6 @@
     max-width: 200px;
     overflow: hidden;
     text-overflow: ellipsis;
-  }
-
-  .toolbar-action {
-    display: inline-flex;
-    align-items: center;
-    height: 26px;
-    padding: 0 11px;
-    border: 1px solid var(--v4-control-border);
-    border-radius: var(--v4-radius-button);
-    background: var(--v4-secondary-bg);
-    color: var(--v4-secondary-fg, var(--v4-text-1));
-    font: inherit;
-    font-size: 13px;
-    font-weight: 500;
-    white-space: nowrap;
-    cursor: pointer;
-    transition:
-      background 140ms ease,
-      border-color 140ms ease;
-  }
-
-  .toolbar-action:hover {
-    background: var(--v4-active-row);
-    color: var(--v4-text-1);
-  }
-
-  .toolbar-action:focus-visible {
-    outline: 2px solid var(--v4-focus-ring, var(--v4-text-1));
-    outline-offset: 2px;
-  }
-
-  .toolbar-action:disabled {
-    cursor: progress;
-    opacity: 0.6;
   }
 
   .action-status {
@@ -1748,7 +1722,6 @@
   @media (prefers-reduced-motion: reduce) {
     .tab,
     .toggle-segment,
-    .toolbar-action,
     .status-badge {
       transition: none;
     }

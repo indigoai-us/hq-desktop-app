@@ -3,6 +3,7 @@
   import type { SettingsTab } from "../settings/settings-sections.js";
   import type { PlatformAdapter } from "@hq/platform";
   import { getV4TitleBarModel, type V4HydrationIssue } from "./model.js";
+  import RailIcon from "../common/button/RailIcon.svelte";
   import { startWindowDrag } from "./window-drag.js";
   import { titlebarDayDate } from "../chat/sidebar-model.js";
   import type { HomeConflict } from "./home-model.js";
@@ -841,13 +842,13 @@
           {#if launchToolsChecked}
             <div class="v4-launch-foot">
               <span>Installed tools are checked on open.</span>
-              <button type="button" class="v4-launch-change" data-testid="titlebar-launch-recheck" onclick={() => void refreshLaunchTools()}>Check again</button>
+              <button type="button" class="v4-launch-change" data-testid="titlebar-launch-recheck" data-rail-btn onclick={() => void refreshLaunchTools()}><RailIcon name="refresh" size={14} />Check again</button>
             </div>
           {/if}
           <div class="v4-launch-foot">
             <span>Folder</span>
             <code data-testid="titlebar-launch-folder">{launchFolderLabel}</code>
-            <button type="button" class="v4-launch-change" data-testid="titlebar-launch-change" onclick={() => void changeLaunchFolder()}>Change…</button>
+            <button type="button" class="v4-launch-change" data-testid="titlebar-launch-change" data-rail-btn onclick={() => void changeLaunchFolder()}><RailIcon name="pencil" size={14} />Change…</button>
           </div>
         </div>
       {/if}
@@ -1204,20 +1205,28 @@
     color: var(--v4-text-2, var(--t2));
   }
 
+  /* Compact labelled button (design standard §4): icon + label, 28px in the
+     dense menu footer, 12px/500, 6px gap, 8px radius. */
   .v4-launch-change {
     margin-left: auto;
     appearance: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    box-sizing: border-box;
+    height: 28px;
     border: 0;
+    border-radius: 8px;
     background: transparent;
-    padding: 0;
+    padding: 0 12px;
     font: inherit;
-    font-size: 13px;
+    font-size: 12px;
+    font-weight: 500;
     color: var(--v4-text-2, var(--t2));
-    text-decoration: underline;
-    text-underline-offset: 3px;
     cursor: pointer;
     white-space: nowrap;
   }
+  .v4-launch-change:hover { color: var(--v4-text-1, var(--t1)); }
 
   .v4-launch-item:hover:not(:disabled),
   .v4-launch-item:focus-visible {

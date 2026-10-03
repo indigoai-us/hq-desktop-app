@@ -1,10 +1,12 @@
 <script lang="ts">
+  import RailButton from "../common/button/RailButton.svelte";
   /**
    * My Telemetry (US-032). Paints the cached snapshot on the first frame,
    * then refreshes in the background. Charts are CSS bars in text-1 opacities.
    */
   import { onMount, untrack } from "svelte";
   import "../chat/scroll-perf.css";
+  import "../common/button/rail-type.css";
   import type { TelemetryCache } from "./telemetry-cache.js";
   import {
     LIST_RATE_LABEL,
@@ -212,7 +214,7 @@
       <h1>
         {page === "overview" ? "My Telemetry" : page === "sessions" ? "Sessions" : page === "tokens" ? "Tokens" : "Outcomes"}
       </h1>
-      <span class="sub">
+      <span class="sub meta-line" data-meta-line>
         {snapshot?.rangeLabel ?? "—"}
         {#if page === "tokens"} · all models{/if}
         · {snapshot?.subtitle ?? ""}
@@ -220,8 +222,8 @@
         {#if page === "outcomes" && snapshot} · what {snapshot.sessions} sessions produced{/if}
       </span>
       <span class="grow"></span>
-      <span class="sub">Only you can see this</span>
-      <button class="btn" onclick={exportCsv}>Export CSV</button>
+      <span class="sub meta-line" data-meta-line>Only you can see this</span>
+      <RailButton icon="download" onclick={exportCsv}>Export CSV</RailButton>
     </div>
 
     {#if snapshot && loadError}
@@ -235,7 +237,7 @@
     {#if !snapshot && loadError}
       <div class="canvas" role="alert" data-testid="telemetry-error">
         <p>{loadError}</p>
-        <button class="btn" data-testid="telemetry-retry" onclick={() => refresh()}>Retry</button>
+        <RailButton icon="refresh" data-testid="telemetry-retry" onclick={() => refresh()}>Retry</RailButton>
       </div>
     {:else if !snapshot}
       <div class="canvas" data-testid="telemetry-skeleton" aria-busy="true">
@@ -354,9 +356,9 @@
               <div class="mm">{selected.detail || selected.outcome} · {selected.length}</div>
             </div>
             <div class="acts">
-              <button class="btn primary" onclick={() => (transcriptFor = selected.id)}>Open transcript</button>
-              <button class="btn" onclick={() => onopen?.(selected, "claude")}>Open in Claude Code</button>
-              <button class="btn" onclick={() => onopen?.(selected, "atlas")}>Atlas</button>
+              <RailButton icon="file" variant="primary" onclick={() => (transcriptFor = selected.id)}>Open transcript</RailButton>
+              <RailButton icon="claude-code" onclick={() => onopen?.(selected, "claude")}>Open in Claude Code</RailButton>
+              <RailButton icon="arrow-right" onclick={() => onopen?.(selected, "atlas")}>Atlas</RailButton>
             </div>
             {#if transcriptFor === selected.id}
               <div class="transcript" data-testid="telemetry-transcript">
@@ -554,7 +556,7 @@
   }
   .pane { width: 260px; flex: none; display: flex; flex-direction: column; border-right: 1px solid var(--line, var(--v4-rowline)); }
   .pane-list { overflow: auto; padding: 12px 14px; }
-  .row, .tab, .btn, .lnk, .card { font: inherit; font-size: 13px; color: inherit; background: transparent; border: 0; cursor: pointer; }
+  .row, .tab, .lnk, .card { font: inherit; font-size: 13px; color: inherit; background: transparent; border: 0; cursor: pointer; }
   .row {
     display: flex; align-items: center; gap: 8px; width: 100%; height: 31px; box-sizing: border-box;
     text-align: left; padding: 7px 8px; border-radius: 8px; color: var(--t2, var(--v4-text-2));
@@ -582,8 +584,6 @@
   .toolbar h1 { font-size: var(--type-title, 20px); font-weight: var(--type-title-weight, 500); line-height: var(--type-title-line, 1.25); margin: 0 4px 0 0; white-space: nowrap; }
   .sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
   .grow { flex: 1; }
-  .btn { height: 28px; box-sizing: border-box; border: 1px solid var(--line2, var(--v4-control-border)); border-radius: 6px; padding: 0 10px; background: var(--btn-bg, var(--v4-control-faint)); color: var(--t1, var(--v4-text-1)); white-space: nowrap; flex: none; }
-  .btn.primary { background: var(--v4-primary-bg); color: var(--v4-primary-fg); border-color: transparent; }
   .canvas { padding: 16px 20px 20px; overflow: auto; display: flex; flex-direction: column; gap: 24px; }
   .statline { display: flex; gap: 8px 28px; flex-wrap: wrap; align-items: baseline; }
   .stat { display: flex; flex-direction: column; gap: 2px; }

@@ -77,6 +77,7 @@
   class:has-live-run={liveRun !== null}
   data-priority={priorityLabel}
   data-testid="story-card"
+  data-board-card
   aria-label={`Story ${story.id}: ${story.title}. Assignee ${assigneeLabel}`}
   title={liveRun === null && stateContext ? stateContext : undefined}
   onclick={activate}
@@ -193,7 +194,7 @@
     max-width: 100%;
     overflow: clip;
     padding: 12px;
-    border: 1px solid var(--v4-hairline);
+    border: 1px solid var(--panel-border, var(--v4-hairline));
     /* Movable work objects may be rounded; board columns stay naked. */
     border-radius: 8px;
     background: var(--v4-raised);
@@ -243,8 +244,9 @@
     min-width: 0;
     overflow: hidden;
     color: var(--v4-text-3);
-    font-size: 13px;
+    font-size: 11px;
     font-weight: 500;
+    line-height: 14px;
     font-variant-numeric: tabular-nums;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -261,15 +263,14 @@
   .priority-badge {
     display: inline-flex;
     align-items: center;
-    height: 18px;
-    padding: 0 6px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-pill);
+    padding: 2px 6px;
+    border: 1px solid var(--line, var(--v4-hairline));
+    border-radius: 999px;
     background: transparent;
     color: var(--v4-text-3);
-    font-size: 13px;
+    font-size: 11px;
     font-weight: 500;
-    line-height: 1;
+    line-height: 14px;
   }
 
   .priority-badge {
@@ -311,14 +312,23 @@
   .label-overflow {
     display: inline-flex;
     align-items: center;
-    padding: 1px 6px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-button);
+    padding: 2px 6px;
+    border: 1px solid var(--line, var(--v4-hairline));
+    border-radius: 999px;
     background: var(--v4-control-faint);
     color: var(--v4-text-3);
-    font-size: 13px;
+    font-size: 11px;
     font-weight: 500;
-    line-height: 16px;
+    line-height: 14px;
+  }
+
+  /* Tag chips on the card: 11px informational pills, fully rounded, quiet border. */
+  .labels :global(.label-chip) {
+    padding: 2px 6px;
+    border-color: var(--line, var(--v4-hairline));
+    border-radius: 999px;
+    font-size: 11px;
+    line-height: 14px;
   }
 
   .card-foot {
@@ -341,7 +351,8 @@
   .assignee-name {
     overflow: hidden;
     color: var(--v4-text-2);
-    font-size: 13px;
+    font-size: 11px;
+    line-height: 14px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -356,8 +367,8 @@
     gap: 6px;
     min-width: 0;
     color: var(--v4-text-3);
-    font-size: 13px;
-    line-height: 16px;
+    font-size: 11px;
+    line-height: 14px;
   }
 
   .live-run-text {
@@ -424,7 +435,8 @@
   .ac-count {
     flex-shrink: 0;
     color: var(--v4-text-3);
-    font-size: 13px;
+    font-size: 11px;
+    line-height: 14px;
     font-variant-numeric: tabular-nums;
   }
 

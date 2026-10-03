@@ -79,6 +79,7 @@
   import ProvenanceLine from "../common/ProvenanceLine.svelte";
   import UnavailableNote from "../common/UnavailableNote.svelte";
   import "../home/tokens.css";
+  import "../common/button/rail-type.css";
 
   interface Props {
     /** Platform seam — projects/settings/shell slices + capability flags. */
@@ -969,7 +970,8 @@
       <div class="projects-heading">
         <h2 id="company-projects-title">Projects</h2>
         <span
-          class="projects-count"
+          class="projects-count meta-line"
+          data-meta-line
           data-testid="projects-count"
           title={`${filteredCompanyProjects.length} of ${companyProjects.length}${companyProjects.length === 1 ? " project" : " projects"} on this computer`}
         >
@@ -1456,10 +1458,7 @@
   }
 
   .projects-count {
-    color: var(--v4-text-3);
-    font-size: 13px;
     font-variant-numeric: tabular-nums;
-    line-height: 1.2;
   }
 
   .projects-live {

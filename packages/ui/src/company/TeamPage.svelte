@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailButton from "../common/button/RailButton.svelte";
   import { dismissable } from "../common/dismissable.js";
   import { publishCompanyPageCount } from "../shell/company-page-counts.svelte.js";
   /**
@@ -38,6 +39,7 @@
   import { readSettingsCache } from "./company-settings.js";
   import { presenceStatus } from "../chat/presence-store.svelte.js";
   import "../home/tokens.css";
+  import "../common/button/rail-type.css";
   import "../chat/chat-tokens.css";
 
   interface Props {
@@ -263,16 +265,16 @@
       {/each}
     </div>
     <span class="grow"></span>
-    <span class="stat" data-testid="team-live-chip">
-      <i class="dot" class:live={liveMembers > 0}></i>{liveMembers} live
+    <span class="meta-line" data-meta-line data-testid="team-live-chip">
+      <i class="meta-dot dot" class:live={liveMembers > 0}></i>{liveMembers} live
     </span>
-    <span class="stat" data-testid="team-seat-chip">{seatLine}</span>
-    <button type="button" class="btn" data-testid="invite-teammate" onclick={() => (inviteOpen = true)}>
+    <span class="meta-line" data-meta-line data-testid="team-seat-chip">{seatLine}</span>
+    <RailButton icon="user-plus" type="button" data-testid="invite-teammate" onclick={() => (inviteOpen = true)}>
       Invite teammate
-    </button>
-    <button type="button" class="btn primary" data-testid="team-add-agent" onclick={() => onaddagent?.()}>
+    </RailButton>
+    <RailButton icon="plus" variant="primary" type="button" data-testid="team-add-agent" onclick={() => onaddagent?.()}>
       Add agent
-    </button>
+    </RailButton>
   </div>
 
   <div class="body">
@@ -325,18 +327,16 @@
           <li>
             <span class="nm">{invite.email}</span>
             <span class="meta">{inviteSummary(invite)}</span>
-            <button
+            <RailButton icon="send"
               type="button"
-              class="btn"
               onclick={() => {
                 invites = resendInvite(invites, invite.id);
                 remember();
-              }}>Resend</button>
-            <button
+              }}>Resend</RailButton>
+            <RailButton icon="trash"
               type="button"
-              class="btn"
               data-testid={`revoke-${invite.id}`}
-              onclick={() => (revokeId = invite.id)}>Revoke</button>
+              onclick={() => (revokeId = invite.id)}>Revoke</RailButton>
           </li>
         {:else}
           <li class="empty">No pending invites.</li>
@@ -417,8 +417,8 @@
         {/if}
         <footer class="sf">
           <span class="grow"></span>
-          <button type="button" class="btn" onclick={() => (inviteOpen = false)}>Cancel</button>
-          <button type="button" class="btn primary" data-testid="invite-send" onclick={submitInvite}>Send invite</button>
+          <RailButton icon="x" type="button" onclick={() => (inviteOpen = false)}>Cancel</RailButton>
+          <RailButton icon="send" variant="primary" type="button" data-testid="invite-send" onclick={submitInvite}>Send invite</RailButton>
         </footer>
       </div>
     </div>
@@ -546,22 +546,6 @@
   .seg .tab { height: auto; padding: 4px 8px; border-radius: 4px; }
   .tab:hover { background: var(--hover); color: var(--t1); }
   .tab[aria-selected="true"] { background: var(--sel); color: var(--t1); }
-  .btn {
-    height: 26px;
-    box-sizing: border-box;
-    border: 1px solid var(--line2);
-    border-radius: 6px;
-    padding: 0 10px;
-    background: var(--btn-bg);
-    color: var(--t1);
-    font: inherit;
-    font-size: 13px;
-    white-space: nowrap;
-    cursor: pointer;
-  }
-  .btn:hover { background: var(--hover); }
-  .btn.primary { background: var(--t1); color: var(--badge-fg); border-color: transparent; }
-  .btn:disabled { opacity: 0.5; cursor: default; }
   .icon {
     display: inline-grid;
     place-items: center;
@@ -575,7 +559,7 @@
     cursor: pointer;
   }
   .icon:hover { background: var(--hover); color: var(--t1); }
-  .stat { display: inline-flex; align-items: center; gap: 6px; color: var(--t2); font-size: 13px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .meta-line { white-space: nowrap; font-variant-numeric: tabular-nums; }
   .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--t3); flex: none; }
   .dot.live { background: var(--ok); }
   .sech { margin: 20px 0 4px; padding: 0 8px; color: var(--t2); font-size: 13px; font-weight: 500; }

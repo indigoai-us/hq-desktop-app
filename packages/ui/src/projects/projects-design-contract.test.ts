@@ -41,7 +41,14 @@ describe("projects pages follow the Messages type scale", () => {
       const css = styleOf(file);
       const sizes = [...css.matchAll(/font-size:\s*([^;]+);/g)].map((m) => m[1].trim());
       // 8px/9px/10px only survive inside avatar initials, never as text sizes.
-      const bad = sizes.filter((s) => !["13px", "20px", "8px", "9px", "10px"].includes(s.replace(/\s*!important/, "")));
+      // OWNER-008: the board task card sets every non-title text at 11px.
+      // OWNER-007: labelled buttons (the status trigger) use a 12px label.
+      const allowed = [
+        "13px", "20px", "8px", "9px", "10px",
+        ...(file === "StoryCard.svelte" ? ["11px"] : []),
+        ...(file === "ProjectDetailView.svelte" ? ["12px"] : []),
+      ];
+      const bad = sizes.filter((s) => !allowed.includes(s.replace(/\s*!important/, "")));
       expect(bad).toEqual([]);
       expect(css).not.toMatch(/font-weight:\s*(600|650|700|bold)/);
       expect(css).not.toMatch(/text-transform:\s*uppercase/);
@@ -53,6 +60,30 @@ describe("projects pages follow the Messages type scale", () => {
     for (const file of FILES) {
       expect(styleOf(file)).not.toMatch(/font-size:\s*(2[1-9]|[3-9]\d)px/);
     }
+  });
+});
+
+describe("board task card (OWNER-008)", () => {
+  const css = styleOf("StoryCard.svelte");
+  const rule = (sel: string) => css.match(new RegExp(`\\n  ${sel.replace(/[.]/g, "\\.")} \\{[^}]*\\}`))?.[0] ?? "";
+
+  it("card is 12px padded, 8px radius, panel border, no accent edge", () => {
+    const card = rule(".story-card");
+    expect(card).toContain("padding: 12px;");
+    expect(card).toContain("border-radius: 8px;");
+    expect(card).toContain("border: 1px solid var(--panel-border");
+    expect(css).not.toMatch(/border-left/);
+    expect(readFileSync(join(here, "StoryCard.svelte"), "utf8")).toContain("data-board-card");
+  });
+
+  it("title clamps to two lines; id, pills, chips, assignee and count are 11px", () => {
+    expect(rule(".story-title")).toContain("-webkit-line-clamp: 2;");
+    for (const sel of [".story-id", ".label-overflow", ".assignee-name", ".ac-count"]) {
+      expect(rule(sel)).toContain("font-size: 11px;");
+    }
+    expect(css).toMatch(/\.priority-badge \{[^}]*border-radius: 999px;[^}]*font-size: 11px;/);
+    expect(css).toMatch(/:global\(\.label-chip\) \{[^}]*padding: 2px 6px;[^}]*border-radius: 999px;[^}]*font-size: 11px;/);
+    expect(rule(".progress-track")).toContain("height: 3px;");
   });
 });
 

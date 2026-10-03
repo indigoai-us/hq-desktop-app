@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailButton from "../common/button/RailButton.svelte";
   /**
    * Personal Library (US-031). My files and Shared with me.
    * Company rows reuse CompanyLibraryPanel. File rows reuse FilePreviewPane
@@ -239,7 +240,7 @@
            / Reveal actions; repeating them here showed every action twice. -->
       <FilePreviewPane {adapter} {path} />
       <div class="act solo" data-testid="library-preview-actions">
-        <button type="button" class="btn" data-testid="library-preview-share" onclick={() => (shareFor = { path, grant })}>Share</button>
+        <RailButton icon="link" data-testid="library-preview-share" onclick={() => (shareFor = { path, grant })}>Share</RailButton>
       </div>
     {:else}
       <div class="ph">
@@ -248,8 +249,8 @@
           <span class="meta">{meta}</span>
         </div>
         <div class="act" data-testid="library-preview-actions">
-          <button type="button" class="btn" onclick={() => void navigator.clipboard?.writeText(path)}>Copy path</button>
-          <button type="button" class="btn" data-testid="library-preview-share" onclick={() => (shareFor = { path, grant })}>Share</button>
+          <RailButton icon="copy" onclick={() => void navigator.clipboard?.writeText(path)}>Copy path</RailButton>
+          <RailButton icon="link" data-testid="library-preview-share" onclick={() => (shareFor = { path, grant })}>Share</RailButton>
         </div>
       </div>
       <pre data-testid="library-file-preview">{text}</pre>
@@ -329,16 +330,6 @@
   .ph-copy b, .ph-copy .meta { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .act.solo { justify-content: flex-start; margin-top: 12px; }
   .act { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; flex: 0 1 auto; max-width: 100%; }
-  .btn {
-    border: 1px solid var(--v4-control-border);
-    background: var(--v4-control-faint);
-    color: var(--v4-text-1);
-    border-radius: 6px;
-    padding: 3px 8px;
-    font: inherit;
-    font-size: 12px;
-    white-space: nowrap;
-  }
   pre {
     margin: 0;
     white-space: pre-wrap;

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailButton from "../common/button/RailButton.svelte";
   /**
    * Company Bots page (console-rail US-027).
    *
@@ -25,6 +26,7 @@
     type BotListRow,
   } from "./team-bots-pages.js";
   import "../home/tokens.css";
+  import "../common/button/rail-type.css";
   import "../chat/chat-tokens.css";
 
   interface Props {
@@ -140,8 +142,8 @@
       {/each}
     </div>
     <span class="grow"></span>
-    <span class="stat" data-testid="bots-count">{rows.length === 1 ? "1 bot" : `${rows.length} bots`}</span>
-    <button type="button" class="btn primary" data-testid="bots-new" onclick={() => onaddbot?.()}>New bot</button>
+    <span class="meta-line" data-meta-line data-testid="bots-count">{rows.length === 1 ? "1 bot" : `${rows.length} bots`}</span>
+    <RailButton icon="plus" variant="primary" type="button" data-testid="bots-new" onclick={() => onaddbot?.()}>New bot</RailButton>
   </div>
 
   {#if empty}
@@ -254,22 +256,6 @@
   .seg .tab { height: auto; padding: 4px 8px; border-radius: 4px; }
   .tab:hover { background: var(--hover); color: var(--t1); }
   .tab[aria-selected="true"] { background: var(--sel); color: var(--t1); }
-  .btn {
-    height: 26px;
-    box-sizing: border-box;
-    border: 1px solid var(--line2);
-    border-radius: 6px;
-    padding: 0 10px;
-    background: var(--btn-bg);
-    color: var(--t1);
-    font: inherit;
-    font-size: 13px;
-    white-space: nowrap;
-    cursor: pointer;
-  }
-  .btn:hover { background: var(--hover); }
-  .btn.primary { background: var(--t1); color: var(--badge-fg); border-color: transparent; }
-  .btn:disabled { opacity: 0.5; cursor: default; }
   .icon {
     display: inline-grid;
     place-items: center;
@@ -283,7 +269,7 @@
     cursor: pointer;
   }
   .icon:hover { background: var(--hover); color: var(--t1); }
-  .stat { display: inline-flex; align-items: center; gap: 6px; color: var(--t2); font-size: 13px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .meta-line { white-space: nowrap; font-variant-numeric: tabular-nums; }
   .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--t3); flex: none; }
   .dot.live { background: var(--ok); }
   .sech { margin: 20px 0 4px; padding: 0 8px; color: var(--t2); font-size: 13px; font-weight: 500; }

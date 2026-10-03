@@ -213,7 +213,7 @@ describe("GoalsView", () => {
     expect(host?.querySelector("[data-testid='link-picker']")).toBeNull();
     expect(sheet.querySelector("[data-testid='new-goal-linked']")?.textContent).toContain("hq-desktop-app");
 
-    [...sheet.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "Create objective")!.click();
+    [...sheet.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "Create objective")!.click();
     flushSync();
 
     expect(host?.querySelector("[data-testid='new-goal-sheet']")).toBeNull();

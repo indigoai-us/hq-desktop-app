@@ -313,7 +313,7 @@ describe("US-029 FilesConnectPage", () => {
     const sheet = document.querySelector("[data-testid='sheet-new-secret']");
     expect(sheet?.getAttribute("role")).toBe("dialog");
     const save = document.querySelector("[data-testid='secret-save']") as HTMLButtonElement;
-    expect(save.textContent).toBe("Save");
+    expect(save.querySelector(".rail-btn-label")?.textContent).toBe("Save");
     expect(save.disabled).toBe(true);
     const name = document.querySelector("[data-testid='secret-name']") as HTMLInputElement;
     name.value = "NEW_KEY";

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailButton from "../common/button/RailButton.svelte";
   /**
    * Atlas inspector (340 px). With a selection: kind, title, vault path,
    * chips, Here now, PRD goal, stories, related, actions, Born/Touched/Inside.
@@ -118,12 +119,12 @@
 
     <div class="hr"></div>
     <div class="actions">
-      <button type="button" class="btn primary" onclick={() => onopenfiles?.(node)}>Open files</button>
+      <RailButton icon="folder" variant="primary" onclick={() => onopenfiles?.(node)}>Open files</RailButton>
       {#if node.type === "project"}
-        <button type="button" class="btn" onclick={() => onopenboard?.(node)}>Open board</button>
+        <RailButton icon="external" onclick={() => onopenboard?.(node)}>Open board</RailButton>
       {/if}
       {#if firstPerson}
-        <button type="button" class="btn" onclick={() => onmessage?.(firstPerson)}>Message {firstPerson.name}</button>
+        <RailButton icon="send" onclick={() => onmessage?.(firstPerson)}>Message {firstPerson.name}</RailButton>
       {/if}
     </div>
     <div class="foot" data-testid="atlas-inspector-footer">{atlasFooterLine(node, nowMs)}</div>
@@ -322,23 +323,6 @@
     display: flex;
     gap: 6px;
     flex-wrap: wrap;
-  }
-  .btn {
-    height: 26px;
-    box-sizing: border-box;
-    padding: 0 10px;
-    border: 1px solid var(--line2, var(--v4-control-border));
-    border-radius: 6px;
-    background: var(--btn-bg, var(--v4-control-bg));
-    color: var(--t1, var(--v4-text-1));
-    font: inherit;
-    font-size: 13px;
-    cursor: pointer;
-  }
-  .btn.primary {
-    background: var(--t1, var(--v4-primary-bg));
-    color: var(--badge-fg, var(--v4-primary-fg));
-    border-color: transparent;
   }
   .foot {
     font-size: 13px;

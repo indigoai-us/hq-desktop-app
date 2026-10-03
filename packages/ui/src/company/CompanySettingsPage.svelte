@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailButton from "../common/button/RailButton.svelte";
   /**
    * Company settings (console-rail US-030).
    * General, Brand, Groups, Grants, HQ Workforce, and Billing.
@@ -176,7 +177,7 @@
           <p class="sub">Name, slug, defaults for new members, ownership</p>
         </div>
         <span class="grow"></span>
-        <button type="button" class="btn primary" data-testid="settings-save" onclick={saveGeneral}>Save changes</button>
+        <RailButton icon="check" variant="primary" type="button" data-testid="settings-save" onclick={saveGeneral}>Save changes</RailButton>
       </div>
       <label class="fr"><span class="lb">Company name</span><input class="in" bind:value={snap.general.name} /></label>
       <label class="fr"><span class="lb">Slug</span><input class="in mono" bind:value={snap.general.slug} /></label>
@@ -204,7 +205,7 @@
           <button type="button" class="tab" role="tab" aria-selected={snap.brand.appearance === "light"} onclick={() => (snap.brand.appearance = "light")}>Light</button>
           <button type="button" class="tab" role="tab" aria-selected={snap.brand.appearance === "dark"} onclick={() => (snap.brand.appearance = "dark")}>Dark</button>
         </div>
-        <button type="button" class="btn primary" onclick={remember}>Save changes</button>
+        <RailButton icon="check" variant="primary" type="button" onclick={remember}>Save changes</RailButton>
       </div>
       <label class="fr"><span class="lb">Logo<small>file name</small></span><input class="in" bind:value={snap.brand.logoName} placeholder="wordmark.svg" /></label>
       <p class="note">The logo shows on this company's rail tile. The accent color tints this company's buttons and highlights. The live indicator stays green.</p>
@@ -237,7 +238,7 @@
                   <p class="sub">{group.description}</p>
                 </div>
                 <span class="grow"></span>
-                <button type="button" class="btn" data-testid="delete-group" onclick={() => (deleteId = group.id)}>Delete group</button>
+                <RailButton icon="trash" type="button" data-testid="delete-group" onclick={() => (deleteId = group.id)}>Delete group</RailButton>
               </div>
               {#each group.members as m (m.id)}
                 <div class="line"><span class="nm">{m.name}</span><span class="c">{m.role}</span><span class="c">{m.added}</span></div>
@@ -316,7 +317,7 @@
           <b>Need more seats or agents?</b>
           Upgrade continues to Stripe checkout in your browser. The desktop collects no card data.
         </div>
-        <button type="button" class="btn primary" data-testid="workforce-upgrade" onclick={() => openStripe("upgrade")}>Upgrade</button>
+        <RailButton icon="arrow-right" variant="primary" type="button" data-testid="workforce-upgrade" onclick={() => openStripe("upgrade")}>Upgrade</RailButton>
       </div>
     {:else}
       <div class="page-head">
@@ -326,7 +327,7 @@
         </div>
       </div>
       <p class="note">Manage payment opens the Stripe customer portal in the system browser.</p>
-      <button type="button" class="btn" data-testid="manage-payment" onclick={() => openStripe("portal")}>Manage payment</button>
+      <RailButton icon="external" type="button" data-testid="manage-payment" onclick={() => openStripe("portal")}>Manage payment</RailButton>
     {/if}
   </div>
 </section>
@@ -362,7 +363,7 @@
     gap: 2px;
   }
   .page { padding: 20px 20px 48px; }
-  .row, .tab, .btn {
+  .row, .tab {
     font: inherit;
     font-size: 13px;
     color: var(--t2);
@@ -420,17 +421,6 @@
   }
   .ta { min-height: 60px; }
   .mono { font-family: var(--font-mono); font-size: 13px; }
-  .btn {
-    height: 26px;
-    box-sizing: border-box;
-    border: 1px solid var(--line2);
-    background: var(--btn-bg);
-    color: var(--t1);
-    padding: 0 10px;
-    cursor: pointer;
-  }
-  .btn:hover { background: var(--hover); }
-  .btn.primary { background: var(--t1); color: var(--badge-fg); border-color: transparent; }
   .seg { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--panel-border); border-radius: 6px; background: var(--hover); }
   .tab { padding: 4px 8px; cursor: pointer; }
   .tab[aria-selected="true"] { background: var(--sel); color: var(--t1); border-radius: 4px; }

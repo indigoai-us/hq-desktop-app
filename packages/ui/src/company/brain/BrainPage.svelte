@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailButton from "../../common/button/RailButton.svelte";
   import { dismissable } from "../../common/dismissable.js";
   /**
    * Company Brain (US-028): Knowledge, Policies, Skills, Workers.
@@ -14,6 +15,7 @@
   import { publishCompanyPageCount } from "../../shell/company-page-counts.svelte.js";
   import { pageRows } from "../../shell/list-paging.js";
   import "../../home/tokens.css";
+  import "../../common/button/rail-type.css";
   import "../../chat/chat-tokens.css";
   import {
     emptyBrainCache,
@@ -356,27 +358,27 @@
   <header class="toolbar">
     <h1>{title}</h1>
     {#if page === "policies"}
-      <span class="chip">{policyGroups.hard.length} hard · {policyGroups.soft.length} soft</span>
+      <span class="meta-line" data-meta-line>{policyGroups.hard.length} hard · {policyGroups.soft.length} soft</span>
       <div class="tabs" role="tablist">
         {#each ["all", "hard", "soft"] as id (id)}
           <button type="button" role="tab" class="tab" aria-selected={policyFilter === id} onclick={() => (policyFilter = id as PolicyFilter)}>{id === "all" ? "All" : id === "hard" ? "Hard" : "Soft"}</button>
         {/each}
       </div>
     {:else if page === "skills"}
-      <span class="chip">{cache.skills.length} skills</span>
+      <span class="meta-line" data-meta-line>{cache.skills.length} skills</span>
       <div class="tabs" role="tablist">
         <button type="button" role="tab" class="tab" aria-selected={skillTab === "library"} onclick={() => (skillTab = "library")}>Library</button>
         <button type="button" role="tab" class="tab" aria-selected={skillTab === "usage"} onclick={() => (skillTab = "usage")}>Usage</button>
       </div>
     {:else if page === "workers"}
-      <span class="chip" data-testid="brain-worker-count">{workerRows.length} workers</span>
+      <span class="meta-line" data-meta-line data-testid="brain-worker-count">{workerRows.length} workers</span>
       <div class="tabs" role="tablist">
         {#each [["all", "All"], ["company", "Company"], ["personal", "Personal overlay"]] as [id, label] (id)}
           <button type="button" role="tab" class="tab" aria-selected={workerScope === id} onclick={() => (workerScope = id as WorkerScopeFilter)}>{label}</button>
         {/each}
       </div>
     {:else}
-      <span class="chip">{cache.knowledge.length} files</span>
+      <span class="meta-line" data-meta-line>{cache.knowledge.length} files</span>
       <div class="tabs" role="tablist">
         <button type="button" role="tab" class="tab" aria-selected={lens === "fresh"} onclick={() => (lens = "fresh")}>What's fresh</button>
         <button type="button" role="tab" class="tab" aria-selected={lens === "tree"} onclick={() => (lens = "tree")}>Browse tree</button>
@@ -385,14 +387,14 @@
     <span class="grow"></span>
     <input class="search" type="search" placeholder={`Search ${title.toLowerCase()}`} bind:value={query} aria-label={`Search ${title}`} />
     {#if page === "knowledge" || page === "policies"}
-      <button type="button" class="btn" onclick={() => onopenpage?.("vault")}>Vault</button>
+      <RailButton icon="folder" onclick={() => onopenpage?.("vault")}>Vault</RailButton>
     {/if}
     {#if page === "policies"}
-      <button type="button" class="btn primary" onclick={() => (sheet = "policy")}>New policy</button>
+      <RailButton icon="plus" variant="primary" onclick={() => (sheet = "policy")}>New policy</RailButton>
     {:else if page === "skills"}
-      <button type="button" class="btn primary" onclick={() => (sheet = "skill")}>New skill</button>
+      <RailButton icon="plus" variant="primary" onclick={() => (sheet = "skill")}>New skill</RailButton>
     {:else if page === "workers"}
-      <button type="button" class="btn primary" onclick={() => (sheet = "worker")}>New worker</button>
+      <RailButton icon="plus" variant="primary" onclick={() => (sheet = "worker")}>New worker</RailButton>
     {/if}
   </header>
 
@@ -497,28 +499,28 @@
           <p class="path">{selectedSkill.path}</p>
           <p>{selectedSkill.description}</p>
           <div class="actions">
-            <button type="button" class="btn primary" data-testid="skill-run" onclick={() => runPrompt(skillRunPrompt(selectedSkill.name), selectedSkill.name)}>Run</button>
-            <button type="button" class="btn" onclick={() => openInClaude(selectedSkill.path)}>Open in Claude Code</button>
-            <button type="button" class="btn" onclick={() => (shareOpen = true)}>Share</button>
+            <RailButton icon="play" variant="primary" data-testid="skill-run" onclick={() => runPrompt(skillRunPrompt(selectedSkill.name), selectedSkill.name)}>Run</RailButton>
+            <RailButton icon="claude-code" onclick={() => openInClaude(selectedSkill.path)}>Open in Claude Code</RailButton>
+            <RailButton icon="link" onclick={() => (shareOpen = true)}>Share</RailButton>
           </div>
         {:else if page === "workers" && selectedWorker}
           <div class="detail-head">
             <h2>{selectedWorker.name}</h2>
-            <button type="button" class="btn" onclick={() => (sheet = "picker")}>⋯</button>
-            <button type="button" class="btn" onclick={() => (selected = null)} aria-label="Close">✕</button>
+            <button type="button" class="icon-btn" onclick={() => (sheet = "picker")}>⋯</button>
+            <button type="button" class="icon-btn" onclick={() => (selected = null)} aria-label="Close">✕</button>
           </div>
           <p class="kind">{selectedWorker.scope}</p>
           <p class="path">{selectedWorker.path}</p>
           <p>{selectedWorker.description}</p>
           <div class="actions">
-            <button type="button" class="btn primary" data-testid="worker-run" onclick={() => runPrompt(workerRunPrompt(selectedWorker.id), selectedWorker.name)}>Run</button>
-            <button type="button" class="btn" onclick={() => openInClaude(selectedWorker.path)}>Open in Claude Code</button>
-            <button type="button" class="btn" onclick={() => openPath(selectedWorker.path)}>Edit worker.yaml</button>
+            <RailButton icon="play" variant="primary" data-testid="worker-run" onclick={() => runPrompt(workerRunPrompt(selectedWorker.id), selectedWorker.name)}>Run</RailButton>
+            <RailButton icon="claude-code" onclick={() => openInClaude(selectedWorker.path)}>Open in Claude Code</RailButton>
+            <RailButton icon="pencil" onclick={() => openPath(selectedWorker.path)}>Edit worker.yaml</RailButton>
           </div>
           {#each selectedWorker.skills as name (name)}
             <div class="sub">
               <span>{name}</span>
-              <button type="button" class="btn" onclick={() => runPrompt(skillRunPrompt(name), name)}>Run</button>
+              <RailButton icon="play" onclick={() => runPrompt(skillRunPrompt(name), name)}>Run</RailButton>
             </div>
           {/each}
         {:else if page === "policies" && selectedPolicy}
@@ -534,16 +536,16 @@
             <p class="gate"><b>Hard gate.</b> Unmet HARD policies block completion.</p>
           {/if}
           <div class="actions">
-            <button type="button" class="btn" onclick={() => openPath(selectedPolicy.path)}>Open</button>
-            <button type="button" class="btn" onclick={() => copyPath(selectedPolicy.path)}>Copy path</button>
+            <RailButton icon="external" onclick={() => openPath(selectedPolicy.path)}>Open</RailButton>
+            <RailButton icon="copy" onclick={() => copyPath(selectedPolicy.path)}>Copy path</RailButton>
           </div>
           <div class="body">{selectedPolicy.body}</div>
         {:else if page === "knowledge" && selectedFile}
           <p class="path">{selectedFile.path}</p>
           <h2>{selectedFile.title}</h2>
           <div class="actions">
-            <button type="button" class="btn" onclick={() => openPath(selectedFile.path)}>Open</button>
-            <button type="button" class="btn" onclick={() => copyPath(selectedFile.path)}>Copy path</button>
+            <RailButton icon="external" onclick={() => openPath(selectedFile.path)}>Open</RailButton>
+            <RailButton icon="copy" onclick={() => copyPath(selectedFile.path)}>Copy path</RailButton>
           </div>
           <div class="body">{selectedFile.body}</div>
         {:else}
@@ -560,7 +562,7 @@
     <div class="sheet" role="dialog" aria-label={sheet === "policy" ? "New policy" : sheet === "skill" ? "New skill" : sheet === "picker" ? "Skill picker" : "New worker"} data-testid="brain-sheet" use:dismissable={{ onclose: () => (sheet = null) }}>
       <header class="sheet-head">
         <h2>{sheet === "policy" ? "New policy" : sheet === "skill" ? "New skill" : sheet === "picker" ? "Skills" : "New worker"}</h2>
-        <button type="button" class="btn" aria-label="Close" onclick={() => (sheet = null)}>✕</button>
+        <button type="button" class="icon-btn" aria-label="Close" onclick={() => (sheet = null)}>✕</button>
       </header>
       {#if sheet === "policy"}
         <label>Title <input bind:value={policyDraft.title} /></label>
@@ -580,8 +582,8 @@
         <label>Body <textarea rows="6" bind:value={policyDraft.body}></textarea></label>
         <footer class="sheet-foot">
           <span class="meta">Versioned in Vault · opens in Claude Code</span>
-          <button type="button" class="btn" onclick={() => (sheet = null)}>Cancel</button>
-          <button type="button" class="btn primary" data-testid="create-policy" onclick={submitPolicy}>Create policy</button>
+          <RailButton icon="x" onclick={() => (sheet = null)}>Cancel</RailButton>
+          <RailButton icon="check" variant="primary" data-testid="create-policy" onclick={submitPolicy}>Create policy</RailButton>
         </footer>
       {:else if sheet === "skill"}
         <label>Name <input bind:value={skillDraft.name} /></label>
@@ -607,8 +609,8 @@
         </div>
         <footer class="sheet-foot">
           <span class="meta">Creates SKILL.md and opens it in Claude Code</span>
-          <button type="button" class="btn" onclick={() => (sheet = null)}>Cancel</button>
-          <button type="button" class="btn primary" data-testid="create-skill" onclick={submitSkill}>Create skill</button>
+          <RailButton icon="x" onclick={() => (sheet = null)}>Cancel</RailButton>
+          <RailButton icon="check" variant="primary" data-testid="create-skill" onclick={submitSkill}>Create skill</RailButton>
         </footer>
       {:else if sheet === "picker"}
         <input placeholder="Search skills" bind:value={pickerQuery} aria-label="Search skills" />
@@ -620,7 +622,7 @@
           </button>
         {/each}
         <footer class="sheet-foot">
-          <button type="button" class="btn primary" onclick={() => (sheet = "worker")}>Done</button>
+          <RailButton icon="check" variant="primary" onclick={() => (sheet = "worker")}>Done</RailButton>
         </footer>
       {:else}
         <label>Name <input bind:value={workerDraft.name} /></label>
@@ -630,12 +632,12 @@
           <button type="button" role="tab" class="tab" aria-selected={workerDraft.scope === "personal"} onclick={() => (workerDraft.scope = "personal" as WorkerScope)}>Personal overlay</button>
         </div>
         <label>Description <textarea rows="3" bind:value={workerDraft.description}></textarea></label>
-        <button type="button" class="btn" onclick={() => (sheet = "picker")}>Pick skills ({workerDraft.skills.length})</button>
+        <RailButton icon="plus" onclick={() => (sheet = "picker")}>Pick skills ({workerDraft.skills.length})</RailButton>
         <label>Knowledge paths <textarea rows="3" bind:value={workerDraft.knowledge}></textarea></label>
         <footer class="sheet-foot">
           <span class="meta">Writes worker.yaml and opens it in Claude Code</span>
-          <button type="button" class="btn" onclick={() => (sheet = null)}>Cancel</button>
-          <button type="button" class="btn primary" data-testid="create-worker" onclick={submitWorker}>Create worker</button>
+          <RailButton icon="x" onclick={() => (sheet = null)}>Cancel</RailButton>
+          <RailButton icon="check" variant="primary" data-testid="create-worker" onclick={submitWorker}>Create worker</RailButton>
         </footer>
       {/if}
     </div>
@@ -643,7 +645,7 @@
 
   {#if shareOpen && selectedSkill}
     <div class="sheet share" role="dialog" aria-label="Share" data-testid="share-sheet" use:dismissable={{ onclose: () => (shareOpen = false), outside: true }}>
-      <header class="sheet-head"><h2>Share</h2><button type="button" class="btn" aria-label="Close" onclick={() => (shareOpen = false)}>✕</button></header>
+      <header class="sheet-head"><h2>Share</h2><button type="button" class="icon-btn" aria-label="Close" onclick={() => (shareOpen = false)}>✕</button></header>
       <p class="path">{selectedSkill.path}</p>
       <p class="meta">Grant level is read or write. The vault share sheet sends the grant.</p>
       <div class="tabs" role="group" aria-label="Grant level">
@@ -651,8 +653,8 @@
         <button type="button" role="radio" class="tab" aria-checked="false">Write</button>
       </div>
       <footer class="sheet-foot">
-        <button type="button" class="btn" onclick={() => copyPath(selectedSkill.path)}>Copy path</button>
-        <button type="button" class="btn primary" onclick={() => { shareOpen = false; onopenpage?.("vault"); }}>Open vault</button>
+        <RailButton icon="copy" onclick={() => copyPath(selectedSkill.path)}>Copy path</RailButton>
+        <RailButton icon="folder" variant="primary" onclick={() => { shareOpen = false; onopenpage?.("vault"); }}>Open vault</RailButton>
       </footer>
     </div>
   {/if}
@@ -685,7 +687,7 @@
   h1 { font-size: var(--type-title, 20px); line-height: var(--type-title-line, 1.25); }
   h2 { font-size: 13px; }
   .grow { flex: 1; }
-  .chip, .badge, .tab, .btn, .search, .item, .opt {
+  .chip, .badge, .tab, .icon-btn, .search, .item, .opt {
     font: inherit;
     font-size: 13px;
     color: var(--t2, var(--v4-text-2));
@@ -700,9 +702,8 @@
     background: var(--sel, var(--v4-active-row));
     color: var(--t1, var(--v4-text-1));
   }
-  .tab:hover, .btn:hover, .item:hover { background: var(--hover, var(--v4-hover)); }
-  .btn { height: 26px; box-sizing: border-box; border-color: var(--line2, var(--v4-control-border)); background: var(--btn-bg, transparent); color: var(--t1, var(--v4-text-1)); padding: 0 10px; cursor: pointer; }
-  .btn.primary { background: var(--t1, var(--v4-text-1)); color: var(--badge-fg, var(--v4-primary-fg)); border-color: transparent; }
+  .tab:hover, .icon-btn:hover, .item:hover { background: var(--hover, var(--v4-hover)); }
+  .icon-btn { height: 26px; box-sizing: border-box; border-color: var(--line2, var(--v4-control-border)); background: var(--btn-bg, transparent); color: var(--t1, var(--v4-text-1)); padding: 0 10px; cursor: pointer; }
   .search {
     height: 28px;
     box-sizing: border-box;

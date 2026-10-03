@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailButton from "../common/button/RailButton.svelte";
   import { dismissable } from "../common/dismissable.js";
   /**
    * New objective sheet (US-026). Period choices match the storyboard.
@@ -145,14 +146,14 @@
             <button type="button" class="x" aria-label="Remove link" onclick={() => removeLink(link)}>✕</button>
           </div>
         {/each}
-        <button type="button" class="btn" data-testid="new-goal-link" onclick={() => (linking = true)}>+ Link</button>
+        <RailButton icon="link" data-testid="new-goal-link" onclick={() => (linking = true)}>+ Link</RailButton>
       </div>
     </div>
   </div>
   <div class="sf">
     <span class="hint">Shows under Objectives as ○ not started until the board records a status.</span>
-    <button type="button" class="btn" onclick={onclose}>Cancel</button>
-    <button type="button" class="btn primary" onclick={create}>Create objective</button>
+    <RailButton icon="x" onclick={onclose}>Cancel</RailButton>
+    <RailButton icon="check" variant="primary" onclick={create}>Create objective</RailButton>
   </div>
   {#if linking}
     <LinkPicker
@@ -201,7 +202,7 @@
     border-bottom: 1px solid var(--v4-rowline);
   }
   .lb { font-size: 12px; color: var(--v4-text-3); padding-top: 6px; }
-  input, textarea, .btn, .tab, .add, .x {
+  input, textarea, .tab, .add, .x {
     font: inherit;
     color: var(--v4-text-1);
     background: var(--v4-control-bg, transparent);
@@ -209,15 +210,13 @@
     border-radius: 6px;
   }
   input, textarea { width: 100%; padding: 6px 8px; }
-  .x, .add, .tab, .btn { background: transparent; }
+  .x, .add, .tab { background: transparent; }
   .tabs { display: flex; gap: 0; width: max-content; padding: 2px; background: var(--v4-control-faint); border-radius: 6px; }
   .tab { border: 0; padding: 3px 8px; color: var(--v4-text-2); }
   .tab[aria-selected="true"] { background: var(--v4-active-row); color: var(--v4-text-1); }
   .krb { border: 1px solid var(--v4-control-border, var(--v4-rowline)); border-radius: 6px; padding: 8px; margin-bottom: 6px; }
   .nums { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; margin-top: 6px; }
-  .add, .btn { border: 0; color: var(--v4-text-2); padding: 4px 8px; }
-  .btn { border: 1px solid var(--v4-rowline); }
-  .btn.primary { background: var(--v4-active-row); color: var(--v4-text-1); }
+  .add { border: 0; color: var(--v4-text-2); padding: 4px 8px; }
   .x { border: 0; }
   .lk { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--v4-text-2); padding: 2px 0 6px; }
   .lk span { flex: 1; }

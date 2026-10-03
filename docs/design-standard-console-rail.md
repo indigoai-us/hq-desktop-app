@@ -38,6 +38,10 @@ Company rule: canvas uses 20px (page/task title) and 13px (everything else). Max
 | Profile name | 20px / 500 | 18px / 700 (**DEV**) | chat/MemberProfilePanel.svelte:212-213 |
 | Agent detail name | 20px / 500 | 16px / 650 (**DEV**) | chat/AgentDetailPanel.svelte:751-752 |
 | Sheet title | 13px / 500 | 15px / 600 (**DEV**) | chat/NewChannelSheet.svelte:196-197 |
+| Meta line (OWNER-008) | 11px / 400 / 14px line-height / `--t3`; `·` separators (`.meta-sep`), 6px status dot (`.meta-dot`) | | common/button/rail-type.css (`.meta-line`) |
+| Tooltip / card meta (OWNER-008) | 11px, the smallest size in the scale | | common/Tooltip.svelte |
+
+Meta line (OWNER-008): every secondary summary or count line under a page header or list section ("4 objectives · 8 KRs · ● 4 on track", "0 hard · 1 soft") uses the shared `.meta-line` class and carries `data-meta-line`. It is smaller than body text on purpose, so the header title and the list carry the weight.
 
 Reference token sets that must NOT be used on the canvas (inflated): `--type-metadata 13 / --type-secondary 14 / --type-body 15 / --type-section 17 / --type-detail 24` (home/tokens.css:31-35; chat/tokens.css:23-27). `--text-lg: 15px` (messaging-tokens.css:39) likewise.
 
@@ -77,7 +81,9 @@ Accent: monochrome. **DEV**: `--accent: var(--vio-ink)` (messaging-tokens.css:48
 | Icon button large | 28px | 0 | 8px | none | hover `--hover` | ChatSidebar.svelte:4536-4540 |
 | Compact button | 26px | 0 10px | `--v4-radius-button` 6px | 1px `--v4-control-border` | | SP:3375-3382; home/tokens.css:51 |
 | Row button | 30px | 0 12px | 6px | 1px control border | | SP:3341-3348 |
-| Sheet button | auto (~28px) | 6px 10px | 6px | 1px `--panel-border`; primary = `--t1` fill | | NewChannelSheet.svelte:236-237 |
+| Labelled button (OWNER-007, all console-rail page actions, sheet footers, empty-state and settings actions) | 36px | 0 16px; gap 8px | 8px | secondary: 1px `--line2` on `--btn-bg`; primary: `--t1` fill, `--panel-bg` ink; ghost; danger | hover `--hover`; disabled 50% | common/button/RailButton.svelte; pill reference V4TitleBar.svelte:1248-1263 (Launch / Core pills) |
+| Labelled button, compact (dense menus only) | 28px | 0 12px; gap 6px | 8px | as above | | home/V4TitleBar.svelte (`.v4-launch-change`) |
+| Sheet button (Messages only) | auto (~28px) | 6px 10px | 6px | 1px `--panel-border`; primary = `--t1` fill | | NewChannelSheet.svelte:236-237 |
 | Full-width panel action | 32px | | 8px | transparent border, 13px | | MemberProfilePanel.svelte:283-296 |
 | Input / select | 28-30px | 0 8px | 6px (`--v4-radius-field`) | 1px `--line2`/`--panel-border` | | NewChannelSheet.svelte:208-210; SP:3194-3200 |
 | Segmented control | track pad 2px, gap 2px | tab 4px 8px | track 6px / tab 4px | track 1px `--panel-border` on `--hover` | selected = bg `--hover`/active-row, `--t1` | NewChannelSheet.svelte:216-218 |
@@ -86,6 +92,12 @@ Accent: monochrome. **DEV**: `--accent: var(--vio-ink)` (messaging-tokens.css:48
 | Quick-react btn | 28px | 0 4px | 6px | none | | ChannelConversation.svelte:3204-3212 |
 
 Status: a 6px dot (SP:3250-3251) plus 13px `--t2` text. No filled/bordered status pills.
+
+Labelled buttons (OWNER-007): every button with a visible label carries an icon. Label 12px / 500 / 16px line-height (smaller than the 13px pill text so the label has more air), icon 14px at stroke 1.5, icon before label, 8px gap, 36px tall, 0 16px padding, 8px radius. Use `RailButton` (`icon` is a required prop). Icons come from one registry, `common/button/rail-icons.ts`: Export → download, New/Add → plus, Cancel/Clear → x, Create/Save → check, Vault → folder, Check again → refresh, Change/Edit → pencil. Tool actions use brand marks from the same registry: Open in Claude Code → `claude-code`, Open in Codex → `codex`, Grok Build → `grok`. Company buttons use the company favicon (`company/CompanyIcon.svelte`); status buttons use a status dot or state icon plus a chevron. Icon-only buttons keep the 24/28px icon-button rows above. Guard: `common/button/button-icons.guard.test.ts`.
+
+Informational pills vs buttons (OWNER-008): non-interactive pills ("Plan: PRD Created", company name chips, tag chips, priority pills, status badges) are fully rounded (999px), 11px / 400, padding 2px 6px, 1px `--line` border (`.info-pill` in common/button/rail-type.css). Interactive buttons keep the 8px radius, so the two never read as the same thing.
+
+Work board task card (OWNER-008): padding 12px, radius 8px, 1px `--panel-border`, no left accent bar. Title keeps its size with a two-line clamp. Every other text on the card (id, priority pill, tag chips, assignee, count) is 11px; chips and the priority pill are info pills; the progress bar is 3px tall.
 
 ## 5. Rows, panes, headers
 
@@ -129,7 +141,7 @@ SVG stroke only, 14px in 24px buttons, stroke-width 1.3 (ChatSidebar.svelte:2812
 | Section labels: 13px sans, `--t2`, sentence case | Tracked mono-caps headers (10px, 0.06-0.1em, uppercase) for columns or sections |
 | Sans for all UI text; mono only for code, IDs/paths, keyboard chords | Mix mono timestamps/statuses into sans rows |
 | Status as 6px dot + 13px `--t2` text; color only for semantic ok/warn/error | Heavy filled or bordered status pills; violet/ice accents for non-semantic emphasis |
-| Buttons 26-30px, radius 6px, transparent or `--btn-bg`, 1px `--line2` only on secondary actions | Bordered full-height buttons, stacked bordered button groups |
+| Labelled buttons: `RailButton`, 36px, 0 16px, 12px/500, 14px icon + label, radius 8px | Text-only labelled buttons; 13px bold-looking labels with tight padding |
 | Fixed row heights: 31px nav rows, 28px child rows, 48px settings rows; line-height in px | Rows whose height depends on content or mixed font sizes (uneven row heights) |
 | Selected row = `--sel` background, `--t1` text | Left accent bars, inset box-shadow markers, colored borders |
 | Detail panes: 12px 14px header with `--line` bottom, 13px title, 24px close, 20px side padding | Bespoke pane chrome; detail panes must match Messages thread/profile pane rhythm |

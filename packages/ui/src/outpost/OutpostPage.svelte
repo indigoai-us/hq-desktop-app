@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailButton from "../common/button/RailButton.svelte";
   import { dismissable } from "../common/dismissable.js";
   /**
    * Personal Outpost (US-034).
@@ -10,6 +11,7 @@
   import { untrack } from "svelte";
   import { startNowTicker } from "../common/now-ticker.js";
   import "../home/tokens.css";
+  import "../common/button/rail-type.css";
   import "../chat/chat-tokens.css";
   import {
     alertLabel,
@@ -235,26 +237,26 @@
     <header class="toolbar">
       <h1>{tab === "overview" ? "Outpost" : tab === "jobs" ? "Scheduled jobs" : tab === "runs" ? "Runs" : tab === "logs" ? "Logs" : "Settings"}</h1>
       {#if provisioned}
-        <span class="sub" data-testid="outpost-host">{[data.host.name, data.host.region, data.host.instance].filter(Boolean).join(" · ")}</span>
-        <span class="status" data-testid="outpost-online"><span class="dot" class:live={!offline} class:err={offline}></span>{offline ? "Offline" : "Online"}</span>
+        <span class="meta-line" data-meta-line data-testid="outpost-host">{[data.host.name, data.host.region, data.host.instance].filter(Boolean).join(" · ")}</span>
+        <span class="meta-line" data-meta-line data-testid="outpost-online"><span class="meta-dot dot" class:live={!offline} class:err={offline}></span>{offline ? "Offline" : "Online"}</span>
       {/if}
-      <span class="sub" class:err={refreshFailed} data-testid="outpost-freshness">{freshness}</span>
+      <span class="meta-line" data-meta-line class:err={refreshFailed} data-testid="outpost-freshness">{freshness}</span>
       <span class="grow"></span>
-      <button type="button" class="btn" disabled={offline} onclick={() => (notice = "terminal")}>Open terminal</button>
-      <button type="button" class="btn" disabled={offline}>Self-update</button>
-      <button type="button" class="btn" disabled={offline}>Restart</button>
+      <RailButton icon="external" type="button" disabled={offline} onclick={() => (notice = "terminal")}>Open terminal</RailButton>
+      <RailButton icon="download" type="button" disabled={offline}>Self-update</RailButton>
+      <RailButton icon="refresh" type="button" disabled={offline}>Restart</RailButton>
     </header>
 
     {#if data.provisioned === false}
       <div class="empty" data-testid="outpost-empty">
         <span class="nm">No Outpost yet</span>
         <span class="sub">An Outpost is your always-on machine in the cloud for scheduled jobs.</span>
-        <button type="button" class="btn primary" data-testid="outpost-setup" onclick={() => openExternal?.(OUTPOST_SETUP_URL)}>Set one up</button>
+        <RailButton icon="external" variant="primary" type="button" data-testid="outpost-setup" onclick={() => openExternal?.(OUTPOST_SETUP_URL)}>Set one up</RailButton>
       </div>
     {:else if data.provisioned === null && refreshFailed}
       <div class="empty" role="alert" data-testid="outpost-load-error">
         <span class="nm">Couldn't read your Outpost</span>
-        <button type="button" class="btn" data-testid="outpost-try-again" onclick={() => retry()}>Try again</button>
+        <RailButton icon="refresh" type="button" data-testid="outpost-try-again" onclick={() => retry()}>Try again</RailButton>
       </div>
     {:else if data.provisioned === null && tab !== "logs"}
       <div class="empty sub" data-testid="outpost-loading">Reading your Outpost…</div>
@@ -262,7 +264,7 @@
       <div class="banner" role="alert" data-testid="outpost-offline-banner">
         <span class="nm">Host unreachable.</span>
         No report since {data.host.lastHeartbeatAt}.
-        <button type="button" class="btn" onclick={() => retry()}>Retry now</button>
+        <RailButton icon="refresh" type="button" onclick={() => retry()}>Retry now</RailButton>
       </div>
     {/if}
 
@@ -274,7 +276,7 @@
           {#each ["all", "active", "paused", "failing"] as name (name)}
             <button type="button" class:on={jobFilter === name} onclick={() => (jobFilter = name as typeof jobFilter)}>{name}</button>
           {/each}
-          <button type="button" class="btn primary" disabled={offline} data-testid="new-job" onclick={openNew}>New job</button>
+          <RailButton icon="plus" variant="primary" type="button" disabled={offline} data-testid="new-job" onclick={openNew}>New job</RailButton>
         </div>
         <div class="jrow hd"><span>Job</span><span>Cadence</span><span>Next run</span><span>Last result</span><span>Alerts</span><span></span></div>
         {#if data.jobs.length === 0}
@@ -405,7 +407,7 @@
         </div>
         <footer>
           <button type="button" onclick={() => (sheet = null)}>Cancel</button>
-          <button type="button" class="btn primary" data-testid="save-job" onclick={saveJob}>Save</button>
+          <RailButton icon="check" variant="primary" type="button" data-testid="save-job" onclick={saveJob}>Save</RailButton>
         </footer>
       </div>
     </div>
@@ -423,7 +425,7 @@
   h2 { font-size: 13px; font-weight: 500; color: var(--t2, var(--v4-text-2)); margin: 16px 0 4px; }
   nav { display: flex; flex-direction: column; gap: 1px; margin-top: 4px; }
   button { font: inherit; font-size: 13px; cursor: pointer; }
-  nav button, .tabs button, .seg button, .tab, .btn, .sheet header button, .sheet footer button { background: transparent; color: var(--t2, var(--v4-text-2)); border: 0; border-radius: 6px; text-align: left; padding: 0 8px; height: 26px; }
+  nav button, .tabs button, .seg button, .tab, .sheet header button, .sheet footer button { background: transparent; color: var(--t2, var(--v4-text-2)); border: 0; border-radius: 6px; text-align: left; padding: 0 8px; height: 26px; }
   nav button { height: 31px; padding: 7px 8px; border-radius: 8px; }
   nav button.on, .jrow[aria-current="true"], .tabs button.on { background: var(--sel, var(--v4-active-row)); color: var(--t1, var(--v4-text-1)); box-shadow: none; }
   nav button:hover, .jrow:hover, .tab:hover, .tabs button:hover { background: var(--hover, var(--v4-hover)); }
@@ -443,7 +445,7 @@
   .empty { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; padding: 24px 0; }
   .banner { display: flex; gap: 8px; align-items: center; min-height: 40px; margin: 0 0 12px; padding: 0 12px; background: var(--raised, var(--v4-control-faint)); border-radius: 8px; }
   .tabs { display: flex; align-items: center; gap: 2px; margin-bottom: 4px; }
-  .tabs .btn { margin-left: auto; }
+  .tabs :global([data-rail-btn]) { margin-left: auto; }
   .jrow { display: grid; grid-template-columns: minmax(0, 1.8fr) 120px 100px minmax(0, 1fr) 90px 120px; gap: 8px; align-items: center; height: 31px; box-sizing: border-box; padding: 0 8px; border-radius: 8px; cursor: pointer; }
   .jrow > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* QA-052: at narrow widths the last result wraps instead of clipping the
@@ -471,6 +473,4 @@
   input { height: 28px; box-sizing: border-box; }
   textarea { padding: 6px 8px; min-height: 80px; }
   button:disabled { opacity: 0.45; cursor: default; }
-  .btn { height: 28px; padding: 0 10px; border: 1px solid var(--line2, var(--v4-control-border)); background: var(--btn-bg, var(--v4-control-faint)); color: var(--t1, var(--v4-text-1)); white-space: nowrap; flex: none; }
-  .btn.primary { background: var(--v4-primary-bg); color: var(--v4-primary-fg); border-color: transparent; }
 </style>

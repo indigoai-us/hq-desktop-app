@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailButton from "../common/button/RailButton.svelte";
   /**
    * Company Activity (US-026). Team, Tokens, and Live tabs with a range
    * and Export. The token chart loads only after Tokens is selected.
@@ -9,6 +10,7 @@
   import { onMount } from "svelte";
   import { publishCompanyPageCount } from "../shell/company-page-counts.svelte.js";
   import "../home/tokens.css";
+  import "../common/button/rail-type.css";
   import "../chat/scroll-perf.css";
   import { loadTokenDayStrip } from "./activity-chart.js";
   import {
@@ -111,11 +113,11 @@
       {/each}
     </div>
     <span class="grow"></span>
-    {#if liveCount > 0}<span class="chip live">{liveCount} live</span>{/if}
+    {#if liveCount > 0}<span class="meta-line" data-meta-line><span class="meta-dot ok"></span>{liveCount} live</span>{/if}
     {#if snapshot?.attributedPct != null}
-      <span class="chip">{snapshot.attributedPct}% attributed</span>
+      <span class="meta-line" data-meta-line><span class="meta-dot"></span>{snapshot.attributedPct}% attributed</span>
     {/if}
-    <button class="btn" type="button" onclick={() => void exportCsv()}>Export</button>
+    <RailButton icon="download" onclick={() => void exportCsv()}>Export</RailButton>
   </header>
 
   {#if !snapshot}
@@ -228,14 +230,12 @@
   .toolbar h1 { margin: 0 8px 0 0; font-size: var(--type-title, 20px); font-weight: var(--type-title-weight, 500); line-height: var(--type-title-line, 1.25); }
   .tabs { display: flex; gap: 2px; background: var(--hover); border: 1px solid var(--panel-border); border-radius: 6px; padding: 2px; }
   .seg { margin-left: 12px; }
-  .tab, .btn { font: inherit; color: var(--v4-text-2); background: transparent; border: 0; }
+  .tab { font: inherit; color: var(--v4-text-2); background: transparent; border: 0; }
   .tab { padding: 4px 8px; font-size: 13px; border-radius: 4px; cursor: pointer; }
   .tab[aria-selected="true"] { background: var(--sel); color: var(--t1); }
   .grow { flex: 1; }
-  .btn { height: 26px; box-sizing: border-box; border: 1px solid var(--line2); border-radius: 6px; padding: 0 10px; background: var(--btn-bg); color: var(--t1); font-size: 13px; cursor: pointer; }
-  .chip { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--t2); font-variant-numeric: tabular-nums; }
-  .chip::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--t3); }
-  .chip.live::before { background: var(--ok); }
+  .meta-line { font-variant-numeric: tabular-nums; }
+  .meta-dot.ok { background: var(--ok); }
   .canvas { padding: 16px 20px 24px; overflow: auto; min-height: 0; font-size: 13px; }
   .scroll { overflow: auto; }
   .sech {

@@ -40,3 +40,7 @@ export type { CompanyActivityStore } from "./OverviewActivityDigest.svelte";
 export { default as UnavailableNote } from "./UnavailableNote.svelte";
 export { default as EmptyState } from "./EmptyState.svelte";
 export * from "./truncation-title";
+
+export { default as RailButton } from "./button/RailButton.svelte";
+export { default as RailIcon } from "./button/RailIcon.svelte";
+export * from "./button/rail-icons";

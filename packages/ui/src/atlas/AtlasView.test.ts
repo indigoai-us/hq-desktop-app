@@ -76,7 +76,7 @@ describe("AtlasView", () => {
   it("QA-064: a click on a node opens its inspector exactly like Return", async () => {
     mountView();
     await settle();
-    const svg = host.querySelector("svg")!;
+    const svg = (host.querySelector(sel("atlas-world")) as SVGGElement).ownerSVGElement!;
     const node = () => host.querySelector(sel(`atlas-node-${RAIL}`)) as SVGGElement;
 
     // Release lands on the svg (the old pointer-capture retarget) — still a node click.
@@ -114,7 +114,7 @@ describe("AtlasView", () => {
     press(host.querySelector(sel(`atlas-node-${RAIL}`))!, window);
     await settle();
     expect(inspectorPath()).toBe("projects/hq-desktop-console-rail/");
-    press(host.querySelector("svg")!, window);
+    press((host.querySelector(sel("atlas-world")) as SVGGElement).ownerSVGElement!, window);
     await settle();
     expect(inspectorPath()).toBeUndefined();
   });
@@ -180,7 +180,7 @@ describe("AtlasView", () => {
     await settle();
     const world = host.querySelector(sel("atlas-world")) as SVGGElement;
     const before = world.getAttribute("transform");
-    const svg = host.querySelector("svg")!;
+    const svg = (host.querySelector(sel("atlas-world")) as SVGGElement).ownerSVGElement!;
     flushSync(() => {
       svg.dispatchEvent(new WheelEvent("wheel", { deltaY: -200, clientX: 10, clientY: 10, bubbles: true }));
     });

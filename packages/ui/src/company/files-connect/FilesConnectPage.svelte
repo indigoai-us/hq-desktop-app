@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailButton from "../../common/button/RailButton.svelte";
   /**
    * Vault, Integrations, Secrets, Deployments (US-029).
    * First frame is the cache or a skeleton. Refresh runs after paint.
@@ -622,8 +623,8 @@
         <button class="fc-seg-tab" role="tab" aria-selected={vaultTab === "new"} data-testid="vault-whats-new" onclick={() => (vaultTab = "new")}>What's new</button>
       </div>
       <input class="field search" placeholder="Search files" bind:value={query} />
-      <button class="btn" type="button" data-testid="vault-upload" onclick={openUpload}>Upload</button>
-      <button class="btn" type="button" data-testid="vault-share" onclick={() => openShare("share")}>Share</button>
+      <RailButton icon="upload" data-testid="vault-upload" onclick={openUpload}>Upload</RailButton>
+      <RailButton icon="link" data-testid="vault-share" onclick={() => openShare("share")}>Share</RailButton>
     </header>
     <div class="split vault-split" class:has-tree={hasExplorer} class:no-access={accessTarget === null}>
       {#if showRecent}
@@ -631,7 +632,7 @@
           {#if recentError}
             <div class="empty" role="alert" data-testid="vault-recent-error">
               <span class="empty-title">{recentError}</span>
-              <button class="btn" type="button" onclick={() => (recentNonce += 1)}>Try again</button>
+              <RailButton icon="refresh" onclick={() => (recentNonce += 1)}>Try again</RailButton>
             </div>
           {:else if recentObjects === null}
             <div data-testid="vault-recent-loading">{@render skeletonRows()}</div>
@@ -724,7 +725,7 @@
                 <button class="fc-seg-tab" type="button" role="tab" aria-selected={grantLevel === level} onclick={() => (grantLevel = level)}>{level === "read" ? "Read" : "Write"}</button>
               {/each}
             </div>
-            <button class="btn" type="button" data-testid="grant-access" onclick={openGrant}>Grant access</button>
+            <RailButton icon="user-plus" data-testid="grant-access" onclick={openGrant}>Grant access</RailButton>
           </div>
         </div>
       </aside>
@@ -741,7 +742,7 @@
         <button class="fc-seg-tab" role="tab" aria-selected={integrationTab === "mcp"} data-testid="integrations-mcp" onclick={() => (integrationTab = "mcp")}>Agents & MCP</button>
       </div>
       <input class="field search" placeholder="App name or website" bind:value={query} />
-      <button class="btn primary" type="button" data-testid="connect-app" onclick={() => (sheet = "connect")}>Connect app</button>
+      <RailButton icon="plug" variant="primary" data-testid="connect-app" onclick={() => (sheet = "connect")}>Connect app</RailButton>
     </header>
     <div class="split">
       <div class="list">
@@ -768,9 +769,9 @@
             <p class="meta">{integrationCurrent.detail}</p>
             {@render statusDot(integrationCurrent.status)}
             <div class="actions">
-              <button class="btn" type="button" onclick={() => openConnect(integrationCurrent.name)}>
+              <RailButton icon="plug" onclick={() => openConnect(integrationCurrent.name)}>
                 {integrationCurrent.status === "active" ? "Manage" : "Connect"}
-              </button>
+              </RailButton>
             </div>
           </div>
         {/if}
@@ -787,7 +788,7 @@
         <button class="fc-seg-tab" role="tab" aria-selected={secretTab === "proxy"} onclick={() => (secretTab = "proxy")}>Proxy-only</button>
       </div>
       <input class="field search" placeholder="Search secrets" bind:value={query} />
-      <button class="btn primary" type="button" data-testid="new-secret" onclick={openNewSecret}>New secret</button>
+      <RailButton icon="plus" variant="primary" data-testid="new-secret" onclick={openNewSecret}>New secret</RailButton>
     </header>
     <div class="split">
       <div class="list" data-testid="secrets-list">
@@ -820,10 +821,10 @@
             </dl>
             <p class="meta">The value is never shown here.</p>
             <div class="actions">
-              <button class="btn" type="button" data-testid="rotate-secret" onclick={() => (sheet = "rotate")}>Rotate</button>
-              <button class="btn" type="button" data-testid="share-secret" onclick={() => openShare("share-secret")}>Share</button>
-              <button class="btn" type="button" data-testid="bind-secret" onclick={() => (sheet = "bind")}>Bind</button>
-              <button class="btn" type="button" data-testid="bind-outpost" onclick={() => (sheet = "bind-outpost")}>Bind to outpost</button>
+              <RailButton icon="refresh" data-testid="rotate-secret" onclick={() => (sheet = "rotate")}>Rotate</RailButton>
+              <RailButton icon="link" data-testid="share-secret" onclick={() => openShare("share-secret")}>Share</RailButton>
+              <RailButton icon="link" data-testid="bind-secret" onclick={() => (sheet = "bind")}>Bind</RailButton>
+              <RailButton icon="link" data-testid="bind-outpost" onclick={() => (sheet = "bind-outpost")}>Bind to outpost</RailButton>
             </div>
           </div>
         {/if}
@@ -834,14 +835,14 @@
       <h1>Deployments</h1>
       {#if deployments}<span class="count" data-testid="deployments-count">{countLabel("Deployments", deployments.length)}</span>{/if}
       <span class="grow"></span>
-      <button class="btn primary" type="button" data-testid="deploy-from-project" onclick={openDeploy}>Deploy</button>
+      <RailButton icon="send" variant="primary" data-testid="deploy-from-project" onclick={openDeploy}>Deploy</RailButton>
     </header>
     {#if deployments === null}
       <div class="list" data-testid="deployments-skeleton" aria-busy="true">{@render skeletonRows()}</div>
     {:else if deployments.length === 0}
       <div class="empty" data-testid="deployments-empty">
         <p>{deploymentsError ?? "Nothing deployed yet"}</p>
-        <button class="btn" type="button" onclick={openDeploy}>Deploy from a project</button>
+        <RailButton icon="send" onclick={openDeploy}>Deploy from a project</RailButton>
       </div>
     {:else}
       <div class="split">
@@ -865,9 +866,9 @@
               {@render statusDot(deployCurrent.status)}
               {#if deployCurrent.url}<p class="mono meta url">{deployCurrent.url}</p>{/if}
               <div class="actions">
-                <button class="btn" type="button" disabled={!deployCurrent.url} onclick={() => openExternal?.(deployCurrent.url)}>Open</button>
-                <button class="btn" type="button" data-testid="redeploy" onclick={() => askRedeploy(deployCurrent)}>Redeploy</button>
-                <button class="btn" type="button" data-testid="deploy-access" onclick={openDeployAccess}>Access</button>
+                <RailButton icon="external" disabled={!deployCurrent.url} onclick={() => openExternal?.(deployCurrent.url)}>Open</RailButton>
+                <RailButton icon="refresh" data-testid="redeploy" onclick={() => askRedeploy(deployCurrent)}>Redeploy</RailButton>
+                <RailButton icon="key" data-testid="deploy-access" onclick={openDeployAccess}>Access</RailButton>
               </div>
             </div>
           {/if}
@@ -976,7 +977,7 @@
         <div class="fr">
           <span class="lb">Files</span>
           <div class="pick">
-            <button class="btn" type="button" data-testid="upload-choose" onclick={() => fileInput?.click()}>Choose files…</button>
+            <RailButton icon="file" data-testid="upload-choose" onclick={() => fileInput?.click()}>Choose files…</RailButton>
             <input bind:this={fileInput} type="file" multiple hidden onchange={(event) => addFiles((event.currentTarget as HTMLInputElement).files)} />
             {#each picked as file, index (file.name + index)}
               <span class="picked"><span class="nm">{file.name}</span><span class="meta">{formatBytes(file.size)}</span>
@@ -1006,36 +1007,36 @@
     <footer class="sf">
       <span class="hint grow">{sheet === "upload" ? `${picked.length} files` : sheet === "upload-progress" ? uploadHint : ""}</span>
       {#if sheet === "share" || sheet === "share-secret"}
-        <button class="btn" type="button" onclick={closeSheet}>Cancel</button>
-        <button class="btn primary" type="button" data-testid="share-save" disabled={busy} onclick={() => void handOff(sheet === "share-secret" ? secretSharePrompt(slug, shareView?.name ?? "", grantLevel) : shareAccessPrompt(slug, vaultFile ?? vaultRoot, grantLevel), "share")}>Share</button>
+        <RailButton icon="x" onclick={closeSheet}>Cancel</RailButton>
+        <RailButton icon="link" variant="primary" data-testid="share-save" disabled={busy} onclick={() => void handOff(sheet === "share-secret" ? secretSharePrompt(slug, shareView?.name ?? "", grantLevel) : shareAccessPrompt(slug, vaultFile ?? vaultRoot, grantLevel), "share")}>Share</RailButton>
       {:else if sheet === "grant"}
-        <button class="btn" type="button" onclick={closeSheet}>Cancel</button>
-        <button class="btn primary" type="button" data-testid="grant-save" disabled={busy || !isEmail(grantRecipient)} onclick={() => void handOff(fileSharePrompt(slug, grantPath, grantRecipient, grantLevel), "grant")}>Grant</button>
+        <RailButton icon="x" onclick={closeSheet}>Cancel</RailButton>
+        <RailButton icon="user-plus" variant="primary" data-testid="grant-save" disabled={busy || !isEmail(grantRecipient)} onclick={() => void handOff(fileSharePrompt(slug, grantPath, grantRecipient, grantLevel), "grant")}>Grant</RailButton>
       {:else if sheet === "connect"}
-        <button class="btn" type="button" onclick={closeSheet}>Cancel</button>
-        <button class="btn primary" type="button" data-testid="connect-open" onclick={() => openConnect(query || "Slack")}>Open in browser</button>
+        <RailButton icon="x" onclick={closeSheet}>Cancel</RailButton>
+        <RailButton icon="external" variant="primary" data-testid="connect-open" onclick={() => openConnect(query || "Slack")}>Open in browser</RailButton>
       {:else if sheet === "connect-waiting"}
-        <button class="btn" type="button" onclick={closeSheet}>Cancel</button>
-        <button class="btn" type="button" data-testid="connect-return" onclick={simulateReturn}>I've signed in</button>
+        <RailButton icon="x" onclick={closeSheet}>Cancel</RailButton>
+        <RailButton icon="check" data-testid="connect-return" onclick={simulateReturn}>I've signed in</RailButton>
       {:else if sheet === "new-secret" || sheet === "rotate"}
-        <button class="btn" type="button" onclick={closeSheet}>Cancel</button>
-        <button class="btn primary" type="button" data-testid="secret-save" disabled={busy || (sheet === "new-secret" && !secretNameValid)} onclick={() => void saveSecret(sheet === "rotate")}>Save</button>
+        <RailButton icon="x" onclick={closeSheet}>Cancel</RailButton>
+        <RailButton icon="check" variant="primary" data-testid="secret-save" disabled={busy || (sheet === "new-secret" && !secretNameValid)} onclick={() => void saveSecret(sheet === "rotate")}>Save</RailButton>
       {:else if sheet === "bind" || sheet === "bind-outpost"}
-        <button class="btn" type="button" onclick={closeSheet}>Cancel</button>
-        <button class="btn primary" type="button" data-testid="bind-save" disabled={busy} onclick={() => void handOff(secretBindPrompt(slug, secretCurrent?.name ?? "", sheet === "bind-outpost" ? "outpost" : "app"), "binding")}>Bind</button>
+        <RailButton icon="x" onclick={closeSheet}>Cancel</RailButton>
+        <RailButton icon="link" variant="primary" data-testid="bind-save" disabled={busy} onclick={() => void handOff(secretBindPrompt(slug, secretCurrent?.name ?? "", sheet === "bind-outpost" ? "outpost" : "app"), "binding")}>Bind</RailButton>
       {:else if sheet === "deploy"}
-        <button class="btn" type="button" onclick={closeSheet}>Cancel</button>
-        <button class="btn primary" type="button" data-testid="run-deploy" disabled={busy || !deploySourceCurrent} onclick={() => void runDeploy(deploySourceCurrent?.path ?? "")}>Deploy</button>
+        <RailButton icon="x" onclick={closeSheet}>Cancel</RailButton>
+        <RailButton icon="send" variant="primary" data-testid="run-deploy" disabled={busy || !deploySourceCurrent} onclick={() => void runDeploy(deploySourceCurrent?.path ?? "")}>Deploy</RailButton>
       {:else if sheet === "deploy-allowlist"}
-        <button class="btn primary" type="button" onclick={() => (sheet = "deploy")}>Back to deploy</button>
+        <RailButton icon="arrow-left" variant="primary" onclick={() => (sheet = "deploy")}>Back to deploy</RailButton>
       {:else if sheet === "confirm-redeploy"}
-        <button class="btn" type="button" onclick={closeSheet}>Cancel</button>
-        <button class="btn primary" type="button" data-testid="confirm-redeploy" disabled={busy} onclick={() => void runRedeploy()}>Redeploy</button>
+        <RailButton icon="x" onclick={closeSheet}>Cancel</RailButton>
+        <RailButton icon="refresh" variant="primary" data-testid="confirm-redeploy" disabled={busy} onclick={() => void runRedeploy()}>Redeploy</RailButton>
       {:else if sheet === "upload"}
-        <button class="btn" type="button" onclick={closeSheet}>Cancel</button>
-        <button class="btn primary" type="button" data-testid="upload-start" disabled={!canUpload || picked.length === 0} onclick={() => void startUpload()}>Upload</button>
+        <RailButton icon="x" onclick={closeSheet}>Cancel</RailButton>
+        <RailButton icon="upload" variant="primary" data-testid="upload-start" disabled={!canUpload || picked.length === 0} onclick={() => void startUpload()}>Upload</RailButton>
       {:else}
-        <button class="btn primary" type="button" onclick={closeSheet}>Done</button>
+        <RailButton icon="check" variant="primary" onclick={closeSheet}>Done</RailButton>
       {/if}
     </footer>
     {/if}
@@ -1057,11 +1058,6 @@
   .fc-seg-tab[aria-selected="true"] { background: var(--v4-active-row, var(--sel)); color: var(--t1, var(--v4-text-1)); }
   .field { height: 28px; border-radius: 6px; border: 1px solid var(--line2, var(--v4-control-border)); background: transparent; color: inherit; padding: 0 8px; min-width: 0; }
   .search { width: 200px; }
-  .btn { height: 26px; border-radius: 6px; border: 1px solid var(--line2, var(--v4-control-border)); background: transparent; color: var(--t1, var(--v4-text-1)); padding: 0 10px; cursor: pointer; white-space: nowrap; }
-  .btn:hover:not(:disabled) { background: var(--hover, var(--v4-hover)); }
-  .btn.primary { background: var(--t1, var(--v4-text-1)); color: var(--panel-bg, var(--v4-ground)); border-color: transparent; }
-  .btn.primary:hover:not(:disabled) { background: var(--t1, var(--v4-text-1)); opacity: 0.9; }
-  .btn:disabled { opacity: 0.45; cursor: default; }
   .icon { width: 24px; height: 24px; display: inline-grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--t3, var(--v4-text-3)); padding: 0; cursor: pointer; }
   .icon:hover { background: var(--hover, var(--v4-hover)); color: var(--t1, var(--v4-text-1)); }
   .link { border: 0; background: transparent; color: var(--t1, var(--v4-text-1)); padding: 0; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; text-align: left; }
@@ -1108,7 +1104,7 @@
   }
   .empty { padding: 48px 16px; color: var(--t3, var(--v4-text-3)); text-align: center; display: flex; flex-direction: column; align-items: center; gap: 4px; }
   .empty p { margin: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .empty .btn { margin-top: 8px; }
+  .empty :global([data-rail-btn]) { margin-top: 8px; }
   .empty p.wrap { white-space: normal; overflow: visible; }
   .sheet .empty { padding: 24px 20px; }
   .empty-title { color: var(--t2, var(--v4-text-2)); }

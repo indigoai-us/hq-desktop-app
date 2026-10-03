@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailButton from "../../common/button/RailButton.svelte";
   /**
    * Who can open one deployment (QA-059). Reads the app's hq-deploy access
    * policy and allowlist, edits a draft, and applies it after a confirmation
@@ -194,7 +195,7 @@
           {#if draft.users.length + draft.groups.length === 0}<span class="none">No one yet</span>{/if}
           <span class="add">
             <input class="field" list="deploy-access-members" data-testid="access-person" placeholder={members === null ? "Loading people…" : "name@company.com"} autocomplete="off" bind:value={entry} onkeydown={(e) => e.key === "Enter" && addPerson()} />
-            <button class="btn" type="button" data-testid="access-person-add" onclick={addPerson}>Add</button>
+            <RailButton icon="plus" data-testid="access-person-add" onclick={addPerson}>Add</RailButton>
           </span>
           <datalist id="deploy-access-members">
             {#each memberChoices as m (m.id)}<option value={m.email}>{m.label}</option>{/each}
@@ -211,7 +212,7 @@
           {#if draft.emails.length === 0}<span class="none">No one yet</span>{/if}
           <span class="add">
             <input class="field" type="text" data-testid="access-email" placeholder="name@company.com or @company.com" autocomplete="off" spellcheck="false" bind:value={entry} onkeydown={(e) => e.key === "Enter" && addEmail()} />
-            <button class="btn" type="button" data-testid="access-email-add" disabled={!isEmailPattern(entry)} onclick={addEmail}>Add</button>
+            <RailButton icon="plus" data-testid="access-email-add" disabled={!isEmailPattern(entry)} onclick={addEmail}>Add</RailButton>
           </span>
         </div>
       </div>
@@ -223,11 +224,11 @@
 <footer class="sf">
   <span class="hint grow">{dirty && !confirming ? "Unsaved changes" : ""}</span>
   {#if confirming}
-    <button class="btn" type="button" disabled={saving} onclick={() => (confirming = false)}>Back</button>
-    <button class="btn primary" type="button" data-testid="access-apply" disabled={!canSave} aria-busy={saving} onclick={() => void apply()}>{saving ? "Saving…" : "Apply"}</button>
+    <RailButton icon="arrow-left" disabled={saving} onclick={() => (confirming = false)}>Back</RailButton>
+    <RailButton icon="check" variant="primary" data-testid="access-apply" disabled={!canSave} aria-busy={saving} onclick={() => void apply()}>{saving ? "Saving…" : "Apply"}</RailButton>
   {:else}
-    <button class="btn" type="button" onclick={onclose}>Cancel</button>
-    <button class="btn primary" type="button" data-testid="access-save" disabled={!canSave} onclick={() => (confirming = true)}>Save</button>
+    <RailButton icon="x" onclick={onclose}>Cancel</RailButton>
+    <RailButton icon="check" variant="primary" data-testid="access-save" disabled={!canSave} onclick={() => (confirming = true)}>Save</RailButton>
   {/if}
 </footer>
 
@@ -257,10 +258,6 @@
   .add { display: flex; gap: 6px; width: 100%; }
   .add .field { flex: 1; }
   .field { height: 28px; border-radius: 6px; border: 1px solid var(--line2, var(--v4-control-border)); background: transparent; color: inherit; padding: 0 8px; min-width: 0; }
-  .btn { height: 26px; border-radius: 6px; border: 1px solid var(--line2, var(--v4-control-border)); background: transparent; color: var(--t1, var(--v4-text-1)); padding: 0 10px; cursor: pointer; white-space: nowrap; }
-  .btn:hover:not(:disabled) { background: var(--hover, var(--v4-hover)); }
-  .btn.primary { background: var(--t1, var(--v4-text-1)); color: var(--panel-bg, var(--v4-ground)); border-color: transparent; }
-  .btn:disabled { opacity: 0.45; cursor: default; }
   .mono { font-family: var(--font-mono, ui-monospace, monospace); }
   .confirm { padding: 10px 20px; }
   .confirm .sec { margin: 0 0 6px; font-weight: 500; }
