@@ -58,3 +58,27 @@ describe("FilesConnectPage read deadline (BLANK-1)", () => {
     expect(logged).toHaveBeenCalled();
   });
 });
+
+describe("FilesConnectPage vault summary deadline (BLANK-1)", () => {
+  it("the folder summary line does not stay on Reading folder…", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const never = () => new Promise(() => {});
+    component = mount(FilesConnectPage, {
+      target: document.body,
+      props: {
+        page: "vault",
+        slug: "blank-1-vault",
+        companyUid: "cmp_blank1",
+        files: { listDir: vi.fn(never), getFileContent: vi.fn(never), listVaultPrefix: vi.fn(never) },
+        shell: { pickFile: vi.fn(async () => ok(null)) } as unknown as ShellApi,
+        settings: { getConfig: vi.fn(async () => ok({})) } as unknown as SettingsApi,
+        openExternal: vi.fn(),
+      } as never,
+    });
+    flushSync();
+    await vi.advanceTimersByTimeAsync(READ_DEADLINE_MS + 10);
+    flushSync();
+    expect(document.querySelector("[data-testid='vault-summary']")?.textContent ?? "").not.toContain("Reading folder…");
+  });
+});

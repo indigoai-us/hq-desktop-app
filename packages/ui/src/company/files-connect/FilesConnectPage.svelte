@@ -257,7 +257,8 @@
     vaultRootSummary = cached ? folderSummary(cached) : null;
     if (!files) return;
     let alive = true;
-    loadVaultChildren(root)
+    // BLANK-1: the folder summary line settles within the shared bound.
+    withReadDeadline(loadVaultChildren(root), "vault folder summary")
       .then((entries) => {
         if (alive) vaultRootSummary = folderSummary(entries);
       })
