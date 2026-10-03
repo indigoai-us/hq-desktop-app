@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { LocalBotRow } from "@hq/platform";
 import {
+  localBotInCompany,
+  localBotsForCompany,
   isAlreadyExistsFailure,
   isRawBotFailureText,
   isValidLocalBotName,
@@ -210,5 +212,39 @@ describe("localBotNeedsOfflineNotice", () => {
 
   it("nothing to show without a bot", () => {
     expect(localBotNeedsOfflineNotice(null)).toBe(false);
+  });
+});
+
+describe("localBotInCompany (OWNER-014)", () => {
+  const workspaces = [
+    { slug: "gt", cloudUid: "cmp_gt" },
+    { slug: "acme", cloudUid: "cmp_acme" },
+  ];
+
+  it("keeps a personal bot with no membership out of every company", () => {
+    const bot = { kind: "personal" as const, companies: [], promotionHold: null };
+    expect(localBotInCompany(bot, "cmp_gt", workspaces)).toBe(false);
+    expect(localBotInCompany(bot, "cmp_acme", workspaces)).toBe(false);
+  });
+
+  it("shows a personal bot in the one company it is a member of", () => {
+    const bot = { kind: "personal" as const, companies: ["acme"], promotionHold: null };
+    expect(localBotInCompany(bot, "cmp_acme", workspaces)).toBe(true);
+    expect(localBotInCompany(bot, "cmp_gt", workspaces)).toBe(false);
+  });
+
+  it("shows a bot being moved to a company only in that company", () => {
+    const bot = { companies: undefined, promotionHold: { companyUid: "cmp_gt" } };
+    expect(localBotInCompany(bot, "cmp_gt", workspaces)).toBe(true);
+    expect(localBotInCompany(bot, "cmp_acme", workspaces)).toBe(false);
+  });
+
+  it("filters a list to one company", () => {
+    const bots = [
+      { name: "dr-love", companies: [], promotionHold: null },
+      { name: "gt-bot", companies: ["gt"], promotionHold: null },
+    ];
+    expect(localBotsForCompany(bots, "cmp_gt", workspaces).map((b) => b.name)).toEqual(["gt-bot"]);
+    expect(localBotsForCompany(bots, null, workspaces)).toEqual([]);
   });
 });

@@ -19,6 +19,7 @@
   import { dismissable } from "../common/dismissable.js";
   import { pageRows } from "../shell/list-paging.js";
   import { cloudBotsFromRoster } from "../settings/cloud-bots.js";
+  import { localBotsForCompany } from "../chat/local-bots.js";
   import {
     BOT_FILTERS,
     filterBots,
@@ -63,8 +64,9 @@
   let pages = $state(1);
 
   function localRows(): BotListRow[] {
-    return (localBots ?? [])
-      .filter((bot) => !companyUid || !bot.promotionHold?.companyUid || bot.promotionHold.companyUid === companyUid)
+    // OWNER-014: only bots that are members of (or moving to) this company.
+    // A personal bot stays in Personal.
+    return localBotsForCompany(localBots, companyUid, companies)
       .map((bot) => ({
         uid: bot.agentUid,
         name: bot.displayName?.trim() || bot.name,

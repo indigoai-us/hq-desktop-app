@@ -12,10 +12,13 @@ import type { LocalBotRow } from "@hq/platform";
 
 let component: ReturnType<typeof mount> | null = null;
 
+// Company bots that are members of the open company (OWNER-014: a personal
+// bot with no membership is not listed on a company's Bots page at all).
 const localBots = [
-  { agentUid: "agt_drlove", name: "dr-love", displayName: "dr-love", state: "idle", runtime: "claude" },
-  { agentUid: "agt_other", name: "other", displayName: "other", state: "idle", runtime: "claude" },
+  { agentUid: "agt_drlove", name: "dr-love", displayName: "dr-love", state: "idle", runtime: "claude", kind: "company", companies: ["gt"] },
+  { agentUid: "agt_other", name: "other", displayName: "other", state: "idle", runtime: "claude", kind: "company", companies: ["gt"] },
 ] as unknown as LocalBotRow[];
+const companies = [{ slug: "gt", displayName: "GT", kind: "company", cloudUid: "cmp_gt" }];
 
 async function until<T>(read: () => T | null | undefined): Promise<T> {
   for (let i = 0; i < 200; i += 1) {
@@ -28,7 +31,7 @@ async function until<T>(read: () => T | null | undefined): Promise<T> {
 }
 
 async function openPage(): Promise<void> {
-  component = mount(BotsPage, { target: document.body, props: { companyUid: "cmp_gt", localBots } });
+  component = mount(BotsPage, { target: document.body, props: { companyUid: "cmp_gt", localBots, companies } as never });
   flushSync();
   await tick();
 }

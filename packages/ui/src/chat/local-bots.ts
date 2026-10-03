@@ -282,3 +282,33 @@ export function localBotCompanies(
     .filter((w) => w.kind !== "personal" && Boolean(w.cloudUid) && w.slug.trim())
     .map((w) => ({ slug: w.slug.trim(), label: w.displayName?.trim() || w.slug.trim() }));
 }
+
+/**
+ * Whether a local bot belongs on a company's surfaces (OWNER-014).
+ *
+ * A bot on this Mac shows in a company only when it holds that company's
+ * membership (`companies`, matched by slug through the workspace list) or is
+ * being handed to that company (`promotionHold`). A personal bot with neither
+ * shows in Personal only, never in whichever company happens to be open.
+ */
+export function localBotInCompany(
+  bot: Pick<LocalBotRow, "companies" | "promotionHold">,
+  companyUid: string | null | undefined,
+  workspaces: ReadonlyArray<{ slug: string; cloudUid: string | null }> | null | undefined,
+): boolean {
+  const uid = (companyUid ?? "").trim();
+  if (!uid) return false;
+  if (bot.promotionHold?.companyUid?.trim() === uid) return true;
+  const slugs = new Set((bot.companies ?? []).map((s) => s.trim()).filter(Boolean));
+  if (slugs.size === 0) return false;
+  return (workspaces ?? []).some((w) => (w.cloudUid ?? "").trim() === uid && slugs.has(w.slug.trim()));
+}
+
+/** The local bots that belong to one company (see `localBotInCompany`). */
+export function localBotsForCompany<T extends Pick<LocalBotRow, "companies" | "promotionHold">>(
+  bots: readonly T[] | null | undefined,
+  companyUid: string | null | undefined,
+  workspaces: ReadonlyArray<{ slug: string; cloudUid: string | null }> | null | undefined,
+): T[] {
+  return (bots ?? []).filter((bot) => localBotInCompany(bot, companyUid, workspaces));
+}

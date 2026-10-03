@@ -515,6 +515,7 @@
     LOCAL_BOT_BUSY_POLL_MS,
     LOCAL_BOTS_POLL_MS,
     localBotForRow,
+    localBotInCompany,
     localBotNeedsOfflineNotice,
     localBotOfflineNotice,
     localBotPresence,
@@ -5215,12 +5216,15 @@
   ): void {
     const uid = personUid.trim();
     if (!uid) return;
-    const origin = options.companyUid?.trim();
+    const bot = localBots.find((b) => b.agentUid === uid);
+    // OWNER-014: a local bot carries the open company only when it is a
+    // member of it; a personal bot's DM and profile stay in Personal.
+    const requested = options.companyUid?.trim() || null;
+    const origin = bot && !localBotInCompany(bot, requested, effectiveCompanies) ? null : requested;
     if (origin) dmOriginCompany = { ...dmOriginCompany, [uid]: origin };
     const existing = [...railRows, ...searchRows].find(
       (row) => row.kind === "dm" && row.personUid === uid && !row.channelId,
     );
-    const bot = localBots.find((b) => b.agentUid === uid);
     handleSelect(
       existing ?? {
         id: `dm:${uid}`,
@@ -5232,7 +5236,7 @@
             bot?.name,
             displayNameByUid[uid],
           ]) || uid,
-        companyUid: options.companyUid?.trim() || null,
+        companyUid: origin,
         unreadDot: false,
         lastActivityAt: Date.now(),
         pinned: false,
