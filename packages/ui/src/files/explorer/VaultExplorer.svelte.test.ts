@@ -15,6 +15,7 @@ import { flushSync, mount, tick, unmount } from "svelte";
 import type { PlatformAdapter, VaultFileHit, VaultNoteLinks } from "@hq/platform";
 import type { Workspace } from "../../chat/workspaces.js";
 import VaultExplorer from "./VaultExplorer.svelte";
+import { READ_DEADLINE_MS } from "../../common/read-deadline.js";
 
 let host: HTMLDivElement | null = null;
 let component: ReturnType<typeof mount> | null = null;
@@ -351,5 +352,31 @@ describe("VaultExplorer failed read (AUDIT-3-22)", () => {
     expect(host.querySelector('[data-testid="vault-home-error"]')).toBeNull();
     expect(rowNames(host).length).toBeGreaterThan(0);
     expect(host.querySelector('[data-testid="vault-home"]')!.textContent).toContain("3notes");
+  });
+});
+
+describe("VaultExplorer read deadline (BLANK-1)", () => {
+  it("a vault summary that never answers leaves Indexing… for the failed-read state", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const adapter = makeAdapter([]);
+      (adapter.files!.vault as unknown as Record<string, unknown>).summary = vi.fn(() => new Promise(() => {}));
+      host = document.createElement("div");
+      document.body.appendChild(host);
+      component = mount(VaultExplorer, {
+        target: host,
+        props: { adapter, companies, vaultId: "company:acme", onlocationchange: vi.fn() } as never,
+      });
+      await vi.advanceTimersByTimeAsync(50);
+      flushSync();
+      expect(host.textContent).toContain("Indexing…");
+      await vi.advanceTimersByTimeAsync(READ_DEADLINE_MS + 10);
+      flushSync();
+      expect(host.textContent).not.toContain("Indexing…");
+      expect(host.querySelector('[data-testid="vault-home-error"]')?.textContent).toContain("Couldn't read this vault.");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

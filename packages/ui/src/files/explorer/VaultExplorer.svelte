@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { withReadDeadline } from "../../common/read-deadline.js";
   /**
    * VaultExplorer: the Files page. An Obsidian-style, read-only explorer over
    * the local HQ folder, one vault at a time: Personal, or a company the
@@ -119,8 +120,11 @@
     const api = vaultApi;
     if (!api) return;
     summaryLoading = true;
-    await ensureScope(v);
-    const res = await api.summary(v.root, includeSystem);
+    // BLANK-1: a summary that never answers falls to the failed-read state.
+    const res = await withReadDeadline(
+      ensureScope(v).then(() => api.summary(v.root, includeSystem)),
+      "vault summary",
+    ).catch((err: unknown) => ({ ok: false as const, message: err instanceof Error ? err.message : String(err) }));
     if (gen !== summaryGeneration) return;
     summaryLoading = false;
     if (res.ok) summary = res.value;
