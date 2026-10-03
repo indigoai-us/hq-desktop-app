@@ -70,6 +70,9 @@
   const companyProjects = $derived(dedupeProjects(projects.filter((project) => project.company === slug)));
   const unlinked = $derived(unlinkedProjects(companyProjects, links));
   const summary = $derived(tallyGlyphs(visible));
+  // BLANK-2: a failed read with nothing loaded shows only the failed line and
+  // Try again; "0 objectives" waits for a read that succeeded.
+  const failedEmpty = $derived(Boolean(error) && (objectives ?? []).length === 0);
 
   function remember(active: string): void {
     if (objectives) writeGoalsCache(storage, active, { objectives, links });
@@ -252,7 +255,7 @@
       {/each}
     </div>
     <span class="grow"></span>
-    {#if objectives}
+    {#if objectives && !failedEmpty}
       <span class="meta-line" data-meta-line>{visible.length} objectives · {krCount(visible)} KRs</span>
       {#if summary}<span class="meta-line" data-meta-line>{summary}</span>{/if}
     {/if}
@@ -266,7 +269,7 @@
     </div>
   {:else}
     <div class="canvas">
-      <div class="sech">Objectives · {period} <span class="grow"></span><span class="plain">Progress averages each objective's KRs</span></div>
+      {#if !failedEmpty}<div class="sech">Objectives · {period} <span class="grow"></span><span class="plain">Progress averages each objective's KRs</span></div>{/if}
       {#if error}
         <div class="empty load-error" role="alert" data-testid="goals-load-error">
           <p>{error}</p>
