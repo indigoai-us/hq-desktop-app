@@ -281,9 +281,9 @@
         // session-backed name editable and do not manufacture a blank About
         // value that a later Save could send back to the server.
         descriptionLoaded = false;
-        const message = !res.ok
-          ? res.message || "Couldn\u2019t load all profile fields."
-          : "Couldn\u2019t load all profile fields.";
+        // AUDIT-3: the service's own text goes to the log, never onto the screen.
+        console.warn("[settings] profile read failed", res.ok ? "empty" : res.message);
+        const message = "Couldn\u2019t load all profile fields. Try again.";
         profileError = message;
         profileFetchError = message;
       }
@@ -292,8 +292,8 @@
       if (request !== profileRequest || generation !== sessionGeneration) return;
       descriptionLoaded = false;
       profileLoaded = true;
-      const message =
-        error instanceof Error ? error.message : "Couldn\u2019t load all profile fields.";
+      console.warn("[settings] profile read failed", error);
+      const message = "Couldn\u2019t load all profile fields. Try again.";
       profileError = message;
       profileFetchError = message;
     } finally {
@@ -402,12 +402,13 @@
         }
         profileSavedAt = Date.now();
       } else {
-        profileError = res.message || "Couldn't save your profile.";
+        console.warn("[settings] profile save failed", res.message);
+        profileError = "Couldn't save your profile. Try again.";
       }
     } catch (err) {
       if (generation !== sessionGeneration) return;
-      profileError =
-        err instanceof Error ? err.message : "Couldn't save your profile.";
+      console.warn("[settings] profile save failed", err);
+      profileError = "Couldn't save your profile. Try again.";
     } finally {
       if (generation === sessionGeneration) savingProfile = false;
     }
