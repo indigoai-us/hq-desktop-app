@@ -951,28 +951,26 @@
   .vx-eyebrow {
     margin: 0 0 8px;
     color: var(--v4-text-3);
-    font-size: 12px;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    font-size: 13px;
   }
   .vx-home h1 {
     margin: 0;
-    font-size: 36px;
-    font-weight: 680;
-    letter-spacing: -0.025em;
+    font-size: var(--type-title, 20px);
+    font-weight: var(--type-title-weight, 500);
+    line-height: var(--type-title-line, 1.25);
   }
   .vx-lede {
     max-width: 560px;
     margin: 12px 0 28px;
     color: var(--v4-text-2);
-    font-size: 15px;
-    line-height: 1.6;
+    font-size: 13px;
+    line-height: 1.45;
   }
   .vx-home h2 {
     margin: 36px 0 12px;
     color: var(--v4-text-2);
     font-size: 13px;
-    font-weight: 600;
+    font-weight: 500;
   }
   .vx-stats {
     display: grid;
@@ -988,13 +986,13 @@
     background: var(--v4-raised);
   }
   .vx-stats strong {
-    font-size: 24px;
-    font-weight: 650;
+    font-size: 13px;
+    font-weight: 500;
     font-variant-numeric: tabular-nums;
   }
   .vx-stats span {
     color: var(--v4-text-3);
-    font-size: 12px;
+    font-size: 13px;
   }
   .vx-areas {
     display: grid;
@@ -1009,12 +1007,12 @@
     border-radius: 10px;
   }
   .vx-area-name {
-    font-size: 14px;
-    font-weight: 550;
+    font-size: 13px;
+    font-weight: 500;
   }
   .vx-area-count {
     color: var(--v4-text-3);
-    font-size: 12px;
+    font-size: 13px;
   }
   .vx-list {
     display: grid;
