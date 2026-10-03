@@ -649,6 +649,11 @@
     loadFilePreview?: (item: ChannelFileItemModel) => Promise<ChannelFilePreview>;
     /** Platform seam for opening an external URL (run-card preview/diff). */
     onopenurl?: (url: string) => void;
+    /**
+     * Host-owned notification rows (paused uploads) open through the host, so
+     * it can record the engagement and open only an approved link.
+     */
+    onopenhostnotification?: (id: string, url: string) => void;
     /** Bubbled lifecycle-card action (host posts in US-009). */
     oncardaction?: (event: LifecycleCardActionEvent) => void;
     /** Wake events (host bridges MeshClient → bus); null when offline. */
@@ -929,6 +934,7 @@
     filesByRow,
     loadFilePreview,
     onopenurl,
+    onopenhostnotification,
     oncardaction,
     wakes = null,
     companies = null,
@@ -8215,6 +8221,11 @@
       handleSelect(existing ?? stub, {
         replyRootEventId: dest.replyRootEventId,
       });
+      return;
+    }
+    if (dest.kind === "external") {
+      if (onopenhostnotification) onopenhostnotification(dest.id, dest.url);
+      else onopenurl?.(dest.url);
       return;
     }
     if (dest.kind === "files") {

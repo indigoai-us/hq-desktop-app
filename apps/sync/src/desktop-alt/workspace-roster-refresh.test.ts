@@ -163,10 +163,23 @@ afterEach(async () => {
   component = null;
   host?.remove();
   nativeEvents.handlers.clear();
+  window.localStorage.clear();
 });
 
+/** Paused-upload rows the shell hands to the notifications feed. */
+function planLimitRows(): HTMLElement[] {
+  return [
+    ...host.querySelectorAll<HTMLElement>('[data-testid="harness-host-notification"]'),
+  ].filter((row) => row.dataset.type === 'plan_limit');
+}
+
+function expectNoPlanLimitBanner(): void {
+  expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeNull();
+  expect(host.querySelector('.plan-limit-notices')).toBeNull();
+}
+
 describe('HqWorkWorkShell workspace roster refresh', () => {
-  it('shows a server-linked plan notice and opens the exact upgrade URL', async () => {
+  it('records a server-linked plan notification and opens the exact upgrade URL', async () => {
     host = document.createElement('div');
     document.body.appendChild(host);
     const { invokeFn, telemetryEvents } = mockInvoke([() => ({ workspaces: [ACME] })]);
@@ -177,13 +190,13 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
     emit('sync:plan-limit', { company: 'Acme', upgradeUrl });
     await flush();
 
-    const notice = host.querySelector('[data-testid="sync-plan-limit-notice"]');
-    expect(notice?.textContent).toContain('New files are paused for Acme.');
-    const upgrade = notice?.querySelector<HTMLButtonElement>(
-      '[data-testid="sync-plan-limit-upgrade"]',
-    );
-    expect(upgrade?.textContent).toBe('Upgrade');
-    upgrade?.click();
+    expectNoPlanLimitBanner();
+    const rows = planLimitRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].textContent).toContain('New files are paused for Acme.');
+    rows[0]
+      .querySelector<HTMLButtonElement>('[data-testid="harness-host-notification-open"]')
+      ?.click();
     await flush();
     expect(openApprovedExternalUrl).toHaveBeenCalledWith(
       'https://hq.computer' + '/companies/' + 'acme' + '/billing?upgrade=team&entrySurface=desktop_limit',
@@ -191,7 +204,7 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
     expect(telemetryEvents).toEqual([]);
   });
 
-  it('tracks each visible prompt once and records engagement only for Upgrade clicks', async () => {
+  it('tracks each notification once and records engagement only when it is opened', async () => {
     host = document.createElement('div');
     document.body.appendChild(host);
     const { invokeFn, telemetryEvents } = mockInvoke([() => ({ workspaces: [ACME] })], {
@@ -204,7 +217,7 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
     const limitEvent = { company: 'Acme', upgradeUrl };
     emit('sync:plan-limit', limitEvent);
     await flush();
-    expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeTruthy();
+    expect(planLimitRows()).toHaveLength(1);
     expect(telemetryEvents.map((event) => event.eventName)).toEqual([
       'plan_limit_prompt_exposed',
     ]);
@@ -215,10 +228,9 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
       'plan_limit_prompt_exposed',
     ]);
 
-    const upgrade = host.querySelector<HTMLButtonElement>(
-      '[data-testid="sync-plan-limit-upgrade"]',
-    );
-    upgrade?.click();
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="harness-host-notification-open"]')
+      ?.click();
     await flush();
     expect(telemetryEvents.map((event) => event.eventName)).toEqual([
       'plan_limit_prompt_exposed',
@@ -234,14 +246,17 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
       'https://hq.computer' + '/companies/' + 'acme' + '/billing?upgrade=team&entrySurface=desktop_limit',
     );
 
-    host.querySelector<HTMLButtonElement>('.plan-limit-dismiss')?.click();
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="harness-host-notification-ack"]')
+      ?.click();
     await flush();
     emit('sync:plan-limit', limitEvent);
     await flush();
     const exposures = telemetryEvents.filter(
       (event) => event.eventName === 'plan_limit_prompt_exposed',
     );
-    expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeNull();
+    expectNoPlanLimitBanner();
+    expect(planLimitRows()).toHaveLength(1);
     expect(exposures).toHaveLength(1);
     expect(telemetryEvents.filter((event) => event.eventName === 'plan_limit_prompt_engaged'))
       .toHaveLength(1);
@@ -259,11 +274,11 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
     component = mount(HqWorkWorkShell, { target: host, props: { invokeFn } });
     await flush();
 
-    expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeNull();
+    expect(planLimitRows()).toHaveLength(0);
     expect(hqProUrls).not.toContain('/v1/billing/usage-limits?companyUid=cmp_acme');
   });
 
-  it('pushes free warning status on refresh and keeps a dismissed notice hidden', async () => {
+  it('records free warning status once across refreshes', async () => {
     host = document.createElement('div');
     document.body.appendChild(host);
     const { invokeFn, hqProUrls } = mockInvoke([() => ({ workspaces: [ACME] })], {
@@ -279,16 +294,15 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
     component = mount(HqWorkWorkShell, { target: host, props: { invokeFn } });
     await flush();
 
-    expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeTruthy();
+    expectNoPlanLimitBanner();
+    expect(planLimitRows()).toHaveLength(1);
     expect(hqProUrls.filter((url) => url.startsWith('/v1/billing/usage-limits?'))).toHaveLength(1);
 
-    host.querySelector<HTMLButtonElement>('.plan-limit-dismiss')?.click();
-    await flush();
     emit('sync:all-complete', {});
     await flush();
 
     expect(hqProUrls.filter((url) => url.startsWith('/v1/billing/usage-limits?'))).toHaveLength(2);
-    expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeNull();
+    expect(planLimitRows()).toHaveLength(1);
   });
 
   it.each([
@@ -353,7 +367,8 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
     component = mount(HqWorkWorkShell, { target: host, props: { invokeFn } });
     await flush();
 
-    expect(Boolean(host.querySelector('[data-testid=\"sync-plan-limit-notice\"]'))).toBe(expectedNotice);
+    expectNoPlanLimitBanner();
+    expect(planLimitRows()).toHaveLength(expectedNotice ? 1 : 0);
   });
 
   it('does not push a notice for a free company below the warning threshold', async () => {
@@ -371,7 +386,7 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
     component = mount(HqWorkWorkShell, { target: host, props: { invokeFn } });
     await flush();
 
-    expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeNull();
+    expect(planLimitRows()).toHaveLength(0);
   });
 
   it('does not push a notice for a free company exempt from plan-limit enforcement', async () => {
@@ -389,7 +404,7 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
     component = mount(HqWorkWorkShell, { target: host, props: { invokeFn } });
     await flush();
 
-    expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeNull();
+    expect(planLimitRows()).toHaveLength(0);
   });
 
   it('waits for both a resolved roster identity and a visible desktop window', async () => {
@@ -412,7 +427,7 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
     };
     emit('sync:plan-limit', limitEvent);
     await flush();
-    expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeTruthy();
+    expect(planLimitRows()).toHaveLength(1);
     expect(telemetryEvents).toEqual([]);
 
     resolveRoster({ workspaces: [ACME] });
@@ -428,7 +443,7 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
     expect(telemetryEvents[0]).toMatchObject({ companyUid: 'cmp_acme' });
   });
 
-  it('clears a company plan notice when the authenticated account changes', async () => {
+  it("hides the previous account's plan notifications when the authenticated account changes", async () => {
     host = document.createElement('div');
     document.body.appendChild(host);
     const { invokeFn } = mockInvoke([() => ({ workspaces: [ACME] })]);
@@ -440,7 +455,7 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
       upgradeUrl: 'https://hq.computer/companies/acme/billing?upgrade=team',
     });
     await flush();
-    expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeTruthy();
+    expect(planLimitRows()).toHaveLength(1);
 
     emit('auth:session-changed', {
       accountId: 'acct_grace',
@@ -450,7 +465,7 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
     });
     await flush();
 
-    expect(host.querySelector('[data-testid="sync-plan-limit-notice"]')).toBeNull();
+    expect(planLimitRows()).toHaveLength(0);
   });
 
   it('recovers when the native roster succeeds after the UI deadline', async () => {
