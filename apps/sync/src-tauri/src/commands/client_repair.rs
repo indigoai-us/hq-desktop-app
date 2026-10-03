@@ -531,7 +531,13 @@ async fn trigger_sync() -> Result<(), SyncTriggerError> {
         // No handle (headless/test): nothing to drive.
         return Ok(());
     };
-    match crate::commands::sync::start_sync(app, None).await {
+    match crate::commands::sync::start_sync_with_trigger(
+        app,
+        None,
+        crate::commands::cdp_mirror::SyncTrigger::Auto,
+    )
+    .await
+    {
         Ok(_) => Ok(()),
         Err(e) => {
             if e == hq_desktop_core::daemon::CLOUD_PAUSED_MESSAGE {
