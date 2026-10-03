@@ -7480,12 +7480,7 @@ fn sanitized_target_version_token(raw: Option<&str>) -> String {
         return "unknown".to_string();
     };
     let value = raw.strip_prefix('v').unwrap_or(raw);
-    if (1..=48).contains(&value.len())
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+'))
-        && value.bytes().any(|byte| byte.is_ascii_digit())
-    {
+    if (1..=48).contains(&value.len()) && semver::Version::parse(value).is_ok() {
         value.to_string()
     } else {
         "unknown".to_string()
@@ -18419,6 +18414,13 @@ mod tests {
     fn sanitized_target_version_token_preserves_valid_prereleases_but_rejects_free_text() {
         // A stable version passes through unchanged.
         assert_eq!(sanitized_target_version_token(Some("5.103.27")), "5.103.27");
+        assert_eq!(sanitized_target_version_token(Some("AliceCase123")), "unknown");
+        assert_eq!(sanitized_target_version_token(Some("1.2")), "unknown");
+        assert_eq!(sanitized_target_version_token(Some("5.335.0")), "5.335.0");
+        assert_eq!(
+            sanitized_target_version_token(Some("5.335.0-beta.1")),
+            "5.335.0-beta.1"
+        );
         // Valid SemVer prereleases / build metadata survive (the P2 fix): the
         // digits-and-dots-only sanitizer would have collapsed these to `unknown`.
         assert_eq!(
