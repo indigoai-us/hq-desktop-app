@@ -1215,6 +1215,14 @@ export interface FilesApi {
    */
   listVaultPrefix(companyUid: string, prefix: string, cursor?: string): AdapterPromise<Json>;
   /**
+   * OWNER-R17: who can open one vault path, with inherited grants and display
+   * names (hq-pro GET /files/{companyUid}/acl/tree, the read the web console's
+   * access panel uses). Read-only. Hosts without it omit it.
+   */
+  getAccessTree?(companyUid: string, prefix: string): AdapterPromise<Json>;
+  /** OWNER-R17: the company's groups, for names (hq-pro GET /secrets/{companyUid}/groups). Read-only. */
+  listAccessGroups?(companyUid: string): AdapterPromise<Json>;
+  /**
    * Atlas map listing from the company folder synced to this machine
    * (QA-016). Desktop only. Each call resolves null when the company folder is
    * not on this machine; the caller then falls back to `listVaultPrefix`.

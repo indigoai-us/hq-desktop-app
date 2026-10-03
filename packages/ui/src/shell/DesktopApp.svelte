@@ -41,6 +41,7 @@
   import {
     brainPageDoor,
     teamPageDoor,
+    vaultExplorerDoor,
     filesConnectDoor,
     meetingCanvasDoor,
     meetingsSidepaneDoor,
@@ -271,7 +272,6 @@
   import NotificationsView from "../inbox/NotificationsView.svelte";
   import ToastStack from "./ToastStack.svelte";
   import SharedFilesOverlay from "../inbox/SharedFilesOverlay.svelte";
-  import VaultExplorer from "../files/explorer/VaultExplorer.svelte";
   import PageHeader from "./PageHeader.svelte";
   import ProjectsHome from "../projects/ProjectsHome.svelte";
   import CompanyProjectsPage from "../projects/CompanyProjectsPage.svelte";
@@ -1792,6 +1792,27 @@
    * same-origin proxy; desktop uses the bounded Rust byte hop passed by its
    * host.
    */
+  /** OWNER-R17: reads for the Files and Vault right pane's Access section (read-only). */
+  const filesAccess = $derived({
+    companyUidFor: (v: { kind: string; slug: string | null }) =>
+      (companies ?? []).find((w) => (v.kind === "company" ? w.slug === v.slug : w.kind === "personal"))?.cloudUid ?? null,
+    readTree: adapter.files?.getAccessTree ? (uid: string, prefix: string) => adapter.files.getAccessTree!(uid, prefix) : null,
+    readGroups: adapter.files?.listAccessGroups ? (uid: string) => adapter.files.listAccessGroups!(uid) : null,
+  });
+
+  /** OWNER-R13: a vault file that is not on this Mac, read through the vault. */
+  async function vaultCloudRead(companyUid: string | null, key: string): Promise<string | null> {
+    const files = adapter.files;
+    if (!companyUid || !files?.presignVaultGet) return null;
+    const signed = await files.presignVaultGet(companyUid, key);
+    if (!signed.ok) throw new Error(`vault presign ${signed.code ?? signed.reason}`);
+    const url = presignUrlFromResult(signed.value)?.url;
+    if (!url) return null;
+    const res = await getVaultBytesForHost(url, MAX_CHANNEL_FILE_PREVIEW_BYTES);
+    if (!res.ok) throw new Error(`vault read http ${res.status}`);
+    return await res.text();
+  }
+
   async function getVaultBytesForHost(
     url: string,
     maxBytes = MAX_CHANNEL_FILE_PREVIEW_BYTES,
@@ -2412,6 +2433,9 @@
   }
   // Lazy surfaces (profile panes, popovers, create sheets) warm once the first
   // frame is up, so the first click rarely shows their loader.
+  // The Files explorer is its own chunk; fetch it at once so Files still
+  // opens in the click frame.
+  onMount(() => vaultExplorerDoor.preload());
   onMount(() => preloadDoorsWhenIdle());
   // Markdown previews route http(s) links through the host opener (QA-094).
   onMount(() => {
@@ -10384,13 +10408,17 @@
           backTestId="files-back"
         />
         <div class="explorer-host" data-testid="explorer-host">
-          <VaultExplorer
-            {adapter}
-            {companies}
-            vaultId={explorerVault}
-            path={explorerPath}
-            onlocationchange={(loc) => {
-              void navigate({ kind: "explorer", vault: loc.vaultId, path: loc.path });
+          <LazyDoor
+            door={vaultExplorerDoor}
+            props={{
+              adapter,
+              companies,
+              vaultId: explorerVault,
+              path: explorerPath,
+              access: filesAccess,
+              onlocationchange: (loc: { vaultId: string; path: string | null }) => {
+                void navigate({ kind: "explorer", vault: loc.vaultId, path: loc.path });
+              },
             }}
           />
         </div>
@@ -10700,14 +10728,18 @@
                roots and tree, the reading view, and file actions. -->
           <div class="explorer-host rail-files" data-testid="rail-files-host">
             {#if adapter.files}
-              <VaultExplorer
-                {adapter}
-                {companies}
-                vaultId={explorerVault}
-                path={explorerPath}
-                onlocationchange={(loc) => {
-                  explorerVault = loc.vaultId;
-                  explorerPath = loc.path;
+              <LazyDoor
+                door={vaultExplorerDoor}
+                props={{
+                  adapter,
+                  companies,
+                  vaultId: explorerVault,
+                  path: explorerPath,
+                  access: filesAccess,
+                  onlocationchange: (loc: { vaultId: string; path: string | null }) => {
+                    explorerVault = loc.vaultId;
+                    explorerPath = loc.path;
+                  },
                 }}
               />
             {:else}
@@ -10738,6 +10770,8 @@
               adapter,
               companyUid: companyPaneCompany.uid ?? null,
               deployActions: railGate(RAIL_DEPLOYMENTS_ACTIONS_FLAG),
+              companyLabel: companyPaneCompany.label,
+              vaultCloudRead: (key: string) => vaultCloudRead(companyPaneCompany?.uid ?? null, key),
             }}
           >
             {#snippet skeleton()}

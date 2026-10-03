@@ -1269,6 +1269,10 @@ export function createSyncPlatformAdapter(
             cursor,
           }),
         ),
+      getAccessTree: (companyUid, prefix) =>
+        hqProJson('GET', withQuery(`/files/${encodeURIComponent(companyUid)}/acl/tree`, { prefix })),
+      listAccessGroups: (companyUid) =>
+        hqProJson('GET', `/secrets/${encodeURIComponent(companyUid)}/groups`),
       atlasLocal: {
         firstPage: (companySlug) => call('atlas_local_first_page', { companySlug }),
         listing: (companySlug) => call('atlas_local_listing', { companySlug }),

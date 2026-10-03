@@ -49,6 +49,12 @@ export const dropdownDoor = door(() => import("../common/Dropdown.svelte"));
 // OWNER-R9: the company Team page loads when Team opens.
 export const teamPageDoor = door(() => import("../company/TeamPage.svelte"));
 export const memberAccessDoor = door(() => import("../company/MemberAccessSection.svelte"));
+/** The Files explorer; fetched right after startup so Files opens in one frame. */
+export const vaultExplorerDoor = door(() => import("../files/explorer/VaultExplorer.svelte"));
+/** OWNER-R17: the Access section of the Files and Vault right pane. */
+export const accessSectionDoor = door(() => import("../files/explorer/AccessSection.svelte"));
+/** OWNER-R13: a selected folder's contents on the Vault page. */
+export const vaultFolderViewDoor = door(() => import("../files/explorer/VaultFolderView.svelte"));
 export const notificationsPopoverDoor = door(
   () => import("../inbox/NotificationsPopover.svelte"),
 );

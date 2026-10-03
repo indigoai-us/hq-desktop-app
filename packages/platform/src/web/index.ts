@@ -1122,6 +1122,9 @@ export class WebPlatformAdapter implements PlatformAdapter {
       this.get(
         `${WEB_PATHS.filesList}?company=${encodeURIComponent(companyUid)}&prefix=${encodeURIComponent(prefix)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
       ),
+    getAccessTree: (companyUid, prefix) =>
+      this.get(`/files/${encodeURIComponent(companyUid)}/acl/tree?prefix=${encodeURIComponent(prefix)}`),
+    listAccessGroups: (companyUid) => this.get(`/secrets/${encodeURIComponent(companyUid)}/groups`),
     presignVaultGet: (companyUid, key) =>
       this.post(WEB_PATHS.filesPresign, {
         company: companyUid,

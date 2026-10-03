@@ -31,9 +31,11 @@
     revealAll?: boolean;
     /** A short muted note after a row's name (e.g. "conflict copy"). */
     noteFor?: (entry: TreeEntry) => string | null;
+    /** OWNER-R17: a folder row was selected (it also opens or closes). */
+    onfocusdir?: (path: string) => void;
   }
 
-  let { vault, listDir, activePath, showSystem, reloadKey, onopen, retryHere = true, onretry, revealAll = false, noteFor }: Props = $props();
+  let { vault, listDir, activePath, showSystem, reloadKey, onopen, retryHere = true, onretry, revealAll = false, noteFor, onfocusdir }: Props = $props();
 
   let children = $state<Record<string, TreeEntry[]>>({});
   let expanded = $state<Record<string, boolean>>({});
@@ -178,8 +180,10 @@
 
   function activate(entry: TreeEntry, newTab: boolean): void {
     focusPath = entry.path;
-    if (entry.isDir) toggle(entry);
-    else onopen(entry.path, { newTab });
+    if (entry.isDir) {
+      toggle(entry);
+      onfocusdir?.(entry.path);
+    } else onopen(entry.path, { newTab });
   }
 
   function onkeydown(event: KeyboardEvent): void {
@@ -326,6 +330,8 @@
     box-sizing: border-box;
     height: 100%;
     overflow-y: auto;
+    /* OWNER-R13: long names truncate (full name on hover); never a sideways scroll. */
+    overflow-x: hidden;
     padding: 4px 6px 16px;
     outline: none;
   }
@@ -354,6 +360,8 @@
     text-align: left;
     cursor: pointer;
     white-space: nowrap;
+    min-width: 0;
+    max-width: 100%;
   }
   .vt-row:hover {
     background: var(--v4-control-faint);
