@@ -12,6 +12,7 @@
   import "../chat/chat-tokens.css";
   import { companyStore } from "../company/company-store.svelte.js";
   import ShowMoreRow from "../shell/ShowMoreRow.svelte";
+  import ListEmptyState from "../common/ListEmptyState.svelte";
   import { countLabel, pageRows } from "../shell/list-paging.js";
   import {
     acceptSecretKey,
@@ -193,8 +194,10 @@
   });
   const secretPage = $derived(pageRows(secretRows, secretPages));
   const connectionPage = $derived(pageRows(connectionRows, connectionPages));
+  // QA-058: the inspector follows the visible rows, so a search that hides
+  // every secret also clears the inspector instead of keeping a stale row.
   const secretCurrent = $derived(
-    data.secrets.find((row) => row.id === selectedSecret) ?? secretRows[0] ?? data.secrets[0],
+    secretRows.find((row) => row.id === selectedSecret) ?? secretRows[0],
   );
   const connectionCurrent = $derived(
     data.connections.find((row) => row.id === selectedConnection) ?? data.connections[0],
@@ -302,6 +305,19 @@
             <p class="state" data-testid="personal-secrets-empty">
               No personal secrets yet. Add one with New secret or <span class="mono">hq secrets set --personal</span>.
             </p>
+          {:else if secretRows.length === 0}
+            <ListEmptyState
+              total={data.secrets.length}
+              shown={0}
+              query={query}
+              filtered={secretTab !== "all"}
+              noun={["secret", "secrets"]}
+              testid="personal-secrets-no-matches"
+              onclear={() => {
+                query = "";
+                secretTab = "all";
+              }}
+            />
           {/if}
           {#each secretPage.rows as row (row.id)}
             <button class="srow" type="button" aria-current={row.id === secretCurrent?.id} onclick={() => (selectedSecret = row.id)}>

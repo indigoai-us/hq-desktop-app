@@ -495,4 +495,26 @@ describe("initialDraft company (QA-043)", () => {
     expect(initialDraft(ctx).companyUid).toBe("cmp_first");
     expect(initialDraft(ctx, "cmp_gone").companyUid).toBe("cmp_first");
   });
+
+  // Round 12-19: Local → Details defaulted to Personal with no company ticked.
+  it("starts a Local bot as the origin company's bot", () => {
+    const withOwners = {
+      ...ctx,
+      ownerCompanies: [
+        { slug: "first", label: "First" },
+        { slug: "origin", label: "Origin" },
+      ],
+    };
+    const draft = initialDraft(withOwners, "cmp_origin", "origin");
+    expect(draft.scope).toBe("company");
+    expect(draft.companySlugs).toEqual(["origin"]);
+  });
+
+  it("stays Personal when opened without a company or with an unknown one", () => {
+    const withOwners = { ...ctx, ownerCompanies: [{ slug: "origin", label: "Origin" }] };
+    expect(initialDraft(withOwners).scope).toBe("personal");
+    const unknown = initialDraft(withOwners, "cmp_gone", "gone");
+    expect(unknown.scope).toBe("personal");
+    expect(unknown.companySlugs).toEqual([]);
+  });
 });

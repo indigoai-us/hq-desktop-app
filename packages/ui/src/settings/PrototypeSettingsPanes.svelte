@@ -70,6 +70,7 @@
     type ShellSettingsPrefs,
   } from "./settings-prefs.js";
   import { formatHqFolderMeta } from "./settings-sections.js";
+  import { autoUpdateRow } from "../account/account-pages.js";
   import {
     EMPTY_LIVE_SYNC,
     lastSyncLabelFromLive,
@@ -262,6 +263,14 @@
   const coreProbeError = $derived(updateStore.coreProbeError);
   const cliProbeError = $derived(updateStore.cliProbeError);
   const versionsRefreshing = $derived(updateStore.checking);
+  // QA-061: the Automatic updates switch reads the same build capability as
+  // the About line, so a build without background updates never shows it on.
+  const autoRow = $derived(
+    autoUpdateRow({
+      autoUpdate: native.autoUpdate,
+      backgroundUpdatesOff: updateStore.backgroundUpdatesOff,
+    }),
+  );
   const appRowLabel = $derived(
     appRowStatusLabel({
       status: appUpdateStatus,
@@ -1624,18 +1633,21 @@
     <div class="set-row">
       <div>
         <div class="sn">Automatic updates</div>
-        <div class="sd">
-          Install updates to the HQ app, HQ Core, and the command line tool in the background
+        <div class="sd" data-testid="settings-auto-update-description">
+          {autoRow.disabled
+            ? autoRow.description
+            : "Install updates to the HQ app, HQ Core, and the command line tool in the background"}
         </div>
       </div>
       <button
         type="button"
         class="toggle"
-        class:on={native.autoUpdate}
+        class:on={autoRow.checked}
         role="switch"
-        aria-checked={native.autoUpdate}
+        aria-checked={autoRow.checked}
         aria-label="Automatic updates"
-        disabled={!nativeLoaded || pending("automatic-updates")}
+        data-testid="settings-auto-update-toggle"
+        disabled={autoRow.disabled || !nativeLoaded || pending("automatic-updates")}
         onclick={() => void toggleNativeBoolean("automatic-updates", "autoUpdate")}
       ></button>
     </div>

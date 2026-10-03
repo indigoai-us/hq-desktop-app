@@ -204,6 +204,8 @@
     initialStep?: "find" | "company" | "bot";
     /** Company the New bot flow was opened from; its Cloud step starts there. */
     botCompanyUid?: string | null;
+    /** Slug of that company, so a Local bot starts as its company bot. */
+    botCompanySlug?: string | null;
   }
 
   let {
@@ -242,6 +244,7 @@
     initialKind = "channel",
     initialStep = "find",
     botCompanyUid = null,
+    botCompanySlug = null,
   }: Props = $props();
 
   /** Company channel vs project channel; only meaningful inside a company. */
@@ -2617,6 +2620,7 @@
         {botCompanies}
         agentTargets={canCreateCloudBot ? agentTargets : []}
         initialCompanyUid={botCompanyUid}
+        initialCompanySlug={botCompanySlug}
         onCloudCreate={canCreateCloudBot ? newAgentFor : null}
         {loadClaudeProviderFlag}
         {loadCloudProvisionOptions}

@@ -1675,6 +1675,11 @@
 
   /** The company a host entry (Team page Add agent) opened New bot from. */
   let createBotCompanyUid = $state<string | null>(null);
+  const createBotCompanySlug = $derived(
+    createBotCompanyUid
+      ? ((companies ?? []).find((w) => w.cloudUid === createBotCompanyUid)?.slug ?? null)
+      : null,
+  );
   function openCreate(): void {
     closeAllOverlays();
     createBotCompanyUid = null;
@@ -3985,6 +3990,7 @@
     <CreateModal
       {api}
       botCompanyUid={createBotCompanyUid}
+      botCompanySlug={createBotCompanySlug}
       rows={[...directoryRows, ...browseRows]}
       contacts={localBotsAsContacts(contacts, localBots, botDisplayNames)}
       {scopeCompanies}

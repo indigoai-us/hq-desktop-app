@@ -141,6 +141,8 @@
     previewPlacement?: "rail" | "top" | null;
     /** Company the flow was opened from (Team page Add agent); Cloud starts on it. */
     initialCompanyUid?: string | null;
+    /** Slug of that company; a Local bot starts as its company bot (QA-043). */
+    initialCompanySlug?: string | null;
   }
 
   let {
@@ -166,6 +168,7 @@
     pollMs = 1500,
     previewPlacement = null,
     initialCompanyUid = null,
+    initialCompanySlug = null,
     aiTools = null,
     hqFolderPath = "",
     onopenassistant,
@@ -216,7 +219,7 @@
 
   // The draft is seeded once from the initial context; later prop changes
   // (a worker list arriving, a sign-in landing) flow through `ctx` only.
-  let draft = $state<CreateBotDraft>(untrack(() => initialDraft(ctx, initialCompanyUid)));
+  let draft = $state<CreateBotDraft>(untrack(() => initialDraft(ctx, initialCompanyUid, initialCompanySlug)));
   let step = $state<CreateBotStep>("kind");
   let pickedAvatarSrc = $state<string | null>(null);
   /** The user answered "who is it for?" themselves; templates no longer pick for them. */

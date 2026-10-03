@@ -231,4 +231,33 @@ describe("US-028 BrainPage", () => {
     expect(chip).toBe("27 workers");
     expect(document.querySelectorAll("[data-testid='worker-row']").length).toBe(27);
   });
+  it("QA-034: Escape in the worker skill picker returns to New worker", async () => {
+    const library = { getCompany: vi.fn(async () => ok({ workers: [], skills: [] })) };
+    component = mount(BrainPage, {
+      target: document.body,
+      props: { page: "workers", slug: "qa034-co", files: null, library: library as never, shell: null, settings: null },
+    });
+    await vi.waitFor(() => {
+      expect(Array.from(document.querySelectorAll("button")).some((b) => b.textContent?.includes("New worker"))).toBe(true);
+    });
+    const click = (label: string) => {
+      const button = Array.from(document.querySelectorAll("button")).find((b) => b.textContent?.includes(label));
+      expect(button, label).toBeTruthy();
+      button!.click();
+      flushSync();
+    };
+    const escape = () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      flushSync();
+    };
+    const sheetLabel = () => document.querySelector("[data-testid='brain-sheet']")?.getAttribute("aria-label") ?? null;
+    click("New worker");
+    expect(sheetLabel()).toBe("New worker");
+    click("Pick skills");
+    expect(sheetLabel()).toBe("Skill picker");
+    escape();
+    expect(sheetLabel()).toBe("New worker");
+    escape();
+    expect(sheetLabel()).toBeNull();
+  });
 });

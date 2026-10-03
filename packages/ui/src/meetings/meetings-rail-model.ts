@@ -41,6 +41,8 @@ export interface MeetingsRailRow {
   duration?: string | null;
   /** Company name for the row (personal scope lists every company). */
   companyLabel?: string | null;
+  /** Meeting start in epoch ms, for local-day labels such as the recap heading. */
+  startMs?: number | null;
 }
 
 export interface MeetingsRailSection {
@@ -83,6 +85,22 @@ function pad2(n: number): string {
 
 export function clockLabel(date: Date): string {
   return `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+}
+
+/**
+ * Heading for the empty-canvas recap card (QA-098). Compares local calendar
+ * days, so a meeting earlier today reads Today's recap even when UTC has
+ * already rolled over to tomorrow.
+ */
+export function recapHeading(startMs: number | null | undefined, now: Date): string {
+  if (typeof startMs !== "number" || !Number.isFinite(startMs)) return "Latest recap";
+  const day = dayKey(new Date(startMs));
+  const today = dayKey(now);
+  if (day === today) return "Today's recap";
+  if (day === dayKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1))) {
+    return "Yesterday's recap";
+  }
+  return "Latest recap";
 }
 
 export function shortDateLabel(date: Date): string {
@@ -184,6 +202,7 @@ export function meetingsRailSections(input: MeetingsRailInput): MeetingsRailSect
       hasRecording: recording,
       duration: recordedMeta?.durationLabel ?? null,
       companyLabel,
+      startMs: start.getTime(),
     };
     if (recordedMeta) {
       past.push({
