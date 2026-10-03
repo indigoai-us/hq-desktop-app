@@ -355,6 +355,8 @@ export interface IdentityApi {
    * the only way a company-targeted flag reads as on. Omitted → person-only.
    */
   hasFeature(flag: string, scope?: FeatureScope): AdapterPromise<boolean>;
+  /** Force a fresh hq-flags snapshot after the authenticated identity changes. */
+  refreshFeatureFlags?(): Promise<void>;
   /**
    * Optional live subscription to a feature flag. When the underlying flag
    * registry publishes a fresh snapshot, `onChange` fires with the resolved
