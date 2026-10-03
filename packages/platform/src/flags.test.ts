@@ -3,6 +3,7 @@ import type { FlagClient, FlagSnapshot } from "@indigoai-us/hq-flags-client";
 import { failure, ok } from "./adapter.js";
 import {
   CLAUDE_PROVIDER_FLAG,
+  COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
   DESKTOP_LIMIT_STATUS_PUSH_FLAG,
   FLAG_REFRESH_INTERVAL_MS,
   LOGIN_RECEIPT_DURABILITY_FLAG,
@@ -85,6 +86,15 @@ describe("registry key mapping", () => {
     const key = "desktop.first-folder-sync-step-v1";
     expect(key).toMatch(/^[a-z0-9-]+(?:\.[a-z0-9-]+)*$/);
     expect(registryKeyFor(key)).toBe(key);
+  });
+
+  it("maps the company-route lookup retry through its hq-flags registry key", () => {
+    expect(COMPANY_ROUTE_LOOKUP_RETRY_FLAG).toBe(
+      "desktop.company-route-lookup-retry-v1",
+    );
+    expect(registryKeyFor(COMPANY_ROUTE_LOOKUP_RETRY_FLAG)).toBe(
+      COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
+    );
   });
 
 
