@@ -94,6 +94,8 @@
   let load = $state<BrainListLoad>("not-loaded");
   let status = $state("");
   let readError = $state("");
+  // AUDIT-3-17: lists whose read failed; an empty failed list is not "No policies yet."
+  let failedLists = $state<string[]>([]);
   let query = $state("");
   let lens = $state<"tree" | "fresh">("tree");
   let policyFilter = $state<PolicyFilter>("all");
@@ -184,6 +186,7 @@
     page === "knowledge" ? cache.knowledge.length : page === "policies" ? cache.policies.length : page === "skills" ? cache.skills.length : cache.workers.length,
   );
   const listView = $derived(brainListView(load, sourceTotal));
+  const listReadFailed = $derived(sourceTotal === 0 && failedLists.includes(page));
   const filterActive = $derived(
     page === "policies" ? policyFilter !== "all" : page === "skills" ? skillFilter !== "all" : page === "workers" ? workerScope !== "all" || workerFilter !== "all" : false,
   );
@@ -205,6 +208,7 @@
     const key = slug;
     void readAttempt;
     readError = "";
+    failedLists = [];
     const hit = readBrainCache(key);
     query = "";
     selected = null;
@@ -242,6 +246,7 @@
       ]);
       if ((knowledge === null || policies === null) && slug === key) {
         readError = "Some company files could not be read.";
+        failedLists = [...failedLists, ...(knowledge === null ? ["knowledge"] : []), ...(policies === null ? ["policies"] : [])];
       }
       next.knowledge = knowledge ?? next.knowledge;
       next.policies = policies ?? next.policies;
@@ -251,6 +256,12 @@
       if (result.ok) {
         next.skills = result.value.skills.map((skill) => skillRowFromLibrary(skill, key));
         next.workers = result.value.workers.map(workerRowFromLibrary);
+      } else {
+        console.warn("[brain] library read failed", result.message);
+        if (slug === key) {
+          readError = "Some company files could not be read.";
+          failedLists = [...failedLists, "skills", "workers"];
+        }
       }
     }
     writeBrainCache(key, next);
@@ -504,7 +515,9 @@
         {#if page !== "policies" && listPage.remaining > 0}
           <ShowMoreRow shown={listPage.rows.length} total={listPage.total} next={listPage.next} noun={title.toLowerCase()} testid="brain-show-more" onmore={() => (pages += 1)} />
         {/if}
-        {#if activeList.length === 0}
+        {#if listReadFailed}
+          <!-- AUDIT-3-17: the failed-read line and Try again below stand in for the empty line. -->
+        {:else if activeList.length === 0}
           <ListEmptyState
             total={sourceTotal}
             shown={activeList.length}
