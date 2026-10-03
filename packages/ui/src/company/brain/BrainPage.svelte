@@ -1,5 +1,6 @@
 <script lang="ts">
   import RailButton from "../../common/button/RailButton.svelte";
+  import { withReadDeadline } from "../../common/read-deadline.js";
   import { dismissable } from "../../common/dismissable.js";
   /**
    * Company Brain (US-028): Knowledge, Policies, Skills, Workers.
@@ -223,11 +224,19 @@
       phase = "shimmer";
     }
     let live = true;
-    void refresh(key).then(() => {
-      if (!live) return;
-      phase = "ready";
-      load = "loaded";
-    });
+    // BLANK-1: a read that never answers falls to the failed-read state.
+    void withReadDeadline(refresh(key), "company files")
+      .catch((err) => {
+        console.warn("[brain] company files read did not finish", err);
+        if (!live || slug !== key) return;
+        readError = "Some company files could not be read.";
+        failedLists = ["knowledge", "policies", "skills", "workers"];
+      })
+      .then(() => {
+        if (!live) return;
+        phase = "ready";
+        load = "loaded";
+      });
     return () => {
       live = false;
     };
