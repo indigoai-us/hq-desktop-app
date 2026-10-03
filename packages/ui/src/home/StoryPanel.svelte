@@ -137,6 +137,8 @@
   const paneStatus = $derived(
     story ? taskPaneStatus(story, stories, sessions, passesOverride) : null,
   );
+  // The open half of the To do / Done control names the task's actual column
+  // (To do, In progress, Active) so it never contradicts the badge (QA-036).
   const statusLabel = $derived(paneStatus?.label ?? "To do");
   const statusTone = $derived(
     paneStatus?.column === "complete"
@@ -347,9 +349,10 @@
         type="button"
         class:active={!currentPasses}
         disabled={saving}
+        data-testid="task-status-open"
         onclick={() => setPasses(false)}
       >
-        {saving && !currentPasses ? "Saving…" : "To do"}
+        {saving && !currentPasses ? "Saving…" : currentPasses ? "To do" : statusLabel}
       </button>
       <button
         type="button"
