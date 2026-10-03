@@ -932,6 +932,7 @@ fn main() {
             commands::desktop_alt::desktop_alt_is_admin,
             commands::desktop_alt::set_desktop_active_company,
             commands::desktop_alt::get_desktop_active_company,
+            commands::cdp_mirror::web_visitor_anon_id,
             commands::desktop_alt::get_company_summary,
             commands::desktop_alt::get_company_board,
             commands::desktop_alt::ensure_company_home_channel,

@@ -649,6 +649,11 @@
     loadFilePreview?: (item: ChannelFileItemModel) => Promise<ChannelFilePreview>;
     /** Platform seam for opening an external URL (run-card preview/diff). */
     onopenurl?: (url: string) => void;
+    /**
+     * Host-owned notification rows (paused uploads) open through the host, so
+     * it can record the engagement and open only an approved link.
+     */
+    onopenhostnotification?: (id: string, url: string) => void;
     /** Bubbled lifecycle-card action (host posts in US-009). */
     oncardaction?: (event: LifecycleCardActionEvent) => void;
     /** Wake events (host bridges MeshClient → bus); null when offline. */
@@ -800,6 +805,12 @@
     ) => void;
     /** Persist the conversation the user just opened (fresh-load restore). */
     onselectrow?: (row: ConversationRow) => void;
+    /**
+     * QA-075: the company whose pane is open (a company or project channel),
+     * or null on personal pages and every non-conversation view. Hosts use it
+     * to scope per-company notices to that company's pane.
+     */
+    onactivecompanychange?: (company: { uid: string | null; slug: string } | null) => void;
     /** Desktop: PUT attachment bytes outside the webview (no S3 CORS). */
     putAttachmentObject?: PutChatAttachment;
     /**
@@ -929,6 +940,7 @@
     filesByRow,
     loadFilePreview,
     onopenurl,
+    onopenhostnotification,
     oncardaction,
     wakes = null,
     companies = null,
@@ -969,6 +981,7 @@
     hydrateLiveMessages = false,
     onlivemessages,
     onselectrow,
+    onactivecompanychange,
     putAttachmentObject,
     getAttachmentObject,
     bootTimeoutMs = DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
@@ -3566,6 +3579,18 @@
       (companies ?? []).find((c) => (c.cloudUid ?? "").trim() === uid)?.slug ??
       ""
     );
+  });
+  const activeCompanyPane = $derived.by(() => {
+    if (view !== "conversation" || selectedRow?.kind !== "channel") return null;
+    const scope = (selectedRow.channelScope ?? "").trim();
+    if (scope !== "company" && scope !== "project" && !selectedHomeCompany) return null;
+    const uid = (selectedRow.companyUid ?? selectedHomeCompany?.cloudUid ?? "").trim() || null;
+    const slug = selectedCompanySlug.trim();
+    return uid || slug ? { uid, slug } : null;
+  });
+  $effect(() => {
+    const active = activeCompanyPane;
+    onactivecompanychange?.(active ? { uid: active.uid, slug: active.slug } : null);
   });
 
   /** "Indigo · project channel" style subtitle under the channel name. */
@@ -8215,6 +8240,11 @@
       handleSelect(existing ?? stub, {
         replyRootEventId: dest.replyRootEventId,
       });
+      return;
+    }
+    if (dest.kind === "external") {
+      if (onopenhostnotification) onopenhostnotification(dest.id, dest.url);
+      else onopenurl?.(dest.url);
       return;
     }
     if (dest.kind === "files") {
