@@ -24,6 +24,7 @@ The release moves it under the version it ships in.
 - The Meet native Windows test build now pins its signing and Rust toolchain actions to exact versions. Nothing changes in the app.
 - Setup failure events now fill a missing stage from the bounded component and keep error categories on the closed list.
 - CI launches of the desktop app no longer add first-run rows to the install funnel, including through the CDP mirror.
+- Past meetings can show meeting transcripts you saved privately on this computer, including older ones, when the personal transcripts feature is turned on for your account. Transcripts from another account signed in on the same computer stay hidden.
 - Internal tests: four desktop tests that only searched the source text for strings now check what the code does. Nothing changes in the app.
 
 ## [0.10.385] — 2026-10-03

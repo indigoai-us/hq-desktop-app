@@ -11,7 +11,9 @@
 //! desktop session's company scope, and live company membership.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::fs::File;
+use std::io::{BufRead, BufReader, Read};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -36,6 +38,8 @@ const REFRESH_AFTER: Duration = Duration::from_secs(15);
 /// Most of a note sent to the renderer. Rendering is synchronous in the
 /// webview; half a megabyte renders in under a tenth of a second.
 const MAX_NOTE_BYTES: u64 = 512 * 1024;
+/// Only frontmatter is sent to list surfaces; reject headers larger than 8 KiB.
+const MAX_FRONTMATTER_BYTES: usize = 8 * 1024;
 /// Most quick-switcher results.
 const MAX_SEARCH_RESULTS: usize = 60;
 
@@ -174,4 +178,88 @@ pub async fn read_vault_note(
     tokio::task::spawn_blocking(move || read_note_head(&absolute, MAX_NOTE_BYTES))
         .await
         .map_err(|e| format!("note read task failed: {e}"))?
+}
+
+/// Read one Markdown frontmatter block without loading or returning the note body.
+fn read_note_frontmatter(path: &Path) -> Result<String, String> {
+    let file = File::open(path).map_err(|e| format!("frontmatter read failed: {e}"))?;
+    read_frontmatter_from(file, MAX_FRONTMATTER_BYTES)
+}
+
+fn read_frontmatter_from<R: Read>(reader: R, max_bytes: usize) -> Result<String, String> {
+    let mut reader = BufReader::new(reader.take(max_bytes as u64 + 1));
+    let mut frontmatter = Vec::with_capacity(max_bytes.min(1024));
+    let mut line = Vec::new();
+    let mut opened = false;
+    loop {
+        line.clear();
+        let count = reader
+            .read_until(b'\n', &mut line)
+            .map_err(|e| format!("frontmatter read failed: {e}"))?;
+        if count == 0 {
+            return Err("frontmatter closing delimiter not found within 8 KiB".to_string());
+        }
+        if frontmatter.len() + count > max_bytes {
+            return Err("frontmatter exceeds the 8 KiB limit".to_string());
+        }
+        let line_content = match line.strip_suffix(b"\n") {
+            Some(without_lf) => without_lf.strip_suffix(b"\r").unwrap_or(without_lf),
+            None => line.as_slice(),
+        };
+        if !opened {
+            if line_content != b"---" {
+                return Err("note does not begin with frontmatter".to_string());
+            }
+            opened = true;
+        } else if line_content == b"---" {
+            frontmatter.extend_from_slice(&line);
+            return String::from_utf8(frontmatter)
+                .map_err(|e| format!("frontmatter is not valid UTF-8: {e}"));
+        }
+        frontmatter.extend_from_slice(&line);
+    }
+}
+
+/// Bounded frontmatter read with the same account, path, and company checks as
+/// `read_vault_note`; the file operation stays off the async executor.
+#[tauri::command]
+pub async fn read_vault_note_frontmatter(
+    path: String,
+    scope: State<'_, DesktopSessionScope>,
+) -> Result<String, String> {
+    if !crate::util::feature_gate::desktop_features_enabled().await {
+        return Err("file explorer requires a signed-in user".to_string());
+    }
+    let target = resolve_authorized_file_target(&path).await?;
+    let target = revalidate_authorized_file_target(&target).await?;
+    enforce_desktop_read_scope(&target.relative_path, &scope)?;
+    let absolute = target.absolute_path.clone();
+    tokio::task::spawn_blocking(move || read_note_frontmatter(&absolute))
+        .await
+        .map_err(|e| format!("frontmatter read task failed: {e}"))?
+}
+
+#[cfg(test)]
+mod frontmatter_tests {
+    use super::{read_frontmatter_from, MAX_FRONTMATTER_BYTES};
+    use std::io::Cursor;
+
+    #[test]
+    fn frontmatter_read_stops_at_closing_delimiter_before_large_body() {
+        let header = b"---\nid: meeting:test\nsource_id: native-test\n---\n";
+        let mut note = header.to_vec();
+        note.extend(std::iter::repeat(b'x').take(MAX_FRONTMATTER_BYTES * 4));
+
+        let actual = read_frontmatter_from(Cursor::new(note), MAX_FRONTMATTER_BYTES).unwrap();
+        assert_eq!(actual.as_bytes(), header);
+    }
+
+    #[test]
+    fn frontmatter_read_rejects_an_unterminated_header_at_the_byte_cap() {
+        let mut note = b"---\n".to_vec();
+        note.extend(std::iter::repeat(b'x').take(MAX_FRONTMATTER_BYTES));
+
+        let error = read_frontmatter_from(Cursor::new(note), MAX_FRONTMATTER_BYTES).unwrap_err();
+        assert!(error.contains("8 KiB"));
+    }
 }

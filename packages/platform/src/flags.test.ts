@@ -10,6 +10,7 @@ import {
   MEETINGS_LEGACY_FLAG,
   MEETINGS_REGISTRY_KEY,
   PERSONAL_WORKSPACE_BOARD_FLAG,
+  PERSONAL_TRANSCRIPTS_FLAG,
   POST_READY_ACTION_TELEMETRY_FLAG,
   READY_FIRST_ACTION_FLAG,
   SETUP_DEPS_TIMEOUT_RETRY_FLAG,
@@ -62,6 +63,15 @@ describe("registry key mapping", () => {
     );
     expect(registryKeyFor(PERSONAL_WORKSPACE_BOARD_FLAG)).toBe(
       PERSONAL_WORKSPACE_BOARD_FLAG,
+    );
+  });
+
+  it("maps personal meeting transcripts to the hq-flags registry", () => {
+    expect(PERSONAL_TRANSCRIPTS_FLAG).toBe(
+      "desktop.meetings-personal-transcripts",
+    );
+    expect(registryKeyFor(PERSONAL_TRANSCRIPTS_FLAG)).toBe(
+      PERSONAL_TRANSCRIPTS_FLAG,
     );
   });
 
