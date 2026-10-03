@@ -192,7 +192,8 @@ describe("DesktopApp sync widget in a cloud bot's direct message", () => {
     const el = widget()!;
     expect(el.dataset.state).toBe("syncing");
     expect(el.textContent).toContain("Syncing your company's files");
-    expect(el.textContent).toContain("Pulling files down. You can chat now. Nova will know more as this finishes.");
+    expect(el.textContent).toContain("Pulling files down. 128 of 412 files");
+    expect(el.textContent).not.toMatch(/Nova|know more|chat now/);
     expect(bar()!.getAttribute("aria-valuenow")).toBe("31");
     expect(bar()!.getAttribute("aria-valuetext")).toBe("128 of 412 files");
     expect(amount()).toBe("31%");
@@ -267,11 +268,30 @@ describe("DesktopApp sync widget in a cloud bot's direct message", () => {
     await vi.waitFor(() => expect(widget()).not.toBeNull());
     const el = widget()!;
     expect(el.dataset.state).toBe("stale");
-    expect(el.textContent).toContain("Still syncing your company's files");
+    expect(el.textContent).toContain("Still syncing.");
     expect(el.textContent).not.toMatch(/\d/);
     expect(amount()).toBeNull();
     expect(bar()!.hasAttribute("aria-valuenow")).toBe(false);
     expect(bar()!.classList.contains("is-unknown")).toBe(true);
+  });
+
+  it("the live run (Big Nuts, 2026-10-03): 10 of 10 planned, refreshed every second, not finished, reads 'Preparing.' and no percent", async () => {
+    // runtime.firstSync = { phase: "pull", filesDone: 10, filesTotal: 10 }, no
+    // syncOkAt, no firstSyncFinalized, the computer heartbeating. The personal
+    // target was done; the company vault had not been planned yet. The old
+    // strip read it as 99%.
+    const w = world({ status: () => statusOf(downloading(10, 10)) });
+    await mountNewBotDm(w);
+    await vi.waitFor(() => expect(widget()).not.toBeNull());
+    const el = widget()!;
+    expect(el.dataset.state).toBe("syncing");
+    expect(el.textContent).toContain("Syncing your company's files");
+    expect(el.textContent).toContain("Preparing. 10 files so far");
+    expect(el.textContent).not.toMatch(/\d+%|99/);
+    expect(amount()).toBeNull();
+    expect(bar()!.hasAttribute("aria-valuenow")).toBe(false);
+    expect(bar()!.classList.contains("is-unknown")).toBe(true);
+    expect(bar()!.getAttribute("aria-valuetext")).toBe("10 files so far");
   });
 
   it("shows for a bot that was not made here once its computer reports a download", async () => {
@@ -334,8 +354,8 @@ describe("DesktopApp sync widget in a cloud bot's direct message", () => {
     await mountNewBotDm(w);
     await vi.waitFor(() => expect(widget()).not.toBeNull());
     expect(widget()!.dataset.state).toBe("failed");
-    expect(widget()!.textContent).toContain("Sync hit a problem");
-    expect(widget()!.textContent).toContain("Nova could not finish syncing your company's files.");
+    expect(widget()!.textContent).toContain("Sync hit a problem.");
+    expect(widget()!.textContent).not.toContain("Nova");
     expect(bar()).toBeNull();
     expect(amount()).toBeNull();
   });

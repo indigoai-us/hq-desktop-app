@@ -38,6 +38,26 @@
  * So the strip has real counts only while the block is fresh and the computer
  * is heartbeating, an estimate before the first snapshot, and no number at all
  * for a block that has gone quiet.
+ *
+ * WHAT THE COUNTS MEAN (hq-cloud-sync, read 2026-10-03): `filesTotal` is the
+ * sum of the targets that have emitted their `plan` event. A bot syncs more
+ * than one target: its personal files plan and finish in seconds, while the
+ * company vault is still being listed. So a fresh snapshot that reads
+ * `10 of 10` with no finish signal (no `syncOkAt`, no `firstSyncFinalized`)
+ * is not 99 percent: it is "the next target has not been planned yet". The
+ * console's setup page handles the same shape (hq-console
+ * `src/lib/first-sync-view.ts`, `selectFirstSyncView`: a total of zero with
+ * files done renders `running` with `percent: null`, an indeterminate bar and
+ * "N so far"). This strip applies that rule to every snapshot whose counts
+ * look complete while the sync is not finished: "Preparing.", a shimmering
+ * line, the files so far, and never a percent. A real percent appears only
+ * while `filesDone < filesTotal`, and it holds below 100 until the server
+ * says the sync is done. The console counts files, not bytes, and shows
+ * elapsed time as a label only, so no time blend is used here either.
+ *
+ * THE COPY is the same for every sync, first or later: the title names the
+ * scope, the status line names the phase and the counts, and nothing says
+ * what the bot will know or that the person can chat.
  */
 
 import { agentChatReadiness } from "./agent-channel.js";
@@ -55,11 +75,20 @@ export type BotSyncState = "syncing" | "stale" | "done" | "failed";
 export type BotSyncPhase = "pull" | "push";
 
 /**
+ * Whose files the sync is about. It names the title: the company's files, or
+ * just "files" for anything else. The bot's status answer is always about the
+ * company's vault, so a missing scope means company.
+ */
+export type BotSyncScope = "company" | "other";
+
+/**
  * Everything known about one bot's sync. A plain object, so any source can
  * build it. Times are milliseconds.
  */
 export interface BotSyncFacts {
   state: BotSyncState;
+  /** Whose files. Missing means the company's. */
+  scope?: BotSyncScope | null;
   /** When the sync started. Drives the estimate when there are no real numbers. */
   startedAt: number | null;
   /** When this app saw the sync finish or fail, on this device's clock. */
@@ -82,13 +111,19 @@ export interface BotSyncView {
   state: BotSyncState;
   title: string;
   detail: string;
-  /** 0 to 100, or null when no honest number exists. */
+  /**
+   * 0 to 100, or null when no honest number exists: the strip then shows an
+   * indeterminate line.
+   */
   progress: number | null;
   /** True when `progress` is a guess from elapsed time, not a number the server sent. */
   estimated: boolean;
   /** The percent as words ("31%"), only when it is a real number. */
   amount: string | null;
-  /** The counts as words ("128 of 412 files"), only when they are real. */
+  /**
+   * The counts as words, only when they are real: "128 of 412 files" with a
+   * real percent, "10 files so far" while the next part is being prepared.
+   */
   counts: string | null;
 }
 
@@ -106,7 +141,11 @@ export const BOT_SYNC_ESTIMATE_MS = 8 * 60_000;
 /** An estimated bar never passes this. Only the server's "done" fills it. */
 export const BOT_SYNC_ESTIMATE_HOLD = 90;
 
-/** A bar from live counts holds here until the server says the sync is done. */
+/**
+ * A bar from live counts holds here until the server says the sync is done.
+ * It only matters for a source that reports its own percent: a file or byte
+ * percent is only shown while done is below total, which is already below 100.
+ */
 export const BOT_SYNC_REAL_HOLD = 99;
 
 /** How long "Files are up to date." stays before the strip goes away. */
@@ -129,9 +168,13 @@ export const BOT_SYNC_STALE_MS = 10 * 60_000;
 export const BOT_SYNC_HEARTBEAT_FRESH_MS = 5 * 60_000;
 
 export const BOT_SYNC_TITLE = "Syncing your company's files";
-export const BOT_SYNC_STALE_TITLE = "Still syncing your company's files";
+/** The title when the sync is not about the company's files. */
+export const BOT_SYNC_FILES_TITLE = "Syncing files";
+export const BOT_SYNC_STALE_TITLE = "Still syncing.";
 export const BOT_SYNC_DONE_TITLE = "Files are up to date.";
-export const BOT_SYNC_FAILED_TITLE = "Sync hit a problem";
+export const BOT_SYNC_FAILED_TITLE = "Sync hit a problem.";
+/** The status line while the server has reported no countable progress yet. */
+export const BOT_SYNC_PREPARING = "Preparing.";
 
 const HIDDEN: BotSyncView = {
   visible: false,
@@ -158,24 +201,40 @@ function clampPercent(value: number): number {
 }
 
 /**
- * A real percent from what the source sent, or null when it sent no usable
- * number. A percent the source states wins; then bytes, which move evenly;
- * then file counts.
+ * What the source's numbers say about a running sync:
+ *
+ *   - "partial": a real percent, below 100, from counts that are still short
+ *     of their total.
+ *   - "complete": the counts have reached their total (or the source says
+ *     100 percent) while the sync is not finished. The total only covers
+ *     what has been planned so far, so this is the gap before the next part
+ *     is planned: no percent is honest. The console's setup page draws the
+ *     same shape as indeterminate (hq-console `src/lib/first-sync-view.ts`,
+ *     `selectFirstSyncView`, the `filesTotal === 0` branch).
+ *     A total of zero is the same gap (the console's `starting` shape when
+ *     nothing is done yet): the server has reported, and planned nothing.
+ *   - null: the source sent no counts at all. Only then is an estimate made.
+ *
+ * A percent the source states wins; then bytes, which move evenly; then file
+ * counts. A number that is still moving wins over one at its total.
  */
-function realPercent(facts: BotSyncFacts): number | null {
+type BotSyncMeasure = { kind: "partial"; percent: number } | { kind: "complete" };
+
+function measureOf(done: number | null, total: number | null): BotSyncMeasure | null {
+  if (total === null || done === null) return null;
+  if (total <= 0 || done >= total) return { kind: "complete" };
+  return { kind: "partial", percent: clampPercent((done / total) * 100) };
+}
+
+function measure(facts: BotSyncFacts): BotSyncMeasure | null {
   const direct = finite(facts.percent);
-  if (direct !== null) return clampPercent(direct);
-  const bytesTotal = count(facts.bytesTotal);
-  const bytesDone = count(facts.bytesDone);
-  if (bytesTotal !== null && bytesTotal > 0 && bytesDone !== null) {
-    return clampPercent((Math.min(bytesDone, bytesTotal) / bytesTotal) * 100);
-  }
-  const filesTotal = count(facts.filesTotal);
-  const filesDone = count(facts.filesDone);
-  if (filesTotal !== null && filesTotal > 0 && filesDone !== null) {
-    return clampPercent((Math.min(filesDone, filesTotal) / filesTotal) * 100);
-  }
-  return null;
+  if (direct !== null) return direct >= 100 ? { kind: "complete" } : { kind: "partial", percent: clampPercent(direct) };
+  const bytes = measureOf(count(facts.bytesDone), count(facts.bytesTotal));
+  const files = measureOf(count(facts.filesDone), count(facts.filesTotal));
+  // A number that is still moving wins over one that has reached its total.
+  if (bytes?.kind === "partial") return bytes;
+  if (files?.kind === "partial") return files;
+  return bytes ?? files;
 }
 
 /**
@@ -194,36 +253,53 @@ export function estimatedSyncProgress(
   return Math.max(3, Math.min(BOT_SYNC_ESTIMATE_HOLD, Math.round(BOT_SYNC_ESTIMATE_HOLD * eased)));
 }
 
+const number = (n: number): string => n.toLocaleString("en-US");
+
+/** "128 of 412 files", only while the counts are short of their total. */
 function fileCounts(facts: BotSyncFacts): string | null {
   const total = count(facts.filesTotal);
   const done = count(facts.filesDone);
-  if (total === null || total <= 0 || done === null) return null;
-  return `${Math.min(done, total).toLocaleString("en-US")} of ${total.toLocaleString("en-US")} files`;
+  if (total === null || total <= 0 || done === null || done >= total) return null;
+  return `${number(done)} of ${number(total)} files`;
 }
 
-/** The phase as the word the copy uses. */
-function phaseWord(phase: BotSyncPhase | null | undefined): string | null {
+/** "10 files so far", for counts that say how much is done but not how much is left. */
+function filesSoFar(facts: BotSyncFacts): string | null {
+  const done = count(facts.filesDone);
+  if (done === null || done <= 0) return null;
+  return `${number(done)} ${done === 1 ? "file" : "files"} so far`;
+}
+
+/** The phase as the words the status line uses. */
+function phaseWords(phase: BotSyncPhase | null | undefined): string | null {
   if (phase === "pull") return "Pulling files down.";
   if (phase === "push") return "Pushing files up.";
   return null;
 }
 
+/** The status line: the parts that are known, in order, one space apart. */
+const line = (...parts: Array<string | null>): string => parts.filter((part): part is string => part !== null).join(" ");
+
+function titleFor(facts: BotSyncFacts): string {
+  return facts.scope === "other" ? BOT_SYNC_FILES_TITLE : BOT_SYNC_TITLE;
+}
+
 /**
  * What the strip draws for these facts at this moment. Pure: same input, same
- * view. With no facts there is no strip.
+ * view. With no facts there is no strip. The copy never names the bot:
+ * `botName` is accepted so callers from before need not change, and ignored.
  */
 export function botSyncView(
   facts: BotSyncFacts | null | undefined,
   input: { botName?: string | null; now: number },
 ): BotSyncView {
   if (!facts) return HIDDEN;
-  const bot = input.botName?.trim() || "Your bot";
   if (facts.state === "failed") {
     return {
       visible: true,
       state: "failed",
       title: BOT_SYNC_FAILED_TITLE,
-      detail: `${bot} could not finish syncing your company's files.`,
+      detail: "",
       progress: null,
       estimated: false,
       amount: null,
@@ -241,14 +317,13 @@ export function botSyncView(
       visible: true,
       state: "done",
       title: BOT_SYNC_DONE_TITLE,
-      detail: total !== null && total > 0 ? `${total.toLocaleString("en-US")} files synced.` : "",
+      detail: total !== null && total > 0 ? `${number(total)} files synced.` : "",
       progress: 100,
       estimated: false,
       amount: null,
       counts: null,
     };
   }
-  const chat = `You can chat now. ${bot} will know more as this finishes.`;
   if (facts.state === "stale") {
     // The server holds a snapshot nobody has refreshed. Whatever counts it
     // carries are frozen, so no number is shown, whatever the facts say.
@@ -256,34 +331,51 @@ export function botSyncView(
       visible: true,
       state: "stale",
       title: BOT_SYNC_STALE_TITLE,
-      detail: chat,
+      detail: "",
       progress: null,
       estimated: false,
       amount: null,
       counts: null,
     };
   }
-  const real = realPercent(facts);
-  if (real !== null) {
-    const progress = Math.min(BOT_SYNC_REAL_HOLD, real);
-    const phase = phaseWord(facts.phase);
+  const title = titleFor(facts);
+  const measured = measure(facts);
+  if (measured?.kind === "partial") {
+    const progress = Math.min(BOT_SYNC_REAL_HOLD, measured.percent);
+    const counts = fileCounts(facts);
     return {
       visible: true,
       state: "syncing",
-      title: BOT_SYNC_TITLE,
-      detail: phase ? `${phase} ${chat}` : chat,
+      title,
+      detail: line(phaseWords(facts.phase), counts),
       progress,
       estimated: false,
       amount: `${progress}%`,
-      counts: fileCounts(facts),
+      counts,
     };
   }
+  if (measured?.kind === "complete") {
+    // Everything planned so far is done and the sync is not finished: the
+    // next part is being planned. The files so far, and no percent.
+    const counts = filesSoFar(facts);
+    return {
+      visible: true,
+      state: "syncing",
+      title,
+      detail: line(BOT_SYNC_PREPARING, counts),
+      progress: null,
+      estimated: false,
+      amount: null,
+      counts,
+    };
+  }
+  // No snapshot yet: an estimate from the start time, when there is one.
   const startedAt = finite(facts.startedAt);
   return {
     visible: true,
     state: "syncing",
-    title: BOT_SYNC_TITLE,
-    detail: chat,
+    title,
+    detail: BOT_SYNC_PREPARING,
     progress:
       startedAt === null
         ? null
@@ -298,7 +390,7 @@ export function botSyncView(
 export function botSyncNeedsClock(facts: BotSyncFacts | null | undefined, now: number): boolean {
   if (!facts) return false;
   if (facts.state === "done") return botSyncView(facts, { now }).visible;
-  return facts.state === "syncing" && realPercent(facts) === null && finite(facts.startedAt) !== null;
+  return facts.state === "syncing" && measure(facts) === null && finite(facts.startedAt) !== null;
 }
 
 // ── Reading the bot's status answer ──────────────────────────────────────

@@ -6,7 +6,9 @@ import {
   BOT_SYNC_ESTIMATE_HOLD,
   BOT_SYNC_ESTIMATE_MS,
   BOT_SYNC_FAILED_TITLE,
+  BOT_SYNC_FILES_TITLE,
   BOT_SYNC_HEARTBEAT_FRESH_MS,
+  BOT_SYNC_PREPARING,
   BOT_SYNC_REAL_HOLD,
   BOT_SYNC_STALE_MS,
   BOT_SYNC_STALE_TITLE,
@@ -53,22 +55,48 @@ describe("botSyncView", () => {
     expect(botSyncView(undefined, { now: NOW }).visible).toBe(false);
   });
 
-  it("syncing with no numbers from the server: an estimate, and no percent in words", () => {
+  it("syncing with no numbers from the server: an estimate, 'Preparing.', and no percent in words", () => {
     const view = botSyncView(syncing({ startedAt: NOW - 60_000 }), { botName: "Crassly", now: NOW });
     expect(view).toMatchObject({
       visible: true,
       state: "syncing",
       title: BOT_SYNC_TITLE,
-      detail: "You can chat now. Crassly will know more as this finishes.",
+      detail: BOT_SYNC_PREPARING,
       estimated: true,
       amount: null,
       counts: null,
     });
     expect(view.title).toBe("Syncing your company's files");
+    expect(view.detail).toBe("Preparing.");
     expect(view.title).not.toMatch(/\d/);
     expect(view.detail).not.toMatch(/\d/);
     expect(view.progress).toBeGreaterThan(0);
     expect(view.progress).toBeLessThan(BOT_SYNC_ESTIMATE_HOLD);
+  });
+
+  it("the copy is the same for any sync and never names the bot or what it will know", () => {
+    const views = [
+      botSyncView(syncing({ startedAt: NOW - 60_000 }), { botName: "Big Nuts", now: NOW }),
+      botSyncView(syncing({ filesDone: 4_867, filesTotal: 68_141, phase: "pull" }), { botName: "Big Nuts", now: NOW }),
+      botSyncView(syncing({ filesDone: 10, filesTotal: 10, phase: "pull" }), { botName: "Big Nuts", now: NOW }),
+      botSyncView(stale, { botName: "Big Nuts", now: NOW }),
+      botSyncView({ state: "done", startedAt: null, endedAt: NOW, filesDone: 10, filesTotal: 10 }, { botName: "Big Nuts", now: NOW }),
+      botSyncView({ state: "failed", startedAt: null, endedAt: NOW, filesDone: null, filesTotal: null }, { botName: "Big Nuts", now: NOW }),
+    ];
+    for (const view of views) {
+      const words = `${view.title} ${view.detail}`;
+      expect(words).not.toContain("Big Nuts");
+      expect(words).not.toContain("Your bot");
+      expect(words).not.toMatch(/know more|chat now|first/i);
+    }
+  });
+
+  it("names the scope in the title: the company's files, or just files", () => {
+    expect(botSyncView(syncing({ scope: "company" }), { now: NOW }).title).toBe("Syncing your company's files");
+    expect(botSyncView(syncing({ scope: null }), { now: NOW }).title).toBe("Syncing your company's files");
+    expect(botSyncView(syncing({ scope: "other" }), { now: NOW }).title).toBe(BOT_SYNC_FILES_TITLE);
+    expect(BOT_SYNC_FILES_TITLE).toBe("Syncing files");
+    expect(botSyncView(syncing({ scope: "other", filesDone: 1, filesTotal: 4, phase: "pull" }), { now: NOW }).title).toBe("Syncing files");
   });
 
   it("the estimate moves forward with time and never reaches 100", () => {
@@ -98,43 +126,84 @@ describe("botSyncView", () => {
     expect(view).toMatchObject({ visible: true, state: "syncing", progress: null, estimated: false, amount: null });
   });
 
-  it("live file counts: the real percent, in words too, and the phase in the copy", () => {
+  it("live file counts: the real percent, and the phase with the counts on the status line", () => {
     const view = botSyncView(syncing({ filesDone: 128, filesTotal: 412, phase: "pull" }), { botName: "Crassly", now: NOW });
     expect(view).toMatchObject({
       visible: true,
       state: "syncing",
       title: BOT_SYNC_TITLE,
-      detail: "Pulling files down. You can chat now. Crassly will know more as this finishes.",
+      detail: "Pulling files down. 128 of 412 files",
       progress: 31,
       estimated: false,
       amount: "31%",
       counts: "128 of 412 files",
     });
-    expect(botSyncView(syncing({ filesDone: 1, filesTotal: 4, phase: "push" }), { now: NOW }).detail).toMatch(/^Pushing files up\. /);
-    // No phase known: the plain line.
-    expect(botSyncView(syncing({ filesDone: 1, filesTotal: 4 }), { now: NOW }).detail).toBe(
-      "You can chat now. Your bot will know more as this finishes.",
-    );
+    expect(botSyncView(syncing({ filesDone: 1, filesTotal: 4, phase: "push" }), { now: NOW }).detail).toBe("Pushing files up. 1 of 4 files");
+    // No phase known: the counts alone.
+    expect(botSyncView(syncing({ filesDone: 1, filesTotal: 4 }), { now: NOW }).detail).toBe("1 of 4 files");
+    // Large counts are grouped.
+    expect(botSyncView(syncing({ filesDone: 4_867, filesTotal: 68_141, phase: "pull" }), { now: NOW })).toMatchObject({
+      detail: "Pulling files down. 4,867 of 68,141 files",
+      progress: 7,
+      amount: "7%",
+    });
   });
 
-  it("live counts hold below 100 until the server says the sync is done", () => {
-    const all = botSyncView(syncing({ filesDone: 412, filesTotal: 412 }), { now: NOW });
-    expect(all.progress).toBe(BOT_SYNC_REAL_HOLD);
-    expect(all.amount).toBe("99%");
-    const over = botSyncView(syncing({ filesDone: 999, filesTotal: 412 }), { now: NOW });
-    expect(over.progress).toBe(BOT_SYNC_REAL_HOLD);
-    expect(over.counts).toBe("412 of 412 files");
-    expect(botSyncView(syncing({ percent: 100 }), { now: NOW }).progress).toBe(BOT_SYNC_REAL_HOLD);
+  it("the live run (Big Nuts, 2026-10-03): 10 of 10 planned and not finished is 'Preparing.', not 99%", () => {
+    // filesTotal is the sum of the targets planned so far: the personal target
+    // planned and finished its 10 files while the company vault was still
+    // being listed. The old strip read this as 99%.
+    const view = botSyncView(syncing({ filesDone: 10, filesTotal: 10, phase: "pull", startedAt: NOW - 60_000 }), { botName: "Big Nuts", now: NOW });
+    expect(view).toMatchObject({
+      visible: true,
+      state: "syncing",
+      title: BOT_SYNC_TITLE,
+      detail: "Preparing. 10 files so far",
+      progress: null,
+      estimated: false,
+      amount: null,
+      counts: "10 files so far",
+    });
+    expect(view.detail).not.toMatch(/%|99/);
+    expect(view.detail).not.toContain("of");
+    // It does not need a clock: the line shimmers on its own.
+    expect(botSyncNeedsClock(syncing({ filesDone: 10, filesTotal: 10 }), NOW)).toBe(false);
+    // Then the company target's plan lands: a real percent again.
+    expect(botSyncView(syncing({ filesDone: 10, filesTotal: 68_151, phase: "pull" }), { now: NOW })).toMatchObject({
+      detail: "Pulling files down. 10 of 68,151 files",
+      progress: 0,
+      amount: "0%",
+      counts: "10 of 68,151 files",
+    });
   });
 
-  it("a total of zero is not a number: it falls back to the estimate", () => {
-    const view = botSyncView(syncing({ startedAt: NOW - 60_000, filesDone: 0, filesTotal: 0 }), { now: NOW });
-    expect(view.estimated).toBe(true);
-    expect(view.amount).toBeNull();
+  it("counts past their total, or a stated 100 percent, are 'Preparing.' too, never a percent", () => {
+    const over = botSyncView(syncing({ filesDone: 999, filesTotal: 412, phase: "push" }), { now: NOW });
+    expect(over).toMatchObject({ detail: "Preparing. 999 files so far", progress: null, amount: null, counts: "999 files so far" });
+    expect(botSyncView(syncing({ percent: 100 }), { now: NOW })).toMatchObject({ detail: BOT_SYNC_PREPARING, progress: null, amount: null, counts: null });
+    expect(botSyncView(syncing({ percent: 100, filesDone: 1, filesTotal: 1 }), { now: NOW }).counts).toBe("1 file so far");
+    expect(botSyncView(syncing({ bytesDone: 1000, bytesTotal: 1000, filesDone: 10, filesTotal: 10 }), { now: NOW }).progress).toBeNull();
+  });
+
+  it("a live percent from counts is always below 100; a stated percent holds at the cap", () => {
+    expect(botSyncView(syncing({ filesDone: 411, filesTotal: 412 }), { now: NOW })).toMatchObject({ progress: 99, amount: "99%" });
+    expect(botSyncView(syncing({ filesDone: 68_140, filesTotal: 68_141 }), { now: NOW }).progress).toBe(99);
+    expect(botSyncView(syncing({ percent: 99.9 }), { now: NOW }).progress).toBe(BOT_SYNC_REAL_HOLD);
+    expect(BOT_SYNC_REAL_HOLD).toBe(99);
+  });
+
+  it("a snapshot with nothing planned and nothing done is 'Preparing.' with no count", () => {
+    // The console's 'starting' shape (filesTotal 0, filesDone 0). The server
+    // has reported, and said nothing countable: the line shimmers.
+    const view = botSyncView(syncing({ startedAt: NOW - 60_000, filesDone: 0, filesTotal: 0, phase: "pull" }), { now: NOW });
+    expect(view).toMatchObject({ detail: BOT_SYNC_PREPARING, progress: null, estimated: false, amount: null, counts: null });
+    expect(botSyncNeedsClock(syncing({ startedAt: NOW - 60_000, filesDone: 0, filesTotal: 0 }), NOW)).toBe(false);
+    // The console's 'running, total unknown' shape (filesTotal 0, filesDone above 0): the files so far.
+    expect(botSyncView(syncing({ filesDone: 5, filesTotal: 0 }), { now: NOW })).toMatchObject({ detail: "Preparing. 5 files so far", progress: null, amount: null });
   });
 
   it("prefers a percent the source reports, then bytes, then file counts", () => {
-    expect(botSyncView(syncing({ percent: 42.9 }), { now: NOW })).toMatchObject({ progress: 42, amount: "42%", counts: null });
+    expect(botSyncView(syncing({ percent: 42.9 }), { now: NOW })).toMatchObject({ progress: 42, amount: "42%", counts: null, detail: "" });
     expect(botSyncView(syncing({ bytesDone: 250, bytesTotal: 1000 }), { now: NOW })).toMatchObject({ progress: 25, estimated: false });
     // Bytes move evenly where file counts jump: with both, the percent is the bytes'.
     expect(botSyncView(syncing({ bytesDone: 250, bytesTotal: 1000, filesDone: 1, filesTotal: 2 }), { now: NOW })).toMatchObject({
@@ -144,22 +213,24 @@ describe("botSyncView", () => {
     });
     // A byte total of zero says nothing: the files decide.
     expect(botSyncView(syncing({ bytesDone: 0, bytesTotal: 0, filesDone: 1, filesTotal: 2 }), { now: NOW }).progress).toBe(50);
+    // Bytes that have reached their total while files have not: the files still move, so they decide.
+    expect(botSyncView(syncing({ bytesDone: 1000, bytesTotal: 1000, filesDone: 1, filesTotal: 2 }), { now: NOW }).progress).toBe(50);
     expect(botSyncView(syncing({ percent: -5 }), { now: NOW }).progress).toBe(0);
   });
 
-  it("stale: a neutral title, no number, whatever counts the facts carry", () => {
+  it("stale: 'Still syncing.', no number, whatever counts the facts carry", () => {
     const view = botSyncView({ ...stale, filesDone: 412, filesTotal: 412, percent: 100 }, { botName: "Crassly", now: NOW });
     expect(view).toMatchObject({
       visible: true,
       state: "stale",
       title: BOT_SYNC_STALE_TITLE,
-      detail: "You can chat now. Crassly will know more as this finishes.",
+      detail: "",
       progress: null,
       estimated: false,
       amount: null,
       counts: null,
     });
-    expect(BOT_SYNC_STALE_TITLE).toBe("Still syncing your company's files");
+    expect(BOT_SYNC_STALE_TITLE).toBe("Still syncing.");
     expect(`${view.title} ${view.detail}`).not.toMatch(/\d/);
     // It does not move with time, and never becomes an estimate.
     expect(botSyncView(stale, { now: NOW + 3_600_000 }).progress).toBeNull();
@@ -195,20 +266,20 @@ describe("botSyncView", () => {
       visible: true,
       state: "failed",
       title: BOT_SYNC_FAILED_TITLE,
-      detail: "Crassly could not finish syncing your company's files.",
+      detail: "",
       progress: null,
       amount: null,
       counts: null,
     });
-    expect(BOT_SYNC_FAILED_TITLE).toBe("Sync hit a problem");
-    expect(view.detail.match(/\./g)).toHaveLength(1);
-    expect(botSyncView(failed, { now: NOW }).detail).toBe("Your bot could not finish syncing your company's files.");
+    expect(BOT_SYNC_FAILED_TITLE).toBe("Sync hit a problem.");
+    expect(`${view.title} ${view.detail}`).not.toMatch(/\d/);
   });
 
   it("has no long dash in any copy", () => {
     const all = [
       botSyncView(syncing(), { botName: "Crassly", now: NOW }),
       botSyncView(syncing({ filesDone: 1, filesTotal: 2, phase: "pull" }), { botName: "Crassly", now: NOW }),
+      botSyncView(syncing({ filesDone: 2, filesTotal: 2, phase: "pull" }), { botName: "Crassly", now: NOW }),
       botSyncView(stale, { now: NOW }),
       botSyncView({ state: "done", startedAt: null, endedAt: NOW, filesDone: 1, filesTotal: 1 }, { now: NOW }),
       botSyncView({ state: "failed", startedAt: null, endedAt: NOW, filesDone: null, filesTotal: null }, { now: NOW }),
@@ -221,6 +292,7 @@ describe("botSyncView", () => {
     expect(botSyncNeedsClock(syncing(), NOW)).toBe(true);
     expect(botSyncNeedsClock(syncing({ startedAt: null }), NOW)).toBe(false);
     expect(botSyncNeedsClock(syncing({ filesDone: 1, filesTotal: 2 }), NOW)).toBe(false);
+    expect(botSyncNeedsClock(syncing({ filesDone: 2, filesTotal: 2 }), NOW)).toBe(false);
     const done: BotSyncFacts = { state: "done", startedAt: null, endedAt: NOW, filesDone: null, filesTotal: null };
     expect(botSyncNeedsClock(done, NOW + 1_000)).toBe(true);
     expect(botSyncNeedsClock(done, NOW + BOT_SYNC_DONE_VISIBLE_MS)).toBe(false);
@@ -256,6 +328,57 @@ describe("observeBotSync", () => {
     expect(observeBotSync(status({ firstSync: snapshot(), lastHeartbeat: heartbeat(-5_000) }), NOW).state).toBe("syncing");
     // An unknown phase word is no phase.
     expect(observeBotSync(status({ firstSync: snapshot({ phase: "sideways" }), lastHeartbeat: heartbeat(0) }), NOW)).toMatchObject({ phase: null });
+  });
+
+  it("the live run (Big Nuts, 2026-10-03 20:48Z): 10 of 10, refreshed every second, not finished, is 'Preparing.'", () => {
+    // What the server said: runtime.firstSync = { phase: "pull", filesDone: 10,
+    // filesTotal: 10, startedAt: 20:48:38Z, updatedAt advancing every second },
+    // no syncOkAt, no firstSyncFinalized, the computer heartbeating. The old
+    // strip read it as 99%.
+    const now = Date.parse("2026-10-03T20:49:40.000Z");
+    const answer = status({
+      status: "running",
+      firstSyncStartedAt: "2026-10-03T20:48:38.000Z",
+      firstSync: { phase: "pull", filesDone: 10, filesTotal: 10, startedAt: "2026-10-03T20:48:38.000Z", updatedAt: "2026-10-03T20:49:39.000Z" },
+      lastHeartbeat: { at: "2026-10-03T20:49:30.000Z", components: { sync: "unknown" } },
+    });
+    const seen = observeBotSync(answer, now);
+    expect(seen).toEqual({
+      state: "syncing",
+      startedAt: Date.parse("2026-10-03T20:48:38.000Z"),
+      phase: "pull",
+      filesDone: 10,
+      filesTotal: 10,
+      bytesDone: null,
+      bytesTotal: null,
+    });
+    const facts = advanceBotSync(null, seen, now);
+    const view = botSyncView(facts, { botName: "Big Nuts", now });
+    expect(view).toMatchObject({
+      visible: true,
+      state: "syncing",
+      title: "Syncing your company's files",
+      detail: "Preparing. 10 files so far",
+      progress: null,
+      estimated: false,
+      amount: null,
+      counts: "10 files so far",
+    });
+    expect(`${view.title} ${view.detail}`).not.toMatch(/\d+%|99|Big Nuts|know more|chat now/);
+    // A minute later the company target has been planned: the real percent, climbing.
+    const planned = status({
+      status: "running",
+      firstSyncStartedAt: "2026-10-03T20:48:38.000Z",
+      firstSync: { phase: "pull", filesDone: 4_867, filesTotal: 68_141, startedAt: "2026-10-03T20:48:38.000Z", updatedAt: "2026-10-03T20:50:39.000Z" },
+      lastHeartbeat: { at: "2026-10-03T20:50:30.000Z", components: { sync: "unknown" } },
+    });
+    const later = advanceBotSync(facts, observeBotSync(planned, now + 60_000), now + 60_000);
+    expect(botSyncView(later, { botName: "Big Nuts", now: now + 60_000 })).toMatchObject({
+      detail: "Pulling files down. 4,867 of 68,141 files",
+      progress: 7,
+      amount: "7%",
+      counts: "4,867 of 68,141 files",
+    });
   });
 
   it("the live run from the walkthrough: a finished-looking snapshot 40 minutes old is stale, with no percent", () => {

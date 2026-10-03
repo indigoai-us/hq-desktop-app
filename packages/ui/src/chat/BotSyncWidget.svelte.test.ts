@@ -50,6 +50,7 @@ async function settle(): Promise<void> {
 const widget = () => host!.querySelector<HTMLElement>('[data-testid="bot-sync-widget"]');
 const bar = () => host!.querySelector<HTMLElement>('[data-testid="bot-sync-progress"]');
 const title = () => host!.querySelector('[data-testid="bot-sync-title"]')?.textContent ?? "";
+const detail = () => host!.querySelector('[data-testid="bot-sync-detail"]')?.textContent ?? "";
 const amount = () => host!.querySelector('[data-testid="bot-sync-amount"]');
 const glyph = () => host!.querySelector<SVGElement>('[data-testid="bot-sync-icon"] svg');
 
@@ -65,9 +66,26 @@ describe("BotSyncWidget", () => {
     const el = widget()!;
     expect(el.dataset.state).toBe("syncing");
     expect(title()).toBe("Syncing your company's files");
-    expect(el.textContent).toContain("You can chat now. Crassly will know more as this finishes.");
+    expect(detail()).toBe("Preparing.");
+    expect(el.textContent).not.toContain("Crassly");
     expect(el.closest(".bot-sync-slot")?.getAttribute("data-open")).toBe("true");
     // The glyph turns while the sync runs.
+    expect(glyph()!.classList.contains("bot-sync-spin")).toBe(true);
+  });
+
+  it("the live run: 10 of 10 planned and not finished reads 'Preparing.' with the files so far, no percent, a shimmering line", () => {
+    render(syncing({ filesDone: 10, filesTotal: 10, phase: "pull" }));
+    const el = widget()!;
+    expect(el.dataset.state).toBe("syncing");
+    expect(title()).toBe("Syncing your company's files");
+    expect(detail()).toBe("Preparing. 10 files so far");
+    expect(amount()).toBeNull();
+    expect(el.textContent).not.toMatch(/\d+%/);
+    expect(el.textContent).not.toContain("99");
+    const progress = bar()!;
+    expect(progress.classList.contains("is-unknown")).toBe(true);
+    expect(progress.hasAttribute("aria-valuenow")).toBe(false);
+    expect(progress.getAttribute("aria-valuetext")).toBe("10 files so far");
     expect(glyph()!.classList.contains("bot-sync-spin")).toBe(true);
   });
 
@@ -76,7 +94,7 @@ describe("BotSyncWidget", () => {
     const words = widget()!.querySelector<HTMLElement>('[role="status"]')!;
     expect(words.getAttribute("aria-live")).toBe("polite");
     expect(words.textContent).toContain("Syncing your company's files");
-    expect(words.textContent).toContain("Pulling files down.");
+    expect(detail()).toBe("Pulling files down. 128 of 412 files");
     expect(widget()!.getAttribute("aria-label")).toBe("File sync");
     const progress = bar()!;
     expect(progress.getAttribute("role")).toBe("progressbar");
@@ -120,12 +138,12 @@ describe("BotSyncWidget", () => {
     expect(amount()).toBeNull();
   });
 
-  it("a stale sync: the neutral title, a shimmering line, no number, and a glyph that holds still", () => {
+  it("a stale sync: 'Still syncing.', a shimmering line, no number, and a glyph that holds still", () => {
     render({ state: "stale", startedAt: NOW - 40 * 60_000, endedAt: null, filesDone: 412, filesTotal: 412 });
     const el = widget()!;
     expect(el.dataset.state).toBe("stale");
-    expect(title()).toBe("Still syncing your company's files");
-    expect(el.textContent).toContain("You can chat now. Crassly will know more as this finishes.");
+    expect(title()).toBe("Still syncing.");
+    expect(host!.querySelector('[data-testid="bot-sync-detail"]')).toBeNull();
     expect(el.textContent).not.toMatch(/\d/);
     expect(amount()).toBeNull();
     const progress = bar()!;
@@ -188,8 +206,8 @@ describe("BotSyncWidget", () => {
   it("says a failed sync in one sentence, with no bar and no percent, and stays", async () => {
     render({ state: "failed", startedAt: NOW - 60_000, endedAt: NOW, filesDone: 3, filesTotal: 412 });
     expect(widget()!.dataset.state).toBe("failed");
-    expect(title()).toBe("Sync hit a problem");
-    expect(widget()!.textContent).toContain("Crassly could not finish syncing your company's files.");
+    expect(title()).toBe("Sync hit a problem.");
+    expect(widget()!.textContent).not.toContain("Crassly");
     expect(widget()!.textContent).not.toMatch(/\d/);
     expect(bar()).toBeNull();
     expect(amount()).toBeNull();

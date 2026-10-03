@@ -15,22 +15,24 @@
    * the thread under it does not jump.
    *
    * One line: a sync glyph that turns while the sync is running, the title,
-   * the short status sentence in the muted ink, and the percent at the right
-   * when there is an honest one. The progress bar is a two pixel line along
-   * the strip's bottom edge; with no number it shimmers instead. No border,
-   * no shadow, no panel: a faint tint of the accent over the pane, from the
-   * theme's own tokens, so it reads in both themes.
+   * the short status line in the muted ink (the phase and the counts, or
+   * "Preparing."), and the percent at the right when there is an honest one.
+   * The progress bar is a two pixel line along the strip's bottom edge; with
+   * no number it shimmers instead. No border, no shadow, no panel: a faint
+   * tint of the accent over the pane, from the theme's own tokens, so it
+   * reads in both themes. The copy is the same for every sync, first or
+   * later, and never names the bot.
    */
   import { onDestroy, tick, untrack } from "svelte";
   import { botSyncNeedsClock, botSyncView, type BotSyncFacts, type BotSyncView } from "./bot-sync-model.js";
 
   interface Props {
     facts: BotSyncFacts | null;
-    /** The bot's display name, written into the copy. */
+    /** Accepted so hosts from before need not change. The copy no longer uses it. */
     botName?: string | null;
   }
 
-  let { facts, botName = null }: Props = $props();
+  let { facts }: Props = $props();
 
   /** How often an estimated bar moves, and how soon "up to date" is noticed gone. */
   const CLOCK_MS = 1_000;
@@ -38,7 +40,7 @@
   const CLOSE_MS = 320;
 
   let now = $state(Date.now());
-  const view = $derived(botSyncView(facts, { botName, now }));
+  const view = $derived(botSyncView(facts, { now }));
 
   // The clock runs only while time itself changes the strip. New facts are
   // always read at the present moment, however long the clock has been still.
