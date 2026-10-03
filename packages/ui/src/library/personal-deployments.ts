@@ -157,6 +157,11 @@ function accessLabel(app: Record<string, unknown>): string {
 function statusOf(app: Record<string, unknown>): PersonalDeployStatus {
   if (app.active === false) return "deactivated";
   const status = str(app.status).toLowerCase();
+  // OWNER-R34: hq-deploy records an idle SSR app's sleep on computeStatus
+  // ("sleeping" / "waking"); status stays "active". Reading status alone
+  // counted every sleeping app as active.
+  const compute = str(app.computeStatus).toLowerCase();
+  if (status !== "failed" && status !== "deploying" && status !== "inactive" && (compute === "sleeping" || compute === "waking")) return "sleeping";
   if (status === "sleeping" || status === "paused") return "sleeping";
   if (status === "failed" || status === "error") return "failed";
   if (status === "building") return "building";
@@ -281,6 +286,33 @@ export function filterDeployments(
     if (!q) return true;
     return `${row.name} ${row.host} ${row.project} ${row.scopeLabel}`.toLowerCase().includes(q);
   });
+}
+
+/** OWNER-R34: the header pills. Status and scope combine; the toggles narrow further. */
+export type DeployStatusPill = "all" | "active" | "sleeping" | "deactivated";
+export type DeployScopePill = "all" | "personal" | "company";
+export interface DeployFilterPills {
+  status: DeployStatusPill;
+  scope: DeployScopePill;
+  byYou: boolean;
+  byBots: boolean;
+}
+export const DEFAULT_DEPLOY_PILLS: DeployFilterPills = { status: "all", scope: "all", byYou: false, byBots: false };
+
+export function filterDeploymentsBy(
+  rows: readonly PersonalDeployment[],
+  pills: DeployFilterPills,
+  query: string,
+): PersonalDeployment[] {
+  let out = filterDeployments(rows, pills.status, query);
+  if (pills.scope !== "all") out = filterDeployments(out, pills.scope === "personal" ? "scope-personal" : "scope-company", "");
+  if (pills.byYou) out = filterDeployments(out, "by-you", "");
+  if (pills.byBots) out = filterDeployments(out, "by-bots", "");
+  return out;
+}
+
+export function pillsAreDefault(pills: DeployFilterPills): boolean {
+  return pills.status === "all" && pills.scope === "all" && !pills.byYou && !pills.byBots;
 }
 
 export function progressFor(row: PersonalDeployment): DeployProgress {

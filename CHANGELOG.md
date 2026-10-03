@@ -18,6 +18,11 @@ This beta brings the new HQ interface. A rail on the left holds your companies, 
 - The command palette (Cmd+K) searches pages, companies, projects and people. Cmd+N opens the create menu, Cmd+Shift+K starts a new message and Cmd+Shift+A opens Atlas.
 - Notices such as update ready, sync progress and copy confirmations appear as small toasts in one corner instead of banners across the window.
 - Toasts use the same neutral grey as other overlays.
+- Windows, sheets and menus use one neutral grey across the app.
+- Toasts never cover an open window or sheet.
+- Marketplace has its own icon in the main rail. The page is named Marketplace (it was Library) and no longer lists Skills and Workers. The Launch and Core menus open above it.
+- People are shown by name with their email, never by an internal id. Filters and pickers use one dropdown style.
+- Large numbers are abbreviated, so a count rolls over to the next unit (for example 96.6B instead of 96572.1M).
 - Company names show the company favicon beside them across the app, including the New bot company chips, project header, More companies, command palette, Connections, settings, bot membership lists, Meetings, Telemetry and Atlas. The company list reloads when you switch companies, so an icon added later replaces the initials.
 - Clickable icons and small controls on the new pages have a 28 px click area, so they are easier to hit. Their drawn size is unchanged.
 - Toast buttons show a focus ring when you reach them with the keyboard. The sync toast names the company by its display name.
@@ -32,42 +37,52 @@ This beta brings the new HQ interface. A rail on the left holds your companies, 
 
 - Projects has a board and a list view. Opening a task shows it in a side pane with its status, owner and files.
 - Each project has a Files tab, and you can create a new file from it.
-- Goals lists the company's goals with their progress and linked projects.
+- Goals lists the company's goals with their progress and linked projects. Click a goal to see its details and linked projects, and add or remove projects.
+- The Projects board shows as soon as the projects load; goal details fill in after.
 
 ### Company pages
 
-- Team lists people and bots with their roles, and you can invite people from the same page.
-- Bots shows the company's bots. New bot starts on the company you opened it from.
+- Team lists people and bots with their roles, join dates, groups and access in one place, and you can invite people from the same page. A team you have already loaded stays on screen while it refreshes.
+- The company panel has Groups and Grants under People, and a Settings group with General, Brand and Billing. The separate Company settings page is gone.
+- Activity shows the team's real activity, with a detail pane for each member.
+- Bots shows the company's bots. New bot starts on the company you opened it from. When a filter matches no bots, the page says so.
 - New cloud bots sign in with your model subscription. The API key option is no longer offered.
 - Behind `agents.desktop-agent-creation` (Indigo only): New bot is one three-step flow (what kind, where it runs, its details). Choosing Cloud creates the bot directly, without Slack, and opens its DM. New cloud bots start on Claude, with Codex and Grok offered. Cloud stays visible when it can't be used and says why (admin role, plan, or no company). Settings › Bots › New bot closes Settings and opens the same flow. The flag is checked for the company you pick, and the cloud create code loads only when the flow opens, so startup is not slower.
 - Escape closes New bot when it opened on the bot step.
-- Files and Knowledge show the company vault with a preview pane.
+- Files and Knowledge show the company vault with a preview pane. Knowledge's Browse tree is a real folder tree.
+- Vault uses the same folder tree, viewer and access panel as Files. Files and Vault show who can access the selected file or folder.
 - Relative links in any Markdown preview open the linked file.
-- Policies, Workers and Skills each have their own page.
-- Settings covers General, Brand, Groups, Grants and Workforce. Integrations is view only; manage connections in the web console.
+- Policies, Workers and Skills each have their own page. Workers shows each worker's details, skills and a file browser. Skills shows the team's usage beside your own.
+- Integrations is view only. Open console opens the company's integration setup in the web console, and connection types have plain labels.
 - Secrets lists secret names without ever showing their values.
 - When a search on Secrets or Integrations matches nothing, the page says so and the side panel clears instead of showing the last item.
-- Outpost always reads your Outpost when the page opens, even if the window is behind another app. If the read fails it shows Couldn't read your Outpost with Try again instead of loading forever, and if only the jobs fail to load, the host stays on screen and Jobs and Runs show Try again.
+- Outpost is a status view of your Outpost, with Open console to manage it in the web console. If the read fails it shows Couldn't read your Outpost with Try again.
 - Deployments lists the company's deployed apps with their links and access.
 - Access on a company deployment now opens. If it can't load, it says so in plain words.
 - When company Projects, Goals, Team, Bots, Files, Knowledge, Policies, Skills, Workers, Secrets or Deployments, Personal Deployments, or the Choose folder sheet can't be read, the page says so in plain words with Try again, instead of showing the empty-page line or raw error text.
 - When the Library can't be read, it shows one Try again, which reloads both the folder tree and the vault home.
-- Goals shows a loading skeleton on first load instead of briefly showing the empty line.
 - Goals no longer lists projects that are not linked to a goal. The Projects filter has a No goal option to find them.
-- The New objective window and its project picker fit inside the app window.
+- The New objective window, its project picker and its inputs fit inside the app window without scrolling sideways.
 - Pages with nothing in them yet use plain empty copy.
 - Library and Settings text uses the app's standard sizes and weights.
-- If company Knowledge, Policies, Skills, Workers, Goals, Projects, Vault, Secrets, Deployments, Team or Bots, or the personal Library, Deployments, Secrets or Connections pages are still loading after 12 seconds, they stop waiting and say so in plain words with Try again, instead of staying on the loading placeholder.
+- While a page loads, it shows a loading animation with short rotating messages. A slow page keeps waiting and is never reported as failed. The grey placeholder rows are gone.
 - When a page can't be read, it no longer also says the page is empty or shows zero counts. This covers Team, Goals, Bots, Projects, Knowledge, Policies, Skills, Workers, Secrets, Deployments, Connections and the company map.
 - Company Vault says you don't have access when the server refuses access, instead of showing an error.
-- Atlas shades each section, never covers a section's name, and uses readable 13 px labels that do not overlap. The most recent and largest items are labeled first; the rest show on hover and when you zoom in.
-- Company Integrations lists the apps the company has actually connected, with loading, failed and empty states.
+- Atlas tints each section without an outline, never covers a section's name, and uses readable 13 px labels that do not overlap or run into the legend. Projects are small dots. The most recent and largest items are labeled first; the rest show on hover and when you zoom in. A panel lists the company's people and agents with their recent activity.
+- Company Integrations reliably lists the apps the company has actually connected, with loading, failed and empty states.
 - Telemetry shows one sentence when there is no activity, and is hidden for people who do not have the feature. Indigo members keep the Telemetry entry on Home and in every company.
+- My Telemetry is one page: totals, tokens per day, usage by exact model, skills, and the sessions recorded on this Mac.
+- Deployments and Secrets filter from the page header. Personal Connections and Secrets no longer have a side list.
+- Personal Secrets load even when you open them before any company.
+- Marketplace no longer shows zero counts when it can't be read.
 - New bot shows the platform's own create shortcut (Cmd+Return on macOS).
 
 ### Meetings
 
-- Meetings shows your calendar, live meetings and recaps in one page. When the desktop detects a meeting it shows recording controls on the Meetings page.
+- Meetings shows your calendar, live meetings and recaps in one page. When the desktop detects a meeting it shows recording controls on the Meetings page, and the meeting-detected banner opens Meetings.
+- Notes, recaps and decisions load for all your meetings, and recaps and decisions are shown as formatted text. Opening a company meeting no longer times out, and if part of a recap fails the transcript still shows.
+- The "Some past meetings could not load" line appears only when something really fails.
+- The New meeting window is replaced by Invite notetaker. You can invite the notetaker from an upcoming meeting, or by pasting a meeting link.
 - Meetings lists only your own meetings: ones your notetaker recorded, ones on your calendar, and ones recorded on this device. Company role does not add other people's meetings. Past meetings are grouped under day headers.
 - Meetings stored as a single document now show their notes, transcript and attendees.
 - Meeting notes and transcripts stored as documents now load: the app downloads them itself. If a meeting's notes can't load, it shows "Couldn't load the notes." with Try again, instead of saying there are no notes.
@@ -81,18 +96,24 @@ This beta brings the new HQ interface. A rail on the left holds your companies, 
 
 ### Settings and account
 
-- Settings, Profile and Billing open from your account at the bottom of the rail. Light appearance is supported across the new pages.
+- Settings opens from your account at the bottom of the rail. Profile, Billing and Public profile live in the one Settings list. Pronouns are removed from the profile. Light appearance is supported across the new pages.
 - The signed-out page uses plain copy that names the app HQ. Its quit button reads Quit HQ.
 - The signed-out page has one heading, Sign in to HQ, with the reason as a short line under it.
-- Restart to update works while sync is running. Only a meeting recording, a transcript that is still saving, or an HQ Core update holds a restart you asked for, and Settings › Updates and the update notice say which one.
+- Restart to update works while sync is running. Only a meeting recording, a transcript that is still saving, or an HQ Core update holds a restart you asked for, and Settings › Updates and the update notice say which one. While an upload is holding the update, Restart is unavailable in both places.
 - Office Hours and the Settings profile show a plain message with Try again when they can't load or save.
 
 ### Other changes
 
 - Desktop sign-in now records each stage from choosing a provider through the browser callback and token exchange. When it fails, HQ records only the failing stage and a safe error category.
+- The welcome sign-in window moves on when you are already signed in, keeps you informed while browser sign-in is in progress, and offers Try again if it does not finish.
+- Sign-in tracking from a first sign-in is no longer lost. Progress and failure records sent before you are signed in are kept on this Mac (at most 20, for 3 days) and sent once you sign in.
+- Daily-use and first-launch records are sent reliably and carry the app version.
+- Startup diagnostics tell more kinds of rejected saved sign-ins apart.
+- HQ recovers when its record of running commands was damaged by an earlier error.
 - Setup failure events now fill a missing stage from the bounded component and keep error categories on the closed list.
 - CI launches of the desktop app no longer add first-run rows to the install funnel.
 - Desktop Core baseline refresh now retries GitHub timeouts before reporting a pending baseline. Persistent timeouts are still reported.
+- When company-name suggestions are turned on, new-company setup can fill in the name from a business email domain. You can still edit it.
 - Error messages across the app use plain words instead of technical error text, including sending messages, uploads, channel actions, Settings, sign-in, setup and the marketplace. The technical details go to the app log.
 - Opening a company retries the company lookup once before giving up.
 - HQ CLI updates wait for running HQ CLI commands to finish before replacing the CLI.
@@ -113,6 +134,41 @@ This beta brings the new HQ interface. A rail on the left holds your companies, 
 - Deployments cannot redeploy from the desktop yet, and the Your bots filter is empty.
 - Workforce shows the seat limit as unavailable until the plan limits are connected.
 - Custom keyboard shortcuts in the Edit shortcuts sheet are not saved yet.
+
+
+## [0.10.386] — 2026-10-03
+
+- "Restart to update" now works while a sync is running. Only a meeting recording, a transcript that is still saving, or an HQ Core update holds a restart you asked for, and the update card says which one. (This fix was listed under 0.10.379 by mistake; it ships in this release.)
+- Checking whether a desktop command is still registered, cancelled, or finished, and registering or removing one, still works after an internal error interrupts that bookkeeping.
+- Internal tests: two more desktop UI tests (message link color, touch quick-react) now render the conversation and reply panel and read the applied styles instead of searching their source text. Nothing changes in the app.
+- When company-name suggestions are enabled, new-company setup can prefill the name from a business email domain. The name remains editable.
+- Desktop setup still cancels an install and still records its failure after an internal error interrupts that bookkeeping.
+- On first launch, onboarding step telemetry can share the persisted install attempt id with the anonymous launch receipt when its hq-flags gate is enabled.
+- Workspace refresh no longer clears a company cloud link when an entity lookup is missing; only a confirmed deletion removes it.
+- Internal tests: four more desktop UI tests (desktop sidebar layout, files sidebar contrast, @here mention, emoji shortcodes) now render the components instead of searching their source text. Nothing changes in the app.
+- Internal tests: four more desktop UI tests (conversation rail ready signal, mute bell, notification focus ring, quick-react toolbar) now render the components instead of searching their source text. Nothing changes in the app.
+- Keep a company's cloud binding in `companies/manifest.yaml` when it is absent
+  from the signed-in person's membership list. The app now waits for an
+  authoritative deletion signal before unlinking a workspace.
+- Internal tests: four more desktop UI tests (task strip, task chip, page header, agents settings) now render the components instead of searching their source text. Nothing changes in the app.
+- Desktop Core baseline refresh now retries GitHub timeouts before reporting a pending baseline; persistent timeouts remain reported.
+
+- Internal: CLI update failure reports now record which CLI version was running when the update failed, as a SemVer value or the word unknown, with no file path.
+- Release builds: the macOS release check now confirms its test sign-in is still valid before it opens the app. An expired test sign-in failed v0.10.383 with a message that looked like the app was stuck loading; it now says the test sign-in expired and how to renew it.
+- Add bounded marker and refresh rejection attribution to unexpected startup diagnostics.
+- Startup diagnostics now distinguish a rejected saved session from an empty credential store.
+- Desktop CLI updates now wait for running CLI commands to finish before replacing shared package files.
+- Shelltest builds now report to a separate Sentry environment; release telemetry remains in production.
+- Past meetings can list local personal notes and your own desktop recordings, behind the desktop.meetings-personal-transcripts flag (off by default).
+- Desktop sign-in now records each stage from choosing a provider through the browser callback and token exchange. When it fails, HQ records only the failing stage and a safe error category, so the download-to-sign-in drop can be measured without collecting sign-in details.
+- Desktop onboarding retries a failed company lookup once and records when the lookup stays unavailable, without creating a company from incomplete data.
+- The Meet native Windows test build now pins its signing and Rust toolchain actions to exact versions. Nothing changes in the app.
+- Setup failure events now fill a missing stage from the bounded component and keep error categories on the closed list.
+- CI launches of the desktop app no longer add first-run rows to the install funnel, including through the CDP mirror.
+- Past meetings can show meeting transcripts you saved privately on this computer, including older ones, when the personal transcripts feature is turned on for your account. Transcripts from another account signed in on the same computer stay hidden.
+- Internal tests: four desktop tests that only searched the source text for strings now check what the code does. Nothing changes in the app.
+
+- After a Windows Core update, HQ puts its managed CLI ahead of stale CLI paths in the HQ Claude settings file so the updated version is selected.
 
 ## [0.10.385] — 2026-10-03
 - The vyg CDP mirror now also records app opens (every launch), one daily-active row per day, account linking after sign-in (sha256 hashes of the person and company ids only), Claude/Codex/Grok session launches, sync start and end, teammate invites, joining a company from an invite, and the plan picked during setup. The same rows go to HQ's operational telemetry. The `desktop.cdp-mirror` flag is now re-checked every 6 hours, so turning it on or off no longer needs a relaunch.

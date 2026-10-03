@@ -488,7 +488,7 @@ pub async fn first_push_company(
             files_skipped,
         },
     );
-    crate::commands::cdp_mirror::note_first_sync_completed();
+    crate::commands::cdp_mirror::note_first_sync_completed(&company.uid);
 
     Ok(())
 }

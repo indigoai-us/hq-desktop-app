@@ -146,7 +146,7 @@ describe("document-shaped recorded meeting", () => {
   it("fills Attendees from the document's speakers", async () => {
     const event = await shownEventFor(detailWire, async () => documentBody);
     const el = render({ mode: "recap", event, now });
-    expect(el.querySelector('[data-testid="meeting-attendees-skeleton"]')).toBeNull();
+    expect(el.querySelector('[data-testid="meeting-attendees-loading"]')).toBeNull();
     const names = Array.from(el.querySelectorAll('[data-testid="meeting-attendee"]')).map((n) => n.textContent);
     expect(names.join("|")).toContain("Richard");
     expect(names.join("|")).toContain("Corey Epstein");
@@ -158,12 +158,12 @@ describe("attendee skeleton never outlives the load", () => {
 
   it("shows the skeleton only while the meeting's notes load", () => {
     const el = render({ mode: "recap", event: recorded, now, notesLoading: true });
-    expect(el.querySelector('[data-testid="meeting-attendees-skeleton"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="meeting-attendees-loading"]')).not.toBeNull();
   });
 
   it("resolves to \"Attendees unavailable\" when nothing names them", () => {
     const el = render({ mode: "recap", event: recorded, now, notesLoading: false });
-    expect(el.querySelector('[data-testid="meeting-attendees-skeleton"]')).toBeNull();
+    expect(el.querySelector('[data-testid="meeting-attendees-loading"]')).toBeNull();
     expect(el.querySelector('[data-testid="meeting-attendees-unavailable"]')?.textContent).toBe("Attendees unavailable");
   });
 });

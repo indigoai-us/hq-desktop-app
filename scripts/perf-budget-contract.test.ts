@@ -374,6 +374,14 @@ const SESSIONS_HIDDEN_POLL_FLOOR_SECS = 120;
  */
 const FAST_POLLER_ALLOWLIST = new Map<string, string>([
   [
+    "packages/ui/src/common/ReadLoader.svelte",
+    "4s rotation of the waiting line in the shared loader (BLANK-3, owner " +
+      "2026-10-03). Not a long-lived poller: it starts only after a read has " +
+      "been pending 3s, lives only while that loading placeholder is mounted, " +
+      "is cleared the moment the read answers, writes one string per tick, " +
+      "and skips ticks while the window is hidden.",
+  ],
+  [
     "packages/ui/src/tour/GuidedTour.svelte",
     "250ms re-measure of the spotlight target while the guided tour is on " +
       "screen, so the cutout follows layout shifts that fire no resize or " +
@@ -892,7 +900,11 @@ describe("first-frame-of-Home budget: lazy doors stay lazy", () => {
     "packages/ui/src/library/PersonalDeploymentsPage.svelte",
     "packages/ui/src/outpost/OutpostPage.svelte",
     "packages/ui/src/personal/PersonalRailPage.svelte",
-    "packages/ui/src/account/AccountPages.svelte",
+    // OWNER-R21: the old account pages were removed (Profile and Billing
+    // live in Settings). OWNER-R9: Team and its access section load on demand.
+    "packages/ui/src/company/TeamPage.svelte",
+    "packages/ui/src/company/MemberAccessSection.svelte",
+    "packages/ui/src/common/Dropdown.svelte",
   ];
 
   it("keeps every lazy body out of the shell's static import graph", () => {

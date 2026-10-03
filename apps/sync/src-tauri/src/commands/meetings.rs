@@ -186,12 +186,16 @@ async fn vault_base() -> Result<String, String> {
     resolve_vault_api_url().map(|u| u.trim_end_matches('/').to_string())
 }
 
-/// Per-request budget for meetings HTTP. Matches `client_info::build_client`'s
-/// 15s default and is applied on the RequestBuilder so a hung hq-pro call
-/// still errors even if that shared timeout is later removed. Without this,
-/// a wedged `/v1/bot/list` or `/v1/calendar/events` pins the UI `loading`
-/// flag and the Refresh button forever.
-const MEETINGS_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+/// Per-request budget for meetings HTTP, applied on the RequestBuilder (it
+/// overrides `client_info::build_client`'s 15s default) so a hung hq-pro call
+/// still errors and cannot pin the UI `loading` flag forever.
+///
+/// BLANK-3: 35s, past API Gateway's own 30s integration limit, so a slow but
+/// healthy read is answered (or refused by the server) before this client
+/// gives up. At 15s a cold past-meetings read failed on its first open and
+/// loaded on a later retry (tester round 28). While a read is pending the UI
+/// shows the shared loader, never a failure.
+const MEETINGS_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(35);
 
 fn with_timeout(req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
     req.timeout(MEETINGS_REQUEST_TIMEOUT)

@@ -97,9 +97,10 @@ describe("Outpost live read (QA-069)", () => {
     expect(client.getMyOutpostStatus).toHaveBeenCalledTimes(1);
     expect(client.listMyOutpostJobs).toHaveBeenCalledTimes(1);
     expect(target.querySelector("[data-testid='outpost-online']")?.textContent).toBe("Online");
+    expect(target.querySelector("[data-testid='outpost-title']")?.textContent).toBe("hq-outpost-u1");
     const host = target.querySelector("[data-testid='outpost-host']")?.textContent ?? "";
-    expect(host).toContain("hq-outpost-u1");
     expect(host).toContain("us-west-2");
+    expect(host).not.toContain("running");
     expect(host).toContain("40 GB disk");
     const results = [...target.querySelectorAll("[data-testid='job-last-result']")].map((n) => n.textContent);
     expect(results).toEqual(["ok · 2h ago · exit 0", "failed · 7m ago · exit 1"]);
@@ -111,9 +112,9 @@ describe("Outpost live read (QA-069)", () => {
 
   it("shows Offline from the real instance state", async () => {
     const target = await mountWith({ api: api(ok({ ...STATUS, instanceState: "stopped" } as unknown as Json)) });
-    expect(target.querySelector("[data-testid='outpost-online']")?.textContent).toBe("Offline");
+    expect(target.querySelector("[data-testid='outpost-online']")?.textContent).toMatch(/^Unreachable/);
     const banner = (target.querySelector("[data-testid='outpost-offline-banner']")?.textContent ?? "").replace(/\s+/g, " ");
-    expect(banner).toContain("No report since");
+    expect(banner).toContain("No report for");
     expect(banner).not.toMatch(EMPTY_INTERPOLATION);
   });
 

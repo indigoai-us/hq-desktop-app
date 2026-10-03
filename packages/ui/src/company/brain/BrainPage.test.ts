@@ -67,7 +67,7 @@ describe("US-028 BrainPage", () => {
     expect(calls[0]?.[1]).toBe("/standup-brief");
   });
 
-  it("paints a shimmer before the listing arrives", () => {
+  it("paints the loader before the listing arrives", () => {
     const library = { getCompany: vi.fn(() => new Promise(() => undefined)) };
     component = mount(BrainPage, {
       target: document.body,
@@ -80,7 +80,7 @@ describe("US-028 BrainPage", () => {
         settings: null,
       },
     });
-    expect(document.querySelector("[data-testid='brain-shimmer']")).toBeTruthy();
+    expect(document.querySelector("[data-testid='brain-loading']")).toBeTruthy();
   });
 
   it("QA-009: binds the company read scope before listing policies, and counts every real policy", async () => {
@@ -162,8 +162,10 @@ describe("US-028 BrainPage", () => {
       },
     });
     await vi.waitFor(() => {
-      expect(document.querySelector("[data-testid='brain-page'] .item .name")).toBeTruthy();
+      expect(document.querySelector("[data-testid='brain-knowledge-count']")).toBeTruthy();
     });
+    flushSync();
+    (Array.from(document.querySelectorAll("[data-testid='brain-page'] .tab")).find((b) => b.textContent === "What's fresh") as HTMLButtonElement).click();
     flushSync();
     const name = document.querySelector("[data-testid='brain-page'] .item .name")?.textContent;
     expect(name).toBe("Build Your Own AGI — Print Production Pipeline");
@@ -184,8 +186,12 @@ describe("US-028 BrainPage", () => {
       props: { page: "knowledge", slug: "qa058-co", files: files as never, library: null, shell: null, settings: null },
     });
     await vi.waitFor(() => {
-      expect(document.querySelectorAll("[data-testid='brain-list'] .item").length).toBe(3);
+      expect(document.querySelector("[data-testid='brain-knowledge-count']")?.textContent).toBe("3 files");
     });
+    flushSync();
+    (Array.from(document.querySelectorAll("[data-testid='brain-page'] .tab")).find((b) => b.textContent === "What's fresh") as HTMLButtonElement).click();
+    flushSync();
+    expect(document.querySelectorAll("[data-testid='brain-list'] .item").length).toBe(3);
     const search = document.querySelector("[data-testid='brain-page'] input.search") as HTMLInputElement;
     search.value = "zzz-no-such-file";
     search.dispatchEvent(new Event("input", { bubbles: true }));
@@ -314,29 +320,29 @@ describe("US-028 BrainPage", () => {
     const count = () => document.querySelector("[data-testid='brain-knowledge-count']")?.textContent ?? null;
     const pending = { listDir: vi.fn(() => new Promise(() => undefined)), getFileContent: vi.fn(() => new Promise(() => undefined)) };
 
-    it("loading with no cache shows a skeleton with a reading line and no count", () => {
+    it("loading with no cache shows the loader with a reading line and no count", () => {
       mountKnowledge("qa100-cold", pending);
-      expect(document.querySelector("[data-testid='brain-shimmer']")).toBeTruthy();
+      expect(document.querySelector("[data-testid='brain-loading']")).toBeTruthy();
       expect(document.body.textContent).toContain("Reading files…");
       expect(count()).toBeNull();
       expect(document.body.textContent).not.toContain("0 files");
     });
 
-    it("loading with a cache shows the cached rows and cached count", () => {
+    it("loading with a cache shows the cached rows and cached count", async () => {
       const cached = emptyBrainCache();
       cached.knowledge = [knowledgeFromFile(`${root("qa100-warm")}/a.md`, "# Alpha"), knowledgeFromFile(`${root("qa100-warm")}/b.md`, "# Beta")];
       writeBrainCache("qa100-warm", cached);
       mountKnowledge("qa100-warm", pending);
-      expect(document.querySelector("[data-testid='brain-shimmer']")).toBeNull();
+      expect(document.querySelector("[data-testid='brain-loading']")).toBeNull();
       expect(count()).toBe("2 files");
-      expect(document.querySelectorAll("[data-testid='brain-list'] .item")).toHaveLength(2);
+      await vi.waitFor(() => expect(document.querySelectorAll("[data-testid='vault-tree-row']")).toHaveLength(2));
     });
 
     it("loaded and empty shows the empty state with a zero count", async () => {
       mountKnowledge("qa100-empty", { listDir: vi.fn(async () => ok([])), getFileContent: vi.fn(async () => ok("")) });
       await vi.waitFor(() => expect(count()).toBe("0 files"));
       expect(document.body.textContent).toContain("No knowledge files yet.");
-      expect(document.querySelector("[data-testid='brain-shimmer']")).toBeNull();
+      expect(document.querySelector("[data-testid='brain-loading']")).toBeNull();
     });
 
     it("loaded shows the rows", async () => {
@@ -346,7 +352,7 @@ describe("US-028 BrainPage", () => {
         getFileContent: vi.fn(async () => ok("# Alpha")),
       });
       await vi.waitFor(() => expect(count()).toBe("1 file"));
-      expect(document.querySelectorAll("[data-testid='brain-list'] .item")).toHaveLength(1);
+      await vi.waitFor(() => expect(document.querySelectorAll("[data-testid='vault-tree-row']")).toHaveLength(1));
     });
   });
 
@@ -386,4 +392,99 @@ describe("US-028 BrainPage", () => {
       expect(document.body.textContent).not.toContain("listing");
     },
   );
+
+  /**
+   * OWNER-R10: Browse tree rendered the same flat title-and-path list as
+   * What's fresh (the tree lens fell through to the generic list). Paths
+   * below are the real shapes from the Indigo knowledge folder with names
+   * replaced.
+   */
+  describe("OWNER-R10 Browse tree", () => {
+    const slug = "r10-co";
+    const root = ["companies", slug, "knowledge"].join("/");
+    const paths = [
+      `${root}/_archive/2026-09-23-garden/old-note.md`,
+      `${root}/_archive/2026-09-23-garden/old-note.conflict-2026-09-23T10-00-00Z-abc123.md`,
+      `${root}/gtm/pricing.md`,
+      `${root}/gtm/accounts/acme.md`,
+      `${root}/readme.md`,
+    ];
+    const bodies: Record<string, string> = {
+      [`${root}/readme.md`]: "---\ntitle: Readme\nupdated: 2026-09-01\n---\nhello",
+      [`${root}/gtm/pricing.md`]: "---\ntitle: Pricing\nupdated: 2026-10-02\n---\nprice list",
+      [`${root}/gtm/accounts/acme.md`]: "---\ntitle: Acme\ndate: 2026-09-15\n---\naccount",
+      [`${root}/_archive/2026-09-23-garden/old-note.md`]: "---\ntitle: Old note\n---\narchived",
+      [`${root}/_archive/2026-09-23-garden/old-note.conflict-2026-09-23T10-00-00Z-abc123.md`]: "---\ntitle: Old note\n---\narchived copy",
+    };
+    const files = {
+      listDir: vi.fn(async (dir: string) => {
+        const prefix = `${dir}/`;
+        const seen = new Map<string, boolean>();
+        for (const p of paths) {
+          if (!p.startsWith(prefix)) continue;
+          const rest = p.slice(prefix.length);
+          const head = rest.split("/")[0]!;
+          seen.set(head, rest.includes("/"));
+        }
+        return ok([...seen.entries()].map(([name, isDir]) => ({ name, path: `${prefix}${name}`, isDir, hasChildren: isDir })));
+      }),
+      getFileContent: vi.fn(async (p: string) => ok(bodies[p] ?? "")),
+    };
+    const rowNames = () => Array.from(document.querySelectorAll("[data-testid='vault-tree-row'] .vt-name")).map((n) => n.textContent);
+    const tab = (label: string) => {
+      (Array.from(document.querySelectorAll("[data-testid='brain-page'] .tab")).find((b) => b.textContent === label) as HTMLButtonElement).click();
+      flushSync();
+    };
+    const mountIt = async () => {
+      component = mount(BrainPage, {
+        target: document.body,
+        props: { page: "knowledge", slug, files: files as never, library: null, shell: null, settings: null },
+      });
+      await vi.waitFor(() => expect(document.querySelector("[data-testid='brain-knowledge-count']")?.textContent).toBe("5 files"));
+      await vi.waitFor(() => expect(rowNames().length).toBeGreaterThan(0));
+      flushSync();
+    };
+
+    it("shows a folder tree rooted at the knowledge folder, folders first, without the path prefix", async () => {
+      await mountIt();
+      expect(rowNames()).toEqual(["_archive", "gtm", "readme"]);
+      expect(document.querySelector("[data-testid='brain-knowledge-tree']")?.textContent).not.toContain(root);
+      expect(document.querySelectorAll("[data-testid='brain-list'] .item")).toHaveLength(0);
+    });
+
+    it("What's fresh is a different structure: a flat list, most recently changed first, with dates", async () => {
+      await mountIt();
+      tab("What's fresh");
+      expect(document.querySelector("[data-testid='brain-knowledge-tree']")?.hasAttribute("hidden")).toBe(true);
+      const titles = Array.from(document.querySelectorAll("[data-testid='brain-fresh-row'] .name")).map((n) => n.textContent);
+      expect(titles.slice(0, 3)).toEqual(["Pricing", "Acme", "Readme"]);
+      expect(document.querySelector("[data-testid='brain-fresh-changed']")?.textContent).toBe("2026-10-02");
+    });
+
+    it("expands folders, opens a file in the detail pane with the row highlighted, and keeps folders open across tabs", async () => {
+      await mountIt();
+      const row = (name: string) => Array.from(document.querySelectorAll<HTMLButtonElement>("[data-testid='vault-tree-row']")).find((r) => r.querySelector(".vt-name")?.textContent === name)!;
+      row("gtm").click();
+      await vi.waitFor(() => expect(rowNames()).toContain("pricing"));
+      row("pricing").click();
+      flushSync();
+      expect(row("pricing").getAttribute("aria-selected")).toBe("true");
+      expect(document.body.textContent).toContain("price list");
+      tab("What's fresh");
+      tab("Browse tree");
+      expect(rowNames()).toContain("pricing");
+    });
+
+    it("search shows matching files with their folders open; a conflict copy is marked", async () => {
+      await mountIt();
+      const search = document.querySelector("[data-testid='brain-page'] input.search") as HTMLInputElement;
+      search.value = "archived";
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+      flushSync();
+      await vi.waitFor(() => expect(rowNames()).toContain("old-note"));
+      expect(rowNames()).not.toContain("gtm");
+      const conflict = Array.from(document.querySelectorAll("[data-testid='vault-tree-row']")).find((r) => r.textContent?.includes(".conflict-"));
+      expect(conflict?.querySelector(".vt-note-inline")?.textContent).toBe("conflict copy");
+    });
+  });
 });

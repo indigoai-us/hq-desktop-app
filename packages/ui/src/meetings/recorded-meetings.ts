@@ -61,13 +61,17 @@ export function parseRecordedMeetings(raw: unknown): RecordedMeeting[] {
     const meetingId = str(m.meetingId) ?? str(m.id);
     const startTime = validTime(m.startTime) ?? validTime(m.ingested_at) ?? validTime(m.createdAt);
     if (!meetingId || !startTime) continue;
-    const company = str(m.companyId);
+    // OWNER-R2: the cache stores parsed rows (`companyUid`, `durationSec`),
+    // not the wire fields. Reading only `companyId` dropped every cached
+    // meeting's company, so its detail was requested unscoped and hq-pro
+    // answered 404 meeting-not-found ("Couldn't load the notes").
+    const company = str(m.companyId) ?? str(m.companyUid);
     out.push({
       meetingId,
       title: str(m.title) ?? "Untitled meeting",
       startTime,
       endTime: validTime(m.endTime),
-      durationSec: num(m.duration),
+      durationSec: num(m.duration) ?? num(m.durationSec),
       companyUid: company && company !== "unknown" ? company : null,
       hasSignals: m.hasSignals === true,
     });
@@ -256,6 +260,8 @@ export interface RecordedSignals {
 export interface RecordedSignalPages {
   refs: readonly RecordedSignalRef[];
   texts: readonly string[];
+  /** Bodies whose read failed (kept as empty texts); the recap says so. */
+  failed?: number;
 }
 
 /** Notes not read yet. */
@@ -274,6 +280,7 @@ export async function loadNextRecordedSignalPage(
 ): Promise<RecordedSignalPages> {
   const from = pages.texts.length;
   const next = pages.refs.slice(from, from + RECORDED_SIGNAL_READ_LIMIT);
+  let failed = pages.failed ?? 0;
   const texts = await Promise.all(
     next.map(async (ref) => {
       if (ref.title) return ref.title;
@@ -282,11 +289,12 @@ export async function loadNextRecordedSignalPage(
         return signalBodyText(await readText(ref.url));
       } catch (err) {
         console.warn(`[meetings] could not read ${ref.kind} signal body`, err);
+        failed += 1;
         return "";
       }
     }),
   );
-  return { refs: pages.refs, texts: [...pages.texts, ...texts] };
+  return { refs: pages.refs, texts: [...pages.texts, ...texts], failed };
 }
 
 /** The recap `signals` object from every text read so far, in ref order. */

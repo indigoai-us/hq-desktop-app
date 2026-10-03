@@ -6,6 +6,7 @@ import { ok, type PlatformAdapter } from "@hq/platform";
 
 import PrototypeSettingsPanes from "./PrototypeSettingsPanes.svelte";
 import CorePopover from "../home/CorePopover.svelte";
+import { updateToastCopy } from "../shell/update-toast";
 import {
   appRowActions,
   appRowIdleHint,
@@ -30,6 +31,7 @@ import {
   restartToUpdate,
   setAutoUpdateEnabled,
   updateStore,
+  setUpdateHoldReasons,
 } from "./update-store.svelte";
 
 afterEach(() => {
@@ -104,7 +106,7 @@ describe("update presentation labels", () => {
         installPhase: "ready",
         downloadPercent: 100,
       }),
-    ).toBe("RESTART TO UPDATE");
+    ).toBe("UPDATE READY");
     expect(appRowIdleHint(480)).toBe(
       "Auto-install waits for a sync gap · 8 min left",
     );
@@ -238,7 +240,7 @@ describe("shared update store", () => {
         installPhase: updateStore.installPhase,
         downloadPercent: updateStore.downloadPercent,
       }),
-    ).toBe("RESTART TO UPDATE");
+    ).toBe("UPDATE READY");
     expect(appRowActions({ status: "available", installPhase: "ready" }).showRestart).toBe(
       true,
     );
@@ -320,7 +322,7 @@ describe("shared update store", () => {
         installPhase: updateStore.installPhase,
         downloadPercent: updateStore.downloadPercent,
       }),
-    ).toBe("RESTART TO UPDATE");
+    ).toBe("UPDATE READY");
     expect(updateStore.idleWaitRemainingSecs).toBe(480);
     reportDownloadProgress({ percent: 0 });
     expect(updateStore.installPhase).toBe("ready");
@@ -494,6 +496,59 @@ describe("shared store keeps pane and popover in lockstep", () => {
     expect(updates.checkForUpdates.mock.calls.length).toBeGreaterThan(0);
   });
 
+  it("while an upload holds a ready update, Settings disables Restart with the toast's wording", async () => {
+    const adapter = updatesAdapter();
+    const { paneHost } = mountBoth(adapter);
+    await vi.waitFor(() => {
+      flushSync();
+      expect(paneHost.textContent).toContain("UPDATE AVAILABLE");
+    });
+    markDownloaded(updateStore.availableVersion);
+    setUpdateHoldReasons(["uploadInFlight"]);
+    flushSync();
+    const restart = paneHost.querySelector<HTMLButtonElement>('[data-testid="settings-app-restart"]')!;
+    const toast = updateToastCopy({
+      version: updateStore.availableVersion ?? "",
+      reasons: [...updateStore.holdReasons],
+      installing: false,
+      installError: null,
+    });
+    expect(restart.disabled).toBe(true);
+    expect(toast.installDisabled).toBe(true);
+    expect(restart.getAttribute("title")).toBe(toast.installTitle);
+    expect(restart.getAttribute("title")).toBe("Waiting for an upload to finish. Restart becomes available when it finishes.");
+    setUpdateHoldReasons([]);
+    flushSync();
+    expect(restart.disabled).toBe(false);
+  });
+
+  it("names the same hold reason as the update toast while an upload holds the update (item 8)", async () => {
+    // Tester's state on f174dccd8: an update is available, not downloaded, and
+    // the native gate holds it for an upload in flight.
+    const adapter = updatesAdapter();
+    const { paneHost } = mountBoth(adapter);
+    await vi.waitFor(() => {
+      flushSync();
+      expect(paneHost.textContent).toContain("UPDATE AVAILABLE");
+    });
+    setUpdateHoldReasons(["uploadInFlight"]);
+    flushSync();
+    const toast = updateToastCopy({
+      version: updateStore.availableVersion ?? "",
+      reasons: [...updateStore.holdReasons],
+      installing: false,
+      installError: updateStore.installError,
+      downloadPercent: updateStore.downloadPercent,
+    });
+    expect(toast.phase).toBe("held");
+    const reason = paneHost.querySelector('[data-testid="settings-app-deferred-reason"]')?.textContent?.trim();
+    expect(reason).toBe(toast.detail);
+    expect(reason).toBe("Waiting for an upload to finish");
+    setUpdateHoldReasons([]);
+    flushSync();
+    expect(paneHost.querySelector('[data-testid="settings-app-deferred-reason"]')).toBeNull();
+  });
+
   it("Check from the popover drives in-flight then result on the pane", async () => {
     const versions = deferred<unknown>();
     const adapter = updatesAdapter({
@@ -557,9 +612,16 @@ describe("shared store keeps pane and popover in lockstep", () => {
     await vi.waitFor(() => {
       flushSync();
       expect(popoverHost.textContent).toContain("Restart to update");
-      expect(popoverHost.textContent).toContain("RESTART TO UPDATE");
-      expect(paneHost.textContent).toContain("RESTART TO UPDATE");
+      expect(popoverHost.textContent).toContain("UPDATE READY");
+      expect(paneHost.textContent).toContain("UPDATE READY");
       expect(paneHost.querySelector('[data-testid="settings-app-restart"]')).toBeTruthy();
+      // The status beside the Restart button must not repeat the button's words.
+      const paneStatus = paneHost.querySelector('[data-testid="settings-app-status"]')!.textContent!.trim();
+      const paneButton = paneHost.querySelector('[data-testid="settings-app-restart"]')!.textContent!.trim();
+      expect(paneStatus.toLowerCase()).not.toBe(paneButton.toLowerCase());
+      const popoverStatus = popoverHost.querySelector('[data-testid="core-popover-app-status"]')!.textContent!.trim();
+      const popoverButton = popoverHost.querySelector('[data-testid="core-popover-restart-update"]')!.textContent!.trim();
+      expect(popoverStatus.toLowerCase()).not.toBe(popoverButton.toLowerCase());
     });
     const updates = adapter.updates as unknown as {
       downloadUpdate: ReturnType<typeof vi.fn>;
@@ -664,14 +726,14 @@ describe("shared store keeps pane and popover in lockstep", () => {
     });
   });
 
-  it("a package downloaded while the popover was closed hydrates as RESTART TO UPDATE", async () => {
+  it("a package downloaded while the popover was closed hydrates as UPDATE READY", async () => {
     const adapter = updatesAdapter({
       getDownloadedUpdate: vi.fn(async () => ok({ version: "0.10.173" })),
     });
     const { popoverHost } = mountBoth(adapter);
     await vi.waitFor(() => {
       flushSync();
-      expect(popoverHost.textContent).toContain("RESTART TO UPDATE");
+      expect(popoverHost.textContent).toContain("UPDATE READY");
       expect(popoverHost.querySelector('[data-testid="core-popover-restart-update"]')).toBeTruthy();
     });
   });
@@ -685,9 +747,9 @@ describe("shared store keeps pane and popover in lockstep", () => {
     const { paneHost, popoverHost } = mountBoth(adapter);
     await vi.waitFor(() => {
       flushSync();
-      expect(paneHost.textContent).toContain("RESTART TO UPDATE");
+      expect(paneHost.textContent).toContain("UPDATE READY");
       expect(paneHost.textContent).toContain("sync gap");
-      expect(popoverHost.textContent).toContain("RESTART TO UPDATE");
+      expect(popoverHost.textContent).toContain("UPDATE READY");
       expect(popoverHost.textContent).toContain("sync gap");
       expect(paneHost.querySelector('[data-testid="settings-app-restart"]')).toBeTruthy();
     });

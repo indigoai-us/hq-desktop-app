@@ -118,6 +118,7 @@ export type RailItem =
   | { kind: "more-companies"; id: "more-companies"; label: "More companies" }
   | { kind: "library"; id: "library"; label: "Library" }
   | { kind: "personal"; id: RailPersonalId; label: string }
+  | { kind: "marketplace"; id: "marketplace"; label: "Marketplace" }
   | { kind: "you"; id: "you"; label: string };
 
 export type RailItemId = RailItem["id"];
@@ -132,8 +133,9 @@ const PERSONAL_ORDER: readonly RailPersonalId[] = [
 
 /**
  * The decided order: Home, Meetings, pinned company tiles (max six), More
- * companies, Library, Deployments, Telemetry, Secrets, Connections, Outpost,
- * then (after the spacer) the You avatar.
+ * companies, Library, Deployments, Telemetry, Secrets, Connections,
+ * Marketplace (OWNER-R22: beneath Connections, the integrations entry),
+ * Outpost, then (after the spacer) the You avatar.
  */
 export function railItems(
   companies: readonly RailCompany[],
@@ -157,9 +159,12 @@ export function railItems(
     ...tiles,
     { kind: "more-companies", id: "more-companies", label: "More companies" },
     { kind: "library", id: "library", label: "Library" },
-    ...PERSONAL_ORDER.map(
-      (id): RailItem => ({ kind: "personal", id, label: RAIL_PLACEHOLDERS[id].title }),
-    ),
+    ...PERSONAL_ORDER.flatMap((id): RailItem[] => {
+      const item: RailItem = { kind: "personal", id, label: RAIL_PLACEHOLDERS[id].title };
+      return id === "connections"
+        ? [item, { kind: "marketplace", id: "marketplace", label: "Marketplace" }]
+        : [item];
+    }),
     { kind: "you", id: "you", label: youLabel || "You" },
   ];
 }
@@ -186,6 +191,9 @@ export function railDestination(
       // The skills overlay stays available as { kind: "library" }.
       void options;
       return { kind: "extra", page: railPlaceholderPage("library") };
+    case "marketplace":
+      // OWNER-R22: the Marketplace tab of the Library.
+      return { kind: "library", tab: "marketplace" };
     case "more-companies":
       return { kind: "extra", page: railPlaceholderPage("more-companies") };
     case "personal":
@@ -217,6 +225,8 @@ export interface RailSelectionState {
   tenantCompanyId: string | null;
   extraPageId: string | null;
   settingsSection: string | null;
+  /** Library tab when view is "library". */
+  libraryTab?: string | null;
 }
 
 /** Which rail item is selected (background highlight only). */
@@ -224,8 +234,10 @@ export function activeRailItemId(state: RailSelectionState): RailItemId | null {
   switch (state.view) {
     case "meetings":
       return "meetings";
-    case "explorer":
     case "library":
+      // OWNER-R33: the whole page is the Marketplace.
+      return "marketplace";
+    case "explorer":
       return "library";
     case "settings":
       return state.settingsSection === "profile" ? "you" : null;

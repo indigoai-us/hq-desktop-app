@@ -42,6 +42,19 @@ function door(importer: () => Promise<{ default: AnyComponent }>): Door {
 export const profilePaneDoor = door(
   () => import("./profile-panes/ProfilePaneHost.svelte"),
 );
+// OWNER-R5/R6: the shared styled dropdown loads with the first filter that
+// shows it, keeping it out of the start-up bundle.
+export const dropdownDoor = door(() => import("../common/Dropdown.svelte"));
+// OWNER-R9: the Team member pane's access section loads when a pane opens.
+// OWNER-R9: the company Team page loads when Team opens.
+export const teamPageDoor = door(() => import("../company/TeamPage.svelte"));
+export const memberAccessDoor = door(() => import("../company/MemberAccessSection.svelte"));
+/** The Files explorer; fetched right after startup so Files opens in one frame. */
+export const vaultExplorerDoor = door(() => import("../files/explorer/VaultExplorer.svelte"));
+/** OWNER-R17: the Access section of the Files and Vault right pane. */
+export const accessSectionDoor = door(() => import("../files/explorer/AccessSection.svelte"));
+/** OWNER-R13: a selected folder's contents on the Vault page. */
+export const vaultFolderViewDoor = door(() => import("../files/explorer/VaultFolderView.svelte"));
 export const notificationsPopoverDoor = door(
   () => import("../inbox/NotificationsPopover.svelte"),
 );
@@ -82,6 +95,8 @@ export const meetingCanvasDoor = door(
 export function preloadDoorsWhenIdle(): () => void {
   const all = [
     profilePaneDoor,
+    dropdownDoor,
+    teamPageDoor,
     notificationsPopoverDoor,
     moreCompaniesDoor,
     newMessageSheetDoor,

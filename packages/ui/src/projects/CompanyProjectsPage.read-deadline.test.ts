@@ -7,7 +7,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, unmount } from "svelte";
 import type { PlatformAdapter } from "@hq/platform";
-import { READ_DEADLINE_MS } from "../common/read-deadline.js";
+import { expectPendingRead } from "../common/read-loader.test-support.js";
 import { fakeProjectsApi } from "./testing.js";
 import CompanyProjectsPage from "./CompanyProjectsPage.svelte";
 
@@ -24,8 +24,8 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-describe("CompanyProjectsPage read deadline (BLANK-1)", () => {
-  it("a projects read that never answers ends in the failed-read state", async () => {
+describe("CompanyProjectsPage pending read (BLANK-3)", () => {
+  it("a projects read that never answers keeps loading with a waiting line and Try again, never a failed state", async () => {
     vi.useFakeTimers();
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -37,13 +37,8 @@ describe("CompanyProjectsPage read deadline (BLANK-1)", () => {
       props: { adapter: { projects: fakeProjectsApi(ipc) } as PlatformAdapter, slug: "blank-1-projects" },
     });
     flushSync();
-    expect(host.querySelector(".board-loading")).toBeTruthy();
-    await vi.advanceTimersByTimeAsync(READ_DEADLINE_MS + 10);
-    flushSync();
-    expect(host.querySelector(".board-loading")).toBeNull();
-    expect(host.querySelector("[data-testid='projects-load-error']")?.textContent).toContain("Couldn't read this company's projects.");
-    expect(host.querySelector("[data-testid='projects-retry']")).toBeTruthy();
-    expect(logged).toHaveBeenCalled();
+    expect(host.querySelector("[data-testid='projects-loader']")).toBeTruthy();
+    await expectPendingRead(host, "projects-loader");
     // BLANK-2: no zero count or empty board next to the failed read.
     expect(host.querySelector("[data-testid='projects-count']")).toBeNull();
     expect(host.querySelector("[data-testid='empty-projects-state']")).toBeNull();

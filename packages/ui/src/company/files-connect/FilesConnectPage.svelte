@@ -1,9 +1,10 @@
 <script lang="ts">
-  import { withReadDeadline } from "../../common/read-deadline.js";
+  import Dropdown from "../../common/LazyDropdown.svelte";
+  import ReadLoader from "../../common/ReadLoader.svelte";
   import RailButton from "../../common/button/RailButton.svelte";
   /**
    * Vault, Integrations, Secrets, Deployments (US-029).
-   * First frame is the cache or a skeleton. Refresh runs after paint.
+   * First frame is the cache or a loader. Refresh runs after paint.
    * Secret values are never written into the DOM or this window: creating
    * and rotating hand off to `hq secrets set`, which prompts in a terminal.
    * Styling follows the shipped Messages surfaces (chat/), not a new scale.
@@ -15,11 +16,11 @@
   import ListEmptyState from "../../common/ListEmptyState.svelte";
   import { publishCompanyPageCount } from "../../shell/company-page-counts.svelte.js";
   import { countLabel, pageRows } from "../../shell/list-paging.js";
-  import CompanyFileTree from "../../files/CompanyFileTree.svelte";
-  import FilePreviewPane from "../../files/FilePreviewPane.svelte";
+  import VaultExplorer from "../../files/explorer/VaultExplorer.svelte";
+  import type { Vault } from "../../files/explorer/vault-model.js";
   import type { DirEntry } from "../../files/file-tree.js";
   import { withCompanyReadScope } from "../../files/company-read-scope.js";
-  import { cachedChildren, folderSummary, rememberChildren, resolveUploadName, type ConflictPolicy } from "../../projects/project-files.js";
+  import { resolveUploadName, type ConflictPolicy } from "../../projects/project-files.js";
   import { fileIntegrity, presignUrlFromResult, putChatAttachmentDirect } from "../../chat/messaging/upload-chat-attachments.js";
   import { openAgentWorkflow, type AgentWorkflowApi } from "../agent-workflow.js";
   import "../../home/tokens.css";
@@ -29,8 +30,6 @@
   import type { DeployAccessRequest } from "./deploy-access.js";
   import {
     ACCESS_LEVELS,
-    applyDeepLink,
-    beginConnect,
     clampAccess,
     companyDeploymentRows,
     deployPrompt,
@@ -43,7 +42,6 @@
     filterIntegrations,
     companyIntegrationRows,
     filterSecrets,
-    filterVault,
     readFilesConnectCache,
     recentVaultFiles,
     redeployAllowed,
@@ -58,7 +56,6 @@
     vaultUploadKey,
     writeFilesConnectCache,
     type AccessLevel,
-    type ConnectSession,
     type DeploymentRowModel,
     type DeploySourceScan,
     type FilesConnectCache,
@@ -68,6 +65,7 @@
     type SecretRow,
   } from "./files-connect-model.js";
   import { parseListPage, type AtlasListedObject } from "../../shell/vault-list-page.js";
+  import { companyIntegrationsUrl } from "../../common/hq-console.js";
 
   interface Props {
     page: FilesConnectPageId;
@@ -87,9 +85,13 @@
     deployAccessRequest?: DeployAccessRequest;
     /** RELEASE-001 gate: false hides Redeploy and the Selected people access mode. */
     deployActions?: boolean;
+    /** OWNER-R13: the company name the Vault root shows. */
+    companyLabel?: string | null;
+    /** OWNER-R13: reads a vault object by key when the file is not on this Mac. */
+    vaultCloudRead?: ((key: string) => Promise<string | null>) | null;
   }
 
-  let { page, slug, files, shell, settings, openExternal, adapter = null, companyUid = null, listDeployApps, deployAccessRequest, deployActions = true }: Props = $props();
+  let { page, slug, files, shell, settings, openExternal, adapter = null, companyUid = null, listDeployApps, deployAccessRequest, deployActions = true, companyLabel = null, vaultCloudRead = null }: Props = $props();
 
   const workflow = $derived({ settings, shell } as AgentWorkflowApi);
 
@@ -103,7 +105,7 @@
   }
 
   let data = $state<FilesConnectCache>(emptyCompanyCache());
-  // Real lists only. null = not loaded yet (skeleton), never sample rows.
+  // Real lists only. null = not loaded yet (loader), never sample rows.
   let secrets = $state<SecretRow[] | null>(null);
   let deployments = $state<DeploymentRowModel[] | null>(null);
   let secretsError = $state<string | null>(null);
@@ -116,13 +118,11 @@
   let vaultTab = $state<"all" | "new">("all");
   let integrationTab = $state<"connected" | "available" | "mcp">("connected");
   let secretTab = $state<"all" | "standard" | "proxy">("all");
-  let selectedVault = $state<string>("storyboard");
   let selectedIntegration = $state<string>("slack");
   let selectedSecret = $state<string | null>(null);
   let selectedDeploy = $state<string | null>(null);
   let grantLevel = $state<AccessLevel>("read");
   let sheet = $state<string | null>(null);
-  let connect = $state<ConnectSession | null>(null);
   let secretName = $state("");
   let status = $state("");
   let redeployName = $state("");
@@ -153,15 +153,13 @@
   });
 
   async function refresh(s: string, alive: () => boolean): Promise<void> {
-    // BLANK-1: the two reads run side by side so each settles within the bound.
     await Promise.all([refreshSecrets(s, alive), refreshDeployments(s, alive), refreshIntegrations(s, alive)]);
     writeFilesConnectCache(s, data);
   }
 
   async function refreshSecrets(s: string, alive: () => boolean): Promise<void> {
     try {
-      // BLANK-1: a read that never answers falls to the failed-read state.
-      const loaded = await withReadDeadline(companyStore.loadSecrets(s, false), "company secrets");
+      const loaded = await companyStore.loadSecrets(s, false);
       if (!alive()) return;
       secrets = secretRowsFromSource(Array.isArray(loaded) ? loaded : []);
       secretsError = null;
@@ -179,11 +177,11 @@
       const list = listDeployApps ?? adapter?.company?.listDeployApps;
       let rows: DeploymentRowModel[];
       if (list) {
-        const res = await withReadDeadline(list(s), "company deployments");
+        const res = await list(s);
         if (!res.ok) throw new Error(res.message ?? res.reason);
         rows = companyDeploymentRows(res.value as DeployAppsPage, s);
       } else {
-        const loaded = await withReadDeadline(companyStore.loadDeployments(s, false), "company deployments");
+        const loaded = await companyStore.loadDeployments(s, false);
         rows = deploymentRowsFromSource(Array.isArray(loaded) ? loaded : [], s);
       }
       if (!alive()) return;
@@ -207,7 +205,7 @@
       return;
     }
     try {
-      const res = await withReadDeadline(list(companyUid), "company integrations");
+      const res = await list(companyUid);
       if (!res.ok) throw new Error(res.message ?? res.reason);
       const rows = companyIntegrationRows(res.value);
       if (!alive()) return;
@@ -227,7 +225,6 @@
     void refresh(s, () => slug === s);
   }
 
-  const vaultRows = $derived(filterVault(data.nodes, vaultTab, query));
 
   // The sidepane shows these same totals (QA-014): every row, before tabs and search.
   $effect(() => {
@@ -251,12 +248,22 @@
     vaultPages = integrationPages = secretPages = deployPages = 1;
   });
 
-  // Vault tree (All tab): the same lazy, cached tree as the project Files
-  // tab, so a reopened folder paints from cache in the click frame.
+  // OWNER-R13: the Vault page is the Files explorer locked to this company:
+  // the same tree, viewer, folder view and right pane, plus sharing.
   const vaultRoot = $derived(`companies/${slug}`);
+  const companyVault = $derived<Vault>({
+    id: `company:${slug}`,
+    kind: "company",
+    label: companyLabel?.trim() || slug,
+    root: vaultRoot,
+    slug,
+  });
+  /** The file the explorer has open, for Upload and Share defaults. */
   let vaultFile = $state<string | null>(null);
-  let vaultRootSummary = $state<string | null>(null);
-  let treeNonce = $state(0);
+  /** A file to open in the explorer (What's new picks one). */
+  let openRequest = $state<string | null>(null);
+  let explorerReload = $state(0);
+  let grantPath = $state("");
 
   // The native gate refuses company reads until this window binds the
   // company (QA-011). Bind once per slug, before the first listing.
@@ -267,55 +274,38 @@
     ),
   );
 
-  function loadVaultChildren(relPath: string): Promise<DirEntry[]> {
-    if (!files) return Promise.resolve([]);
-    const fresh = scopedListDir(relPath).then((result) => {
-      if (!result.ok) throw new Error(result.message ?? "Could not list files");
-      const entries = result.value as unknown as DirEntry[];
-      rememberChildren(relPath, entries);
-      return entries;
-    });
-    const cached = cachedChildren(relPath);
-    if (!cached) return fresh;
-    void fresh.catch((err) => console.error("vault folder refresh failed:", err));
-    return Promise.resolve(cached);
+  async function listVaultFolder(relPath: string): Promise<DirEntry[]> {
+    if (!files) return [];
+    const result = await scopedListDir(relPath);
+    if (!result.ok) throw new Error(result.message ?? "Could not list files");
+    return result.value as unknown as DirEntry[];
   }
 
-  $effect(() => {
-    const root = vaultRoot;
-    void treeNonce;
-    vaultFile = null;
-    const cached = cachedChildren(root);
-    vaultRootSummary = cached ? folderSummary(cached) : null;
-    if (!files) return;
-    let alive = true;
-    // BLANK-1: the folder summary line settles within the shared bound.
-    withReadDeadline(loadVaultChildren(root), "vault folder summary")
-      .then((entries) => {
-        if (alive) vaultRootSummary = folderSummary(entries);
-      })
-      .catch((err) => {
-        console.error("vault folder summary failed:", err);
-        if (alive) vaultRootSummary = "";
-      });
-    return () => {
-      alive = false;
-    };
+  const vaultAccess = $derived({
+    companyUidFor: () => companyUid,
+    readTree: files?.getAccessTree ? (uid: string, prefix: string) => files!.getAccessTree!(uid, prefix) : null,
+    readGroups: files?.listAccessGroups ? (uid: string) => files!.listAccessGroups!(uid) : null,
+    // A file's grant is made on its folder, as the Vault grant always was.
+    ongrant: (path: string, isDir: boolean) => openGrant(isDir ? path : path.slice(0, path.lastIndexOf("/"))),
   });
 
-  /** Preview seam: the host adapter when given, else files-only (no
-   *  desktop actions, so no dead buttons). */
-  const previewAdapter = $derived(
+  async function cloudRead(path: string): Promise<string | null> {
+    if (!vaultCloudRead || !path.startsWith(`${vaultRoot}/`)) return null;
+    return vaultCloudRead(path.slice(vaultRoot.length + 1));
+  }
+
+  /** The host adapter when given, else files-only (no desktop actions, so no dead buttons). */
+  const explorerAdapter = $derived(
     adapter ??
-      ({ files, shell, isAvailable: () => false } as unknown as PlatformAdapter),
-  );
-  /** Top-level vault folder of the picked file, for the Access header. */
-  const vaultFolder = $derived(
-    vaultFile ? (vaultFile.slice(vaultRoot.length + 1).split("/")[0] ?? null) : null,
+      ({
+        files,
+        shell,
+        appShell: { setActiveCompany: async () => ({ ok: true, value: undefined }) },
+        isAvailable: () => false,
+      } as unknown as PlatformAdapter),
   );
   const hasExplorer = $derived(files !== null);
-  const showVaultTree = $derived(hasExplorer && vaultTab === "all");
-  const showRecent = $derived(hasExplorer && vaultTab === "new");
+  const showRecent = $derived(files !== null && vaultTab === "new");
 
   // ---- What's new (QA-070) --------------------------------------------------
   // The recent-files list: the synced company listing when this machine has
@@ -356,7 +346,6 @@
     if (!showRecent) return;
     recentObjects = null;
     recentError = null;
-    vaultFile = null;
     let alive = true;
     loadRecentObjects(s)
       .then((objects) => {
@@ -384,15 +373,9 @@
   const secretRows = $derived(filterSecrets(secrets ?? [], secretTab, query));
   // Rows in the current Integrations tab before the search, for the no-match total.
   const integrationTabTotal = $derived(filterIntegrations(allIntegrations, integrationTab, "").length);
-  const vaultPage = $derived(pageRows(vaultRows, vaultPages));
   const integrationPage = $derived(pageRows(integrationRows, integrationPages));
   const secretPage = $derived(pageRows(secretRows, secretPages));
   const deployPage = $derived(pageRows(deployments ?? [], deployPages));
-  const vaultCurrent = $derived(data.nodes.find((node) => node.id === selectedVault) ?? data.nodes[0]);
-  /** The Access panel's target; null hides the panel rather than leave it headless. */
-  const accessTarget = $derived(
-    showVaultTree ? (vaultFolder ?? slug) : showRecent ? (vaultFolder ?? null) : (vaultCurrent?.name ?? null),
-  );
   const integrationCurrent = $derived(
     integrationRows.find((row) => row.id === selectedIntegration) ?? integrationRows[0],
   );
@@ -416,9 +399,10 @@
   let members = $state<MemberOption[] | null>(null);
   let membersFor = "";
   let grantRecipient = $state("");
-  const grantPath = $derived(vaultFolder ? `${vaultRoot}/${vaultFolder}` : vaultRoot);
 
-  function openGrant(): void {
+  /** OWNER-R17: the Access section's Grant opens this sheet for the focused item. */
+  function openGrant(path: string): void {
+    grantPath = path;
     grantRecipient = "";
     sheet = "grant";
     loadMembers();
@@ -461,17 +445,9 @@
     busy = false;
   }
 
-  function openConnect(app: string): void {
-    const session = beginConnect(app);
-    connect = session;
-    sheet = "connect-waiting";
-    openExternal?.(session.url);
-  }
-
-  function simulateReturn(): void {
-    if (!connect) return;
-    connect = applyDeepLink(connect, "hq://oauth?code=returned");
-    status = `${connect.app} returned from the browser.`;
+  /** OWNER-R14: apps are connected and managed in the web console's Integrations page. */
+  function openConsole(): void {
+    if (slug) openExternal?.(companyIntegrationsUrl(slug));
   }
 
   async function handOff(prompt: string, label: string): Promise<void> {
@@ -487,7 +463,7 @@
   }
 
   // ---- deploy sources (QA-044) ----------------------------------------------
-  // null = scanning (skeleton). Real project folders only, never samples.
+  // null = scanning (loader). Real project folders only, never samples.
   let deployScan = $state<DeploySourceScan | null>(null);
   let deployScanFor = "";
   let deploySource = $state<string>("");
@@ -581,7 +557,7 @@
     if (!api || !uid || picked.length === 0) return;
     let existing = new Set<string>();
     try {
-      existing = new Set((await loadVaultChildren(uploadFolder)).map((entry) => entry.name));
+      existing = new Set((await listVaultFolder(uploadFolder)).map((entry) => entry.name));
     } catch (err) {
       console.error("upload destination list failed:", err);
     }
@@ -631,7 +607,7 @@
         };
       }
     }
-    treeNonce += 1;
+    explorerReload += 1;
   }
 
   const uploadHint = $derived.by(() => {
@@ -654,10 +630,6 @@
         return "Share";
       case "grant":
         return "Grant access";
-      case "connect":
-        return "Connect app";
-      case "connect-waiting":
-        return connect ? `Waiting for ${connect.app}` : "Connect app";
       case "new-secret":
         return "New secret";
       case "rotate":
@@ -688,139 +660,64 @@
   <span class="st" data-status={value}><i class="dot" aria-hidden="true"></i>{statusLabel(value)}</span>
 {/snippet}
 
-{#snippet skeletonRows()}
-  <div class="skel" aria-busy="true" data-testid="files-connect-skeleton">
-    {#each [0, 1, 2, 3, 4] as row (row)}
-      <span class="skel-row"><i class="skel-icon"></i><i class="skel-line" style:width="{70 - row * 8}%"></i></span>
-    {/each}
-  </div>
-{/snippet}
-
 <section class="page" data-testid="files-connect" data-page={page}>
   {#if page === "vault"}
     <header class="toolbar">
       <h1>Vault</h1>
-      {#if vaultRootSummary}<span class="count">{vaultRootSummary}</span>{/if}
       <span class="grow"></span>
       <div class="fc-seg" role="tablist" aria-label="Vault view">
         <button class="fc-seg-tab" role="tab" aria-selected={vaultTab === "all"} onclick={() => (vaultTab = "all")}>All</button>
         <button class="fc-seg-tab" role="tab" aria-selected={vaultTab === "new"} data-testid="vault-whats-new" onclick={() => (vaultTab = "new")}>What's new</button>
       </div>
-      <input class="field search" placeholder="Search files" bind:value={query} />
+      {#if vaultTab === "new"}<input class="field search" placeholder="Search recent files" bind:value={query} />{/if}
       <RailButton icon="upload" data-testid="vault-upload" onclick={openUpload}>Upload</RailButton>
       <RailButton icon="link" data-testid="vault-share" onclick={() => openShare("share")}>Share</RailButton>
     </header>
-    <div class="split vault-split" class:has-tree={hasExplorer} class:no-access={accessTarget === null}>
-      {#if showRecent}
-        <div class="vault-tree list" data-testid="vault-recent" aria-busy={recentObjects === null && recentError === null}>
-          {#if recentError}
-            <div class="empty" role="alert" data-testid="vault-recent-error">
-              <span class="empty-title">{recentError}</span>
-              <RailButton icon="refresh" onclick={() => (recentNonce += 1)}>Try again</RailButton>
-            </div>
-          {:else if recentObjects === null}
-            <div data-testid="vault-recent-loading">{@render skeletonRows()}</div>
-          {:else if recentRows.length === 0}
-            <div class="empty" data-testid="vault-recent-empty">
-              <span class="empty-title">{query.trim() ? "No recent files match this search" : "No files changed in the last 7 days"}</span>
-            </div>
-          {:else}
-            {#each recentPage.rows as row (row.key)}
-              <button class="row" type="button" data-testid="vault-recent-row" data-path={row.path} aria-current={row.path === vaultFile} title={row.key} onclick={() => (vaultFile = row.path)}>
-                <span class="nm">{row.name}</span>
-                <span class="meta">{row.ago}</span>
-              </button>
-            {/each}
-            {#if recentPage.remaining > 0}
-              <ShowMoreRow shown={recentPage.rows.length} total={recentPage.total} next={recentPage.next} noun="files" testid="vault-recent-show-more" onmore={() => (vaultPages += 1)} />
-            {/if}
-          {/if}
-        </div>
-      {:else if showVaultTree}
-        <div class="vault-tree" data-testid="vault-tree">
-          <div class="vault-root mono" title={vaultRoot}>{vaultRoot}</div>
-          {#key `${vaultRoot}:${treeNonce}`}
-            <CompanyFileTree
-              rootPath={vaultRoot}
-              loadChildren={loadVaultChildren}
-              selectedPath={vaultFile}
-              filterQuery={query}
-              onclearfilter={() => (query = "")}
-              onselect={(path) => (vaultFile = path)}
-            />
-          {/key}
-        </div>
-      {:else}
-        <div class="list" data-testid="vault-list">
-          {#if vaultPage.rows.length === 0}
-            <div class="empty" data-testid="vault-list-empty">
-              <span class="empty-title">{vaultTab === "new" ? "No files changed in the last 7 days" : "No files to show"}</span>
-            </div>
-          {/if}
-          {#each vaultPage.rows as node (node.id)}
-            <button class="row" type="button" aria-current={node.id === vaultCurrent?.id} onclick={() => (selectedVault = node.id)}>
-              <span class="nm" style:padding-left="{(node.depth - 1) * 12}px">{node.name}</span>
-              <span class="meta">{node.acl}</span>
-              <span class="meta">{node.editedBy}</span>
+    {#if showRecent}
+      <div class="list vault-recent" data-testid="vault-recent" aria-busy={recentObjects === null && recentError === null}>
+        {#if recentError}
+          <div class="empty" role="alert" data-testid="vault-recent-error">
+            <span class="empty-title">{recentError}</span>
+            <RailButton icon="refresh" onclick={() => (recentNonce += 1)}>Try again</RailButton>
+          </div>
+        {:else if recentObjects === null}
+          <div data-testid="vault-recent-loading"><ReadLoader testid="vault-recent-loader" onretry={() => (recentNonce += 1)} /></div>
+        {:else if recentRows.length === 0}
+          <div class="empty" data-testid="vault-recent-empty">
+            <span class="empty-title">{query.trim() ? "No recent files match this search" : "No files changed in the last 7 days"}</span>
+          </div>
+        {:else}
+          {#each recentPage.rows as row (row.key)}
+            <button class="row" type="button" data-testid="vault-recent-row" data-path={row.path} title={row.key} onclick={() => { openRequest = row.path; vaultTab = "all"; }}>
+              <span class="nm">{row.name}</span>
+              <span class="meta">{row.ago}</span>
             </button>
           {/each}
-          {#if vaultPage.remaining > 0}
-            <ShowMoreRow shown={vaultPage.rows.length} total={vaultPage.total} next={vaultPage.next} noun="files" testid="vault-show-more" onmore={() => (vaultPages += 1)} />
+          {#if recentPage.remaining > 0}
+            <ShowMoreRow shown={recentPage.rows.length} total={recentPage.total} next={recentPage.next} noun="files" testid="vault-recent-show-more" onmore={() => (vaultPages += 1)} />
           {/if}
-        </div>
-      {/if}
-      {#if hasExplorer}
-        <section class="vault-preview" aria-label="File preview" data-testid="vault-preview">
-          {#if vaultFile}
-            <FilePreviewPane
-              adapter={previewAdapter}
-              path={vaultFile}
-              scopeRoot={vaultRoot}
-              scopeLabel="vault"
-              onopenpath={(p) => (vaultFile = p)}
-            />
-          {:else}
-            <div class="empty" data-testid="vault-preview-empty">
-              <span class="empty-title">Select a file</span>
-              {#if showVaultTree}
-                <p class="mono" title={vaultRoot}>{vaultRoot}</p>
-                <p data-testid="vault-summary">{vaultRootSummary ?? "Reading folder…"}</p>
-              {:else}
-                <p>Pick a recently changed file to preview it.</p>
-              {/if}
-            </div>
-          {/if}
-        </section>
-      {/if}
-      {#if accessTarget !== null}
-      <aside class="pane" data-testid="vault-access">
-        <header class="pane-h"><span class="pane-kind">Access</span></header>
-        <div class="pane-b">
-          <h2>{accessTarget}</h2>
-          {#if !hasExplorer}
-            <pre class="preview">{vaultCurrent?.preview}</pre>
-          {/if}
-          <div class="grants">
-            {#if data.grants.length === 0}<p class="meta">Grant access to share this folder with a teammate.</p>{/if}
-            {#each data.grants as grant (grant.id)}
-              <div class="grant">
-                <span class="nm">{grant.name}</span>
-                <span class="meta">{grant.level}</span>
-              </div>
-            {/each}
-          </div>
-          <div class="actions">
-            <div class="fc-seg" role="tablist" aria-label="Grant level">
-              {#each ACCESS_LEVELS as level (level)}
-                <button class="fc-seg-tab" type="button" role="tab" aria-selected={grantLevel === level} onclick={() => (grantLevel = level)}>{level === "read" ? "Read" : "Write"}</button>
-              {/each}
-            </div>
-            <RailButton icon="user-plus" data-testid="grant-access" onclick={openGrant}>Grant access</RailButton>
-          </div>
-        </div>
-      </aside>
-      {/if}
-    </div>
+        {/if}
+      </div>
+    {:else if hasExplorer}
+      <div class="vault-explorer" data-testid="vault-explorer-host">
+        {#key `${slug}:${explorerReload}`}
+          <VaultExplorer
+            adapter={explorerAdapter}
+            companies={[]}
+            lockedVault={companyVault}
+            path={openRequest}
+            folderView
+            access={vaultAccess}
+            {cloudRead}
+            onlocationchange={(loc) => (vaultFile = loc.path)}
+          />
+        {/key}
+      </div>
+    {:else}
+      <div class="empty" data-testid="vault-unavailable">
+        <span class="empty-title">Files open in the desktop app, which reads your local HQ folder.</span>
+      </div>
+    {/if}
   {:else if page === "integrations"}
     <header class="toolbar">
       <h1>Integrations</h1>
@@ -832,13 +729,13 @@
         <button class="fc-seg-tab" role="tab" aria-selected={integrationTab === "available"} onclick={() => (integrationTab = "available")}>Available</button>
         <button class="fc-seg-tab" role="tab" aria-selected={integrationTab === "mcp"} data-testid="integrations-mcp" onclick={() => (integrationTab = "mcp")}>Agents & MCP</button>
       </div>
-      <input class="field search" placeholder="App name or website" bind:value={query} />
-      <RailButton icon="plug" variant="primary" data-testid="connect-app" onclick={() => (sheet = "connect")}>Connect app</RailButton>
+      <input class="field search" placeholder="Filter apps" aria-label="Filter apps" bind:value={query} />
+      <RailButton icon="external" variant="primary" data-testid="integrations-open-console" onclick={openConsole}>Open console</RailButton>
     </header>
     <div class="split">
       <div class="list" data-testid="integrations-list">
         {#if connectedLoading}
-          {@render skeletonRows()}
+          <ReadLoader testid="integrations-loader" onretry={retryRefresh} />
         {:else if connectedFailed}
           <div class="empty" role="alert" data-testid="integrations-empty">
             <span class="empty-title">{integrationsError}</span>
@@ -881,9 +778,7 @@
             <p class="meta">{integrationCurrent.detail}</p>
             {@render statusDot(integrationCurrent.status)}
             <div class="actions">
-              <RailButton icon="plug" onclick={() => openConnect(integrationCurrent.name)}>
-                {integrationCurrent.status === "active" ? "Manage" : "Connect"}
-              </RailButton>
+              <RailButton icon="external" data-testid="integration-open-console" onclick={openConsole}>Open console</RailButton>
             </div>
           </div>
         {/if}
@@ -906,7 +801,7 @@
     <div class="split">
       <div class="list" data-testid="secrets-list">
         {#if secrets === null}
-          {@render skeletonRows()}
+          <ReadLoader testid="secrets-loader" onretry={retryRefresh} />
         {:else if secretRows.length === 0}
           {#if secretsError}
             <div class="empty" role="alert" data-testid="secrets-empty">
@@ -968,7 +863,7 @@
       <RailButton icon="send" variant="primary" data-testid="deploy-from-project" onclick={openDeploy}>Deploy</RailButton>
     </header>
     {#if deployments === null}
-      <div class="list" data-testid="deployments-skeleton" aria-busy="true">{@render skeletonRows()}</div>
+      <div class="list" aria-busy="true"><ReadLoader testid="deployments-loader" onretry={retryRefresh} /></div>
     {:else if deployments.length === 0}
       <div class="empty" data-testid="deployments-empty">
         {#if deploymentsError}
@@ -1053,7 +948,7 @@
         </div>
         {#if sheet === "share-secret"}<p class="hint" data-testid="share-no-value">No secret value is included.</p>{/if}
       {:else if sheet === "grant"}
-        <div class="fr"><span class="lb">Folder</span><span class="mono">{grantPath}</span></div>
+        <div class="fr"><span class="lb">Item</span><span class="mono">{grantPath}</span></div>
         <label class="fr"><span class="lb">Person</span>
           <input class="field" type="email" list="fc-grant-members" data-testid="grant-recipient" placeholder={members === null && adapter?.company ? "Loading people…" : "name@company.com"} autocomplete="off" bind:value={grantRecipient} />
         </label>
@@ -1069,11 +964,6 @@
           </div>
         </div>
         <p class="hint">Runs hq files share for this folder and reads the access back.</p>
-      {:else if sheet === "connect"}
-        <div class="fr"><span class="lb">App</span><span>{query || "Slack"}</span></div>
-        <p class="hint">Sign-in finishes in your browser.</p>
-      {:else if sheet === "connect-waiting" && connect}
-        <p class="hint" data-testid="connect-waiting">Finish sign-in in the browser. This stays open until the app returns.</p>
       {:else if sheet === "new-secret" || sheet === "rotate"}
         {#if sheet === "new-secret"}
           <label class="fr"><span class="lb">Name</span>
@@ -1088,7 +978,7 @@
         <p class="hint">The binding stores the name, not the value.</p>
       {:else if sheet === "deploy"}
         {#if deployScan === null}
-          <div data-testid="deploy-sources-skeleton">{@render skeletonRows()}</div>
+          <ReadLoader testid="deploy-sources-loading" />
         {:else if deployScan.sources.length === 0}
           <div class="empty" data-testid="deploy-sources-empty">
             <span class="empty-title">Nothing to deploy yet</span>
@@ -1096,11 +986,13 @@
           </div>
         {:else}
           <label class="fr"><span class="lb">Project</span>
-            <select class="field" data-testid="deploy-source" bind:value={deploySource}>
-              {#each deployScan.sources as source (source.id)}
-                <option value={source.id}>{source.dir === "." ? source.project : `${source.project} · ${source.dir}`}</option>
-              {/each}
-            </select>
+            <Dropdown
+              block
+              testid="deploy-source"
+              label="Project"
+              bind:value={deploySource}
+              options={deployScan.sources.map((source) => ({ value: source.id, label: source.dir === "." ? source.project : `${source.project} · ${source.dir}` }))}
+            />
           </label>
           {#if deploySourceCurrent}<p class="hint mono" data-testid="deploy-source-path" title={deploySourceCurrent.path}>{deploySourceCurrent.path}</p>{/if}
         {/if}
@@ -1149,12 +1041,6 @@
       {:else if sheet === "grant"}
         <RailButton icon="x" onclick={closeSheet}>Cancel</RailButton>
         <RailButton icon="user-plus" variant="primary" data-testid="grant-save" disabled={busy || !isEmail(grantRecipient)} onclick={() => void handOff(fileSharePrompt(slug, grantPath, grantRecipient, grantLevel), "grant")}>Grant</RailButton>
-      {:else if sheet === "connect"}
-        <RailButton icon="x" onclick={closeSheet}>Cancel</RailButton>
-        <RailButton icon="external" variant="primary" data-testid="connect-open" onclick={() => openConnect(query || "Slack")}>Open in browser</RailButton>
-      {:else if sheet === "connect-waiting"}
-        <RailButton icon="x" onclick={closeSheet}>Cancel</RailButton>
-        <RailButton icon="check" data-testid="connect-return" onclick={simulateReturn}>I've signed in</RailButton>
       {:else if sheet === "new-secret" || sheet === "rotate"}
         <RailButton icon="x" onclick={closeSheet}>Cancel</RailButton>
         <RailButton icon="check" variant="primary" data-testid="secret-save" disabled={busy || (sheet === "new-secret" && !secretNameValid)} onclick={() => void saveSecret(sheet === "rotate")}>Save</RailButton>
@@ -1223,22 +1109,11 @@
   .facts dd { margin: 0; color: var(--t1, var(--v4-text-1)); overflow-wrap: anywhere; }
   .url { white-space: normal; overflow-wrap: anywhere; }
   .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding-top: 4px; }
-  .grants { display: flex; flex-direction: column; }
-  .grant { display: flex; justify-content: space-between; align-items: center; gap: 8px; min-height: 28px; }
-  .preview { white-space: pre-wrap; color: var(--t2, var(--v4-text-2)); font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; margin: 0; }
   /* Vault: tree · preview · access. */
-  .vault-split.has-tree { grid-template-columns: minmax(240px, 300px) minmax(0, 1fr) 280px; }
-  .vault-split.has-tree.no-access { grid-template-columns: minmax(240px, 300px) minmax(0, 1fr); }
-  .split.no-access:not(.has-tree) { grid-template-columns: minmax(0, 1fr); }
-  .vault-tree { min-height: 0; overflow: auto; padding: 8px 8px 16px; border-right: 1px solid var(--line, var(--v4-rowline)); }
-  .vault-root { padding: 4px 8px 6px; color: var(--t3, var(--v4-text-3)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .vault-preview { min-width: 280px; min-height: 0; overflow: auto; }
   /* Narrow window: the tree shrinks and Access moves under the preview
      instead of squeezing the preview to nothing (QA-026). */
-  @media (max-width: 1180px) {
-    .vault-split.has-tree { grid-template-columns: minmax(160px, 240px) minmax(280px, 1fr); grid-template-rows: minmax(0, 1fr) auto; overflow: auto; }
-    .vault-split.has-tree .pane { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--line, var(--v4-rowline)); max-height: 40vh; }
-  }
+  .vault-explorer { flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
+  .vault-recent { flex: 1; min-height: 0; overflow: auto; }
   .empty { padding: 48px 16px; color: var(--t3, var(--v4-text-3)); text-align: center; display: flex; flex-direction: column; align-items: center; gap: 4px; }
   .empty p { margin: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .empty :global([data-rail-btn]) { margin-top: 8px; }
@@ -1246,14 +1121,10 @@
   .sheet .empty { padding: 24px 20px; }
   .empty-title { color: var(--t2, var(--v4-text-2)); }
   .empty-line { margin: 0; padding: 48px 16px; text-align: center; color: var(--t3, var(--v4-text-3)); }
-  .skel { display: flex; flex-direction: column; padding: 6px 8px; }
-  .skel-row { display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 8px; }
-  .skel-icon { width: 20px; height: 20px; border-radius: 5px; background: var(--line, var(--v4-control-faint)); }
-  .skel-line { height: 10px; border-radius: 4px; background: var(--line, var(--v4-control-faint)); }
   .status { margin: 0; padding: 8px 16px; color: var(--t3, var(--v4-text-3)); border-top: 1px solid var(--line, var(--v4-rowline)); }
   /* Sheet: chat/NewChannelSheet.svelte. */
   .scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45); z-index: 70; }
-  .sheet { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(480px, calc(100vw - 32px)); max-height: calc(100% - 40px); display: flex; flex-direction: column; overflow: hidden; z-index: 71; background: var(--panel-bg, var(--v4-popover)); border: 1px solid var(--panel-border, var(--v4-hairline)); border-radius: 8px; color: var(--t1, var(--v4-text-1)); font: 400 13px/1.45 var(--font-ui, var(--font-sans)); }
+  .sheet { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(480px, calc(100vw - 32px)); max-height: calc(100% - 40px); display: flex; flex-direction: column; overflow: hidden; z-index: 71; background: var(--overlay-bg, var(--panel-bg, var(--v4-popover))); border: 1px solid var(--panel-border, var(--v4-hairline)); border-radius: 8px; color: var(--t1, var(--v4-text-1)); font: 400 13px/1.45 var(--font-ui, var(--font-sans)); }
   .sh { height: 52px; flex: 0 0 52px; display: flex; align-items: center; gap: 8px; padding: 0 10px 0 20px; border-bottom: 1px solid var(--panel-border, var(--v4-hairline)); font-weight: 500; }
   .sb { overflow: auto; }
   .fr { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 12px; align-items: center; min-height: 28px; padding: 10px 20px; border-bottom: 1px solid var(--panel-border, var(--v4-rowline)); }

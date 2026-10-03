@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ReadLoader from "../common/ReadLoader.svelte";
   /**
    * FilePreviewPane — preview the selected company file beside the file tree
    * (Files mode + Knowledge tab).
@@ -384,11 +385,7 @@
         testid="file-preview-unavailable"
       />
     {:else if loading}
-      <div class="preview-skeleton" aria-label="Loading preview">
-        {#each Array(6) as _, index (index)}
-          <span style={`width: ${92 - index * 9}%`}></span>
-        {/each}
-      </div>
+      <ReadLoader testid="file-preview-loading" />
     {:else if unsupported || mediaError}
       <div class="preview-unsupported" data-testid="file-preview-unsupported">
         <svg
@@ -630,25 +627,6 @@
     border: 1px solid var(--v4-hairline, var(--border));
     border-radius: var(--v4-radius-structure);
     background: var(--v4-inset, var(--bg-subtle, transparent));
-  }
-
-  .preview-skeleton {
-    display: grid;
-    gap: 10px;
-    width: 100%;
-  }
-
-  .preview-skeleton span {
-    height: 16px;
-    border-radius: 5px;
-    background: linear-gradient(
-      90deg,
-      var(--v4-control-faint),
-      var(--v4-hairline),
-      var(--v4-control-faint)
-    );
-    background-size: 200% 100%;
-    animation: preview-skeleton 1.2s ease-in-out infinite;
   }
 
   .preview-unsupported {
@@ -909,15 +887,6 @@
     margin-bottom: 0;
   }
 
-  @keyframes preview-skeleton {
-    from {
-      background-position: 0 0;
-    }
-    to {
-      background-position: -200% 0;
-    }
-  }
-
   @keyframes preview-action-spin {
     to {
       transform: rotate(360deg);
@@ -925,10 +894,6 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .preview-skeleton span {
-      animation: none;
-    }
-
     .reveal-btn {
       transition: none;
     }

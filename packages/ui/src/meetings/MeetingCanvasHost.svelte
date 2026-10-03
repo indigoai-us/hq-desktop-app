@@ -50,7 +50,7 @@
 
   const events = $derived(
     withRecordedEvents(
-      [...meetingsRailState.localMeetings, ...meetingsStore.events],
+      meetingsStore.events,
       meetingsStore.recorded,
     ),
   );
@@ -125,18 +125,7 @@
     onmore={() => meetingsRailState.showAgenda()}
   />
 {/if}
-{#if meetingsRailState.sheetOpen && (meetingsRailState.agenda || phase === "live")}
-  <MeetingsStatesDoor
-    sheetOnly
-    mode="empty"
-    sheetOpen
-    sheetLink={meetingsRailState.sheetLink}
-    {openExternal}
-    oncopy={(text: string) => void copy(text)}
-    oncloseSheet={() => meetingsRailState.openSheet(false)}
-    oncreate={(created: import("./meetings-model").MeetingEvent) => meetingsRailState.addLocalMeeting(created)}
-  />
-{:else if !meetingsRailState.agenda && phase !== "live"}
+{#if !meetingsRailState.agenda && phase !== "live"}
   <MeetingsStatesDoor
     mode={phase === "past" ? "recap" : phase === "upcoming" ? "upcoming" : "empty"}
     event={shownEvent}
@@ -145,19 +134,15 @@
     notesLoadingMore={notesEntry?.loadingMore ?? false}
     onloadmore={() => recordedId && void meetingsStore.loadMoreRecordedNotes(recordedId)}
     {notesFailed}
+    recapFailed={notesEntry?.recapFailed ?? false}
     onretrynotes={() =>
       recordedId && void meetingsStore.loadRecordedNotes(recordedId, event?.sourceCompanyUid ?? null, { retry: true })}
     {bot}
     {companyName}
     {sections}
-    sheetOpen={meetingsRailState.sheetOpen}
-    sheetLink={meetingsRailState.sheetLink}
     {openExternal}
     oncopy={(text: string) => void copy(text)}
     onselect={(id: string) => meetingsRailState.select(id)}
-    onopenSheet={(link?: string) => meetingsRailState.openSheet(true, link ?? null)}
-    oncloseSheet={() => meetingsRailState.openSheet(false)}
-    oncreate={(created: import("./meetings-model").MeetingEvent) => meetingsRailState.addLocalMeeting(created)}
   />
 {/if}
 <div class="agenda-slot" style:display={meetingsRailState.agenda ? "contents" : "none"} data-testid="meetings-agenda-slot">

@@ -7,7 +7,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, unmount } from "svelte";
 import type { PlatformAdapter } from "@hq/platform";
-import { READ_DEADLINE_MS } from "../common/read-deadline.js";
+import { expectPendingRead } from "../common/read-loader.test-support.js";
 import { fakeProjectsApi } from "../projects/testing.js";
 import GoalsView from "./GoalsView.svelte";
 
@@ -24,8 +24,8 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-describe("GoalsView read deadline (BLANK-1)", () => {
-  it("a goals read that never answers ends in the failed-read state", async () => {
+describe("GoalsView pending read (BLANK-3)", () => {
+  it("a goals read that never answers keeps loading with a waiting line and Try again, never a failed state", async () => {
     vi.useFakeTimers();
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     const ipc = (): Promise<unknown> => new Promise(() => {});
@@ -36,12 +36,7 @@ describe("GoalsView read deadline (BLANK-1)", () => {
       props: { adapter: { projects: fakeProjectsApi(ipc) } as PlatformAdapter, slug: "blank-1-goals" },
     });
     flushSync();
-    expect(host.querySelector("[data-testid='goals-skeleton']")).toBeTruthy();
-    await vi.advanceTimersByTimeAsync(READ_DEADLINE_MS + 10);
-    flushSync();
-    expect(host.querySelector("[data-testid='goals-skeleton']")).toBeNull();
-    expect(host.querySelector("[data-testid='goals-load-error']")?.textContent).toContain("Couldn't read this company's goals.");
-    expect(host.querySelector("[data-testid='goals-retry']")).toBeTruthy();
-    expect(logged).toHaveBeenCalled();
+    expect(host.querySelector("[data-testid='goals-loader']")).toBeTruthy();
+    await expectPendingRead(host, "goals-loader");
   });
 });

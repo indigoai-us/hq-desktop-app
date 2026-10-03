@@ -85,13 +85,18 @@ describe("console-rail lists never silently truncate", () => {
       "company/files-connect/FilesConnectPage.svelte",
       "company/brain/BrainPage.svelte",
       "personal/PersonalRailPage.svelte",
-      "telemetry/TelemetryView.svelte",
     ]) {
       const text = readFileSync(join(ROOT, rel), "utf8");
       expect(text, rel).toContain("ShowMoreRow");
       expect(text, rel).toContain("pageRows(");
       expect(text, rel).not.toMatch(CAP);
     }
+    // OWNER-R27: Telemetry's sessions are paged by the native list command,
+    // so Show more asks for the next offset instead of slicing in memory.
+    const telemetry = readFileSync(join(ROOT, "telemetry/TelemetryView.svelte"), "utf8");
+    expect(telemetry).toContain("ShowMoreRow");
+    expect(telemetry).toContain("offset: shown");
+    expect(telemetry).not.toMatch(CAP);
   });
 
   it("keeps every allowlisted file in the scan", () => {

@@ -448,6 +448,28 @@ function providerName(provider: string): string {
     .join(" ");
 }
 
+/**
+ * QA-108: plain copy for the connection-type tags the Slack/MCP factory puts in
+ * a connection's scopes. Any other scope is a machine token (OAuth scopes such
+ * as "chat:write", unknown factory tags) and is never shown.
+ */
+const SCOPE_LABELS: Record<string, string> = {
+  "factory:auth:required": "Sign-in required",
+  "factory:auth:none": "No sign-in needed",
+  "factory:remote_mcp": "Remote connection",
+  "factory:app": "App",
+};
+
+function scopeLabels(scopes: readonly string[]): string[] {
+  const labels: string[] = [];
+  for (const scope of scopes) {
+    const key = scope.trim().toLowerCase();
+    const label = SCOPE_LABELS[key] ?? (key.startsWith("factory:cli:") ? "Command-line tool" : null);
+    if (label && !labels.includes(label)) labels.push(label);
+  }
+  return labels;
+}
+
 function connectionStatus(status: unknown): IntegrationRow["status"] {
   if (status === "connected") return "active";
   if (status === "needs-reauth" || status === "needs-attention") return "needs-sign-in";
@@ -472,12 +494,12 @@ export function companyIntegrationRows(body: unknown): IntegrationRow[] {
     if (!id || !provider || c.status === "revoked") continue;
     const name = providerName(provider);
     const owner = typeof c.createdByName === "string" ? c.createdByName.trim() : "";
-    const scopes = Array.isArray(c.scopes) ? c.scopes.filter((v): v is string => typeof v === "string") : [];
+    const labels = scopeLabels(Array.isArray(c.scopes) ? c.scopes.filter((v): v is string => typeof v === "string") : []);
     rows.push({
       id,
       name,
       mark: name.replace(/[^A-Za-z0-9]/g, "").slice(0, 2).toUpperCase() || name.slice(0, 2),
-      detail: scopes.length ? scopes.join(", ") : owner ? `Connected by ${owner}` : "Connected",
+      detail: labels.length ? labels.join(", ") : owner ? `Connected by ${owner}` : "Connected",
       status: connectionStatus(c.status),
       owner,
       audience: "",

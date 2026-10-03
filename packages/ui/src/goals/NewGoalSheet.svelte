@@ -210,13 +210,15 @@
     border: 1px solid var(--v4-control-border, var(--v4-rowline));
     border-radius: 6px;
   }
-  input, textarea { width: 100%; padding: 6px 8px; }
+  /* QA-107: border-box so width: 100% includes padding and border, and min-width: 0
+     so the three key-result numbers shrink to their grid tracks instead of overlapping. */
+  input, textarea { box-sizing: border-box; width: 100%; min-width: 0; padding: 6px 8px; }
   .x, .add, .tab { background: transparent; }
   .tabs { display: flex; gap: 0; width: max-content; padding: 2px; background: var(--v4-control-faint); border-radius: 6px; }
   .tab { border: 0; padding: 3px 8px; color: var(--v4-text-2); }
   .tab[aria-selected="true"] { background: var(--v4-active-row); color: var(--v4-text-1); }
   .krb { border: 1px solid var(--v4-control-border, var(--v4-rowline)); border-radius: 6px; padding: 8px; margin-bottom: 6px; }
-  .nums { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; margin-top: 6px; }
+  .nums { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: 6px; }
   .add { border: 0; color: var(--v4-text-2); padding: 4px 8px; }
   .x { border: 0; }
   .lk { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--v4-text-2); padding: 2px 0 6px; }

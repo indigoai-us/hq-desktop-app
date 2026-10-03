@@ -3,7 +3,7 @@
    * Core popover (US-016) — opened from the titlebar "● Core ⌄" pill.
    *
    * Contains: conflict rescue card, HQ core version/drift row, desktop app
-   * update row, Library stub, expandable PACKS list + marketplace, and a
+   * update row, Marketplace row, expandable PACKS list + marketplace, and a
    * cloud-paused notice. Model logic lives in core-popover-model.ts.
    */
   import type { PlatformAdapter } from "@hq/platform";
@@ -347,7 +347,7 @@
       // store (the Updates pane) paints immediately without a CHECKING flash.
       if (adapter.isAvailable("canSelfUpdate")) {
         // A download that finished while the popover was closed paints as
-        // RESTART TO UPDATE immediately.
+        // UPDATE READY immediately.
         void hydrateDownloadedUpdate(orchAdapter()).catch(() => {});
       }
       if (
@@ -729,7 +729,7 @@
             appStatusLabel === "INSTALLING" ||
             appStatusLabel.startsWith("DOWNLOADING")}
           class:drifted={appStatusLabel === "UPDATE AVAILABLE" ||
-            appStatusLabel === "RESTART TO UPDATE" ||
+            appStatusLabel === "UPDATE READY" ||
             appStatusLabel === "CHECK FAILED" ||
             appStatusLabel === "UPDATE FAILED"}
           data-testid={appStatusLabel === "UP TO DATE"
@@ -790,7 +790,7 @@
         onclose?.();
       }}
     >
-      <span class="core-row-label">Library</span>
+      <span class="core-row-label">Marketplace</span>
       <span class="core-row-chevron" aria-hidden="true">›</span>
     </button>
   </div>
@@ -854,17 +854,6 @@
           }}
         >
           Open marketplace
-        </button>
-        <button
-          type="button"
-          class="core-btn secondary"
-          data-testid="core-popover-open-library"
-          onclick={() => {
-            onopenLibrary?.();
-            onclose?.();
-          }}
-        >
-          Library
         </button>
       </div>
     {/if}

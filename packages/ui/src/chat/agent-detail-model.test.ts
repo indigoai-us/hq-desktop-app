@@ -1,3 +1,4 @@
+import { compactNumber } from "../common/compact-number.js";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -6,7 +7,6 @@ import {
   formatJobCadence,
   formatJobOutcome,
   formatRunningFor,
-  formatTokenCount,
   headerFromMobileRoster,
   headerFromStatusPayload,
   jobTitleFromPrompt,
@@ -254,12 +254,12 @@ describe("header / owners", () => {
   });
 });
 
-describe("formatTokenCount", () => {
+describe("token counts use the shared compact formatter (OWNER-R28)", () => {
   it("compacts thousands and millions", () => {
-    expect(formatTokenCount(0)).toBe("0");
-    expect(formatTokenCount(420)).toBe("420");
-    expect(formatTokenCount(1200)).toBe("1.2k");
-    expect(formatTokenCount(1_200_000)).toBe("1.2M");
+    expect(compactNumber(0)).toBe("0");
+    expect(compactNumber(420)).toBe("420");
+    expect(compactNumber(1200)).toBe("1.2K");
+    expect(compactNumber(1_200_000)).toBe("1.2M");
   });
 });
 

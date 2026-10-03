@@ -193,7 +193,7 @@ describe("US-029 FilesConnectPage", () => {
     expect(prompt).toContain("/deploy indigo");
   });
 
-  it("shows the vault as a folder tree with a quiet preview until a file is picked", async () => {
+  it("shows the vault in the Files tree; a folder shows its contents and a file opens in the viewer (OWNER-R13)", async () => {
     const tree: Record<string, unknown[]> = {
       "companies/indigo": [
         { name: "knowledge", path: "companies/indigo/knowledge", isDir: true, hasChildren: true },
@@ -207,24 +207,28 @@ describe("US-029 FilesConnectPage", () => {
       listDir: vi.fn(async (path: string) => ok(tree[path] ?? [])),
       getFileContent: vi.fn(async () => ok("# GTM")),
     };
-    const target = mountPage("vault", files);
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    flushSync();
-    expect(target.querySelector("[data-testid='vault-tree']")).not.toBeNull();
-    expect(target.querySelector("[data-testid='vault-list']")).toBeNull();
-    expect(target.querySelector("[data-testid='vault-preview-empty']")?.textContent).toContain("Select a file");
-    expect(target.querySelector("[data-testid='vault-summary']")?.textContent).toBe("1 folder · 1 file");
+    const flush = async () => {
+      for (let i = 0; i < 6; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        flushSync();
+      }
+    };
+    const target = mountPage("vault", files, { companyLabel: "Indigo" });
+    await flush();
+    // The Files tree, rooted at the company name, not a companies/ path; no second tree.
+    expect(target.querySelector("[data-testid='vault-explorer'] [data-testid='vault-tree']")).not.toBeNull();
+    expect(target.querySelector("[data-testid='file-tree-row']")).toBeNull();
+    expect(target.querySelector("[data-testid='vault-root-label']")?.textContent?.trim()).toBe("I Indigo");
+    expect(target.textContent).not.toContain("Select a file");
     const rowFor = (path: string) =>
-      target.querySelector<HTMLElement>(`[data-testid='file-tree-row'][data-path='${path}']`);
+      target.querySelector<HTMLElement>(`[data-testid='vault-tree-row'][data-tree-path='${path}']`);
     rowFor("companies/indigo/knowledge")!.click();
-    for (let i = 0; i < 5; i += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      flushSync();
-    }
-    rowFor("companies/indigo/knowledge/gtm.md")!.click();
-    flushSync();
-    expect(target.querySelector("[data-testid='vault-preview-empty']")).toBeNull();
-    expect(target.querySelector("[data-testid='vault-access'] h2")?.textContent).toBe("knowledge");
+    // The folder view is its own chunk; wait for its rows, not a fixed number of ticks.
+    const folderRowsOf = () => [...target.querySelectorAll<HTMLElement>("[data-testid='vault-folder-row']")];
+    await vi.waitFor(() => expect(folderRowsOf().map((row) => row.title)).toEqual(["gtm.md"]), { timeout: 3000 });
+    folderRowsOf()[0]!.click();
+    await vi.waitFor(() => expect(target.querySelector("[data-testid='vault-content']")?.textContent).toContain("GTM"), { timeout: 3000 });
+    expect(target.querySelector("[data-testid='vault-folder']")).toBeNull();
   });
 
   describe("Vault What's new (QA-070)", () => {
@@ -263,13 +267,13 @@ describe("US-029 FilesConnectPage", () => {
         "companies/indigo/projects/x/prd.json",
         "companies/indigo/knowledge/gtm.md",
       ]);
-      expect(target.querySelector("[data-testid='vault-preview']")).not.toBeNull();
       // No selection: Access is hidden, not headless.
       expect(target.querySelector("[data-testid='vault-access']")).toBeNull();
       rows[1]!.click();
-      flushSync();
-      expect(target.querySelector("[data-testid='vault-access'] h2")?.textContent).toBe("knowledge");
-      expect(target.querySelector("[data-testid='vault-preview-empty']")).toBeNull();
+      await flush();
+      // The pick opens in the Files viewer, back on All.
+      expect(target.querySelector("[data-testid='vault-recent']")).toBeNull();
+      expect(target.querySelector("[data-testid='vault-explorer'] [role='tab'][aria-selected='true']")?.textContent?.trim()).toBe("gtm");
     });
 
     it("shows an explicit empty state when nothing changed in 7 days", async () => {
@@ -308,16 +312,16 @@ describe("US-029 FilesConnectPage", () => {
       errSpy.mockRestore();
     });
 
-    it("All restores the tree and its Access target", async () => {
+    it("All restores the Files tree", async () => {
       const files = baseFiles(async () => ok({ objects: [] }));
       const target = mountPage("vault", files);
       await flush();
       openNew(target);
       await flush();
+      expect(target.querySelector("[data-testid='vault-tree']")).toBeNull();
       (target.querySelector("[aria-label='Vault view'] [role='tab']") as HTMLButtonElement).click();
       await flush();
-      expect(target.querySelector("[data-testid='vault-tree']")).not.toBeNull();
-      expect(target.querySelector("[data-testid='vault-access'] h2")?.textContent).toBe("indigo");
+      expect(target.querySelector("[data-testid='vault-explorer'] [data-testid='vault-tree']")).not.toBeNull();
     });
   });
 
@@ -478,7 +482,15 @@ describe("US-029 FilesConnectPage", () => {
   });
 
   it("grants vault access to a chosen person through hq files share (QA-025)", async () => {
-    const files = { listDir: vi.fn(async () => ok([])), getFileContent: vi.fn(async () => ok("")) };
+    const files = {
+      listDir: vi.fn(async (path: string) =>
+        ok(path === "companies/indigo" ? [{ name: "knowledge", path: "companies/indigo/knowledge", isDir: true, hasChildren: false }] : []),
+      ),
+      getFileContent: vi.fn(async () => ok("")),
+      // OWNER-R17: the caller is an admin on the folder, so the pane offers Grant.
+      getAccessTree: vi.fn(async () => ok({ prefix: "knowledge/", direct: [], inherited: [], children: [], directRow: null, effectivePermission: "admin", identities: {} })),
+      listAccessGroups: vi.fn(async () => ok({ groups: [] })),
+    };
     const adapter = {
       files,
       appShell: { setActiveCompany: vi.fn(async () => ok(undefined)) },
@@ -487,13 +499,19 @@ describe("US-029 FilesConnectPage", () => {
       },
       isAvailable: () => false,
     };
-    const target = mountPage("vault", files, { adapter });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    flushSync();
+    const target = mountPage("vault", files, { adapter, companyUid: "cmp_example" });
+    const flush = async () => {
+      for (let i = 0; i < 8; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        flushSync();
+      }
+    };
+    await flush();
     expect(target.textContent).not.toContain("Eric B.");
-    (target.querySelector("[data-testid='grant-access']") as HTMLButtonElement).click();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    flushSync();
+    (target.querySelector("[data-tree-path='companies/indigo/knowledge']") as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(target.querySelector("[data-testid='access-grant']")).not.toBeNull(), { timeout: 2000 });
+    (target.querySelector("[data-testid='access-grant']") as HTMLButtonElement).click();
+    await flush();
     expect(adapter.company.listMembers).toHaveBeenCalledWith("indigo");
     expect(document.querySelector("#fc-grant-members option")?.getAttribute("value")).toBe("ada@example.com");
     const save = document.querySelector("[data-testid='grant-save']") as HTMLButtonElement;
@@ -506,7 +524,7 @@ describe("US-029 FilesConnectPage", () => {
     save.click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     const prompt = String((openAgentWorkflow.mock.calls[0] as unknown as unknown[] | undefined)?.[1] ?? "");
-    expect(prompt).toContain('hq files share "" --company indigo --with ada@example.com --permission read');
+    expect(prompt).toContain('hq files share "knowledge/" --company indigo --with ada@example.com --permission read');
   });
 
   it("opens the upload sheet from Vault Upload", async () => {
@@ -518,14 +536,23 @@ describe("US-029 FilesConnectPage", () => {
     expect(document.querySelector("[data-testid='sheet-upload']")).not.toBeNull();
     expect(document.querySelector("[data-testid='upload-choose']")).not.toBeNull();
   });
-  it("closes the Connect app dialog on Escape (QA-012)", () => {
-    const target = mountPage("integrations");
-    (target.querySelector("[data-testid='connect-app']") as HTMLButtonElement).click();
+  it("Open console opens the company's web Integrations page; no in-app connect flow (OWNER-R14)", () => {
+    const openExternal = vi.fn();
+    const target = mountPage("integrations", null, { openExternal });
+    const header = target.querySelector<HTMLButtonElement>("[data-testid='integrations-open-console']");
+    expect(header?.textContent?.trim()).toBe("Open console");
+    header!.click();
     flushSync();
-    expect(target.querySelector("[data-testid='sheet-connect']")).not.toBeNull();
-    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
-    flushSync();
+    expect(openExternal).toHaveBeenCalledWith("https://hq.computer/companies/indigo/integrations");
+    const inspector = target.querySelector<HTMLButtonElement>("[data-testid='integration-open-console']");
+    if (inspector) {
+      inspector.click();
+      expect(openExternal).toHaveBeenLastCalledWith("https://hq.computer/companies/indigo/integrations");
+    }
+    expect(target.querySelector("[data-testid='connect-app']")).toBeNull();
     expect(target.querySelector("[data-testid='sheet-connect']")).toBeNull();
+    expect(target.textContent).not.toContain("Connect app");
+    expect(target.querySelector("input[placeholder='App name or website']")).toBeNull();
   });
 
   it("closes the vault Share dialog on Escape (QA-024)", async () => {
@@ -558,7 +585,7 @@ describe("US-029 FilesConnectPage", () => {
     const target = mountPage("deployments", files, { listDeployApps });
     (target.querySelector("[data-testid='deploy-from-project']") as HTMLButtonElement).click();
     flushSync();
-    expect(target.querySelector("[data-testid='deploy-sources-skeleton']")).not.toBeNull();
+    expect(target.querySelector("[data-testid='deploy-sources-loading']")).not.toBeNull();
     expect((target.querySelector("[data-testid='run-deploy']") as HTMLButtonElement).disabled).toBe(true);
     release();
     await vi.waitFor(() => expect(target.querySelector("[data-testid='deploy-source']")).not.toBeNull());

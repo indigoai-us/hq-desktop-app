@@ -81,6 +81,7 @@ pub mod hq_version;
 pub mod ignore;
 pub mod journal;
 pub mod library_local;
+pub mod local_sessions;
 pub mod lifecycle;
 pub mod logfile;
 pub mod marketplace;

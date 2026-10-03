@@ -4,7 +4,7 @@
  * console-rail US-007 — the company tile opens the company sidepane.
  */
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import { ok, type PlatformAdapter } from "@hq/platform";
 
@@ -53,6 +53,14 @@ const memoryStorage = installMemoryLocalStorage();
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
+
+// ActivityRailHost loads ActivityView with a lazy import. Under full-suite
+// load that import could resolve after this file's environment was torn
+// down (EnvironmentTeardownError). Load the module up front so the lazy
+// import resolves from the module cache while the test is still running.
+beforeAll(async () => {
+  await import("../activity/ActivityView.svelte");
+});
 
 afterEach(async () => {
   if (component) await unmount(component);
@@ -111,7 +119,8 @@ function click(testId: string): void {
 }
 
 describe("DesktopApp company sidepane (console-rail US-007)", () => {
-  it("Indigo tile shows all 15 rows in the decided groups and Company settings in the footer", async () => {
+  // OWNER-R24: Groups under People, a Settings group last, no footer link.
+  it("Indigo tile shows every row in the decided groups with Settings last and no footer", async () => {
     await mountShell([
       {
         slug: "indigo",
@@ -131,27 +140,27 @@ describe("DesktopApp company sidepane (console-rail US-007)", () => {
     const labels = [...host.querySelectorAll('[data-testid="sidepane-section-label"]')].map(
       (el) => el.textContent?.trim(),
     );
-    expect(labels).toEqual(["People", "Brain", "Files and connect"]);
+    expect(labels).toEqual(["People", "Brain", "Files and connect", "Settings"]);
     const rows = [...host.querySelectorAll<HTMLElement>('[data-testid="sidepane-row"]')].map(
       (el) => el.getAttribute("data-row-id"),
     );
     expect(rows).toEqual([
-      "atlas", "projects", "activity", "goals", "team", "bots",
+      "atlas", "projects", "activity", "goals", "team", "bots", "groups",
       "knowledge", "policies", "skills", "workers",
       "vault", "integrations", "secrets", "deployments",
+      // Grants and Billing are hidden: the member role is not owner or admin.
+      "general", "brand",
       // US-014: the tile lands on Atlas and this company has no teammates yet.
       "invite-teammate",
     ]);
-    expect(
-      host.querySelector('[data-testid="sidepane-footer"] [data-testid="company-sidepane-settings"]'),
-    ).not.toBeNull();
+    expect(host.querySelector('[data-testid="company-sidepane-settings"]')).toBeNull();
 
     host.querySelector<HTMLButtonElement>('[data-row-id="workers"]')!.click();
     await settle();
     // US-028 Brain pages replaced the placeholder; the lazy door paints its
-    // skeleton with the row title in the first frame.
-    const skeleton = host.querySelector('[data-testid="brain-door-skeleton"]');
-    expect(skeleton?.querySelector("h1")?.textContent).toBe("Workers");
+    // loading frame (row title plus the shared loader) in the first frame.
+    const loading = host.querySelector('[data-testid="brain-door-loading"]')?.closest(".rail-placeholder");
+    expect(loading?.querySelector("h1")?.textContent).toBe("Workers");
     expect(host.querySelector('[data-row-id="workers"]')?.getAttribute("aria-current")).toBe("page");
     expect(
       host.querySelector('[data-testid="rail-company"]')?.getAttribute("aria-current"),
@@ -206,7 +215,7 @@ describe("DesktopApp company sidepane (console-rail US-007)", () => {
 
   function meetingsPaneShown(): boolean {
     return (
-      host.querySelector('[data-testid="meetings-sidepane-door-skeleton"]') != null ||
+      host.querySelector('[data-testid="meetings-sidepane-door-loading"]') != null ||
       host.querySelector('[data-sidepane-key="meetings"], [aria-label="Meetings"]') != null
     );
   }

@@ -98,7 +98,7 @@ describe("US-028 brain model", () => {
       {
         id: "w", name: "w", description: "", path: "w", scope: "company",
         tools: [], skills: [], parked: true, mine: true, scheduled: false,
-        live: false, lastRun: "",
+        live: false, lastRun: "", status: "parked",
       },
     ];
     expect(filterWorkers(workers, "all", "active", "")).toHaveLength(0);

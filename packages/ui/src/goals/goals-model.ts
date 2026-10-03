@@ -177,3 +177,45 @@ export function writeGoalsCache(storage: Storage | null, slug: string, cache: Go
     /* best-effort */
   }
 }
+
+/**
+ * Same write as writeGoalsCache, but a failed save throws so the objective
+ * pane can roll its optimistic change back (OWNER-R8).
+ */
+export function saveGoalsCache(storage: Storage | null, slug: string, cache: GoalsCache): void {
+  if (!storage || !slug) throw new Error("goals cache unavailable");
+  storage.setItem(CACHE_PREFIX + slug, JSON.stringify(cache));
+}
+
+/** One row per project linked to any key result of this objective, first link wins. */
+export function objectiveLinks(links: readonly KrLink[], objectiveId: string): KrLink[] {
+  const seen = new Set<string>();
+  return links.filter((link) => {
+    if (link.objectiveId !== objectiveId || seen.has(link.projectId)) return false;
+    seen.add(link.projectId);
+    return true;
+  });
+}
+
+/** Drops every key-result link between this objective and the project. */
+export function withoutObjectiveLink(links: readonly KrLink[], objectiveId: string, projectId: string): KrLink[] {
+  return links.filter((link) => !(link.objectiveId === objectiveId && link.projectId === projectId));
+}
+
+export interface OwnerDisplay {
+  name: string;
+  email: string | null;
+}
+
+/**
+ * Owner as a name with a muted email. A bare `prs_` or `agt_` id is never
+ * shown; an owner that is only an id renders nothing.
+ */
+export function ownerDisplay(owner: string | null | undefined): OwnerDisplay | null {
+  const raw = (owner ?? "").trim();
+  if (!raw || /^(prs|agt)_[A-Za-z0-9_-]+$/.test(raw)) return null;
+  const angle = raw.match(/^(.*?)\s*<([^>]+@[^>]+)>$/);
+  if (angle) return { name: angle[1]!.trim() || angle[2]!, email: angle[1]!.trim() ? angle[2]! : null };
+  if (raw.includes("@") && !raw.includes(" ")) return { name: raw.split("@")[0]!, email: raw };
+  return { name: raw, email: null };
+}

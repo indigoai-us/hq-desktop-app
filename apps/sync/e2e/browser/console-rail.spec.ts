@@ -36,7 +36,9 @@ test.describe('console rail: full user path', () => {
   test('rail switch, company Atlas, projects, task pane, Files tab', async ({ page }) => {
     const errors = await openShell(page);
     const rail = page.getByTestId('app-rail');
-    await expect(rail.locator('[data-testid^="rail-"]')).toHaveCount(12);
+    // OWNER-R22 added Marketplace beneath Connections.
+    await expect(rail.locator('[data-testid^="rail-"]')).toHaveCount(13);
+    await expect(page.getByTestId('rail-marketplace')).toHaveAttribute('aria-label', 'Marketplace');
 
     await clickPaints(page, '[data-testid="rail-company"]', '[data-testid="atlas-landing"]');
     await expect(page.getByTestId('rail-company')).toHaveAttribute('aria-current', 'page');
@@ -121,9 +123,16 @@ test.describe('console rail: full user path', () => {
     await page.getByTestId('rail-you').click();
     const menu = page.getByTestId('account-menu');
     await expect(menu).toBeVisible();
-    await expect(page.getByTestId('account-profile')).toBeFocused();
-    for (const id of ['account-profile', 'account-billing', 'account-settings', 'account-sign-out']) {
+    // OWNER-R21: the menu is the name block (opens Settings at Profile), one
+    // Settings entry and Sign out; Profile and Billing rows moved into the
+    // Settings list. Focus lands on the first item, the name block.
+    await expect(page.getByTestId('account-identity')).toBeFocused();
+    for (const id of ['account-identity', 'account-settings', 'account-sign-out']) {
       await expect(page.getByTestId(id)).toBeVisible();
+    }
+    await expect(menu.getByRole('menuitem')).toHaveCount(3);
+    for (const id of ['account-profile', 'account-billing']) {
+      await expect(page.getByTestId(id)).toHaveCount(0);
     }
     page.once('dialog', (dialog) => void dialog.accept());
     await page.getByTestId('account-sign-out').click();

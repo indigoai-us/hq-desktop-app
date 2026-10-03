@@ -53,7 +53,7 @@ describe("paneForEntry (QA-047): every destination sets its own sidepane", () =>
       { kind: "extra", page: railPlaceholderPage("deployments") },
       { kind: "settings", section: "profile" },
       { kind: "settings", section: "bots" },
-      { kind: "library", tab: "skills" },
+      { kind: "library", tab: "marketplace" },
       { kind: "explorer" },
       { kind: "shared-files" },
       { kind: "projects", company: "unicom" },

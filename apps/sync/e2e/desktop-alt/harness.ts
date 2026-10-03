@@ -225,7 +225,9 @@ export class DesktopAltHarness implements DesktopAltTestHarness {
       text: sourceText('../../packages/ui/src/shell/AtlasLandingHost.svelte', [
         'data-testid="atlas-landing"',
         '<h1>Atlas</h1>',
-        'data-testid="atlas-landing-skeleton"',
+        // OWNER-R26: the skeleton was removed; the shared loader is the
+        // loading state while the Atlas chunk resolves.
+        '<ReadLoader testid="atlas-landing-loading" surface="atlas" onretry={loadChunk} />',
       ]),
       consoleErrors: [...this.consoleErrors],
     };

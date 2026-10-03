@@ -46,15 +46,14 @@ describe("AtlasLandingHost (US-009)", () => {
       }),
     );
     flushSync();
-    // First frame: skeleton and loading note, never a blank pane or spinner.
-    expect(target.querySelector("[data-testid='atlas-landing-skeleton']")).not.toBeNull();
+    // First frame: the shared loader, never a blank pane.
+    expect(target.querySelector("[data-testid='atlas-landing-loading']")).not.toBeNull();
     expect(target.querySelector("[data-testid='atlas-landing']")?.getAttribute("aria-busy")).toBe("true");
-    expect(target.textContent).toContain("Loading Indigo");
 
     await settle(target);
     const inspector = target.querySelector("[data-testid='atlas-inspector']");
     expect(inspector).not.toBeNull();
-    expect(target.querySelector("[data-testid='atlas-landing-skeleton']")).toBeNull();
+    expect(target.querySelector("[data-testid='atlas-landing-loading']")).toBeNull();
     const rollup = target.querySelector("[data-testid='atlas-inspector-rollup']")?.textContent ?? "";
     expect(rollup).toContain("2 live");
     expect(rollup).toContain("0 projects in progress");
@@ -101,8 +100,8 @@ describe("AtlasLandingHost live presence (US-013)", () => {
       actors: [{ actorUid: "b_deacon", name: "deacon", bot: true, projectId: "hq-desktop-console-rail" }],
     });
     flushSync();
-    // First frame is still the skeleton, never blank.
-    expect(target.querySelector("[data-testid='atlas-landing-skeleton']")).not.toBeNull();
+    // First frame is still the loader, never blank.
+    expect(target.querySelector("[data-testid='atlas-landing-loading']")).not.toBeNull();
     await waitFor(target, "[data-testid='atlas-map']");
     // Cached map paints; refresh runs in the background.
     expect(target.querySelector(`[data-testid='atlas-halo-${rail}']`)).not.toBeNull();
@@ -235,7 +234,7 @@ describe("AtlasLandingHost local first page (QA-016 re-test)", () => {
     await waitFor(target, () => Boolean(target.querySelector("[data-testid='atlas-map']")));
 
     // Partial map is on screen while the full listing is still pending.
-    expect(target.querySelector("[data-testid='atlas-skeleton']")).toBeNull();
+    expect(target.querySelector("[data-testid='atlas-loader']")).toBeNull();
     expect(target.querySelector("[data-testid='atlas-error']")).toBeNull();
     expect(count()).toBe("4 objects");
     expect(target.querySelector("[data-testid='atlas-loading-more']")).not.toBeNull();

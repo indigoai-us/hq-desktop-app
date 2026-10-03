@@ -81,7 +81,8 @@ describe("OWNER-D 2 company Integrations reads connected apps", () => {
       ["Slack", "active", "connected"],
       ["Linear", "needs-sign-in", "connected"],
     ]);
-    expect(rows[0]?.detail).toBe("channels:read, chat:write");
+    // QA-108: OAuth scopes are machine tokens and are not shown.
+    expect(rows[0]?.detail).toBe("Connected by Ada");
     expect(rows[1]?.detail).toBe("Connected by Bo");
     expect(() => companyIntegrationRows({ grouped: {} })).toThrow();
   });
@@ -96,10 +97,10 @@ describe("OWNER-D 2 company Integrations reads connected apps", () => {
     expect(target.querySelector("[data-testid='integrations-count']")?.textContent).toContain("2");
   });
 
-  it("shows a skeleton while the read is in flight", async () => {
+  it("shows the loader while the read is in flight", async () => {
     const target = mountWith(() => new Promise(() => {}));
     await settle();
-    expect(target.querySelector("[data-testid='files-connect-skeleton']")).toBeTruthy();
+    expect(target.querySelector("[data-testid='integrations-loader']")).toBeTruthy();
     expect(target.querySelector("[data-testid='integrations-empty']")).toBeNull();
     expect(target.querySelector("[data-testid='integrations-count']")).toBeNull();
   });

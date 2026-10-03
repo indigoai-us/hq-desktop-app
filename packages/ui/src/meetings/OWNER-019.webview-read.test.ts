@@ -226,3 +226,157 @@ describe("a failed read is not an empty meeting", () => {
     expect(meetingsStore.recordedNotes["m-4"]?.document?.transcript).toHaveLength(2);
   });
 });
+
+/**
+ * OWNER-019 part 2 (round 29): the Oct 1 company standup still failed while
+ * the Oct 2 personal meeting loaded. Its detail call (company scope, three
+ * signals) answers in 14-16 s and the shared native bound was 15 s, so the
+ * detail read timed out. These cover what the store does with that shape.
+ */
+describe("OWNER-019 part 2: partial reads and fresh links", () => {
+  it("a failed signal read still shows the transcript, with its own Try again", async () => {
+    const read = vi.fn(async (u: string) =>
+      keyOf(u).startsWith("signals/") ? failure("network", "meeting notes HTTP 403") : ok(bodies[keyOf(u)] ?? ""),
+    );
+    wire(standupDetail, read as never);
+    await meetingsStore.loadRecordedNotes("m-5", "cmp_EXAMPLE");
+    const entry = meetingsStore.recordedNotes["m-5"];
+    expect(entry?.status).toBe("ready");
+    expect(entry?.recapFailed).toBe(true);
+    expect(entry?.document?.transcript).toHaveLength(2);
+    const onretrynotes = vi.fn();
+    const el = render({ mode: "recap", event: shown("m-5"), now, recapFailed: entry?.recapFailed, onretrynotes });
+    expect(el.querySelector('[data-testid="meeting-tabs"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="meeting-notes-failed"]')).toBeNull();
+    expect(el.querySelector('[data-testid="meeting-recap-failed"]')?.textContent).toContain("Couldn't load part of the recap.");
+    expect(el.textContent).not.toContain("403");
+    (el.querySelector('[data-testid="meeting-recap-retry"]') as HTMLButtonElement).click();
+    expect(onretrynotes).toHaveBeenCalledTimes(1);
+  });
+
+  it("Try again refetches the detail and reads the fresh links, not the stale ones", async () => {
+    let generation = 0;
+    const getRecorded = vi.fn(async () => {
+      generation += 1;
+      const g = generation;
+      const fresh = (key: string) => `${signed(key)}&gen=${g}`;
+      return ok({
+        ...standupDetail,
+        source: { ...standupDetail.source, presigned_url: fresh("sources/meetings/m-1.md") },
+        signals: { summary: [{ slug: "s1", path: "signals/s1.md", presigned_url: fresh("signals/s1.md") }] },
+      });
+    });
+    const seen: string[] = [];
+    const read = vi.fn(async (u: string) => {
+      seen.push(new URL(u).searchParams.get("gen") ?? "");
+      // Links from the first detail have expired.
+      return new URL(u).searchParams.get("gen") === "1" ? failure("network", "meeting notes HTTP 403") : ok(bodies[keyOf(u)] ?? "");
+    });
+    configureMeetingsApi({
+      accountId: "acct",
+      sessionGeneration: 1,
+      storage: null,
+      meetings: { getRecorded, readRecordedBody: read } as never,
+      feedback: {} as never,
+    });
+    await meetingsStore.loadRecordedNotes("m-6", "cmp_EXAMPLE");
+    expect(meetingsStore.recordedNotes["m-6"]?.status).toBe("error");
+    await meetingsStore.loadRecordedNotes("m-6", "cmp_EXAMPLE", { retry: true });
+    expect(getRecorded).toHaveBeenCalledTimes(2);
+    expect(seen.slice(-2)).toEqual(["2", "2"]);
+    expect(meetingsStore.recordedNotes["m-6"]?.status).toBe("ready");
+    expect(meetingsStore.recordedNotes["m-6"]?.signals?.summary).toBe("Placeholder recap.");
+  });
+
+  it("Try again after a partial recap failure reads the meeting again", async () => {
+    let fail = true;
+    const read = vi.fn(async (u: string) =>
+      fail && keyOf(u).startsWith("signals/") ? failure("network", "offline") : ok(bodies[keyOf(u)] ?? ""),
+    );
+    wire(standupDetail, read as never);
+    await meetingsStore.loadRecordedNotes("m-7", "cmp_EXAMPLE");
+    expect(meetingsStore.recordedNotes["m-7"]?.recapFailed).toBe(true);
+    fail = false;
+    await meetingsStore.loadRecordedNotes("m-7", "cmp_EXAMPLE", { retry: true });
+    expect(meetingsStore.recordedNotes["m-7"]?.recapFailed).toBe(false);
+    expect(meetingsStore.recordedNotes["m-7"]?.signals?.decisions).toHaveLength(2);
+  });
+});
+
+/**
+ * OWNER-R2 (2026-10-03 16:45Z): most meetings in "Your meetings" showed
+ * "Couldn't load the notes". The list is painted from the local cache first;
+ * the cache stores parsed rows (`companyUid`), and hydration re-parsed them
+ * reading only the wire field `companyId`, so every cached row lost its
+ * company. Its detail was then read unscoped, and hq-pro answers an unscoped
+ * read of a company meeting with 404 meeting-not-found (measured for all four
+ * Sep 23 meetings; scoped reads returned 200).
+ */
+describe("OWNER-R2: cached rows keep their company", () => {
+  const wireRow = {
+    meetingId: "m-8",
+    sourceShape: "markdown",
+    title: "Person A<>Person B Standup",
+    startTime: "2026-09-23T09:00:00-06:00",
+    channel: "meeting",
+    ingested_at: "2026-09-23T16:00:00.000Z",
+    hasSignals: true,
+    companyId: "cmp_EXAMPLE",
+    attributed: true,
+  };
+
+  it("a row read back from the cache keeps its company", () => {
+    const parsed = parseRecordedMeetings({ meetings: [wireRow] });
+    const cached = JSON.parse(JSON.stringify(parsed));
+    expect(parseRecordedMeetings(cached)).toEqual(parsed);
+    expect(parseRecordedMeetings(cached)[0]?.companyUid).toBe("cmp_EXAMPLE");
+  });
+
+  it("opening a cached company meeting reads its detail in that company and shows the transcript", async () => {
+    const getRecorded = vi.fn(async (_id: string, companyId: string | null) =>
+      companyId === "cmp_EXAMPLE"
+        ? ok(standupDetail)
+        : failure("http-404", "Meeting not found"),
+    );
+    configureMeetingsApi({
+      accountId: "acct",
+      sessionGeneration: 1,
+      storage: null,
+      meetings: { getRecorded, readRecordedBody: nativeRead } as never,
+      feedback: {} as never,
+    });
+    const cachedRow = parseRecordedMeetings(JSON.parse(JSON.stringify(parseRecordedMeetings({ meetings: [wireRow] }))))[0]!;
+    const event = recordedToEvent(cachedRow);
+    await meetingsStore.loadRecordedNotes("m-8", event.sourceCompanyUid ?? null);
+    expect(getRecorded).toHaveBeenCalledWith("m-8", "cmp_EXAMPLE");
+    expect(meetingsStore.recordedNotes["m-8"]?.status).toBe("ready");
+    expect(meetingsStore.recordedNotes["m-8"]?.document?.transcript).toHaveLength(2);
+  });
+
+  it("a read that failed without a company is read again once the row knows its company", async () => {
+    const getRecorded = vi.fn(async (_id: string, companyId: string | null) =>
+      companyId ? ok(standupDetail) : failure("http-404", "Meeting not found"),
+    );
+    configureMeetingsApi({
+      accountId: "acct",
+      sessionGeneration: 1,
+      storage: null,
+      meetings: { getRecorded, readRecordedBody: nativeRead } as never,
+      feedback: {} as never,
+    });
+    await meetingsStore.loadRecordedNotes("m-9", null);
+    expect(meetingsStore.recordedNotes["m-9"]?.status).toBe("error");
+    await meetingsStore.loadRecordedNotes("m-9", "cmp_EXAMPLE");
+    expect(meetingsStore.recordedNotes["m-9"]?.status).toBe("ready");
+  });
+
+  it("a meeting with a transcript and no saved recap says so plainly, not as an error", async () => {
+    wire(noSignalDetail);
+    await meetingsStore.loadRecordedNotes("m-10", "cmp_EXAMPLE");
+    const el = render({ mode: "recap", event: shown("m-10"), now });
+    expect(el.querySelector('[data-testid="meeting-tabs"]')).not.toBeNull();
+    expect(el.querySelector('[data-testid="meeting-recap-none"]')?.textContent).toBe("There is no recap for this meeting yet.");
+    expect(el.querySelector('[data-testid="meeting-notes-failed"]')).toBeNull();
+    expect(el.querySelector('[data-testid="meeting-attendees-unavailable"]')).toBeNull();
+  });
+});

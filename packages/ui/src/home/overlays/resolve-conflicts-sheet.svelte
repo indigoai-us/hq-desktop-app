@@ -138,7 +138,7 @@
     max-height: calc(100vh - 48px);
     display: flex;
     flex-direction: column;
-    background: var(--v4-popover);
+    background: var(--overlay-bg, var(--v4-popover));
     border: 1px solid var(--v4-hairline);
     border-radius: 8px;
     box-shadow: var(--v4-shadow-popover, 0 16px 48px rgba(0, 0, 0, 0.28));

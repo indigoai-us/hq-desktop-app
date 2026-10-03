@@ -43,7 +43,7 @@ describe('DESKTOP-015: open Home hierarchy and safe-delete visibility', () => {
       '.home-table',
       '.home-agenda',
       '.home-empty',
-      '.home-skeleton',
+      '.home-loading',
     ]) {
       const block = rule(home, selector);
       expect(block, `${selector} should exist`).not.toBe('');

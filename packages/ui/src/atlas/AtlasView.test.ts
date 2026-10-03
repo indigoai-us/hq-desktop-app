@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import AtlasView from "./AtlasView.svelte";
 import { AtlasLoadError, createAtlasCache } from "./atlas-cache.js";
+import { expectPendingRead } from "../common/read-loader.test-support.js";
 import { ATLAS_SMOKE_DETAIL, smokeAtlasGraph } from "./atlas-model.js";
 
 const NOW = Date.UTC(2026, 8, 30, 12);
@@ -121,10 +122,10 @@ describe("AtlasView", () => {
 
   it("shows a skeleton in the first frame with no cache, then paints the graph", async () => {
     mountView();
-    expect(host.querySelector(sel("atlas-skeleton"))).not.toBeNull();
+    expect(host.querySelector(sel("atlas-loader"))).not.toBeNull();
     expect(host.querySelector(sel("atlas-inspector"))).not.toBeNull();
     await settle();
-    expect(host.querySelector(sel("atlas-skeleton"))).toBeNull();
+    expect(host.querySelector(sel("atlas-loader"))).toBeNull();
     expect(host.querySelectorAll('[data-testid^="atlas-node-"]').length).toBe(
       smokeAtlasGraph().nodes.length,
     );
@@ -135,7 +136,7 @@ describe("AtlasView", () => {
     const cache = createAtlasCache({ fetcher: async () => smokeAtlasGraph() });
     await cache.refresh("cmp_indigo");
     mountView(cache);
-    expect(host.querySelector(sel("atlas-skeleton"))).toBeNull();
+    expect(host.querySelector(sel("atlas-loader"))).toBeNull();
     expect(host.querySelector(sel(`atlas-node-${RAIL}`))).not.toBeNull();
   });
 
@@ -321,7 +322,7 @@ describe("Atlas chunk boundary", () => {
     await vi.waitFor(() => {
       expect(host.querySelector(sel("atlas-error"))).not.toBeNull();
     });
-    expect(host.querySelector(sel("atlas-skeleton"))).toBeNull();
+    expect(host.querySelector(sel("atlas-loader"))).toBeNull();
     const text = host.querySelector(sel("atlas-error"))?.textContent ?? "";
     expect(text).toContain("The map didn't load");
     expect(text).not.toContain("401");
@@ -355,17 +356,30 @@ describe("Atlas chunk boundary", () => {
     expect(host.querySelector(sel("atlas-retry"))).not.toBeNull();
   });
 
-  it("QA-016: a fetch that never settles is cut off by the timeout and shows the error state", async () => {
+  it("BLANK-3: by default a fetch that never settles keeps the loader, never the error state", async () => {
+    vi.useFakeTimers();
+    try {
+      const cache = createAtlasCache({ fetcher: () => new Promise<unknown>(() => undefined) });
+      mountView(cache);
+      await expectPendingRead(host, "atlas-loader");
+      expect(host.querySelector(sel("atlas-error"))).toBeNull();
+      expect(host.querySelector(sel("atlas-loader"))).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("QA-016: an explicit refresh limit still ends in the error state", async () => {
     const cache = createAtlasCache({
       fetcher: () => new Promise<unknown>(() => undefined),
       timeoutMs: 20,
     });
     mountView(cache);
-    expect(host.querySelector(sel("atlas-skeleton"))).not.toBeNull();
+    expect(host.querySelector(sel("atlas-loader"))).not.toBeNull();
     await vi.waitFor(() => {
       expect(host.querySelector(sel("atlas-error"))).not.toBeNull();
     });
-    expect(host.querySelector(sel("atlas-skeleton"))).toBeNull();
+    expect(host.querySelector(sel("atlas-loader"))).toBeNull();
     expect(host.querySelector(sel("atlas-retry"))).not.toBeNull();
   });
 });

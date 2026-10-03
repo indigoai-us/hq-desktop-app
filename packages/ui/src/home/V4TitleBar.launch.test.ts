@@ -105,6 +105,11 @@ describe("V4TitleBar Launch menu", () => {
     expect(host.querySelector('[data-testid="titlebar-notifications"]')).toBeTruthy();
   });
 
+  it("OWNER-R36: hides the sidebar toggle on a page with no side pane", async () => {
+    await mountBar(makeAdapter({}), { sidebarToggleHidden: true });
+    expect(host.querySelector('[data-testid="titlebar-sidebar-toggle"]')).toBeNull();
+  });
+
   it("offers a labeled host create action without launching an external tool", async () => {
     const onselect = vi.fn();
     const adapter = makeAdapter({});

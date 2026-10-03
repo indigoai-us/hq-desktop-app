@@ -18,7 +18,6 @@ import {
   extraParamCompanyKey,
   sessionExtraRequiresCompany,
   historyNeighbor,
-  priorNonLibraryIndex,
   NAVIGATION_HISTORY_CAP,
   type NavigationDestination,
   type NavigationEntry,
@@ -68,24 +67,24 @@ function entry(
   );
 }
 
-describe("Library Back history target", () => {
-  it("returns no target when history has no earlier non-Library route", () => {
-    const history = createNavigationHistory();
-    const skills = { kind: "library", tab: "skills" } as const;
-    history.push(entry(skills, { companyUid: "cmp_previous" }));
-    history.push(entry(skills, { companyUid: "cmp_current" }));
-
-    expect(history.snapshot().entries).toHaveLength(2);
-    expect(priorNonLibraryIndex(history.snapshot())).toBeNull();
+describe("Marketplace route (OWNER-R33, was Library)", () => {
+  it("redirects the retired Skills and Workers tabs, and unknown tabs, to Browse", () => {
+    for (const tab of ["skills", "workers", "nope", undefined]) {
+      expect(canonicalizeDestination({ kind: "library", tab, itemId: "skills/x/SKILL.md" } as never)).toEqual({
+        kind: "library",
+        tab: "marketplace",
+        itemId: null,
+      });
+    }
+    for (const tab of ["marketplace", "installed", "submit"] as const) {
+      expect(canonicalizeDestination({ kind: "library", tab })).toMatchObject({ kind: "library", tab });
+    }
   });
 
-  it("skips earlier Library tabs to find the prior app route", () => {
-    const history = createNavigationHistory();
-    history.push(entry({ kind: "messages" }));
-    history.push(entry({ kind: "library", tab: "workers" }));
-    history.push(entry({ kind: "library", tab: "skills" }));
-
-    expect(priorNonLibraryIndex(history.snapshot())).toBe(0);
+  it("labels the page Marketplace in history, never Library", () => {
+    expect(destinationLabel({ kind: "library", tab: "marketplace" })).toBe("Marketplace");
+    expect(destinationLabel({ kind: "library", tab: "installed" })).toBe("Marketplace · Installed");
+    expect(destinationLabel({ kind: "library", tab: "submit" })).toBe("Marketplace · Submit");
   });
 });
 

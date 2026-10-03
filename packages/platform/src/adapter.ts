@@ -355,6 +355,8 @@ export interface IdentityApi {
    * the only way a company-targeted flag reads as on. Omitted → person-only.
    */
   hasFeature(flag: string, scope?: FeatureScope): AdapterPromise<boolean>;
+  /** Force a fresh hq-flags snapshot after the authenticated identity changes. */
+  refreshFeatureFlags?(): Promise<void>;
   /**
    * Optional live subscription to a feature flag. When the underlying flag
    * registry publishes a fresh snapshot, `onChange` fires with the resolved
@@ -1047,7 +1049,21 @@ export interface CompanyApi {
   ): AdapterPromise<Json>;
   getSecrets(slug: string): AdapterPromise<Json[]>;
   listMembers(slug: string): AdapterPromise<Json[]>;
-  getTeamTelemetry(slug: string): AdapterPromise<Json>;
+  /**
+   * OWNER-R9: the company's membership roster with role, acceptedAt, origin and
+   * membershipKey (`GET /membership/company/{uid}` → `{members}`). Desktop only.
+   */
+  listCompanyMemberships?(companyUid: string): AdapterPromise<Json>;
+  /** OWNER-R9: unclaimed invites (`GET /membership/company/{uid}/pending` → `{pending}`). */
+  listPendingMemberships?(companyUid: string): AdapterPromise<Json>;
+  /** OWNER-R9: files and secrets one member can reach (`GET /files/{uid}/members/{personUid}/access`). */
+  getMemberAccess?(companyUid: string, personUid: string): AdapterPromise<Json>;
+  /** OWNER-R9: change a member's role (`POST /membership/role`). Server enforces who may. */
+  setMemberRole?(companyUid: string, membershipKey: string, newRole: string): AdapterPromise<Json>;
+  /** OWNER-R9: remove a member or revoke an invite (`POST /membership/revoke`). Server keeps the last owner. */
+  revokeMembership?(companyUid: string, membershipKey: string): AdapterPromise<Json>;
+  /** Company telemetry; `range` is a `YYYY-MM-DD` window (the host defaults to the last 30 days). */
+  getTeamTelemetry(slug: string, range?: { from: string; to: string }): AdapterPromise<Json>;
   claimPendingInvite(slug: string): AdapterPromise<Json>;
   connectToCloud(slug: string): AdapterPromise<Json>;
   getSummary(slug: string): AdapterPromise<Json>;
@@ -1198,6 +1214,14 @@ export interface FilesApi {
    * page's `cursor` to continue a listing.
    */
   listVaultPrefix(companyUid: string, prefix: string, cursor?: string): AdapterPromise<Json>;
+  /**
+   * OWNER-R17: who can open one vault path, with inherited grants and display
+   * names (hq-pro GET /files/{companyUid}/acl/tree, the read the web console's
+   * access panel uses). Read-only. Hosts without it omit it.
+   */
+  getAccessTree?(companyUid: string, prefix: string): AdapterPromise<Json>;
+  /** OWNER-R17: the company's groups, for names (hq-pro GET /secrets/{companyUid}/groups). Read-only. */
+  listAccessGroups?(companyUid: string): AdapterPromise<Json>;
   /**
    * Atlas map listing from the company folder synced to this machine
    * (QA-016). Desktop only. Each call resolves null when the company folder is
@@ -1376,6 +1400,15 @@ export interface AgentsApi {
    * (daily series + totals). Optional so older test doubles stay valid.
    */
   getMyTelemetry?(from: string, to: string): AdapterPromise<Json>;
+  /**
+   * OWNER-R27: session history recorded on this Mac in the HQ workspace
+   * folder (workspace/sessions + workspace/threads), newest first. Native
+   * hosts only; `from`/`to` are YYYY-MM-DD.
+   */
+  listLocalSessions?(
+    range: { from: string; to: string },
+    page?: { offset?: number; limit?: number },
+  ): AdapterPromise<Json>;
   /**
    * POST /outpost/status — the caller's own Outpost row (state, region,
    * instance state, telemetry timestamps). A 404 failure means no Outpost.

@@ -39,7 +39,6 @@ export const CONSOLE_RAIL_FILES = [
   "company/files-connect/DeployAccessForm.svelte",
   "outpost/OutpostPage.svelte",
   "personal/PersonalRailPage.svelte",
-  "account/AccountPages.svelte",
   "common/LiveNowCard.svelte",
   "common/ListEmptyState.svelte",
   "home/V4TitleBar.svelte",

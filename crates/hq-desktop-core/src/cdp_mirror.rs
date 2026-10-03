@@ -878,6 +878,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pre_auth_signin_failure_reaches_cdp_without_a_login_token() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/flags/resolve-public"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"enabled":true}"#))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/cdp/ingest"))
+            .respond_with(ResponseTemplate::new(202))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut c = ctx();
+        c.anon_id = None;
+        let mirror = Mirror::new(c, endpoints(&server), Box::new(|_, _| {}));
+        mirror.record(
+            EVENT_AUTH_FAILURE,
+            Map::from_iter([
+                ("provider".into(), json!("google")),
+                ("step".into(), json!("provider_page_opened")),
+                ("errorCategory".into(), json!("network")),
+            ]),
+        );
+
+        assert!(mirror.resolve_gate().await);
+        mirror.flush_now().await;
+
+        let requests = server.received_requests().await.unwrap();
+        let post = requests
+            .iter()
+            .find(|request| request.method == "POST")
+            .unwrap();
+        assert!(
+            post.headers.get("authorization").is_none(),
+            "the pre-auth CDP path must not require a login token"
+        );
+        let body: Value = serde_json::from_slice(&post.body).unwrap();
+        assert!(body.get("profileId").is_none());
+        assert_eq!(body["events"][0]["eventType"], EVENT_AUTH_FAILURE);
+        assert_eq!(body["events"][0]["properties"]["provider"], "google");
+        assert_eq!(body["events"][0]["properties"]["errorCategory"], "network");
+        server.verify().await;
+    }
+
+    #[tokio::test]
     async fn signin_link_visitor_is_adopted_persisted_and_posted_with_origin() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))

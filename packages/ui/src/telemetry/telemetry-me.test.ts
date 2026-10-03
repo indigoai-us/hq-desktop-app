@@ -4,7 +4,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import TelemetryView from "./TelemetryView.svelte";
 import { createTelemetryCache } from "./telemetry-cache.js";
 import {
-  MISSING_SESSION_ROWS,
   createMyTelemetryFetcher,
   modelDisplayName,
   modelFamily,
@@ -57,7 +56,7 @@ describe("My Telemetry from /v1/telemetry/me", () => {
   it("maps real totals and leaves unknown parts empty instead of inventing them", () => {
     const snap = snapshotFromMe(meBody("2026-09-03", "2026-10-02", 42), "30d");
     expect(snap.sessions).toBe(42);
-    expect(snap.tokensLabel).toBe("3k");
+    expect(snap.tokensLabel).toBe("2.5K");
     expect(snap.deploys).toBe(4);
     expect(snap.storiesShipped).toBe(6);
     expect(snap.distinctSkills).toBe(2);
@@ -70,7 +69,10 @@ describe("My Telemetry from /v1/telemetry/me", () => {
     expect(snap.sessionsRows).toEqual([]);
     expect(snap.bots).toEqual([]);
     expect(snap.byCompany).toEqual([]);
-    expect(snap.notice).toBe(MISSING_SESSION_ROWS);
+    // OWNER-R18: no developer notice; the view states the gap in one sentence.
+    expect(snap.notice).toBe("");
+    expect(snap.sessionsAvailable).toBe(false);
+    expect(snap.medianGap).toBe("—");
   });
 
   it("puts model-less tokens in an Other row so the table adds up to the headline (QA-081)", () => {
@@ -163,12 +165,20 @@ describe("TelemetryView on the real source", () => {
     document.body.appendChild(target);
     component = mount(TelemetryView, { target, props: { cache } });
     flushSync();
-    expect(target.querySelector("[data-testid='telemetry-skeleton']")).not.toBeNull();
+    expect(target.querySelector("[data-testid='telemetry-loading']")).not.toBeNull();
     await settle();
     expect(target.querySelector(".stat .n")?.textContent).toContain("42");
     expect(target.textContent).not.toContain("128");
     expect(target.textContent).not.toContain("LiveRecover");
-    expect(target.querySelector("[data-testid='telemetry-notice']")?.textContent).toContain("per-session telemetry endpoint");
+    // OWNER-R31: no session source in this window, so no Sessions section,
+    // no "not available" sentence, no false 0, and no median gap.
+    expect(target.querySelector("[data-testid='telemetry-notice']")).toBeNull();
+    expect(target.querySelector("[data-testid='telemetry-sessions']")).toBeNull();
+    expect(target.textContent).not.toContain("not available yet");
+    expect(target.querySelector("[data-testid='telemetry-sessions-count']")).toBeNull();
+    expect(target.querySelector(".srow")).toBeNull();
+    expect(target.textContent).not.toContain("median");
+    expect(target.textContent).not.toContain("endpoint");
 
     const seven = [...target.querySelectorAll("button.tab")].find((b) => b.textContent === "7d") as HTMLButtonElement;
     seven.click();

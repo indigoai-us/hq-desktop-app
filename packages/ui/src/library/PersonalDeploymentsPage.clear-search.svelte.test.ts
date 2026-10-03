@@ -7,7 +7,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { flushSync, mount, tick, unmount } from "svelte";
 
-import PersonalDeploymentsPage from "./PersonalDeploymentsPage.svelte";
+import PersonalDeploymentsPage, { resetDeployPillsForTests } from "./PersonalDeploymentsPage.svelte";
+import { chooseDropdown, dropdownValue } from "../test-support/dropdown.js";
 import { deployAppsFixture } from "./personal-deployments.fixture.js";
 
 let host: HTMLDivElement | null = null;
@@ -19,6 +20,7 @@ afterEach(async () => {
   host?.remove();
   host = null;
   localStorage.clear();
+  resetDeployPillsForTests();
 });
 
 async function settle(): Promise<void> {
@@ -50,11 +52,8 @@ describe("PersonalDeploymentsPage empty-state Clear search (QA-091)", () => {
     await settle();
     expect(subdomains(host)).toHaveLength(6);
 
-    const personal = [...host.querySelectorAll<HTMLButtonElement>("aside .row")].find(
-      (b) => b.textContent?.trim() === "Personal",
-    )!;
-    personal.click();
-    flushSync();
+    // OWNER-R34: scope is the header Scope pill.
+    await chooseDropdown(host, "deploy-scope-pill", "personal");
     expect(subdomains(host)).toHaveLength(3);
 
     const search = host.querySelector<HTMLInputElement>("input.search")!;
@@ -68,7 +67,7 @@ describe("PersonalDeploymentsPage empty-state Clear search (QA-091)", () => {
     flushSync();
 
     expect(search.value).toBe("");
-    expect(personal.getAttribute("aria-current")).toBe("true");
+    expect(await dropdownValue(host, "deploy-scope-pill")).toBe("personal");
     const rows = subdomains(host);
     expect(rows).toHaveLength(3);
     for (const row of rows) expect(row).toContain("Personal");

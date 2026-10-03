@@ -36,6 +36,7 @@ const OVERLAYS = [
   "goals/NewGoalSheet.svelte",
   "home/CorePopover.svelte",
   "inbox/NotificationsPopover.svelte",
+  "meetings/InviteNotetakerSheet.svelte",
   "projects/NewProjectSheet.svelte",
   "shell/AccountMenu.svelte",
   "shell/MoreCompaniesPopover.svelte",
@@ -121,4 +122,38 @@ describe("overlay surface guard (OWNER-006)", () => {
     expect(backgroundViolations(".a { background: rgba(0, 0, 0, 0.45); }")).toEqual([]);
     expect(backgroundViolations(".a { background: var(--overlay-bg); }")).toEqual([]);
   });
+
+  // OWNER-R33: the top bar (z-index 30) and its raised menus share the shell's
+  // stacking context with the page bodies. A full page that positions itself
+  // over the shell with a z-index at or above the top bar buries the Launch
+  // and Core menus, the notification panel and the account menu. The real
+  // hit-test lives in apps/sync/e2e/browser/top-bar-menus-above-pages.spec.ts;
+  // this is its source-level twin for the vitest run.
+  it("no full-page view stacks itself above the top bar", () => {
+    const titleBar = styleOf(readFileSync(join(src, "home/V4TitleBar.svelte"), "utf8"));
+    const barZ = Number(titleBar.match(/\.v4-titlebar\s*\{[^}]*z-index:\s*(\d+)/)?.[1]);
+    expect(barZ).toBeGreaterThan(0);
+    const PAGES: Array<[string, string]> = [
+      ["library/LibraryOverlay.svelte", ".marketplace-page"],
+      ["settings/ShellSettings.svelte", ""],
+      ["meetings/MeetingsPage.svelte", ""],
+    ];
+    for (const [file, root] of PAGES) {
+      const css = styleOf(readFileSync(join(src, file), "utf8"));
+      for (const m of css.matchAll(/([^{}]+)\{([^}]*)\}/g)) {
+        const z = Number(m[2].match(/z-index:\s*(\d+)/)?.[1] ?? 0);
+        const covering = /position:\s*(absolute|fixed)/.test(m[2]) && /inset:\s*0\b/.test(m[2]);
+        if (covering) expect(z, `${file} ${m[1].trim()}`).toBeLessThan(barZ);
+      }
+      if (root) {
+        const block = css.match(new RegExp(`\\${root}\\s*\\{([^}]*)\\}`))?.[1] ?? "";
+        expect(block, `${file} ${root}`).not.toMatch(/z-index/);
+        expect(block, `${file} ${root}`).not.toMatch(/position:\s*(absolute|fixed)/);
+      }
+    }
+    // The Marketplace renders in the shell body under the top bar, not after it.
+    const shell = readFileSync(join(src, "shell/DesktopApp.svelte"), "utf8");
+    expect(shell).toMatch(/\{:else if view === "library"\}\s*(<!--[\s\S]*?-->\s*)?<div class="desktop-body" data-testid="marketplace-host">/);
+  });
 });
+

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { compactNumber } from "../common/compact-number.js";
   /**
    * Slack-style right-hand agent detail pane: identity, scheduled jobs,
    * 30-day usage, and owner/admin settings. Data comes from adapter.agents
@@ -14,7 +15,6 @@
   import type { AvatarPack, AvatarSelection } from "../avatars/types.js";
   import {
     defaultTelemetryRange,
-    formatTokenCount,
     headerFromMobileRoster,
     headerFromStatusPayload,
     jobsFromPayload,
@@ -495,7 +495,7 @@
           <div>
             <dt>Tokens</dt>
             <dd data-testid="agent-detail-usage-tokens">
-              {formatTokenCount(usage.tokens)}
+              {compactNumber(usage.tokens)}
             </dd>
           </div>
           <div>
@@ -539,7 +539,7 @@
                 <span class="ad-bar" aria-hidden="true"
                   ><i style={`width:${model.pct}%`}></i></span
                 >
-                <span class="ad-model-n">{formatTokenCount(model.tokens)}</span>
+                <span class="ad-model-n">{compactNumber(model.tokens)}</span>
               </li>
             {/each}
           </ul>

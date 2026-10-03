@@ -1,9 +1,19 @@
+<script lang="ts" module>
+  import { DEFAULT_DEPLOY_PILLS as DEFAULTS, type DeployFilterPills as Pills } from "./personal-deployments.js";
+  /** OWNER-R34: filter state survives leaving and coming back in a session. */
+  let sessionPills: Pills = { ...DEFAULTS };
+  export function resetDeployPillsForTests(): void {
+    sessionPills = { ...DEFAULTS };
+  }
+</script>
+
 <script lang="ts">
-  import { withReadDeadline } from "../common/read-deadline.js";
+  import Dropdown from "../common/LazyDropdown.svelte";
+  import ReadLoader from "../common/ReadLoader.svelte";
   import RailButton from "../common/button/RailButton.svelte";
   /**
    * Personal Deployments (US-031). Real hq-deploy apps across the personal
-   * scope and every cloud company. Paints the cached list first (skeleton on
+   * scope and every cloud company. Paints the cached list first (loader on
    * the first ever load), then refreshes. A deploying row keeps its previous
    * build serving until swap.
    */
@@ -16,7 +26,10 @@
   import type { Workspace } from "../chat/workspaces.js";
   import { DEPLOY_STEP_LABELS } from "../company/deploy-progress.js";
   import {
-    filterDeployments,
+    filterDeploymentsBy,
+    pillsAreDefault,
+    DEFAULT_DEPLOY_PILLS,
+    type DeployFilterPills,
     formatViews,
     loadDeployments,
     progressFor,
@@ -26,7 +39,6 @@
     writePersonalDeploymentsCache,
     type DeployAppsPage,
     type DeployScope,
-    type PersonalDeployFilter,
     type PersonalDeployment,
     type PersonalDeploymentsCache,
   } from "./personal-deployments.js";
@@ -48,7 +60,9 @@
   let refreshing = $state(false);
   let failedScopes = $state<string[]>([]);
   let unavailable = $state(false);
-  let filter = $state<PersonalDeployFilter>("all");
+  // OWNER-R34: two header pills (status, scope) plus "Deployed by you" and
+  // "Deployed by your bots" toggles. Kept for the session across visits.
+  let pills = $state<DeployFilterPills>({ ...sessionPills });
   let query = $state("");
   let selectedId = $state<string | null>(null);
   let limit = $state(PAGE);
@@ -81,8 +95,7 @@
     refreshing = true;
     loadFailed = false;
     const fetchScope = async (scope: string): Promise<DeployAppsPage> => {
-      // BLANK-1: a read that never answers counts as a failed scope.
-      const result = await withReadDeadline(list(scope), `deploy apps ${scope}`);
+      const result = await list(scope);
       if (!result.ok) throw new Error(`deploy apps ${scope} ${result.reason}`);
       return result.value as DeployAppsPage;
     };
@@ -119,7 +132,19 @@
     (row.lastVisitAt ? relativeAge(row.lastVisitAt, now) : "") || row.lastVisit;
 
   const allRows = $derived(cache?.rows ?? []);
-  const rows = $derived(filterDeployments(allRows, filter, query));
+  const rows = $derived(filterDeploymentsBy(allRows, pills, query));
+  $effect(() => {
+    sessionPills = { ...pills };
+  });
+  const statusCounts = $derived({
+    active: allRows.filter((r) => r.status === "active" || r.status === "deploying" || r.status === "building").length,
+    sleeping: allRows.filter((r) => r.status === "sleeping").length,
+    deactivated: allRows.filter((r) => r.status === "deactivated").length,
+  });
+  const scopeCounts = $derived({
+    personal: allRows.filter((r) => r.scope === "personal").length,
+    company: allRows.filter((r) => r.scope === "company").length,
+  });
   const shown = $derived(rows.slice(0, limit));
   const selected = $derived(allRows.find((row) => row.id === selectedId) ?? rows[0] ?? null);
   const progress = $derived(selected && (selected.status === "deploying" || selected.status === "building")
@@ -137,19 +162,8 @@
     failedScopes.map((id) => scopes.find((s) => s.id === id)?.label ?? id).join(", "),
   );
 
-  const filters: { id: PersonalDeployFilter; label: string }[] = [
-    { id: "all", label: "All" },
-    { id: "active", label: "Active" },
-    { id: "sleeping", label: "Sleeping" },
-    { id: "deactivated", label: "Deactivated" },
-    { id: "scope-personal", label: "Personal" },
-    { id: "scope-company", label: "Company" },
-    { id: "by-you", label: "You" },
-    { id: "by-bots", label: "Your bots" },
-  ];
-
-  function pick(next: PersonalDeployFilter): void {
-    filter = next;
+  function setPills(next: Partial<DeployFilterPills>): void {
+    pills = { ...pills, ...next };
     limit = PAGE;
   }
 
@@ -171,20 +185,49 @@
 </script>
 
 <div class="page" data-testid="personal-deployments">
-  <aside class="pane" aria-label="Deployments">
-    {#each filters.filter((item) => actions || item.id !== "by-bots") as item (item.id)}
-      <button type="button" class="row" class:active={filter === item.id} aria-current={filter === item.id ? "true" : undefined} onclick={() => pick(item.id)}>
-        {item.label}
-      </button>
-    {/each}
-  </aside>
   <main>
     <div class="toolbar">
       <h1>Deployments</h1>
       {#if cache}
         <span class="meta-line" data-meta-line data-testid="deploy-count">{countLabel}</span>
-        <span class="meta-line" data-meta-line><span class="meta-dot dot live"></span>{activeCount.toLocaleString()} active</span>
+        <span class="meta-line" data-meta-line data-testid="deploy-active-count"><span class="meta-dot dot live"></span>{activeCount.toLocaleString()} active</span>
         {#if deployingCount > 0}<span class="meta-line" data-meta-line>{deployingCount} deploying</span>{/if}
+        <span class="pills" data-testid="deploy-pills">
+          <Dropdown
+            pill
+            active={pills.status !== "all"}
+            testid="deploy-status-pill"
+            label="Status"
+            value={pills.status}
+            onchange={(v) => setPills({ status: v as DeployFilterPills["status"] })}
+            options={[
+              { value: "all", label: "All statuses" },
+              { value: "active", label: "Active", detail: statusCounts.active.toLocaleString() },
+              { value: "sleeping", label: "Sleeping", detail: statusCounts.sleeping.toLocaleString() },
+              { value: "deactivated", label: "Deactivated", detail: statusCounts.deactivated.toLocaleString() },
+            ]}
+          />
+          <Dropdown
+            pill
+            active={pills.scope !== "all"}
+            testid="deploy-scope-pill"
+            label="Scope"
+            value={pills.scope}
+            onchange={(v) => setPills({ scope: v as DeployFilterPills["scope"] })}
+            options={[
+              { value: "all", label: "All scopes" },
+              { value: "personal", label: "Personal", detail: scopeCounts.personal.toLocaleString() },
+              { value: "company", label: "Company", detail: scopeCounts.company.toLocaleString() },
+            ]}
+          />
+          <button type="button" class="toggle-pill" class:sel={pills.byYou} aria-pressed={pills.byYou} data-testid="deploy-by-you" onclick={() => setPills({ byYou: !pills.byYou })}>Deployed by you</button>
+          {#if actions}
+            <button type="button" class="toggle-pill" class:sel={pills.byBots} aria-pressed={pills.byBots} data-testid="deploy-by-bots" onclick={() => setPills({ byBots: !pills.byBots })}>Deployed by your bots</button>
+          {/if}
+          {#if !pillsAreDefault(pills)}
+            <button type="button" class="clear-pills" data-testid="deploy-clear-filters" onclick={() => setPills({ ...DEFAULT_DEPLOY_PILLS })}>Clear</button>
+          {/if}
+        </span>
       {/if}
       {#if refreshing}<span class="meta-line" data-meta-line aria-live="polite">Refreshing…</span>{/if}
       <span class="grow"></span>
@@ -205,8 +248,8 @@
           {:else if unavailable}
             <p class="empty" data-testid="deploy-unavailable">Deployments load in the desktop app once you're signed in.</p>
           {:else}
-            <div data-testid="deploy-skeleton" aria-busy="true">
-              {#each [0, 1, 2, 3, 4, 5] as i (i)}<div class="skel"></div>{/each}
+            <div aria-busy="true">
+              <ReadLoader testid="deploy-loader" onretry={() => (loadAttempt += 1)} />
             </div>
           {/if}
         {:else if rows.length === 0}
@@ -214,14 +257,14 @@
             total={allRows.length}
             shown={0}
             {query}
-            filtered={filter !== "all"}
+            filtered={!pillsAreDefault(pills)}
             noun={["deployment", "deployments"]}
             emptyCopy="No deployments yet."
             onclear={() => {
               // QA-091: "Clear search" clears only the query and keeps the
               // scope; "Clear filters" (no query) resets the filter.
               if (query.trim()) query = "";
-              else filter = "all";
+              else pills = { ...DEFAULT_DEPLOY_PILLS };
               limit = PAGE;
             }}
             testid="personal-deploy-empty"
@@ -292,7 +335,7 @@
      --hover / --sel fills, --t1/--t2/--t3 ink. No mono outside code. */
   .page {
     display: grid;
-    grid-template-columns: 200px minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
     height: 100%;
     min-height: 0;
     color: var(--t1);
@@ -300,6 +343,19 @@
     font-size: 13px;
     line-height: 17px;
   }
+  .pills { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .toggle-pill, .clear-pills {
+    min-height: 28px;
+    padding: 0 12px;
+    border: 1px solid var(--v4-hairline, var(--line));
+    border-radius: 999px;
+    background: transparent;
+    color: var(--t1);
+    font: inherit;
+    cursor: pointer;
+  }
+  .toggle-pill.sel { background: var(--sel); border-color: transparent; }
+  .clear-pills { border-color: transparent; color: var(--t2); }
   .pane {
     border-right: 1px solid var(--line);
     background: var(--side-bg);
@@ -373,7 +429,6 @@
   .load-error p { margin: 0; }
   .st.err { color: var(--v4-error); }
   .st.off { color: var(--t3); }
-  .skel { height: 31px; margin: 1px 0; border-radius: 8px; background: var(--raised); }
   .more {
     margin: 8px; height: 28px; padding: 0 10px; border: none; border-radius: 8px;
     background: var(--btn-bg); color: var(--t2); font: inherit; cursor: pointer;
