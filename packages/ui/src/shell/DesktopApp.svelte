@@ -1341,10 +1341,12 @@
     try {
       const res = await adapter.updates.installPendingUpdate();
       if (!res.ok) {
+        console.warn("[update] install pending update failed", res.message ?? res.reason);
         updateInstallError = res.message ?? res.reason ?? "Could not restart.";
         updateInstalling = false;
       }
     } catch (err) {
+      console.warn("[update] install pending update failed", err);
       updateInstallError = err instanceof Error ? err.message : "Could not restart.";
       updateInstalling = false;
     }
