@@ -1,7 +1,7 @@
 <!--
   Meetings sidepane (console-rail US-021).
 
-  Sidepane host with the Messages grammar: header with Filter,
+  Sidepane host with the Messages grammar: header with Filter and Invite notetaker,
   then Live, Today, Tomorrow, then one day header per past day (the shared
   Messages day-group header). Rows are a time slot, title, an optional
   company mark, and a notes mark on past rows with a recap. Sections derive
@@ -38,6 +38,8 @@
     memory?: SidepaneScrollMemory;
     onselect?: (id: string) => void;
     onfilter?: (next: MeetingsFilter) => void;
+    /** Opens "Invite notetaker to a meeting" for a link not on the calendar. */
+    oninvite?: () => void;
     onearlier?: () => void;
   }
 
@@ -53,6 +55,7 @@
     memory,
     onselect,
     onfilter,
+    oninvite,
     onearlier,
   }: Props = $props();
 
@@ -87,6 +90,18 @@
       >
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4" /></svg>
       </button>
+      {#if oninvite}
+        <button
+          type="button"
+          class="icon-btn"
+          aria-label="Invite notetaker to a meeting"
+          title="Invite notetaker to a meeting"
+          data-testid="meetings-invite-notetaker"
+          onclick={() => oninvite?.()}
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+        </button>
+      {/if}
       {#if filterOpen}
         <div class="popover" role="dialog" aria-label="Filter meetings" data-testid="meetings-filter-popover">
           <div class="pop-sec">Company</div>
@@ -195,8 +210,11 @@
     position: absolute;
     inset: min(0px, calc(50% - 14px));
   }
-  /* Filter is 26 px and pads 2 px on its outer side to reach a 28 px hit area. */
+  /* Filter and Invite notetaker are 26 px with a 2 px gap: each pads 2 px on
+     its outer side only, so both reach 28 px and the two hit areas meet at
+     the gap without overlapping. */
   .pane-head .icon-btn::after { inset: -1px 0 -1px -2px; }
+  .pane-head .icon-btn + .icon-btn::after { inset: -1px -2px -1px 0; }
   .pane-head {
     position: relative;
     display: flex;

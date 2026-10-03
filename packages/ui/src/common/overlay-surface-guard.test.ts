@@ -36,6 +36,7 @@ const OVERLAYS = [
   "goals/NewGoalSheet.svelte",
   "home/CorePopover.svelte",
   "inbox/NotificationsPopover.svelte",
+  "meetings/InviteNotetakerSheet.svelte",
   "projects/NewProjectSheet.svelte",
   "shell/AccountMenu.svelte",
   "shell/MoreCompaniesPopover.svelte",

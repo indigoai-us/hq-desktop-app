@@ -21,6 +21,7 @@
   import { eventStart } from "./meetings-model";
   import { agendaItems, attendeeViews, locationLabel, meetingJoinUrl, organizerLabel } from "./meeting-details";
   import MeetingsToolbarControls from "./MeetingsToolbarControls.svelte";
+  import NotetakerControl from "./NotetakerControl.svelte";
   import { meetingsStore } from "./meetings-store.svelte";
   import { meetingsRailState } from "./meetings-rail-state.svelte";
   import { PROVIDER_LABEL, detectMeetingProvider } from "./meeting-link";
@@ -231,6 +232,7 @@
       </div>
       <span class="grow"></span>
       {#if mode === "upcoming"}
+        <NotetakerControl {event} {bot} {url} />
         <span class="hint">{canJoin ? "Ready to join" : "Join opens 10 min before"}</span>
         <button type="button" class="btn primary" data-testid="meeting-join" disabled={!canJoin} title={canJoin ? "Opens the meeting link in your browser" : "Opens 10 min before the meeting starts"} onclick={() => url && openExternal?.(url)}>Join</button>
         <button type="button" class="btn" data-testid="meeting-copy" disabled={!url} onclick={copyLink}>Copy link</button>
