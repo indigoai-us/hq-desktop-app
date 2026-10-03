@@ -18,6 +18,7 @@
   import type { PlatformAdapter } from "@hq/platform";
   import { platformStrings } from "../common/platform-strings.js";
   import { renderMarkdownDocument } from "../common/markdown.js";
+  import { markdownLinks } from "../common/markdown-links.js";
   import { filePreviewKind } from "./file-preview-kind.js";
   import OpenFileInClaudeCode from "./OpenFileInClaudeCode.svelte";
   import UnavailableNote from "../common/UnavailableNote.svelte";
@@ -29,6 +30,10 @@
     adapter: PlatformAdapter;
     /** HQ-folder-relative, forward-slash path of the selected file. */
     path: string;
+    /** Open another file from a relative Markdown link (QA-094). Links only
+     *  resolve to files under `scopeRoot` when it is set. */
+    onopenpath?: (path: string) => void;
+    scopeRoot?: string | null;
   }
 
   interface AuthorizedFilePreview {
@@ -36,7 +41,9 @@
     dataBase64: string;
   }
 
-  let { adapter, path }: Props = $props();
+  let { adapter, path, onopenpath, scopeRoot = null }: Props = $props();
+  /** Plain-language note when a relative link points at a missing file. */
+  let linkNote = $state<string | null>(null);
 
   // Desktop-only affordances render only when the platform offers them —
   // otherwise nothing (never a dead button).
@@ -99,6 +106,7 @@
     pathCopied = false;
     copyingPath = false;
     copyError = null;
+    linkNote = null;
     revealGeneration += 1;
     copyGeneration += 1;
     previewUnavailable = false;
@@ -170,6 +178,37 @@
       cancelled = true;
     };
   });
+
+  function inScope(target: string): boolean {
+    const root = scopeRoot?.replace(/\/$/, "");
+    return !root || target === root || target.startsWith(`${root}/`);
+  }
+
+  async function linkTargetExists(target: string): Promise<boolean> {
+    const targetKind = filePreviewKind(target);
+    if (targetKind === "unknown") return true;
+    const res =
+      targetKind === "image" || targetKind === "pdf"
+        ? await adapter.files.getAuthorizedPreview(target)
+        : await adapter.files.getFileContent(target);
+    if (!res.ok && res.reason !== "unavailable") {
+      console.warn("Markdown link target unreadable:", target, res.message);
+    }
+    return res.ok;
+  }
+
+  async function openLinkedFile(target: string): Promise<void> {
+    const from = path;
+    const name = target.split("/").pop() ?? target;
+    linkNote = null;
+    const exists = inScope(target) && (await linkTargetExists(target));
+    if (path !== from) return;
+    if (!exists) {
+      linkNote = `${name} isn't in this project`;
+      return;
+    }
+    onopenpath?.(target);
+  }
 
   async function revealInFinder(): Promise<void> {
     if (!path || revealing) return;
@@ -398,7 +437,14 @@
       </object>
     {:else if content !== null && isMarkdown}
       <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-      <article class="markdown-body" data-testid="file-preview-markdown">
+      {#if linkNote}
+        <p class="link-note" role="status" data-testid="file-preview-link-note">{linkNote}</p>
+      {/if}
+      <article
+        class="markdown-body"
+        data-testid="file-preview-markdown"
+        use:markdownLinks={{ currentPath: path, onopenfile: (target) => void openLinkedFile(target) }}
+      >
         {@html markdownHtml}
       </article>
     {:else if content !== null}
@@ -641,6 +687,10 @@
   }
 
   /* ---- markdown typography (mirrors LibraryDetailPanel .markdown-body) ----- */
+  .link-note {
+    margin: 0 0 8px;
+    color: var(--t2, inherit);
+  }
   .markdown-body {
     color: var(--v4-text-1, var(--fg));
     font-size: 13px;

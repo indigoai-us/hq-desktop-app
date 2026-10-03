@@ -16,6 +16,7 @@
   import LazyDoor from "../shell/LazyDoor.svelte";
   import ShowMoreRow from "../shell/ShowMoreRow.svelte";
   import { profilePaneDoor } from "../shell/lazy-doors.js";
+  import { dismissable } from "../common/dismissable.js";
   import { pageRows } from "../shell/list-paging.js";
   import { cloudBotsFromRoster } from "../settings/cloud-bots.js";
   import {
@@ -56,6 +57,9 @@
   let cloudPhase = $state<"shimmer" | "ready">("shimmer");
   let filter = $state<BotFilter>("all");
   let selected = $state<string | null>(null);
+  // QA-093: Close profile and Escape hide the inspector until a row is picked.
+  // Clearing `selected` alone let the first-row fallback reopen it at once.
+  let dismissed = $state(false);
   let pages = $state(1);
 
   function localRows(): BotListRow[] {
@@ -78,7 +82,9 @@
     if (cloudPhase === "ready") publishCompanyPageCount(companyUid, "bots", localRows().length + cloud.length);
   });
   const page = $derived(pageRows(rows, pages));
-  const current = $derived(rows.find((row) => row.uid === selected) ?? rows[0] ?? null);
+  const current = $derived(
+    dismissed ? null : (rows.find((row) => row.uid === selected) ?? rows[0] ?? null),
+  );
   const empty = $derived(cloudPhase === "ready" && localRows().length === 0 && cloud.length === 0);
 
   onMount(() => {
@@ -115,6 +121,16 @@
   $effect(() => {
     if (current && selected !== current.uid) selected = current.uid;
   });
+
+  function selectRow(uid: string): void {
+    selected = uid;
+    dismissed = false;
+  }
+
+  function closeProfile(): void {
+    selected = null;
+    dismissed = true;
+  }
 
   function kindLabel(row: BotListRow): string {
     return row.kind === "local" ? "Local" : "Cloud";
@@ -163,7 +179,7 @@
             class:is-selected={current?.uid === row.uid}
             aria-current={current?.uid === row.uid}
             data-testid="bot-row"
-            onclick={() => (selected = row.uid)}
+            onclick={() => selectRow(row.uid)}
           >
             <span class="sq" aria-hidden="true">
               <svg viewBox="0 0 14 14" width="12" height="12"><rect x="2.5" y="4" width="9" height="7" rx="2" stroke="currentColor" stroke-width="1.3" fill="none" /><path d="M7 2v2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" /></svg>
@@ -179,7 +195,11 @@
         {/if}
       </div>
       {#if current}
-        <aside class="inspector" data-testid="bot-inspector">
+        <aside
+          class="inspector"
+          data-testid="bot-inspector"
+          use:dismissable={{ onclose: closeProfile, trap: false, autofocus: false }}
+        >
           {#key current.uid}
             <LazyDoor
               door={profilePaneDoor}
@@ -193,7 +213,7 @@
                 runtimeKind: current.kind,
                 companyUid,
                 agents: adapter?.agents ?? null,
-                onclose: () => (selected = null),
+                onclose: closeProfile,
                 onmessage: () => onmessage?.(current.uid, current.name),
               }}
             >

@@ -441,6 +441,7 @@
   import LinkContextMenu from "../common/LinkContextMenu.svelte";
   import {
     handleLinkActivate,
+    setHostOpenUrl,
     type LinkMenuAnchor,
   } from "../common/external-links.js";
   import {
@@ -2371,6 +2372,11 @@
   // Lazy surfaces (profile panes, popovers, create sheets) warm once the first
   // frame is up, so the first click rarely shows their skeleton.
   onMount(() => preloadDoorsWhenIdle());
+  // Markdown previews route http(s) links through the host opener (QA-094).
+  onMount(() => {
+    setHostOpenUrl(onopenurl ?? null);
+    return () => setHostOpenUrl(null);
+  });
   onMount(() => {
     if (!adapter.bots) return;
     void refreshLocalBots();

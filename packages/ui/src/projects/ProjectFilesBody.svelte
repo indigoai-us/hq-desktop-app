@@ -361,7 +361,7 @@
       <p class="files-notice" role="status" data-testid="new-file-notice">{createNotice}</p>
     {/if}
     {#if selectedPath}
-      <FilePreviewPane {adapter} path={selectedPath} />
+      <FilePreviewPane {adapter} path={selectedPath} scopeRoot={vaultRoot} onopenpath={selectFile} />
     {:else}
       <div class="files-empty" data-testid="project-files-empty">
         <span class="files-empty-title">Select a file</span>
