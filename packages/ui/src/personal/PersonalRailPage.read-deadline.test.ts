@@ -41,6 +41,9 @@ describe("PersonalRailPage read deadline (BLANK-1)", () => {
     expect(document.querySelector("[data-testid='personal-secrets-skeleton']")).toBeNull();
     expect(document.querySelector("[data-testid='personal-secrets-error']")?.textContent).toContain("Could not reach your vault.");
     expect(document.querySelector("[data-testid='personal-secrets-retry']")).toBeTruthy();
+    // BLANK-2: no zero counts next to the failed read.
+    expect(document.querySelector("[data-testid='personal-secrets-count']")).toBeNull();
+    expect(document.querySelector("[data-testid='scope-personal']")?.textContent?.trim()).toBe("Personal");
   });
 
   it("a connections read that never answers ends in the failed-read state", async () => {
@@ -58,6 +61,7 @@ describe("PersonalRailPage read deadline (BLANK-1)", () => {
     expect(document.querySelector("[data-testid='personal-integrations-skeleton']")).toBeNull();
     expect(document.querySelector("[data-testid='personal-integrations-error']")?.textContent).toContain("Could not load your connections.");
     expect(document.querySelector("[data-testid='personal-integrations-retry']")).toBeTruthy();
+    expect(document.querySelector("[data-testid='connections-personal-nav']")?.textContent?.trim()).toBe("Personal");
     expect(logged).toHaveBeenCalled();
   });
 });
