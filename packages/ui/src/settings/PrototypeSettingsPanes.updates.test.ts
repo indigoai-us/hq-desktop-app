@@ -13,7 +13,7 @@ import { ok, type PlatformAdapter } from "@hq/platform";
 
 import PrototypeSettingsPanes from "./PrototypeSettingsPanes.svelte";
 import { installMemoryLocalStorage } from "../test-support/memory-local-storage.js";
-import { resetUpdateStore } from "./update-store.svelte";
+import { resetUpdateStore, setBackgroundUpdatesOff } from "./update-store.svelte";
 
 const memoryStorage = installMemoryLocalStorage();
 
@@ -247,5 +247,33 @@ describe("Updates pane: versions land before the slow core check", () => {
     expect(text).toMatch(
       /staging index build failed: HTTP 502|could not be checked|did not finish|Try again/,
     );
+  });
+});
+
+// QA-061: Settings → Updates showed Automatic updates on while About said
+// automatic updates are off in this build. Both now read one capability.
+describe("Updates pane: automatic updates follow the build capability", () => {
+  function toggle(): HTMLButtonElement | null {
+    return host.querySelector<HTMLButtonElement>('[data-testid="settings-auto-update-toggle"]');
+  }
+
+  it("shows the switch off and disabled in a build without background updates", async () => {
+    setBackgroundUpdatesOff(true);
+    const { adapter } = updatesAdapter();
+    mountUpdates(adapter);
+    await vi.waitFor(() => expect(toggle()).toBeTruthy());
+    expect(toggle()!.getAttribute("aria-checked")).toBe("false");
+    expect(toggle()!.disabled).toBe(true);
+    expect(
+      host.querySelector('[data-testid="settings-auto-update-description"]')?.textContent,
+    ).toContain("not available in this build");
+  });
+
+  it("keeps the saved preference when background updates are available", async () => {
+    setBackgroundUpdatesOff(false);
+    const { adapter } = updatesAdapter();
+    mountUpdates(adapter);
+    await vi.waitFor(() => expect(toggle()?.disabled).toBe(false));
+    expect(toggle()!.getAttribute("aria-checked")).toBe("true");
   });
 });
