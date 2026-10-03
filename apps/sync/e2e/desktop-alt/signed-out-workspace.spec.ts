@@ -26,7 +26,7 @@ describe('signed-out users open the desktop workspace for sign-in', () => {
   });
 
   it('hosts SignInPrompt in the workspace signed-out branch', () => {
-    const idx = shell.indexOf('lifecycle === \'signed-out\'');
+    const idx = shell.indexOf("{:else if lifecycle === 'signed-out'}");
     expect(idx).toBeGreaterThan(-1);
     const body = shell.slice(idx, idx + 1200);
     expect(shell).toContain("import SignInPrompt from '../components/SignInPrompt.svelte'");
