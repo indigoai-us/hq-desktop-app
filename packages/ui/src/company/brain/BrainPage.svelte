@@ -18,6 +18,7 @@
   import "../../common/button/rail-type.css";
   import "../../chat/chat-tokens.css";
   import {
+    brainListView,
     emptyBrainCache,
     filterKnowledge,
     filterPolicies,
@@ -39,6 +40,7 @@
     workerRowFromLibrary,
     workerRunPrompt,
     writeBrainCache,
+    type BrainListLoad,
     type BrainPageId,
     type KnowledgeFile,
     type PolicyDoc,
@@ -87,6 +89,8 @@
 
   let cache = $state(emptyBrainCache());
   let phase = $state<"shimmer" | "ready">("shimmer");
+  // QA-100: "ready" can mean cached rows; only `load` says the read finished.
+  let load = $state<BrainListLoad>("not-loaded");
   let status = $state("");
   let query = $state("");
   let lens = $state<"tree" | "fresh">("tree");
@@ -172,6 +176,7 @@
   const sourceTotal = $derived(
     page === "knowledge" ? cache.knowledge.length : page === "policies" ? cache.policies.length : page === "skills" ? cache.skills.length : cache.workers.length,
   );
+  const listView = $derived(brainListView(load, sourceTotal));
   const filterActive = $derived(
     page === "policies" ? policyFilter !== "all" : page === "skills" ? skillFilter !== "all" : page === "workers" ? workerScope !== "all" || workerFilter !== "all" : false,
   );
@@ -193,6 +198,7 @@
     selected = null;
     pages = 1;
     sheet = null;
+    load = "loading";
     if (hit) {
       cache = hit;
       phase = "ready";
@@ -202,7 +208,9 @@
     }
     let live = true;
     void refresh(key).then(() => {
-      if (live) phase = "ready";
+      if (!live) return;
+      phase = "ready";
+      load = "loaded";
     });
     return () => {
       live = false;
@@ -370,7 +378,7 @@
         {/each}
       </div>
     {:else if page === "skills"}
-      <span class="meta-line" data-meta-line>{cache.skills.length} skills</span>
+      {#if listView.count !== null}<span class="meta-line" data-meta-line>{listView.count} skills</span>{/if}
       <div class="tabs" role="tablist">
         <button type="button" role="tab" class="tab" aria-selected={skillTab === "library"} onclick={() => (skillTab = "library")}>Library</button>
         <button type="button" role="tab" class="tab" aria-selected={skillTab === "usage"} onclick={() => (skillTab = "usage")}>Usage</button>
@@ -383,7 +391,7 @@
         {/each}
       </div>
     {:else}
-      <span class="meta-line" data-meta-line>{cache.knowledge.length} files</span>
+      {#if listView.count !== null}<span class="meta-line" data-meta-line data-testid="brain-knowledge-count">{listView.count} {listView.count === 1 ? "file" : "files"}</span>{/if}
       <div class="tabs" role="tablist">
         <button type="button" role="tab" class="tab" aria-selected={lens === "fresh"} onclick={() => (lens = "fresh")}>What's fresh</button>
         <button type="button" role="tab" class="tab" aria-selected={lens === "tree"} onclick={() => (lens = "tree")}>Browse tree</button>
@@ -403,9 +411,10 @@
     {/if}
   </header>
 
-  {#if phase === "shimmer" && activeList.length === 0}
+  {#if listView.body === "skeleton"}
     <div class="shimmer" data-testid="brain-shimmer" aria-busy="true">
       <div class="bar"></div><div class="bar"></div><div class="bar short"></div>
+      <p class="reading" role="status">Reading {listNoun[1]}…</p>
     </div>
   {:else if page === "skills" && skillTab === "usage"}
     <div class="usage" data-testid="skills-usage">
@@ -490,7 +499,7 @@
             {query}
             filtered={filterActive}
             noun={listNoun}
-            emptyCopy={`Nothing in this ${title.toLowerCase()} listing yet.`}
+            emptyCopy={page === "knowledge" ? "No knowledge files yet." : `Nothing in this ${title.toLowerCase()} listing yet.`}
             onclear={clearListFilters}
             testid="brain-empty"
           />
@@ -763,6 +772,7 @@
     animation: shine 1.2s linear infinite;
   }
   .bar.short { width: 40%; }
+  .reading { margin: 4px 0 0; color: var(--t3, var(--v4-text-3)); }
   @media (prefers-reduced-motion: reduce) { .bar { animation: none; } }
   @keyframes shine { from { background-position: 100% 0; } to { background-position: -100% 0; } }
   .scrim { position: absolute; inset: 0; background: var(--v4-scrim, rgba(0, 0, 0, 0.35)); }

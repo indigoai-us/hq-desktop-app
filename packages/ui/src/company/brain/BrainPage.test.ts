@@ -3,6 +3,7 @@ import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ok, unavailable } from "@hq/platform";
 import BrainPage from "./BrainPage.svelte";
+import { emptyBrainCache, knowledgeFromFile, writeBrainCache } from "./brain-model.js";
 
 const openAgentWorkflow = vi.hoisted(() => vi.fn(async () => ({
   outcome: "opened" as const,
@@ -259,5 +260,53 @@ describe("US-028 BrainPage", () => {
     expect(sheetLabel()).toBe("New worker");
     escape();
     expect(sheetLabel()).toBeNull();
+  });
+
+  describe("QA-100 knowledge load states", () => {
+    const root = (slug: string) => `companies/${slug}/knowledge`;
+    const mountKnowledge = (slug: string, files: unknown) => {
+      component = mount(BrainPage, {
+        target: document.body,
+        props: { page: "knowledge", slug, files: files as never, library: null, shell: null, settings: null },
+      });
+      flushSync();
+    };
+    const count = () => document.querySelector("[data-testid='brain-knowledge-count']")?.textContent ?? null;
+    const pending = { listDir: vi.fn(() => new Promise(() => undefined)), getFileContent: vi.fn(() => new Promise(() => undefined)) };
+
+    it("loading with no cache shows a skeleton with a reading line and no count", () => {
+      mountKnowledge("qa100-cold", pending);
+      expect(document.querySelector("[data-testid='brain-shimmer']")).toBeTruthy();
+      expect(document.body.textContent).toContain("Reading files…");
+      expect(count()).toBeNull();
+      expect(document.body.textContent).not.toContain("0 files");
+    });
+
+    it("loading with a cache shows the cached rows and cached count", () => {
+      const cached = emptyBrainCache();
+      cached.knowledge = [knowledgeFromFile(`${root("qa100-warm")}/a.md`, "# Alpha"), knowledgeFromFile(`${root("qa100-warm")}/b.md`, "# Beta")];
+      writeBrainCache("qa100-warm", cached);
+      mountKnowledge("qa100-warm", pending);
+      expect(document.querySelector("[data-testid='brain-shimmer']")).toBeNull();
+      expect(count()).toBe("2 files");
+      expect(document.querySelectorAll("[data-testid='brain-list'] .item")).toHaveLength(2);
+    });
+
+    it("loaded and empty shows the empty state with a zero count", async () => {
+      mountKnowledge("qa100-empty", { listDir: vi.fn(async () => ok([])), getFileContent: vi.fn(async () => ok("")) });
+      await vi.waitFor(() => expect(count()).toBe("0 files"));
+      expect(document.body.textContent).toContain("No knowledge files yet.");
+      expect(document.querySelector("[data-testid='brain-shimmer']")).toBeNull();
+    });
+
+    it("loaded shows the rows", async () => {
+      const dir = root("qa100-full");
+      mountKnowledge("qa100-full", {
+        listDir: vi.fn(async (path: string) => ok(path === dir ? [{ name: "a.md", path: `${dir}/a.md`, isDir: false, hasChildren: false }] : [])),
+        getFileContent: vi.fn(async () => ok("# Alpha")),
+      });
+      await vi.waitFor(() => expect(count()).toBe("1 file"));
+      expect(document.querySelectorAll("[data-testid='brain-list'] .item")).toHaveLength(1);
+    });
   });
 });
