@@ -57,6 +57,36 @@ export interface LiveProjectDeps {
   fetch?: HqProFetch;
 }
 
+/** Add a project member through the same hq-pro route used by hq mesh. */
+export async function addLiveProjectMember(
+  companyUid: string,
+  projectId: string,
+  personUid: string,
+  fetchImpl: HqProFetch = hqProFetch,
+): Promise<void> {
+  const path = `/v1/work-mesh/projects/${encodeURIComponent(projectId)}/members`;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    let response: Response;
+    try {
+      response = await fetchImpl(path, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ companyUid, personUid }),
+      });
+    } catch (error) {
+      if (attempt === 2) throw new Error("Could not add project member");
+      await new Promise((resolve) => setTimeout(resolve, 150 * (attempt + 1)));
+      continue;
+    }
+    if (response.ok) return;
+    if (response.status < 500 && response.status !== 429) {
+      throw new Error("Could not add project member");
+    }
+    if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 150 * (attempt + 1)));
+  }
+  throw new Error("Could not add project member");
+}
+
 function rec(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)

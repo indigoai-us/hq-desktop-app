@@ -69,6 +69,7 @@
   import { loadWorkThreads } from "./work-thread-loader";
   import { projectIdFromDirectoryRow } from "./live-sidebar";
   import {
+    addLiveProjectMember,
     loadLiveProjectMeta,
     loadWebVaultFilePreview,
     type LiveProjectMeta,
@@ -903,6 +904,12 @@
     // work-mesh activity as Board tasks.
     return ensureProjectMeta(row)?.board ?? null;
   });
+  const addProjectMember = async (row: ConversationRow, personUid: string) => {
+    const companyUid = (row.companyUid ?? "").trim();
+    const projectId = (row.projectId ?? "").trim();
+    if (!companyUid || !projectId) throw new Error("This row is not a company project");
+    await addLiveProjectMember(companyUid, projectId, personUid, workFetch);
+  };
   const filesByRow = $derived(
     (row: ConversationRow): ChannelFileItemModel[] => {
       return ensureProjectMeta(row)?.files ?? [];
@@ -994,6 +1001,7 @@
       {messagesByRow}
       {reactionsByRow}
       {boardByRow}
+      {addProjectMember}
       {filesByRow}
       {loadFilePreview}
       {channelStatusByRow}

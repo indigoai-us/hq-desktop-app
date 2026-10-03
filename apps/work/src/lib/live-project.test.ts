@@ -5,6 +5,7 @@ import { hqProFetch } from "./hq-pro-client.js";
 import {
   loadWebVaultFilePreview,
   loadLiveProjectMeta,
+  addLiveProjectMember,
   metaFromProjectView,
   parseChannelMembers,
 } from "./live-project.js";
@@ -37,6 +38,27 @@ function json(value: unknown): Response {
 describe("live project hq-pro transport", () => {
   beforeEach(() => {
     vi.mocked(hqProFetch).mockReset();
+  });
+
+  it("adds a project member through the same company-scoped hq-pro route", async () => {
+    const fetchImpl = vi.fn(async () => json({ ok: true }));
+    await addLiveProjectMember("cmp_work", "project/a", "prs_member", fetchImpl);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "/v1/work-mesh/projects/project%2Fa/members",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ companyUid: "cmp_work", personUid: "prs_member" }),
+      }),
+    );
+  });
+
+  it("retries a transient project member write and keeps the request idempotent", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response("{}", { status: 503 }))
+      .mockResolvedValueOnce(json({ ok: true }));
+    await addLiveProjectMember("cmp_work", "project-a", "prs_member", fetchImpl);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl.mock.calls[0]?.[1]).toEqual(fetchImpl.mock.calls[1]?.[1]);
   });
 
   it("routes project metadata through an injected hq-pro transport", async () => {

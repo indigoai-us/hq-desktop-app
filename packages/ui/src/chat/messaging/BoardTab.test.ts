@@ -49,17 +49,35 @@ afterEach(async () => {
   host?.remove();
 });
 
-function renderBoard(): HTMLDivElement {
+function renderBoard(onAddMember?: (personUid: string) => Promise<void>): HTMLDivElement {
   host = document.createElement("div");
   document.body.appendChild(host);
   component = mount(BoardTab, {
     target: host,
-    props: { columns, stories },
+    props: { columns, stories, onAddMember },
   });
   return host;
 }
 
 describe("BoardTab column filter", () => {
+  it("adds a member through the host project API callback", async () => {
+    const addMember = vi.fn(async () => {});
+    const root = renderBoard(addMember);
+    const input = root.querySelector<HTMLInputElement>("#board-member-uid");
+    expect(input).not.toBeNull();
+    flushSync(() => {
+      input!.value = "prs_member";
+      input!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const form = root.querySelector<HTMLFormElement>('[aria-label="Add project member"]');
+    expect(form).not.toBeNull();
+    flushSync(() => form!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    await tick();
+    flushSync();
+    expect(addMember).toHaveBeenCalledWith("prs_member");
+    expect(root.querySelector('[role="status"]')?.textContent).toContain("Member added to the project.");
+  });
+
   it("does not advertise a changes action without an authoritative diff", () => {
     const root = renderBoard();
     flushSync(() =>

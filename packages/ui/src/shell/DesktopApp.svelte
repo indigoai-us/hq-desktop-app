@@ -644,6 +644,8 @@
     onreactionscache?: (row: ConversationRow, reactions: ReactionMap) => void;
     /** Resolve the (injected) Board fixture for a row (columns + stories). */
     boardByRow?: (row: ConversationRow) => BoardTabData | null;
+    /** Add an active company member to a project row through the host API. */
+    addProjectMember?: (row: ConversationRow, personUid: string) => Promise<void>;
     /** Resolve the (injected) Files fixture rows for a row. */
     filesByRow?: (row: ConversationRow) => ChannelFileItemModel[];
     loadFilePreview?: (item: ChannelFileItemModel) => Promise<ChannelFilePreview>;
@@ -937,6 +939,7 @@
     reactionsByRow,
     onreactionscache,
     boardByRow,
+    addProjectMember,
     filesByRow,
     loadFilePreview,
     onopenurl,
@@ -10251,6 +10254,9 @@
             <BoardTab
               columns={board?.columns ?? []}
               stories={board?.stories ?? {}}
+              onAddMember={selectedRow && addProjectMember
+                ? (personUid) => addProjectMember(selectedRow!, personUid)
+                : undefined}
               onOpenInChannel={() => pushConversationSurface({ tab: "chat" })}
             />
           {:else}

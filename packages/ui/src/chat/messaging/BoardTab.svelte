@@ -23,13 +23,14 @@
 
   interface Props {
     onCreateTask?: (task: {id: string; title: string; description: string; status: BoardStageId}) => Promise<void>;
+    onAddMember?: (personUid: string) => Promise<void>;
     columns: BoardColumnModel[];
     stories: Record<string, BoardStoryPanelModel>;
     /** Bubbled "Open in channel" — the host flips back to the Chat tab. */
     onOpenInChannel?: () => void;
   }
 
-  let { columns, stories, onOpenInChannel, onCreateTask }: Props = $props();
+  let { columns, stories, onOpenInChannel, onCreateTask, onAddMember }: Props = $props();
 
   let createStage = $state<BoardStageId | null>(null);
   let taskTitle = $state("");
@@ -37,6 +38,28 @@
   let createPending = $state(false);
   let createError = $state("");
   let createId = "";
+  let memberUid = $state("");
+  let memberPending = $state(false);
+  let memberError = $state("");
+  let memberNotice = $state("");
+
+  async function addMember(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+    const uid = memberUid.trim();
+    if (!uid || !onAddMember || memberPending) return;
+    memberPending = true;
+    memberError = "";
+    memberNotice = "";
+    try {
+      await onAddMember(uid);
+      memberUid = "";
+      memberNotice = "Member added to the project.";
+    } catch {
+      memberError = "Could not add this member. Check the UID and company membership, then try again.";
+    } finally {
+      memberPending = false;
+    }
+  }
 
   function beginCreate(stage: string): void {
     const valid = BOARD_STAGE_ORDER.find(value => value === stage);
@@ -137,6 +160,16 @@
       {/each}
     </div>
   </div>
+
+  {#if onAddMember}
+    <form class="board-member-add" aria-label="Add project member" onsubmit={addMember}>
+      <label for="board-member-uid">Person UID</label>
+      <input id="board-member-uid" bind:value={memberUid} autocomplete="off" disabled={memberPending} />
+      <button type="submit" disabled={memberPending || !memberUid.trim()}>{memberPending ? "Adding…" : "Add member"}</button>
+      {#if memberError}<p role="status">{memberError}</p>{/if}
+      {#if memberNotice}<p role="status">{memberNotice}</p>{/if}
+    </form>
+  {/if}
 
   {#if createStage}
     <form class="board-create" onsubmit={createTask} aria-label="Create task">
@@ -331,6 +364,11 @@
   .board-create { padding: 12px 16px; border-bottom: 1px solid var(--pop-border); }
   .board-create label { display: block; margin: 8px 0; }
   .board-create input, .board-create textarea { display: block; box-sizing: border-box; width: 100%; padding: 6px; color: var(--pop-text); background: var(--c-field-bg); border: 1px solid var(--pop-border); border-radius: 4px; }
+  .board-member-add { display: flex; align-items: center; gap: 8px; padding: 10px 20px; color: var(--t3); font-size: 12px; }
+  .board-member-add input { width: min(280px, 40vw); padding: 6px 8px; color: var(--pop-text); background: var(--c-field-bg); border: 1px solid var(--pop-border); border-radius: 4px; }
+  .board-member-add button { padding: 6px 10px; color: var(--t1); background: var(--btn-bg); border: 1px solid var(--line); border-radius: 4px; cursor: pointer; }
+  .board-member-add button:disabled { opacity: 0.55; cursor: default; }
+  .board-member-add p { margin: 0; }
 
   .board-tab {
     display: flex;
