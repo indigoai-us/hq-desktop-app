@@ -39,6 +39,7 @@ export interface ContinuationContext {
   installAttemptId: string;
   appVersion: string;
   apiBase: string;
+  suppressFirstLaunchTelemetry: boolean;
 }
 
 /**
@@ -88,6 +89,7 @@ export async function loadContinuationContext(
       installAttemptId: context.installAttemptId,
       appVersion: context.appVersion,
       apiBase: context.apiBase.replace(/\/+$/, ''),
+      suppressFirstLaunchTelemetry: context.suppressFirstLaunchTelemetry === true,
     };
   } catch {
     return null;
