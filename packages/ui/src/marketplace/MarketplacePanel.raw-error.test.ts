@@ -106,3 +106,21 @@ describe("MarketplacePanel raw errors (AUDIT-3c)", () => {
     expect(warn).toHaveBeenCalledWith("[marketplace] install failed", RAW);
   });
 });
+
+describe("MarketplacePanel failed listings read", () => {
+  it("shows the failure without a zero listing or available count", async () => {
+    const adapter = adapterWith(async () => ok(null));
+    (adapter.marketplace as unknown as Record<string, unknown>).listListings = vi.fn(async () => failure("network", RAW));
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(MarketplacePanel, { target: host, props: { adapter } });
+    await vi.waitFor(() => {
+      flushSync();
+      expect(host.querySelector('[data-testid="marketplace-error"]')).not.toBeNull();
+    }, { timeout: 3000 });
+    const text = host.textContent ?? "";
+    expect(text).not.toMatch(/\b0 listings\b/);
+    expect(text).not.toMatch(/\b0 available\b/);
+    expect(host.querySelector('[data-testid="marketplace-available"]')).toBeNull();
+  });
+});

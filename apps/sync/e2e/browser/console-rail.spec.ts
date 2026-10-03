@@ -123,8 +123,9 @@ test.describe('console rail: full user path', () => {
     await page.getByTestId('rail-you').click();
     const menu = page.getByTestId('account-menu');
     await expect(menu).toBeVisible();
-    await expect(page.getByTestId('account-profile')).toBeFocused();
-    for (const id of ['account-profile', 'account-billing', 'account-settings', 'account-sign-out']) {
+    // OWNER-R21: identity button (opens Settings at Profile), Settings, Sign out.
+    await expect(page.getByTestId('account-identity')).toBeFocused();
+    for (const id of ['account-identity', 'account-settings', 'account-sign-out']) {
       await expect(page.getByTestId(id)).toBeVisible();
     }
     page.once('dialog', (dialog) => void dialog.accept());

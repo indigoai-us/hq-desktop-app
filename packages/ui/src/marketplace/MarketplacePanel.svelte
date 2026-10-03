@@ -320,6 +320,8 @@
     <p class="count" aria-live="polite">
       {#if loading}
         Loading…
+      {:else if error}
+        <!-- A failed read has no count: a zero here would claim an empty marketplace. -->
       {:else}
         {visible.length}
         {visible.length === 1 ? "listing" : "listings"}
@@ -343,7 +345,7 @@
         attribution.
       </p>
     </div>
-    <span>{listings.length} available</span>
+    {#if !error && !loading}<span data-testid="marketplace-available">{listings.length} available</span>{/if}
   </section>
 
   {#if error}
