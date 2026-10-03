@@ -3,6 +3,7 @@ import {
   extractRichContentFromBody,
   HOST_PLACED_BLOCK_KINDS,
   KNOWN_BLOCK_KINDS,
+  MAX_CONNECT_ITEMS,
   messageHasConnectBlock,
   messageHasVisibleContent,
   parseRichContent,
@@ -686,13 +687,13 @@ describe("parseRichContent: connect block", () => {
         { domain: "  WWW.Linear.app " },
         { domain: "mcp.notion.so" },
         { domain: "https://www.github.com/org/repo" },
-        { domain: "quickbooks.intuit.com" },
       ]),
     )?.[0];
     expect(domains).toEqual({
       kind: "connect",
-      items: [{ domain: "linear.app" }, { domain: "notion.so" }, { domain: "github.com" }, { domain: "quickbooks.intuit.com" }],
+      items: [{ domain: "linear.app" }, { domain: "notion.so" }, { domain: "github.com" }],
     });
+    expect(parsed(items([{ domain: "quickbooks.intuit.com" }]))?.[0]).toEqual({ kind: "connect", items: [{ domain: "quickbooks.intuit.com" }] });
   });
 
   it("drops an item whose domain is not a hostname", () => {
@@ -709,12 +710,19 @@ describe("parseRichContent: connect block", () => {
     ]);
   });
 
-  it("drops duplicates, keeping the first and its reason, and stops at six items", () => {
+  it("drops duplicates, keeping the first and its reason, and stops at three items", () => {
     expect(parsed(items([{ domain: "linear.app", why: "first" }, { domain: "www.linear.app", why: "second" }, { app: "slack" }, { app: "slack" }]))).toEqual([
       { kind: "connect", items: [{ domain: "linear.app", why: "first" }, { app: "slack" }] },
     ]);
+    // Owner, 2026-10-03: never four cards. A bot that names more gets its first three.
+    expect(MAX_CONNECT_ITEMS).toBe(3);
     const many = Array.from({ length: 9 }, (_, i) => ({ domain: `app${i}.com` }));
-    expect(parsed(items(many))?.[0]).toEqual({ kind: "connect", items: many.slice(0, 6) });
+    expect(parsed(items(many))?.[0]).toEqual({ kind: "connect", items: many.slice(0, 3) });
+    // A duplicate does not take one of the three places.
+    expect(parsed(items([{ app: "slack" }, { app: "slack" }, { domain: "a.com" }, { domain: "b.com" }, { domain: "c.com" }]))?.[0]).toEqual({
+      kind: "connect",
+      items: [{ app: "slack" }, { domain: "a.com" }, { domain: "b.com" }],
+    });
   });
 
   it("sanitizes the reason: plain text, one line, capped at 80 characters, dropped when empty", () => {
@@ -723,14 +731,13 @@ describe("parseRichContent: connect block", () => {
         { domain: "linear.app", why: "Your\u0007 team's\n\n issues   live here" },
         { domain: "notion.so", why: "x".repeat(200) },
         { domain: "asana.com", why: "   " },
-        { domain: "hubspot.com", why: 12 },
       ]),
     ) as Array<{ items: Array<{ domain: string; why?: string }> }>;
     expect(block!.items[0]).toEqual({ domain: "linear.app", why: "Your team's issues live here" });
     expect(block!.items[1]!.why).toHaveLength(80);
     expect(block!.items[1]!.why!.endsWith("…")).toBe(true);
     expect(block!.items[2]).toEqual({ domain: "asana.com" });
-    expect(block!.items[3]).toEqual({ domain: "hubspot.com", why: "12" });
+    expect(parsed(items([{ domain: "hubspot.com", why: 12 }]))?.[0]).toEqual({ kind: "connect", items: [{ domain: "hubspot.com", why: "12" }] });
   });
 
   it("prefers items over targets when a block carries both", () => {

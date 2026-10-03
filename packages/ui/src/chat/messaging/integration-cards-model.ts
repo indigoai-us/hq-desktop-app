@@ -43,7 +43,7 @@ export const ROW_SETTLE_MS = 2_000;
 export const MAX_BRIEF_CONNECTIONS = 25;
 /** The apps brief's cap, in characters. */
 export const MAX_BRIEF_CHARS = 1_400;
-/** How many of the person's own apps the fallback cards show next to Slack. */
+/** How many cards the app chooses in all, Slack included. Owner: never four cards, three at most. */
 export const MAX_FALLBACK_APPS = 3;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -512,10 +512,11 @@ export function readKeyBlueprint(json: unknown): KeyBlueprint {
 
 /**
  * The cards the app attaches when the bot's message carries no connect block:
- * Slack (unless the bot is in Slack), then up to {@link MAX_FALLBACK_APPS} of
- * the person's own connected apps the bot cannot use yet, newest first. An
- * app with no domain in the list is named `{provider}.com`, which the card
- * matches back to the connection by its first label.
+ * Slack (unless the bot is in Slack), then the person's own connected apps
+ * the bot cannot use yet, newest first, {@link MAX_FALLBACK_APPS} cards in
+ * all (Slack counts as one). An app with no domain in the list is named
+ * `{provider}.com`, which the card matches back to the connection by its
+ * first label.
  */
 export function appChosenItems(
   facts: CompanyConnections | null | undefined,
@@ -529,7 +530,7 @@ export function appChosenItems(
     .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
   const seen = new Set<string>();
   for (const connection of own) {
-    if (items.length >= MAX_FALLBACK_APPS + (slackConnected ? 0 : 1)) break;
+    if (items.length >= MAX_FALLBACK_APPS) break;
     const domain = connection.domain ?? (connection.provider ? `${connection.provider}.com` : null);
     if (!domain || seen.has(domain) || !normalizeConnectDomain(domain)) continue;
     seen.add(domain);

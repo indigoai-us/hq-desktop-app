@@ -556,8 +556,8 @@ function parseSuggestionsBlock(raw: Record<string, unknown>): SuggestionsBlock |
 
 /** The built-in cards the old `targets` form may name. */
 const CONNECT_TARGETS: readonly ConnectTarget[] = ["slack", "tools"];
-/** How many cards one `connect` block may ask for. */
-const MAX_CONNECT_ITEMS = 6;
+/** How many cards one `connect` block may ask for. More than three is decision overload. */
+export const MAX_CONNECT_ITEMS = 3;
 const MAX_CONNECT_WHY_LEN = 80;
 const MAX_CONNECT_DOMAIN_LEN = 80;
 const HOSTNAME = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
@@ -796,26 +796,42 @@ function findEnvelopeSpan(body: string): EnvelopeSpan | null {
   return null;
 }
 
+/** How many envelopes one body is scanned for: a bound on the work, never reached by a real message. */
+const MAX_ENVELOPES = MAX_BLOCKS;
+
 /**
- * Extract a single ```hq-block fenced JSON envelope from a message body.
+ * Extract every ```hq-block fenced JSON envelope from a message body.
  *
  * This is the mechanism a fleet agent can reliably produce with no server
- * support: it emits a plain-text answer AND a fenced block. The client lifts
- * the fence into structured content and shows the surrounding prose as the
- * plain-text fallback. If the fence is missing or the JSON is invalid, the body
- * is returned untouched so it degrades to ordinary markdown (never a crash).
+ * support: it emits a plain-text answer AND one or more fenced blocks. The
+ * client lifts each fence into structured content and shows the surrounding
+ * prose as the plain-text fallback. If there is no fence or the JSON is
+ * invalid, the body is returned untouched so it degrades to ordinary markdown
+ * (never a crash).
+ *
+ * A bot told to end with "a suggestions block, then a connect block" writes
+ * two envelopes. Lifting only the first left the second in the text as a code
+ * block of JSON. So every envelope is lifted, in document order, their blocks
+ * merged into one model, and every span cut from the text. An envelope whose
+ * blocks this version does not know is still cut (see {@link EnvelopeSpan}).
  *
  * Prefers an explicit `richContent` wire field over the fence when both exist;
  * see `richContentForMessage`.
  */
 export function extractRichContentFromBody(body: string): ExtractedRichContent {
   if (!body) return { text: "", rich: null };
-  const span = findEnvelopeSpan(body);
-  if (!span) return { text: body, rich: null };
-  const text = (body.slice(0, span.start) + body.slice(span.end))
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-  return { text, rich: span.rich };
+  let text = body;
+  const blocks: RichBlock[] = [];
+  let found = 0;
+  for (; found < MAX_ENVELOPES; found += 1) {
+    const span = findEnvelopeSpan(text);
+    if (!span) break;
+    if (span.rich) blocks.push(...span.rich.blocks);
+    text = text.slice(0, span.start) + text.slice(span.end);
+  }
+  if (found === 0) return { text: body, rich: null };
+  text = text.replace(/\n{3,}/g, "\n\n").trim();
+  return { text, rich: blocks.length > 0 ? { blocks: blocks.slice(0, MAX_BLOCKS) } : null };
 }
 
 /**

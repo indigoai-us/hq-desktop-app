@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   APP_TIMEOUT_NOTE,
   MAX_BRIEF_CHARS,
+  MAX_FALLBACK_APPS,
   ROW_SETTLE_MS,
   appChosenItems,
   appLogo,
@@ -459,7 +460,7 @@ describe("appChosenItems: the cards the app picks when the bot does not", () => 
     expect(appChosenItems(facts(), null, false)).toEqual([{ app: "slack" }]);
   });
 
-  it("adds up to three of the person's own apps the bot cannot use yet, newest first", () => {
+  it("adds the person's own apps the bot cannot use yet, newest first, three cards in all with Slack counting as one", () => {
     const f = facts([
       own("a1", "Linear", "linear.app", "2026-10-01T00:00:00.000Z"),
       own("a2", "Notion", "notion.so", "2026-10-03T00:00:00.000Z"),
@@ -468,10 +469,13 @@ describe("appChosenItems: the cards the app picks when the bot does not", () => 
       own("a5", "Gmail", "gmail.com", "2026-10-04T00:00:00.000Z", { createdBy: "prs_teammate" }),
       own("a6", "Figma", "figma.com", "2026-10-05T00:00:00.000Z", { access: { mode: "everyone" } }),
     ]);
-    expect(appChosenItems(f, null, false)).toEqual([{ app: "slack" }, { domain: "notion.so" }, { domain: "asana.com" }, { domain: "linear.app" }]);
+    // Owner, 2026-10-03: "We shouldn't show 4 cards - max 3".
+    expect(MAX_FALLBACK_APPS).toBe(3);
+    expect(appChosenItems(f, null, false)).toEqual([{ app: "slack" }, { domain: "notion.so" }, { domain: "asana.com" }]);
     expect(appChosenItems(f, null, true)).toEqual([{ domain: "notion.so" }, { domain: "asana.com" }, { domain: "linear.app" }]);
     // One the person already let the bot use is not offered again.
     expect(appChosenItems(f, recordGrant(null, "a2", "Notion", NOW), true)).toEqual([{ domain: "asana.com" }, { domain: "linear.app" }, { domain: "hubspot.com" }]);
+    expect(appChosenItems(f, recordGrant(null, "a2", "Notion", NOW), false)).toEqual([{ app: "slack" }, { domain: "asana.com" }, { domain: "linear.app" }]);
   });
 
   it("names an app with no domain by its provider, and skips what it cannot name", () => {
