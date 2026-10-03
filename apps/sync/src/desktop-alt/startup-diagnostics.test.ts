@@ -31,7 +31,9 @@ describe('desktop startup diagnostics', () => {
   });
 
   it('reports global categories without values and removes its listeners', () => {
-    const invoke = vi.fn(async () => undefined);
+    const invoke = vi.fn<Parameters<typeof createDesktopStartupDiagnostics>[0]>(
+      async () => undefined,
+    );
     const target = new EventTarget();
     const diagnostics = createDesktopStartupDiagnostics(invoke, () => 25);
     const remove = diagnostics.installGlobalErrorListeners(target as never);
