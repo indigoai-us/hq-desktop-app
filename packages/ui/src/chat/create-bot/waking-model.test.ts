@@ -49,6 +49,31 @@ describe("waking model", () => {
     expect(emptyRead.signedInAt ?? null).toBeNull();
   });
 
+  it("takes the machine's own codex-auth: ok as the sign-in, even while the step is still pending", () => {
+    // Live (owner, 2026-10-03, "Super Duper"): under the chat-first setup
+    // order the codex-auth step runs after the runtime install. The person
+    // had signed in twice; the heartbeat said codex-auth: ok; the step said
+    // pending; the screen kept saying "We don't see it yet."
+    const asked = applyWakingStatus(session(), { agent: { provider: "codex" }, setupState: signInStep("pending"), pairing: CODEX_PAIRING }, STARTED + 150_000);
+    expect(asked.approval).not.toBeNull();
+    const machineOk = {
+      agent: { provider: "codex", runtime: { lastHeartbeat: { at: "2026-10-03T19:28:08.085Z", components: { "codex-auth": "ok", sync: "unknown" } } } },
+      setupState: { phase: "waiting", stepOrder: "chat-first", chatReady: false, steps: [{ name: "runtime-install", status: "running" }, { name: "codex-auth", status: "pending" }] },
+      pairing: CODEX_PAIRING,
+    };
+    const signedIn = applyWakingStatus(asked, machineOk, STARTED + 200_000);
+    expect(signedIn.approval).toBeNull();
+    expect(signedIn.signedInAt).toBe(STARTED + 200_000);
+    expect(signedIn.phase).toBe("waking");
+    // A heartbeat that says anything else leaves the step rule in charge.
+    const notYet = {
+      agent: { provider: "codex", runtime: { lastHeartbeat: { components: { "codex-auth": "unknown" } } } },
+      setupState: signInStep("pending"),
+      pairing: CODEX_PAIRING,
+    };
+    expect(applyWakingStatus(asked, notYet, STARTED + 200_000).signedInAt ?? null).toBeNull();
+  });
+
   it("says the sign-in worked and starts a fresh estimate for the rest", () => {
     const asked = applyWakingStatus(session(), { agent: { provider: "codex" }, setupState: signInStep("waiting"), pairing: CODEX_PAIRING }, STARTED + 150_000);
     // Ten minutes of the person being away moves nothing.

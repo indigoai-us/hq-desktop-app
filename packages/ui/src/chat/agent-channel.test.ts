@@ -162,6 +162,31 @@ describe("agentChatReadiness", () => {
     expect(agentChatReadiness({ setupState: { phase: "ready" } })).toEqual({ chatReady: true, catchingUp: false, failed: false });
     expect(agentChatReadiness(null).chatReady).toBe(false);
   });
+
+  it("trusts the server's chatReady flag over the step list when the flag is present", () => {
+    // Live (owner, 2026-10-03): under the chat-first order the sign-in and
+    // sync steps read done while the runtime that answers was still
+    // installing; setupState.chatReady was false. The step rule said ready.
+    const chatFirst = [
+      { name: "identity", status: "done" },
+      { name: "runtime", status: "done" },
+      { name: "sync", status: "done", backgroundFirstSync: true },
+      { name: "runtime-install", status: "running" },
+      { name: "codex-auth", status: "pending" },
+      { name: "channels", status: "pending" },
+      { name: "audit", status: "pending" },
+    ];
+    expect(
+      agentChatReadiness({ setupState: { phase: "waiting", stepOrder: "chat-first", chatReady: false, steps: steps("waiting") } }).chatReady,
+    ).toBe(false);
+    expect(
+      agentChatReadiness({ setupState: { phase: "waiting", stepOrder: "chat-first", chatReady: true, steps: chatFirst } }).chatReady,
+    ).toBe(true);
+    // A failed setup is never chat-ready, whatever the flag says.
+    expect(agentChatReadiness({ setupState: { phase: "failed", chatReady: true, steps: chatFirst } }).chatReady).toBe(false);
+    // No flag: the step rule still decides (older deployments).
+    expect(agentChatReadiness({ setupState: { phase: "waiting", steps: steps("waiting") } }).chatReady).toBe(true);
+  });
 });
 
 describe("the new bot's first message", () => {

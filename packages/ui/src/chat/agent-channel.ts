@@ -370,7 +370,12 @@ export function agentChatReadiness(payload: unknown): AgentChatReadiness {
     CHAT_READY_STEPS.every((name) =>
       steps.some((step) => lowerText(step.name) === name && lowerText(step.status) === "done"),
     );
-  const chatReady = !failed && (fullyReady || stepsReady);
+  // The server says when the bot can chat (`setupState.chatReady`). Under the
+  // chat-first setup order the runtime that answers is installed after the
+  // sign-in and sync steps, so the step list alone would say ready too early.
+  // The step rule stays for payloads without the flag (older deployments).
+  const serverChatReady = typeof setup?.chatReady === "boolean" ? setup.chatReady : null;
+  const chatReady = !failed && (fullyReady || (serverChatReady ?? stepsReady));
   const runtime = isRecord(agent?.runtime) ? agent.runtime : null;
   const filesDone = runtime ? typeof runtime.syncOkAt === "string" && runtime.syncOkAt.length > 0 : fullyReady;
   return { chatReady, catchingUp: chatReady && !filesDone, failed };

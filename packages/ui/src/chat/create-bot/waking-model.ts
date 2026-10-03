@@ -77,17 +77,26 @@ function helloWait(session: WakingBotSession): number {
 }
 
 /**
- * Whether the brain sign-in step is finished, read from the setup steps.
- * null when the payload carries no step list (older deployments).
+ * Whether the brain sign-in is finished. Two signals say so: the `codex-auth`
+ * setup step is done, or the bot's machine reports `codex-auth: ok` in its
+ * heartbeat. The second matters under the chat-first setup order, where the
+ * step runs after the runtime install and would otherwise keep the screen
+ * asking for a sign-in the machine already has. null when the payload carries
+ * neither a step list nor a heartbeat (older deployments).
  */
 function signInStepDone(payload: unknown): boolean | null {
   const root = record(payload);
   const agent = record(root?.agent) ?? root;
   const setup = record(root?.setupState) ?? record(agent?.setupState);
+  const heartbeat = record(record(agent?.runtime)?.lastHeartbeat);
+  const components = record(heartbeat?.components);
+  const machineSignedIn = components ? text(components["codex-auth"]) === "ok" : null;
+  if (machineSignedIn) return true;
   const steps = setup?.steps;
-  if (!Array.isArray(steps)) return null;
+  if (!Array.isArray(steps)) return machineSignedIn;
   const step = steps.map(record).find((entry) => text(entry?.name) === "codex-auth");
-  return step ? text(step.status) === "done" : null;
+  if (step) return text(step.status) === "done";
+  return machineSignedIn;
 }
 
 function finishEstimate(session: WakingBotSession): number {
