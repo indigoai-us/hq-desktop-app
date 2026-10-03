@@ -3,7 +3,7 @@
  * flag read and the `agents.fetch` REST transport `@hq/agents` runs on, in
  * all three adapters.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DESKTOP_AGENT_CREATION_FLAG, createHqProRestFetch, registryKeyFor } from "./flags.js";
 import { TauriPlatformAdapter } from "./tauri/index.js";
 import { createSyncPlatformAdapter } from "./tauri/sync-adapter.js";
@@ -143,15 +143,27 @@ describe("agents.desktop-agent-creation flag", () => {
 });
 
 describe("createHqProRestFetch", () => {
-  it("defaults an absent body to null and wraps a bare value as 200", async () => {
+  it("defaults an absent body to null and passes the host's status and body through", async () => {
     const calls: Invocation[] = [];
     const f = createHqProRestFetch(async (cmd, args) => {
       calls.push({ cmd, args });
-      return { ok: true };
+      return { status: 201, body: "{\"ok\":true}" };
     });
     const res = await f("/v1/agents/agt_1/status", { method: "GET" });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(201);
     await expect(res.text()).resolves.toBe("{\"ok\":true}");
     expect(calls[0]?.args).toEqual({ url: "/v1/agents/agt_1/status", method: "GET", body: null });
+  });
+
+  it("treats a response without a status as an error, not a 200", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const f = createHqProRestFetch(async () => ({ ok: true }));
+      const res = await f("/v1/agents", { method: "POST", body: "{}" });
+      expect(res.status).toBe(502);
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

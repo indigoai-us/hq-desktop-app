@@ -276,8 +276,11 @@ export function createHqProRestFetch(invoke: FlagInvokeFn): HqProFetch {
       const body = typeof rec.body === "string" ? rec.body : "";
       return { status: rec.status, text: async () => body };
     }
-    const body = JSON.stringify(raw ?? null);
-    return { status: 200, text: async () => body };
+    // The host always answers `{ status, body }`. Anything else is a broken
+    // bridge, never a success: report it as a bad gateway.
+    console.warn("[hq-desktop] hq_pro_fetch returned no status", { url: path, method: init.method });
+    const body = JSON.stringify({ error: "hq_pro_fetch returned no status" });
+    return { status: 502, text: async () => body };
   };
 }
 
