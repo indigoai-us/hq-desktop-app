@@ -13,6 +13,7 @@ const CONTEXT: ContinuationContext = {
   installAttemptId: '11111111-1111-4111-8111-111111111111',
   appVersion: '1.4.2',
   apiBase: 'http://127.0.0.1:1',
+  suppressFirstLaunchTelemetry: false,
 };
 
 /**
