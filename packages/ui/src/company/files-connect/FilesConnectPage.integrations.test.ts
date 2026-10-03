@@ -81,7 +81,8 @@ describe("OWNER-D 2 company Integrations reads connected apps", () => {
       ["Slack", "active", "connected"],
       ["Linear", "needs-sign-in", "connected"],
     ]);
-    expect(rows[0]?.detail).toBe("channels:read, chat:write");
+    // QA-108: OAuth scopes are machine tokens and are not shown.
+    expect(rows[0]?.detail).toBe("Connected by Ada");
     expect(rows[1]?.detail).toBe("Connected by Bo");
     expect(() => companyIntegrationRows({ grouped: {} })).toThrow();
   });
