@@ -43,8 +43,8 @@ use crate::util::feature_gate;
 use crate::util::logfile::log;
 use crate::util::paths;
 use crate::util::release_channel::{
-    effective_channel, fetch_update_feed_policy, resolve_channel_endpoint, should_offer_update,
-    should_reinstall_feed_target, EndpointProvenance, ReleaseChannel, ResolvedChannelEndpoint,
+    channel_accepts_version, effective_channel, fetch_update_feed_policy, resolve_channel_endpoint,
+    should_offer_update, should_reinstall_feed_target, EndpointProvenance, ReleaseChannel, ResolvedChannelEndpoint,
     UpdateFeedPolicy,
 };
 use hq_desktop_core::update_gate::{
@@ -1113,9 +1113,21 @@ async fn channel_aware_updater_with_mode(
         .updater_builder()
         .endpoints(vec![endpoint])
         .map_err(|e| format!("updater_builder.endpoints: {e}"))?
-        .version_comparator(move |current, release| match mode {
-            UpdateOfferMode::Reinstall => should_reinstall_feed_target(&current, &release.version),
-            UpdateOfferMode::Standard => should_offer_update(&current, &release.version, &policy),
+        .version_comparator(move |current, release| {
+            // A feed target from a channel the user did not choose is never
+            // installed, even on Reinstall: a Stable user is never moved onto
+            // a beta or alpha build by a mis-flagged release.
+            if !channel_accepts_version(channel, &release.version) {
+                return false;
+            }
+            match mode {
+                UpdateOfferMode::Reinstall => {
+                    should_reinstall_feed_target(&current, &release.version)
+                }
+                UpdateOfferMode::Standard => {
+                    should_offer_update(&current, &release.version, &policy)
+                }
+            }
         })
         .build()
         .map_err(|e| format!("updater_builder.build: {e}"))?;
