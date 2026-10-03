@@ -219,10 +219,7 @@
     type EntryPointTarget,
     type CloudBotDraft,
   } from "../chat/lifecycle-entry-points.js";
-  import {
-    createDirectCloudCreate,
-    runCompanyDirectCloudCreate,
-  } from "../chat/create-bot/cloud-create.js";
+  import { lazyDirectCloudCreate } from "../chat/create-bot/direct-cloud-lazy.js";
   import {
     openCreateCompanyDraft,
     sendCompanyInvites,
@@ -6532,7 +6529,7 @@
    * creates through POST /v1/agents instead of driving the card sequence.
    * Null when the adapter has no REST transport, which keeps the card path.
    */
-  const directCloudCreate = $derived(createDirectCloudCreate(adapter));
+  const directCloudCreate = $derived(lazyDirectCloudCreate(adapter));
 
   /**
    * Direct create: one POST with the session's idempotency key, Slack
@@ -6551,8 +6548,7 @@
       (companies ?? []).find((c) => c.cloudUid === companyUid)?.displayName?.trim() || undefined;
     // The flag is read for this company on every direct create, not only by
     // the surface that offered Cloud.
-    const result = await runCompanyDirectCloudCreate(
-      directCloudCreate,
+    const result = await directCloudCreate.create(
       companyUid,
       {
         name: draft.name,

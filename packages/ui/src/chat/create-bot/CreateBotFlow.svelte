@@ -34,8 +34,9 @@
   import type { RuntimeSignInApi } from "./RuntimeSignIn.svelte";
   import type { RuntimeStatus } from "./runtime-status.js";
   import type { CloudBotDraft } from "../lifecycle-entry-points.js";
-  import { cloudUnavailableCopy, type CloudUnavailableCopy, type CreateAvailability, type CreateErrorFix } from "@hq/agents";
-  import { newWizardIdempotencyKey, type DirectCloudCreate } from "./cloud-create.js";
+  import type { CloudUnavailableCopy, CreateAvailability, CreateErrorFix } from "@hq/agents";
+  import type { DirectCloudFlowSeam } from "./direct-cloud-lazy.js";
+  import { newWizardIdempotencyKey } from "./wizard-key.js";
   import {
     STEP_TITLES,
     botDisplayName,
@@ -113,7 +114,7 @@
      * the cloud draft carries a per-session idempotency key and the quote.
      * Absent or flag off → the older behaviour, unchanged.
      */
-    directCloud?: DirectCloudCreate | null;
+    directCloud?: DirectCloudFlowSeam | null;
     signInApi?: RuntimeSignInApi | null;
     onsignin?: ((runtime: BotRuntime) => void | Promise<void>) | null;
     onsignedin?: ((runtime: BotRuntime) => void | Promise<void>) | null;
@@ -210,13 +211,16 @@
   const canLocal = $derived(!!oncreate);
   /** `agents.desktop-agent-creation` resolved on for this person or one of their companies. */
   let directCloudOn = $state(false);
+  /** `@hq/agents` copy for an unavailable Cloud, loaded with the flag (kept off the startup bundle). */
+  let unavailableCopy = $state<typeof import("@hq/agents").cloudUnavailableCopy | null>(null);
   /** Per-company create availability, filled in once the flag is on. */
   let cloudAvailability = $state<Record<string, CreateAvailability>>({});
   /** One key for this New bot session: a double-click or a retry replays it. */
   const cloudIdempotencyKey = newWizardIdempotencyKey();
   const companyBlocks = $derived.by<Record<string, CloudUnavailableCopy>>(() => {
     const out: Record<string, CloudUnavailableCopy> = {};
-    if (!directCloudOn) return out;
+    const cloudUnavailableCopy = unavailableCopy;
+    if (!directCloudOn || !cloudUnavailableCopy) return out;
     for (const company of companies) {
       const copy = cloudUnavailableCopy(cloudAvailability[company.companyUid] ?? null, {
         companyLabel: company.label,
@@ -228,7 +232,8 @@
   });
   /** Why Cloud cannot be used at all (flag on only): no company, or every company refuses. */
   const cloudBlocked = $derived.by<CloudUnavailableCopy | null>(() => {
-    if (!directCloudOn) return null;
+    const cloudUnavailableCopy = unavailableCopy;
+    if (!directCloudOn || !cloudUnavailableCopy) return null;
     if (companies.length === 0) return cloudUnavailableCopy(null, { companies: 0 });
     if (!onCloudCreate) return null;
     const blocked = companies.map((c) => companyBlocks[c.companyUid]);
@@ -302,6 +307,9 @@
     const uids = untrack(() => companies.map((c) => c.companyUid));
     void seam.anyEnabled(uids).then(async (on) => {
       if (!active || !on) return;
+      const agents = await import("@hq/agents");
+      if (!active) return;
+      unavailableCopy = agents.cloudUnavailableCopy;
       directCloudOn = true;
       const entries = await Promise.all(
         uids.map(async (uid) => [uid, await seam.availability(uid)] as const),

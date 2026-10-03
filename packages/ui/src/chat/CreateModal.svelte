@@ -29,7 +29,7 @@
   import type { AvatarPack } from "../avatars/types.js";
   import CreateBotFlow, { type CreateBotExtras } from "./create-bot/CreateBotFlow.svelte";
   import type { BotRuntime } from "./create-bot/create-bot-model.js";
-  import type { DirectCloudCreate } from "./create-bot/cloud-create.js";
+  import type { DirectCloudFlowSeam } from "./create-bot/direct-cloud-lazy.js";
   import type { CreateErrorFix } from "@hq/agents";
   import type { RuntimeSignInApi } from "./create-bot/RuntimeSignIn.svelte";
   import type { ChatSidebarApi } from "./chat-api.js";
@@ -145,7 +145,7 @@
     loadClaudeProviderFlag?: (() => AdapterPromise<boolean>) | null;
     loadCloudProvisionOptions?: ((companyUid: string) => AdapterPromise<AgentProvisionOptionsView>) | null;
     /** `agents.desktop-agent-creation` seam for the New bot flow. */
-    directCloud?: DirectCloudCreate | null;
+    directCloud?: DirectCloudFlowSeam | null;
     /** Companies an agent can be added to (cloud companies the user is in). */
     agentCompanies?: ScopeCompany[] | null;
     /**

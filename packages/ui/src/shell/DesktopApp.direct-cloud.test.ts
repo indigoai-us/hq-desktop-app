@@ -9,6 +9,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import { ok, type AgentProvisionOptionsView, type PlatformAdapter } from "@hq/platform";
 
+// Warm the modules the shell loads lazily so import() resolves from cache.
+import "../chat/create-bot/cloud-create.js";
+import "@hq/agents";
 import DesktopApp from "./DesktopApp.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
@@ -119,6 +122,12 @@ async function settle(times = 8): Promise<void> {
   for (let i = 0; i < times; i += 1) {
     await tick();
     await Promise.resolve();
+  }
+  // The shell loads cloud-create.ts and @hq/agents through import() when the
+  // New bot flow first asks for the flag; that resolves on a later task.
+  for (let i = 0; i < 3; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await tick();
   }
 }
 

@@ -13,6 +13,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import { ok, type AgentProvisionOptionsView } from "@hq/platform";
 import type { CreateAvailability } from "@hq/agents";
+// Warm the module the flow loads through import() once the flag is on, so the
+// lazy load resolves from the module cache inside settle().
+import "@hq/agents";
 
 import CreateBotFlow from "./CreateBotFlow.svelte";
 import type { DirectCloudCreate } from "./cloud-create.js";
@@ -56,6 +59,12 @@ async function settle(times = 6): Promise<void> {
   for (let i = 0; i < times; i += 1) {
     await tick();
     await Promise.resolve();
+  }
+  // The flow loads `@hq/agents` through import() once the flag is on; that
+  // resolves on a later task, not a microtask.
+  for (let i = 0; i < 3; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await tick();
   }
 }
 

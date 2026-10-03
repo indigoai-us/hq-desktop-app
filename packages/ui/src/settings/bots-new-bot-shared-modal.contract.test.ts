@@ -33,8 +33,11 @@ describe("Settings › Bots New bot uses the shared Messages modal", () => {
   it("every direct cloud create reads the flag for the chosen company", () => {
     const fn = shell.slice(shell.indexOf("async function createCloudBotDirect"));
     const body = fn.slice(0, fn.indexOf("\n  }\n"));
-    expect(body).toContain("runCompanyDirectCloudCreate(");
+    expect(body).toContain("directCloudCreate.create(");
     expect(shell).not.toMatch(/\brunDirectCloudCreate\(/);
+    const lazy = read("../chat/create-bot/direct-cloud-lazy.ts");
+    const create = lazy.slice(lazy.indexOf("async create("));
+    expect(create.slice(0, create.indexOf("\n    },\n"))).toContain("mod.runCompanyDirectCloudCreate(seam, companyUid");
   });
 
   it("Settings has no cloud create of its own", () => {

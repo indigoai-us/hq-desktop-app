@@ -13,6 +13,7 @@ import {
   runDirectCloudCreate,
   type DirectCloudDraft,
 } from "./cloud-create.js";
+import { lazyDirectCloudCreate } from "./direct-cloud-lazy.js";
 
 const INDIGO = "cmp_01KQ2RYAHXHDPCTY9GPQPTH3DG";
 
@@ -220,6 +221,26 @@ describe("runCompanyDirectCloudCreate: the flag is checked for the chosen compan
     expect(seen.filter((s) => s.method === "POST")).toEqual([]);
 
     await expect(runCompanyDirectCloudCreate(seam, INDIGO, DRAFT)).resolves.toMatchObject({ ok: true, agentUid: "agt_ada" });
+    expect(seen.filter((s) => s.method === "POST").map((s) => (s.body as { companyUid: string }).companyUid)).toEqual([INDIGO]);
+  });
+});
+
+describe("lazyDirectCloudCreate: the shell's seam loads the real module on first use", () => {
+  it("is null without a REST transport", () => {
+    expect(lazyDirectCloudCreate({ identity: { hasFeature: async () => ok(true) }, agents: {} })).toBeNull();
+  });
+
+  it("reads the flag per company and creates only where it is on", async () => {
+    const { adapter, seen } = webAdapter((method, path) =>
+      method === "GET" && path.startsWith("/v1/flags/resolve")
+        ? flags(path.includes(`companyUid=${INDIGO}`))
+        : { status: 201, body: CREATED },
+    );
+    const seam = lazyDirectCloudCreate(adapter)!;
+    expect(seen).toEqual([]);
+    await expect(seam.anyEnabled(["cmp_other", INDIGO])).resolves.toBe(true);
+    await expect(seam.create("cmp_other", DRAFT)).resolves.toMatchObject({ ok: false, blocked: true });
+    await expect(seam.create(INDIGO, DRAFT)).resolves.toMatchObject({ ok: true, agentUid: "agt_ada" });
     expect(seen.filter((s) => s.method === "POST").map((s) => (s.body as { companyUid: string }).companyUid)).toEqual([INDIGO]);
   });
 });
