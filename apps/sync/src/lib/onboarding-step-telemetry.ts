@@ -71,7 +71,7 @@ export interface OnboardingStepProperties {
   component?: StageId;
   flow?: OnboardingFlow;
   outcome?: string;
-  provider?: 'google' | 'microsoft';
+  provider?: 'google' | 'microsoft' | 'web';
   appVersion?: string;
   surface: 'desktop_installer';
   platform: OnboardingPlatform;
