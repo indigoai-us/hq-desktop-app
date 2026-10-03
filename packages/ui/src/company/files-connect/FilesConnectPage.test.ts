@@ -580,4 +580,30 @@ describe("US-029 FilesConnectPage", () => {
     expect(target.querySelector("[data-testid='deploy-sources-empty']")?.textContent).toMatch(/no projects yet/);
     expect((target.querySelector("[data-testid='run-deploy']") as HTMLButtonElement).disabled).toBe(true);
   });
+
+  it("AUDIT-3: failed secrets and deployments reads offer Try again and recover", async () => {
+    const { companyStore } = await import("../company-store.svelte.js");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(companyStore.loadSecrets).mockRejectedValueOnce(new Error("vault 503"));
+    let failDeploy = true;
+    const listDeployApps = vi.fn(async () =>
+      failDeploy
+        ? ({ ok: false as const, reason: "error", message: "HTTP 500" } as never)
+        : ok({ apps: [{ id: "1", name: "real-app", subdomain: "real-app", url: "https://real-app.indigo-hq.com", status: "active" }] }),
+    );
+    let target = mountPage("secrets", null, { listDeployApps });
+    await vi.waitFor(() => expect(target.querySelector("[data-testid='secrets-retry']")).not.toBeNull());
+    expect(target.textContent).toContain("Could not load secrets.");
+    (target.querySelector("[data-testid='secrets-retry']") as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(target.querySelector("[data-testid='secrets-retry']")).toBeNull());
+    await unmount(component!);
+    component = null;
+
+    target = mountPage("deployments", null, { listDeployApps });
+    await vi.waitFor(() => expect(target.querySelector("[data-testid='deployments-retry']")).not.toBeNull());
+    expect(target.textContent).not.toContain("HTTP 500");
+    failDeploy = false;
+    (target.querySelector("[data-testid='deployments-retry']") as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(target.textContent).toContain("real-app"));
+  });
 });
