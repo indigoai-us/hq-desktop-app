@@ -19,6 +19,9 @@
     whenChip,
   } from "./meeting-states-model";
   import { eventStart } from "./meetings-model";
+  import { renderInline, renderMarkdown } from "../common/markdown.js";
+  import { markdownLinks } from "../common/markdown-links.js";
+  import { decisionParts, normalizeRecapMarkdown } from "./recap-markdown";
   import { agendaItems, attendeeViews, locationLabel, meetingJoinUrl, organizerLabel } from "./meeting-details";
   import MeetingsToolbarControls from "./MeetingsToolbarControls.svelte";
   import NotetakerControl from "./NotetakerControl.svelte";
@@ -293,24 +296,35 @@
             {/if}
             {#if recap.summary}
               <h2 class="sh">Summary</h2>
-              <p class="sum">{recap.summary}</p>
+              <!-- OWNER-R25: the shared renderer (escaped, no remote images); links open through the host opener. -->
+              <div class="sum md" data-testid="recap-summary" use:markdownLinks={{ currentPath: "" }}>{@html renderMarkdown(normalizeRecapMarkdown(recap.summary, event.summary ?? ""))}</div>
             {/if}
             {#if recap.decisions.length}
               <h2 class="sh">Decisions <span class="n">{recap.decisions.length}</span></h2>
               {#each recap.decisions as item (item.id)}
-                <div class="it" data-testid="recap-decision"><span class="mk hi"></span><span>{item.title}</span><span class="own"><span class="mini">{item.ownerInitials}</span>{item.owner}</span><span class="ts">{item.when}</span></div>
+                {@const d = decisionParts(item.title)}
+                <div class="it top" data-testid="recap-decision">
+                  <span class="mk hi"></span>
+                  <div class="dec md" use:markdownLinks={{ currentPath: "" }}>
+                    <span class="dec-title" data-testid="decision-title">{@html renderInline(d.title)}</span>
+                    {#if d.decidedBy}<span class="dec-line" data-testid="decision-by"><span class="lbl">Decided by</span> {@html renderInline(d.decidedBy)}</span>{/if}
+                    {#if d.reasoning}<span class="dec-line" data-testid="decision-reasoning"><span class="lbl">Reasoning</span> {@html renderInline(d.reasoning)}</span>{/if}
+                  </div>
+                  {#if item.owner}<span class="own"><span class="mini">{item.ownerInitials}</span>{item.owner}</span>{:else}<span></span>{/if}
+                  {#if item.when}<span class="ts">{item.when}</span>{:else}<span></span>{/if}
+                </div>
               {/each}
             {/if}
             {#if recap.actions.length}
               <h2 class="sh">Action items <span class="n">{recap.actions.length}</span></h2>
               {#each recap.actions as item (item.id)}
-                <div class="it" data-testid="recap-action"><span class="mk"></span><span>{item.title}{#if item.detail}<span class="q">{item.detail}</span>{/if}</span><span class="own"><span class="mini" class:sq={item.bot}>{item.bot ? "⌁" : item.ownerInitials}</span>{item.owner}</span><span class="chip">{item.status}</span></div>
+                <div class="it" data-testid="recap-action"><span class="mk"></span><span class="md" use:markdownLinks={{ currentPath: "" }}>{@html renderInline(item.title)}{#if item.detail}<span class="q">{item.detail}</span>{/if}</span>{#if item.owner || item.bot}<span class="own"><span class="mini" class:sq={item.bot}>{item.bot ? "⌁" : item.ownerInitials}</span>{item.owner}</span>{:else}<span></span>{/if}<span class="chip">{item.status}</span></div>
               {/each}
             {/if}
             {#if recap.questions.length}
               <h2 class="sh">Open questions <span class="n">{recap.questions.length}</span></h2>
               {#each recap.questions as item (item.id)}
-                <div class="it"><span class="mk"></span><span>{item.title}</span><span class="own">{item.owner}</span><span class="chip">{item.status}</span></div>
+                <div class="it" data-testid="recap-question"><span class="mk"></span><span class="md" use:markdownLinks={{ currentPath: "" }}>{@html renderInline(item.title)}</span><span class="own">{item.owner}</span><span class="chip">{item.status}</span></div>
               {/each}
             {/if}
             {#if !recapFailed && notesRemaining === 0 && !recap.summary && !recap.decisions.length && !recap.actions.length && !recap.questions.length}
@@ -354,7 +368,7 @@
         {:else}
           <div data-testid="meeting-notes-tab">
             {#each event.notes ?? [] as note, i (note.id ?? i)}
-              <p class="sum"><b>{note.author || "Note"}</b> {note.text}</p>
+              <div class="sum md" data-testid="meeting-note" use:markdownLinks={{ currentPath: "" }}><b>{note.author || "Note"}</b>{@html renderMarkdown(normalizeRecapMarkdown(note.text ?? "", event.summary ?? ""))}</div>
             {:else}<p class="muted">Notes render here. The file stays in the company vault.</p>{/each}
           </div>
         {/if}
@@ -429,6 +443,15 @@
   .more { display: flex; align-items: center; gap: 8px; margin: 12px 0 4px; }
   .sum { max-width: 66ch; line-height: 1.55; }
   .sum b { font-weight: 500; }
+  .md :global(p) { margin: 0 0 8px; }
+  .md :global(ul), .md :global(ol) { margin: 0 0 8px; padding-left: 20px; }
+  .md :global(li) { margin: 2px 0; }
+  .md :global(strong) { font-weight: 500; }
+  .md :global(a) { color: inherit; text-decoration: underline; }
+  .it.top { align-items: start; }
+  .dec { display: grid; gap: 2px; min-width: 0; }
+  .dec-line { color: var(--t2); }
+  .dec-line .lbl { color: var(--t3); }
   .it { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; gap: 8px; align-items: center; min-height: 28px; padding: 4px 0; font-size: 13px; line-height: 17px; }
   .mk { width: 6px; height: 6px; border-radius: 50%; background: var(--t3); }
   .mk.hi { background: var(--t1); }

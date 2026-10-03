@@ -115,7 +115,8 @@ function bucket(raw: unknown, key: string): Record<string, unknown>[] {
 function itemFrom(row: Record<string, unknown>, kind: RecapItemKind, index: number): RecapItem | null {
   const title = textOf(row);
   if (!title) return null;
-  const owner = typeof row.owner === "string" && row.owner.trim() ? row.owner.trim() : "—";
+  // OWNER-R25: an empty owner is empty, not a dash placeholder.
+  const owner = typeof row.owner === "string" && row.owner.trim() ? row.owner.trim() : "";
   const bot = owner.toLowerCase() === "deacon" || row.kind === "bot";
   return {
     id: String(row.id ?? `${kind}-${index}`),
@@ -123,7 +124,7 @@ function itemFrom(row: Record<string, unknown>, kind: RecapItemKind, index: numb
     title,
     detail: typeof row.detail === "string" ? row.detail : typeof row.quote === "string" ? row.quote : "",
     owner,
-    ownerInitials: owner === "—" ? "—" : initialsOf(owner),
+    ownerInitials: owner ? initialsOf(owner) : "",
     bot,
     when: typeof row.when === "string" ? row.when : typeof row.at === "string" ? row.at : "",
     status: typeof row.status === "string" ? row.status : kind === "question" ? "Unanswered" : "Open",
@@ -146,7 +147,7 @@ export function recapModel(event: MeetingEvent, bot?: ScheduledBot): RecapModel 
 
 export function recapPlainText(model: RecapModel, title: string): string {
   const lines = [title, "", "Summary", model.summary, "", "Decisions"];
-  for (const item of model.decisions) lines.push(`- ${item.title}${item.owner !== "—" ? ` (${item.owner})` : ""}`);
+  for (const item of model.decisions) lines.push(`- ${item.title}${item.owner ? ` (${item.owner})` : ""}`);
   lines.push("", "Action items");
   for (const item of model.actions) lines.push(`- ${item.title} [${item.status}]`);
   return lines.join("\n");
