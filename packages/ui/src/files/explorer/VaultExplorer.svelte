@@ -28,6 +28,7 @@
   import QuickSwitcher from "./QuickSwitcher.svelte";
   import ShareFileSheet from "./ShareFileSheet.svelte";
   import VaultTree from "./VaultTree.svelte";
+  import RailButton from "../../common/button/RailButton.svelte";
   import {
     PERSONAL_VAULT,
     breadcrumbs,
@@ -123,7 +124,11 @@
     if (gen !== summaryGeneration) return;
     summaryLoading = false;
     if (res.ok) summary = res.value;
-    else summaryError = res.message || "This vault could not be read.";
+    else {
+      // AUDIT-3: plain copy only; the host message goes to the log.
+      console.warn("VaultExplorer: vault summary failed:", res.message);
+      summaryError = "Couldn't read this vault.";
+    }
   }
 
   $effect(() => {
@@ -203,14 +208,14 @@
         ...content,
         [p]: res.ok
           ? { text: res.value.text, size: res.value.size, truncated: res.value.truncated }
-          : { error: res.message || "This file could not be read." },
+          : { error: "Couldn't read this file." },
       };
       return;
     }
     const res = await adapter.files.getFileContent(p);
     content = {
       ...content,
-      [p]: res.ok ? { text: String(res.value ?? "") } : { error: res.message || "This file could not be read." },
+      [p]: res.ok ? { text: String(res.value ?? "") } : { error: "Couldn't read this file." },
     };
   }
 
@@ -285,7 +290,10 @@
   async function reveal(p: string): Promise<void> {
     revealError = null;
     const res = await adapter.files.revealInFinder(p);
-    if (!res.ok) revealError = res.message || `Could not open ${fileManagerName}.`;
+    if (!res.ok) {
+      console.warn("VaultExplorer: reveal failed:", res.message);
+      revealError = `Could not open ${fileManagerName}.`;
+    }
   }
 
   const canReveal = $derived(adapter.isAvailable("localFiles"));
@@ -425,7 +433,10 @@
             {:else if summaryLoading}
               <p class="vx-muted">Reading the vault…</p>
             {:else if summaryError}
-              <p class="vx-muted">{summaryError}</p>
+              <div class="vx-load-error" role="alert" data-testid="vault-home-error">
+                <p class="vx-muted">{summaryError}</p>
+                <RailButton icon="refresh" data-testid="vault-home-retry" onclick={() => void loadSummary(vault, showSystem)}>Try again</RailButton>
+              </div>
             {:else if !vaultApi}
               <p class="vx-muted">Pick a file on the left to start reading.</p>
             {/if}
@@ -1045,6 +1056,8 @@
   .vx-list .vx-muted {
     margin-left: auto;
   }
+  .vx-load-error { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+  .vx-load-error p { margin: 0; }
   .vx-muted {
     color: var(--v4-text-3);
   }
