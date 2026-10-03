@@ -9,6 +9,7 @@ export * from "./library-shelf.js";
 export * from "./plan-limit.js";
 export {
   CLAUDE_PROVIDER_FLAG,
+  COMPANY_NAME_PREFILL_FLAG,
   COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
   DESKTOP_LIMIT_STATUS_PUSH_FLAG,
   FIRST_LAUNCH_JOIN_KEY_FLAG,

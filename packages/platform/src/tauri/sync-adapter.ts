@@ -32,6 +32,7 @@ import { TAURI_CAPABILITIES, type Capability } from '../capabilities.js';
 import { WEB_PATHS } from '../web/index.js';
 import {
   CLAUDE_PROVIDER_FLAG,
+  COMPANY_NAME_PREFILL_FLAG,
   DESKTOP_LIMIT_STATUS_PUSH_FLAG,
   FIRST_FOLDER_SYNC_STEP_FLAG,
   FIRST_LAUNCH_JOIN_KEY_FLAG,
@@ -189,6 +190,10 @@ export function createSyncPlatformAdapter(
   });
 
   function hasFeatureLegacy(flag: string): AdapterPromise<boolean> {
+    if (flag === COMPANY_NAME_PREFILL_FLAG) {
+      // Company-name suggestions are opt-in; missing registry data stays off.
+      return Promise.resolve(ok(false));
+    }
     if (flag === POST_READY_ACTION_TELEMETRY_FLAG) {
       // The measurement event is opt-in and stays off until the hq-flags
       // registry contains an explicit enabled value.
@@ -494,6 +499,7 @@ export function createSyncPlatformAdapter(
 
     identity: {
       getAuthSession: () => call('get_auth_session'),
+      refreshFeatureFlags: () => flags.refresh(),
       whoami: async () => {
         type ShellAuthState = {
           authenticated?: boolean;
