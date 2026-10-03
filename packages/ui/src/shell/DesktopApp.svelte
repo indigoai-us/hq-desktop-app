@@ -52,9 +52,7 @@
   import { pinCompany, type MoreCompany } from "./more-companies.js";
   import type { NewCompanyPlan, ProjectTemplate } from "./new-company/new-company.js";
   import TelemetryRailHost from "./TelemetryRailHost.svelte";
-  import ComingSoon from "./ComingSoon.svelte";
   import {
-    COMING_SOON_COPY,
     RAIL_ATLAS_FLAG,
     RAIL_DEPLOYMENTS_ACTIONS_FLAG,
     RAIL_OUTPOST_FLAG,
@@ -3777,6 +3775,7 @@
       action: () => openSettings(),
     });
     for (const [id, page] of Object.entries(extraPages ?? {})) {
+      if (!telemetryVisible && railPlaceholderForPage(id)?.id === "telemetry") continue;
       nav.push({
         id: `command-go-${id}`,
         label: page.label,
@@ -9037,7 +9036,10 @@
         liveCount: companyLiveCount(snap, company.uid),
         unreadCount: companyChannelUnread(railRows, company.uid),
       }));
-    return railItems(pinned, resolvedAccountLabel ?? "You");
+    // OWNER-D 3: members without Telemetry do not see its rail entry.
+    return railItems(pinned, resolvedAccountLabel ?? "You").filter(
+      (item) => item.id !== "telemetry" || telemetryVisible,
+    );
   });
   const activeRailId = $derived(
     activeRailItemId({ view, tenantCompanyId, extraPageId, settingsSection }),
@@ -9142,6 +9144,16 @@
   });
   const railGate = (key: IndigoOnlyGateKey): boolean =>
     isIndigoOnlySurface(key, gateCompany, railGateValues);
+  // OWNER-D 3: Telemetry is hidden (rail, palette, deep links) for members
+  // without the feature, instead of a "Coming soon" page.
+  const telemetryVisible = $derived(railGate(RAIL_TELEMETRY_FLAG));
+  $effect(() => {
+    if (railPlaceholder?.id !== "telemetry" || telemetryVisible) return;
+    const company = tenantCompanyId;
+    untrack(() => {
+      void navigate(company ? companyRowDestination("atlas", company) : { kind: "messages" });
+    });
+  });
   const companyPaneSelectedId = $derived(
     view === "extra" ? companyRowForPage(extraPageId) : null,
   );
@@ -10712,10 +10724,8 @@
             }}
           />
         {:else if railPlaceholder?.id === "telemetry"}
-          {#if railGate(RAIL_TELEMETRY_FLAG)}
+          {#if telemetryVisible}
             <TelemetryRailHost agents={adapter.agents ?? null} />
-          {:else}
-            <ComingSoon title="Telemetry" body={COMING_SOON_COPY[RAIL_TELEMETRY_FLAG]} testid="telemetry-coming-soon" />
           {/if}
         {:else if railPlaceholder?.id === "secrets" || railPlaceholder?.id === "connections"}
           <PersonalRailHost
