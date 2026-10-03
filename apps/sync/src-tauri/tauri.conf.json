@@ -46,7 +46,7 @@
       }
     ],
     "security": {
-      "csp": "img-src 'self' data: asset: blob: https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com"
+      "csp": "img-src 'self' data: asset: blob: https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com https://t0.gstatic.com https://icons.duckduckgo.com"
     }
   },
   "plugins": {
