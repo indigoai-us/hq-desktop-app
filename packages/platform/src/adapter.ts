@@ -1401,6 +1401,15 @@ export interface AgentsApi {
    */
   getMyTelemetry?(from: string, to: string): AdapterPromise<Json>;
   /**
+   * OWNER-R27: session history recorded on this Mac in the HQ workspace
+   * folder (workspace/sessions + workspace/threads), newest first. Native
+   * hosts only; `from`/`to` are YYYY-MM-DD.
+   */
+  listLocalSessions?(
+    range: { from: string; to: string },
+    page?: { offset?: number; limit?: number },
+  ): AdapterPromise<Json>;
+  /**
    * POST /outpost/status — the caller's own Outpost row (state, region,
    * instance state, telemetry timestamps). A 404 failure means no Outpost.
    */

@@ -1158,6 +1158,8 @@ export function createSyncPlatformAdapter(
         hqProJson('GET', AGENT_PATHS.companyTelemetry(companyUid, from, to)),
       getMyTelemetry: (from, to) =>
         hqProJson('GET', AGENT_PATHS.myTelemetry(from, to)),
+      listLocalSessions: (range, page) =>
+        call('list_local_sessions', { from: range.from, to: range.to, offset: page?.offset ?? 0, limit: page?.limit ?? 50 }),
       getMyOutpostStatus: () => hqProJson('POST', OUTPOST_PATHS.status, {}),
       listMyOutpostJobs: () => hqProJson('GET', OUTPOST_PATHS.jobsStatus),
       listMyGoogleAccounts: () => hqProJson('GET', PERSONAL_INTEGRATION_PATHS.googleAccounts),
