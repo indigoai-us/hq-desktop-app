@@ -323,4 +323,17 @@ describe('HqWorkWorkShell plan-limit upload pause (US-019)', () => {
     await flush();
     expect(rows().map((row) => row.dataset.status)).toEqual(['read', 'read', 'read']);
   });
+
+  // OWNER-002: the old build stacked every paused company's notice above the
+  // shell frame, on the see-through host, so they showed over other apps.
+  it('renders no paused-files notice in the window outside the notifications feed', async () => {
+    await mountShell({
+      uploadsPaused: COMPANIES.map((company) => ({ company, upgradeUrl: UPGRADE_URL })),
+    });
+    await settleBanner();
+    expectNoBanner();
+    const frame = host.querySelector('.work-shell-frame');
+    expect(frame).toBeTruthy();
+    for (const row of rows()) expect(row.closest('.work-shell-frame')).toBe(frame);
+  });
 });

@@ -174,6 +174,8 @@
           }
         | null,
     ) => void;
+    /** QA-075: company whose pane is open; null on personal pages. */
+    onactivecompanychange?: (company: { uid: string | null; slug: string } | null) => void;
     /** The persisted post-ready marker used by the desktop telemetry path. */
     postReadyActionReady?: boolean;
     /** Native host-only full-column surfaces, forwarded to DesktopApp. */
@@ -277,6 +279,7 @@
     callsHost = null,
     onembeddednavigationready,
     onactivethreadchange,
+    onactivecompanychange,
     postReadyActionReady = false,
     extraPages,
     rowExtrasLoading = false,
@@ -1031,6 +1034,7 @@
       {refreshAppVersion}
       {uiVersion}
       {onactivethreadchange}
+      {onactivecompanychange}
       readyFirstActionReady={postReadyActionReady}
       {extraPages}
       {rowExtrasLoading}
