@@ -31,3 +31,57 @@ describe("AUDIT-2 Library vault home type", () => {
     expect(home).not.toMatch(/text-transform:\s*uppercase/);
   });
 });
+
+/**
+ * AUDIT-2-09 / structural issue 3: the whole VaultExplorer (toolbar, tree,
+ * note view, side rails) is on the same scale. 13px everywhere, weight at
+ * most 500, 20px only for the page title (vault home h1 and the note title),
+ * 11px mono only for the keyboard chord in the search box (the ⌘O hint).
+ * The vault avatar is a glyph tile: its size is exempt, its weight is not.
+ */
+const FILES = ["VaultExplorer.svelte", "VaultTree.svelte", "NoteView.svelte"];
+const TITLES = new Set([".vx-home h1", ".note-title"]);
+
+function rules(file: string): Array<{ sel: string; body: string }> {
+  const text = readFileSync(resolve(here, file), "utf8");
+  const style = text.slice(text.lastIndexOf("<style"));
+  return [...style.matchAll(/([^{}]*)\{([^}]*)\}/g)].map((m) => ({
+    sel: m[1].replace(/\/\*[\s\S]*?\*\//g, "").trim(),
+    body: m[2],
+  }));
+}
+
+describe("AUDIT-2 whole VaultExplorer type", () => {
+  for (const file of FILES) {
+    it(`${file}: 13px text, 20px title only, 11px mono only for the chord`, () => {
+      const off: string[] = [];
+      for (const { sel, body } of rules(file)) {
+        for (const m of body.matchAll(/font-size:\s*([^;]+);/g)) {
+          const v = m[1].trim();
+          if (TITLES.has(sel) && /var\(--type-title/.test(v)) continue;
+          if (sel.startsWith(".vx-avatar")) continue;
+          if (v === "13px") continue;
+          if (v === "11px" && sel === ".vx-search kbd" && /font-family:\s*var\(--font-mono/.test(body)) continue;
+          off.push(`${sel} → ${v}`);
+        }
+      }
+      expect(off).toEqual([]);
+    });
+
+    it(`${file}: weight at most 500`, () => {
+      const heavy: string[] = [];
+      for (const { sel, body } of rules(file)) {
+        for (const m of body.matchAll(/font-weight:\s*([^;]+);/g)) {
+          const n = Number(/(\d+)\)?\s*$/.exec(m[1].trim())?.[1]);
+          if (!(n <= 500)) heavy.push(`${sel} → ${m[1].trim()}`);
+        }
+      }
+      expect(heavy).toEqual([]);
+    });
+  }
+
+  it("the ⌘O hint is mono", () => {
+    const kbd = rules("VaultExplorer.svelte").find((r) => r.sel === ".vx-search kbd");
+    expect(kbd?.body).toMatch(/font-family:\s*var\(--font-mono/);
+  });
+});

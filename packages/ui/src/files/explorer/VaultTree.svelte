@@ -374,7 +374,7 @@
     border-radius: 4px;
     background: var(--v4-control-faint);
     color: var(--v4-text-3);
-    font-size: 10px;
+    font-size: 13px;
     letter-spacing: 0.02em;
     text-transform: uppercase;
   }
@@ -396,7 +396,7 @@
   .vt-note {
     margin: 12px 10px;
     color: var(--v4-text-3);
-    font-size: 12px;
+    font-size: 13px;
   }
   .vt-skeleton {
     display: grid;

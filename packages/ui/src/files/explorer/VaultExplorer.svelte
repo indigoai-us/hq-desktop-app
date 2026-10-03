@@ -615,8 +615,8 @@
     background: transparent;
     color: var(--v4-text-1);
     font: inherit;
-    font-size: 14px;
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     cursor: pointer;
   }
   .vx-vault-btn:hover {
@@ -643,7 +643,7 @@
     background: color-mix(in srgb, var(--v4-link) 18%, var(--v4-raised));
     color: var(--v4-link);
     font-size: 12px;
-    font-weight: 700;
+    font-weight: 500;
   }
   .vx-avatar.personal {
     background: var(--v4-control-faint);
@@ -692,7 +692,7 @@
   .vx-menu-kind {
     margin-left: auto;
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: 13px;
   }
   .vx-search {
     display: flex;
@@ -717,6 +717,7 @@
   .vx-search kbd {
     margin-left: auto;
     font: inherit;
+    font-family: var(--font-mono, ui-monospace, Menlo, monospace);
     font-size: 11px;
   }
   .vx-tree {
@@ -730,7 +731,7 @@
     padding: 10px 14px 12px;
     border-top: 1px solid var(--v4-hairline);
     color: var(--v4-text-3);
-    font-size: 11.5px;
+    font-size: 13px;
   }
   .vx-toggle {
     display: flex;
@@ -782,7 +783,7 @@
     background: transparent;
     color: inherit;
     font: inherit;
-    font-size: 12.5px;
+    font-size: 13px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -829,7 +830,7 @@
     gap: 6px;
     min-width: 0;
     color: var(--v4-text-3);
-    font-size: 12.5px;
+    font-size: 13px;
     white-space: nowrap;
     overflow: hidden;
   }
@@ -873,7 +874,7 @@
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
     cursor: pointer;
   }
   .vx-action:hover {
@@ -1033,7 +1034,7 @@
     background: transparent;
     color: var(--v4-text-1);
     font: inherit;
-    font-size: 13.5px;
+    font-size: 13px;
     text-align: left;
     cursor: pointer;
   }
@@ -1048,7 +1049,7 @@
     color: var(--v4-text-3);
   }
   .small {
-    font-size: 12px;
+    font-size: 13px;
   }
 
   /* ---- right rail ---- */
@@ -1068,8 +1069,8 @@
     gap: 6px;
     margin: 0 0 8px 6px;
     color: var(--v4-text-3);
-    font-size: 11px;
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     letter-spacing: 0.05em;
     text-transform: uppercase;
   }
@@ -1078,7 +1079,7 @@
     border-radius: 999px;
     background: var(--v4-control-faint);
     color: var(--v4-text-2);
-    font-size: 10.5px;
+    font-size: 13px;
     letter-spacing: 0;
   }
   .vx-outline,
@@ -1098,7 +1099,7 @@
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
-    font-size: 12.5px;
+    font-size: 13px;
     line-height: 1.4;
     text-align: left;
     cursor: pointer;
@@ -1115,7 +1116,7 @@
     font-size: 13px;
   }
   .vx-links .small {
-    font-size: 11px;
+    font-size: 13px;
   }
 
   /* The note keeps its reading width; below that the rail folds into the
@@ -1137,8 +1138,8 @@
     gap: 6px;
     margin: 0 0 8px;
     color: var(--v4-text-3);
-    font-size: 11px;
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     letter-spacing: 0.05em;
     text-transform: uppercase;
   }
