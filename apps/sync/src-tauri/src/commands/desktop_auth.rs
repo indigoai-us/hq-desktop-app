@@ -185,7 +185,10 @@ fn post_signin_link_best_effort(link: String, bearer: String) {
         let response = client
             .post(hq_desktop_core::desktop_signin_link::SIGNIN_LINK_URL)
             .bearer_auth(bearer)
-            .json(&serde_json::json!({ "link": link }))
+            .json(&hq_desktop_core::desktop_signin_link::signin_link_body(
+                &link,
+                crate::commands::cdp_mirror::download_tag_anon_id().as_deref(),
+            ))
             .send()
             .await?;
         let status = response.status().as_u16();
@@ -376,6 +379,7 @@ pub async fn desktop_continuation_start(app: AppHandle) -> Result<ContinuationSt
     let (browser_url, link_nonce) = hq_desktop_core::desktop_signin_link::select_browser_url(
         &armed.authorize_url,
         super::first_run::install_attempt_id().as_deref(),
+        super::cdp_mirror::download_tag_anon_id().as_deref(),
         || async {
             let response = reqwest::Client::new()
                 .get(hq_desktop_core::desktop_signin_link::SIGNIN_CONFIG_URL)

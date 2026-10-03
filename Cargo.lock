@@ -932,6 +932,7 @@ dependencies = [
  "minisign-verify",
  "reqwest",
  "rustix",
+ "same-file",
  "semver",
  "sentry",
  "serde",

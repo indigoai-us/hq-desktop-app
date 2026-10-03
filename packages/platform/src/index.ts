@@ -18,6 +18,7 @@ export {
   PERSONAL_WORKSPACE_BOARD_FLAG,
   POST_READY_ACTION_TELEMETRY_FLAG,
   READY_FIRST_ACTION_FLAG,
+  SETUP_DEPS_TIMEOUT_RETRY_FLAG,
 } from "./flags.js";
 export {
   compareHumanRecency,

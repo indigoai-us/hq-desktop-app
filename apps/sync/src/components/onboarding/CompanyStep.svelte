@@ -31,9 +31,16 @@
     type FirstRunPlan,
     type InvokeFn,
   } from '../../lib/first-run-company';
+  import { flushPendingCompanyInvites, queuePendingCompanyInvites } from '../../lib/pending-company-invites';
 
   export type CompanyStepEvent =
-    | { action: 'company_created'; companyUid: string; inviteCount: number; inviteFailureCount: number }
+    | {
+        action: 'company_created';
+        companyUid: string;
+        inviteCount: number;
+        inviteFailureCount: number;
+        inviteQueuedCount: number;
+      }
     | { action: 'company_create_failed'; blocked: boolean }
     | { action: 'invite_joined'; inviteCount: number }
     | { action: 'invite_join_failed' }
@@ -90,6 +97,14 @@
   const canCreate = $derived(
     !busy && form !== null && missing.length === 0 && !slugBlocksSubmit(slugState) && invites.invalid.length === 0,
   );
+
+  function browserStorage(): Storage | null {
+    try {
+      return typeof localStorage === 'undefined' ? null : localStorage;
+    } catch {
+      return null;
+    }
+  }
 
   function toHandle(name: string): string {
     return name
@@ -169,19 +184,43 @@
     }
     slugWatcher?.cancel();
     companyUid = result.company.companyUid;
+    const queued = result.company.queuedInvites;
+    const failedEmails = result.company.inviteFailures.map((failure) => failure.email);
+    let queuedSaved = false;
+    if (queued.length > 0) {
+      queuedSaved = queuePendingCompanyInvites(browserStorage(), companyUid, queued);
+      if (queuedSaved) {
+        // The app sends these when it next sees the company ready; also try
+        // once more in the background in case provisioning finishes soon.
+        void flushPendingCompanyInvites(browserStorage(), api).catch((err) =>
+          console.warn('onboarding: sending queued invites failed', err),
+        );
+      } else {
+        failedEmails.push(...queued.map((invite) => invite.email));
+      }
+    }
     onTelemetry?.({
       action: 'company_created',
       companyUid,
       inviteCount: invites.valid.length,
-      inviteFailureCount: result.company.inviteFailures.length,
+      inviteFailureCount: failedEmails.length,
+      inviteQueuedCount: queuedSaved ? queued.length : 0,
     });
-    const inviteNote =
-      result.company.inviteFailures.length > 0
-        ? `Some invites did not go out: ${result.company.inviteFailures.map((failure) => failure.email).join(', ')}. You can invite them again from the Team tab.`
-        : null;
-    // The company exists but its cloud vault is not set up yet; the desktop
-    // window's sync banner retries provisioning on Try again.
-    note = [result.company.cloudError, inviteNote].filter(Boolean).join(' ') || null;
+    // The company exists but its cloud vault may not be set up yet; the
+    // desktop window's sync banner retries provisioning on Try again.
+    const notes: string[] = [];
+    if (result.company.cloudError) notes.push(result.company.cloudError);
+    if (queuedSaved) {
+      notes.push(
+        `Your company is still being set up. HQ will send the invites to ${queued.map((invite) => invite.email).join(', ')} as soon as it is ready.`,
+      );
+    }
+    if (failedEmails.length > 0) {
+      notes.push(
+        `Some invites did not go out: ${failedEmails.join(', ')}. You can invite them again from the Team tab.`,
+      );
+    }
+    note = notes.length > 0 ? notes.join(' ') : null;
     phase = 'plan';
   }
 
@@ -273,6 +312,13 @@
     slugWatcher?.cancel();
     stopCheckoutListen?.();
   });
+
+  /** Server labels may already include "(optional)" (e.g. "Website (optional) — …"); only append it when missing. */
+  function fieldLabel(field: { label: string; required?: boolean }): string {
+    if (field.required || /\(optional\)/i.test(field.label)) return field.label;
+    return `${field.label} (optional)`;
+  }
+
 </script>
 
 <div class="follow-on on" data-testid="onboarding-company">
@@ -320,7 +366,7 @@
       >
         {#each form.fields as field (field.id)}
           <label for={`onboarding-company-${field.id}`}>
-            {field.label}{field.required ? '' : ' (optional)'}
+            {fieldLabel(field)}
           </label>
           <input
             id={`onboarding-company-${field.id}`}
@@ -440,10 +486,6 @@
 </div>
 
 <style>
-  .company-form textarea {
-    font: inherit;
-    resize: vertical;
-  }
   .plan-options {
     border: 0;
     margin: 0 0 16px;

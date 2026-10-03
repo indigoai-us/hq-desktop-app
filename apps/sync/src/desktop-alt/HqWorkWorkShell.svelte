@@ -47,6 +47,8 @@
   } from '@hq/ui';
   import { flushSync, onDestroy, onMount, tick, untrack, type ComponentProps } from 'svelte';
   import { safeUnlisten } from '../lib/listener-registry';
+  import { createFirstRunCompanyApi, type InvokeFn } from '../lib/first-run-company';
+  import { flushPendingCompanyInvites } from '../lib/pending-company-invites';
   import { emitPlanLimitPromptTelemetry } from '../lib/desktop-telemetry';
   import { isPostReadyActionReady } from '../lib/post-ready-action-telemetry';
   import type { DmRequestContact } from '../lib/dmRequests';
@@ -62,6 +64,7 @@
   import { startDesktopMeshPresence } from './mesh-presence';
   import { startMeetingRecordingBridge } from './meeting-recording-bridge';
   import { SETUP_PROMPT } from './lib/setup-launch';
+  import { watcherLockNoticeFromStatus } from './watcher-lock-status';
   import {
     createNativeWorkShellCapabilities,
     type NativeInvokeFn,
@@ -81,6 +84,26 @@
     bootTimeoutMs,
     rosterRetryDelaysMs,
   }: Props = $props();
+
+  /**
+   * Send invites the "Name your company" setup step queued while the new
+   * company was still provisioning. A no-op when nothing is queued.
+   */
+  function sendQueuedCompanyInvites(): void {
+    let storage: Storage | null = null;
+    try {
+      storage = typeof localStorage === 'undefined' ? null : localStorage;
+    } catch {
+      return;
+    }
+    void flushPendingCompanyInvites(storage, createFirstRunCompanyApi(invokeFn as InvokeFn))
+      .then((report) => {
+        for (const failure of report.failed) {
+          console.warn('Queued company invite was refused.', failure.companyUid, failure.reason);
+        }
+      })
+      .catch((error) => console.error('Could not send queued company invites.', error));
+  }
 
   const adapter = createSyncPlatformAdapter({
     invoke: (command, args) => invokeFn(command, args),
@@ -189,6 +212,7 @@
     statusPush?: boolean;
   }
   let planLimitNotices = $state<PlanLimitNotice[]>([]);
+  let watcherLockNotice = $state<string | null>(null);
   // QA-075: companies whose notice the person dismissed. A dismissal is per
   // company and lasts for the session (cleared only on an account change).
   const dismissedPlanLimitKeys = new Set<string>();
@@ -633,6 +657,7 @@
       if (request !== hydration || expectedGeneration !== authGeneration) return;
       lifecycle = 'ready';
       void rosterRefresher.refresh();
+      sendQueuedCompanyInvites();
     } catch (error) {
       if (request !== hydration || expectedGeneration !== authGeneration) return;
       identityError = readableError(error, 'Couldn’t verify your account.');
@@ -792,6 +817,16 @@
 
     const bootRevealTimeoutId = setTimeout(() => void reveal(), IDENTITY_SETTLE_TIMEOUT_MS);
 
+    const unlistenWatcherStatusPromise = listen<{
+      state: string;
+      holderCommand?: string;
+    }>('sync:watcher-status', (event) => {
+      if (!cancelled) watcherLockNotice = watcherLockNoticeFromStatus(event.payload);
+    }).catch((error) => {
+      console.error('Could not subscribe to watcher lock status.', error);
+      return () => {};
+    });
+
     const restoreInitialNavigation = async () => {
       try {
         const pending = await invokeFn('desktop_alt_consume_pending_route');
@@ -933,7 +968,10 @@
     // Website-created companies are provisioned by the sync runner after
     // sign-in; re-read the roster when it says so instead of after a restart.
     const unsubscribeRosterEvents = subscribeRosterRefreshEvents(listen, () => {
-      if (!cancelled && lifecycle === 'ready') void rosterRefresher.refresh();
+      if (!cancelled && lifecycle === 'ready') {
+        void rosterRefresher.refresh();
+        sendQueuedCompanyInvites();
+      }
     });
     const unlistenWorkPushes = WORK_PUSH_EVENTS.map((eventName) =>
       listen(eventName, (event) => {
@@ -1076,6 +1114,7 @@
       void unlistenRecommendClearPromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenForcePromise.then((unlisten) => safeUnlisten(unlisten)());
       void unlistenAuthSessionPromise.then((unlisten) => safeUnlisten(unlisten)());
+      void unlistenWatcherStatusPromise.then((unlisten) => safeUnlisten(unlisten)());
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('focus', revalidateOnRecovery);
       window.removeEventListener('online', revalidateOnRecovery);
@@ -1296,6 +1335,11 @@
     {#if signOutError}
       <div class="workspace-warning" data-testid="hq-work-sign-out-error" role="alert">
         <span>{signOutError}</span>
+      </div>
+    {/if}
+    {#if watcherLockNotice}
+      <div class="workspace-warning" data-testid="sync-watcher-lock-status" role="status">
+        {watcherLockNotice}
       </div>
     {/if}
     <div class="work-shell-frame">

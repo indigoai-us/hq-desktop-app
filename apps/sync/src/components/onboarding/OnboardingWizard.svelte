@@ -99,10 +99,12 @@
     setupCompletionResult,
     setupProgressPercent,
     setupStageRecoveryAction,
+    resolveFlagWithTimeout,
     stageCommandInvocations,
     stageTimeoutMs,
     setupFailureTelemetryDetails,
     StageTimeoutError,
+    SETUP_TIMEOUT_NATIVE_SETTLE_TIMEOUT_MS,
     withProgressTimeout,
     STAGE_ORDER,
     withTimeout,
@@ -158,9 +160,19 @@
     createSyncPlatformAdapter,
     dispatchPostReadyAction,
     FIRST_FOLDER_SYNC_STEP_FLAG,
+    SETUP_DEPS_TIMEOUT_RETRY_FLAG,
     retryThrottled,
   } from '@hq/platform';
   import { markPostReadyActionReady } from '../../lib/post-ready-action-telemetry';
+  import {
+    classifyInviteError,
+    hqProErrorCode,
+    HqProRequestError,
+    inviteErrorMessage,
+    isAlreadyExists,
+    type InviteErrorKind,
+    type InviteFailure,
+  } from '../../lib/onboarding-invite';
 
   interface Props {
     initialStep: number;
@@ -208,8 +220,6 @@
     tone: 'error' | 'warning';
     text: string;
   };
-
-  type InviteTeammateErrorKind = 'request_failed' | 'email_delivery_failed';
 
   type InstallProgressPayload = {
     handle?: string;
@@ -380,7 +390,9 @@
   let inviteEmail = $state('');
   let inviteSending = $state(false);
   let inviteSent = $state(false);
-  let inviteErrorKind = $state<InviteTeammateErrorKind | null>(null);
+  let inviteErrorKind = $state<InviteErrorKind | null>(null);
+  /** Set when the address was already invited and HQ resent that invite. */
+  let inviteResent = $state(false);
   let firstFolderSyncFlagResolution: Promise<boolean> | null = null;
   let firstFolderSyncBusy = $state(false);
   let firstFolderSyncError = $state(false);
@@ -415,6 +427,7 @@
   let effectiveInstallPath = $state<string | null>(null);
   let currentRunId = 0;
   let currentSetupRunId = '';
+  let currentDepsAttemptId = '';
   let setupCancelled = false;
   const initialCloudSyncOperation = { operation: null as Promise<void> | null };
   let unlistenInstallProgress: UnlistenFn | null = null;
@@ -1076,7 +1089,7 @@
       throw new Error('hq-pro returned an invalid response');
     }
     if (response.status < 200 || response.status >= 300) {
-      throw new Error(`hq-pro request failed with status ${response.status}`);
+      throw new HqProRequestError(response.status, hqProErrorCode(response.body));
     }
     const payload =
       typeof response.body === 'string' && response.body.trim()
@@ -1169,6 +1182,29 @@
     }
   }
 
+  function recordInviteFailure(failure: InviteFailure): void {
+    inviteErrorKind = failure.kind;
+    recordStep(INVITE_TEAMMATE_STEP_INDEX, 'failed', {
+      errorKind: failure.kind,
+      errorCategory: failure.kind === 'network' ? 'network' : 'unknown',
+      ...(failure.httpStatus === undefined ? {} : { statusCode: failure.httpStatus }),
+    });
+  }
+
+  function postInvite(
+    context: { companyUid: string; personUid: string },
+    inviteeEmail: string,
+    resend: boolean,
+  ): Promise<Record<string, unknown>> {
+    return onboardingHqProJson('POST', '/membership/invite', {
+      companyUid: context.companyUid,
+      role: 'member',
+      invitedBy: context.personUid,
+      inviteeEmail,
+      ...(resend ? { resend: true } : { sendEmail: true }),
+    });
+  }
+
   async function sendTeammateInvite(): Promise<void> {
     const context = inviteTeammateContext;
     const inviteeEmail = inviteEmail.trim();
@@ -1176,40 +1212,41 @@
 
     inviteSending = true;
     inviteErrorKind = null;
+    inviteResent = false;
     try {
-      const resend = inviteCreatedForEmail === inviteeEmail;
-      const response = await onboardingHqProJson('POST', '/membership/invite', {
-        companyUid: context.companyUid,
-        role: 'member',
-        invitedBy: context.personUid,
-        inviteeEmail,
-        ...(resend ? { resend: true } : { sendEmail: true }),
-      });
+      let resend = inviteCreatedForEmail === inviteeEmail;
+      let alreadyInvited = false;
+      let response: Record<string, unknown>;
+      try {
+        response = await postInvite(context, inviteeEmail, resend);
+      } catch (error) {
+        // A resumed session (or a second click after a lost answer) meets the
+        // invite the first attempt made. hq-pro answers 409; resend it.
+        if (resend || !isAlreadyExists(error)) throw error;
+        resend = true;
+        alreadyInvited = true;
+        inviteCreatedForEmail = inviteeEmail;
+        response = await postInvite(context, inviteeEmail, true);
+      }
       const inviteExists =
         isRecord(response.membership) || (resend && response.resent === true);
       if (!inviteExists) {
-        inviteErrorKind = 'request_failed';
-        recordStep(INVITE_TEAMMATE_STEP_INDEX, 'failed', {
-          inviteErrorKind,
-        });
+        recordInviteFailure({ kind: 'request_failed' });
         return;
       }
       inviteCreatedForEmail = inviteeEmail;
       if (response.emailSent !== true) {
-        inviteErrorKind = 'email_delivery_failed';
-        recordStep(INVITE_TEAMMATE_STEP_INDEX, 'failed', {
-          inviteErrorKind,
-        });
+        recordInviteFailure({ kind: 'email_delivery_failed' });
         return;
       }
       inviteSent = true;
-      recordStep(INVITE_TEAMMATE_STEP_INDEX, 'completed', { outcome: 'ok' });
+      inviteResent = alreadyInvited;
+      recordStep(INVITE_TEAMMATE_STEP_INDEX, 'completed', {
+        outcome: alreadyInvited ? 'resent' : 'ok',
+      });
     } catch (error) {
       console.warn('onboarding: invite teammate request failed', error);
-      inviteErrorKind = 'request_failed';
-      recordStep(INVITE_TEAMMATE_STEP_INDEX, 'failed', {
-        inviteErrorKind,
-      });
+      recordInviteFailure(classifyInviteError(error));
     } finally {
       inviteSending = false;
     }
@@ -1404,6 +1441,7 @@
   function beginSetupRun(): number {
     currentRunId += 1;
     currentSetupRunId = createSetupRunId();
+    currentDepsAttemptId = currentSetupRunId;
     setupCancelled = false;
     setupRetry = null;
     // Supersession: the previous run may have left a stage mid-retry. This
@@ -1461,7 +1499,7 @@
     if (handle !== 'preflight') activeInstallHandles.add(handle);
     if (
       currentStageId === 'deps' &&
-      payload.setupRunId === currentSetupRunId &&
+      payload.setupRunId === currentDepsAttemptId &&
       payload.line?.trim()
     ) {
       activeDepsOutputTimeoutProgress?.();
@@ -1639,6 +1677,7 @@
     id: StageId,
     runId: number,
     failureScope: OnboardingFailureScope,
+    depsTimeoutRetryEnabled: boolean,
   ): Promise<void> {
     const invocations = stageCommandInvocations(id, { installPath: effectiveInstallPath });
     if (invocations.length === 0) return;
@@ -1673,9 +1712,7 @@
             : Promise.resolve(invokeDesktopCommand(invocation.command, args));
         const onTimeout = (timeoutMs = ms) =>
           new StageTimeoutError(id, timeoutMs);
-        const cancel = () => {
-          void cancelForegroundWork(runId);
-        };
+        const cancel = () => cancelForegroundWork(runId);
         if (id === 'initial-sync') {
           await withProgressTimeout(
             operation,
@@ -1714,6 +1751,10 @@
             activityTimeoutEnabled
               ? ms * SETUP_STAGE_TIMEOUT_MAX_ELAPSED_MULTIPLIER
               : undefined,
+            depsTimeoutRetryEnabled,
+            depsTimeoutRetryEnabled
+              ? SETUP_TIMEOUT_NATIVE_SETTLE_TIMEOUT_MS
+              : 0,
           );
         } else if (id === 'content' && activityTimeoutEnabled) {
           await withProgressTimeout(
@@ -1808,11 +1849,20 @@
     id: StageId,
     runId: number,
     attemptCount: number,
+    depsTimeoutRetryFlag: Promise<boolean>,
   ): Promise<StageRunResult> {
     if (!isCurrentRun(runId)) return CANCELLED_STAGE_RUN;
     const setupRunId = currentSetupRunId;
+    const depsTimeoutRetryEnabled =
+      id === 'deps' ? await depsTimeoutRetryFlag : false;
+    if (!isCurrentRun(runId)) return CANCELLED_STAGE_RUN;
+    const setupAttemptId =
+      id === 'deps' && depsTimeoutRetryEnabled
+        ? createSetupRunId()
+        : setupRunId;
+    if (id === 'deps') currentDepsAttemptId = setupAttemptId;
     const failureScope = {
-      setupRunId,
+      setupRunId: setupAttemptId,
       attemptCount,
       flow: onboardingFlow,
       frontendSessionId: onboardingTelemetry.sessionId,
@@ -1829,7 +1879,12 @@
     stages = setStageStatus(stages, id, 'running');
     await journalStageStart(id);
 
-    const result = await invokeStageCommand(id, runId, failureScope).then(
+    const result = await invokeStageCommand(
+      id,
+      runId,
+      failureScope,
+      depsTimeoutRetryEnabled,
+    ).then(
       () => ({ kind: 'done' as const }),
       (err) => ({ kind: 'failed' as const, err }),
     );
@@ -1865,6 +1920,10 @@
         stageId: id,
         message,
         retryCount: attemptCount - 1,
+        depsTimeoutRetryEnabled,
+        depsTimeoutRetrySuppressed:
+          result.err instanceof StageTimeoutError &&
+          result.err.retrySuppressed,
       });
       stages = setStageStatus(
         stages,
@@ -1954,14 +2013,23 @@
     }
   }
 
-  async function runSetup(runId: number, startStage: StageId = STAGE_ORDER[0]) {
+  async function runSetup(
+    runId: number,
+    startStage: StageId = STAGE_ORDER[0],
+    depsTimeoutRetryFlag: Promise<boolean> = Promise.resolve(false),
+  ) {
     const startIndex = Math.max(0, STAGE_ORDER.indexOf(startStage));
     const retryCounts = new Map<StageId, number>();
     for (const id of STAGE_ORDER.slice(startIndex)) {
       if (!isCurrentRun(runId)) return;
       while (isCurrentRun(runId)) {
         const attemptCount = (retryCounts.get(id) ?? 0) + 1;
-        const result = await runStage(id, runId, attemptCount);
+        const result = await runStage(
+          id,
+          runId,
+          attemptCount,
+          depsTimeoutRetryFlag,
+        );
         if (result.outcome === 'cancelled') return;
         if (result.outcome === 'ok') break;
 
@@ -2200,6 +2268,24 @@
     const runId = beginSetupRun();
     inFlightRunId = runId;
     try {
+      const depsTimeoutRetryFlag = resolveFlagWithTimeout(
+        Promise.resolve()
+          .then(() =>
+            onboardingFeatureFlags.identity.hasFeature(
+              SETUP_DEPS_TIMEOUT_RETRY_FLAG,
+            ),
+          )
+          .then((result) => result.ok && result.value === true)
+          .catch((error) => {
+            console.warn(
+              'onboarding: dependency timeout retry flag unavailable; leaving retry off',
+              error,
+            );
+            return false;
+          }),
+        2_000,
+      );
+      if (!isCurrentRun(runId)) return;
       if (installPath) effectiveInstallPath = installPath;
       await listenForProgress(runId);
       let startStage: StageId = STAGE_ORDER[0];
@@ -2216,7 +2302,7 @@
         }
       }
       if (!isCurrentRun(runId)) return;
-      await runSetup(runId, startStage);
+      await runSetup(runId, startStage, depsTimeoutRetryFlag);
     } finally {
       // Only the run that still owns the guard may release it: a superseded
       // run finishing late must not clear a newer run's claim. Every exit —
@@ -2921,7 +3007,12 @@
       event.action === 'company_create_failed' ||
       event.action === 'invite_join_failed' ||
       event.action === 'checkout_failed';
-    const outcome = event.action === 'plan_chosen' ? `plan_${event.plan}` : event.action;
+    const outcome =
+      event.action === 'plan_chosen'
+        ? `plan_${event.plan}`
+        : event.action === 'company_created' && event.inviteQueuedCount > 0
+          ? 'company_created_invites_queued'
+          : event.action;
     recordStep(COMPANY_STEP_INDEX, failed ? 'failed' : 'started', { outcome });
   }
 
@@ -3466,19 +3557,16 @@
               invite people later.
             </p>
             {#if inviteSent}
-              <p class="note inline-note" role="status" aria-live="polite">Invitation sent.</p>
-            {:else if inviteErrorKind === 'email_delivery_failed'}
+              <p class="note inline-note" role="status" aria-live="polite">{inviteResent
+                  ? 'This person was already invited. HQ sent the invitation again.'
+                  : 'Invitation sent.'}</p>
+            {:else if inviteErrorKind}
               <p
                 class="note inline-note"
                 data-testid="onboarding-invite-error"
+                data-error-kind={inviteErrorKind}
                 role="alert"
-              >HQ could not confirm that the invitation email was sent. You can try again or skip for now.</p>
-            {:else if inviteErrorKind === 'request_failed'}
-              <p
-                class="note inline-note"
-                data-testid="onboarding-invite-error"
-                role="alert"
-              >HQ could not send the invitation. You can try again or skip for now.</p>
+              >{inviteErrorMessage(inviteErrorKind)}</p>
             {/if}
             <form
               class="invite-form"

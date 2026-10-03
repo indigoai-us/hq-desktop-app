@@ -30,6 +30,14 @@ use crate::util::paths;
 pub const ANON_ID_KEY: &str = "cdpAnonId";
 pub const INSTALL_SOURCE_KEY: &str = "cdpInstallSource";
 pub const FIRST_LAUNCH_AT_KEY: &str = "cdpFirstLaunchAtMs";
+/// `true` when `cdpAnonId` came from the installer's download URL.
+pub const DOWNLOAD_URL_TAG_KEY: &str = "cdpDownloadUrlTag";
+/// Unix ms of the one-time download-URL read (set whether or not it found one).
+pub const DOWNLOAD_TAG_READ_AT_KEY: &str = "cdpDownloadTagReadAt";
+/// `{found, source}` of that read until hq-pro accepts `install_tag_read`.
+pub const INSTALL_TAG_PENDING_KEY: &str = "cdpInstallTagReadPending";
+/// hq-pro operational event for the one-time read.
+pub const EVENT_INSTALL_TAG_READ: &str = "install_tag_read";
 
 /// How long an app-initiated quit waits for the final flush.
 pub const EXIT_FLUSH_BUDGET: Duration = Duration::from_millis(1500);
@@ -80,6 +88,134 @@ pub fn load_persisted(
     (string(ANON_ID_KEY), string(INSTALL_SOURCE_KEY), first)
 }
 
+/// What the one-time read found, as reported on `install_tag_read`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagReadReport {
+    pub found: bool,
+    /// `whereFroms | zoneIdentifier | none`.
+    pub source: &'static str,
+}
+
+impl TagReadReport {
+    pub fn properties(&self) -> Value {
+        json!({ "found": self.found, "source": self.source })
+    }
+}
+
+/// Apply a download-URL read to menubar.json once. Returns `None` when the
+/// read already happened on an earlier launch. The visitor id is written only
+/// when none is stored, so a sign-in link (or an earlier read) is never
+/// overwritten. Only `aid`/`src` are stored; the URL itself never is.
+pub fn apply_download_tag(
+    path: &std::path::Path,
+    tag: Option<&hq_desktop_core::download_tag::DownloadTag>,
+    now_ms: u64,
+) -> Option<TagReadReport> {
+    let obj = read_menubar_obj(path);
+    if obj.get(DOWNLOAD_TAG_READ_AT_KEY).is_some() {
+        return None;
+    }
+    let report = TagReadReport {
+        found: tag.is_some(),
+        source: tag.map(|t| t.source.label()).unwrap_or("none"),
+    };
+    let mut updates = vec![
+        (DOWNLOAD_TAG_READ_AT_KEY, json!(now_ms)),
+        (INSTALL_TAG_PENDING_KEY, report.properties()),
+    ];
+    let existing = obj.get(ANON_ID_KEY).and_then(Value::as_str);
+    if let Some(tag) = tag.filter(|_| hq_desktop_core::download_tag::should_adopt(existing)) {
+        updates.push((ANON_ID_KEY, json!(tag.anon_id)));
+        updates.push((DOWNLOAD_URL_TAG_KEY, json!(true)));
+        if let Some(source) = tag.install_source.as_deref() {
+            updates.push((INSTALL_SOURCE_KEY, json!(source)));
+        }
+    }
+    let _ = merge_menubar_flags(path, &updates);
+    Some(report)
+}
+
+/// The stored visitor id when, and only when, it came from the download URL.
+pub fn download_tag_anon_id_at(path: &std::path::Path) -> Option<String> {
+    let obj = read_menubar_obj(path);
+    if obj.get(DOWNLOAD_URL_TAG_KEY).and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    obj.get(ANON_ID_KEY)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+}
+
+/// [`download_tag_anon_id_at`] for this machine's menubar.json.
+pub fn download_tag_anon_id() -> Option<String> {
+    paths::menubar_json_path()
+        .ok()
+        .and_then(|p| download_tag_anon_id_at(&p))
+}
+
+/// The visitor id the mirror currently tags events with, if any. hq-pro
+/// desktop telemetry attaches the same id.
+pub fn current_anon_id() -> Option<String> {
+    mirror().and_then(|m| m.context().anon_id)
+}
+
+/// Send the pending `install_tag_read` row to hq-pro; clear it on success.
+/// Before sign-in there is no token and it stays pending for the next try.
+pub fn flush_install_tag_report() {
+    let Ok(path) = paths::menubar_json_path() else {
+        return;
+    };
+    let Some(props) = read_menubar_obj(&path)
+        .get(INSTALL_TAG_PENDING_KEY)
+        .filter(|v| v.is_object())
+        .cloned()
+    else {
+        return;
+    };
+    tauri::async_runtime::spawn(async move {
+        let sent = super::telemetry::emit_desktop_operational_telemetry(
+            EVENT_INSTALL_TAG_READ.to_string(),
+            Some(props),
+            None,
+            None,
+        )
+        .await
+        .is_ok();
+        if sent {
+            let _ = merge_menubar_flags(&path, &[(INSTALL_TAG_PENDING_KEY, Value::Null)]);
+        }
+    });
+}
+
+/// One-time read of the installer's download URL tag (`aid`/`src`).
+fn read_download_tag_once(path: &std::path::Path) {
+    if read_menubar_obj(path)
+        .get(DOWNLOAD_TAG_READ_AT_KEY)
+        .is_some()
+    {
+        return;
+    }
+    let tag = std::env::current_exe().ok().and_then(|exe| {
+        hq_desktop_core::download_tag::discover(
+            &exe,
+            dirs::download_dir().as_deref(),
+            std::time::SystemTime::now(),
+        )
+    });
+    if let Some(report) = apply_download_tag(path, tag.as_ref(), now_ms()) {
+        // Labels only: never the URL, and the ids only as the closed shape.
+        crate::util::logfile::log(
+            "cdp",
+            &format!(
+                "download tag read: found={} source={}",
+                report.found, report.source
+            ),
+        );
+    }
+}
+
 fn persist_visitor(anon_id: &str, install_source: Option<&str>) {
     let anon_id = anon_id.to_string();
     let install_source = install_source.map(str::to_owned);
@@ -103,7 +239,10 @@ pub fn init(_app: &AppHandle, is_first_launch: bool) {
         return;
     };
     let (anon_id, install_source, first_launch_at_ms) = match paths::menubar_json_path() {
-        Ok(path) => load_persisted(&path, now_ms()),
+        Ok(path) => {
+            read_download_tag_once(&path);
+            load_persisted(&path, now_ms())
+        }
         Err(_) => (None, None, now_ms()),
     };
     let ctx = MirrorContext {
@@ -123,6 +262,7 @@ pub fn init(_app: &AppHandle, is_first_launch: bool) {
         mirror.record(EVENT_APP_FIRST_LAUNCH, Map::new());
     }
     tauri::async_runtime::spawn(mirror.run());
+    flush_install_tag_report();
 }
 
 /// Queue a named event with extra props. Common props are added by the mirror.
@@ -169,6 +309,7 @@ pub fn note_login_completed(provider: &str) {
     let mut props = Map::new();
     props.insert("provider".into(), json!(provider));
     record(EVENT_LOGIN_COMPLETED, props);
+    flush_install_tag_report();
 }
 
 /// Hook for the sign-in link completion (`post_signin_link_best_effort`):
@@ -240,6 +381,70 @@ pub fn on_exit_requested(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tag(aid: &str) -> hq_desktop_core::download_tag::DownloadTag {
+        hq_desktop_core::download_tag::DownloadTag {
+            anon_id: aid.into(),
+            install_source: Some("welcome-install-arm".into()),
+            source: hq_desktop_core::download_tag::TagSource::WhereFroms,
+        }
+    }
+
+    #[test]
+    fn download_tag_fills_an_empty_visitor_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("menubar.json");
+        let report = apply_download_tag(&path, Some(&tag("vyg-dl")), 7).unwrap();
+        assert_eq!(
+            report,
+            TagReadReport {
+                found: true,
+                source: "whereFroms"
+            }
+        );
+        let (anon, source, _) = load_persisted(&path, 9);
+        assert_eq!(anon.as_deref(), Some("vyg-dl"));
+        assert_eq!(source.as_deref(), Some("welcome-install-arm"));
+        assert_eq!(download_tag_anon_id_at(&path).as_deref(), Some("vyg-dl"));
+        let obj = read_menubar_obj(&path);
+        assert_eq!(obj[DOWNLOAD_TAG_READ_AT_KEY], 7);
+        assert_eq!(obj[INSTALL_TAG_PENDING_KEY]["found"], true);
+        // Second launch: no re-read, nothing changes.
+        assert_eq!(apply_download_tag(&path, Some(&tag("vyg-other")), 8), None);
+        assert_eq!(load_persisted(&path, 9).0.as_deref(), Some("vyg-dl"));
+    }
+
+    #[test]
+    fn download_tag_never_overwrites_a_signin_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("menubar.json");
+        merge_menubar_flags(
+            &path,
+            &[
+                (ANON_ID_KEY, json!("vyg-signin")),
+                (INSTALL_SOURCE_KEY, json!("email-link")),
+            ],
+        )
+        .unwrap();
+        let report = apply_download_tag(&path, Some(&tag("vyg-dl")), 7).unwrap();
+        assert!(report.found);
+        let (anon, source, _) = load_persisted(&path, 9);
+        assert_eq!(anon.as_deref(), Some("vyg-signin"));
+        assert_eq!(source.as_deref(), Some("email-link"));
+        assert_eq!(download_tag_anon_id_at(&path), None);
+    }
+
+    #[test]
+    fn download_tag_absent_is_reported_as_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("menubar.json");
+        let report = apply_download_tag(&path, None, 7).unwrap();
+        assert_eq!(
+            report.properties(),
+            json!({ "found": false, "source": "none" })
+        );
+        assert_eq!(load_persisted(&path, 9).0, None);
+    }
 
     #[test]
     fn chip_label_maps_rust_arch_names() {

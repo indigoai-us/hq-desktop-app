@@ -11,6 +11,7 @@ import {
   PERSONAL_WORKSPACE_BOARD_FLAG,
   POST_READY_ACTION_TELEMETRY_FLAG,
   READY_FIRST_ACTION_FLAG,
+  SETUP_DEPS_TIMEOUT_RETRY_FLAG,
   bearerTokenFromHeaders,
   createFeatureFlagGate,
   createHqProFlagFetch,
@@ -95,6 +96,74 @@ describe("registry key mapping", () => {
   it("maps the ready first action through its default-off hq-flags key", () => {
     expect(READY_FIRST_ACTION_FLAG).toBe("desktop.ready-first-action-v1");
     expect(registryKeyFor(READY_FIRST_ACTION_FLAG)).toBe(READY_FIRST_ACTION_FLAG);
+  });
+
+  it("maps dependency setup timeout retries through the default-off hq-flags key", () => {
+    expect(SETUP_DEPS_TIMEOUT_RETRY_FLAG).toBe(
+      "desktop.setup-deps-timeout-retry-v1",
+    );
+    expect(registryKeyFor(SETUP_DEPS_TIMEOUT_RETRY_FLAG)).toBe(
+      SETUP_DEPS_TIMEOUT_RETRY_FLAG,
+    );
+  });
+
+  it("keeps dependency setup timeout retries off unless hq-flags enables them", async () => {
+    const isEnabled = vi.fn(() => true);
+    const adapter = createSyncPlatformAdapter({
+      invoke: vi.fn(async () => undefined),
+      createFlagClient: () =>
+        fakeClient({
+          ready: async () => {},
+          snapshot: () => ({ version: 1, flags: {} }),
+          isEnabled,
+        }),
+    });
+
+    await expect(
+      adapter.identity.hasFeature(SETUP_DEPS_TIMEOUT_RETRY_FLAG),
+    ).resolves.toEqual(ok(false));
+    expect(isEnabled).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the dependency setup timeout retry flag cannot be read", async () => {
+    const isEnabled = vi.fn(() => true);
+    const adapter = createSyncPlatformAdapter({
+      invoke: vi.fn(async () => undefined),
+      createFlagClient: () =>
+        fakeClient({
+          ready: async () => {
+            throw new Error("registry unavailable");
+          },
+          snapshot: () => null,
+          isEnabled,
+        }),
+    });
+
+    await expect(
+      adapter.identity.hasFeature(SETUP_DEPS_TIMEOUT_RETRY_FLAG),
+    ).resolves.toEqual(ok(false));
+    expect(isEnabled).not.toHaveBeenCalled();
+  });
+
+  it("uses an explicitly enabled dependency setup timeout retry flag", async () => {
+    const isEnabled = vi.fn(() => true);
+    const adapter = createSyncPlatformAdapter({
+      invoke: vi.fn(async () => undefined),
+      createFlagClient: () =>
+        fakeClient({
+          ready: async () => {},
+          snapshot: () => ({
+            version: 1,
+            flags: { [SETUP_DEPS_TIMEOUT_RETRY_FLAG]: true },
+          }),
+          isEnabled,
+        }),
+    });
+
+    await expect(
+      adapter.identity.hasFeature(SETUP_DEPS_TIMEOUT_RETRY_FLAG),
+    ).resolves.toEqual(ok(true));
+    expect(isEnabled).toHaveBeenCalledWith(SETUP_DEPS_TIMEOUT_RETRY_FLAG);
   });
 
   it("keeps the ready first action off until hq-flags configures it", async () => {

@@ -1,3 +1,4 @@
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { emitDesktopOperationalTelemetry } from './desktop-telemetry';
 import {
   POST_READY_ACTIONS,
@@ -58,6 +59,16 @@ export interface PostReadyActionTelemetry {
     action: PostReadyAction,
     scope?: { companyUid?: string; companySlug?: string },
   ): Promise<boolean>;
+}
+
+export function registerPostReadyCloseTelemetry(
+  telemetry: Promise<PostReadyActionTelemetry>,
+) {
+  return getCurrentWindow().onCloseRequested((event) => {
+    // Rust owns hide-on-close for the main window; prevent Tauri's default destroy.
+    event.preventDefault();
+    void telemetry.then((actions) => actions.record('close_window'));
+  });
 }
 
 export function markPostReadyActionReady(

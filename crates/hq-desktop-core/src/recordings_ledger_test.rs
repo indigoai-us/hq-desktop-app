@@ -287,7 +287,7 @@ fn open_window_ids_empty_when_no_recordings() {
 }
 
 #[test]
-fn record_bridge_died_clears_all_entries_and_returns_them() {
+fn record_bridge_died_retains_all_entries_and_returns_them() {
     let _g = lock();
     let _tmp = with_test_ledger();
 
@@ -306,19 +306,42 @@ fn record_bridge_died_clears_all_entries_and_returns_them() {
     )
     .unwrap();
 
-    let mut cleared = record_bridge_died().unwrap();
-    cleared.sort();
+    let mut window_ids = record_bridge_died().unwrap();
+    window_ids.sort();
     assert_eq!(
-        cleared,
+        window_ids,
         vec!["win-1".to_string(), "win-2".to_string()],
-        "every in-flight windowId is returned so the caller can synthesize one terminal event each"
+        "every in-flight windowId is returned so the caller can synthesize one notification each"
     );
 
-    // After a bridge death the ledger is empty — the terminal recording:error
-    // is the resolution, so the launch reconcile must not re-report these.
+    // A local bridge error is not proof that hq-pro reached a terminal state.
+    // Keep these entries so launch reconciliation can recover server-side state.
+    let retained = read_ledger().unwrap();
+    assert_eq!(retained.len(), 2, "bridge-death entries remain reconcilable");
+    assert!(retained.contains_key("win-1"));
+    assert!(retained.contains_key("win-2"));
+
+    clear_override();
+}
+
+#[test]
+fn local_recording_error_retains_started_entry_on_disk() {
+    let _g = lock();
+    let _tmp = with_test_ledger();
+
+    record_started(
+        "win-1".to_string(),
+        "rec_1".to_string(),
+        None,
+        ts("2026-06-03T10:00:00Z"),
+    )
+    .unwrap();
+    record_local_event("win-1", RecordingLedgerEvent::Error).unwrap();
+
+    let retained = read_ledger().unwrap();
     assert!(
-        read_ledger().unwrap().is_empty(),
-        "bridge-death clears the ledger so the next launch has nothing to reconcile"
+        retained.contains_key("win-1"),
+        "a local recording error must leave server reconciliation state on disk"
     );
 
     clear_override();
@@ -331,8 +354,8 @@ fn record_bridge_died_is_noop_when_empty() {
 
     // No active recordings: a sidecar death with nothing in flight returns an
     // empty set and writes nothing (no row to surface).
-    let cleared = record_bridge_died().unwrap();
-    assert!(cleared.is_empty());
+    let window_ids = record_bridge_died().unwrap();
+    assert!(window_ids.is_empty());
     assert!(read_ledger().unwrap().is_empty());
 
     clear_override();

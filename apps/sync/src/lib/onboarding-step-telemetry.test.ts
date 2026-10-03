@@ -685,3 +685,43 @@ describe('onboarding step telemetry', () => {
     ]);
   });
 });
+
+describe('invite-teammate failure telemetry', () => {
+  const base = {
+    sessionId: '11111111-1111-4111-8111-111111111111',
+    occurredAt: '2026-10-02T10:00:00.000Z',
+  };
+
+  it('carries the invite errorKind and HTTP status', () => {
+    const properties = desktopPropertiesForOnboardingStep({
+      ...base,
+      properties: {
+        step: 'invite-teammate',
+        action: 'failed',
+        errorKind: 'plan_limit',
+        statusCode: 402,
+        surface: 'desktop_installer',
+        platform: 'macos',
+      },
+    });
+    expect(properties.errorKind).toBe('plan_limit');
+    expect(properties.statusCode).toBe(402);
+  });
+
+  it('bounds unknown kinds and bad statuses', () => {
+    const properties = desktopPropertiesForOnboardingStep({
+      ...base,
+      properties: {
+        step: 'invite-teammate',
+        action: 'failed',
+        errorKind: 'person@example.com' as never,
+        statusCode: 9000,
+        surface: 'desktop_installer',
+        platform: 'macos',
+      },
+    });
+    expect(properties.errorKind).toBe('request_failed');
+    expect(properties.statusCode).toBeUndefined();
+    expect(JSON.stringify(properties)).not.toContain('example.com');
+  });
+});

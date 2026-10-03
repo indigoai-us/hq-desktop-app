@@ -101,7 +101,7 @@ const created: CreateCompanyResult = {
   company: {
     companyUid: "cmp_new",
     companyChannelId: "chn_company",
-    inviteFailures: [],
+    inviteFailures: [], queuedInvites: [],
     cloudError: null,
   },
 };
@@ -336,7 +336,7 @@ describe("CreateModal — create company from the palette", () => {
         company: {
           companyUid: "cmp_new",
           companyChannelId: "chn_company",
-          inviteFailures: [{ email: "ada@example.com", reason: "Already a member." }],
+          inviteFailures: [{ email: "ada@example.com", reason: "Already a member." }], queuedInvites: [],
           cloudError: null,
         },
       }),
@@ -363,6 +363,7 @@ describe("CreateModal — create company from the palette", () => {
             companyUid: "cmp_new",
             companyChannelId: "chn_company",
             inviteFailures: [],
+            queuedInvites: [],
             cloudError: "Your company was created, but its cloud storage isn't set up yet. Try again to finish.",
           },
         };

@@ -2701,7 +2701,7 @@ describe('invite teammate onboarding step', () => {
     expect(
       inviteStepRows().some(
         (row) =>
-          row.action === 'failed' && row.inviteErrorKind === 'email_delivery_failed',
+          row.action === 'failed' && row.errorKind === 'email_delivery_failed',
       ),
     ).toBe(true);
     expect(
@@ -2720,6 +2720,114 @@ describe('invite teammate onboarding step', () => {
       inviteeEmail: inviteEmail,
       resend: true,
     });
+  });
+
+  async function submitInvite(): Promise<void> {
+    const email = host.querySelector<HTMLInputElement>(
+      '[data-testid="onboarding-invite-email"]',
+    );
+    if (!email) throw new Error('Expected the invite email field.');
+    email.value = inviteEmail;
+    email.dispatchEvent(new Event('input', { bubbles: true }));
+    await flush();
+    host.querySelector<HTMLButtonElement>('[data-testid="onboarding-invite-send"]')?.click();
+  }
+
+  function inviteRequestBodies(): Array<Record<string, unknown>> {
+    return tauri.invoke.mock.calls
+      .filter(
+        ([command, args]) =>
+          command === 'hq_pro_fetch' &&
+          (args as { url?: string })?.url === '/membership/invite',
+      )
+      .map(([, args]) => JSON.parse((args as { body: string }).body));
+  }
+
+  it('resends instead of failing when the address already has a pending invite (409)', async () => {
+    await reachInviteScenario({
+      inviteResponses: [
+        {
+          status: 409,
+          body: { error: 'Membership already exists', code: 'MEMBERSHIP_ALREADY_EXISTS' },
+        },
+        { status: 200, body: { resent: true, emailSent: true, emailSkipped: false } },
+      ],
+    });
+    await submitInvite();
+    await flushUntil(() =>
+      host.textContent?.includes('This person was already invited. HQ sent the invitation again.') ===
+      true,
+    );
+
+    expect(host.textContent).not.toContain('HQ could not send the invitation');
+    expect(host.querySelector('[data-testid="onboarding-invite-error"]')).toBeNull();
+    const bodies = inviteRequestBodies();
+    expect(bodies).toHaveLength(2);
+    expect(bodies[0]).toMatchObject({ sendEmail: true });
+    expect(bodies[1]).toMatchObject({
+      companyUid: 'cmp_demo',
+      inviteeEmail: inviteEmail,
+      resend: true,
+    });
+    expect(bodies[1]).not.toHaveProperty('sendEmail');
+    const rows = inviteStepRows();
+    expect(rows.some((row) => row.action === 'failed')).toBe(false);
+    expect(rows.some((row) => row.action === 'completed' && row.outcome === 'resent')).toBe(true);
+  });
+
+  it('says the person is already a member when the 409 has no pending invite to resend', async () => {
+    await reachInviteScenario({
+      inviteResponses: [
+        { status: 409, body: { code: 'MEMBERSHIP_ALREADY_EXISTS' } },
+        { status: 404, body: { code: 'INVITE_NOT_PENDING' } },
+      ],
+    });
+    await submitInvite();
+    await flushUntil(() =>
+      host.querySelector('[data-testid="onboarding-invite-error"]') !== null,
+    );
+
+    expect(host.textContent).toContain('This person is already a member of your company.');
+    expect(
+      inviteStepRows().some(
+        (row) =>
+          row.action === 'failed' && row.errorKind === 'already_member' && row.statusCode === 404,
+      ),
+    ).toBe(true);
+  });
+
+  it('names a plan limit and records its errorKind and HTTP status', async () => {
+    await reachInviteScenario({
+      inviteResponses: [{ status: 402, body: { error: 'plan limit', code: 'PLAN_LIMIT' } }],
+    });
+    await submitInvite();
+    await flushUntil(() =>
+      host.querySelector('[data-testid="onboarding-invite-error"]') !== null,
+    );
+
+    expect(host.textContent).toContain('Your plan has no free seats for another teammate.');
+    expect(host.textContent).not.toContain('HQ could not send the invitation.');
+    expect(inviteRequestBodies()).toHaveLength(1);
+    expect(
+      inviteStepRows().some(
+        (row) =>
+          row.action === 'failed' && row.errorKind === 'plan_limit' && row.statusCode === 402,
+      ),
+    ).toBe(true);
+  });
+
+  it('names an invalid email address', async () => {
+    await reachInviteScenario({
+      inviteResponses: [{ status: 400, body: { error: 'Invalid inviteeEmail' } }],
+    });
+    await submitInvite();
+    await flushUntil(() =>
+      host.querySelector('[data-testid="onboarding-invite-error"]') !== null,
+    );
+    expect(host.textContent).toContain('HQ could not use that email address.');
+    expect(
+      inviteStepRows().some((row) => row.errorKind === 'invalid_email' && row.statusCode === 400),
+    ).toBe(true);
   });
 
   it('records invite shown and sent with companyUid and no email', async () => {
@@ -3335,6 +3443,8 @@ describe('company onboarding step', () => {
     memberships?: Array<Record<string, unknown>>;
     pendingInvites?: Array<{ slug: string; displayName: string }>;
     checkout?: { status: number; body: unknown };
+    /** Whether GET /entity/cmp_new reports the new company provisioned. */
+    provisioned?: boolean;
   } = {}): Promise<void> {
     onboardingFlags.firstFolderSyncEnabled = false;
     mountWizard(vi.fn(), SETUP_STEP_INDEX);
@@ -3380,6 +3490,19 @@ describe('company onboarding step', () => {
         case 'hq_pro_fetch': {
           if (args?.url === '/membership/me') {
             return { status: 200, body: JSON.stringify({ memberships: options.memberships ?? [] }) };
+          }
+          if (args?.url === '/entity/cmp_new') {
+            const ready = options.provisioned ?? true;
+            return {
+              status: 200,
+              body: JSON.stringify({
+                entity: {
+                  uid: 'cmp_new',
+                  status: ready ? 'active' : 'provisioning',
+                  bucketName: ready ? 'hq-vault-cmp-new' : '',
+                },
+              }),
+            };
           }
           if (args?.url === '/v1/billing/checkout/team') {
             const answer = options.checkout ?? {
@@ -3440,6 +3563,25 @@ describe('company onboarding step', () => {
     expect(tauri.invoke.mock.calls.some(([command]) => command === 'run_card_action')).toBe(false);
   });
 
+  it('does not double "(optional)" when the server label already includes it', async () => {
+    const website = createCompanyCard.fields[2];
+    const original = website.label;
+    website.label = "Website (optional) — we'll use its icon for your company";
+    try {
+      await reachCompanyScenario();
+      await flushUntil(() =>
+        Boolean(host.querySelector('[data-testid="onboarding-company-field-website"]')),
+      );
+      const websiteLabel = host.querySelector('label[for="onboarding-company-website"]')?.textContent?.trim();
+      expect(websiteLabel).toBe("Website (optional) — we'll use its icon for your company");
+      expect(websiteLabel?.match(/\(optional\)/g)).toHaveLength(1);
+      const inviteLabel = host.querySelector('label[for="onboarding-company-invites"]')?.textContent?.trim();
+      expect(inviteLabel).toBe('Invite teammates (optional)');
+    } finally {
+      website.label = original;
+    }
+  });
+
   it('names a company, invites a teammate, and starts on Starter', async () => {
     await reachCompanyScenario();
     await flushUntil(() =>
@@ -3493,6 +3635,34 @@ describe('company onboarding step', () => {
       expect(JSON.stringify(row)).not.toContain('pat@acme.com');
       expect(JSON.stringify(row)).not.toContain('Acme Studio');
     }
+  });
+
+  it('queues invites until the new company is provisioned and says so', async () => {
+    localStorage.removeItem('hq.pendingCompanyInvites.v1');
+    await reachCompanyScenario({ provisioned: false });
+    await flushUntil(() =>
+      Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')),
+    );
+    typeInto('onboarding-company-field-name', 'Acme Studio');
+    typeInto('onboarding-company-invites', 'pat@acme.com');
+    await settle();
+    click('onboarding-company-create');
+    for (let i = 0; i < 40 && !host.querySelector('[data-testid="onboarding-plan-starter"]'); i += 1) {
+      await vi.advanceTimersByTimeAsync(1_500);
+      await flush();
+    }
+    expect(host.querySelector('[data-testid="onboarding-plan-starter"]')).not.toBeNull();
+
+    expect(tauri.invoke.mock.calls.some(([command]) => command === 'run_company_tab_action')).toBe(false);
+    expect(host.textContent).toContain('HQ will send the invites to pat@acme.com as soon as it is ready.');
+    expect(JSON.parse(localStorage.getItem('hq.pendingCompanyInvites.v1') ?? '[]')).toEqual([
+      expect.objectContaining({
+        companyUid: 'cmp_new',
+        invites: [{ email: 'pat@acme.com', role: 'member' }],
+      }),
+    ]);
+    expect(companyRows().some((row) => row.outcome === 'company_created_invites_queued')).toBe(true);
+    localStorage.removeItem('hq.pendingCompanyInvites.v1');
   });
 
   it('opens Workforce checkout in the browser and finishes on the checkout return', async () => {

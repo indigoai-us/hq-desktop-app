@@ -418,7 +418,7 @@ export interface ConversationApi {
    */
   checkCompanySlug?(slug: string): Promise<unknown>;
   /**
-   * POST activate-cloud — provision the company's cloud vault (bucket, KMS,
+   * POST activate-cloud: provision the company's cloud vault (bucket, KMS,
    * owner grants). Owner-only and idempotent. Optional: a host without the
    * route omits it.
    */
