@@ -4,6 +4,7 @@
   import type { PlatformAdapter } from "@hq/platform";
   import { getV4TitleBarModel, type V4HydrationIssue } from "./model.js";
   import RailIcon from "../common/button/RailIcon.svelte";
+  import type { BrandIconName } from "../common/button/rail-icons.js";
   import { startWindowDrag } from "./window-drag.js";
   import { titlebarDayDate } from "../chat/sidebar-model.js";
   import type { HomeConflict } from "./home-model.js";
@@ -524,12 +525,12 @@
   const LAUNCH_ITEMS: ReadonlyArray<{
     key: LaunchKey;
     label: string;
-    mark: string;
+    mark: BrandIconName;
     hint: string;
   }> = [
-    { key: "claude", label: "Claude Code", mark: "CC", hint: "Opens in the HQ folder" },
-    { key: "codex", label: "Codex", mark: "CX", hint: "Opens in the HQ folder" },
-    { key: "grok", label: "Grok Build", mark: "GB", hint: "Needs grok on PATH" },
+    { key: "claude", label: "Claude Code", mark: "claude-code", hint: "Opens in the HQ folder" },
+    { key: "codex", label: "Codex", mark: "codex", hint: "Opens in the HQ folder" },
+    { key: "grok", label: "Grok Build", mark: "grok", hint: "Needs grok on PATH" },
   ];
 
   /**
@@ -798,7 +799,7 @@
                 class="v4-launch-item v4-launch-missing"
                 data-testid={`titlebar-launch-${item.key}`}
               >
-                <span class="v4-launch-mark off">{item.mark}</span>
+                <span class="v4-launch-mark off" data-launch-mark={item.mark}><RailIcon name={item.mark} /></span>
                 <span class="v4-launch-copy">
                   <span class="v4-launch-item-label">
                     {item.label}
@@ -822,7 +823,7 @@
                 disabled={launching !== null && launching !== item.key}
                 onclick={() => void runLaunch(item.key)}
               >
-                <span class="v4-launch-mark">{item.mark}</span>
+                <span class="v4-launch-mark" data-launch-mark={item.mark}><RailIcon name={item.mark} /></span>
                 <span class="v4-launch-copy">
                   <span class="v4-launch-item-label">
                     {launching === item.key ? `Opening ${item.label}…` : item.label}

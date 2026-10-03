@@ -10,6 +10,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import RailButton from "./RailButton.svelte";
+import RailIcon from "./RailIcon.svelte";
 import ListEmptyState from "../ListEmptyState.svelte";
 import { BRAND_ICONS, LINE_ICONS, iconForLabel } from "./rail-icons";
 
@@ -149,5 +150,40 @@ describe("meta line and info pill (OWNER-008)", () => {
     const pill = block(".info-pill");
     expect(pill).toMatch(/border-radius: 999px/u);
     expect(pill).toMatch(/font-size: 11px/u);
+  });
+});
+
+describe("official brand marks (OWNER-013)", () => {
+  it("resolves the three launch names to the registered marks", () => {
+    expect(iconForLabel("Open in Claude Code")).toBe("claude-code");
+    expect(iconForLabel("Open in Codex")).toBe("codex");
+    expect(iconForLabel("Grok Build")).toBe("grok");
+    // Claude Spark and OpenAI Blossom are the vendors' published single paths.
+    expect(BRAND_ICONS["claude-code"]).toMatchObject({ viewBox: "0 0 94 94", fill: "clay" });
+    expect(BRAND_ICONS["claude-code"].d.startsWith("M18.7657 62.4437L37.1822 52.1167")).toBe(true);
+    expect(BRAND_ICONS.codex).toMatchObject({ viewBox: "176 176 364 364", fill: "mono" });
+    expect(BRAND_ICONS.codex.d.startsWith("M508.749 317.399C516.777 287.314")).toBe(true);
+    expect(BRAND_ICONS.grok).toMatchObject({ viewBox: "0 0 16 16", fill: "current" });
+  });
+
+  it("renders each mark at 14px with its own viewBox and colour treatment", () => {
+    for (const name of ["claude-code", "codex", "grok"] as const) {
+      const target = document.createElement("div");
+      document.body.appendChild(target);
+      mounted.push(mount(RailIcon, { target, props: { name } }));
+      const svg = target.querySelector(`svg[data-rail-icon="${name}"]`)!;
+      expect(svg.getAttribute("width")).toBe("14");
+      expect(svg.getAttribute("viewBox")).toBe(BRAND_ICONS[name].viewBox);
+      expect(svg.querySelector("path")!.getAttribute("class")).toContain(`brand-${BRAND_ICONS[name].fill}`);
+    }
+  });
+
+  it("Launch menu avatars use the brand marks, not letter badges", () => {
+    const bar = read("home/V4TitleBar.svelte");
+    expect(bar).toMatch(/mark: "claude-code"/u);
+    expect(bar).toMatch(/mark: "codex"/u);
+    expect(bar).toMatch(/mark: "grok"/u);
+    expect(bar).not.toMatch(/mark: "(CC|CX|GB)"/u);
+    expect(bar).toMatch(/<RailIcon name=\{item\.mark\} \/>/u);
   });
 });
