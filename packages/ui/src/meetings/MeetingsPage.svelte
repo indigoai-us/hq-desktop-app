@@ -7,6 +7,11 @@
     MeetingPermissionsSnapshot,
     PlatformAdapter,
   } from "@hq/platform";
+  import {
+    buildPastMeetingRows,
+    parsePersonalMeetingTranscript,
+    type PersonalMeetingTranscript,
+  } from "./past-meetings";
   import { externalHref } from "../common/external-links";
   import {
     activeMeetings,
@@ -124,6 +129,27 @@
   const fetchError = $derived(meetingsStore.fetchError);
   const refreshBlocked = $derived(meetingsStore.refreshBlocked);
   const loading = $derived(meetingsStore.loading);
+  const PERSONAL_TRANSCRIPTS_FLAG = "desktop.meetings-personal-transcripts";
+  let personalTranscriptsEnabled = $state(false);
+  let personalTranscripts = $state<PersonalMeetingTranscript[]>([]);
+  let signedInPersonUid = $state<string | null>(null);
+  let personalTranscriptLoadGeneration = 0;
+  const recordedBots = $derived(
+    scheduledBots.filter((bot) =>
+      (bot.status ?? "").trim().toLowerCase() === "completed" || bot.sourceLanded === true,
+    ),
+  );
+  const pastMeetingRows = $derived(
+    buildPastMeetingRows(
+      recordedBots,
+      personalTranscripts,
+      personalTranscriptsEnabled,
+      signedInPersonUid,
+    ),
+  );
+  const personalPastRows = $derived(
+    pastMeetingRows.filter((row) => row.kind === "personal"),
+  );
   // Per-row operation map, owned by the store. Sibling actions disable while
   // a request runs, but only the invoked control announces and paints busy.
   const pendingActionsByEventId = $derived<Map<string, MeetingBotAction>>(
@@ -190,7 +216,8 @@
       meetingsStore.hasLiveSnapshot &&
       !fetchError &&
       accounts.length === 0 &&
-      events.length === 0,
+      events.length === 0 &&
+      personalPastRows.length === 0,
   );
 
   // Stamp last-synced when a store refresh completes (loading true → false).
@@ -549,6 +576,123 @@
     }
   }
 
+  async function refreshPersonalMeetingTranscripts(): Promise<void> {
+    const generation = ++personalTranscriptLoadGeneration;
+    let flagResult;
+    try {
+      flagResult = await adapter.identity.hasFeature(PERSONAL_TRANSCRIPTS_FLAG);
+    } catch (error) {
+      if (generation !== personalTranscriptLoadGeneration) return;
+      console.warn("Could not resolve the personal meeting transcript flag; keeping it off.", error);
+      personalTranscriptsEnabled = false;
+      personalTranscripts = [];
+      signedInPersonUid = null;
+      return;
+    }
+    if (generation !== personalTranscriptLoadGeneration) return;
+    if (!flagResult.ok) {
+      console.warn("Could not resolve the personal meeting transcript flag; keeping it off.");
+      personalTranscriptsEnabled = false;
+      personalTranscripts = [];
+      signedInPersonUid = null;
+      return;
+    }
+    personalTranscriptsEnabled = flagResult.value === true;
+    if (!personalTranscriptsEnabled) {
+      personalTranscripts = [];
+      signedInPersonUid = null;
+      return;
+    }
+
+    let identity;
+    try {
+      identity = await adapter.identity.whoami();
+    } catch (error) {
+      if (generation !== personalTranscriptLoadGeneration) return;
+      console.warn("Could not resolve the signed-in person for meeting sources.", error);
+      signedInPersonUid = null;
+      personalTranscripts = [];
+      return;
+    }
+    if (generation !== personalTranscriptLoadGeneration) return;
+    const uid =
+      identity.ok && typeof identity.value.personUid === "string"
+        ? identity.value.personUid.trim()
+        : "";
+    if (!uid) {
+      console.warn("Could not resolve the signed-in person for meeting sources.");
+      signedInPersonUid = null;
+      personalTranscripts = [];
+      return;
+    }
+    signedInPersonUid = uid;
+    if (!adapter.files.vault) {
+      console.warn("The current host does not provide local vault note reads.");
+      personalTranscripts = [];
+      return;
+    }
+
+    const directories = ["personal/sources/meetings"];
+    try {
+      const companies = await adapter.files.listDir("companies");
+      if (generation !== personalTranscriptLoadGeneration) return;
+      if (companies.ok) {
+        directories.push(
+          ...companies.value
+            .filter((entry) => entry.isDir === true && typeof entry.name === "string")
+            .map((entry) => `companies/${entry.name}/sources/meetings`),
+        );
+      } else {
+        console.warn("Could not list synced company folders for meeting sources.");
+      }
+    } catch (error) {
+      console.warn("Could not list synced company folders for meeting sources.", error);
+    }
+
+    const transcripts = await Promise.all(
+      directories.map(async (directory) => {
+        try {
+          const listed = await adapter.files.listDir(directory);
+          if (!listed.ok) {
+            console.warn("Could not list a local meeting source directory.");
+            return [];
+          }
+          return Promise.all(
+            listed.value
+              .filter(
+                (entry) =>
+                  entry.isDir !== true &&
+                  typeof entry.name === "string" &&
+                  entry.name.toLowerCase().endsWith(".md") &&
+                  typeof entry.path === "string",
+              )
+              .map(async (entry) => {
+                try {
+                  const note = await adapter.files.vault!.readNote(entry.path as string);
+                  if (!note.ok) {
+                    console.warn("Could not read a local meeting transcript.");
+                    return null;
+                  }
+                  return parsePersonalMeetingTranscript(entry.path as string, note.value.text);
+                } catch (error) {
+                  console.warn("Could not read a local meeting transcript.", error);
+                  return null;
+                }
+              }),
+          );
+        } catch (error) {
+          console.warn("Could not list a local meeting source directory.", error);
+          return [];
+        }
+      }),
+    );
+    if (generation === personalTranscriptLoadGeneration) {
+      personalTranscripts = transcripts.flat().filter(
+        (transcript): transcript is PersonalMeetingTranscript => transcript !== null,
+      );
+    }
+  }
+
   onMount(() => {
     // Cache-first singleton. Do not force another refresh on every icon
     // click — that re-downloaded the full calendar and beachballed the app.
@@ -563,12 +707,39 @@
     startMeetingsStore();
     setMeetingsViewActive(true);
     void refreshMeetingPermissions();
+    void refreshPersonalMeetingTranscripts();
+    const transcriptPoll = window.setInterval(() => void refreshPersonalMeetingTranscripts(), 30_000);
+    const onTranscriptFocus = () => void refreshPersonalMeetingTranscripts();
+    window.addEventListener("focus", onTranscriptFocus);
+    const stopTranscriptFlag = adapter.identity.subscribeFeature?.(
+      PERSONAL_TRANSCRIPTS_FLAG,
+      (result) => {
+        if (!result.ok) {
+          console.warn("Could not refresh the personal meeting transcript flag; keeping it off.");
+          personalTranscriptLoadGeneration++;
+          personalTranscriptsEnabled = false;
+          personalTranscripts = [];
+          signedInPersonUid = null;
+          return;
+        }
+        personalTranscriptsEnabled = result.value === true;
+        if (personalTranscriptsEnabled) void refreshPersonalMeetingTranscripts();
+        else {
+          personalTranscriptLoadGeneration++;
+          personalTranscripts = [];
+          signedInPersonUid = null;
+        }
+      },
+    );
     // Re-read after the person returns from System Settings / the setup window.
     const onFocus = () => void refreshMeetingPermissions();
     window.addEventListener("focus", onFocus);
 
     return () => {
+      window.removeEventListener("focus", onTranscriptFocus);
       window.removeEventListener("focus", onFocus);
+      window.clearInterval(transcriptPoll);
+      stopTranscriptFlag?.();
       setMeetingsViewActive(false);
       if (focusClearTimer) clearTimeout(focusClearTimer);
     };
@@ -960,23 +1131,41 @@
         </button>
       </section>
     {:else}
-      <MeetingsAgenda
-        groups={dayGroups}
-        {upNext}
-        totalCount={agendaEvents.length}
-        {agendaTitle}
-        emptyMessage={agendaEmptyMessage}
-        companyNames={companyNamesByUid}
-        {liveEventId}
-        {botsByEventId}
-        {scheduledBots}
-        {pendingActionsByEventId}
-        {focusedMeetingId}
-        {onInvite}
-        {onUninvite}
-        {onJoinNow}
-        onOpenExternal={openExternal}
-      />
+      {#if !(agendaTab === "past" && pastEvents.length === 0 && personalPastRows.length > 0)}
+        <MeetingsAgenda
+          groups={dayGroups}
+          {upNext}
+          totalCount={agendaEvents.length}
+          {agendaTitle}
+          emptyMessage={agendaEmptyMessage}
+          companyNames={companyNamesByUid}
+          {liveEventId}
+          {botsByEventId}
+          {scheduledBots}
+          {pendingActionsByEventId}
+          {focusedMeetingId}
+          {onInvite}
+          {onUninvite}
+          {onJoinNow}
+          onOpenExternal={openExternal}
+        />
+      {/if}
+      {#if agendaTab === "past" && personalPastRows.length > 0}
+        <section class="section" aria-label="Past meetings" data-testid="meetings-personal-past">
+          <h3>Past meetings</h3>
+          <ul class="event-list">
+            {#each personalPastRows as row (row.key)}
+              <li class="event-row" data-testid="personal-past-meeting-row">
+                <div class="event-meta">
+                  <span class="event-time">{row.transcript.createdAt ?? ""}</span>
+                  <span class="event-title" title={row.transcript.title}>{row.transcript.title}</span>
+                </div>
+                <span class="event-time">{row.transcript.sourceLabel}</span>
+              </li>
+            {/each}
+          </ul>
+        </section>
+      {/if}
     {/if}
 
     <!-- Secondary: connected calendars + recent signals as hairline sections. -->
