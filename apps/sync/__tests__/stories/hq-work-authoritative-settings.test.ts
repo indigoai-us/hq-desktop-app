@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 vi.mock('svelte', async () => {
   // @ts-expect-error Vitest needs Svelte's browser entry for happy-dom mounts.
@@ -14,6 +14,13 @@ import { createSyncPlatformAdapter, type SyncInvokeFn } from '@hq/platform';
 import CompaniesSettingsPane from '../../../../packages/ui/src/settings/CompaniesSettingsPane.svelte';
 import PrototypeSettingsPanes from '../../../../packages/ui/src/settings/PrototypeSettingsPanes.svelte';
 import { resetUpdateStore } from '../../../../packages/ui/src/settings/update-store.svelte';
+
+// The recording-company control is the lazily loaded shared Dropdown. Load
+// its module up front so the door opens from the module cache instead of
+// racing a cold import on a slow CI runner.
+beforeAll(async () => {
+  await import('../../../../packages/ui/src/common/Dropdown.svelte');
+});
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -349,7 +356,7 @@ describe('embedded HQ Work authoritative settings', () => {
       const button = host.querySelector<HTMLButtonElement>('[data-testid="recording-company"]');
       expect(button?.getAttribute('data-value')).toBe('');
       expect(button?.disabled).toBe(false);
-    });
+    }, { timeout: 5000 });
     expect(host.querySelector('select')).toBeNull();
     host.querySelector<HTMLButtonElement>('[data-testid="recording-company"]')?.click();
     const menu = await vi.waitFor(() => {
