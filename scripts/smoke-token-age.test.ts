@@ -46,6 +46,13 @@ describe("classifyTokenAge", () => {
     expect(classifyTokenAge("2026-10-03", at(1)).status).toBe("invalid");
     expect(classifyTokenAge("2026-10-03T02:50:34+02:00", at(1)).status).toBe("invalid");
     expect(classifyTokenAge(MINTED, at(-1)).status).toBe("invalid");
+    // Date rolls these over instead of rejecting them; the check must not.
+    expect(classifyTokenAge("2026-02-30T00:00:00Z", at(1)).status).toBe("invalid");
+    expect(classifyTokenAge("2026-04-31T00:00:00Z", at(1)).status).toBe("invalid");
+    expect(classifyTokenAge("2026-10-02T24:00:00Z", at(1)).status).toBe("invalid");
+    expect(classifyTokenAge("2026-10-02T23:59:60Z", at(1)).status).toBe("invalid");
+    expect(classifyTokenAge("2026-10-02T02:50Z", at(1)).status).toBe("ok");
+    expect(classifyTokenAge("2026-10-02T02:50:34.123Z", at(1)).status).toBe("ok");
   });
 });
 

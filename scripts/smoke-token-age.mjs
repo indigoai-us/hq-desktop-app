@@ -19,7 +19,26 @@ export const MINTED_AT_VARIABLE = "HQ_RELEASE_SMOKE_REFRESH_TOKEN_MINTED_AT";
 export const TOKEN_LIFETIME_DAYS = 30;
 export const REMINT_DUE_DAYS = 25;
 const DAY_MS = 24 * 60 * 60 * 1000;
-const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?Z$/;
+const ISO_UTC = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?Z$/;
+
+// Date accepts impossible calendar values and rolls them over (2026-02-30 ->
+// March 2, 24:00 -> the next day), so require the parsed UTC fields to match
+// what was written.
+function parseUtc(raw) {
+  const m = ISO_UTC.exec(raw);
+  if (!m) return null;
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return null;
+  const [, y, mo, d, h, mi, se = "00"] = m;
+  const same =
+    date.getUTCFullYear() === Number(y) &&
+    date.getUTCMonth() + 1 === Number(mo) &&
+    date.getUTCDate() === Number(d) &&
+    date.getUTCHours() === Number(h) &&
+    date.getUTCMinutes() === Number(mi) &&
+    date.getUTCSeconds() === Number(se);
+  return same ? date : null;
+}
 
 /**
  * Classify the token by age. Returns { status, ageDays?, message } where
@@ -33,8 +52,8 @@ export function classifyTokenAge(mintedAt, now = new Date()) {
       message: `${MINTED_AT_VARIABLE} is not set, so the age of ${SMOKE_TOKEN_SECRET} is unknown. Re-mint the token with the command in docs/RELEASE.md ("Non-Indigo release smoke"); it sets this variable.`,
     };
   }
-  const minted = ISO_UTC.test(raw) ? new Date(raw) : new Date(Number.NaN);
-  if (Number.isNaN(minted.getTime())) {
+  const minted = parseUtc(raw);
+  if (!minted) {
     return {
       status: "invalid",
       message: `${MINTED_AT_VARIABLE}=${JSON.stringify(raw)} is not a UTC ISO timestamp (YYYY-MM-DDTHH:MM:SSZ).`,
