@@ -211,7 +211,6 @@
     buildAgentToolConnectedNotice,
     agentChatReadiness,
     agentComposerPlaceholder,
-    cleanAgentHelloText,
     helloCardSource,
     helloCardSourceLogLine,
     isAgentConversationRow,
@@ -5485,36 +5484,6 @@
     const at = cloudBotConnectMoreChipAt;
     if (!at) return cards;
     return { ...(cards ?? {}), [at]: [...(cards?.[at] ?? []), { kind: "suggestions", items: [CONNECT_MORE_REQUEST] }] };
-  });
-  /** The connect items a message's cards show: the bot's own, then the app's. */
-  function connectItemsShown(message: ConversationMessageWire): ConnectItem[] {
-    const own = richContentForMessage(message).rich?.blocks ?? [];
-    const extra = cloudBotExtraCards?.[message.eventId] ?? [];
-    return [...own, ...extra].flatMap((block) => (block.kind === "connect" ? block.items : []));
-  }
-  /**
-   * The text the app draws for the bot's hello and for its answers to
-   * "Connect more tools", by message: the message's own text with the app
-   * lines and the command sentence taken out (agent-channel.ts,
-   * `cleanAgentHelloText`). Only those messages; a message whose text the
-   * cleanup leaves alone is not named. Null when there is nothing to change.
-   */
-  const cloudBotCleanText = $derived.by((): Record<string, string> | null => {
-    const uid = dmCloudBotUid;
-    if (!uid) return null;
-    const helloId = connectionRecords[uid]?.helloEventId ?? null;
-    const answers = connectMoreAnswerIds(timeline, uid, { visible: messageHasVisibleContent, ownCards: () => false });
-    const ids = new Set([...(helloId ? [helloId] : []), ...answers]);
-    if (ids.size === 0) return null;
-    let out: Record<string, string> | null = null;
-    for (const message of timeline) {
-      if (!ids.has(message.eventId) || (message.fromPersonUid ?? "").trim() !== uid) continue;
-      const own = richContentForMessage(message).text;
-      const cleaned = cleanAgentHelloText(own, connectItemsShown(message));
-      if (cleaned === own) continue;
-      (out ??= {})[message.eventId] = cleaned;
-    }
-    return out;
   });
   /**
    * One line in the app's file log per hello saying whose picks its cards
@@ -11204,7 +11173,6 @@
                   suggestionsFrom={suggestionsFromUid}
                   connections={cloudBotConnections}
                   extraBlocksByEventId={cloudBotExtraBlocks}
-                  textByEventId={cloudBotCleanText}
                   draftKey={selectedRow.id}
                   draftStorage={tenantStorage}
                 />

@@ -289,13 +289,6 @@
      */
     extraBlocksByEventId?: Readonly<Record<string, readonly RichBlock[]>> | null;
     /**
-     * The host's text for a message, by eventId, drawn in place of the
-     * message's own text (a cloud bot's hello with the app names taken out,
-     * agent-channel.ts `cleanAgentHelloText`). The message itself is not
-     * changed, and a message not named here keeps its own text.
-     */
-    textByEventId?: Readonly<Record<string, string>> | null;
-    /**
      * Sidebar row id (`ch:<id>` / `dm:<uid>`) this composer belongs to. With
      * `draftStorage`, unsent text is restored on mount, persisted (debounced)
      * while typing, flushed on unmount, and cleared on send — so switching
@@ -369,7 +362,6 @@
     suggestedReplyText = null,
     connections = null,
     extraBlocksByEventId = null,
-    textByEventId = null,
     draftKey = null,
     draftStorage = null,
     composerLocked = false,
@@ -379,13 +371,12 @@
     humanOnly = false,
   }: Props = $props();
 
-  /** A message's text and blocks, with any text or blocks the host put on it. */
+  /** A message's text and blocks, with any blocks the host put on it. */
   function richForMessage(msg: ConversationMessageWire): ExtractedRichContent {
     const own = richContentForMessage(msg);
     const extra = extraBlocksByEventId?.[msg.eventId];
-    const text = textByEventId?.[msg.eventId] ?? own.text;
-    if (!extra && text === own.text) return own;
-    return { text, rich: extra ? withExtraBlocks(own.rich, extra) : own.rich };
+    if (!extra) return own;
+    return { text: own.text, rich: withExtraBlocks(own.rich, extra) };
   }
 
   /** Presence-store online flag for an actor in this conversation's company. */

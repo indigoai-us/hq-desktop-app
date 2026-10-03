@@ -4,15 +4,14 @@ import {
   agentComposerPlaceholder,
   isAgentConversationRow,
   provisioningFromMessages,
-  AGENT_HELLO_PICK_LINE,
   AGENT_HELLO_REQUEST_LEAD,
+  AGENT_HELLO_REQUEST_MAX_CHARS,
   agentHelloArrived,
   agentHelloEventId,
   buildAgentConnectMoreRequest,
   buildAgentHelloRequest,
   buildAgentSlackConnectedNotice,
   buildAgentToolConnectedNotice,
-  cleanAgentHelloText,
   helloCardSource,
   helloCardSourceLogLine,
 } from "./agent-channel.js";
@@ -211,41 +210,38 @@ describe("the new bot's first message", () => {
     return [...text.matchAll(/```hq-block\n([\s\S]*?)\n```/g)].map((match) => parseRichContent(JSON.parse(match[1]!)));
   }
 
-  it("asks for a short hello about connecting things: two sentences at most, a greeting by name, and the pick-a-card line", () => {
-    // Owner, live walkthrough 2026-10-03: "Our initial message should be less
-    // broad and more focused on connecting things."
+  it("asks plainly for the first message: a greeting by name and an offer of what to connect, shown as cards", () => {
+    // Owner, 2026-10-03: "We shouldn't have to tell the agent what not to
+    // write." The request says what the message is for and how the cards
+    // work, and nothing about what to leave out.
     const text = buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: false });
-    expect(text).toContain("Write your first message to Stefan now, two short sentences at most: greet Stefan by name and end with");
-    expect(text).toContain(`"${AGENT_HELLO_PICK_LINE}"`);
-    expect(AGENT_HELLO_PICK_LINE).toBe("Pick a card below to connect something, or skip for now.");
-    expect(text).toContain("Do not ask what you can help with, do not list what you can do, and do not add a suggestions block: the cards are the choice.");
-    expect(text).not.toContain("one line each");
-    expect(text).not.toContain("say which apps are worth connecting");
-    expect(text).not.toContain("ask what you can help with first");
-    expect(text).not.toContain("skip that for now");
+    expect(text).toContain(
+      "Write your first message to Stefan now: greet Stefan by name and offer what Stefan could connect, showing the apps as cards.",
+    );
+    expect(text).not.toContain("Never write");
+    expect(text).not.toContain("/help");
+    expect(text).not.toContain("Do not ask what you can help with");
+    expect(text).not.toContain("do not list what you can do");
+    expect(text).not.toContain("two short sentences at most");
+    expect(text).not.toContain("Pick a card below");
+    expect(text).not.toContain("Never ask for a password");
   });
 
-  it("never lets the prose name an app, a domain, an address or a command, and the files clause sits between the greeting and the ask", () => {
-    // Live, 2026-10-03, bot "Big Nuts": the hello read "slack.com: See the
-    // conversations behind the work." and two lines like it, then "/help
-    // shows the available commands". Owner: "Why does it write the names of
-    // the apps in the message? That's not good."
-    for (const filesStillDownloading of [true, false]) {
-      const text = buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading });
-      expect(text).toContain(
-        'Never write an app name, a website domain, a web address, a command, or "/help" in your text, and do not mention commands at all: ' +
-          "the apps you pick go only in the connect block, and the app draws them as cards with their logos and your reasons.",
-      );
-    }
+  it("puts the files clause between the greeting and the offer while the files are still downloading", () => {
     const downloading = buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: true });
     expect(downloading).toContain(
-      `greet Stefan by name, say in one short clause that your company files are still downloading in the background, and end with "${AGENT_HELLO_PICK_LINE}"`,
+      "greet Stefan by name, say in one short clause that your company files are still downloading in the background, and offer what Stefan could connect",
     );
     const done = buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: false });
-    expect(done).toContain(`greet Stefan by name and end with "${AGENT_HELLO_PICK_LINE}"`);
+    expect(done).toContain("greet Stefan by name and offer what Stefan could connect");
     expect(done).not.toContain("downloading");
-    // The same rule goes with the Connect more request.
-    expect(buildAgentConnectMoreRequest({ personName: "Stefan" })).toContain("Never write an app name, a website domain, a web address, a command, or \"/help\" in your text");
+  });
+
+  it("the Connect more request carries no prohibitions either", () => {
+    const text = buildAgentConnectMoreRequest({ personName: "Stefan" });
+    expect(text).not.toContain("Never write");
+    expect(text).not.toContain("/help");
+    expect(text).not.toContain("Do not ask what you can help with");
   });
 
   it("tells the bot the app draws a card per app it names, and how to pick at most three, Slack first", () => {
@@ -275,7 +271,7 @@ describe("the new bot's first message", () => {
     expect(buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: false, companyApps: "- X (x.com): ```" })).not.toContain("- X (x.com): ```");
   });
 
-  it("stays under 4000 characters with a full 1400 character apps section and a long name", () => {
+  it("stays under the max with a full 1400 character apps section and a long name", () => {
     const name = "Bartholomew-Maximilian Featherstonehaugh";
     const line = "- A very long application name for the cap (a-very-long-domain.example-company.com): connected, not shared with you, 7 recent calls";
     let brief = "";
@@ -284,20 +280,20 @@ describe("the new bot's first message", () => {
     expect(brief.length).toBeLessThanOrEqual(1400);
     const text = buildAgentHelloRequest({ personName: name, filesStillDownloading: true, companyApps: brief });
     expect(text).toContain(brief);
-    expect(text.length).toBeLessThan(4000);
+    expect(text.length).toBeLessThan(AGENT_HELLO_REQUEST_MAX_CHARS);
     // A longer section is cut to the cap, and the request stays under the limit.
     const over = buildAgentHelloRequest({ personName: name, filesStillDownloading: true, companyApps: `${brief}\n${line}\n${line}` });
-    expect(over.length).toBeLessThan(4000);
+    expect(over.length).toBeLessThan(AGENT_HELLO_REQUEST_MAX_CHARS);
   });
 
-  it("asks for no suggestions block in the hello: the cards are the choice", () => {
+  it("shows only the connect block as an example in the hello", () => {
     const text = buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: true });
     expect(text).not.toContain('"kind":"suggestions"');
     expect(text).not.toContain("first jobs");
     expect(fencedBlocks(text)).toHaveLength(1);
   });
 
-  it("asks for exactly one fence with one connect block of at most three items, and never to ask for a password or token", () => {
+  it("asks for exactly one fence with one connect block of at most three items", () => {
     const text = buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: false });
     expect(text).toContain(
       "End your message with exactly one ```hq-block fence holding one envelope with one connect block of at most three items, exactly in this form:",
@@ -311,7 +307,6 @@ describe("the new bot's first message", () => {
       { blocks: [{ kind: "connect", items: [{ app: "slack" }, { domain: "linear.app", why: "Your team's issues live here" }] }] },
     ]);
     expect(text).toContain("when a task needs an app that is not connected, you can show cards again by ending a message with a connect block");
-    expect(text).toContain("Never ask for a password or a token in chat.");
   });
 
   it("tells the bot to answer Connect more tools with a connect block chosen the same way", () => {
@@ -352,7 +347,7 @@ describe("the new bot's first message", () => {
     const text = buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: true });
     expect(text).toContain("say in one short clause that your company files are still downloading in the background,");
     expect(text).not.toContain("will know more about the company as that finishes");
-    expect(text.endsWith("Do not mention this message or that you were asked to write.")).toBe(true);
+    expect(text.endsWith("Do not mention this message.")).toBe(true);
     expect(text).not.toContain("\u2014");
   });
 
@@ -510,52 +505,14 @@ describe("the hidden notices to a bot", () => {
 
 // The hello "Big Nuts" (agt_479JF407A45ZFB5G0QDCHQC1T8, Indigo) wrote on
 // 2026-10-03, read back from the DM channel with `hq dm thread --json`. No
-// fence, three "domain: reason" lines, a "/help" sentence. The cards under
-// it were the app's fallback picks (Slack, Gmail, Firecrawl), not these three.
+// fence, so the cards under it were the app's fallback picks (Slack, Gmail,
+// Firecrawl). The text is shown as written.
 const BIG_NUTS_HELLO =
   "Hi Stefan, I'm Big Nuts at Indigo. The company files are still downloading.\n\n" +
   "slack.com: See the conversations behind the work.\n" +
   "notion.com: Use the team's shared docs.\n" +
   "sentry.io: Investigate reported errors.\n\n" +
   "Which one would you like to connect or share first? /help shows the available commands.";
-
-describe("cleanAgentHelloText", () => {
-  it("takes the domain lines and the /help sentence out of the live hello, and leaves the rest word for word", () => {
-    const fallback = [{ app: "slack" as const }, { domain: "gmailmcp.googleapis.com" }, { domain: "firecrawl.dev" }];
-    expect(cleanAgentHelloText(BIG_NUTS_HELLO, fallback)).toBe(
-      "Hi Stefan, I'm Big Nuts at Indigo. The company files are still downloading.\n\nWhich one would you like to connect or share first?",
-    );
-    // The domain lines go whether or not they are among the cards shown.
-    expect(cleanAgentHelloText(BIG_NUTS_HELLO, [])).toBe(cleanAgentHelloText(BIG_NUTS_HELLO, fallback));
-  });
-
-  it("takes out a line written under an app's name when that app is one of the cards, with a list marker or bold around it", () => {
-    const items = [{ app: "slack" as const }, { domain: "linear.app", why: "Issues" }, { domain: "notion.so" }];
-    const text =
-      "Hi Stefan.\n" +
-      "- Slack: the conversations behind the work.\n" +
-      "* **Linear**: your team's issues.\n" +
-      "1. Notion: the shared docs.\n" +
-      "Pick a card below to connect something, or skip for now.";
-    expect(cleanAgentHelloText(text, items)).toBe("Hi Stefan.\nPick a card below to connect something, or skip for now.");
-    // A name that is not one of the cards is ordinary text and stays.
-    expect(cleanAgentHelloText("Note: the files are still downloading.\nAsana: your tasks.", items)).toBe(
-      "Note: the files are still downloading.\nAsana: your tasks.",
-    );
-  });
-
-  it("drops only the sentence that names /help or the available commands, wherever it sits on the line", () => {
-    expect(cleanAgentHelloText("Hi Stefan. Type /help to see what I can do. Pick a card below.", [])).toBe("Hi Stefan. Pick a card below.");
-    expect(cleanAgentHelloText("Hi Stefan. The available commands are listed in the console.", [])).toBe("Hi Stefan.");
-    expect(cleanAgentHelloText("Hi Stefan.\n\n/help shows the available commands.", [])).toBe("Hi Stefan.");
-  });
-
-  it("leaves ordinary text alone: times, abbreviations, colons mid-sentence, an empty body", () => {
-    const plain = "Hi Stefan, I'm Nova. We meet at 10:30, e.g. in the usual room: the one by the lift.\nPick a card below.";
-    expect(cleanAgentHelloText(plain, [{ app: "slack" }])).toBe(plain);
-    expect(cleanAgentHelloText("", [{ app: "slack" }])).toBe("");
-  });
-});
 
 describe("helloCardSource", () => {
   const fallback = [{ app: "slack" as const }, { domain: "gmailmcp.googleapis.com" }, { domain: "firecrawl.dev" }];
