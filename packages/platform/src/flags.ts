@@ -89,6 +89,8 @@ export const SETUP_DEPS_TIMEOUT_RETRY_FLAG =
   "desktop.setup-deps-timeout-retry-v1";
 export const HUMAN_ONLY_CONVERSATIONS_FLAG =
   "desktop.human-only-conversations";
+export const PERSONAL_TRANSCRIPTS_FLAG =
+  "desktop.meetings-personal-transcripts";
 /**
  * Desktop value for `desktop.human-only-conversations`. The desktop (Tauri)
  * adapters answer this flag with this constant and do not consult the
@@ -110,6 +112,7 @@ export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
   [DESKTOP_LIMIT_STATUS_PUSH_FLAG]: DESKTOP_LIMIT_STATUS_PUSH_FLAG,
   [SETUP_DEPS_TIMEOUT_RETRY_FLAG]: SETUP_DEPS_TIMEOUT_RETRY_FLAG,
   [HUMAN_ONLY_CONVERSATIONS_FLAG]: HUMAN_ONLY_CONVERSATIONS_FLAG,
+  [PERSONAL_TRANSCRIPTS_FLAG]: PERSONAL_TRANSCRIPTS_FLAG,
   "desktop.mirror-quarantine-move-not-deletion":
     "desktop.mirror-quarantine-move-not-deletion",
 };

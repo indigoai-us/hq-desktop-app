@@ -40,6 +40,7 @@ import {
   bearerTokenFromHeaders,
   createFeatureFlagGate,
   PERSONAL_WORKSPACE_BOARD_FLAG,
+  PERSONAL_TRANSCRIPTS_FLAG,
   type FeatureFlagGate,
 } from "../flags.js";
 import {
@@ -490,7 +491,8 @@ export class WebPlatformAdapter implements PlatformAdapter {
     if (
       flag === "meetings" ||
       flag === "agents.claude-provider" ||
-      flag === PERSONAL_WORKSPACE_BOARD_FLAG
+      flag === PERSONAL_WORKSPACE_BOARD_FLAG ||
+      flag === PERSONAL_TRANSCRIPTS_FLAG
     ) {
       return Promise.resolve(ok(false));
     }
