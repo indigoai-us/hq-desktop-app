@@ -7,6 +7,7 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+- Startup diagnostics now classify reason-suffixed refresh-rejection markers as desktop-origin markers.
 - The welcome sign-in window now advances when you are already signed in, keeps
   you informed while browser sign-in is in progress, and gives you a clear Try
   again path if it does not finish.
