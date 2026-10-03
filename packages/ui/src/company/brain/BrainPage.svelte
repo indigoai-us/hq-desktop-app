@@ -15,6 +15,8 @@
   import ListEmptyState from "../../common/ListEmptyState.svelte";
   import { publishCompanyPageCount } from "../../shell/company-page-counts.svelte.js";
   import { pageRows } from "../../shell/list-paging.js";
+  import type { AdapterPromise, Json } from "@hq/platform";
+  import { lastRunCell, mySkillUsage, runsCell, skillUsageRows, teamSkillUsage, type TeamSkillUsage } from "./skill-usage.js";
   import "../../home/tokens.css";
   import "../../common/button/rail-type.css";
   import "../../chat/chat-tokens.css";
@@ -76,6 +78,14 @@
      */
     appShell?: Pick<AppShellApi, "setActiveCompany"> | null;
     onopenpage?: (rowId: string) => void;
+    /**
+     * OWNER-R11: usage reads for the Skills Usage tab. `team` is hq-pro
+     * company telemetry (the web Activity read); `mine` is /v1/telemetry/me.
+     */
+    usage?: {
+      team?: ((slug: string, range: { from: string; to: string }) => AdapterPromise<Json>) | null;
+      mine?: ((from: string, to: string) => AdapterPromise<Json>) | null;
+    } | null;
   }
 
   let {
@@ -87,6 +97,7 @@
     settings,
     appShell = null,
     onopenpage,
+    usage = null,
   }: Props = $props();
 
   let cache = $state(emptyBrainCache());
@@ -116,6 +127,54 @@
     sheet = sheet === "picker" ? "worker" : null;
   }
   let shareOpen = $state(false);
+
+  // OWNER-R11: each read has its own state, so one failing never blanks the other.
+  type UsageRead<T> = { state: "idle" | "loading" | "ok" | "failed"; data: T | null };
+  let teamUsage = $state<UsageRead<Map<string, TeamSkillUsage>>>({ state: "idle", data: null });
+  let myUsage = $state<UsageRead<Map<string, number>>>({ state: "idle", data: null });
+  let usageNonce = $state(0);
+  const usageDays = { "7d": 7, "30d": 30, "90d": 90 } as const;
+  const isoDay = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+
+  async function readUsage<T>(
+    run: (() => AdapterPromise<Json>) | null,
+    parse: (body: unknown) => T,
+    set: (next: UsageRead<T>) => void,
+    alive: () => boolean,
+  ): Promise<void> {
+    if (!run) {
+      set({ state: "failed", data: null });
+      return;
+    }
+    set({ state: "loading", data: null });
+    try {
+      const res = await run();
+      if (!res.ok) throw new Error(res.message ?? res.reason);
+      const data = parse(res.value);
+      if (alive()) set({ state: "ok", data });
+    } catch (err) {
+      console.error("skill usage read failed:", err);
+      if (alive()) set({ state: "failed", data: null });
+    }
+  }
+
+  // The Usage tab and the skill detail both show usage; read once either is open.
+  const wantUsage = $derived(page === "skills" && (skillTab === "usage" || selected !== null));
+  $effect(() => {
+    if (!wantUsage) return;
+    const activeSlug = slug;
+    const activeRange = usageRange;
+    void usageNonce;
+    const now = Date.now();
+    const from = isoDay(now - (usageDays[activeRange] - 1) * 86_400_000);
+    const to = isoDay(now);
+    const alive = () => slug === activeSlug && usageRange === activeRange;
+    const team = usage?.team ?? null;
+    const mine = usage?.mine ?? null;
+    void readUsage(team && activeSlug ? () => team(activeSlug, { from, to }) : null, teamSkillUsage, (n) => (teamUsage = n), alive);
+    void readUsage(mine ? () => mine(from, to) : null, mySkillUsage, (n) => (myUsage = n), alive);
+  });
+
 
   let policyDraft = $state<PolicyDraft>({
     title: "",
@@ -175,6 +234,8 @@
   // QA-102: the inspector reads the filtered rows, so a search or filter that
   // hides the selection never leaves its detail and actions on screen.
   const selectedSkill = $derived(inspectedRow(skillRows, selected));
+  const usageRows = $derived(skillUsageRows(skillRows, teamUsage.data, myUsage.data));
+  const selectedUsage = $derived(selectedSkill ? skillUsageRows([selectedSkill], teamUsage.data, myUsage.data)[0] : null);
   const selectedWorker = $derived(inspectedRow(workerRows, selected));
   const selectedPolicy = $derived(inspectedRow(policyRows, selected));
   const selectedFile = $derived(inspectedRow(knowledgeRows, selected));
@@ -458,18 +519,28 @@
           <button type="button" role="tab" class="tab" aria-selected={usageRange === range} onclick={() => (usageRange = range as typeof usageRange)}>{range}</button>
         {/each}
         <span class="grow"></span>
-        <span class="meta">Sort · runs</span>
+        <span class="meta">Sort · team runs</span>
       </div>
-      <div class="head usage-grid"><span>Skill</span><span>Runs</span><span>Last run</span></div>
-      {#each pageRows(skillRows, pages).rows as row (row.path)}
-        <div class="row usage-grid">
+      {#if teamUsage.state === "failed"}
+        <p class="note" data-testid="skills-usage-team-failed">Team runs could not be read. Only company owners and admins can see them. <button type="button" class="link" onclick={() => (usageNonce += 1)}>Try again</button></p>
+      {/if}
+      {#if myUsage.state === "failed"}
+        <p class="note" data-testid="skills-usage-mine-failed">Your runs could not be read. <button type="button" class="link" onclick={() => (usageNonce += 1)}>Try again</button></p>
+      {/if}
+      <div class="head usage-grid">
+        <span>Skill</span><span>Team runs</span><span title="Across all of your companies">Your runs (all companies)</span><span>People</span><span title="The day of the latest run; the read does not say who ran it">Last run (date)</span>
+      </div>
+      {#each pageRows(usageRows, pages).rows as row (row.path)}
+        <div class="row usage-grid" data-testid="skills-usage-row">
           <span class="name">{row.name}</span>
-          <span class="meta">{row.runs}</span>
-          <span class="meta">{row.lastRun || "No runs in this window"}</span>
+          <span class="meta">{teamUsage.state === "loading" ? "…" : runsCell(row.teamRuns)}</span>
+          <span class="meta">{myUsage.state === "loading" ? "…" : runsCell(row.yourRuns)}</span>
+          <span class="meta">{teamUsage.state === "loading" ? "…" : runsCell(row.people)}</span>
+          <span class="meta">{teamUsage.state === "loading" ? "…" : lastRunCell(row.lastDay)}</span>
         </div>
       {/each}
       {#if skillRows.length === 0}
-        <p class="empty">No skill runs in this window yet. Usage fills in from the library listing.</p>
+        <p class="empty">No skills in this company yet.</p>
       {/if}
     </div>
   {:else}
@@ -549,6 +620,14 @@
           <h2>{selectedSkill.name}</h2>
           <p class="path">{selectedSkill.path}</p>
           <p>{selectedSkill.description}</p>
+          {#if usage && selectedUsage}
+            <dl class="skill-usage" data-testid="skill-usage-block">
+              <div><dt>Team runs</dt><dd>{runsCell(selectedUsage.teamRuns)}</dd></div>
+              <div><dt>Your runs</dt><dd>{runsCell(selectedUsage.yourRuns)}</dd></div>
+              <div><dt>People</dt><dd>{runsCell(selectedUsage.people)}</dd></div>
+              <div><dt>Last run</dt><dd>{lastRunCell(selectedUsage.lastDay)}</dd></div>
+            </dl>
+          {/if}
           <div class="actions">
             <RailButton icon="play" variant="primary" data-testid="skill-run" onclick={() => runPrompt(skillRunPrompt(selectedSkill.name), selectedSkill.name)}>Run</RailButton>
             <RailButton icon="claude-code" onclick={() => openInClaude(selectedSkill.path)}>Open in Claude Code</RailButton>
@@ -809,7 +888,12 @@
   .body { white-space: pre-wrap; color: var(--t2, var(--v4-text-2)); line-height: 1.45; margin-top: 12px; }
   .gate { padding: 10px 12px; border-radius: 8px; background: var(--raised, var(--v4-control-faint)); color: var(--t2, var(--v4-text-2)); }
   .usage { padding: 12px 20px; overflow: auto; }
-  .usage-grid { display: grid; grid-template-columns: 1fr 80px 180px; gap: 12px; padding: 8px; }
+  .usage-grid { display: grid; grid-template-columns: minmax(0, 1fr) 80px 120px 64px 110px; gap: 12px; padding: 8px; }
+  .note { margin: 4px 8px; color: var(--v4-text-2, inherit); }
+  .link { background: none; border: 0; padding: 0; color: inherit; text-decoration: underline; cursor: pointer; font: inherit; min-height: 28px; }
+  .skill-usage { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 12px; margin: 8px 0; }
+  .skill-usage dt { color: var(--v4-text-2, inherit); }
+  .skill-usage dd { margin: 0; }
   .head { color: var(--t3, var(--v4-text-3)); border-bottom: 1px solid var(--line, var(--v4-rowline)); }
   .shimmer { padding: 20px; display: grid; gap: 8px; }
   .bar {

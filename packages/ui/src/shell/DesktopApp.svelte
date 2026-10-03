@@ -10640,6 +10640,10 @@
               settings: adapter.settings ?? null,
               appShell: adapter.appShell ?? null,
               onopenpage: selectCompanyPaneRow,
+              usage: {
+                team: adapter.company?.getTeamTelemetry ? (s: string, r: { from: string; to: string }) => adapter.company.getTeamTelemetry(s, r) : null,
+                mine: adapter.agents?.getMyTelemetry ? (f: string, t: string) => adapter.agents.getMyTelemetry!(f, t) : null,
+              },
             }}
           >
             {#snippet skeleton()}
