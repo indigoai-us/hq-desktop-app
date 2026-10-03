@@ -166,7 +166,7 @@ describe("DesktopApp account menu (US-010)", () => {
       expect(host.querySelector('[data-testid="settings-nav-profile"]')?.getAttribute("aria-current")).toBe("page"),
     );
     const nav = [...host.querySelectorAll('[data-testid^="settings-nav-"]')].map((el) => el.getAttribute("data-testid"));
-    expect(nav.slice(0, 2)).toEqual(["settings-nav-profile", "settings-nav-billing"]);
+    expect(nav.slice(0, 3)).toEqual(["settings-nav-profile", "settings-nav-public-profile", "settings-nav-billing"]);
     expect(host.querySelector('[data-testid="account-host"]')).toBeNull();
   });
 
