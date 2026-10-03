@@ -6908,9 +6908,12 @@ mod tests {
                 root.path(),
                 None,
                 Some(&menubar_path),
-                move |_, _, _| async move {
-                    failed_fetch_calls.fetch_add(1, Ordering::AcqRel);
-                    Err(github_fetch_failure("rate_limited", "HTTP 403"))
+                move |_, _, _| {
+                    let failed_fetch_calls = Arc::clone(&failed_fetch_calls);
+                    async move {
+                        failed_fetch_calls.fetch_add(1, Ordering::AcqRel);
+                        Err(github_fetch_failure("rate_limited", "HTTP 403"))
+                    }
                 },
             )
             .await
@@ -9870,11 +9873,15 @@ error: clone failed";
             Channel::Release,
             Some("github-token"),
             Some(&menubar_path),
-            move |fetched_source, fetched_commit, token| async move {
-                assert_eq!(fetched_source, source);
-                assert_eq!(fetched_commit, expected_commit);
-                assert_eq!(token.as_deref(), Some("github-token"));
-                Ok(remote)
+            move |fetched_source, fetched_commit, token| {
+                let expected_commit = expected_commit.clone();
+                let remote = remote.clone();
+                async move {
+                    assert_eq!(fetched_source, source);
+                    assert_eq!(fetched_commit, expected_commit);
+                    assert_eq!(token.as_deref(), Some("github-token"));
+                    Ok(remote)
+                }
             },
         )
         .await
