@@ -59,6 +59,12 @@ pub const EVENT_COMPANY_CREATED: &str = "company_created";
 pub const EVENT_FIRST_SYNC_COMPLETED: &str = "first_sync_completed";
 pub const EVENT_SETUP_ABANDONED: &str = "setup_abandoned";
 pub const EVENT_INSTALL_LINKED: &str = "install_linked";
+/// Company step looked before creating: which route it took.
+pub const EVENT_COMPANY_ROUTE_DECIDED: &str = "company_route_decided";
+/// Company provisioning failed (with the step) during onboarding.
+pub const EVENT_COMPANY_PROVISIONING_FAILED: &str = "company_provisioning_failed";
+/// First sync found a company with no bucket and asked hq-pro to finish it.
+pub const EVENT_COMPANY_SELF_HEAL: &str = "company_self_heal";
 
 /// What every mirrored event carries. Assembled once at startup by the app and
 /// updated when the sign-in link completion returns the visitor id.

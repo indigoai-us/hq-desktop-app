@@ -82,7 +82,32 @@ export interface OnboardingStepProperties {
   setupRunId?: string;
   /** Company scope for the invite and company steps; never attach invitee data here. */
   companyUid?: string;
+  /** Company step route decision (look before create). Counts only, never names. */
+  existingCompanies?: number;
+  paidCompany?: boolean;
+  pendingInvites?: number;
+  decision?: string;
+  /** hq-pro provisioning step that failed or is being waited on. */
+  provisioningStep?: string;
+  /** Missing-bucket self-heal during the first sync. */
+  selfHeal?: 'triggered' | 'succeeded' | 'failed';
 }
+
+export const COMPANY_ROUTE_DECISIONS = [
+  'resume_setup',
+  'company_other_account',
+  'paid_existing',
+  'joined_existing',
+  'offer_existing',
+  'join_invite',
+  'invite_other_email',
+  'invite_expired',
+  'create',
+  'joined_invite',
+  'used_existing',
+  'created_another',
+] as const;
+const SELF_HEAL_VALUES = ['triggered', 'succeeded', 'failed'] as const;
 
 export interface OnboardingStepEvent {
   sessionId: string;
@@ -282,8 +307,33 @@ export function desktopPropertiesForOnboardingStep(
   if (event.properties.setupRunId !== undefined) {
     properties.setupRunId = event.properties.setupRunId;
   }
+  for (const key of ['existingCompanies', 'pendingInvites'] as const) {
+    const value = event.properties[key];
+    if (typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 1_000) {
+      properties[key] = value;
+    }
+  }
+  if (typeof event.properties.paidCompany === 'boolean') properties.paidCompany = event.properties.paidCompany;
+  if (event.properties.decision !== undefined) {
+    properties.decision = (COMPANY_ROUTE_DECISIONS as readonly string[]).includes(event.properties.decision)
+      ? event.properties.decision
+      : 'unknown';
+  }
+  if (typeof event.properties.provisioningStep === 'string') {
+    properties.provisioningStep = /^[a-z0-9:_-]{1,64}$/.test(event.properties.provisioningStep)
+      ? event.properties.provisioningStep
+      : 'unknown';
+  }
   if (
-    (event.properties.step === 'invite-teammate' || event.properties.step === 'company') &&
+    event.properties.selfHeal !== undefined &&
+    (SELF_HEAL_VALUES as readonly string[]).includes(event.properties.selfHeal)
+  ) {
+    properties.selfHeal = event.properties.selfHeal;
+  }
+  if (
+    (event.properties.step === 'invite-teammate' ||
+      event.properties.step === 'company' ||
+      event.properties.selfHeal !== undefined) &&
     typeof event.properties.companyUid === 'string' &&
     event.properties.companyUid.startsWith('cmp_')
   ) {
