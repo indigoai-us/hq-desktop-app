@@ -31,6 +31,15 @@ export interface ActivityMember {
   topSkill: string;
   outcomesPerMillion: number | null;
   spendUsd: number | null;
+  /** OWNER-R7: web parity fields; absent on snapshots cached before R7. */
+  email?: string;
+  prs?: number;
+  outcomes?: number;
+  /** Per-day tokens, oldest first (hq-pro perMember.trend). */
+  trend?: number[];
+  tokensByModel?: { model: string; total: number }[];
+  skills?: { skill: string; count: number }[];
+  services?: { service: string; count: number }[];
 }
 
 export interface LiveSession {
@@ -119,9 +128,17 @@ export function dayBars(
 }
 
 export function formatTokens(n: number): string {
+  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(2).replace(/\.?0+$/, "")}B`;
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
   return String(n);
+}
+
+/** Outcomes per 1M tokens, as the web formats it; a dash when unranked. */
+export function formatEfficiency(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "—";
+  if (Math.abs(value) >= 10) return value.toFixed(1);
+  return value.toFixed(2).replace(/0$/, "");
 }
 
 function csvCell(value: string | number | null): string {
@@ -137,6 +154,7 @@ export function activityToCsv(snapshot: ActivitySnapshot, range: ActivityRange):
     "tokens",
     "sessions",
     "stories",
+    "prs",
     "deploys",
     "top_skill",
     "outcomes_per_1m",
@@ -150,6 +168,7 @@ export function activityToCsv(snapshot: ActivitySnapshot, range: ActivityRange):
       member.tokens,
       member.sessions,
       member.stories,
+      member.prs ?? "",
       member.deploys,
       member.topSkill,
       member.outcomesPerMillion ?? "",
@@ -289,26 +308,51 @@ export function activityFromCompanyTelemetry(body: unknown): ActivitySnapshot {
     if (tokens === 0 && sessions === 0 && num(totals.events) === 0) continue;
     const label = [m.label, m.displayName].find((v): v is string => typeof v === "string" && !!v.trim())?.trim() ?? "";
     const email = typeof m.email === "string" ? m.email.trim() : "";
-    const name = label || email || "Unnamed member";
+    const bot = id.startsWith("agt_") || m.kind === "agent";
+    // Never an id: a label, else the email, else a plain stand-in.
+    const name = label && !/^(prs|agt)_/.test(label) ? label : email || (bot ? "Unknown bot" : "Unnamed member");
     const byType = rec(rec(m.outcomes).byType);
     const bySkill = Array.isArray(rec(totals.skills).bySkill) ? (rec(totals.skills).bySkill as unknown[]) : [];
     const top = rec(bySkill[0]).skill;
+    const services = Array.isArray(rec(totals.services).byService) ? (rec(totals.services).byService as unknown[]) : [];
+    const efficiency = typeof m.efficiency === "number" && Number.isFinite(m.efficiency) ? m.efficiency : null;
     members.push({
       id,
       name,
       mark: initials(name),
-      bot: id.startsWith("agt_"),
+      bot,
       live: false,
       tokens,
       sessions,
       stories: num(byType.storyCompleted),
       deploys: num(byType.deploySucceeded),
       topSkill: typeof top === "string" ? top : "",
-      outcomesPerMillion: null,
+      outcomesPerMillion: efficiency,
       spendUsd: null,
+      email: email && email !== name ? email : "",
+      prs: num(byType.prMerged),
+      outcomes: num(rec(m.outcomes).total),
+      trend: Array.isArray(m.trend) ? m.trend.map(num) : [],
+      tokensByModel: (Array.isArray(totals.tokensByModel) ? totals.tokensByModel : [])
+        .map((t) => ({ model: String(rec(t).model ?? ""), total: tokenTotal([t]) }))
+        .filter((t) => t.model && t.total > 0)
+        .sort((a, b) => b.total - a.total),
+      skills: bySkill
+        .map((k) => ({ skill: String(rec(k).skill ?? ""), count: num(rec(k).count) }))
+        .filter((k) => k.skill),
+      services: services
+        .map((k) => ({ service: String(rec(k).service ?? ""), count: num(rec(k).count) }))
+        .filter((k) => k.service),
     });
   }
-  members.sort((a, b) => b.tokens - a.tokens || a.name.localeCompare(b.name));
+  // Web order: Outcomes/1M descending, unranked members after every ranked one.
+  members.sort((a, b) => {
+    const ar = a.outcomesPerMillion != null;
+    const br = b.outcomesPerMillion != null;
+    if (ar !== br) return ar ? -1 : 1;
+    if (ar && br && a.outcomesPerMillion !== b.outcomesPerMillion) return (b.outcomesPerMillion as number) - (a.outcomesPerMillion as number);
+    return b.tokens - a.tokens || a.name.localeCompare(b.name);
+  });
   const daily = Array.isArray(root.daily) ? root.daily.map(rec) : [];
   const dayWeights = daily
     .filter((d) => typeof d.date === "string")

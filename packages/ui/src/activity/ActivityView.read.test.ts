@@ -6,7 +6,7 @@ import { failure, ok } from "@hq/platform";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import ActivityView from "./ActivityView.svelte";
-import { activityFromCompanyTelemetry } from "./activity-model";
+import { activityFromCompanyTelemetry, activityToCsv } from "./activity-model";
 
 // Producer shape from hq-pro readCompanyTelemetry (ids redacted).
 const tokens = (input: number, output: number) => [{ model: "claude", input, output, cacheCreation: 10, cacheRead: 90 }];
@@ -129,5 +129,82 @@ describe("BLANK-1-31 company Activity reads company telemetry", () => {
     await settle();
     expect(target.querySelector("[data-testid='activity-loader']")).toBeNull();
     expect(target.textContent).toContain("Cached Ada");
+  });
+});
+
+describe("OWNER-R7 Activity team table and member pane", () => {
+  let component: Record<string, unknown> | null = null;
+  afterEach(async () => {
+    if (component) await unmount(component);
+    component = null;
+    document.body.innerHTML = "";
+    localStorage.clear();
+  });
+  const settle = async () => {
+    flushSync();
+    for (let i = 0; i < 4; i += 1) await new Promise((r) => setTimeout(r, 0));
+    flushSync();
+  };
+  const body = {
+    ...COMPANY_TELEMETRY,
+    perMember: [
+      { ...COMPANY_TELEMETRY.perMember[1], label: "", efficiency: null, trend: [0, 1] },
+      {
+        ...COMPANY_TELEMETRY.perMember[0],
+        efficiency: 3.75,
+        trend: [100, 0, 1500],
+        totals: {
+          ...COMPANY_TELEMETRY.perMember[0].totals,
+          services: { total: 3, byService: [{ service: "github", count: 3 }] },
+        },
+      },
+    ],
+  };
+  function mountWith() {
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    component = mount(ActivityView, {
+      target,
+      props: { slug: "acme", companyLabel: "Acme", adapter: { company: { getTeamTelemetry: vi.fn(async () => ok(body)) } } as never },
+    });
+    return target;
+  }
+
+  it("shows the web columns, web order and names, never ids", async () => {
+    const target = mountWith();
+    await settle();
+    expect([...target.querySelectorAll("thead th")].map((th) => th.textContent)).toEqual([
+      "Member", "Trend", "Tokens", "Sessions", "Stories", "PRs", "Deploys", "Top skill", "Outcomes/1M",
+    ]);
+    const rows = [...target.querySelectorAll("tbody tr")].map((tr) => [...tr.querySelectorAll("td")].map((td) => td.textContent));
+    expect(rows[0][0]).toBe("Ada");
+    expect(rows[0][5]).toBe("1");
+    expect(rows[0][8]).toBe("3.75");
+    expect(rows[1][0]).toBe("Unknown bot");
+    expect(rows[1][8]).toBe("—");
+    expect(target.textContent).not.toMatch(/\b(prs|agt)_/);
+  });
+
+  it("opens the member pane with totals, models, skills and tools; Escape closes it", async () => {
+    const target = mountWith();
+    await settle();
+    target.querySelector<HTMLElement>("[data-testid='activity-member-row']")!.click();
+    flushSync();
+    const pane = target.querySelector("[data-testid='activity-member-pane']");
+    expect(pane?.textContent).toContain("Ada");
+    expect(pane?.textContent).toContain("ada@example.com");
+    expect(pane?.textContent).toContain("claude");
+    expect(pane?.textContent).toContain("run-project");
+    expect(pane?.textContent).toContain("github");
+    expect(pane?.querySelector("svg path")?.getAttribute("d")).toBeTruthy();
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    flushSync();
+    expect(target.querySelector("[data-testid='activity-member-pane']")).toBeNull();
+  });
+
+  it("exports PRs alongside what the table shows", () => {
+    const csv = activityToCsv(activityFromCompanyTelemetry(body), "30d");
+    expect(csv.split("\n")[0]).toContain("prs");
+    expect(csv).toContain("3.75");
   });
 });
