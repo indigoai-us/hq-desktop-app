@@ -51,6 +51,7 @@ function fakeAdapter(): PlatformAdapter {
     identity: {
       whoami: () => Promise.resolve(ok({ personUid: "prs_fixture", email: "" })) as never,
       hasFeature: () => Promise.resolve(ok(false)) as never,
+      subscribeFeature: () => () => {},
     },
     files: {
       listDir: () => Promise.resolve(ok([])) as never,

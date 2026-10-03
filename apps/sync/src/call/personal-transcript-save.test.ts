@@ -53,3 +53,21 @@ it('finalizes locally through same-account auth generation changes without refre
  const save=createPersonalTranscriptSave(invoke,handle,()=>{});
  try{await save.enqueue(row);generation=2;await save.end();expect(save.hasUnsaved()).toBe(false);expect(authReads).toBe(1);expect(JSON.parse((writes.at(-1)!.projection as {rawJson:string}).rawJson).provisional).toBe(false);}finally{save.dispose();}
 });
+
+
+it('saves personal notes without person_uid when the identity is unavailable',async()=>{
+ const noUidHandle={target:{self:{personUid:null,deviceId:'device'}}} as unknown as CallWindowHandle;
+ const noUidRow={...row,personUid:null} as unknown as TranscriptRow;
+ const writes:Array<{markdown:string}> = [];
+ const invoke:SaveInvoke=async<T>(command:string,args?:Record<string,unknown>)=>{
+  if(command==='get_auth_session')return {accountId:'a',generation:1} as T;
+  writes.push((args!.projection as {markdown:string}));return {markdownPath:'/personal/n.md'} as T;
+ };
+ const save=createPersonalTranscriptSave(invoke,noUidHandle,()=>{});
+ try{
+  await save.enqueue(noUidRow);
+  expect(writes).toHaveLength(1);
+  expect(writes[0].markdown).not.toMatch(/^person_uid:/m);
+  expect(save.hasUnsaved()).toBe(false);
+ }finally{save.dispose();}
+});
