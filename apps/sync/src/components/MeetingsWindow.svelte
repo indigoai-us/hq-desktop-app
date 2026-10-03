@@ -27,6 +27,10 @@
   import PlanUpgradeAction from './PlanUpgradeAction.svelte';
   import { openApprovedExternalUrl } from '../desktop-alt/external-open';
   import {
+    buildPastMeetingRows,
+    parsePersonalMeetingTranscript,
+  } from '../desktop-alt/lib/pastMeetings';
+  import {
     botForEvent,
     buildRefreshProblemReport,
     calendarEventIdsForBotLookup,
@@ -186,6 +190,9 @@
     cachedSnapshot?.scheduledBots ??
       (cachedSnapshot?.botsByEventId ?? []).map(([, bot]) => bot),
   );
+  let personalTranscripts = $state<ReturnType<typeof parsePersonalMeetingTranscript>[]>([]);
+  let personalTranscriptsEnabled = $state(false);
+  let signedInPersonUid = $state<string | null>(null);
   let companyNamesByUid = $state<Map<string, string>>(
     new Map(cachedSnapshot?.companyNamesByUid ?? []),
   );
@@ -601,6 +608,78 @@
     };
   });
 
+  async function refreshPersonalMeetingTranscripts(): Promise<void> {
+    // The hq-flags resolver returns false for missing or unreadable values.
+    // A rejected IPC call follows the same default-off path.
+    let enabled = false;
+    try {
+      enabled = await invoke<boolean>('meetings_personal_transcripts_enabled');
+    } catch {
+      console.warn('Could not resolve personal meeting transcript flag; keeping it off.');
+    }
+    personalTranscriptsEnabled = enabled;
+    if (!enabled) {
+      personalTranscripts = [];
+      signedInPersonUid = null;
+      return;
+    }
+
+    try {
+      const identity = await invoke<{ personUid?: unknown }>('whoami');
+      signedInPersonUid =
+        typeof identity.personUid === 'string' ? identity.personUid.trim() || null : null;
+    } catch {
+      console.warn('Could not resolve the signed-in person for desktop meeting sources.');
+      signedInPersonUid = null;
+    }
+
+    const meetingDirectories = ['personal/sources/meetings'];
+    try {
+      const companyDirectories = await invoke<Array<{ name: string; isDir: boolean }>>(
+        'list_hq_dir',
+        { relPath: 'companies' },
+      );
+      meetingDirectories.push(
+        ...companyDirectories
+          .filter((entry) => entry.isDir)
+          .map((entry) => `companies/${entry.name}/sources/meetings`),
+      );
+    } catch {
+      console.warn('Could not list synced company meeting sources.');
+    }
+
+    const notes = await Promise.all(
+      meetingDirectories.map(async (relPath) => {
+        try {
+          const files = await invoke<Array<{ path: string; name: string; isDir: boolean }>>(
+            'list_hq_dir',
+            { relPath },
+          );
+          return Promise.all(
+            files
+              .filter((file) => !file.isDir && file.name.toLowerCase().endsWith('.md'))
+              .map(async (file) => {
+                try {
+                  const note = await invoke<{ text: string }>('read_vault_note', { path: file.path });
+                  return parsePersonalMeetingTranscript(file.path, note.text);
+                } catch {
+                  console.warn('Could not read a local meeting transcript.');
+                  return null;
+                }
+              }),
+          );
+        } catch {
+          // A personal or company vault may not have any meeting sources yet.
+          console.warn('Could not list a local meeting source directory.');
+          return [];
+        }
+      }),
+    );
+    personalTranscripts = notes.flat().filter(
+      (note): note is NonNullable<typeof note> => note !== null,
+    );
+  }
+
   async function refresh() {
     // Dedupe concurrent calls. The lifecycle $effect, the 30s poll, the
     // focus-refresh listener, and the manual refresh button can all race;
@@ -695,6 +774,8 @@
         botsByEventId = buildBotMap(bots);
         allBots = bots;
       }
+
+      await refreshPersonalMeetingTranscripts();
 
       // Calendars per account — second-pass fan-out so the events render
       // doesn't block on calendar metadata. Failures per-account are
@@ -1194,6 +1275,13 @@
     });
   }
 
+  function personalTranscriptDateLabel(createdAt: string | null): string {
+    if (!createdAt) return '';
+    const date = new Date(createdAt);
+    if (Number.isNaN(date.getTime())) return '';
+    return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  }
+
   function pastDateLabel(bot: ScheduledBot): string {
     const raw = bot.scheduledStartTime ?? bot.createdAt;
     if (!raw) return '';
@@ -1391,6 +1479,14 @@
    *  block-scoped binding before its declaration. */
   const groupedEvents = $derived<DayGroup[]>(groupByDay(filteredEvents));
   const recordedBots = $derived(sortByStartDesc(selectRecorded(allBots)) as ScheduledBot[]);
+  const pastMeetingRows = $derived(
+    buildPastMeetingRows(
+      recordedBots,
+      personalTranscripts.filter((row) => row !== null),
+      personalTranscriptsEnabled,
+      signedInPersonUid,
+    ),
+  );
 
   /** Count of events the link-only filter is currently hiding. Drives
    *  the "X hidden — show all" recovery affordance so the user doesn't
@@ -2108,23 +2204,35 @@
           {/each}
         </ul>
       {/each}
-      {#if recordedBots.length > 0}
+      {#if pastMeetingRows.length > 0}
         <h3 class="day-heading">Past meetings</h3>
         <ul class="event-list">
-          {#each recordedBots as bot (bot.botId)}
-            <li
-              class="event-row"
-              class:event-row-focused={bot.botId === focusedMeetingId}
-              use:trackEventRow={bot.botId}
-            >
-              <div class="event-meta">
-                <span class="event-time">{pastDateLabel(bot)}</span>
-                <span class="event-title" title={bot.meetingTitle ?? '(no title)'}>
-                  {bot.meetingTitle ?? '(no title)'}
-                </span>
-              </div>
-              {@render companyAssign(bot)}
-            </li>
+          {#each pastMeetingRows as row (row.key)}
+            {#if row.kind === 'bot'}
+              <li
+                class="event-row"
+                class:event-row-focused={row.bot.botId === focusedMeetingId}
+                use:trackEventRow={row.bot.botId}
+              >
+                <div class="event-meta">
+                  <span class="event-time">{pastDateLabel(row.bot)}</span>
+                  <span class="event-title" title={row.bot.meetingTitle ?? '(no title)'}>
+                    {row.bot.meetingTitle ?? '(no title)'}
+                  </span>
+                </div>
+                {@render companyAssign(row.bot)}
+              </li>
+            {:else}
+              <li class="event-row">
+                <div class="event-meta">
+                  <span class="event-time">{personalTranscriptDateLabel(row.transcript.createdAt)}</span>
+                  <span class="event-title" title={row.transcript.title}>
+                    {row.transcript.title}
+                  </span>
+                </div>
+                <span class="event-time">{row.transcript.sourceLabel}</span>
+              </li>
+            {/if}
           {/each}
         </ul>
       {/if}
