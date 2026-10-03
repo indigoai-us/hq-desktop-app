@@ -29,6 +29,11 @@ function webAdapter(): PlatformAdapter {
       listAccounts: async () => ok([]),
       permissionsState: async () => ok(null),
     },
+    identity: {
+      whoami: async () => ok({ personUid: "prs_fixture", email: "" }),
+      hasFeature: async () => ok(false),
+      subscribeFeature: () => () => {},
+    },
     appShell: {
       notificationPermissionState: async () => ok("default"),
     },
