@@ -20,6 +20,7 @@
     type AtlasRegion,
     type AtlasScreenLabel,
     type AtlasView,
+    ATLAS_TYPE_TINT,
   } from "./atlas-layout.js";
 
   interface Props {
@@ -159,7 +160,7 @@
 
   export function frame(): void {
     const box = svgEl?.getBoundingClientRect();
-    onview(frameAll(placed, box?.width ?? 800, box?.height ?? 560));
+    onview(frameAll([...placed, ...districts], box?.width ?? 800, box?.height ?? 560));
   }
 
   /**
@@ -255,7 +256,7 @@
           cx={district.x}
           cy={district.y}
           r={district.r}
-          vector-effect="non-scaling-stroke"
+          style:--c={ATLAS_TYPE_TINT[district.type]}
         />
       {/each}
       {#each shownEdges as edge (`${edge.kind}:${edge.source}>${edge.target}`)}
@@ -282,6 +283,7 @@
           data-testid={`atlas-node-${node.id}`}
           data-kind={node.type}
           data-atlas-node={node.id}
+          style:--c={ATLAS_TYPE_TINT[node.type]}
           role="button"
           tabindex="-1"
           aria-label={node.label}
@@ -385,12 +387,12 @@
     stroke-width: 3px;
     pointer-events: none;
   }
-  /* OWNER-D 7: shaded section, neutral tokens in both themes (no accent). */
+  /* OWNER-R4: each section is tinted with the web type colour; no outline. */
   .district {
-    fill: var(--v4-text-1);
-    fill-opacity: 0.045;
-    stroke: var(--v4-hairline);
-    stroke-width: 1px;
+    /* Pulled toward the ink so the pale web colours still read on a light ground. */
+    fill: var(--c);
+    fill-opacity: 0.2;
+    stroke: none;
     pointer-events: none;
   }
   .edge {
@@ -404,8 +406,9 @@
     opacity: var(--t, 1);
     transition: opacity 160ms ease;
   }
+  /* Type colour, pulled toward the ink so it reads in light and dark. */
   .dot {
-    fill: var(--v4-text-3);
+    fill: color-mix(in srgb, var(--c) 80%, var(--v4-text-1));
     transition: fill 120ms ease;
   }
   .node:hover .dot,

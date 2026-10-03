@@ -27,6 +27,7 @@
     atlasEdges,
     atlasRelatedIds,
     frameAll,
+    atlasDistrictShapes,
     layoutAtlas,
     type AtlasView as AtlasViewBox,
   } from "./atlas-layout.js";
@@ -141,7 +142,8 @@
 
   function frame(): void {
     measure();
-    view = frameAll(layout.placed, size.width, size.height);
+    // OWNER-R4: frame the shaded sections, not just the dots, so no section is cut off.
+    view = frameAll([...layout.placed, ...atlasDistrictShapes(layout.placed, layout.regions)], size.width, size.height);
   }
 
   // Company switch: show that company's cache immediately, refresh behind it.

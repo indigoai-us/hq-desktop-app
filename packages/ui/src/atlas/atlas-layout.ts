@@ -39,9 +39,86 @@ export function atlasHash(s: string): number {
   return (h >>> 0) / 4294967296;
 }
 
-/** Circle radius grows with story count, else file count. */
-export function atlasRadius(n: Pick<AtlasNode, "count" | "stories">): number {
-  return 4 + Math.sqrt(objectSize(n)) * 3.2;
+/**
+ * OWNER-R4: the web Atlas type colours (hq-console atlas-canvas.tsx). Each
+ * section is tinted with its type colour and its dots use it too; no outline.
+ */
+export const ATLAS_TYPE_COLOR: Record<AtlasDistrictType, string> = {
+  project: "#c8d0dc",
+  knowledge: "#9db8a6",
+  policy: "#c9b49a",
+  repo: "#b7c0cc",
+  worker: "#a8acc0",
+  skill: "#c4b4ae",
+};
+
+/**
+ * Section tints. The web colours above are near-greys (project and repo share
+ * one hue), so on their own six sections read as one grey. These keep each
+ * web colour's family at a stronger chroma, move repo to teal and worker to
+ * olive so all six differ, and stay out of purple.
+ */
+export const ATLAS_TYPE_TINT: Record<AtlasDistrictType, string> = {
+  project: "#7f9cc4",
+  knowledge: "#6fae84",
+  policy: "#c79a5f",
+  repo: "#6fb0b4",
+  worker: "#aaa45c",
+  skill: "#c98a72",
+};
+
+/** Web per-type dot multipliers (hq-console company-atlas-layout.ts ATLAS_TUNE). */
+const ATLAS_TYPE_DOTS: Record<AtlasDistrictType, number> = {
+  project: 4.8,
+  knowledge: 3.45,
+  policy: 7.05,
+  repo: 4.2,
+  worker: 9.3,
+  skill: 8.55,
+};
+
+/** The web lays the ring out at orbit 4000; this map uses ATLAS_ORBIT. */
+const WEB_SCALE = ATLAS_ORBIT / 4000;
+
+/**
+ * Dot radius with the web size scale: square root of story total, else file
+ * count, times the type's multiplier, scaled to this map. Most objects are
+ * small dots; only large projects read as small circles.
+ */
+export function atlasRadius(n: Pick<AtlasNode, "count" | "stories"> & { type?: AtlasDistrictType }): number {
+  const dots = ATLAS_TYPE_DOTS[n.type ?? "project"];
+  return Math.max(1.5, (0.2 + Math.sqrt(objectSize(n) + 1) * 0.45 * 10 * dots) * WEB_SCALE);
+}
+
+/** Push apart dots of one section that overlap, keeping the hash layout's shape. */
+function relaxSection(items: { x: number; y: number; r: number }[], gap = 7, rounds = 24): void {
+  for (let round = 0; round < rounds; round++) {
+    let moved = false;
+    for (let i = 0; i < items.length; i++) {
+      for (let j = i + 1; j < items.length; j++) {
+        const a = items[i]!;
+        const b = items[j]!;
+        let dx = b.x - a.x;
+        let dy = b.y - a.y;
+        let d = Math.hypot(dx, dy);
+        const min = a.r + b.r + gap + 0.01;
+        if (d >= min) continue;
+        if (d < 1e-6) {
+          // Same spot: split along a fixed direction so the result stays deterministic.
+          dx = 1;
+          dy = 0;
+          d = 1;
+        }
+        const push = (min - d) / 2;
+        a.x -= (dx / d) * push;
+        a.y -= (dy / d) * push;
+        b.x += (dx / d) * push;
+        b.y += (dy / d) * push;
+        moved = true;
+      }
+    }
+    if (!moved) return;
+  }
 }
 
 export function layoutAtlas(nodes: AtlasNode[]): {
@@ -60,19 +137,50 @@ export function layoutAtlas(nodes: AtlasNode[]): {
   });
   const siblings = new Map<AtlasDistrictType, number>();
   for (const n of roots) siblings.set(n.type, (siblings.get(n.type) ?? 0) + 1);
-  const placed = roots.map((n) => {
-    const region = regions.find((r) => r.type === n.type) as AtlasRegion;
-    const pack = 22 + 16 * Math.sqrt(siblings.get(n.type) ?? 1);
+  // Offsets from the section centre: the web hash scatter and pack size,
+  // scaled to this map, then relaxed so no two dots overlap.
+  const offsets = roots.map((n) => {
+    const pack = (16 + 13 * Math.sqrt(siblings.get(n.type) ?? 1)) * 7.65 * WEB_SCALE;
     const rad = Math.sqrt(atlasHash(n.id)) * pack;
     const ang = atlasHash(`${n.id}b`) * Math.PI * 2;
-    return {
-      ...n,
-      x: region.x + Math.cos(ang) * rad,
-      y: region.y + Math.sin(ang) * rad,
-      r: atlasRadius(n),
-    };
+    return { n, x: Math.cos(ang) * rad, y: Math.sin(ang) * rad, r: atlasRadius(n) };
   });
-  return { placed, regions };
+  const reach = new Map<AtlasDistrictType, number>();
+  for (const type of ATLAS_RING_ORDER) {
+    const members = offsets.filter((o) => o.n.type === type);
+    relaxSection(members);
+    if (members.length) {
+      reach.set(type, Math.max(40, Math.max(...members.map((o) => Math.hypot(o.x, o.y) + o.r)) + DISTRICT_PAD));
+    }
+  }
+  // OWNER-R4: sections never overlap. Widen the ring until every pair of
+  // shaded sections keeps a gap; small maps keep the web orbit.
+  let scale = 1;
+  const centre = (region: AtlasRegion) => ({ x: region.x * scale, y: region.y * scale });
+  for (let tries = 0; tries < 60; tries++) {
+    let clash = false;
+    for (let i = 0; i < regions.length && !clash; i++) {
+      for (let j = i + 1; j < regions.length; j++) {
+        const ra = reach.get(regions[i]!.type);
+        const rb = reach.get(regions[j]!.type);
+        if (ra === undefined || rb === undefined) continue;
+        const a = centre(regions[i]!);
+        const b = centre(regions[j]!);
+        if (Math.hypot(a.x - b.x, a.y - b.y) < ra + rb + SECTION_GAP) {
+          clash = true;
+          break;
+        }
+      }
+    }
+    if (!clash) break;
+    scale *= 1.08;
+  }
+  const scaled = regions.map((region) => ({ ...region, ...centre(region) }));
+  const placed = offsets.map(({ n, x, y, r }) => {
+    const region = scaled.find((g) => g.type === n.type) as AtlasRegion;
+    return { ...n, x: region.x + x, y: region.y + y, r };
+  });
+  return { placed, regions: scaled };
 }
 
 /** Graph edges plus `contains` edges from parentId. */
@@ -115,6 +223,8 @@ export function atlasVisibleEdges(
 export type AtlasDistrictShape = AtlasRegion & { r: number };
 
 const DISTRICT_PAD = 18;
+/** Space kept between two shaded sections. */
+const SECTION_GAP = 24;
 
 /**
  * OWNER-D 7: the shaded area behind each section that has objects. Like the
