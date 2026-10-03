@@ -214,21 +214,37 @@ pub fn managed_npm_prefix_in(root: &Path) -> PathBuf {
 }
 
 /// Managed Windows directories which must lead the settings PATH for the
-/// desktop's own resolver and child processes. Keep this order aligned with
-/// `extended_search_dirs_raw`: `node` supplies the runtime for the `.cmd` shim,
-/// followed by npm's flat global prefix and the remaining managed tools.
+/// desktop's own resolver and child processes. Put npm's flat global prefix
+/// before `node` so its `hq.cmd` wins over a stale shim in the Node directory;
+/// `node` remains next so the selected shim can find its runtime.
 pub fn managed_windows_path_dirs_for_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
     let mut dirs = Vec::with_capacity(roots.len() * 5);
     for root in roots {
-        dirs.push(managed_node_dir_in(root));
         // This function models the Windows layout independent of the host
         // running its tests; `managed_npm_prefix_in` follows host cfgs.
         dirs.push(root.join("npm-prefix"));
+        dirs.push(managed_node_dir_in(root));
         dirs.push(root.join("bin"));
         dirs.push(root.join("git").join("cmd"));
         dirs.push(root.join("git").join("mingw64").join("bin"));
     }
     dirs
+}
+
+/// Whether the settings-PATH repair has the platform-specific inputs it needs.
+/// Windows writes use LOCALAPPDATA-derived managed roots and the HQ folder;
+/// unlike Unix they do not consume the user's home or login-shell PATH.
+pub fn settings_path_repair_environment_available(
+    is_windows: bool,
+    home_available: bool,
+    hq_root_available: bool,
+    managed_roots_available: bool,
+) -> bool {
+    if is_windows {
+        hq_root_available && managed_roots_available
+    } else {
+        home_available
+    }
 }
 
 /// Compose Windows Claude `env.PATH` with HQ-managed tool directories first.
@@ -2776,9 +2792,9 @@ mod tests {
         assert_eq!(
             composed,
             concat!(
-                r"C:\ProgramData\IndigoHQ\toolchain\node",
-                ";",
                 r"C:\ProgramData\IndigoHQ\toolchain\npm-prefix",
+                ";",
+                r"C:\ProgramData\IndigoHQ\toolchain\node",
                 ";",
                 r"C:\ProgramData\IndigoHQ\toolchain\bin",
                 ";",
@@ -2797,6 +2813,31 @@ mod tests {
         assert_eq!(composed.matches(r"C:\UserCli\npm").count(), 2);
         assert!(composed.contains(r"C:\UserCli\npm"));
         assert!(composed.contains(r"C:\Program Files\PowerShell\7"));
+    }
+
+    #[test]
+    fn windows_settings_path_puts_npm_prefix_before_node() {
+        let root = PathBuf::from(r"C:\ProgramData\IndigoHQ\toolchain");
+        let dirs = managed_windows_path_dirs_for_roots(&[root.clone()]);
+
+        assert_eq!(dirs[0], root.join("npm-prefix"));
+        assert_eq!(dirs[1], root.join("node"));
+    }
+
+    #[test]
+    fn windows_settings_path_repair_does_not_require_home() {
+        // Windows' writer ignores home and login_path. With LOCALAPPDATA-backed
+        // roots and an HQ folder available, the repair should still run when
+        // HOME and profile fallback variables are absent.
+        assert!(settings_path_repair_environment_available(
+            true, false, true, true
+        ));
+        assert!(!settings_path_repair_environment_available(
+            true, false, true, false
+        ));
+        assert!(!settings_path_repair_environment_available(
+            true, false, false, true
+        ));
     }
 
     #[test]

@@ -3718,7 +3718,17 @@ async fn settings_path_repair_and_refinalize(
     );
     let hq_root = paths::resolved_hq_folder();
     let wrote = if gate == SettingsPathRepairGate::Attempt {
-        if let Some(home) = paths::home_dir() {
+        let home = paths::home_dir();
+        let managed_roots_available = !paths::managed_toolchain_roots().is_empty();
+        if paths::settings_path_repair_environment_available(
+            cfg!(windows),
+            home.is_some(),
+            hq_root.is_dir(),
+            managed_roots_available,
+        ) {
+            // Windows' writer ignores home and login_path. Supply an empty
+            // placeholder when that platform has no home/profile variables.
+            let home = home.unwrap_or_default();
             let hq_root = hq_root.clone();
             #[cfg(not(windows))]
             let login_path = crate::commands::install_deps::shell_login_path().to_string();
