@@ -3595,6 +3595,8 @@ mod codex_telemetry_tests {
         let home = setup_home();
         write_menubar(home.path(), r#"{"machineId":"mid-desktop-on"}"#);
         std::env::set_var("HOME", home.path());
+        let install_attempt_id = crate::commands::first_run::install_attempt_id()
+            .expect("the persisted install attempt id is available");
 
         let vault = VaultClient::new(server.uri(), "test-jwt");
         let result = emit_desktop_operational_telemetry_with_vault(
@@ -3635,6 +3637,7 @@ mod codex_telemetry_tests {
         assert_eq!(event["schemaVersion"], 1);
         assert_eq!(event["occurredAt"], "2026-08-31T10:00:00.000Z");
         assert_eq!(event["sessionId"], "11111111-1111-4111-8111-111111111111");
+        assert_eq!(event["installAttemptId"], install_attempt_id);
 
         let allowed_event_keys = [
             "eventName",
@@ -3645,6 +3648,7 @@ mod codex_telemetry_tests {
             "schemaVersion",
             "idempotencyKey",
             "sessionId",
+            "installAttemptId",
             "properties",
         ];
         let event_keys = event.as_object().unwrap();
