@@ -44,10 +44,10 @@ describe("live project hq-pro transport", () => {
     const fetchImpl = vi.fn(async () => json({ ok: true }));
     await expect(addLiveProjectMember("cmp_work", "project/a", "prs_member", fetchImpl)).resolves.toBe("added");
     expect(fetchImpl).toHaveBeenCalledWith(
-      "/v1/work-mesh/projects/project%2Fa/members",
+      "/v1/work-mesh/projects/project%2Fa",
       expect.objectContaining({
-        method: "POST",
-        body: JSON.stringify({ companyUid: "cmp_work", personUid: "prs_member" }),
+        method: "PUT",
+        body: JSON.stringify({ operation: "add-member", companyUid: "cmp_work", personUid: "prs_member" }),
       }),
     );
   });
