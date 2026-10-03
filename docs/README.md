@@ -11,6 +11,9 @@ Current operational docs:
 
 - [`RELEASE.md`](RELEASE.md) — the unified, channel-isolated, atomic release
   workflow.
+- [`LOCAL-BUILD-AND-TEST.md`](LOCAL-BUILD-AND-TEST.md) — build a branch as a
+  private side-by-side bundle, install and verify it, reset to a fresh user, and
+  do the same inside a throwaway macOS VM.
 - [`hq-work-handoff-qa.md`](hq-work-handoff-qa.md) — HQ Work handoff smoke
   checklist (canonical: [`apps/sync/docs/hq-work-handoff-qa.md`](../apps/sync/docs/hq-work-handoff-qa.md)).
 - [`rich-agent-messages.md`](rich-agent-messages.md) — the structured-content
