@@ -4312,6 +4312,134 @@ fn npm_path_shape(detail: &str, prefix: Option<&str>) -> NpmPathShape {
     }
 }
 
+/// Select a bounded set of regular files for a Windows Restart Manager query.
+/// `is_file` is supplied by the filesystem caller so selection stays pure and testable.
+pub fn select_rm_file_resources(
+    candidates: impl IntoIterator<Item = (std::path::PathBuf, bool)>,
+) -> Vec<std::path::PathBuf> {
+    candidates
+        .into_iter()
+        .filter_map(|(path, is_file)| is_file.then_some(path))
+        .take(32)
+        .collect()
+}
+
+/// Extract npm's reported rename resources and their in-prefix parents for a
+/// Windows Restart Manager query. Returned paths stay in process memory and
+/// must never cross the telemetry boundary.
+pub fn npm_reported_target_resources(prefix: &str, npm_detail: &str) -> Vec<std::path::PathBuf> {
+    fn normalized(value: &str) -> String {
+        value
+            .trim()
+            .trim_matches(|character| character == '\'' || character == '"')
+            .replace('/', "\\")
+            .to_ascii_lowercase()
+    }
+
+    let prefix_text = normalized(prefix).trim_end_matches('\\').to_string();
+    let mut resources = Vec::new();
+    for line in npm_detail.lines() {
+        let Some(path) = line
+            .strip_prefix("npm error path ")
+            .or_else(|| line.strip_prefix("npm error dest "))
+        else {
+            continue;
+        };
+        let path_text = normalized(path);
+        if path_text.contains("\\..\\")
+            || path_text.ends_with("\\..")
+            || path_text.contains("\\.\\")
+            || (path_text != prefix_text && !path_text.starts_with(&format!("{prefix_text}\\")))
+        {
+            continue;
+        }
+        let mut current = path
+            .trim()
+            .trim_matches(|character| character == '\'' || character == '"')
+            .to_string();
+        loop {
+            if resources.len() >= 32 {
+                break;
+            }
+            resources.push(std::path::PathBuf::from(&current));
+            let Some((parent, _)) = current.rsplit_once('\\') else {
+                break;
+            };
+            let parent_text = normalized(parent);
+            if parent_text == prefix_text {
+                resources.push(std::path::PathBuf::from(parent));
+                break;
+            }
+            if !parent_text.starts_with(&format!("{prefix_text}\\")) {
+                break;
+            }
+            current = parent.to_string();
+        }
+    }
+    resources.sort();
+    resources.dedup();
+    resources
+}
+
+#[cfg(test)]
+mod npm_reported_target_resources_tests {
+    use super::npm_reported_target_resources;
+
+    #[test]
+    fn rm_resource_selection_excludes_directories() {
+        let candidates = [
+            (std::path::PathBuf::from(r"C:\npm\target"), false),
+            (std::path::PathBuf::from(r"C:\npm\target\file.js"), true),
+        ];
+        let selected = super::select_rm_file_resources(candidates);
+
+        assert_eq!(selected, [std::path::PathBuf::from(r"C:\npm\target\file.js")]);
+    }
+
+    #[test]
+    fn rm_resource_selection_caps_registered_files_at_32() {
+        let candidates = (0..40).map(|index| {
+            (
+                std::path::PathBuf::from(format!(r"C:\npm\node_modules\pkg\file-{index}.js")),
+                true,
+            )
+        });
+        let selected = super::select_rm_file_resources(candidates);
+
+        assert_eq!(selected.len(), 32);
+    }
+
+    #[test]
+    fn busy_query_registers_npm_rename_targets_and_each_parent_inside_the_prefix() {
+        let resources = npm_reported_target_resources(
+            r"C:\npm",
+            concat!(
+                "npm error path C:\\npm\\node_modules\\@indigoai-us\\hq-cli\n",
+                "npm error dest C:\\npm\\node_modules\\@indigoai-us\\.hq-cli-X\n",
+                "npm error path C:\\private\\outside.exe\n",
+                "npm error dest C:\\npm\\..\\private\\outside.exe\n",
+            ),
+        );
+        let path_strings = resources
+            .iter()
+            .map(|path| path.to_string_lossy().to_ascii_lowercase())
+            .collect::<Vec<_>>();
+        for expected in [
+            r"c:\npm\node_modules\@indigoai-us\hq-cli",
+            r"c:\npm\node_modules\@indigoai-us",
+            r"c:\npm\node_modules",
+            r"c:\npm",
+            r"c:\npm\node_modules\@indigoai-us\.hq-cli-x",
+        ] {
+            assert!(
+                path_strings.iter().any(|path| path == expected),
+                "{expected}"
+            );
+        }
+        assert!(!path_strings.iter().any(|path| path.contains("private")));
+    }
+}
+
 /// The `@indigoai-us/hq-cli` shim a bin-collision or prefix-permission event
 /// names, reduced to a CLOSED enumeration: one of [`HQ_CLI_BIN_NAMES`] when the
 /// reported path's basename is that shim (with or without a Windows `.cmd` /
@@ -5293,6 +5421,7 @@ pub struct RestartManagerHolderClassification {
     pub class: NpmLockHolderClass,
     pub count: u16,
     owned_processes: Vec<RestartManagerProcessIdentity>,
+    image_basename: Option<String>,
 }
 
 impl RestartManagerHolderClassification {
@@ -5304,6 +5433,10 @@ impl RestartManagerHolderClassification {
         self.owned_processes.iter().any(|identity| {
             identity.process_id == process_id && identity.process_start_time == process_start_time
         })
+    }
+
+    pub fn image_basename(&self) -> Option<&str> {
+        self.image_basename.as_deref()
     }
 }
 
@@ -5369,6 +5502,7 @@ pub fn classify_restart_manager_holders(
     let mut identities = Vec::new();
     let mut owned_processes = Vec::new();
     let mut selected = NpmLockHolderClass::None;
+    let mut selected_image_basename: Option<String> = None;
     for result in results {
         if result.process_id == 0 {
             continue;
@@ -5396,13 +5530,45 @@ pub fn classify_restart_manager_holders(
         };
         if priority(class) > priority(selected) {
             selected = class;
+            selected_image_basename = result
+                .image_name
+                .as_deref()
+                .and_then(telemetry_image_basename);
+        } else if class == selected {
+            if let Some(image_basename) = result
+                .image_name
+                .as_deref()
+                .and_then(telemetry_image_basename)
+            {
+                if selected_image_basename
+                    .as_ref()
+                    .is_none_or(|current| image_basename < *current)
+                {
+                    selected_image_basename = Some(image_basename);
+                }
+            }
         }
     }
     RestartManagerHolderClassification {
         class: selected,
         count: identities.len().min(u16::MAX as usize) as u16,
         owned_processes,
+        image_basename: selected_image_basename,
     }
+}
+
+fn telemetry_image_basename(value: &str) -> Option<String> {
+    if value.is_empty()
+        || value.len() > 96
+        || value.contains('/')
+        || value.contains('\\')
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return None;
+    }
+    Some(value.to_string())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -5430,6 +5596,7 @@ pub struct RestartManagerHolderObservation {
     pub count: u16,
     pub query_outcome: NpmLockHolderQueryOutcome,
     owned_processes: Vec<RestartManagerProcessIdentity>,
+    image_basename: Option<String>,
 }
 
 impl RestartManagerHolderObservation {
@@ -5460,6 +5627,11 @@ impl RestartManagerHolderObservation {
                 .unwrap_or(classification.count),
             query_outcome,
             owned_processes: classification.owned_processes,
+            image_basename: if query_outcome == NpmLockHolderQueryOutcome::Complete {
+                classification.image_basename
+            } else {
+                None
+            },
         }
     }
 
@@ -5468,6 +5640,7 @@ impl RestartManagerHolderObservation {
             class: self.class,
             count: self.count,
             query_outcome: self.query_outcome,
+            image_basename: self.image_basename.clone(),
         }
     }
 
@@ -5482,13 +5655,14 @@ impl RestartManagerHolderObservation {
     }
 }
 
-/// Telemetry-safe holder summary. This type deliberately has no PID or name
-/// fields; only its closed values may cross the reporting boundary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Telemetry-safe holder summary. It carries no PID or path; the only process
+/// identifier is a validated basename with a bounded ASCII vocabulary.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct NpmLockHolderDiagnostic {
     pub class: NpmLockHolderClass,
     pub count: u16,
     pub query_outcome: NpmLockHolderQueryOutcome,
+    pub image_basename: Option<String>,
 }
 
 pub const WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES: usize = 3;
@@ -6687,6 +6861,7 @@ mod windows_busy_deferral_tests {
             class: NpmLockHolderClass::None,
             count: 0,
             query_outcome: NpmLockHolderQueryOutcome::Complete,
+            image_basename: None,
         }
     }
 
@@ -6838,12 +7013,14 @@ mod windows_busy_deferral_tests {
             class: NpmLockHolderClass::DefenderOrIndexer,
             count: 1,
             query_outcome: NpmLockHolderQueryOutcome::Complete,
+            image_basename: Some("MsMpEng.exe".into()),
         };
-        assert_eq!(decide(true, real_holder, None), None);
+        assert_eq!(decide(true, real_holder.clone(), None), None);
         let incomplete_query = NpmLockHolderDiagnostic {
             class: NpmLockHolderClass::None,
             count: 0,
             query_outcome: NpmLockHolderQueryOutcome::Unavailable,
+            image_basename: None,
         };
         assert_eq!(decide(true, incomplete_query, None), None);
         assert!(install_failure_report(Some(-4082), DETAIL, Some(PREFIX)).is_some());
@@ -6919,6 +7096,34 @@ mod windows_busy_deferral_tests {
         assert_eq!(event.message.as_deref(), Some(expected.as_str()));
         assert_eq!(event.tags["npm_windows_busy_deferral_attempts"], "3");
         assert_eq!(event.tags["npm_windows_busy_deferral_outcome"], "exhausted");
+    }
+
+    #[test]
+    fn running_cli_version_tag_is_bounded_semver_or_unknown_and_path_free() {
+        let events = sentry::test::with_captured_events(|| {
+            let path_value = InstallEnvironment::default()
+                .with_running_cli_version(Some(r"C:\Users\Alice\hq-cli\5.210.0"));
+            report_install_failure_with_environment(
+                Some(-4082),
+                DETAIL,
+                Some(PREFIX),
+                false,
+                &path_value,
+            );
+            let semver_value = InstallEnvironment::default()
+                .with_running_cli_version(Some("5.211.0-beta.1"));
+            report_install_failure_with_environment(
+                Some(-4082),
+                DETAIL,
+                Some(PREFIX),
+                false,
+                &semver_value,
+            );
+        });
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].tags["hq_cli_running_version"], "unknown");
+        assert_eq!(events[1].tags["hq_cli_running_version"], "5.211.0-beta.1");
+        assert!(!events[0].tags["hq_cli_running_version"].contains("Users"));
     }
 
     #[test]
@@ -7053,6 +7258,7 @@ mod restart_manager_holder_tests {
         let classification = classify_restart_manager_holders(&[duplicate.clone(), duplicate]);
         assert_eq!(classification.class, NpmLockHolderClass::UserTerminalHqCli);
         assert_eq!(classification.count, 1);
+        assert_eq!(classification.image_basename(), Some("node.exe"));
         let mut windows_search = result(7, "Windows Search", Some("svchost.exe"), false, None);
         windows_search.service_short_name = "WSearch".to_string();
         assert_eq!(
@@ -7063,6 +7269,36 @@ mod restart_manager_holder_tests {
             classify_restart_manager_holders(&[]).class,
             NpmLockHolderClass::None
         );
+    }
+
+    #[test]
+    fn holder_telemetry_has_only_a_safe_basename_and_never_a_path_or_message() {
+        let safe = RestartManagerHolderObservation::from_results(
+            &[result(9, "untrusted message", Some("node.exe"), true, None)],
+            NpmLockHolderQueryOutcome::Complete,
+        )
+        .diagnostic();
+        assert_eq!(safe.class, NpmLockHolderClass::UserTerminalHqCli);
+        let safe_output = format!("{safe:?}");
+        assert!(safe_output.contains("image_basename: Some(\"node.exe\")"));
+
+        let path_shaped = RestartManagerHolderObservation::from_results(
+            &[result(
+                10,
+                "untrusted message",
+                Some(r"C:\Users\private\node.exe"),
+                true,
+                None,
+            )],
+            NpmLockHolderQueryOutcome::Complete,
+        )
+        .diagnostic();
+        let path_shaped_output = format!("{path_shaped:?}");
+        assert!(path_shaped_output.contains("image_basename: None"));
+        assert!(!format!("{safe_output} {path_shaped_output}").contains("untrusted message"));
+        let serialized = format!("{safe_output} {path_shaped_output}");
+        assert!(!serialized.contains('/'));
+        assert!(!serialized.contains('\\'));
     }
 
     #[test]
@@ -7182,6 +7418,7 @@ mod deferred_user_cli_report_tests {
                 class: NpmLockHolderClass::UserTerminalHqCli,
                 count: 1,
                 query_outcome: NpmLockHolderQueryOutcome::Complete,
+                image_basename: Some("node.exe".into()),
             }),
             ..InstallEnvironment::default()
         };
@@ -7367,6 +7604,10 @@ pub struct InstallEnvironment {
     /// publishes most days and would make grouping unbounded. Defaults to `None`,
     /// emitted as NO tag, so every existing caller reproduces today's exact tag set.
     pub target_version: Option<String>,
+    /// The CLI version resolved when the updater observed failure. Tag-only,
+    /// never a grouping component. Opt-in callers with no readable version emit
+    /// `unknown`.
+    pub running_cli_version: Option<String>,
     /// Whether the failing install pinned an exact version or asked for the `latest`
     /// dist-tag. TAG ONLY, defaulting to [`RequestedSpecKind::Unknown`] (emitted as
     /// NO tag), so every existing caller's tag set is unchanged until it opts in.
@@ -7401,6 +7642,13 @@ impl InstallEnvironment {
     pub fn with_pinned_target_version(mut self, version: &str) -> Self {
         self.target_version = Some(version.to_string());
         self.requested_spec_kind = RequestedSpecKind::PinnedVersion;
+        self
+    }
+
+    /// Attach the CLI version that was running when the updater observed failure.
+    /// The report boundary reduces it to a bounded SemVer token or `unknown`.
+    pub fn with_running_cli_version(mut self, version: Option<&str>) -> Self {
+        self.running_cli_version = Some(version.unwrap_or("unknown").to_string());
         self
     }
 }
@@ -7441,12 +7689,7 @@ fn sanitized_target_version_token(raw: Option<&str>) -> String {
         return "unknown".to_string();
     };
     let value = raw.strip_prefix('v').unwrap_or(raw);
-    if (1..=48).contains(&value.len())
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+'))
-        && value.bytes().any(|byte| byte.is_ascii_digit())
-    {
+    if (1..=48).contains(&value.len()) && semver::Version::parse(value).is_ok() {
         value.to_string()
     } else {
         "unknown".to_string()
@@ -7592,6 +7835,10 @@ pub fn report_install_failure_with_environment(
         .target_version
         .as_deref()
         .map(|version| sanitized_target_version_token(Some(version)));
+    let hq_cli_running_version: Option<String> = env
+        .running_cli_version
+        .as_deref()
+        .map(|version| sanitized_target_version_token(Some(version)));
     let requested_spec_kind_tag = if env.requested_spec_kind != RequestedSpecKind::Unknown {
         Some(env.requested_spec_kind.tag_value())
     } else {
@@ -7664,7 +7911,7 @@ pub fn report_install_failure_with_environment(
             env.windows_busy_retry_outcome,
             WindowsBusyRetryOutcome::NotArmed | WindowsBusyRetryOutcome::Failed
         ) {
-            let diagnostic = env.lock_holder_diagnostic.unwrap_or_default();
+            let diagnostic = env.lock_holder_diagnostic.clone().unwrap_or_default();
             npm_diagnostics.push_str(&format!(
                 " lock_holder_class={} lock_holder_count={} lock_holder_query_outcome={}",
                 diagnostic.class.tag_value(),
@@ -7756,6 +8003,9 @@ pub fn report_install_failure_with_environment(
             if let Some(target_version) = hq_cli_target_version.as_deref() {
                 scope.set_tag("hq_cli_target_version", target_version);
             }
+            if let Some(running_version) = hq_cli_running_version.as_deref() {
+                scope.set_tag("hq_cli_running_version", running_version);
+            }
             if let Some(spec_kind) = requested_spec_kind_tag {
                 scope.set_tag("npm_requested_spec_kind", spec_kind);
             }
@@ -7779,13 +8029,16 @@ pub fn report_install_failure_with_environment(
                     env.windows_busy_retry_outcome,
                     WindowsBusyRetryOutcome::NotArmed | WindowsBusyRetryOutcome::Failed
                 ) {
-                    let diagnostic = env.lock_holder_diagnostic.unwrap_or_default();
+                    let diagnostic = env.lock_holder_diagnostic.clone().unwrap_or_default();
                     scope.set_tag("npm_lock_holder_class", diagnostic.class.tag_value());
                     scope.set_tag("npm_lock_holder_count", diagnostic.count.to_string());
                     scope.set_tag(
                         "npm_lock_holder_query_outcome",
                         diagnostic.query_outcome.tag_value(),
                     );
+                    if let Some(image_basename) = diagnostic.image_basename.as_deref() {
+                        scope.set_tag("npm_lock_holder_image_basename", image_basename);
+                    }
                 }
                 scope.set_tag("npm_windows_busy_retry_attempts", attempts.to_string());
                 scope.set_tag(
@@ -8354,6 +8607,30 @@ pub fn report_npm_cache_setup_failure(category: &'static str) {
         || {
             sentry::capture_message(
                 "[hq-cli-update] app-owned npm cache could not be prepared",
+                sentry::Level::Error,
+            );
+        },
+    );
+}
+
+/// Report a bounded timeout while waiting for active HQ CLI processes to
+/// release the package-use lease. The fixed message, tag, and fingerprint
+/// intentionally exclude local paths and process details.
+pub fn report_package_use_lease_timeout() {
+    sentry::with_scope(
+        |scope| {
+            scope.set_tag("hq_cli_update_kind", "install-failed");
+            scope.set_tag("install_failure_kind", "package_use_lease_timeout");
+            scope.set_tag("hq_cli_update_stage", "package_use_lease_timeout");
+            scope.set_fingerprint(Some(&[
+                "hq-cli-update",
+                "install-failed",
+                "package_use_lease_timeout",
+            ]));
+        },
+        || {
+            sentry::capture_message(
+                "[hq-cli-update] timed out waiting for active HQ CLI package use",
                 sentry::Level::Error,
             );
         },
@@ -9304,6 +9581,34 @@ mod tests {
         std::fs::write(&npm, "fixture").unwrap();
         let hq = prefix_hq_shim_path(&prefix).to_string_lossy().into_owned();
         (temp, prefix.to_string_lossy().into_owned(), hq)
+    }
+
+    #[test]
+    fn package_use_lease_timeout_report_has_fixed_tag_and_no_paths() {
+        let events = sentry::test::with_captured_events(report_package_use_lease_timeout);
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+        assert_eq!(event.level, sentry::Level::Error);
+        assert_eq!(
+            event.tags["install_failure_kind"],
+            "package_use_lease_timeout"
+        );
+        assert_eq!(
+            event.tags["hq_cli_update_stage"],
+            "package_use_lease_timeout"
+        );
+        let fingerprint: Vec<&str> = event.fingerprint.iter().map(|part| part.as_ref()).collect();
+        assert_eq!(
+            fingerprint,
+            vec![
+                "hq-cli-update",
+                "install-failed",
+                "package_use_lease_timeout"
+            ]
+        );
+        let message = event.message.as_deref().expect("static event message");
+        assert!(!message.contains('/') && !message.contains('\\'));
+        assert!(event.extra.is_empty());
     }
 
     #[test]
@@ -17303,6 +17608,7 @@ mod tests {
             lock_holder_diagnostic: None,
             missing_target_state: MissingTargetState::Unknown,
             target_version: None,
+            running_cli_version: None,
             requested_spec_kind: RequestedSpecKind::Unknown,
             registry_serving_lag_recurred: false,
         };
@@ -18372,6 +18678,13 @@ mod tests {
     fn sanitized_target_version_token_preserves_valid_prereleases_but_rejects_free_text() {
         // A stable version passes through unchanged.
         assert_eq!(sanitized_target_version_token(Some("5.103.27")), "5.103.27");
+        assert_eq!(sanitized_target_version_token(Some("AliceCase123")), "unknown");
+        assert_eq!(sanitized_target_version_token(Some("1.2")), "unknown");
+        assert_eq!(sanitized_target_version_token(Some("5.335.0")), "5.335.0");
+        assert_eq!(
+            sanitized_target_version_token(Some("5.335.0-beta.1")),
+            "5.335.0-beta.1"
+        );
         // Valid SemVer prereleases / build metadata survive (the P2 fix): the
         // digits-and-dots-only sanitizer would have collapsed these to `unknown`.
         assert_eq!(

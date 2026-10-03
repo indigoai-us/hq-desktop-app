@@ -223,6 +223,7 @@ describe("read deadline through the real desktop adapter (BLANK-1)", () => {
   it.each([
     ["secrets", "Could not load secrets.", "get_company_secrets"],
     ["deployments", "Could not load deployments.", "list_deploy_apps"],
+    ["integrations", "Could not load connected apps.", "hq_pro_fetch /v1/integrations/admin?companyUid=cmp_real_integrations"],
   ] as const)(
     "company %s (FilesConnectPage via filesConnectDoor) ends in the failed-read state",
     async (page, copy, command) => {

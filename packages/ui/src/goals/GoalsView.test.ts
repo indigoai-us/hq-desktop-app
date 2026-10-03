@@ -185,7 +185,11 @@ describe("GoalsView", () => {
     });
     flushSync();
     await expect.poll(() => host?.querySelector(".shimmer")).toBeNull();
-    await expect.poll(() => host?.textContent).toContain("Unlinked projects · 1");
+    // OWNER-D 9: Goals shows only goals and their linked projects; the
+    // unlinked list lives on the Projects page filter.
+    for (let i = 0; i < 4; i += 1) await new Promise((r) => setTimeout(r, 0));
+    flushSync();
+    expect(host?.textContent).not.toContain("Unlinked projects");
 
     (host?.querySelector("[data-testid='new-objective']") as HTMLButtonElement).click();
     flushSync();

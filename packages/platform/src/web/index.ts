@@ -919,6 +919,15 @@ export class WebPlatformAdapter implements PlatformAdapter {
           companyId ? `?companyId=${encodeURIComponent(companyId)}` : ""
         }`,
       ),
+    readRecordedBody: async (url) => {
+      try {
+        const res = await fetch(url);
+        if (!res.ok) return failure("network", `meeting notes HTTP ${res.status}`);
+        return ok(await res.text());
+      } catch (err) {
+        return failure("network", err instanceof Error ? err.message : String(err));
+      }
+    },
     inviteBot: (payload) =>
       this.post(
         withCompanyQuery(WEB_PATHS.botInvite, payload),

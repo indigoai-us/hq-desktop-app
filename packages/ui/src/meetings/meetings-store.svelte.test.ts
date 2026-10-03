@@ -64,6 +64,7 @@ function wireApi(
         call("listRecorded", companyId ?? null) as never,
       getRecorded: (meetingId: string, companyId?: string | null) =>
         call("getRecorded", { meetingId, companyId: companyId ?? null }) as never,
+      readRecordedBody: (url: string) => call("readRecordedBody", { url }) as never,
       inviteBot: (payload: Json) => call("inviteBot", payload) as never,
       cancelBot: (id: string) => call("cancelBot", id) as never,
       joinBotNow: (payload: Json) => call("joinBotNow", payload) as never,
@@ -522,6 +523,7 @@ describe("meetings store recording-company attribution", () => {
         listScheduledBots: () => call("listScheduledBots") as never,
         listRecorded: () => Promise.resolve({ ok: true, value: { meetings: [] } }) as never,
         getRecorded: () => Promise.resolve({ ok: true, value: { signals: {} } }) as never,
+        readRecordedBody: () => Promise.resolve({ ok: true, value: "" }) as never,
         inviteBot: (payload: Json) => call("inviteBot", payload) as never,
         cancelBot: (id: string) => call("cancelBot", id) as never,
         joinBotNow: (payload: Json) => call("joinBotNow", payload) as never,

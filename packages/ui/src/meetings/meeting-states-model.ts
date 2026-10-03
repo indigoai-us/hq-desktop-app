@@ -249,7 +249,7 @@ export function relativeUntil(start: Date, now: Date): string {
   return shortDateLabel(start);
 }
 
-export type PastNotesState = "ready" | "preparing" | "loading" | "none";
+export type PastNotesState = "ready" | "preparing" | "loading" | "failed" | "none";
 
 /** Notes usually land this long after a recorded meeting ends. */
 export const NOTES_PREP_WINDOW_MS = 30 * 60_000;
@@ -263,7 +263,7 @@ export const NOTES_PREP_WINDOW_MS = 30 * 60_000;
 export function pastNotesState(
   event: MeetingEvent,
   now: Date,
-  opts: { bot?: ScheduledBot; detailLoading?: boolean } = {},
+  opts: { bot?: ScheduledBot; detailLoading?: boolean; detailFailed?: boolean } = {},
 ): PastNotesState {
   const model = recapModel(event, opts.bot);
   const hasContent =
@@ -273,6 +273,8 @@ export function pastNotesState(
     (event.notes ?? []).some((n) => n.text?.trim());
   if (hasContent) return "ready";
   if (opts.detailLoading) return "loading";
+  // OWNER-019: a read that failed is not "no notes".
+  if (opts.detailFailed) return "failed";
   const bot = opts.bot;
   const recorded = Boolean(event.recorded) || Boolean(bot?.sourceLanded) ||
     (bot ? bot.status === "recording" || bot.status === "processing" || bot.status === "completed" : false);

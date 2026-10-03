@@ -1439,7 +1439,7 @@
     } else {
       console.error("install update failed:", res.message);
       updateResult =
-        res.message === "HQ will restart to update after your recording finishes"
+        res.message?.startsWith("HQ will restart to update after")
           ? res.message
           : "Install failed";
       appUpdateInstalling = false;

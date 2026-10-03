@@ -185,8 +185,9 @@
     border: 1px solid var(--v4-hairline, var(--v4-rowline));
     border-radius: 8px;
     color: var(--v4-text-1);
+    /* QA-105: one position only. A trailing `position: relative` here used to
+       override `absolute`, dropping the sheet to the bottom of the window. */
     overflow: hidden;
-    position: relative;
   }
   .sh, .sf { display: flex; align-items: center; gap: 8px; padding: 12px 16px; }
   .sh { border-bottom: 1px solid var(--v4-hairline, var(--v4-rowline)); font-weight: 600; }

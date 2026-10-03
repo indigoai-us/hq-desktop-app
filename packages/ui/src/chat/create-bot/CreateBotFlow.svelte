@@ -17,7 +17,8 @@
    * is reached, so a company bot is never made under a name nobody has seen.
    */
   import { onMount, untrack } from "svelte";
-  import { hostComputerNoun, primaryEnterKeyHint } from "@hq/platform";
+  import { hostComputerNoun } from "@hq/platform";
+  import { formatShortcut, matchesShortcut } from "../../common/keyboard-shortcuts.js";
   import type {
     AdapterPromise,
     AgentProvisionOptionsView,
@@ -205,7 +206,10 @@
    * "⌘↵" on macOS and "Ctrl+Enter" on Windows / Linux so a person on a PC
    * never sees a Mac key symbol they cannot press.
    */
-  const primaryEnterHint = primaryEnterKeyHint();
+  // OWNER-D 8 (AUDIT-2-15): the app's own chord label, read from the window's
+  // platform, so a Mac shows ⌘↵ even before the Tauri host probe answers.
+  const CREATE_CHORD = "Mod+Enter";
+  const primaryEnterHint = formatShortcut(CREATE_CHORD);
   const companies = $derived(agentTargets ?? []);
   const ownerCompanies = $derived(botCompanies ?? []);
   const canLocal = $derived(!!oncreate);
@@ -515,7 +519,7 @@
   }
 
   function onKey(event: KeyboardEvent): void {
-    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+    if (matchesShortcut(CREATE_CHORD, event)) {
       event.preventDefault();
       event.stopPropagation();
       if (busy) return;
@@ -663,7 +667,7 @@
         {prevStep(step, draft) ? "Back" : "Cancel"}
       </button>
       <span class="flow-issue" data-testid="create-bot-issue" aria-live="polite">{issue ?? ""}</span>
-      <span class="flow-hint" aria-hidden="true">{primaryEnterHint} to create</span>
+      <span class="flow-hint" aria-hidden="true" data-testid="create-bot-hint"><kbd class="chord">{primaryEnterHint}</kbd> to create</span>
       <button
         type="button"
         class="flow-primary"
@@ -833,6 +837,11 @@
   .flow-hint {
     color: var(--t3);
     font-size: 13px;
+  }
+  /* Keyboard chords: 11px mono, as elsewhere in the app. */
+  .chord {
+    font-family: var(--font-mono, "Geist Mono", ui-monospace, Menlo, monospace);
+    font-size: 11px;
   }
   /* Messages sheet primary: --t1 fill on panel ink, 28px, radius 6. */
   .flow-primary {

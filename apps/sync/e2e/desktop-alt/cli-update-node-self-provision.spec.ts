@@ -509,19 +509,33 @@ describe('hq-CLI Windows EBUSY recovery waits for app commands and records the b
     );
     const pnpmAt = installFlow.indexOf('install_hq_cli_update_via_pnpm(&app');
     const pnpmQuiesceAt = installFlow.indexOf('wait_for_cli_install_quiescence(');
-    const npmQuiesceAt = installFlow.indexOf(
-      'wait_for_cli_install_quiescence(',
-      pnpmQuiesceAt + 1,
-    );
     const npmInstallAt = installFlow.indexOf('run_npm_install_with_retries(&npm');
+    // The npm path quiesces inside run_npm_install_with_retries: it takes the
+    // package-use lease and closes app admission before the first npm attempt,
+    // and holds both guards until every retry has finished.
+    const npmRun = cli.slice(
+      cli.indexOf('async fn run_npm_install_with_retries('),
+      cli.indexOf('\n}\n', cli.indexOf('async fn run_npm_install_with_retries(')),
+    );
+    const npmLeaseAt = npmRun.indexOf(
+      'let (_package_use_lease, _process_admission) =\n        acquire_cli_package_update_lease(npm, path, prefix).await?;',
+    );
+    const npmFirstAttemptAt = npmRun.indexOf('run_recorded_npm_install_attempt(');
+    const lease = cli.slice(
+      cli.indexOf('async fn acquire_cli_package_update_lease('),
+      cli.indexOf('async fn run_npm_install_with_retries('),
+    );
     const managedRetryAt = installFlow.indexOf('match managed_toolchain_retry(');
 
     expect(holderRootsAt).toBeGreaterThanOrEqual(0);
     expect(holderRootsAt).toBeLessThan(executorSelectionAt);
     expect(pnpmQuiesceAt).toBeGreaterThanOrEqual(0);
     expect(pnpmAt).toBeGreaterThan(pnpmQuiesceAt);
-    expect(npmQuiesceAt).toBeGreaterThan(pnpmAt);
-    expect(npmInstallAt).toBeGreaterThan(npmQuiesceAt);
+    expect(npmInstallAt).toBeGreaterThan(pnpmAt);
+    expect(npmLeaseAt).toBeGreaterThanOrEqual(0);
+    expect(npmFirstAttemptAt).toBeGreaterThan(npmLeaseAt);
+    expect(lease).toContain('wait_for_cli_install_quiescence(');
+    expect(lease).toContain('Ok((package_guard, process_guard))');
     expect(managedRetryAt).toBeGreaterThan(npmInstallAt);
     expect(installFlow).not.toContain('drop(_cli_process_quiescence)');
     expect(installFlow).toContain('CLI_INSTALL_PROCESS_QUIESCE_TIMEOUT');
@@ -533,7 +547,12 @@ describe('hq-CLI Windows EBUSY recovery waits for app commands and records the b
       processRs.indexOf('pub async fn wait_for_cli_install_quiescence('),
       processRs.indexOf('#[cfg(target_os = "windows")]\nfn windows_process_open_error_means_exited'),
     );
-    expect(quiescence).toContain('UPDATE_QUIESCE_REQUESTED');
+    expect(quiescence).toContain('close_cli_process_admission_for_update()?');
+    const admission = processRs.slice(
+      processRs.indexOf('pub fn close_cli_process_admission_for_update()'),
+      processRs.indexOf('\n}\n', processRs.indexOf('pub fn close_cli_process_admission_for_update()')),
+    );
+    expect(admission).toContain('UPDATE_QUIESCE_REQUESTED');
     expect(quiescence).toContain('UPDATE_SENSITIVE_OPERATIONS');
     expect(quiescence).toContain('.active');
     expect(quiescence).toContain('.keys()');

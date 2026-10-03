@@ -280,7 +280,7 @@ describe("shared update store", () => {
         installPhase: updateStore.installPhase,
         downloadPercent: null,
       }),
-    ).toBe("WILL RESTART AFTER RECORDING");
+    ).toBe("WAITING TO RESTART");
   });
 
   it("hydrates a package downloaded while the surface was closed into Restart to update", async () => {
@@ -602,10 +602,41 @@ describe("shared store keeps pane and popover in lockstep", () => {
       .click();
     await vi.waitFor(() => {
       flushSync();
-      expect(popoverHost.textContent).toContain("WILL RESTART AFTER RECORDING");
-      expect(paneHost.textContent).toContain("WILL RESTART AFTER RECORDING");
+      expect(popoverHost.textContent).toContain("WAITING TO RESTART");
+      expect(paneHost.textContent).toContain("WAITING TO RESTART");
       expect(popoverHost.querySelector('[data-testid="core-popover-restart-update"]')).toBeNull();
       expect(paneHost.querySelector('[data-testid="settings-app-restart"]')).toBeNull();
+    });
+  });
+
+  it("the Settings update row names a Core update hold instead of a recording (#1237)", async () => {
+    const adapter = updatesAdapter({
+      installDownloadedUpdate: vi.fn(async () =>
+        fail("HQ will restart to update after the HQ Core update finishes"),
+      ),
+    });
+    const { paneHost } = mountBoth(adapter);
+    await vi.waitFor(() => {
+      flushSync();
+      expect(paneHost.querySelector('[data-testid="settings-app-download"]')).toBeTruthy();
+    });
+    paneHost
+      .querySelector<HTMLButtonElement>('[data-testid="settings-app-download"]')!
+      .click();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(paneHost.querySelector('[data-testid="settings-app-restart"]')).toBeTruthy();
+    });
+    paneHost
+      .querySelector<HTMLButtonElement>('[data-testid="settings-app-restart"]')!
+      .click();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(paneHost.textContent).toContain("WAITING TO RESTART");
+      expect(
+        paneHost.querySelector('[data-testid="settings-app-deferred-reason"]')?.textContent?.trim(),
+      ).toBe("HQ will restart to update after the HQ Core update finishes");
+      expect(paneHost.textContent).not.toContain("recording");
     });
   });
 
