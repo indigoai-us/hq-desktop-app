@@ -196,7 +196,7 @@ async function createPolar(): Promise<void> {
   await vi.waitFor(() => expect(document.querySelector('[data-testid="chat-new-message"]')).toBeTruthy());
   clickAnywhere('[data-testid="chat-new-message"]');
   await settle(10);
-  clickAnywhere('[data-testid="chat-create-new-bot"]');
+  clickAnywhere('[data-testid="chat-create-menu-agent"]');
   await settle(10);
   clickAnywhere('[data-testid="create-bot-next"]');
   await settle(10);
