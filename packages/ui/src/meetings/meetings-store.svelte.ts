@@ -35,6 +35,11 @@ import {
   isListableMeeting,
 } from "./meetings-model";
 import { takeAgendaWindow } from "./meetings-view-model";
+import {
+  mergeRecordedMeetings,
+  parseRecordedMeetings,
+  type RecordedMeeting,
+} from "./recorded-meetings";
 import type {
   CompanyMembership,
   GoogleAccount,
@@ -186,6 +191,9 @@ let companyNamesByUid = $state<Map<string, string>>(new Map());
 let accountEmailById = $state<Map<string, string>>(new Map());
 let calendarSummaryByKey = $state<Map<string, string>>(new Map());
 let memberships = $state<CompanyMembership[]>([]);
+// Recorded meeting history across every scope the caller can read.
+let recorded = $state<RecordedMeeting[]>([]);
+let recordedError = $state("");
 let membershipsError = $state("");
 let fetchError = $state("");
 let refreshBlocked = $state(false);
@@ -246,6 +254,7 @@ function hydrateFromCache() {
     snapshot.scheduledBots ??
     (snapshot.botsByEventId ?? []).map(([, bot]) => bot);
   companyNamesByUid = new Map(snapshot.companyNamesByUid ?? []);
+  recorded = parseRecordedMeetings(snapshot.recorded ?? []);
   accounts = snapshot.accounts ?? [];
   accountEmailById = new Map(snapshot.accountEmailById ?? []);
   calendarsByAccount = new Map(snapshot.calendarsByAccount ?? []);
@@ -342,7 +351,10 @@ async function refreshOnce(refreshRevision: number, epoch: number): Promise<void
 
     // Calendar fan-out is part of the same snapshot. Holding these values
     // locally prevents a pre-mutation poll from partially repainting the UI.
-    const calendarSnapshot = await loadCalendarsForAccounts(meetings, accts ?? []);
+    const [calendarSnapshot, recordedResult] = await Promise.all([
+      loadCalendarsForAccounts(meetings, accts ?? []),
+      loadRecordedMeetings(meetings, members ?? []),
+    ]);
 
     // A mutation committed while this pass was in flight. Its forced trailing
     // pass owns the next paint; never apply this pre-mutation snapshot.
@@ -377,6 +389,9 @@ async function refreshOnce(refreshRevision: number, epoch: number): Promise<void
     enabledCalIdsByAccount = calendarSnapshot.enabledCalIdsByAccount;
     calendarSummaryByKey = calendarSnapshot.calendarSummaryByKey;
     membershipsError = nextMembershipsError;
+    // A failed history fetch keeps the cached rows instead of blanking them.
+    if (recordedResult.rows) recorded = recordedResult.rows;
+    recordedError = recordedResult.error;
     fetchError = nextFetchError;
     refreshBlocked = nextRefreshBlocked;
     lastRefreshErrorRaw = nextLastRefreshErrorRaw;
@@ -425,6 +440,43 @@ async function reportRefreshProblem(): Promise<ToastDescriptor> {
   }
 }
 
+/**
+ * Recorded history for personal scope: the caller's unattributed meetings
+ * plus every active company's meetings, merged newest first. hq-pro returns
+ * only unattributed rows when no company is passed, so the fan-out is what
+ * makes company meetings appear. Any failed scope is reported; rows from the
+ * scopes that answered still paint, and a total failure returns null so the
+ * caller keeps its cached rows.
+ */
+async function loadRecordedMeetings(
+  meetings: MeetingsApi,
+  members: CompanyMembership[],
+): Promise<{ rows: RecordedMeeting[] | null; error: string }> {
+  const companyIds = Array.from(
+    new Set(
+      members
+        .filter((m) => m.companyUid && (m.status ?? "").toLowerCase() === "active")
+        .map((m) => m.companyUid),
+    ),
+  );
+  const scopes: Array<string | null> = [null, ...companyIds];
+  let failed = 0;
+  const lists = await Promise.all(
+    scopes.map(async (companyId) => {
+      try {
+        return parseRecordedMeetings(unwrap(await meetings.listRecorded(companyId)));
+      } catch (err) {
+        failed += 1;
+        console.error(`meetings listRecorded failed for ${companyId ?? "personal"}:`, err);
+        return [] as RecordedMeeting[];
+      }
+    }),
+  );
+  const error = failed ? "Some past meetings could not load." : "";
+  if (failed === scopes.length) return { rows: null, error };
+  return { rows: mergeRecordedMeetings(lists), error };
+}
+
 async function loadCalendarsForAccounts(
   meetings: MeetingsApi,
   accts: GoogleAccount[],
@@ -470,6 +522,7 @@ function persistSnapshot(): void {
       ([acct, ids]) => [acct, Array.from(ids)],
     ),
     calendarSummaryByKey: Array.from(calendarSummaryByKey.entries()),
+    recorded,
   }, storage);
 }
 
@@ -1115,6 +1168,8 @@ function resetTenantSession(): void {
   calendarSummaryByKey = new Map();
   memberships = [];
   membershipsError = "";
+  recorded = [];
+  recordedError = "";
   fetchError = "";
   refreshBlocked = false;
   refreshFailureCount = 0;
@@ -1181,6 +1236,14 @@ export const meetingsStore = {
   },
   get membershipsError() {
     return membershipsError;
+  },
+  /** Recorded meeting history, newest first, across every readable scope. */
+  get recorded() {
+    return recorded;
+  },
+  /** Plain-language note when some or all history scopes failed. */
+  get recordedError() {
+    return recordedError;
   },
   get fetchError() {
     return fetchError;

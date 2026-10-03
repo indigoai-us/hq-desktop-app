@@ -6,6 +6,7 @@
 <script lang="ts">
   import MeetingsSidepane from "./MeetingsSidepane.svelte";
   import { meetingsStore } from "./meetings-store.svelte";
+  import { withRecordedEvents } from "./recorded-meetings";
   import { meetingsRailState } from "./meetings-rail-state.svelte";
   import { defaultMeetingId, meetingsRailSections } from "./meetings-rail-model";
   import type { SidepaneScrollMemory } from "../shell/sidepane-models.js";
@@ -18,7 +19,12 @@
   let { memory, onnewmeeting }: Props = $props();
 
   // Recomputed when the snapshot changes; the minute clock lives in the store refresh.
-  const events = $derived([...meetingsRailState.localMeetings, ...meetingsStore.events]);
+  const events = $derived(
+    withRecordedEvents(
+      [...meetingsRailState.localMeetings, ...meetingsStore.events],
+      meetingsStore.recorded,
+    ),
+  );
   const sections = $derived(
     meetingsRailSections({
       events,
@@ -40,6 +46,8 @@
   {selectedId}
   filter={meetingsRailState.filter}
   loading={meetingsStore.initialLoadPending}
+  error={meetingsStore.recordedError}
+  onretry={() => void meetingsStore.refresh()}
   {memory}
   onselect={(id) => meetingsRailState.select(id)}
   onfilter={(next) => meetingsRailState.setFilter(next)}

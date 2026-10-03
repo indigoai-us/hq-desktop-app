@@ -9,6 +9,7 @@
   import type { Snippet } from "svelte";
   import MeetingCanvas from "./MeetingCanvas.svelte";
   import { meetingsStore } from "./meetings-store.svelte";
+  import { withRecordedEvents } from "./recorded-meetings";
   import { meetingsRailState } from "./meetings-rail-state.svelte";
   import { defaultMeetingId, meetingsRailSections } from "./meetings-rail-model";
   import { botForEvent } from "./meetings-model";
@@ -33,7 +34,12 @@
     meetingsRailState.select(focusMeetingId);
   });
 
-  const events = $derived([...meetingsRailState.localMeetings, ...meetingsStore.events]);
+  const events = $derived(
+    withRecordedEvents(
+      [...meetingsRailState.localMeetings, ...meetingsStore.events],
+      meetingsStore.recorded,
+    ),
+  );
   const sections = $derived(
     meetingsRailSections({
       events,

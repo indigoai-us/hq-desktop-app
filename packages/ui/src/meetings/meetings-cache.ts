@@ -67,6 +67,8 @@ export interface MeetingsSnapshot<
   enabledCalIdsByAccount: Array<[string, string[]]>;
   /** [calKey, summary] entries — calKey is `${accountId}|${calendarId}`. */
   calendarSummaryByKey: Array<[string, string]>;
+  /** Recorded meeting history rows (already coerced). */
+  recorded?: unknown[];
 }
 
 interface CacheEnvelope<TSnap> {

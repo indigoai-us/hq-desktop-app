@@ -60,6 +60,8 @@ function wireApi(
       listMemberships: () => call("listMemberships") as never,
       listUpcoming: () => call("listUpcoming") as never,
       listScheduledBots: () => call("listScheduledBots") as never,
+      listRecorded: (companyId?: string | null) =>
+        call("listRecorded", companyId ?? null) as never,
       inviteBot: (payload: Json) => call("inviteBot", payload) as never,
       cancelBot: (id: string) => call("cancelBot", id) as never,
       joinBotNow: (payload: Json) => call("joinBotNow", payload) as never,
@@ -516,6 +518,7 @@ describe("meetings store recording-company attribution", () => {
         listMemberships: () => call("listMemberships") as never,
         listUpcoming: () => call("listUpcoming") as never,
         listScheduledBots: () => call("listScheduledBots") as never,
+        listRecorded: () => Promise.resolve({ ok: true, value: { meetings: [] } }) as never,
         inviteBot: (payload: Json) => call("inviteBot", payload) as never,
         cancelBot: (id: string) => call("cancelBot", id) as never,
         joinBotNow: (payload: Json) => call("joinBotNow", payload) as never,
@@ -1332,5 +1335,91 @@ describe("meetings store launch prefetch + first-paint provenance (US-010)", () 
 
     expect(meetingsStore.initialLoadPending).toBe(false);
     expect(meetingsStore.hasLiveSnapshot).toBe(false);
+  });
+});
+
+describe("meetings store recorded history", () => {
+  // Real hq-pro GET /v1/meetings row shape (captured 2026-10-02 via
+  // `hq meetings list --json`): no duration, companyId "unknown" when the
+  // meeting is unattributed, and only attributed rows under ?companyId=.
+  const personalRow = {
+    meetingId: "e07dfd9f-a210-4eff-b881-4e0b9fb72ea1",
+    sourceShape: "markdown",
+    title: "Corey<>Aliyya",
+    startTime: "2026-07-01T12:00:00-06:00",
+    channel: "meeting",
+    ingested_at: "2026-07-01T19:00:00.000Z",
+    hasSignals: false,
+    companyId: "unknown",
+    attributed: false,
+  };
+  const indigoRow = {
+    meetingId: "5b1c2d3e-0000-4000-8000-000000000001",
+    sourceShape: "markdown",
+    title: "Emma Hughes and Jacob Posel",
+    startTime: "2026-10-02T16:00:00-04:00",
+    channel: "meeting",
+    ingested_at: "2026-10-02T21:00:00.000Z",
+    hasSignals: true,
+    companyId: "cmp_indigo",
+    attributed: true,
+  };
+
+  it("fans out across personal and every active company, newest first", async () => {
+    call.mockImplementation((method: string, payload?: unknown) => {
+      if (method === "listMemberships") {
+        return Promise.resolve(
+          ok([
+            { companyUid: "cmp_indigo", companyName: "Indigo", status: "active" },
+            { companyUid: "cmp_gone", companyName: "Gone", status: "revoked" },
+          ]),
+        );
+      }
+      if (method === "listRecorded") {
+        return Promise.resolve(
+          ok({
+            meetings: payload === "cmp_indigo" ? [indigoRow] : [personalRow],
+            nextToken: "x",
+          }),
+        );
+      }
+      return Promise.resolve(ok([]));
+    });
+
+    await meetingsStore.refresh();
+
+    const scopes = call.mock.calls
+      .filter(([m]) => m === "listRecorded")
+      .map(([, p]) => p);
+    expect(scopes).toEqual([null, "cmp_indigo"]);
+    expect(meetingsStore.recorded.map((m) => [m.title, m.companyUid])).toEqual([
+      ["Emma Hughes and Jacob Posel", "cmp_indigo"],
+      ["Corey<>Aliyya", null],
+    ]);
+    expect(meetingsStore.recordedError).toBe("");
+    expect(saveMeetingsCache.mock.calls.at(-1)?.[0].recorded).toHaveLength(2);
+  });
+
+  it("keeps the rows that loaded and says so when one scope fails", async () => {
+    call.mockImplementation((method: string, payload?: unknown) => {
+      if (method === "listMemberships") {
+        return Promise.resolve(
+          ok([{ companyUid: "cmp_indigo", companyName: "Indigo", status: "active" }]),
+        );
+      }
+      if (method === "listRecorded") {
+        return Promise.resolve(
+          payload === "cmp_indigo"
+            ? ok({ meetings: [indigoRow] })
+            : failure("http-500", "meetings HTTP 500"),
+        );
+      }
+      return Promise.resolve(ok([]));
+    });
+
+    await meetingsStore.refresh();
+
+    expect(meetingsStore.recorded.map((m) => m.meetingId)).toEqual([indigoRow.meetingId]);
+    expect(meetingsStore.recordedError).toBe("Some past meetings could not load.");
   });
 });

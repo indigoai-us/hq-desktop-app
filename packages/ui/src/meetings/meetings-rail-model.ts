@@ -18,8 +18,10 @@ import {
   type ScheduledBot,
 } from "./meetings-model";
 
-/** Past rows shown before the "Earlier" affordance. */
+/** Past calendar rows shown before the "Earlier" affordance. */
 export const MEETINGS_PAST_ROW_LIMIT = 8;
+/** Recorded history rows kept in Past (one hq-pro page per scope). */
+export const MEETINGS_RECORDED_ROW_LIMIT = 50;
 
 export type MeetingsSectionId = "live" | "today" | "tomorrow" | "past";
 
@@ -35,6 +37,10 @@ export interface MeetingsRailRow {
   /** Past row with a saved recap (notes mark). */
   hasRecap: boolean;
   hasRecording: boolean;
+  /** Recorded rows: "45m"; null when unknown or not a recording. */
+  duration?: string | null;
+  /** Company name for the row (personal scope lists every company). */
+  companyLabel?: string | null;
 }
 
 export interface MeetingsRailSection {
@@ -146,24 +152,26 @@ export function meetingsRailSections(input: MeetingsRailInput): MeetingsRailSect
   const live: MeetingsRailRow[] = [];
   const todayRows: MeetingsRailRow[] = [];
   const tomorrowRows: MeetingsRailRow[] = [];
-  const past: Array<{ at: number; row: MeetingsRailRow }> = [];
+  const past: Array<{ at: number; row: MeetingsRailRow; recorded: boolean }> = [];
   const upcoming: Array<{ at: number; row: MeetingsRailRow; bucket: MeetingsRailRow[] }> = [];
 
   for (const event of input.events) {
     if (event.status === "cancelled") continue;
-    if (!isListableMeeting(event)) continue;
+    const recordedMeta = event.recorded ?? null;
+    if (!recordedMeta && !isListableMeeting(event)) continue;
     const start = eventStart(event);
     if (!start) continue;
     const end = eventEnd(event) ?? start;
     const bot = botForEvent(event, input.botsByEventId, input.scheduledBots);
     const companyUid = event.sourceCompanyUid ?? null;
     const isLive = isLiveMeeting(event, now, bot);
-    const recap = hasRecap(event, bot);
+    const recap = recordedMeta ? recordedMeta.hasSignals : hasRecap(event, bot);
     const recording = Boolean(bot && isActiveBotStatus(bot.status));
     if (filter.companyUid && companyUid !== filter.companyUid) continue;
     if (filter.liveOnly && !isLive) continue;
     if (filter.hasRecap && !recap) continue;
-    if (filter.hasRecording && !recording && !bot?.sourceLanded) continue;
+    if (filter.hasRecording && !recording && !bot?.sourceLanded && !recordedMeta) continue;
+    const companyLabel = companyUid ? (input.companyNamesByUid.get(companyUid) ?? null) : null;
     const base = {
       id: event.id,
       title: event.summary?.trim() || "Untitled meeting",
@@ -174,7 +182,17 @@ export function meetingsRailSections(input: MeetingsRailInput): MeetingsRailSect
       live: isLive,
       hasRecap: false,
       hasRecording: recording,
+      duration: recordedMeta?.durationLabel ?? null,
+      companyLabel,
     };
+    if (recordedMeta) {
+      past.push({
+        at: start.getTime(),
+        row: { ...base, live: false, time: shortDateLabel(start), hasRecap: recap },
+        recorded: true,
+      });
+      continue;
+    }
     if (isLive) {
       live.push({ ...base, time: elapsedLabel(start, now) });
       continue;
@@ -183,6 +201,7 @@ export function meetingsRailSections(input: MeetingsRailInput): MeetingsRailSect
       past.push({
         at: end.getTime(),
         row: { ...base, time: shortDateLabel(start), hasRecap: recap },
+        recorded: false,
       });
       continue;
     }
@@ -195,6 +214,17 @@ export function meetingsRailSections(input: MeetingsRailInput): MeetingsRailSect
   upcoming.sort((a, b) => a.at - b.at);
   for (const u of upcoming) u.bucket.push(u.row);
   past.sort((a, b) => b.at - a.at);
+  // Calendar past rows stay capped; recorded history is the meeting archive
+  // and keeps up to one server page so older meetings remain reachable.
+  let calendarPast = 0;
+  let recordedPast = 0;
+  const pastRows = past
+    .filter((p) =>
+      p.recorded
+        ? recordedPast++ < MEETINGS_RECORDED_ROW_LIMIT
+        : calendarPast++ < MEETINGS_PAST_ROW_LIMIT,
+    )
+    .map((p) => p.row);
 
   const sections: MeetingsRailSection[] = [];
   if (live.length) sections.push({ id: "live", label: "Live", rows: live });
@@ -202,11 +232,11 @@ export function meetingsRailSections(input: MeetingsRailInput): MeetingsRailSect
     sections.push({ id: "today", label: `Today · ${shortDateLabel(now)}`, rows: todayRows });
   if (tomorrowRows.length)
     sections.push({ id: "tomorrow", label: "Tomorrow", rows: tomorrowRows });
-  if (past.length)
+  if (pastRows.length)
     sections.push({
       id: "past",
       label: "Past",
-      rows: past.slice(0, MEETINGS_PAST_ROW_LIMIT).map((p) => p.row),
+      rows: pastRows,
     });
   return sections;
 }
@@ -226,7 +256,7 @@ export function filterCompanies(
 ): Array<{ uid: string; label: string; mark: string; count: number }> {
   const counts = new Map<string, number>();
   for (const event of events) {
-    if (!isListableMeeting(event)) continue;
+    if (!event.recorded && !isListableMeeting(event)) continue;
     const uid = event.sourceCompanyUid;
     if (uid) counts.set(uid, (counts.get(uid) ?? 0) + 1);
   }

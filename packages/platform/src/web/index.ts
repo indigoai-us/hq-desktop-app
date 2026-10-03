@@ -153,6 +153,8 @@ export const WEB_PATHS = {
     `/v1/google/accounts/${encodeURIComponent(id)}`,
   calendarCalendars: "/v1/calendar/calendars",
   botList: "/v1/bot/list",
+  /** Recorded meeting history (`?companyId=` scopes to one company). */
+  meetingsList: "/v1/meetings",
   botInvite: "/v1/bot/invite",
   botJoinNow: "/v1/bot/join-now",
   botCancel: (id: string) => `/v1/bot/${encodeURIComponent(id)}/cancel`,
@@ -899,6 +901,12 @@ export class WebPlatformAdapter implements PlatformAdapter {
       if (!result.ok) return result;
       return ok(unwrapNamedArray(result.value, ["bots"]));
     },
+    listRecorded: (companyId) =>
+      this.get<Json>(
+        companyId
+          ? `${WEB_PATHS.meetingsList}?companyId=${encodeURIComponent(companyId)}&limit=50`
+          : `${WEB_PATHS.meetingsList}?limit=50`,
+      ),
     inviteBot: (payload) =>
       this.post(
         withCompanyQuery(WEB_PATHS.botInvite, payload),

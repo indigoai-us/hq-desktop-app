@@ -30,6 +30,7 @@ const api = {
   listMemberships: () => call("listMemberships") as never,
   listUpcoming: () => call("listUpcoming") as never,
   listScheduledBots: () => call("listScheduledBots") as never,
+  listRecorded: () => Promise.resolve({ ok: true, value: { meetings: [] } }) as never,
   inviteBot: () => call("inviteBot") as never,
   cancelBot: () => call("cancelBot") as never,
   joinBotNow: () => call("joinBotNow") as never,

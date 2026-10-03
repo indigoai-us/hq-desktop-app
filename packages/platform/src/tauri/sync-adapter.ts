@@ -945,6 +945,14 @@ export function createSyncPlatformAdapter(
       listMemberships: () => call('meetings_list_memberships'),
       listUpcoming: () => call('meetings_list_upcoming'),
       listScheduledBots: () => call('meetings_list_scheduled_bots'),
+      listRecorded: (companyId) =>
+        hqProJson(
+          'GET',
+          withQuery(WEB_PATHS.meetingsList, {
+            companyId: companyId || undefined,
+            limit: 50,
+          }),
+        ),
       fetchLiveTranscript: (req) =>
         call('meetings_fetch_live_transcript', {
           recallBotId: req.recallBotId,

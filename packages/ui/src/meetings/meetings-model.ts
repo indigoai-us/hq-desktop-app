@@ -42,6 +42,8 @@ export interface MeetingEvent {
   organizer?: { email?: string; displayName?: string | null; self?: boolean } | null;
   htmlLink?: string | null;
   conferenceData?: { entryPoints?: Array<{ entryPointType?: string; uri?: string }> } | null;
+  /** Set when the row comes from recorded meeting history, not the calendar. */
+  recorded?: { meetingId: string; durationLabel: string | null; hasSignals: boolean } | null;
 }
 
 export interface MeetingAttendee {

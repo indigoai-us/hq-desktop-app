@@ -881,6 +881,13 @@ export interface MeetingsApi {
   listMemberships(): AdapterPromise<Json[]>;
   listUpcoming(): AdapterPromise<Json[]>;
   listScheduledBots(): AdapterPromise<Json[]>;
+  /**
+   * Recorded meeting history, newest first (`GET /v1/meetings`). Pass a
+   * company uid for that company's meetings; omit it for the caller's
+   * unattributed (personal) meetings. Returns the raw `{ meetings, nextToken }`
+   * envelope; callers coerce rows at their parse boundary.
+   */
+  listRecorded(companyId?: string | null): AdapterPromise<Json>;
   inviteBot(payload: Json): AdapterPromise<Json>;
   cancelBot(id: string): AdapterPromise<void>;
   /** Same payload as inviteBot — hq-pro `POST /v1/bot/join-now`. */

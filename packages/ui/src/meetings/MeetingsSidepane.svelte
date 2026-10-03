@@ -29,6 +29,9 @@
     filter: MeetingsFilter;
     /** True only on a cold start with no cached snapshot. */
     loading?: boolean;
+    /** Plain-language note when past meetings could not load. */
+    error?: string;
+    onretry?: () => void;
     memory?: SidepaneScrollMemory;
     onselect?: (id: string) => void;
     onfilter?: (next: MeetingsFilter) => void;
@@ -43,6 +46,8 @@
     selectedId,
     filter,
     loading = false,
+    error = "",
+    onretry,
     memory,
     onselect,
     onfilter,
@@ -129,11 +134,21 @@
         {:else}<div class="sk-row"><span class="sk" style:width="34px"></span><span class="sk" style:width={`${110 + ((i * 37) % 60)}px`}></span></div>{/if}
       {/each}
     </div>
+  {:else if sections.length === 0 && error}
+    <div class="empty" data-testid="meetings-sidepane-error">
+      <span>Past meetings could not load.</span>
+      <button type="button" class="retry" onclick={() => onretry?.()}>Tap to retry</button>
+    </div>
   {:else if sections.length === 0}
     <div class="empty" data-testid="meetings-sidepane-empty">
-      {activeCount ? "No meetings match these filters." : "No meetings today or tomorrow."}
+      {activeCount ? "No meetings match these filters." : "No meetings yet"}
     </div>
   {:else}
+    {#if error}
+      <button type="button" class="empty retry" data-testid="meetings-sidepane-error" onclick={() => onretry?.()}>
+        Some past meetings could not load. Tap to retry
+      </button>
+    {/if}
     {#each sections as section (section.id)}
       <div class="sec" data-testid="meetings-section" data-section={section.id}>{section.label}</div>
       {#each section.rows as row (row.id)}
@@ -153,13 +168,14 @@
             <span class="time">{row.time}</span>
           {/if}
           <span class="t">{row.title}</span>
-          {#if row.companyMark}<span class="mark" title={row.companyUid ?? undefined} aria-hidden="true">{row.companyMark}</span>{/if}
+          {#if row.companyMark}<span class="mark" title={row.companyLabel ?? row.companyUid ?? undefined} data-testid="meetings-row-company">{row.companyMark}<span class="sr">{row.companyLabel ?? ""}</span></span>{/if}
           {#if row.hasRecap}
             <span class="notes" aria-label="Recap saved" data-testid="meetings-row-recap">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 3h7l5 5v13H7z" /><path d="M14 3v5h5M9 13h6M9 17h6" /></svg>
             </span>
           {/if}
-          {#if row.live}<span class="meta">{row.time}</span>{/if}
+          {#if row.live}<span class="meta">{row.time}</span>
+          {:else if row.duration}<span class="meta" data-testid="meetings-row-duration">{row.duration}</span>{/if}
         </button>
       {/each}
     {/each}
@@ -325,6 +341,24 @@
     padding: 16px 8px;
     color: var(--t2);
     font-size: 13px;
+  }
+
+  .retry {
+    border: 0;
+    background: none;
+    color: var(--t2);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
   }
 
   .popover {
