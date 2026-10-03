@@ -131,6 +131,12 @@
     }
   }
 
+  // AUDIT-3-22: one Try again retries both the tree and the vault home.
+  function retryVault(): void {
+    treeReload += 1;
+    void loadSummary(vault, showSystem);
+  }
+
   $effect(() => {
     const v = vault;
     const sys = showSystem;
@@ -142,6 +148,8 @@
   let tabs = $state<string[]>([]);
   let activeTab = $state(0);
   const activePath = $derived(tabs[activeTab] ?? null);
+  // AUDIT-3-22: the vault home owns the one Try again while it is shown with an error.
+  const homeOwnsRetry = $derived(!activePath && summaryError !== null && !summary && !summaryLoading);
   let content = $state<Record<string, { text?: string; size?: number; truncated?: boolean; error?: string }>>({});
   let treeReload = $state(0);
 
@@ -347,7 +355,7 @@
       </button>
     </div>
     <div class="vx-tree">
-      <VaultTree {vault} {listDir} {activePath} {showSystem} reloadKey={treeReload} onopen={(p, o) => openFile(p, o)} />
+      <VaultTree {vault} {listDir} {activePath} {showSystem} reloadKey={treeReload} onopen={(p, o) => openFile(p, o)} retryHere={!homeOwnsRetry} onretry={retryVault} />
     </div>
     <footer class="vx-side-foot">
       {#if vault.kind === "personal"}
@@ -435,7 +443,7 @@
             {:else if summaryError}
               <div class="vx-load-error" role="alert" data-testid="vault-home-error">
                 <p class="vx-muted">{summaryError}</p>
-                <RailButton icon="refresh" data-testid="vault-home-retry" onclick={() => void loadSummary(vault, showSystem)}>Try again</RailButton>
+                <RailButton icon="refresh" data-testid="vault-home-retry" onclick={retryVault}>Try again</RailButton>
               </div>
             {:else if !vaultApi}
               <p class="vx-muted">Pick a file on the left to start reading.</p>

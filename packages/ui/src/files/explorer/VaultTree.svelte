@@ -22,9 +22,13 @@
     /** Bumped by the parent to force a reload (vault switch, refresh). */
     reloadKey: number;
     onopen: (path: string, opts: { newTab: boolean }) => void;
+    /** AUDIT-3-22: false when the vault home already shows the one Try again. */
+    retryHere?: boolean;
+    /** Retries every vault read, not just the tree. */
+    onretry?: () => void;
   }
 
-  let { vault, listDir, activePath, showSystem, reloadKey, onopen }: Props = $props();
+  let { vault, listDir, activePath, showSystem, reloadKey, onopen, retryHere = true, onretry }: Props = $props();
 
   let children = $state<Record<string, TreeEntry[]>>({});
   let expanded = $state<Record<string, boolean>>({});
@@ -241,7 +245,9 @@
   {#if rootError}
     <div class="vt-note vt-error" role="alert" data-testid="vault-tree-error">
       <p>{rootError}</p>
-      <RailButton icon="refresh" data-testid="vault-tree-retry" onclick={() => { rootError = null; void load(vault.root); }}>Try again</RailButton>
+      {#if retryHere}
+        <RailButton icon="refresh" data-testid="vault-tree-retry" onclick={() => { rootError = null; if (onretry) onretry(); else void load(vault.root); }}>Try again</RailButton>
+      {/if}
     </div>
   {:else if loading[vault.root] && !children[vault.root]}
     <div class="vt-skeleton" aria-hidden="true">
