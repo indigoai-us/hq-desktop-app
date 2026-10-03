@@ -93,6 +93,15 @@ describe("BLANK-1-31 company Activity reads company telemetry", () => {
     expect(target.textContent).toContain("75% attributed");
   });
 
+  it("offers no Live tab and no 'not read yet' line when the read has no live sessions (OWNER-R31)", async () => {
+    const target = mountWith(vi.fn(async () => ok(COMPANY_TELEMETRY)));
+    await settle();
+    const tabs = [...target.querySelectorAll("[aria-label='Activity views'] [role='tab']")].map((b) => b.textContent);
+    expect(tabs).toEqual(["Team", "Tokens"]);
+    expect(target.querySelector("[data-testid='activity-live-unavailable']")).toBeNull();
+    expect(target.textContent).not.toContain("does not read them yet");
+  });
+
   it("shows the shared loader while the first read is in flight", async () => {
     const target = mountWith(() => new Promise(() => {}));
     await settle();

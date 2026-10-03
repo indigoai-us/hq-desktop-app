@@ -48,6 +48,10 @@
   const storage = typeof localStorage === "undefined" ? null : localStorage;
 
   let tab = $state<ActivityTab>("team");
+  // OWNER-R31: Live shows only when the read carries live sessions; this app's
+  // read has none today, so the tab is not offered (and falls back to Team).
+  const hasLive = $derived((snapshot?.live.length ?? 0) > 0);
+  const shownTab = $derived(tab === "live" && !hasLive ? "team" : tab);
   let range = $state<ActivityRange>("30d");
   let snapshot = $state<ActivitySnapshot | null>(null);
   let refreshing = $state(false);
@@ -162,11 +166,11 @@
   <header class="toolbar">
     <h1>Activity</h1>
     <div class="tabs seg" role="tablist" aria-label="Activity views">
-      {#each [["team", "Team"], ["tokens", "Tokens"], ["live", "Live"]] as item (item[0])}
+      {#each [["team", "Team"], ["tokens", "Tokens"], ...(hasLive ? [["live", "Live"]] : [])] as item (item[0])}
         <button
           class="tab"
           role="tab"
-          aria-selected={tab === item[0]}
+          aria-selected={shownTab === item[0]}
           onclick={() => (tab = item[0] as ActivityTab)}
         >{item[1]}</button>
       {/each}
@@ -193,7 +197,7 @@
     <div class="canvas" data-testid="activity-loading" aria-busy="true">
       <ReadLoader testid="activity-loader" onretry={() => (readNonce += 1)} />
     </div>
-  {:else if tab === "team"}
+  {:else if shownTab === "team"}
     <div class="split">
     <div class="canvas">
       <div class="sech">Team · last {range} <span class="grow"></span><span class="plain"><CompanyLabel name={companyLabel} companyUid={slug} /></span></div>
@@ -281,7 +285,7 @@
       </aside>
     {/if}
     </div>
-  {:else if tab === "tokens"}
+  {:else if shownTab === "tokens"}
     <div class="canvas" data-testid="activity-tokens">
       <div class="sech">Tokens by day <span class="grow"></span><span class="plain">weekends dimmed · {bars.length} days</span></div>
       {#if chart}
@@ -312,10 +316,7 @@
   {:else}
     <div class="canvas" data-testid="activity-live">
       <div class="sech">Live now <span class="grow"></span><span class="plain">{snapshot.updatedLabel || "Work Mesh"}</span></div>
-      {#if snapshot.live.length === 0}
-        <!-- OWNER-R7: live presence comes from the work map, which this app does not read; never claim "nobody". -->
-        <p class="empty" data-testid="activity-live-unavailable">Live sessions show in the web console. The desktop app does not read them yet.</p>
-      {:else}
+      {#if snapshot.live.length > 0}
         <table class="tbl">
           <thead><tr><th>Who</th><th>Signal</th><th>Project</th><th class="r">Elapsed</th></tr></thead>
           <tbody>
