@@ -24,9 +24,11 @@ export interface MyTelemetryApi {
   getMyTelemetry?(from: string, to: string): AdapterPromise<Json>;
 }
 
-/** Per-session rows, the company split and bots need endpoints that do not exist yet. */
-export const MISSING_SESSION_ROWS =
-  "Per-session rows, the company split, and bots acting as you need a per-session telemetry endpoint. Totals below are real.";
+/**
+ * OWNER-R18: hq-pro has no per-session route for the caller and the app keeps
+ * no local session list, so the Sessions list says this plainly.
+ */
+export const SESSIONS_UNAVAILABLE = "Session-by-session history is not available yet. Totals above are complete.";
 
 export class TelemetryLoadError extends Error {
   constructor(
@@ -316,7 +318,8 @@ export function snapshotFromMe(body: unknown, range: TelemetryRange): TelemetryS
       none: 0,
       other: Math.max(0, 100 - deployedShare - shippedShare),
     },
-    notice: MISSING_SESSION_ROWS,
+    notice: "",
+    sessionsAvailable: false,
     optedOut: root.optedOut === true,
   };
 }

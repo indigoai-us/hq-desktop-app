@@ -38,6 +38,7 @@
   } from "./telemetry-model.js";
   import ShowMoreRow from "../shell/ShowMoreRow.svelte";
   import { pageRows } from "../shell/list-paging.js";
+  import { SESSIONS_UNAVAILABLE } from "./telemetry-me.js";
 
   interface Props {
     cache: TelemetryCache;
@@ -193,7 +194,7 @@
           onclick={() => (page = item.id)}
         >
           <span>{item.label}</span>
-          {#if item.meta}<span class="meta" data-testid="telemetry-sessions-count">{snapshot ? String(snapshot.sessionsRows.length) : item.meta}</span>{/if}
+          {#if item.meta && snapshot?.sessionsAvailable !== false}<span class="meta" data-testid="telemetry-sessions-count">{snapshot ? String(snapshot.sessionsRows.length) : item.meta}</span>{/if}
         </button>
       {/each}
       <button class="row" onclick={() => void showSkills()}>
@@ -277,7 +278,9 @@
           <div class="stat"><div class="n">{snapshot.storiesShipped}</div><div class="l">stories shipped</div></div>
           <div class="stat"><div class="n">{snapshot.deploys}</div><div class="l">deploys</div></div>
           <div class="stat"><div class="n">{snapshot.distinctSkills}</div><div class="l">distinct skills</div></div>
-          <div class="stat"><div class="n">{snapshot.medianGap}</div><div class="l">median session gap</div></div>
+          {#if snapshot.medianGap !== "—"}
+            <div class="stat"><div class="n">{snapshot.medianGap}</div><div class="l">median session gap</div></div>
+          {/if}
         </div>
         <div>
           <div class="sech">Tokens per day · stacked by model <span class="grow"></span>
@@ -297,6 +300,10 @@
         </div>
         <div class="two">
           <div>
+            {#if snapshot.sessionsAvailable === false}
+            <div class="sech">Sessions</div>
+            <p class="foot" data-testid="telemetry-sessions-unavailable">{SESSIONS_UNAVAILABLE}</p>
+            {:else}
             <div class="sech">Sessions <span class="grow"></span>
               <button class="lnk" onclick={() => (page = "sessions")}>Show all {snapshot.sessionsRows.length}</button>
             </div>
@@ -314,6 +321,7 @@
               {/each}
             </div>
             <p class="foot">Sessions on your laptop, your Outpost, and bots running under your identity. Company admins see totals only, never transcripts.</p>
+            {/if}
           </div>
           <div bind:this={skillsSection} tabindex="-1" data-testid="telemetry-top-skills">
             <div class="sech">Top skills <span class="grow"></span>
@@ -337,6 +345,10 @@
             {/each}
           </div>
         </div>
+      </div>
+    {:else if page === "sessions" && snapshot.sessionsAvailable === false}
+      <div class="canvas">
+        <p class="foot" data-testid="telemetry-sessions-unavailable">{SESSIONS_UNAVAILABLE}</p>
       </div>
     {:else if page === "sessions"}
       <div class="canvas sessions">

@@ -137,6 +137,12 @@ export interface TelemetrySnapshot {
   days: DayStack[];
   dayLabels: string[];
   sessionsRows: TelemetrySession[];
+  /**
+   * OWNER-R18: false when the source has no per-session rows at all (hq-pro
+   * /v1/telemetry/me). The view then says so in one sentence instead of
+   * showing an empty table and a false "0". Absent means rows are real.
+   */
+  sessionsAvailable?: boolean;
   skills: SkillUse[];
   bots: BotActor[];
   models: ModelUsage[];
