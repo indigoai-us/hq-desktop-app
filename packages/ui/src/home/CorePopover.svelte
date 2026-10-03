@@ -347,7 +347,7 @@
       // store (the Updates pane) paints immediately without a CHECKING flash.
       if (adapter.isAvailable("canSelfUpdate")) {
         // A download that finished while the popover was closed paints as
-        // RESTART TO UPDATE immediately.
+        // UPDATE READY immediately.
         void hydrateDownloadedUpdate(orchAdapter()).catch(() => {});
       }
       if (
@@ -729,7 +729,7 @@
             appStatusLabel === "INSTALLING" ||
             appStatusLabel.startsWith("DOWNLOADING")}
           class:drifted={appStatusLabel === "UPDATE AVAILABLE" ||
-            appStatusLabel === "RESTART TO UPDATE" ||
+            appStatusLabel === "UPDATE READY" ||
             appStatusLabel === "CHECK FAILED" ||
             appStatusLabel === "UPDATE FAILED"}
           data-testid={appStatusLabel === "UP TO DATE"

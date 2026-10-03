@@ -104,7 +104,7 @@ describe("update presentation labels", () => {
         installPhase: "ready",
         downloadPercent: 100,
       }),
-    ).toBe("RESTART TO UPDATE");
+    ).toBe("UPDATE READY");
     expect(appRowIdleHint(480)).toBe(
       "Auto-install waits for a sync gap · 8 min left",
     );
@@ -238,7 +238,7 @@ describe("shared update store", () => {
         installPhase: updateStore.installPhase,
         downloadPercent: updateStore.downloadPercent,
       }),
-    ).toBe("RESTART TO UPDATE");
+    ).toBe("UPDATE READY");
     expect(appRowActions({ status: "available", installPhase: "ready" }).showRestart).toBe(
       true,
     );
@@ -320,7 +320,7 @@ describe("shared update store", () => {
         installPhase: updateStore.installPhase,
         downloadPercent: updateStore.downloadPercent,
       }),
-    ).toBe("RESTART TO UPDATE");
+    ).toBe("UPDATE READY");
     expect(updateStore.idleWaitRemainingSecs).toBe(480);
     reportDownloadProgress({ percent: 0 });
     expect(updateStore.installPhase).toBe("ready");
@@ -557,9 +557,16 @@ describe("shared store keeps pane and popover in lockstep", () => {
     await vi.waitFor(() => {
       flushSync();
       expect(popoverHost.textContent).toContain("Restart to update");
-      expect(popoverHost.textContent).toContain("RESTART TO UPDATE");
-      expect(paneHost.textContent).toContain("RESTART TO UPDATE");
+      expect(popoverHost.textContent).toContain("UPDATE READY");
+      expect(paneHost.textContent).toContain("UPDATE READY");
       expect(paneHost.querySelector('[data-testid="settings-app-restart"]')).toBeTruthy();
+      // The status beside the Restart button must not repeat the button's words.
+      const paneStatus = paneHost.querySelector('[data-testid="settings-app-status"]')!.textContent!.trim();
+      const paneButton = paneHost.querySelector('[data-testid="settings-app-restart"]')!.textContent!.trim();
+      expect(paneStatus.toLowerCase()).not.toBe(paneButton.toLowerCase());
+      const popoverStatus = popoverHost.querySelector('[data-testid="core-popover-app-status"]')!.textContent!.trim();
+      const popoverButton = popoverHost.querySelector('[data-testid="core-popover-restart-update"]')!.textContent!.trim();
+      expect(popoverStatus.toLowerCase()).not.toBe(popoverButton.toLowerCase());
     });
     const updates = adapter.updates as unknown as {
       downloadUpdate: ReturnType<typeof vi.fn>;
@@ -664,14 +671,14 @@ describe("shared store keeps pane and popover in lockstep", () => {
     });
   });
 
-  it("a package downloaded while the popover was closed hydrates as RESTART TO UPDATE", async () => {
+  it("a package downloaded while the popover was closed hydrates as UPDATE READY", async () => {
     const adapter = updatesAdapter({
       getDownloadedUpdate: vi.fn(async () => ok({ version: "0.10.173" })),
     });
     const { popoverHost } = mountBoth(adapter);
     await vi.waitFor(() => {
       flushSync();
-      expect(popoverHost.textContent).toContain("RESTART TO UPDATE");
+      expect(popoverHost.textContent).toContain("UPDATE READY");
       expect(popoverHost.querySelector('[data-testid="core-popover-restart-update"]')).toBeTruthy();
     });
   });
@@ -685,9 +692,9 @@ describe("shared store keeps pane and popover in lockstep", () => {
     const { paneHost, popoverHost } = mountBoth(adapter);
     await vi.waitFor(() => {
       flushSync();
-      expect(paneHost.textContent).toContain("RESTART TO UPDATE");
+      expect(paneHost.textContent).toContain("UPDATE READY");
       expect(paneHost.textContent).toContain("sync gap");
-      expect(popoverHost.textContent).toContain("RESTART TO UPDATE");
+      expect(popoverHost.textContent).toContain("UPDATE READY");
       expect(popoverHost.textContent).toContain("sync gap");
       expect(paneHost.querySelector('[data-testid="settings-app-restart"]')).toBeTruthy();
     });

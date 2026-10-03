@@ -191,7 +191,7 @@ export async function checkDesktopUpdates(
 /**
  * "Download & install": phase 1 of the queued update. Downloads the verified
  * package in the background (progress arrives via reportDownloadProgress),
- * then parks the row on RESTART TO UPDATE. A second call while a download or
+ * then parks the row on UPDATE READY. A second call while a download or
  * install is already running (manual or automatic) is a no-op.
  */
 export async function downloadDesktopUpdate(
@@ -261,7 +261,7 @@ export async function restartToUpdate(
 
 /**
  * Late-mounting surfaces (the popover opens after a download finished in the
- * background) hydrate straight into RESTART TO UPDATE from the host's staged
+ * background) hydrate straight into UPDATE READY from the host's staged
  * package. Never downgrades an in-flight install. A stuck DOWNLOADING 0%
  * after the host already staged the package is upgraded to ready.
  */
