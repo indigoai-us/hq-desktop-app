@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { withReadDeadline } from "../../common/read-deadline.js";
   /**
    * VaultTree: the lazy folder tree for one vault in the Files explorer.
    *
@@ -60,7 +61,11 @@
   async function load(path: string): Promise<void> {
     const gen = generation;
     loading = { ...loading, [path]: true };
-    const res = await listDir(path);
+    // BLANK-1: a read that never answers falls to the failed-read state.
+    const res = await withReadDeadline(listDir(path), "vault folder").catch((err: unknown) => ({
+      ok: false as const,
+      message: err instanceof Error ? err.message : String(err),
+    }));
     if (gen !== generation) return;
     loading = { ...loading, [path]: false };
     if (!res.ok) {
