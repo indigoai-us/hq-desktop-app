@@ -453,6 +453,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     listScheduledBots: async () => MEETINGS_USE_CLOUD,
     listRecorded: async () => MEETINGS_USE_CLOUD,
     getRecorded: async () => MEETINGS_USE_CLOUD,
+    readRecordedBody: async () => MEETINGS_USE_CLOUD,
     inviteBot: async () => MEETINGS_USE_CLOUD,
     cancelBot: async () => MEETINGS_USE_CLOUD,
     joinBotNow: async () => MEETINGS_USE_CLOUD,

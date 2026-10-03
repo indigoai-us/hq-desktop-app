@@ -320,7 +320,7 @@
       } else {
         console.error("install update failed:", res.message);
         errorMessage =
-          res.message === "HQ will restart to update after your recording finishes"
+          res.message?.startsWith("HQ will restart to update after")
             ? res.message
             : "Install failed";
         phase = "error";

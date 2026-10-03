@@ -383,3 +383,26 @@ export function snapshotForRange(base: TelemetrySnapshot, range: TelemetryRange)
     },
   };
 }
+
+/**
+ * OWNER-D 3: true when the snapshot has no recorded activity at all (no
+ * sessions, tokens or skills), so the page shows one sentence instead of a
+ * dashboard of zeros.
+ */
+export function hasNoTelemetryActivity(snapshot: TelemetrySnapshot): boolean {
+  const tokens =
+    snapshot.models.reduce(
+      (sum, row) => sum + row.input + row.output + row.cacheWrite + row.cacheRead,
+      0,
+    ) + (snapshot.unattributed?.tokens ?? 0);
+  return (
+    snapshot.sessions === 0 &&
+    snapshot.sessionsRows.length === 0 &&
+    snapshot.skills.length === 0 &&
+    tokens === 0
+  );
+}
+
+/** The one line an account with no activity sees in place of the dashboard. */
+export const TELEMETRY_EMPTY_COPY =
+  "Telemetry shows your sessions, tokens and skills across your HQ work, and numbers appear here after your first session.";

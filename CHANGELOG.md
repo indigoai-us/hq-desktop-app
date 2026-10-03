@@ -53,17 +53,24 @@ This beta brings the new HQ interface. A rail on the left holds your companies, 
 - When company Projects, Goals, Team, Bots, Files, Knowledge, Policies, Skills, Workers, Secrets or Deployments, Personal Deployments, or the Choose folder sheet can't be read, the page says so in plain words with Try again, instead of showing the empty-page line or raw error text.
 - When the Library can't be read, it shows one Try again, which reloads both the folder tree and the vault home.
 - Goals shows a loading skeleton on first load instead of briefly showing the empty line.
+- Goals no longer lists projects that are not linked to a goal. The Projects filter has a No goal option to find them.
+- The New objective window and its project picker fit inside the app window.
 - Pages with nothing in them yet use plain empty copy.
 - Library and Settings text uses the app's standard sizes and weights.
 - If company Knowledge, Policies, Skills, Workers, Goals, Projects, Vault, Secrets, Deployments, Team or Bots, or the personal Library, Deployments, Secrets or Connections pages are still loading after 12 seconds, they stop waiting and say so in plain words with Try again, instead of staying on the loading placeholder.
 - When a page can't be read, it no longer also says the page is empty or shows zero counts. This covers Team, Goals, Bots, Projects, Knowledge, Policies, Skills, Workers, Secrets, Deployments, Connections and the company map.
 - Company Vault says you don't have access when the server refuses access, instead of showing an error.
+- Atlas shades each section, never covers a section's name, and uses readable 13 px labels that do not overlap. The most recent and largest items are labeled first; the rest show on hover and when you zoom in.
+- Company Integrations lists the apps the company has actually connected, with loading, failed and empty states.
+- Telemetry shows one sentence when there is no activity, and is hidden for people who do not have the feature. Indigo members keep the Telemetry entry on Home and in every company.
+- New bot shows the platform's own create shortcut (Cmd+Return on macOS).
 
 ### Meetings
 
 - Meetings shows your calendar, live meetings and recaps in one page. When the desktop detects a meeting it shows recording controls on the Meetings page.
 - Meetings lists only your own meetings: ones your notetaker recorded, ones on your calendar, and ones recorded on this device. Company role does not add other people's meetings. Past meetings are grouped under day headers.
 - Meetings stored as a single document now show their notes, transcript and attendees.
+- Meeting notes and transcripts stored as documents now load: the app downloads them itself. If a meeting's notes can't load, it shows "Couldn't load the notes." with Try again, instead of saying there are no notes.
 - Load more shows meeting notes past the first 24.
 - When your calendar can't be read, Meetings says so with Try again instead of asking you to connect your calendar.
 - Behind the `desktop.meetings-personal-transcripts` flag (off by default): Past meetings can list meeting transcripts and notes saved privately on this computer, including older ones, and your own desktop recordings. Transcripts from another account signed in on the same computer stay hidden.
@@ -76,6 +83,8 @@ This beta brings the new HQ interface. A rail on the left holds your companies, 
 
 - Settings, Profile and Billing open from your account at the bottom of the rail. Light appearance is supported across the new pages.
 - The signed-out page uses plain copy that names the app HQ. Its quit button reads Quit HQ.
+- The signed-out page has one heading, Sign in to HQ, with the reason as a short line under it.
+- Restart to update works while sync is running. Only a meeting recording, a transcript that is still saving, or an HQ Core update holds a restart you asked for, and Settings › Updates and the update notice say which one.
 - Office Hours and the Settings profile show a plain message with Try again when they can't load or save.
 
 ### Other changes
@@ -86,6 +95,9 @@ This beta brings the new HQ interface. A rail on the left holds your companies, 
 - Desktop Core baseline refresh now retries GitHub timeouts before reporting a pending baseline. Persistent timeouts are still reported.
 - Error messages across the app use plain words instead of technical error text, including sending messages, uploads, channel actions, Settings, sign-in, setup and the marketplace. The technical details go to the app log.
 - Opening a company retries the company lookup once before giving up.
+- HQ CLI updates wait for running HQ CLI commands to finish before replacing the CLI.
+- Setup recovers when its install bookkeeping was left locked by an earlier error, so it can still cancel an install and record its failure.
+- CLI update failure reports record which CLI version was running. Onboarding step telemetry can be joined to the install attempt (behind a flag).
 - Sync keeps a company's cloud link when the company is missing from your membership list or its lookup comes back missing. Only a confirmed deletion removes the link.
 - A rejected saved sign-in at startup is treated as signed out, so HQ asks you to sign in again.
 - After a Windows Core update, HQ puts its managed CLI ahead of stale CLI paths in the HQ Claude settings file so the updated version is selected.
@@ -144,6 +156,8 @@ This beta brings the new HQ interface. A rail on the left holds your companies, 
 ## [0.10.379] — 2026-10-02
 
 - Closing the main window no longer logs an error.
+
+- "Restart to update" works again while sync is running. Only a meeting recording, a transcript that is still saving, or an HQ Core update holds a restart you asked for, and the update card now says which one instead of always mentioning a recording.
 
 - When hq-flags enables `desktop.setup-deps-timeout-retry-v1`, a dependency setup timeout gets one automatic retry before setup is marked passed with that step skipped.
 

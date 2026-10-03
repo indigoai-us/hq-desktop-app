@@ -42,12 +42,16 @@
   let projectId = $state<string | null>(null);
   let target = $state<string | null>(null);
 
-  const visible = $derived(
+  const matches = $derived(
     (projects ?? []).filter((project) => {
       const name = projectDisplayName(project).toLowerCase();
       return !query.trim() || name.includes(query.trim().toLowerCase());
     }),
   );
+  // QA-105: a company can have hundreds of projects; draw the first rows and
+  // let the search narrow the rest instead of rendering every one.
+  const PICKER_ROW_CAP = 50;
+  const visible = $derived(matches.slice(0, PICKER_ROW_CAP));
   // Project ids are only unique per PRD path, so rows and selection use the full identity.
   const chosen = $derived((projects ?? []).find((project) => projectIdentity(project) === projectId) ?? null);
 
@@ -85,6 +89,9 @@
       {:else}
         <p class="foot">{projects.length ? "No projects match." : "No projects in this company yet."}</p>
       {/each}
+      {#if matches.length > visible.length}
+        <p class="foot" data-testid="link-picker-more">Showing {visible.length} of {matches.length}. Search to find the rest.</p>
+      {/if}
     {/if}
   </div>
   <div class="sec">Key results</div>
@@ -121,7 +128,8 @@
     right: 16px;
     top: 52px;
     width: 380px;
-    max-height: 420px;
+    /* QA-105: never taller than the overlay it opens in. */
+    max-height: min(420px, calc(100% - 68px));
     overflow: auto;
     z-index: 5;
     padding: 6px;

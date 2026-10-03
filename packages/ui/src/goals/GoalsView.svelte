@@ -35,7 +35,6 @@
     readGoalsCache,
     mergeGoalsWithCache,
     tallyGlyphs,
-    unlinkedProjects,
     writeGoalsCache,
     type GoalPeriod,
     type KrLink,
@@ -68,7 +67,6 @@
   const visible = $derived((objectives ?? []).filter((objective) => matchesPeriod(objective.timeframe, period)));
   // The picker only offers the active company's projects, one row per PRD.
   const companyProjects = $derived(dedupeProjects(projects.filter((project) => project.company === slug)));
-  const unlinked = $derived(unlinkedProjects(companyProjects, links));
   const summary = $derived(tallyGlyphs(visible));
   // BLANK-2: a failed read with nothing loaded shows only the failed line and
   // Try again; "0 objectives" waits for a read that succeeded.
@@ -313,13 +311,6 @@
           {/each}
         </article>
       {/each}
-      {#if unlinked.length > 0}
-        <div class="unl">
-          <b>Unlinked projects · {unlinked.length}</b>
-          <span>{unlinked.map((project) => projectDisplayName(project)).join(" · ")}</span>
-          <RailButton icon="link" onclick={() => (picker = true)}>Link to a KR</RailButton>
-        </div>
-      {/if}
       <div class="glegend">{#each ["on track", "at risk", "off track", "complete"] as label (label)}<span><i class="sdot" data-status={label}></i>{label}</span>{/each}</div>
     </div>
   {/if}
@@ -436,11 +427,9 @@
   .km { display: flex; align-items: center; gap: 8px; margin-top: 4px; font-size: 13px; color: var(--t3); flex-wrap: wrap; }
   .bar { flex: 1 1 160px; max-width: 560px; height: 3px; background: var(--line2); border-radius: 2px; overflow: hidden; }
   .bar i { display: block; height: 100%; background: var(--t2); }
-  .unl, .glegend, .empty { font-size: 13px; color: var(--t3); }
+  .glegend, .empty { font-size: 13px; color: var(--t3); }
   .load-error { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
   .load-error p { margin: 0; }
-  .unl { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
-  .unl b { color: var(--t2); font-weight: 500; }
   .glegend { display: flex; gap: 14px; margin-top: 16px; padding: 0 8px; }
   .shimmer {
     height: 48px; margin: 8px 0; border-radius: 6px;

@@ -95,6 +95,15 @@ function localFilesAdapter(): PlatformAdapter {
   } as unknown as PlatformAdapter;
 }
 
+/** Web adapter whose registry turns Telemetry on (RELEASE-001 gate). */
+function telemetryAdapter(): PlatformAdapter {
+  const adapter = webAdapter();
+  (adapter as unknown as { identity: unknown }).identity = {
+    hasFeature: async (flag: string) => ok(flag === "desktop.rail-telemetry-v1"),
+  };
+  return adapter;
+}
+
 async function mountShell(adapter: PlatformAdapter = webAdapter()): Promise<void> {
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -143,7 +152,7 @@ function click(testId: string): void {
 
 describe("DesktopApp app rail (console-rail US-003)", () => {
   it("shows the rail in the decided order and no folder, console, or meetings titlebar icon", async () => {
-    await mountShell();
+    await mountShell(telemetryAdapter());
     expect(railIds()).toEqual([
       "home",
       "meetings",
@@ -266,19 +275,43 @@ describe("DesktopApp app rail (console-rail US-003)", () => {
     await lazyBodiesLoaded(loadTelemetry);
   });
 
-  it("shows Coming soon for Telemetry outside Indigo, with no telemetry host or data load (RELEASE-001)", async () => {
+  it("hides the Telemetry entry outside Indigo, with no telemetry host or data load (OWNER-D 3)", async () => {
     await mountShell();
+    await settle();
+    expect(host.querySelector('[data-testid="rail-telemetry"]')).toBeNull();
+    expect(host.querySelector('[data-testid="telemetry-host"]')).toBeNull();
+    expect(host.querySelector('[data-testid="telemetry-coming-soon"]')).toBeNull();
+    expect(host.textContent).not.toContain("Coming soon");
+  });
+
+  it("leaves Telemetry for Home without a blank or an error when the feature turns off (OWNER-D 3)", async () => {
+    const adapter = webAdapter();
+    let push: ((result: { ok: boolean; value?: unknown }) => void) | null = null;
+    (adapter as unknown as { identity: unknown }).identity = {
+      hasFeature: async (flag: string) => ok(flag === "desktop.rail-telemetry-v1"),
+      subscribeFeature: (flag: string, cb: (result: { ok: boolean; value?: unknown }) => void) => {
+        if (flag === "desktop.rail-telemetry-v1") push = cb;
+        return () => {};
+      },
+    };
+    await mountShell(adapter);
     click("rail-telemetry");
     await settle();
     expect(current()).toBe("telemetry");
+    push!(ok(false));
+    await settle();
+    expect(host.querySelector('[data-testid="rail-telemetry"]')).toBeNull();
     expect(host.querySelector('[data-testid="telemetry-host"]')).toBeNull();
-    expect(host.querySelector('[data-testid="telemetry-coming-soon"]')?.textContent).toContain(
-      "Coming soon. Usage and session telemetry is on its way to your company.",
-    );
+    expect(current()).toBe("home");
+    await lazyBodiesLoaded(loadTelemetry);
   });
 
   it("shows one sidepane: personal pages and Meetings replace the Messages list", async () => {
-    await mountShell();
+    const adapter = webAdapter();
+    (adapter as unknown as { identity: unknown }).identity = {
+      hasFeature: async (flag: string) => ok(flag === "desktop.rail-telemetry-v1"),
+    };
+    await mountShell(adapter);
     const chatSlot = () => host.querySelector<HTMLElement>(".chat-pane-slot");
     expect(chatSlot()?.style.display).toBe("contents");
     for (const id of ["rail-telemetry", "rail-secrets", "rail-connections", "rail-outpost"]) {
@@ -301,7 +334,7 @@ describe("DesktopApp app rail (console-rail US-003)", () => {
   });
 
   it("maps Cmd+1 to Cmd+9 to rail items in order", async () => {
-    await mountShell();
+    await mountShell(telemetryAdapter());
     const press = async (key: string) => {
       // The registry resolves Mod to Cmd on macOS and Ctrl elsewhere.
       const mac = /Mac OS X|Macintosh/i.test(navigator.userAgent);

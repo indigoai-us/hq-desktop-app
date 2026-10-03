@@ -78,11 +78,6 @@ export function isIndigoOnlySurface(
   return RAIL_GATE_EVERYONE_DEFAULT[key] === true;
 }
 
-/** One plain sentence for a gated page's "Coming soon" fallback. */
-export const COMING_SOON_COPY: Readonly<Record<string, string>> = {
-  [RAIL_TELEMETRY_FLAG]: "Usage and session telemetry is on its way to your company.",
-};
-
 type FeatureReader = {
   hasFeature?: (flag: string) => Promise<{ ok: boolean; value?: unknown }>;
   subscribeFeature?: (

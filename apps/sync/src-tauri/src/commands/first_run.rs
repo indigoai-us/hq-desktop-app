@@ -141,6 +141,15 @@ pub fn is_first_run(state: State<'_, LaunchKindState>) -> bool {
     state.0 == LaunchKind::FirstRun
 }
 
+/// Read the stable installation identity for anonymous first-launch joins.
+#[tauri::command]
+pub async fn desktop_install_attempt_id() -> Option<String> {
+    tauri::async_runtime::spawn_blocking(|| install_attempt_id())
+        .await
+        .ok()
+        .flatten()
+}
+
 /// True when a legacy user updated to this build, hasn't seen the auto-sync
 /// notice yet, AND still has auto-sync on. A user who explicitly turned
 /// auto-sync off (`realtimeSync: false`) made a deliberate choice and gets no

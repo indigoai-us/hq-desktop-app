@@ -163,4 +163,19 @@ describe('SignInPrompt session retry (OWNER-015)', () => {
     expect(host.querySelector('[data-testid="sign-in-session-retry"]')).toBeNull();
     expect(host.querySelector('input[type="password"]')).toBeNull();
   });
+
+  it('keeps "Sign in to HQ" as the one heading on the signed-out page, with the reason under it (OWNER-D 5)', async () => {
+    component = mount(SignInPrompt, {
+      target: host,
+      props: { layout: 'column', reauth: true, note: 'Your session expired.' },
+    });
+    await flush();
+
+    const headings = host.querySelectorAll('h1, h2');
+    expect(headings).toHaveLength(1);
+    expect(headings[0]!.textContent).toBe('Sign in to HQ');
+    expect(host.querySelector('[data-testid="sign-in-description"]')?.textContent?.trim()).toBe(
+      'Your session expired.',
+    );
+  });
 });

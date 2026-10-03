@@ -59,6 +59,9 @@
     notesRemaining?: number;
     notesLoadingMore?: boolean;
     onloadmore?: () => void;
+    /** The saved-notes read failed; show Try again, never "No notes". */
+    notesFailed?: boolean;
+    onretrynotes?: () => void;
   }
 
   let {
@@ -82,6 +85,8 @@
     notesRemaining = 0,
     notesLoadingMore = false,
     onloadmore,
+    notesFailed = false,
+    onretrynotes,
   }: Props = $props();
 
   let tab = $state<"recap" | "transcript" | "notes" | "agenda">("recap");
@@ -109,7 +114,7 @@
   const recap = $derived(event ? recapModel(event, bot) : null);
   // Past meetings show tabs only when real notes exist on the server.
   const notesState = $derived(
-    mode === "recap" && event ? pastNotesState(event, now, { bot, detailLoading: notesLoading }) : null,
+    mode === "recap" && event ? pastNotesState(event, now, { bot, detailLoading: notesLoading, detailFailed: notesFailed }) : null,
   );
   const hasNotes = $derived(notesState === null || notesState === "ready");
   const turns = $derived(event ? filterTranscript(transcriptTurns(event), query) : []);
@@ -320,6 +325,13 @@
           <div class="no-notes" data-testid="meeting-no-notes" data-state={notesState}>
             {#if notesState === "loading"}
               <div class="sk-lines" aria-busy="true" aria-label="Loading notes"><i></i><i></i></div>
+            {:else if notesState === "failed"}
+              <div role="alert" data-testid="meeting-notes-failed">
+                <p class="sum">Couldn't load the notes.</p>
+                <div class="actions">
+                  <button type="button" class="btn" data-testid="meeting-notes-retry" onclick={() => onretrynotes?.()}>Try again</button>
+                </div>
+              </div>
             {:else if notesState === "preparing"}
               <p class="sum">Notes are being prepared.</p>
               <p class="muted">They usually appear within 15 minutes after the meeting ends.</p>

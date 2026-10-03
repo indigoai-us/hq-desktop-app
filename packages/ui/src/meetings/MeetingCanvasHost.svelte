@@ -89,6 +89,7 @@
       : event,
   );
   const notesLoading = $derived(Boolean(recordedId) && (!notesEntry || notesEntry.status === "loading"));
+  const notesFailed = $derived(notesEntry?.status === "error");
   const companyName = $derived(
     event?.sourceCompanyUid ? (meetingsStore.companyNamesByUid.get(event.sourceCompanyUid) ?? null) : null,
   );
@@ -143,6 +144,9 @@
     notesRemaining={notesEntry?.remaining ?? 0}
     notesLoadingMore={notesEntry?.loadingMore ?? false}
     onloadmore={() => recordedId && void meetingsStore.loadMoreRecordedNotes(recordedId)}
+    {notesFailed}
+    onretrynotes={() =>
+      recordedId && void meetingsStore.loadRecordedNotes(recordedId, event?.sourceCompanyUid ?? null, { retry: true })}
     {bot}
     {companyName}
     {sections}

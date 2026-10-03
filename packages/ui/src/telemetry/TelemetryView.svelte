@@ -19,6 +19,8 @@
     formatTokens,
     formatUsd,
     hasListRate,
+    hasNoTelemetryActivity,
+    TELEMETRY_EMPTY_COPY,
     listRateUsd,
     outcomesForFilter,
     sessionsForFilter,
@@ -262,6 +264,10 @@
             <div class="stat"><div class="n shimmer">&nbsp;</div><div class="l shimmer">&nbsp;</div></div>
           {/each}
         </div>
+      </div>
+    {:else if !snapshot.optedOut && hasNoTelemetryActivity(snapshot)}
+      <div class="canvas">
+        <p class="empty-line" data-testid="telemetry-empty">{TELEMETRY_EMPTY_COPY}</p>
       </div>
     {:else if page === "overview"}
       <div class="canvas">
@@ -646,6 +652,7 @@
   .bar { height: 3px; background: var(--btn-bg, var(--v4-control-faint)); border-radius: 2px; overflow: hidden; }
   .bar i { display: block; height: 100%; opacity: 0.45; }
   .foot { margin: 8px 0 0; padding: 0 8px; }
+  .empty-line { margin: 0; padding: 48px 16px; text-align: center; font-size: 13px; color: var(--t3); }
   .content > .foot { padding: 0 20px; }
   .scroll { max-height: 420px; overflow: auto; }
   .sessions { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 0; padding-right: 0; padding-top: 8px; }

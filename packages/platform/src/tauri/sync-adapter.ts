@@ -20,6 +20,7 @@ import {
   AGENT_PATHS,
   OUTPOST_PATHS,
   PERSONAL_INTEGRATION_PATHS,
+  COMPANY_INTEGRATION_PATHS,
   buildSendReplyRequest,
   failure,
   normalizeReplyThreadValue,
@@ -38,6 +39,7 @@ import {
   DESKTOP_AGENT_CREATION_FLAG,
   DESKTOP_LIMIT_STATUS_PUSH_FLAG,
   FIRST_FOLDER_SYNC_STEP_FLAG,
+  FIRST_LAUNCH_JOIN_KEY_FLAG,
   HUMAN_ONLY_CONVERSATIONS_FLAG,
   HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT,
   LOGIN_RECEIPT_DURABILITY_FLAG,
@@ -216,6 +218,10 @@ export function createSyncPlatformAdapter(
     if (flag === FIRST_FOLDER_SYNC_STEP_FLAG) {
       // The first-folder onboarding step is a rollout; fail closed until
       // a manager explicitly enables its hq-flags value.
+      return Promise.resolve(ok(false));
+    }
+    if (flag === FIRST_LAUNCH_JOIN_KEY_FLAG) {
+      // Missing or unreadable registry data leaves the new join-key behavior off.
       return Promise.resolve(ok(false));
     }
     if (flag === PERSONAL_WORKSPACE_BOARD_FLAG) {
@@ -980,6 +986,7 @@ export function createSyncPlatformAdapter(
             companyId: companyId || undefined,
           }),
         ),
+      readRecordedBody: (url) => call('meetings_read_recorded_body', { url }),
       fetchLiveTranscript: (req) =>
         call('meetings_fetch_live_transcript', {
           recallBotId: req.recallBotId,
@@ -1130,6 +1137,8 @@ export function createSyncPlatformAdapter(
 
     company: {
       getDeployments: (slug) => call('get_company_deployments', { slug }),
+      listIntegrations: (companyUid) =>
+        hqProJson('GET', COMPANY_INTEGRATION_PATHS.list(companyUid)),
       listDeployApps: (scope) => call('list_deploy_apps', { scope }),
       deployAccessRequest: (scope, method, path, body) =>
         call('deploy_access_request', { scope, method, path, body: body ?? null }),

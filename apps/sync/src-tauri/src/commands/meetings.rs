@@ -421,6 +421,57 @@ pub async fn meetings_set_company(
     serde_json::from_str(&text).map_err(|e| format!("meeting/company parse: {e} — body: {text}"))
 }
 
+/// Largest recorded-meeting document or signal body read into the renderer.
+const RECORDED_BODY_MAX_BYTES: usize = 8 * 1024 * 1024;
+
+/// A presigned vault GET the renderer may ask the native side to read:
+/// https, on an HQ vault bucket in S3. Anything else is refused before any
+/// network call.
+fn recorded_body_url_allowed(url: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    if parsed.scheme() != "https" {
+        return false;
+    }
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    host.starts_with("hq-vault-")
+        && host.ends_with(".amazonaws.com")
+        && host.contains(".s3.")
+}
+
+/// OWNER-019: read a recorded meeting's document or signal body from its
+/// presigned vault URL. The vault buckets send no CORS headers, so the
+/// webview's own `fetch` of these URLs is blocked and every meeting looked
+/// empty; the native client has no such restriction. No auth header is sent
+/// (the URL is already signed), and the URL is never logged.
+#[tauri::command]
+pub async fn meetings_read_recorded_body(url: String) -> Result<String, String> {
+    let url = url.trim().to_string();
+    if !recorded_body_url_allowed(&url) {
+        return Err("meeting notes link is not an HQ vault link".to_string());
+    }
+    let res = with_timeout(build_client().get(&url))
+        .send()
+        .await
+        .map_err(|e| format!("meeting notes fetch: {}", e.without_url()))?;
+    let status = res.status();
+    if !status.is_success() {
+        crate::util::logfile::log("meetings", &format!("meeting notes body HTTP {status}"));
+        return Err(format!("meeting notes HTTP {}", status.as_u16()));
+    }
+    let bytes = res
+        .bytes()
+        .await
+        .map_err(|e| format!("meeting notes read: {}", e.without_url()))?;
+    if bytes.len() > RECORDED_BODY_MAX_BYTES {
+        return Err("meeting notes are too large to show".to_string());
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 /// `POST /v1/bot/invite` — schedule a Recall.ai bot for a meeting. Pass
 /// `company_id` as a query param so hq-pro routes the transcript to that
 /// company's vault (it validates the caller is a member). Omit to land
@@ -1161,6 +1212,29 @@ pub async fn meetings_clear_prompt_badge(app: AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recorded_body_reads_only_hq_vault_links() {
+        // OWNER-019: the shape hq-pro returns in `source.presigned_url`.
+        assert!(recorded_body_url_allowed(
+            "https://hq-vault-cmp-example.s3.us-east-1.amazonaws.com/sources/meetings/m.md?X-Amz-Expires=3600"
+        ));
+        assert!(recorded_body_url_allowed(
+            "https://hq-vault-prs-example.s3.amazonaws.com/signals/s.md"
+        ));
+        assert!(!recorded_body_url_allowed(
+            "http://hq-vault-cmp-example.s3.us-east-1.amazonaws.com/m.md"
+        ));
+        assert!(!recorded_body_url_allowed("https://example.com/m.md"));
+        assert!(!recorded_body_url_allowed(
+            "https://other-bucket.s3.us-east-1.amazonaws.com/m.md"
+        ));
+        assert!(!recorded_body_url_allowed(
+            "https://hq-vault-x.s3.amazonaws.com.evil.example/m.md"
+        ));
+        assert!(!recorded_body_url_allowed("file:///etc/passwd"));
+        assert!(!recorded_body_url_allowed("not a url"));
+    }
 
     #[test]
     fn scheduled_bot_event_id_query_encoding_escapes_reserved_chars() {

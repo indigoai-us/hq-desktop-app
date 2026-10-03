@@ -10,7 +10,7 @@
  * (kind → home → details); the Home step picks Local (this Mac) or Cloud
  * (company bot, today's create-agent team action).
  */
-import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import { ok, type AgentProvisionOptionsView } from "@hq/platform";
 
@@ -19,6 +19,14 @@ import { createFixtureChatSidebarApi } from "../shell/fixtures.js";
 import type { Workspace } from "./workspaces.js";
 import type { EntryPointResult } from "./lifecycle-entry-points.js";
 import { createBotFlowDoor } from "../shell/lazy-doors.js";
+
+// These flows press ⌘↵: run them as the Mac host the app ships on, so the
+// platform's own create chord (OWNER-D 8) is Command, not Control.
+const MAC_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15";
+const priorUserAgent = navigator.userAgent;
+beforeAll(() => Object.defineProperty(navigator, "userAgent", { configurable: true, value: MAC_UA }));
+afterAll(() => Object.defineProperty(navigator, "userAgent", { configurable: true, value: priorUserAgent }));
+
 
 // The create modal preloads the New bot flow when it opens; load it once here
 // so the flow paints in the same tick these tests click into it.

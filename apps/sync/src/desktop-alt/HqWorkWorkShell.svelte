@@ -1346,26 +1346,19 @@
     </section>
   {:else if lifecycle === 'signed-out'}
     <section class="lifecycle-state" data-testid="hq-work-signed-out" role="status">
-      <h1>
-        {signedOutReason === 'expired'
-          ? 'Your session expired'
-          : signedOutReason === 'invalid'
-            ? 'Your sign-in is no longer valid'
-            : signedOutReason === 'non-human'
-              ? 'These credentials belong to an agent'
-              : 'You are signed out'}
-      </h1>
-      <p>
-        {signedOutReason === 'expired'
-          ? 'Sign in again to continue using HQ.'
-          : signedOutReason === 'non-human'
-            ? 'The HQ sign-in saved on this computer belongs to an agent, not a person. Sign in with your own HQ account to continue.'
-            : 'Sign in to pick up where you left off on this computer.'}
-      </p>
+      <!-- OWNER-D 5 (AUDIT-3-20): the card's "Sign in to HQ" is the page's one
+           heading; why the person is signed out is a short line under it. -->
       <div class="workspace-signin">
         <SignInPrompt
           layout="column"
           version={version}
+          note={signedOutReason === 'expired'
+            ? 'Your session expired.'
+            : signedOutReason === 'invalid'
+              ? 'Your saved sign-in is no longer valid.'
+              : signedOutReason === 'non-human'
+                ? 'The sign-in saved here belongs to an agent, not a person.'
+                : undefined}
           reauth={signedOutReason === 'expired' ||
             signedOutReason === 'invalid' ||
             signedOutReason === 'non-human'}

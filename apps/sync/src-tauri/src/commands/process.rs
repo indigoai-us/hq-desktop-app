@@ -2564,12 +2564,32 @@ pub fn query_hq_cli_package_holders(
 pub fn query_hq_cli_package_roots(
     package_roots: &[std::path::PathBuf],
 ) -> hq_desktop_core::hq_cli_update::RestartManagerHolderObservation {
+    query_hq_cli_package_roots_with_resources(package_roots, &[])
+}
+
+#[cfg(target_os = "windows")]
+pub fn query_hq_cli_package_roots_with_resources(
+    package_roots: &[std::path::PathBuf],
+    explicit_resources: &[std::path::PathBuf],
+) -> hq_desktop_core::hq_cli_update::RestartManagerHolderObservation {
     use hq_desktop_core::hq_cli_update::{
         NpmLockHolderQueryOutcome, RestartManagerHolderObservation, RestartManagerProcessResult,
     };
     use windows::Win32::System::RestartManager::CCH_RM_SESSION_KEY;
 
-    let files = hq_cli_package_files_for_roots(package_roots);
+    let mut files = hq_cli_package_files_for_roots(package_roots);
+    let explicit_files = hq_desktop_core::hq_cli_update::select_rm_file_resources(
+        explicit_resources
+            .iter()
+            .cloned()
+            .map(|path| {
+                let is_file = std::fs::metadata(&path).is_ok_and(|metadata| metadata.is_file());
+                (path, is_file)
+            }),
+    );
+    files.extend(explicit_files);
+    files.sort();
+    files.dedup();
     if files.is_empty() {
         return RestartManagerHolderObservation::from_results(
             &[],
@@ -2697,6 +2717,20 @@ pub fn query_hq_cli_package_roots(
         },
         reported_count,
     )
+}
+
+#[cfg(target_os = "windows")]
+pub fn query_hq_cli_package_busy_holders(
+    prefix: &str,
+    npm_detail: &str,
+) -> hq_desktop_core::hq_cli_update::RestartManagerHolderObservation {
+    let package_root = std::path::Path::new(prefix)
+        .join("node_modules")
+        .join("@indigoai-us")
+        .join("hq-cli");
+    let resources =
+        hq_desktop_core::hq_cli_update::npm_reported_target_resources(prefix, npm_detail);
+    query_hq_cli_package_roots_with_resources(&[package_root], &resources)
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -4531,6 +4565,15 @@ pub struct UpdateQuiescenceGuard {
     committed: bool,
 }
 
+/// Close admission for desktop-owned child work while a CLI package update is
+/// waiting on its cross-process lease. The guard reopens admission on drop.
+pub fn close_cli_process_admission_for_update() -> Result<UpdateQuiescenceGuard, String> {
+    UPDATE_QUIESCE_REQUESTED
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .map_err(|_| "another desktop update is already quiescing HQ processes".to_string())?;
+    Ok(UpdateQuiescenceGuard { committed: false })
+}
+
 impl UpdateQuiescenceGuard {
     pub fn commit(mut self) {
         self.committed = true;
@@ -4554,10 +4597,7 @@ impl Drop for UpdateQuiescenceGuard {
 pub async fn wait_for_cli_install_quiescence(
     timeout: Duration,
 ) -> Result<UpdateQuiescenceGuard, String> {
-    UPDATE_QUIESCE_REQUESTED
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .map_err(|_| "another desktop update is already quiescing HQ processes".to_string())?;
-    let guard = UpdateQuiescenceGuard { committed: false };
+    let guard = close_cli_process_admission_for_update()?;
     let started = std::time::Instant::now();
 
     loop {
