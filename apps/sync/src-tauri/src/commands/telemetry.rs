@@ -4101,6 +4101,7 @@ mod codex_telemetry_tests {
         let home = setup_home();
         write_menubar(home.path(), "{}");
         let _home = scoped_home(home.path());
+        crate::commands::cognito::clear_tokens().await.unwrap();
         std::env::set_var("HQ_VAULT_API_URL", server.uri());
 
         // What `cdp_mirror::init` does on a first launch.
@@ -4302,6 +4303,7 @@ mod codex_telemetry_tests {
         let home = setup_home();
         write_menubar(home.path(), "{}");
         let _home = scoped_home(home.path());
+        crate::commands::cognito::clear_tokens().await.unwrap();
         std::env::set_var("HQ_VAULT_API_URL", server.uri());
 
         // First-time sign-in, no token: the provider page fails to open.

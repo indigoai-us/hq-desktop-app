@@ -909,7 +909,10 @@ mod tests {
         mirror.flush_now().await;
 
         let requests = server.received_requests().await.unwrap();
-        let post = requests.iter().find(|request| request.method == "POST").unwrap();
+        let post = requests
+            .iter()
+            .find(|request| request.method == "POST")
+            .unwrap();
         assert!(
             post.headers.get("authorization").is_none(),
             "the pre-auth CDP path must not require a login token"
@@ -918,10 +921,7 @@ mod tests {
         assert!(body.get("profileId").is_none());
         assert_eq!(body["events"][0]["eventType"], EVENT_AUTH_FAILURE);
         assert_eq!(body["events"][0]["properties"]["provider"], "google");
-        assert_eq!(
-            body["events"][0]["properties"]["errorCategory"],
-            "network"
-        );
+        assert_eq!(body["events"][0]["properties"]["errorCategory"], "network");
         server.verify().await;
     }
 
