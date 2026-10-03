@@ -123,6 +123,7 @@
   } from "./advertised-shortcuts.js";
   import { dismissToastByKey, pushToast } from "./toast-stack.svelte.js";
   import { updateToastCopy } from "./update-toast.js";
+  import { syncToastCopy } from "./sync-toast.js";
   import { CREATE_MENU_ITEMS, type CreateMenuAction } from "../chat/create-menu.js";
   import {
     SIDEBAR_OVERLAY_MAX_PX,
@@ -1324,20 +1325,31 @@
     }
   }
 
+  // Session snooze, mirrored in state so the toast effect re-runs on Later.
+  let snoozedUpdateVersion = $state<string | null>(dismissedVersion());
+
   function handleUpdateDismiss(): void {
-    if (!updatePendingVersion) return;
-    try { sessionStorage.setItem(SNOOZED_KEY, updatePendingVersion); } catch (err) {
+    const version = updatePendingVersion ?? updateStore.availableVersion;
+    if (!version) return;
+    try { sessionStorage.setItem(SNOOZED_KEY, version); } catch (err) {
       console.error("update toast: could not record the session snooze:", err);
     }
+    snoozedUpdateVersion = version;
     updatePendingVersion = null;
     updateHoldReasons = [];
     updateInstallError = null;
   }
 
-  // OWNER-003: the update notice is a sticky toast on the shared layer.
+  // OWNER-003: the update notice is a sticky toast on the shared layer. It
+  // follows the gate (ready / held) and the shared update store (download
+  // and install progress), so the bar fills while bytes land and "Restart
+  // to update" unlocks only once the package is ready.
   $effect(() => {
-    const version = updatePendingVersion;
-    if (!version) {
+    const phase = updateStore.installPhase;
+    const storeBusy = phase === "downloading" || phase === "queued" || phase === "installing";
+    const version = updatePendingVersion ?? (storeBusy || phase === "ready" ? updateStore.availableVersion : null);
+    const snoozed = version !== null && version === snoozedUpdateVersion && !updateInstalling && phase !== "installing";
+    if (!version || snoozed) {
       untrack(() => dismissToastByKey(UPDATE_TOAST_KEY));
       return;
     }
@@ -1346,6 +1358,8 @@
       reasons: updateHoldReasons,
       installing: updateInstalling,
       installError: updateInstallError,
+      phase: storeBusy ? phase : undefined,
+      downloadPercent: updateStore.downloadPercent,
     });
     untrack(() => pushToast({
       key: UPDATE_TOAST_KEY,
@@ -1355,6 +1369,7 @@
       title: copy.title,
       detail: copy.detail,
       error: copy.error,
+      progress: copy.progress,
       dismissLabel: "Dismiss update notice",
       onDismiss: handleUpdateDismiss,
       actions: [
@@ -1495,6 +1510,31 @@
    * filters to one company and this one deliberately watches every run.
    */
   let syncStatus = $state<SyncStatusState>(emptySyncStatus());
+
+  // OWNER-003: one "sync" toast that updates in place while files move and
+  // turns into a quiet "Files up to date" when the run ends. Runs that move
+  // nothing stay silent; attention states belong to the Core pill.
+  const SYNC_TOAST_KEY = "sync";
+  let syncRunMoved = false;
+  $effect(() => {
+    const status = syncStatus;
+    untrack(() => {
+      if (status.phase === "syncing" && (status.planTotal > 0 || status.progressed > 0)) {
+        syncRunMoved = true;
+      }
+      const copy = syncToastCopy(status, syncRunMoved);
+      if (copy.state === "busy" && syncRunMoved) {
+        pushToast({ key: SYNC_TOAST_KEY, kind: "sticky", tone: "neutral", testId: "sync-toast", title: copy.title, detail: copy.detail, progress: copy.progress });
+      } else if (copy.state === "done") {
+        syncRunMoved = false;
+        pushToast({ key: SYNC_TOAST_KEY, kind: "quiet", tone: "ok", testId: "sync-toast", title: copy.title, detail: copy.detail });
+      } else if (copy.state === "attention") {
+        syncRunMoved = false;
+        dismissToastByKey(SYNC_TOAST_KEY);
+      }
+    });
+  });
+  $effect(() => () => dismissToastByKey(SYNC_TOAST_KEY));
 
   /**
    * Per-file conflict rows for the Core popover. Separate from the reducer

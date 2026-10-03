@@ -21,7 +21,8 @@ export interface UpdateToastInput {
   installing: boolean;
   installError: string | null;
   downloadPercent?: number | null;
-  phase?: "checking" | "downloading";
+  /** Lifecycle from the shared update store (download / install progress). */
+  phase?: "checking" | "downloading" | "queued" | "installing" | "ready" | "failed" | "idle" | "deferred";
 }
 
 export interface UpdateToastCopy {
@@ -32,7 +33,11 @@ export interface UpdateToastCopy {
   installLabel: string;
   installDisabled: boolean;
   installTitle: string | null;
+  /** 0..1 while bytes are counted, "indeterminate" while only busy, else null. */
+  progress: number | "indeterminate" | null;
 }
+
+const FINISHING = "Finishing download";
 
 const HOLD_TEXT: Record<string, string> = {
   meetingrecording: "Waiting for your recording to finish",
@@ -80,25 +85,36 @@ export function updateToastCopy(input: UpdateToastInput): UpdateToastCopy {
       installLabel: "Will restart after recording",
       installDisabled: true,
       installTitle: null,
+      progress: null,
     };
   }
-  if (input.installing) {
-    return { phase: "installing", title: "Updating HQ", detail: "Restarting to install the update", error: null, installLabel: "Restarting…", installDisabled: true, installTitle: null };
+  if (input.installing || input.phase === "installing") {
+    return { phase: "installing", title: "Updating HQ", detail: "Installing the update and restarting", error: null, installLabel: "Restarting…", installDisabled: true, installTitle: null, progress: "indeterminate" };
   }
   if (input.phase === "checking") {
-    return { phase: "checking", title: "Checking for updates", detail: "Looking for a new version of HQ", error: null, installLabel: "Restart to update", installDisabled: true, installTitle: null };
+    return { phase: "checking", title: "Checking for updates", detail: "Looking for a new version of HQ", error: null, installLabel: "Restart to update", installDisabled: true, installTitle: null, progress: "indeterminate" };
   }
-  if (input.phase === "downloading") {
+  if (input.phase === "downloading" || input.phase === "queued") {
     const pct = input.downloadPercent;
-    return { phase: "downloading", title: "Downloading update", detail: pct == null ? "Downloading the new version" : `Downloading the new version (${Math.round(pct)}%)`, error: null, installLabel: "Restart to update", installDisabled: true, installTitle: null };
+    const known = input.phase === "downloading" && pct != null && Number.isFinite(pct);
+    return {
+      phase: "downloading",
+      title: "Downloading update",
+      detail: known ? `Downloading ${version ? `HQ ${version}` : "the new version"} (${Math.round(pct)}%)` : `Downloading ${version ? `HQ ${version}` : "the new version"}`,
+      error: null,
+      installLabel: "Restart to update",
+      installDisabled: true,
+      installTitle: FINISHING,
+      progress: known ? Math.min(1, Math.max(0, pct / 100)) : "indeterminate",
+    };
   }
   const error = plainError(input.installError);
   if (error) {
-    return { phase: "failed", title: "Update failed", detail: ready, error, installLabel: "Try again", installDisabled: false, installTitle: null };
+    return { phase: "failed", title: "Update failed", detail: ready, error, installLabel: "Try again", installDisabled: false, installTitle: null, progress: null };
   }
   const hold = holdReasonText(input.reasons);
   if (hold) {
-    return { phase: "held", title: "Update available", detail: hold, error: null, installLabel: "Restart to update", installDisabled: true, installTitle: hold };
+    return { phase: "held", title: "Update available", detail: hold, error: null, installLabel: "Restart to update", installDisabled: true, installTitle: hold, progress: null };
   }
-  return { phase: "ready", title: "Update available", detail: ready, error: null, installLabel: "Restart to update", installDisabled: false, installTitle: null };
+  return { phase: "ready", title: "Update available", detail: ready, error: null, installLabel: "Restart to update", installDisabled: false, installTitle: null, progress: null };
 }

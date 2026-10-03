@@ -5,6 +5,7 @@ import { mount, tick, unmount } from "svelte";
 import { ok, unavailable, type AdapterResult, type PlatformAdapter } from "@hq/platform";
 
 import MeetingsPage from "./MeetingsPage.svelte";
+import ToastStack from "../shell/ToastStack.svelte";
 import {
   configureMeetingsApi,
   meetingsStore,
@@ -99,8 +100,11 @@ afterEach(async () => {
   stopMeetingsStore();
   if (component) await unmount(component);
   component = null;
+  if (layer) await unmount(layer);
+  layer = null;
   host?.remove();
 });
+let layer: ReturnType<typeof mount> | null = null;
 
 describe("MeetingsPage calendar connect popup blocked (Fix 4)", () => {
   it("stops the connect watch when the default web opener gets a blocked popup", async () => {
@@ -111,6 +115,7 @@ describe("MeetingsPage calendar connect popup blocked (Fix 4)", () => {
       target: host,
       props: { adapter: fakeAdapter() },
     });
+    layer = mount(ToastStack, { target: host });
     await tick();
 
     const connectBtn = host.querySelector<HTMLButtonElement>(
@@ -126,7 +131,8 @@ describe("MeetingsPage calendar connect popup blocked (Fix 4)", () => {
 
     // Re-connectable — not stuck in "Waiting for Google…".
     expect(connectBtn?.disabled).toBe(false);
-    expect(host.textContent).toMatch(
+    // OWNER-003: page feedback renders on the shared toast layer.
+    expect(document.querySelector('[data-testid="toast-stack"]')?.textContent).toMatch(
       /Popup blocked|Couldn't open the browser/i,
     );
 

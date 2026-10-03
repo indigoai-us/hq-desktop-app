@@ -75,10 +75,24 @@
       <div class="ts-b">
         <span class="ts-title">{toast.title}</span>
         {#if toast.detail}<span class="ts-m" data-testid="toast-detail">{toast.detail}</span>{/if}
+        {#if toast.progress != null}
+          {@const fraction = typeof toast.progress === "number" ? Math.min(1, Math.max(0, toast.progress)) : null}
+          <div
+            class="ts-bar"
+            class:indeterminate={fraction === null}
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={fraction === null ? undefined : Math.round(fraction * 100)}
+            data-testid="toast-progress"
+          >
+            <span style:transform={fraction === null ? undefined : `scaleX(${fraction})`}></span>
+          </div>
+        {/if}
         {#if toast.error}<span class="ts-e" role="alert" data-testid="toast-error">{toast.error}</span>{/if}
         {#if toast.actions?.length || (toast.actionLabel && toast.onAction)}
           <div class="ts-acts">
-            {#each toast.actions ?? [] as action (action.label)}
+            {#each toast.actions ?? [] as action (action.testId ?? action.label)}
               <button
                 type="button"
                 class="ts-act"
@@ -198,6 +212,59 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .ts-bar {
+    position: relative;
+    height: 3px;
+    margin-top: 6px;
+    border-radius: 2px;
+    overflow: hidden;
+    background: var(--v4-hairline, rgba(255, 255, 255, 0.12));
+  }
+
+  .ts-bar span {
+    position: absolute;
+    inset: 0;
+    border-radius: 2px;
+    background: var(--v4-text-2);
+    transform-origin: left center;
+    transition: transform 200ms linear;
+  }
+
+  .ts-bar.indeterminate span {
+    width: 30%;
+    animation: ts-shimmer 1.2s ease-in-out infinite;
+  }
+
+  @keyframes ts-shimmer {
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(340%);
+    }
+  }
+
+  /* Reduced motion: a still, half-filled bar stands in for the shimmer. */
+  .reduced .ts-bar.indeterminate span {
+    width: 50%;
+    animation: none;
+  }
+
+  .reduced .ts-bar span {
+    transition: none;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .ts-bar.indeterminate span {
+      width: 50%;
+      animation: none;
+    }
+
+    .ts-bar span {
+      transition: none;
+    }
   }
 
   .ts-e,

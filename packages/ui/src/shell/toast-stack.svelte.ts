@@ -31,6 +31,11 @@ export interface ToastItem {
   detail: string;
   /** Optional error line under the detail. */
   error?: string | null;
+  /**
+   * 3px bar under the detail: a 0..1 fraction when the backend reports bytes
+   * or file counts, "indeterminate" when it only reports a busy state.
+   */
+  progress?: number | "indeterminate" | null;
   tone: ToastTone;
   actions?: ToastAction[];
   /** Legacy single action; the toast dismisses after it runs. */

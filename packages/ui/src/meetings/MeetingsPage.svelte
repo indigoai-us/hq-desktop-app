@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
+  import { dismissToastByKey, pushToast } from "../shell/toast-stack.svelte.js";
   import { hostComputerNoun } from "@hq/platform";
   import type {
     MeetingPermissionsSnapshot,
@@ -354,6 +355,44 @@
     }, 4000);
   }
 
+  // OWNER-003: page feedback renders on the shared toast layer. The page
+  // timer above still owns how long it stays (the upgrade action can hold it).
+  const MEETINGS_TOAST_KEY = "meetings-notice";
+  $effect(() => {
+    const current = toast;
+    const pending = toastUpgradePending;
+    untrack(() => {
+      if (!current) {
+        dismissToastByKey(MEETINGS_TOAST_KEY);
+        return;
+      }
+      const upgradeUrl = current.upgradeUrl;
+      pushToast({
+        key: MEETINGS_TOAST_KEY,
+        kind: "sticky",
+        tone: current.kind === "warn" ? "err" : "neutral",
+        title: current.text,
+        detail: "",
+        onDismiss: () => {
+          toast = null;
+        },
+        actions: upgradeUrl
+          ? [
+              {
+                label: pending ? "Opening…" : "Upgrade",
+                testId: "meetings-plan-upgrade",
+                primary: true,
+                disabled: pending,
+                keepOpen: true,
+                onAction: () => void openToastUpgrade(upgradeUrl),
+              },
+            ]
+          : [],
+      });
+    });
+  });
+  $effect(() => () => dismissToastByKey(MEETINGS_TOAST_KEY));
+
   async function openToastUpgrade(url: string): Promise<void> {
     if (toastUpgradePending) return;
     const safeUrl = externalHref(url);
@@ -668,25 +707,6 @@
     </div>
     {/snippet}
   </PageHeader>
-
-  {#if toast}
-    <div class="toast" class:toast-warn={toast.kind === "warn"} role="status">
-      <span>{toast.text}</span>
-      {#if toast.upgradeUrl}
-        <button
-          class="toast-upgrade"
-          data-testid="meetings-plan-upgrade"
-          type="button"
-          disabled={toastUpgradePending}
-          onclick={() => {
-            if (toast?.upgradeUrl) void openToastUpgrade(toast.upgradeUrl);
-          }}
-        >
-          {toastUpgradePending ? "Opening…" : "Upgrade"}
-        </button>
-      {/if}
-    </div>
-  {/if}
 
   <div class="content">
     <div class="url-invite-bar">
@@ -1158,47 +1178,6 @@
     flex-shrink: 0;
     align-items: center;
     gap: 8px;
-  }
-
-  .toast {
-    --toast-dot: var(--v4-ok);
-    display: flex;
-    align-items: baseline;
-    gap: 7px;
-    margin: 10px 0 0;
-    padding: 8px 0 0;
-    border: 0;
-    border-top: 1px solid var(--v4-rowline);
-    border-radius: 0;
-    background: transparent;
-    color: var(--v4-text-2);
-    font-size: var(--type-body, 13px);
-    line-height: 18px;
-  }
-
-  .toast::before {
-    width: 5px;
-    height: 5px;
-    flex: 0 0 auto;
-    border-radius: var(--v4-radius-pill);
-    background: var(--toast-dot);
-    content: "";
-    transform: translateY(-1px);
-  }
-
-  .toast-warn {
-    --toast-dot: var(--v4-warn);
-  }
-
-  .toast-upgrade {
-    flex: 0 0 auto;
-    border: 0;
-    border-bottom: 1px solid currentColor;
-    padding: 0;
-    background: transparent;
-    color: var(--v4-text-1);
-    font: inherit;
-    cursor: pointer;
   }
 
   .detect-setup {

@@ -68,8 +68,9 @@ describe('sync plan-limit event contract', () => {
   it('shows the server upgrade URL in the routed desktop-alt Meetings page', () => {
     expect(routedMeetingsStoreSource).toContain('planRequiredUpgradeUrl(err)');
     expect(routedMeetingsStoreSource).toContain('upgradeUrl ? { upgradeUrl } : {}');
-    expect(routedMeetingsPageSource).toContain('{#if toast.upgradeUrl}');
-    expect(routedMeetingsPageSource).toContain('data-testid="meetings-plan-upgrade"');
+    // OWNER-003: the Meetings notice is a toast on the shared layer.
+    expect(routedMeetingsPageSource).toContain('const upgradeUrl = current.upgradeUrl;');
+    expect(routedMeetingsPageSource).toContain('testId: "meetings-plan-upgrade"');
     expect(routedMeetingsPageSource).toContain('openToastUpgrade');
     expect(routedMeetingsErrorsSource).toContain('url.protocol !== "https:"');
   });

@@ -410,4 +410,56 @@ describe("DesktopApp update-available card", () => {
       resetSharedState();
     }
   });
+
+  it("Later snoozes the version for this session only", async () => {
+    const events = createSyncEventHost();
+    await mountApp(events.host);
+    events.emit("update-gate://deferred", gatePayload(VERSION_A));
+    await settle();
+    document.querySelector<HTMLButtonElement>('[data-testid="update-later"]')!.click();
+    await settle();
+    expect(document.querySelector('[data-testid="update-available-card"]')).toBeNull();
+    expect(window.localStorage.getItem("hq.update.dismissedVersion")).toBeNull();
+
+    // Same session, fresh window: still snoozed.
+    if (component) await unmount(component);
+    component = null;
+    host.remove();
+    await mountApp(events.host, gatePayload(VERSION_A));
+    expect(document.querySelector('[data-testid="update-available-card"]')).toBeNull();
+
+    // New session: the update is offered again.
+    if (component) await unmount(component);
+    component = null;
+    host.remove();
+    window.sessionStorage.clear();
+    await mountApp(events.host, gatePayload(VERSION_A));
+    expect(document.querySelector('[data-testid="update-available-card"]')).not.toBeNull();
+  });
+
+  it("shows one sync toast that fills while files move and goes quiet when done", async () => {
+    const events = createSyncEventHost();
+    await mountApp(events.host);
+    events.emit("sync:plan", { company: "Acme", filesToUpload: 4 });
+    events.emit("sync:progress", { company: "Acme" });
+    await settle();
+    let toasts = document.querySelectorAll<HTMLElement>('[data-testid="sync-toast"]');
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0].dataset.kind).toBe("sticky");
+    expect(toasts[0].textContent).toContain("1 of 4 done");
+    expect(toasts[0].querySelector('[data-testid="toast-progress"]')?.getAttribute("aria-valuenow")).toBe("25");
+
+    events.emit("sync:progress", { company: "Acme" });
+    await settle();
+    toasts = document.querySelectorAll<HTMLElement>('[data-testid="sync-toast"]');
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0].textContent).toContain("2 of 4 done");
+
+    events.emit("sync:all-complete", {});
+    await settle();
+    toasts = document.querySelectorAll<HTMLElement>('[data-testid="sync-toast"]');
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0].dataset.kind).toBe("quiet");
+    expect(toasts[0].textContent).toContain("Files up to date");
+  });
 });

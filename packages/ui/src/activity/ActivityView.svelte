@@ -8,6 +8,7 @@
    * refresh keeps the cached snapshot and records that the read finished.
    */
   import { onMount } from "svelte";
+  import { pushToast } from "../shell/toast-stack.svelte.js";
   import { publishCompanyPageCount } from "../shell/company-page-counts.svelte.js";
   import "../home/tokens.css";
   import "../common/button/rail-type.css";
@@ -41,7 +42,6 @@
   let range = $state<ActivityRange>("30d");
   let snapshot = $state<ActivitySnapshot | null>(null);
   let refreshing = $state(false);
-  let exportNote = $state("");
   let chart = $state<Awaited<ReturnType<typeof loadTokenDayStrip>> | null>(null);
 
   const bars = $derived<DayBar[]>(
@@ -90,7 +90,14 @@
     const current = snapshot ?? EMPTY_ACTIVITY;
     const csv = activityToCsv(current, range);
     const result = await saveCsvViaDialog(`activity-${slug || "company"}-${range}.csv`, csv);
-    exportNote = result === "saved" ? "Saved CSV" : "Export cancelled";
+    // OWNER-003: a quiet confirmation on the shared toast layer.
+    pushToast({
+      key: "activity-export",
+      testId: "export-note",
+      title: result === "saved" ? "Saved CSV" : "Export cancelled",
+      detail: "",
+      tone: result === "saved" ? "ok" : "neutral",
+    });
   }
 </script>
 
@@ -211,7 +218,6 @@
       {/if}
     </div>
   {/if}
-  {#if exportNote}<p class="toast" data-testid="export-note">{exportNote}</p>{/if}
 </div>
 
 <style>
@@ -261,7 +267,7 @@
   .tbl tr[data-live="true"] td { color: var(--t1); }
   .r { text-align: right; font-variant-numeric: tabular-nums; font-size: 13px; }
   .sk { font-size: 13px; color: var(--t3); }
-  .empty, .foot, .toast { font-size: 13px; color: var(--t3); }
+  .empty, .foot { font-size: 13px; color: var(--t3); }
   .axis { display: flex; justify-content: space-between; font-size: 13px; font-variant-numeric: tabular-nums; color: var(--t3); margin-bottom: 16px; }
   .who { display: flex; justify-content: space-between; height: 31px; box-sizing: border-box; padding: 7px 0; line-height: 17px; border-bottom: 1px solid var(--line); color: var(--t2); }
   .ev { display: grid; grid-template-columns: 52px 1fr; gap: 10px; padding: 7px 0; line-height: 17px; font-size: 13px; color: var(--t2); }

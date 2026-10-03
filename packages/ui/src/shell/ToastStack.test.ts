@@ -19,6 +19,8 @@ import {
   toastItems,
 } from "./toast-stack.svelte.js";
 import { looksLikeStateKey, updateToastCopy } from "./update-toast.js";
+import { syncToastCopy } from "./sync-toast.js";
+import { emptySyncStatus, type SyncStatusState } from "../home/sync-status.js";
 
 const SRC = join(__dirname, "..");
 
@@ -184,6 +186,7 @@ describe("update toast copy guard (OWNER-004)", () => {
     { version: "0.10.381", reasons: ["coreUpdateInProgress"], installing: false, installError: null },
     { version: "0.10.381", reasons: ["CoreUpdateInProgress"], installing: false, installError: null },
     { version: "0.10.381", reasons: ["someNewHoldCode"], installing: false, installError: null },
+    { version: "0.10.381", reasons: ["uploadInFlight"], installing: false, installError: null },
     { version: "0.10.381", reasons: [], installing: true, installError: null },
     { version: "0.10.381", reasons: [], installing: false, installError: "coreUpdateInProgress" },
     { version: "0.10.381", reasons: [], installing: false, installError: "install_failed" },
@@ -207,11 +210,20 @@ describe("update toast copy guard (OWNER-004)", () => {
     expect(updateToastCopy(states[0]).detail).toBe("HQ 0.10.381 is ready to install");
     expect(updateToastCopy(states[1]).detail).toBe("Waiting for the HQ folder update to finish");
     expect(updateToastCopy(states[3]).detail).toBe("Waiting for HQ to finish a task");
-    expect(updateToastCopy(states[5]).error).toBe("Waiting for the HQ folder update to finish");
-    expect(updateToastCopy(states[6])).toMatchObject({ title: "Update failed", installLabel: "Try again", installDisabled: false });
-    expect(updateToastCopy(states[7]).error).toBe("Could not reach the update server.");
-    expect(updateToastCopy(states[8]).title).toBe("Checking for updates");
-    expect(updateToastCopy(states[9]).detail).toBe("Downloading the new version (42%)");
+    expect(updateToastCopy(states[6]).error).toBe("Waiting for the HQ folder update to finish");
+    expect(updateToastCopy(states[7])).toMatchObject({ title: "Update failed", installLabel: "Try again", installDisabled: false });
+    expect(updateToastCopy(states[8]).error).toBe("Could not reach the update server.");
+    expect(updateToastCopy(states[9]).title).toBe("Checking for updates");
+    expect(updateToastCopy(states[10])).toMatchObject({
+      detail: "Downloading HQ 0.10.381 (42%)",
+      progress: 0.42,
+      installDisabled: true,
+      installTitle: "Finishing download",
+    });
+    expect(updateToastCopy(states[11]).progress).toBe("indeterminate");
+    expect(updateToastCopy(states[5]).progress).toBe("indeterminate");
+    expect(updateToastCopy(states[0])).toMatchObject({ progress: null, installDisabled: false, installLabel: "Restart to update" });
+    expect(updateToastCopy({ ...states[0], reasons: ["uploadInFlight"] }).detail).toBe("Waiting for an upload to finish");
   });
 
   it("the rendered toast carries no state key", () => {
@@ -222,5 +234,70 @@ describe("update toast copy guard (OWNER-004)", () => {
     const text = shown()[0].textContent ?? "";
     expect(text).not.toMatch(/\b[a-z]+[A-Z][A-Za-z]*\b/);
     expect(text).toContain("Waiting for the HQ folder update to finish");
+  });
+});
+
+describe("progress bar", () => {
+  it("is determinate when the backend reports counts and indeterminate when only busy", () => {
+    mountLayer();
+    pushToast({ key: "a", kind: "sticky", title: "Downloading update", detail: "", tone: "neutral", progress: 0.4 });
+    pushToast({ key: "b", kind: "sticky", title: "Syncing files", detail: "", tone: "neutral", progress: "indeterminate" });
+    pushToast({ key: "c", kind: "sticky", title: "Update available", detail: "", tone: "neutral" });
+    flushSync();
+    const bars = [...document.querySelectorAll<HTMLElement>('[data-testid="toast-progress"]')];
+    expect(bars).toHaveLength(2);
+    const [indeterminate, determinate] = bars; // newest first
+    expect(indeterminate.classList.contains("indeterminate")).toBe(true);
+    expect(indeterminate.getAttribute("aria-valuenow")).toBeNull();
+    expect(determinate.getAttribute("aria-valuenow")).toBe("40");
+    expect(determinate.querySelector("span")?.style.transform).toBe("scaleX(0.4)");
+  });
+
+  it("stops the shimmer under reduced motion", () => {
+    const own = readFileSync(join(SRC, "shell/ToastStack.svelte"), "utf8");
+    expect(own).toMatch(/\.reduced \.ts-bar\.indeterminate span\s*\{[^}]*animation:\s*none/);
+    expect(own).toMatch(/prefers-reduced-motion: reduce\)\s*\{\s*\.ts-bar\.indeterminate span\s*\{[^}]*animation:\s*none/);
+  });
+});
+
+describe("sync toast copy guard", () => {
+  const syncing = (planTotal: number, progressed: number, company: string | null = "Acme"): SyncStatusState => ({
+    ...emptySyncStatus(),
+    phase: "syncing",
+    planTotal,
+    progressed,
+    company,
+  });
+  const cases: Array<[SyncStatusState, boolean, boolean]> = [
+    [syncing(28, 3), true, false],
+    [syncing(0, 2), true, false],
+    [syncing(0, 0, null), false, false],
+    [emptySyncStatus(), true, false],
+    [emptySyncStatus(), false, true],
+    [{ ...emptySyncStatus(), phase: "auth-error" }, false, false],
+    [{ ...emptySyncStatus(), phase: "conflict" }, false, false],
+    [{ ...emptySyncStatus(), phase: "error" }, false, false],
+  ];
+
+  it("never renders a sync state key", () => {
+    for (const [status, moved, paused] of cases) {
+      const copy = syncToastCopy(status, moved, paused);
+      for (const word of `${copy.title} ${copy.detail}`.split(/\s+/).filter(Boolean)) {
+        expect(looksLikeStateKey(word), word).toBe(false);
+      }
+    }
+  });
+
+  it("maps sync states to plain copy with counted progress", () => {
+    expect(syncToastCopy(syncing(28, 3), true)).toEqual({
+      state: "busy",
+      title: "Syncing 28 files for Acme",
+      detail: "3 of 28 done",
+      progress: 3 / 28,
+    });
+    expect(syncToastCopy(syncing(0, 2), true)).toMatchObject({ detail: "2 files done", progress: "indeterminate" });
+    expect(syncToastCopy(emptySyncStatus(), true)).toMatchObject({ state: "done", title: "Files up to date" });
+    expect(syncToastCopy(emptySyncStatus(), false).state).toBe("none");
+    expect(syncToastCopy(emptySyncStatus(), false, true).title).toBe("Sync is paused");
   });
 });
