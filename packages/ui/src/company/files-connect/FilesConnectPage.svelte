@@ -11,6 +11,7 @@
   import type { DeployAppsPage } from "../../library/personal-deployments.js";
   import { dismissable } from "../../common/dismissable.js";
   import ShowMoreRow from "../../shell/ShowMoreRow.svelte";
+  import ListEmptyState from "../../common/ListEmptyState.svelte";
   import { publishCompanyPageCount } from "../../shell/company-page-counts.svelte.js";
   import { countLabel, pageRows } from "../../shell/list-paging.js";
   import CompanyFileTree from "../../files/CompanyFileTree.svelte";
@@ -323,6 +324,8 @@
 
   const integrationRows = $derived(filterIntegrations(data.integrations, integrationTab, query));
   const secretRows = $derived(filterSecrets(secrets ?? [], secretTab, query));
+  // Rows in the current Integrations tab before the search, for the no-match total.
+  const integrationTabTotal = $derived(filterIntegrations(data.integrations, integrationTab, "").length);
   const vaultPage = $derived(pageRows(vaultRows, vaultPages));
   const integrationPage = $derived(pageRows(integrationRows, integrationPages));
   const secretPage = $derived(pageRows(secretRows, secretPages));
@@ -335,9 +338,17 @@
   const integrationCurrent = $derived(
     integrationRows.find((row) => row.id === selectedIntegration) ?? integrationRows[0],
   );
-  const secretCurrent = $derived(
-    (secrets ?? []).find((row) => row.id === selectedSecret) ?? (secrets ?? [])[0],
-  );
+  // The inspector reads the filtered rows (QA-058): a secret the tab or search
+  // hides is never inspected, and its actions never stay on screen.
+  const secretCurrent = $derived(secretRows.find((row) => row.id === selectedSecret) ?? secretRows[0]);
+  $effect(() => {
+    if (selectedSecret && !secretRows.some((row) => row.id === selectedSecret)) selectedSecret = null;
+  });
+  const secretsFiltered = $derived(secretTab !== "all" || query.trim() !== "");
+  function clearSecretFilters() {
+    query = "";
+    secretTab = "all";
+  }
   const deployCurrent = $derived(
     (deployments ?? []).find((row) => row.id === selectedDeploy) ?? (deployments ?? [])[0],
   );
@@ -763,7 +774,19 @@
           </button>
         {/each}
         {#if integrationRows.length === 0}
-          <p class="empty-line" data-testid="integrations-empty">{integrationTab === "connected" ? "No connected apps yet" : integrationTab === "mcp" ? "No agent tools connected yet" : "No matching apps"}</p>
+          {#if query.trim() && integrationTabTotal > 0}
+            <ListEmptyState
+              total={integrationTabTotal}
+              shown={0}
+              {query}
+              noun={["app", "apps"]}
+              scope="in this view"
+              onclear={() => (query = "")}
+              testid="integrations-empty"
+            />
+          {:else}
+            <p class="empty-line" data-testid="integrations-empty">{integrationTab === "connected" ? "No connected apps yet" : integrationTab === "mcp" ? "No agent tools connected yet" : "No apps available"}</p>
+          {/if}
         {/if}
         {#if integrationPage.remaining > 0}
           <ShowMoreRow shown={integrationPage.rows.length} total={integrationPage.total} next={integrationPage.next} noun="integrations" testid="integrations-show-more" onmore={() => (integrationPages += 1)} />
@@ -788,7 +811,7 @@
   {:else if page === "secrets"}
     <header class="toolbar">
       <h1>Secrets</h1>
-      {#if secrets}<span class="count" data-testid="secrets-count">{countLabel("Secrets", secretRows.length)}</span>{/if}
+      {#if secrets}<span class="count" data-testid="secrets-count">{countLabel("Secrets", secretRows.length)}{secretsFiltered ? ` of ${secrets.length.toLocaleString()}` : ""}</span>{/if}
       <span class="grow"></span>
       <div class="fc-seg" role="tablist" aria-label="Secret kind">
         <button class="fc-seg-tab" role="tab" aria-selected={secretTab === "all"} onclick={() => (secretTab = "all")}>All</button>
@@ -803,7 +826,21 @@
         {#if secrets === null}
           {@render skeletonRows()}
         {:else if secretRows.length === 0}
-          <p class="empty-line" data-testid="secrets-empty">{secretsError ?? (query ? "No matching secrets" : "No secrets yet")}</p>
+          {#if secretsError}
+            <p class="empty-line" data-testid="secrets-empty">{secretsError}</p>
+          {:else}
+            <ListEmptyState
+              total={secrets.length}
+              shown={0}
+              {query}
+              filtered={secretTab !== "all"}
+              noun={["secret", "secrets"]}
+              scope="in this company"
+              emptyCopy="No secrets yet"
+              onclear={clearSecretFilters}
+              testid="secrets-empty"
+            />
+          {/if}
         {:else}
           {#each secretPage.rows as row (row.id)}
             <button class="row" type="button" data-testid="secret-row" aria-current={row.id === secretCurrent?.id} onclick={() => (selectedSecret = row.id)}>
