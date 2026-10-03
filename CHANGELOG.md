@@ -7,6 +7,7 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+- Workspace refresh no longer clears a company cloud link when an entity lookup is missing; only a confirmed deletion removes it.
 - Desktop Core baseline refresh now retries GitHub timeouts before reporting a pending baseline; persistent timeouts remain reported.
 
 - Past meetings can list local personal notes and your own desktop recordings, behind the desktop.meetings-personal-transcripts flag (off by default).
@@ -197,8 +198,6 @@ The release moves it under the version it ships in.
 - Internal: unused exports in the shared UI package are now module-private. No behaviour change.
 
 - Internal: unused exports in the work shell and installer are now module-private. No behaviour change.
-
-- Workspace refresh no longer clears a company cloud link when an entity lookup is missing; only a confirmed deletion removes it.
 
 - With the Personal workspace board rollout enabled, HQ Desktop shows the
   cloud-backed board alongside company workspaces.
