@@ -1,55 +1,84 @@
+// @vitest-environment happy-dom
 /**
  * Contrast compensation for the Files sidebar.
  *
- * The perf pass removed this panel's `backdrop-filter` (the native glass view
- * behind the transparent window already blurs). The chat rail got the same
- * treatment AND an alpha bump to pay for the lost contrast (--side-bg
- * 0.18→0.30 light, 0.12→0.20 dark, commit fa4807c1); this panel did not, so at
- * max transparency in light mode its --v4-sidebar token floors near 0.12 alpha
- * and the sidebar washes out.
- *
- * Asserted against the source because the compensation is pure CSS on a token
- * the component does not own.
+ * The perf pass removed this panel's backdrop-filter (the native glass view
+ * behind the transparent window already blurs). The wash layered on
+ * --v4-sidebar pays for the lost contrast. happy-dom does not compute scoped
+ * styles, so these assertions read the stylesheet the mounted panel injects.
  */
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { mount, tick, unmount } from "svelte";
+import type { FilesApi } from "@hq/platform";
 
-const SOURCE = readFileSync(
-  fileURLToPath(new URL("./FilesModeSidebar.svelte", import.meta.url)),
-  "utf8",
-);
+import FilesModeSidebar from "./FilesModeSidebar.svelte";
 
-/** The style block only — never match the markup or the script. */
-const STYLE = SOURCE.slice(SOURCE.lastIndexOf("<style>"));
+let host: HTMLDivElement | null = null;
+let component: ReturnType<typeof mount> | null = null;
+
+afterEach(async () => {
+  if (component) await unmount(component);
+  component = null;
+  host?.remove();
+  host = null;
+});
+
+async function injected(): Promise<string> {
+  host = document.createElement("div");
+  document.body.appendChild(host);
+  const files = {
+    listDir: async () => ({ ok: false as const, error: { code: "unavailable", message: "stub" } }),
+  } as unknown as FilesApi;
+  component = mount(FilesModeSidebar, {
+    target: host,
+    props: {
+      files,
+      companies: [],
+      activeSlug: null,
+      selectedPath: null,
+      accessReady: false,
+    },
+  });
+  await tick();
+  expect(host.querySelector(".files-sidebar")).not.toBeNull();
+  return [...document.querySelectorAll("style")]
+    .map((node) => node.textContent ?? "")
+    .filter((css) => css.includes("files-sidebar"))
+    .join("\n")
+    .replace(/\/\*[\s\S]*?\*\//g, "");
+}
+
+function mainRule(css: string): string {
+  const match = css.match(/\.files-sidebar\.svelte-[\w-]+\s*\{([^}]*)\}/);
+  expect(match, "mounted Files sidebar has no panel rule").not.toBeNull();
+  return match![1];
+}
 
 describe("FilesModeSidebar background", () => {
-  it("still has no backdrop-filter on the panel itself", () => {
-    const panel = STYLE.slice(
-      STYLE.indexOf("  .files-sidebar {"),
-      STYLE.indexOf("  /* Header:"),
-    );
-    expect(panel).not.toMatch(/^\s*(-webkit-)?backdrop-filter:(?!\s*none)/m);
+  it("still has no backdrop-filter on the panel itself", async () => {
+    const panel = mainRule(await injected());
+    expect(panel).not.toMatch(/(-webkit-)?backdrop-filter:\s*(?!none)/);
   });
 
-  it("layers a wash over --v4-sidebar so the lost blur is paid for", () => {
-    expect(STYLE).toMatch(
+  it("layers a wash over --v4-sidebar so the lost blur is paid for", async () => {
+    const panel = mainRule(await injected());
+    expect(panel).toMatch(
       /background:\s*linear-gradient\(\s*var\(--fs-panel-wash\),\s*var\(--fs-panel-wash\)\s*\),\s*var\(--v4-sidebar/,
     );
   });
 
-  it("defines the wash for light and dark, at the chat rail's magnitude", () => {
-    const alphas = [...STYLE.matchAll(/--fs-panel-wash:\s*rgb\([^)]*\/\s*([\d.]+)\)/g)].map(
-      (m) => Number(m[1]),
+  it("defines the wash for light and dark, at the chat rail's magnitude", async () => {
+    const css = await injected();
+    const alphas = [...css.matchAll(/--fs-panel-wash:\s*rgb\([^)]*\/\s*([\d.]+)\)/g)].map(
+      (match) => Number(match[1]),
     );
     expect(alphas.length).toBeGreaterThanOrEqual(3);
-    // The chat rail's bump was +0.12 light / +0.08 dark; stay in that band.
     for (const alpha of alphas) {
       expect(alpha).toBeGreaterThanOrEqual(0.08);
       expect(alpha).toBeLessThanOrEqual(0.14);
     }
-    expect(STYLE).toMatch(/prefers-color-scheme:\s*dark[\s\S]*?--fs-panel-wash/);
-    expect(STYLE).toMatch(/data-force-theme="light"[\s\S]*?--fs-panel-wash/);
-    expect(STYLE).toMatch(/data-force-theme="dark"[\s\S]*?--fs-panel-wash/);
+    expect(css).toMatch(/prefers-color-scheme:\s*dark[\s\S]*?--fs-panel-wash/);
+    expect(css).toMatch(/data-force-theme="light"[\s\S]*?--fs-panel-wash/);
+    expect(css).toMatch(/data-force-theme="dark"[\s\S]*?--fs-panel-wash/);
   });
 });
