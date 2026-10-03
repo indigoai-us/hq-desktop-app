@@ -82,3 +82,11 @@ describe("Meetings type and chrome contract", () => {
     }
   });
 });
+
+describe("AUDIT-2 Meetings sidepane type", () => {
+  it("keeps the sidepane title and rows at 13px (no 14px+ text)", () => {
+    const css = styleOf(resolve(here, "MeetingsSidepane.svelte"));
+    const sizes = [...css.matchAll(/font-size:\s*(\d+(?:\.\d+)?)px/g)].map((m) => Number(m[1]));
+    expect(sizes.filter((px) => px > 13)).toEqual([]);
+  });
+});

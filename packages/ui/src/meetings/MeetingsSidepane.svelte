@@ -200,7 +200,7 @@
 
   .title {
     flex: 1 1 auto;
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 500;
   }
 
@@ -262,7 +262,7 @@
     background: transparent;
     color: var(--t1);
     font: inherit;
-    font-size: 14px;
+    font-size: 13px;
     text-align: left;
     cursor: pointer;
   }
