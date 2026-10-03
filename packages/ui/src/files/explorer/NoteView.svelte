@@ -9,6 +9,7 @@
    */
   import { tick } from "svelte";
   import { renderMarkdown } from "../../common/markdown.js";
+  import { handleMarkdownLinkClick } from "../../common/markdown-links.js";
   import { outlineOf, splitFrontmatter, plural, type NoteProperty, type OutlineItem } from "./vault-model.js";
 
   interface Props {
@@ -28,6 +29,9 @@
     scrollTo?: { index: number; seq: number } | null;
     /** Shown on a truncated note: opens the whole file elsewhere. */
     onopenfull?: () => void;
+    /** Whether a relative Markdown link target exists in this vault (QA-104).
+     *  Missing targets get an inline note instead of opening. */
+    linkexists?: (path: string) => Promise<boolean>;
   }
 
   let {
@@ -41,7 +45,23 @@
     onlinktargets,
     scrollTo = null,
     onopenfull,
+    linkexists,
   }: Props = $props();
+
+  /** Plain-language note when a relative link points at a missing file. */
+  let linkNote = $state<string | null>(null);
+
+  async function openLinkedFile(target: string, newTab: boolean): Promise<void> {
+    const from = path;
+    linkNote = null;
+    const exists = linkexists ? await linkexists(target) : true;
+    if (path !== from) return;
+    if (!exists) {
+      linkNote = `${target.split("/").pop() ?? target} isn't in this vault`;
+      return;
+    }
+    onopen(target, { newTab });
+  }
 
   let article = $state<HTMLElement | null>(null);
 
@@ -121,7 +141,16 @@
   function followLink(event: MouseEvent | KeyboardEvent): void {
     const link = (event.target as HTMLElement | null)?.closest<HTMLElement>(".markdown-wikilink");
     const target = link?.dataset.target;
-    if (!target) return;
+    if (!target) {
+      if (event instanceof MouseEvent) {
+        const newTab = event.metaKey || event.ctrlKey;
+        handleMarkdownLinkClick(event, {
+          currentPath: path,
+          onopenfile: (p) => void openLinkedFile(p, newTab),
+        });
+      }
+      return;
+    }
     if (event instanceof KeyboardEvent && event.key !== "Enter") return;
     event.preventDefault();
     onopen(target, { newTab: event.metaKey || event.ctrlKey });
@@ -177,6 +206,10 @@
     </dl>
   {/if}
 
+  {#if linkNote}
+    <p class="link-note" role="status" data-testid="note-link-note">{linkNote}</p>
+  {/if}
+
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <article
     class="markdown-body"
@@ -190,6 +223,10 @@
 </div>
 
 <style>
+  .link-note {
+    margin: 0 0 12px;
+    color: var(--v4-text-2);
+  }
   .note {
     box-sizing: border-box;
     max-width: 740px;

@@ -36,6 +36,8 @@
     repoAccess?: boolean;
     sessions?: readonly PortfolioSessionRef[];
     ownerName?: string;
+    /** File to select when the pane opens, e.g. from a README link (QA-104). */
+    openPath?: string | null;
   }
 
   let {
@@ -45,6 +47,7 @@
     repoAccess = true,
     sessions = [],
     ownerName = "You",
+    openPath = null,
   }: Props = $props();
 
   let linkedRepo = $state<string | null>(null);
@@ -168,6 +171,10 @@
   function inScope(path: string): boolean {
     return roots.some((root) => path === root.path || path.startsWith(`${root.path}/`));
   }
+
+  $effect(() => {
+    if (openPath) selectFile(openPath);
+  });
 
   function selectFile(path: string): void {
     if (!inScope(path)) return;
