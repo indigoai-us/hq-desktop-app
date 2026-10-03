@@ -31,6 +31,9 @@
     testid?: string;
     /** Stretch to the container width (form fields). */
     block?: boolean;
+    /** Pill shape for header filters; `active` paints the selected style. */
+    pill?: boolean;
+    active?: boolean;
     onchange?: (value: V) => void;
   }
 
@@ -42,6 +45,8 @@
     disabled = false,
     testid,
     block = false,
+    pill = false,
+    active: selectedStyle = false,
     onchange,
   }: Props = $props();
 
@@ -137,6 +142,8 @@
     bind:this={button}
     type="button"
     class="dd-button"
+    class:pill
+    class:sel={selectedStyle}
     aria-haspopup="listbox"
     aria-expanded={open}
     aria-controls={`${uid}-list`}
@@ -210,6 +217,8 @@
     text-align: left;
     cursor: pointer;
   }
+  .dd-button.pill { border-radius: 999px; padding: 0 8px 0 12px; width: auto; }
+  .dd-button.sel { background: var(--sel, var(--overlay-hover)); border-color: transparent; }
   .dd-button:disabled { opacity: 0.55; cursor: default; }
   .dd-button:focus-visible { outline: 2px solid var(--v4-focus, currentColor); outline-offset: 1px; }
   .dd-value { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

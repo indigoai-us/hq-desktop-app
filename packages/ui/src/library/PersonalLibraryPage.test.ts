@@ -2,7 +2,8 @@
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import PersonalLibraryPage from "./PersonalLibraryPage.svelte";
-import PersonalDeploymentsPage from "./PersonalDeploymentsPage.svelte";
+import PersonalDeploymentsPage, { resetDeployPillsForTests } from "./PersonalDeploymentsPage.svelte";
+import { chooseDropdown } from "../test-support/dropdown.js";
 
 describe("US-031 personal library and deployments", () => {
   let component: Record<string, unknown> | null = null;
@@ -12,6 +13,7 @@ describe("US-031 personal library and deployments", () => {
     if (component) await unmount(component);
     component = null;
     host?.remove();
+    resetDeployPillsForTests();
   });
 
   it("shows the selected shared file in the preview column", async () => {
@@ -112,9 +114,8 @@ describe("US-031 personal library and deployments", () => {
     component = mount(PersonalDeploymentsPage, { target: host, props: { accountId: "acct-qa038", listDeployApps, companies: [] } });
     flushSync();
     await vi.waitFor(() => expect(host.querySelector('[data-testid="deploy-count"]')?.textContent).toBe("3 apps"));
-    const sleeping = [...host.querySelectorAll<HTMLButtonElement>(".pane .row")].find((b) => b.textContent?.trim() === "Sleeping")!;
-    sleeping.click();
-    flushSync();
+    // OWNER-R34: the status filter is the header Status pill.
+    await chooseDropdown(host, "deploy-status-pill", "sleeping");
     expect(host.querySelector('[data-testid="deploy-count"]')?.textContent).toBe("2 of 3 apps");
     expect(host.querySelectorAll('[data-testid="deploy-row"]').length).toBe(2);
   });

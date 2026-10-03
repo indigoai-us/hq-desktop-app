@@ -15,10 +15,12 @@
     disabled?: boolean;
     testid?: string;
     block?: boolean;
+    pill?: boolean;
+    active?: boolean;
     onchange?: (value: string) => void;
   }
 
-  let { value = $bindable(), options, label, prefix = "", disabled = false, testid, block = false, onchange }: Props = $props();
+  let { value = $bindable(), options, label, prefix = "", disabled = false, testid, block = false, pill = false, active = false, onchange }: Props = $props();
 
   const current = $derived(options.find((o) => o.value === value)?.label ?? "");
 </script>
@@ -33,6 +35,8 @@
     disabled,
     testid,
     block,
+    pill,
+    active,
     onchange: (next: string) => {
       value = next;
       onchange?.(next);
@@ -40,7 +44,7 @@
   }}
 >
   {#snippet skeleton()}
-    <span class="dd-wait" class:block aria-hidden="true">
+    <span class="dd-wait" class:block class:pill aria-hidden="true">
       {#if prefix}<span class="dd-wait-prefix">{prefix} · </span>{/if}{current}
     </span>
   {/snippet}
@@ -58,6 +62,7 @@
     color: var(--v4-text-1);
     white-space: nowrap;
   }
+  .dd-wait.pill { border-radius: 999px; padding: 0 30px 0 12px; }
   .dd-wait.block { display: flex; width: 100%; }
   .dd-wait-prefix { color: var(--v4-text-3); }
 </style>
