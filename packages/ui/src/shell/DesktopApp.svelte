@@ -10492,7 +10492,10 @@
           <PersonalRailHost
             page={railPlaceholder.id}
             companies={railCompanyRoster.map((company) => ({ uid: company.uid, label: company.label }))}
+            activeCompany={railCompanyRoster.find((company) => company.uid === tenantCompanyId) ?? null}
             onopenintegrations={openCompanyIntegrations}
+            integrationsApi={adapter.agents ?? null}
+            openExternal={onopenurl}
           />
         {:else if railPlaceholder?.id === "outpost"}
           <OutpostRailHost api={adapter.agents ?? null} openExternal={onopenurl} />

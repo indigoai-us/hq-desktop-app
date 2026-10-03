@@ -19,6 +19,7 @@ import {
   type VersionInfo,
   AGENT_PATHS,
   OUTPOST_PATHS,
+  PERSONAL_INTEGRATION_PATHS,
   buildSendReplyRequest,
   failure,
   normalizeReplyThreadValue,
@@ -1087,6 +1088,12 @@ export function createSyncPlatformAdapter(
         hqProJson('GET', AGENT_PATHS.myTelemetry(from, to)),
       getMyOutpostStatus: () => hqProJson('POST', OUTPOST_PATHS.status, {}),
       listMyOutpostJobs: () => hqProJson('GET', OUTPOST_PATHS.jobsStatus),
+      listMyGoogleAccounts: () => hqProJson('GET', PERSONAL_INTEGRATION_PATHS.googleAccounts),
+      disconnectMyGoogleAccount: (accountId) =>
+        hqProJson('DELETE', PERSONAL_INTEGRATION_PATHS.googleAccount(accountId)),
+      listMySlackAccounts: () => hqProJson('GET', PERSONAL_INTEGRATION_PATHS.slackAccounts),
+      disconnectMySlackAccount: (accountId) =>
+        hqProJson('DELETE', PERSONAL_INTEGRATION_PATHS.slackAccount(accountId)),
     },
 
     company: {

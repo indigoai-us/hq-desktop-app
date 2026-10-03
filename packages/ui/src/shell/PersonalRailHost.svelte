@@ -5,14 +5,18 @@
    */
   import { onMount } from "svelte";
   import { loadPersonalRail } from "./personal-rail-lazy.js";
+  import type { PersonalIntegrationsApi } from "../personal/personal-integrations.js";
 
   interface Props {
     page: "secrets" | "connections";
     companies?: { uid: string; label: string }[];
+    activeCompany?: { uid: string; label: string } | null;
     onopenintegrations?: (uid: string) => void;
+    integrationsApi?: PersonalIntegrationsApi | null;
+    openExternal?: (url: string) => void;
   }
 
-  let { page, companies = [], onopenintegrations }: Props = $props();
+  let { page, companies = [], activeCompany = null, onopenintegrations, integrationsApi = null, openExternal }: Props = $props();
 
   let Body = $state<typeof import("../personal/PersonalRailPage.svelte").default | null>(null);
 
@@ -25,7 +29,7 @@
 
 <div class="host" data-testid="personal-rail-host" data-page={page}>
   {#if Body}
-    <Body {page} {companies} {onopenintegrations} />
+    <Body {page} {companies} {activeCompany} {onopenintegrations} {integrationsApi} {openExternal} />
   {:else}
     <div class="skeleton" data-testid="personal-rail-skeleton" aria-busy="true">
       <aside>

@@ -36,6 +36,17 @@
     type BotPolicy,
     type PersonalRailCache,
   } from "./personal-rail-model.js";
+  import {
+    PERSONAL_INTEGRATIONS_URL,
+    connectedLabel,
+    disconnectPersonalIntegration,
+    loadPersonalIntegrations,
+    readIntegrationsCache,
+    writeIntegrationsCache,
+    IntegrationsLoadError,
+    type PersonalIntegration,
+    type PersonalIntegrationsApi,
+  } from "./personal-integrations.js";
 
   interface Props {
     page: "secrets" | "connections";
@@ -43,10 +54,24 @@
     fixtures?: boolean;
     /** Companies the owner belongs to, for the per-company Integrations links. */
     companies?: { uid: string; label: string }[];
+    /** The selected company, when one is; its Integrations page is linked at the bottom. */
+    activeCompany?: { uid: string; label: string } | null;
     onopenintegrations?: (uid: string) => void;
+    /** hq-pro personal integration routes (Google, personal Slack). */
+    integrationsApi?: PersonalIntegrationsApi | null;
+    /** Opens a URL in the system browser. */
+    openExternal?: (url: string) => void;
   }
 
-  let { page, fixtures = false, companies = [], onopenintegrations }: Props = $props();
+  let {
+    page,
+    fixtures = false,
+    companies = [],
+    activeCompany = null,
+    onopenintegrations,
+    integrationsApi = null,
+    openExternal,
+  }: Props = $props();
 
   // Fixture mode is fixed for the life of the page.
   const useFixtures = untrack(() => fixtures);
@@ -98,6 +123,65 @@
       // Cached rows stay on screen; the error state only replaces an empty list.
       secretsState = data.secrets.length > 0 ? "ready" : "error";
     }
+  }
+
+  // Personal integrations: cached rows paint first, refresh runs after paint.
+  const cachedIntegrations = useFixtures ? null : readIntegrationsCache();
+  let integrations = $state<PersonalIntegration[]>(cachedIntegrations ?? []);
+  let integrationsState = $state<"loading" | "ready" | "error">(cachedIntegrations ? "ready" : "loading");
+  let integrationsError = $state("");
+  let selectedIntegration = $state("");
+  let disconnecting = $state(false);
+  let disconnectError = $state("");
+
+  $effect(() => {
+    if (useFixtures || page !== "connections") return;
+    let live = true;
+    queueMicrotask(() => {
+      if (live) void refreshIntegrations();
+    });
+    return () => {
+      live = false;
+    };
+  });
+
+  async function refreshIntegrations(): Promise<void> {
+    if (integrationsState === "error") integrationsState = "loading";
+    try {
+      const next = await loadPersonalIntegrations(integrationsApi);
+      integrations = next;
+      writeIntegrationsCache(next);
+      integrationsState = "ready";
+      integrationsError = "";
+    } catch (err) {
+      if (!(err instanceof IntegrationsLoadError)) console.warn("[personal-rail] integrations load failed", err);
+      integrationsError = err instanceof IntegrationsLoadError ? err.reason : "Could not load your connections. Check your connection and retry.";
+      // Cached rows stay on screen; the error state only replaces an empty list.
+      integrationsState = integrations.length > 0 ? "ready" : "error";
+    }
+  }
+
+  const integrationCurrent = $derived(
+    integrations.find((row) => row.id === selectedIntegration) ?? integrations[0],
+  );
+
+  function openConsoleIntegrations(): void {
+    openExternal?.(PERSONAL_INTEGRATIONS_URL);
+  }
+
+  async function confirmDisconnect(row: PersonalIntegration): Promise<void> {
+    if (disconnecting) return;
+    disconnecting = true;
+    disconnectError = "";
+    const error = await disconnectPersonalIntegration(integrationsApi, row);
+    disconnecting = false;
+    if (error) {
+      disconnectError = error;
+      return;
+    }
+    integrations = integrations.filter((item) => item.id !== row.id);
+    writeIntegrationsCache(integrations);
+    sheet = null;
   }
 
   const secretRows = $derived(filterPersonalSecrets(data.secrets, secretTab, query));
@@ -184,10 +268,7 @@
       <p class="sec">Needs attention</p>
       <button class="nav" type="button" aria-current={secretTab === "stale"} onclick={() => (secretTab = "stale")}>Not rotated in 90 d</button>
     {:else if !useFixtures}
-      <p class="sec">Managed per company</p>
-      {#each companies as company (company.uid)}
-        <button class="nav" type="button" onclick={() => onopenintegrations?.(company.uid)}>{company.label}</button>
-      {/each}
+      <button class="nav" type="button" aria-current="true" data-testid="connections-personal-nav">Personal <span>{integrations.length}</span></button>
     {:else}
       <button class="nav" type="button" aria-current={connectionTab === "connected"} onclick={() => (connectionTab = "connected")}>Connected <span>{connectedCount}</span></button>
       <button class="nav" type="button" aria-current={connectionTab === "available"} onclick={() => (connectionTab = "available")}>Available</button>
@@ -274,18 +355,67 @@
     {:else if !useFixtures}
       <header class="toolbar">
         <h1>Connections</h1>
+        <span class="sub">Apps connected to you, usable across your sessions, never owned by a company</span>
+        <span class="grow"></span>
+        <button class="btn primary" type="button" data-testid="add-integration" onclick={openConsoleIntegrations}>Add integration</button>
       </header>
-      <div class="state" data-testid="connections-per-company">
-        <p>Connections are managed per company. HQ does not have personal connections yet, so each company keeps its own apps on its Integrations page.</p>
-        {#if companies.length === 0}
-          <p>Join or create a company to connect apps.</p>
-        {:else}
-          {#each companies as company (company.uid)}
-            <button class="btn" type="button" data-testid={`connections-company-${company.uid}`} onclick={() => onopenintegrations?.(company.uid)}>
-              {company.label} Integrations
+      <div class="split">
+        <div class="list" data-testid="personal-integrations-list">
+          {#if integrationsError && integrationsState === "ready"}
+            <p class="meta" data-testid="personal-integrations-stale">
+              Showing saved rows. {integrationsError}
+              <button class="btn tiny-btn" type="button" onclick={() => void refreshIntegrations()}>Retry</button>
+            </p>
+          {/if}
+          {#if integrationsState === "loading"}
+            <div data-testid="personal-integrations-skeleton" aria-busy="true">
+              {#each [0, 1, 2] as i (i)}<div class="skel"></div>{/each}
+            </div>
+          {:else if integrationsState === "error"}
+            <div class="state" role="alert" data-testid="personal-integrations-error">
+              <p>{integrationsError}</p>
+              <button class="btn" type="button" data-testid="personal-integrations-retry" onclick={() => void refreshIntegrations()}>Retry</button>
+            </div>
+          {:else if integrations.length === 0}
+            <div class="state empty" data-testid="personal-integrations-empty">
+              <p>No personal connections yet</p>
+              <button class="btn" type="button" onclick={openConsoleIntegrations}>Add integration</button>
+            </div>
+          {:else}
+            <div class="head irow"><span>App</span><span>Account</span><span>Status</span><span>Connected</span></div>
+            {#each integrations as row (row.id)}
+              <button class="srow irow" type="button" data-testid={`integration-row-${row.id}`} aria-current={row.id === integrationCurrent?.id} onclick={() => (selectedIntegration = row.id)}>
+                <span class="nm">{row.app}</span>
+                <span>{row.identity}</span>
+                <span class="status"><span class="dot" data-status={row.status === "active" ? "connected" : "reconnect"}></span>{row.status === "active" ? "Active" : "Reconnect"}</span>
+                <span>{connectedLabel(row.connectedAt).replace("Connected ", "")}</span>
+              </button>
+            {/each}
+          {/if}
+          {#if activeCompany}
+            <button class="srow company-link" type="button" data-testid="company-connections-link" onclick={() => onopenintegrations?.(activeCompany.uid)}>
+              <span>Company connections</span><span class="meta">{activeCompany.label} Integrations</span>
             </button>
-          {/each}
-        {/if}
+          {/if}
+        </div>
+        <aside class="inspector" data-testid="integration-inspector">
+          {#if integrationCurrent}
+            <p class="kind"><span class="dot" data-status={integrationCurrent.status === "active" ? "connected" : "reconnect"}></span>{integrationCurrent.status === "active" ? "Active" : "Reconnect needed"}</p>
+            <h2>{integrationCurrent.app}</h2>
+            <p class="meta">{integrationCurrent.identity}</p>
+            {#if connectedLabel(integrationCurrent.connectedAt)}<p class="meta">{connectedLabel(integrationCurrent.connectedAt)}</p>{/if}
+            {#if integrationCurrent.sources.length > 0}
+              <p class="label">Connected sources</p>
+              <ul class="sources" data-testid="integration-sources">
+                {#each integrationCurrent.sources as source (source)}<li>{source}</li>{/each}
+              </ul>
+            {/if}
+            <div class="act">
+              <button class="btn" type="button" data-testid="integration-manage" onclick={openConsoleIntegrations}>Manage</button>
+              <button class="btn" type="button" data-testid="integration-disconnect" onclick={() => { disconnectError = ""; sheet = "confirm-integration-disconnect"; }}>Disconnect</button>
+            </div>
+          {/if}
+        </aside>
       </div>
     {:else}
       <header class="toolbar">
@@ -421,6 +551,11 @@
         <h2 data-testid="connect-waiting">Waiting for {connect.app}</h2>
         <p>Finish sign-in in the browser. This sheet stays until the deep link returns.</p>
         <button class="btn" type="button" data-testid="connect-return" onclick={simulateReturn}>Deep link returned</button>
+      {:else if sheet === "confirm-integration-disconnect" && integrationCurrent}
+        <h2>Disconnect {integrationCurrent.app}?</h2>
+        <p class="meta">{integrationCurrent.identity}. HQ stops reading this account until you connect it again.</p>
+        {#if disconnectError}<p class="meta" role="alert" data-testid="integration-disconnect-error">{disconnectError}</p>{/if}
+        <button class="btn danger" type="button" data-testid="confirm-integration-disconnect" disabled={disconnecting} onclick={() => void confirmDisconnect(integrationCurrent)}>{disconnecting ? "Disconnecting…" : "Disconnect"}</button>
       {:else if sheet === "confirm-disconnect"}
         <h2>Disconnect {connectionCurrent?.name}?</h2>
         <p class="meta">Bots lose this connection on their next run.</p>
@@ -489,6 +624,11 @@
   h2 { font-size: 13px; font-weight: 500; margin: 0 0 2px; color: var(--t1, var(--v4-text-1)); }
   .kind { margin: 0 0 8px; display: flex; align-items: center; }
   .sheet { position: absolute; right: 16px; bottom: 16px; width: 320px; padding: 16px 20px; border: 1px solid var(--panel-border, var(--v4-rowline)); border-radius: 8px; background: var(--panel-bg, var(--v4-raised, var(--v4-ground))); box-shadow: var(--panel-shadow, none); display: flex; flex-direction: column; gap: 8px; }
+  .irow { grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.4fr) 110px 110px; }
+  .company-link { display: flex; gap: 8px; margin-top: 12px; }
+  .sources { list-style: none; margin: 0; padding: 0; color: var(--t2, var(--v4-text-2)); }
+  .sources li { height: 28px; line-height: 28px; }
+  .state.empty { text-align: center; padding: 48px 16px; color: var(--t3, var(--v4-text-3)); }
   .state { padding: 16px 8px; color: var(--t2, var(--v4-text-2)); }
   .state p { margin: 0 0 8px; }
   .state .btn { margin: 0 8px 8px 0; }

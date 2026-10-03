@@ -1247,6 +1247,16 @@ export const AGENT_PATHS = {
     `/v1/telemetry/me?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
 } as const;
 
+/** The caller's personal integrations, as read by the console's Personal Integrations page. */
+export const PERSONAL_INTEGRATION_PATHS = {
+  googleAccounts: "/v1/google/accounts",
+  googleAccount: (accountId: string) =>
+    `/v1/google/accounts/${encodeURIComponent(accountId)}`,
+  slackAccounts: "/v1/slack/personal/accounts",
+  slackAccount: (accountId: string) =>
+    `/v1/slack/personal/accounts/${encodeURIComponent(accountId)}`,
+} as const;
+
 export interface AgentProvisionSizeOption {
   key: "basic" | "power" | "dev";
   productName: string;
@@ -1312,6 +1322,14 @@ export interface AgentsApi {
   getMyOutpostStatus?(): AdapterPromise<Json>;
   /** GET /outpost/jobs/status — the caller's scheduled-job status rows. */
   listMyOutpostJobs?(): AdapterPromise<Json>;
+  /** GET /v1/google/accounts — the caller's connected Google accounts. */
+  listMyGoogleAccounts?(): AdapterPromise<Json>;
+  /** DELETE /v1/google/accounts/{accountId} — disconnect one Google account. */
+  disconnectMyGoogleAccount?(accountId: string): AdapterPromise<Json>;
+  /** GET /v1/slack/personal/accounts — the caller's personal Slack accounts. */
+  listMySlackAccounts?(): AdapterPromise<Json>;
+  /** DELETE /v1/slack/personal/accounts/{accountId}. */
+  disconnectMySlackAccount?(accountId: string): AdapterPromise<Json>;
 }
 
 export interface FeedbackApi {

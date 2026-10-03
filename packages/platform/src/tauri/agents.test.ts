@@ -124,3 +124,25 @@ describe("createSyncPlatformAdapter personal Outpost", () => {
     expect(res && !res.ok ? res.code : "").toBe("http-404");
   });
 });
+
+describe("createSyncPlatformAdapter personal integrations", () => {
+  it("reads and disconnects Google and personal Slack accounts on the console's routes", async () => {
+    const calls: Invocation[] = [];
+    const adapter = createSyncPlatformAdapter({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args });
+        return { status: 200, body: JSON.stringify({ accounts: [] }) };
+      },
+    });
+    await adapter.agents.listMyGoogleAccounts?.();
+    await adapter.agents.listMySlackAccounts?.();
+    await adapter.agents.disconnectMyGoogleAccount?.("g/1");
+    await adapter.agents.disconnectMySlackAccount?.("s1");
+    expect(calls.map((c) => [c.args?.method, c.args?.url])).toEqual([
+      ["GET", "/v1/google/accounts"],
+      ["GET", "/v1/slack/personal/accounts"],
+      ["DELETE", "/v1/google/accounts/g%2F1"],
+      ["DELETE", "/v1/slack/personal/accounts/s1"],
+    ]);
+  });
+});

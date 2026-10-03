@@ -3,6 +3,7 @@ import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import PersonalRailPage from "./PersonalRailPage.svelte";
 import { clearPersonalRailCache } from "./personal-rail-model.js";
+import { clearIntegrationsCache } from "./personal-integrations.js";
 
 vi.mock("../company/company-store.svelte.js", () => ({
   companyStore: {
@@ -22,6 +23,7 @@ describe("US-033 PersonalRailPage", () => {
     if (component) await unmount(component);
     component = null;
     clearPersonalRailCache();
+    clearIntegrationsCache();
   });
 
   async function settle(): Promise<void> {
@@ -113,23 +115,135 @@ describe("US-033 PersonalRailPage", () => {
     expect(target.querySelector("[data-testid='personal-secrets-list']")?.textContent).toContain("HQ_TOKEN");
   });
 
-  it("says connections are managed per company and links into each company's Integrations", () => {
+  const GOOGLE_BODY = {
+    accounts: [
+      { accountId: "g1", email: "me@example.com", scope: "", connectedAt: "2026-09-30T12:00:00Z", capabilities: ["gmail", "calendar", "drive"] },
+    ],
+  };
+  const SLACK_BODY = {
+    accounts: [
+      { accountId: "s1", teamId: "T1", slackUserId: "U1", teamName: "Acme", teamDomain: "acme", slackUserDisplay: "Corey", companyUid: "cmp_a", capabilities: [], connectedAt: "2026-09-29T12:00:00Z", status: "active" },
+    ],
+  };
+
+  function integrationsApi(overrides: Record<string, unknown> = {}) {
+    return {
+      listMyGoogleAccounts: vi.fn(async () => ({ ok: true as const, value: GOOGLE_BODY })),
+      listMySlackAccounts: vi.fn(async () => ({ ok: true as const, value: SLACK_BODY })),
+      disconnectMyGoogleAccount: vi.fn(async () => ({ ok: true as const, value: { deleted: true } })),
+      disconnectMySlackAccount: vi.fn(async () => ({ ok: true as const, value: { deleted: true } })),
+      ...overrides,
+    };
+  }
+
+  it("lists personal integrations from the console routes, not the per-company placeholder", async () => {
+    const api = integrationsApi();
+    const target = mountPage("connections", { integrationsApi: api });
+    await settle();
+    const list = target.querySelector("[data-testid='personal-integrations-list']") as HTMLElement;
+    expect(list.textContent).toContain("Google");
+    expect(list.textContent).toContain("me@example.com");
+    expect(list.textContent).toContain("Slack (personal)");
+    expect(list.textContent).toContain("Corey · Acme");
+    expect(list.textContent).toContain("Active");
+    expect(list.textContent).toContain("Sep 30, 2026");
+    expect(target.textContent).not.toContain("managed per company");
+    expect(target.textContent).not.toContain("HQ does not have personal connections");
+    const sources = target.querySelector("[data-testid='integration-sources']");
+    expect(sources?.textContent).toContain("Calendar");
+    expect(sources?.textContent).toContain("Drive");
+    expect(sources?.textContent).toContain("Gmail");
+  });
+
+  it("paints cached integrations on the first frame and never flashes empty", async () => {
+    const first = mountPage("connections", { integrationsApi: integrationsApi() });
+    await settle();
+    expect(first.querySelectorAll("[data-testid^='integration-row-']")).toHaveLength(2);
+    await unmount(component!);
+    let resolve: (v: unknown) => void = () => {};
+    const slow = integrationsApi({
+      listMyGoogleAccounts: vi.fn(() => new Promise((r) => { resolve = r; })),
+    });
+    const target = mountPage("connections", { integrationsApi: slow });
+    expect(target.querySelectorAll("[data-testid^='integration-row-']")).toHaveLength(2);
+    expect(target.querySelector("[data-testid='personal-integrations-skeleton']")).toBeNull();
+    expect(target.querySelector("[data-testid='personal-integrations-empty']")).toBeNull();
+    resolve({ ok: true, value: GOOGLE_BODY });
+    await settle();
+    expect(target.querySelectorAll("[data-testid^='integration-row-']")).toHaveLength(2);
+  });
+
+  it("shows the empty state with an add action when nothing is connected", async () => {
+    const opened: string[] = [];
+    const api = integrationsApi({
+      listMyGoogleAccounts: vi.fn(async () => ({ ok: true as const, value: { accounts: [] } })),
+      listMySlackAccounts: vi.fn(async () => ({ ok: true as const, value: { accounts: [] } })),
+    });
+    const target = mountPage("connections", { integrationsApi: api, openExternal: (url: string) => opened.push(url) });
+    await settle();
+    const empty = target.querySelector("[data-testid='personal-integrations-empty']") as HTMLElement;
+    expect(empty.textContent).toContain("No personal connections yet");
+    (empty.querySelector("button") as HTMLButtonElement).click();
+    (target.querySelector("[data-testid='add-integration']") as HTMLButtonElement).click();
+    expect(opened).toEqual(["https://hq.computer/personal/integrations", "https://hq.computer/personal/integrations"]);
+  });
+
+  it("shows plain-language error copy with a retry, never the server text", async () => {
+    const failure = { ok: false as const, reason: "error" as const, code: "http-500", message: "Internal Server Error: DynamoDB throttled" };
+    const api = integrationsApi({
+      listMyGoogleAccounts: vi.fn(async () => failure),
+      listMySlackAccounts: vi.fn(async () => failure),
+    });
+    const target = mountPage("connections", { integrationsApi: api });
+    await settle();
+    const error = target.querySelector("[data-testid='personal-integrations-error']") as HTMLElement;
+    expect(error.textContent).toContain("Could not load your connections");
+    expect(target.textContent).not.toMatch(/500|Internal Server Error|DynamoDB|http-/);
+    api.listMyGoogleAccounts.mockResolvedValueOnce({ ok: true, value: GOOGLE_BODY } as never);
+    (target.querySelector("[data-testid='personal-integrations-retry']") as HTMLButtonElement).click();
+    await settle();
+    expect(target.querySelector("[data-testid='personal-integrations-error']")).toBeNull();
+    expect(target.textContent).toContain("me@example.com");
+  });
+
+  it("asks before disconnecting and only calls the server on confirm", async () => {
+    const api = integrationsApi();
+    const target = mountPage("connections", { integrationsApi: api });
+    await settle();
+    (target.querySelector("[data-testid='integration-disconnect']") as HTMLButtonElement).click();
+    flushSync();
+    expect(target.querySelector("[data-testid='sheet-confirm-integration-disconnect']")?.textContent).toContain("Disconnect Google?");
+    expect(api.disconnectMyGoogleAccount).not.toHaveBeenCalled();
+    (target.querySelector("[data-testid='confirm-integration-disconnect']") as HTMLButtonElement).click();
+    await settle();
+    expect(api.disconnectMyGoogleAccount).toHaveBeenCalledWith("g1");
+    expect(target.querySelector("[data-testid='integration-row-google:g1']")).toBeNull();
+    expect(target.querySelector("[data-testid='integration-row-slack:s1']")).not.toBeNull();
+  });
+
+  it("links to the selected company's Integrations with one row, not a wall of buttons", async () => {
     const opened: string[] = [];
     const target = mountPage("connections", {
+      integrationsApi: integrationsApi(),
       companies: [
         { uid: "cmp_a", label: "Acme" },
         { uid: "cmp_b", label: "Beta" },
       ],
+      activeCompany: { uid: "cmp_b", label: "Beta" },
       onopenintegrations: (uid: string) => opened.push(uid),
     });
-    const state = target.querySelector("[data-testid='connections-per-company']");
-    expect(state?.textContent).toContain("managed per company");
-    // No invented GitHub, Google, or Slack rows in the running app.
-    expect(target.textContent).not.toContain("GitHub");
-    expect(target.textContent).not.toContain("Slack");
-    expect(target.querySelector("[data-testid='connections-list']")).toBeNull();
-    (target.querySelector("[data-testid='connections-company-cmp_b']") as HTMLButtonElement).click();
+    await settle();
+    expect(target.querySelector("[data-testid='connections-company-cmp_a']")).toBeNull();
+    const link = target.querySelector("[data-testid='company-connections-link']") as HTMLButtonElement;
+    expect(link.textContent).toContain("Company connections");
+    link.click();
     expect(opened).toEqual(["cmp_b"]);
+  });
+
+  it("hides the company row when no company is selected", async () => {
+    const target = mountPage("connections", { integrationsApi: integrationsApi() });
+    await settle();
+    expect(target.querySelector("[data-testid='company-connections-link']")).toBeNull();
   });
 
   it("shows Allowed, Ask first, and Never on the Agents and MCP tab in the design fixture", () => {
