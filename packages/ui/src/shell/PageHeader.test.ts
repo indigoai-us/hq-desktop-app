@@ -1,8 +1,6 @@
 // @vitest-environment happy-dom
 
-import { afterEach, describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, unmount } from "svelte";
 import PageHeader from "./PageHeader.svelte";
 import {
@@ -17,7 +15,16 @@ afterEach(async () => {
   if (component) await unmount(component);
   component = null;
   host?.remove();
+  delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
 });
+
+function scopedCss(root: Element): string {
+  const scope = [...root.classList].find((name) => name.startsWith("svelte-"));
+  return [...document.querySelectorAll("style")]
+    .map((node) => node.textContent ?? "")
+    .filter((css) => (scope ? css.includes(scope) : false))
+    .join("\n");
+}
 
 describe("PageHeader", () => {
   it("renders Back, title, subtitle and a Tauri drag region", () => {
@@ -68,15 +75,39 @@ describe("PageHeader", () => {
   });
 });
 
-describe("PageHeader source contract", () => {
-  const source = readFileSync(join(import.meta.dirname, "PageHeader.svelte"), "utf8");
+describe("PageHeader window chrome", () => {
+  it("starts a window drag from the header and not from Back", () => {
+    const invoke = vi.fn();
+    (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {
+      invoke,
+      metadata: { currentWindow: { label: "library" } },
+    };
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(PageHeader, {
+      target: host,
+      props: { title: "Library", onback: () => {} },
+    });
+    const header = host.querySelector<HTMLElement>("[data-testid='page-header']");
+    header?.dispatchEvent(new PointerEvent("pointerdown", { button: 0, bubbles: true }));
+    expect(invoke).toHaveBeenCalledWith("plugin:window|start_dragging", { label: "library" });
+    invoke.mockClear();
+    host
+      .querySelector("[data-testid='page-header-back']")
+      ?.dispatchEvent(new PointerEvent("pointerdown", { button: 0, bubbles: true }));
+    expect(invoke).not.toHaveBeenCalled();
+  });
 
   it("sizes and insets from the shared titlebar CSS variables", () => {
-    expect(source).toContain(`var(${TITLEBAR_HEIGHT_CSS_VAR}`);
-    expect(source).toContain(`var(${TITLEBAR_LEADING_INSET_CSS_VAR}`);
-    expect(source).toContain("data-tauri-drag-region");
-    expect(source).toContain("startWindowDrag");
-    expect(source).not.toMatch(/padding-left:\s*\d+px/);
-    expect(source).not.toMatch(/height:\s*52px/);
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(PageHeader, { target: host, props: { title: "Library" } });
+    const header = host.querySelector("[data-testid='page-header']");
+    expect(header).not.toBeNull();
+    const css = scopedCss(header!);
+    expect(css).toContain(`var(${TITLEBAR_HEIGHT_CSS_VAR}`);
+    expect(css).toContain(`var(${TITLEBAR_LEADING_INSET_CSS_VAR}`);
+    expect(css).not.toMatch(/padding-left:\s*\d+px/);
+    expect(css).not.toMatch(/height:\s*52px/);
   });
 });
