@@ -33,9 +33,13 @@ pub struct AuthSessionEnvelope {
 }
 
 static AUTH_SESSION_ENVELOPE: OnceLock<Mutex<Option<AuthSessionEnvelope>>> = OnceLock::new();
-static AUTH_SESSION_DIAGNOSTIC: OnceLock<
-    Mutex<Option<(AuthSessionStatus, Option<CognitoRefreshFailureClass>)>>,
-> = OnceLock::new();
+type AuthSessionDiagnostic = (
+    AuthSessionStatus,
+    Option<CognitoRefreshFailureClass>,
+    &'static str,
+);
+
+static AUTH_SESSION_DIAGNOSTIC: OnceLock<Mutex<Option<AuthSessionDiagnostic>>> = OnceLock::new();
 static LAST_AUTH_TRANSITION: OnceLock<Mutex<Option<(&'static str, SystemTime)>>> = OnceLock::new();
 
 fn record_last_auth_transition(class: &'static str) {
@@ -57,8 +61,7 @@ fn auth_session_envelope_cell() -> &'static Mutex<Option<AuthSessionEnvelope>> {
     AUTH_SESSION_ENVELOPE.get_or_init(|| Mutex::new(None))
 }
 
-fn auth_session_diagnostic_cell(
-) -> &'static Mutex<Option<(AuthSessionStatus, Option<CognitoRefreshFailureClass>, &'static str)>> {
+fn auth_session_diagnostic_cell() -> &'static Mutex<Option<AuthSessionDiagnostic>> {
     AUTH_SESSION_DIAGNOSTIC.get_or_init(|| Mutex::new(None))
 }
 
@@ -92,11 +95,13 @@ pub(crate) fn startup_auth_diagnostic_tags() -> (&'static str, &'static str, &'s
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     match guard.as_ref() {
         Some((status, Some(failure_class), rejection_class)) => (
-            auth_session_status_tag(status), failure_class.as_tag(), *rejection_class,
+            auth_session_status_tag(status),
+            failure_class.as_tag(),
+            *rejection_class,
         ),
-        Some((status, None, rejection_class)) => (
-            auth_session_status_tag(status), "none", *rejection_class,
-        ),
+        Some((status, None, rejection_class)) => {
+            (auth_session_status_tag(status), "none", *rejection_class)
+        }
         None => ("unknown", "none", "none"),
     }
 }
@@ -169,7 +174,7 @@ pub(crate) fn publish_auth_session(
         *guard = Some(current.clone());
         (current, changed)
     };
-    set_auth_session_diagnostic(current.0.status.clone(), None);
+    set_auth_session_diagnostic(current.0.status.clone(), None, "none");
     if current.1 {
         // The desktop label is intentional: auth events for the compact main
         // window must not be mistaken for an embedded Work tenant transition.
@@ -438,7 +443,8 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
     let before = first_token_read.ok().flatten();
     let outcome =
         crate::commands::dm_notify::resolve_notification_credentials_classified(app).await;
-    let (state, status, account_id, reason, refresh_failure_class, rejection_class) = match outcome {
+    let (state, status, account_id, reason, refresh_failure_class, rejection_class) = match outcome
+    {
         // Refuse to adopt a machine identity as the signed-in person. The
         // credential file is shared with the `hq` CLI and with fleet-agent
         // machine credentials, so usable tokens are not evidence of a human
@@ -558,7 +564,11 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
             reason: reason.map(str::to_string),
         },
     );
-    set_auth_session_diagnostic(envelope.status.clone(), refresh_failure_class, rejection_class);
+    set_auth_session_diagnostic(
+        envelope.status.clone(),
+        refresh_failure_class,
+        rejection_class,
+    );
     (state, envelope)
 }
 

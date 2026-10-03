@@ -837,6 +837,7 @@ pub(crate) async fn resolve_notification_credentials_classified<R: Runtime>(
             message: "Notification session state is unavailable".to_string(),
             refresh_failure_class: None,
             requires_reauth: false,
+            rejection_class: "none",
         }
     })?;
     let tokens = match cognito::get_valid_tokens_classified().await {
@@ -863,6 +864,7 @@ pub(crate) async fn resolve_notification_credentials_classified<R: Runtime>(
         message: "Authentication changed while resolving credentials".to_string(),
         refresh_failure_class: None,
         requires_reauth: false,
+        rejection_class: "none",
     })?;
     Ok((tokens, snapshot))
 }
