@@ -262,3 +262,17 @@ describe("formatTokenCount", () => {
     expect(formatTokenCount(1_200_000)).toBe("1.2M");
   });
 });
+
+describe("unavailableMessage raw-error fallback", () => {
+  it("never returns raw server text for an unknown failure; logs it", async () => {
+    const { unavailableMessage } = await import("./agent-detail-model.js");
+    const { vi } = await import("vitest");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const raw = '[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}';
+    const text = unavailableMessage({ ok: false, reason: "error", message: raw }, "usage");
+    expect(text).toBe("Couldn't load this. Try again.");
+    expect(text).not.toContain("boom");
+    expect(warn).toHaveBeenCalledWith("[agent-detail] usage load failed", raw);
+    warn.mockRestore();
+  });
+});
