@@ -1216,9 +1216,12 @@ fn build_desktop_telemetry_event(
         &mut properties,
         crate::commands::cdp_mirror::current_anon_id(),
     );
-    let install_attempt_id = (event_name == "desktop_setup_completed")
-        .then(crate::commands::first_run::install_attempt_id)
-        .flatten();
+    let install_attempt_id = matches!(
+        event_name.as_str(),
+        "desktop_setup_completed" | "desktop_onboarding_step"
+    )
+    .then(crate::commands::first_run::install_attempt_id)
+    .flatten();
     RawTelemetryEvent {
         event_name,
         app: "hq-desktop-app".to_string(),
@@ -3150,6 +3153,10 @@ mod codex_telemetry_tests {
             crate::app_version::current()
         );
         assert_eq!(event.properties["step"], "connector-import");
+        assert_eq!(
+            serde_json::to_value(&event).unwrap()["installAttemptId"],
+            install_attempt_id
+        );
 
         let completed = build_desktop_telemetry_event(
             "desktop_setup_completed".to_string(),
