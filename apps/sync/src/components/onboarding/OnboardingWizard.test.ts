@@ -21,6 +21,7 @@ const app = vi.hoisted(() => ({
 }));
 const onboardingFlags = vi.hoisted(() => ({
   firstFolderSyncEnabled: false,
+  companyNamePrefillEnabled: false,
   companyRouteLookupRetryEnabled: false,
   hasFeature: vi.fn(),
   startSync: vi.fn(),
@@ -43,6 +44,7 @@ vi.mock('@tauri-apps/plugin-http', () => ({ fetch: httpFetch }));
 vi.mock('@hq/platform', () => ({
   hostComputerNoun: () => 'computer',
   FIRST_FOLDER_SYNC_STEP_FLAG: 'desktop.first-folder-sync-step-v1',
+  COMPANY_NAME_PREFILL_FLAG: 'desktop.company-name-prefill-v1',
   FIRST_LAUNCH_JOIN_KEY_FLAG: 'desktop.first-launch-join-key-v1',
   COMPANY_ROUTE_LOOKUP_RETRY_FLAG: 'desktop.company-route-lookup-retry-v1',
   SETUP_DEPS_TIMEOUT_RETRY_FLAG: 'desktop.setup-deps-timeout-retry-v1',
@@ -66,7 +68,8 @@ vi.mock('@hq/platform', () => ({
         }
         if (
           flag === 'desktop.first-launch-join-key-v1' ||
-          flag === 'desktop.company-route-lookup-retry-v1'
+          flag === 'desktop.company-route-lookup-retry-v1' ||
+          flag === 'desktop.company-name-prefill-v1'
         ) {
           return onboardingFlags.hasFeature(flag);
         }
@@ -447,12 +450,15 @@ beforeEach(() => {
     text: async () => '',
   });
   onboardingFlags.firstFolderSyncEnabled = false;
+  onboardingFlags.companyNamePrefillEnabled = false;
   onboardingFlags.companyRouteLookupRetryEnabled = false;
   onboardingFlags.hasFeature.mockReset().mockImplementation(async (flag: string) => ({
     ok: true,
     value: flag === 'desktop.first-folder-sync-step-v1'
       ? onboardingFlags.firstFolderSyncEnabled
-      : flag === 'desktop.company-route-lookup-retry-v1' &&
+      : flag === 'desktop.company-name-prefill-v1'
+        ? onboardingFlags.companyNamePrefillEnabled
+        : flag === 'desktop.company-route-lookup-retry-v1' &&
         onboardingFlags.companyRouteLookupRetryEnabled,
   }));
   onboardingFlags.startSync.mockReset().mockResolvedValue({

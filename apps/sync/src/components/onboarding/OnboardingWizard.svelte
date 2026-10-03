@@ -176,6 +176,7 @@
   import {
     createSyncPlatformAdapter,
     dispatchPostReadyAction,
+    COMPANY_NAME_PREFILL_FLAG,
     FIRST_LAUNCH_JOIN_KEY_FLAG,
     COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
     FIRST_FOLDER_SYNC_STEP_FLAG,
@@ -418,6 +419,7 @@
    * `existing` or null (lookup failed) to skip it.
    */
   let companyPath = $state<FirstRunCompanyPath | null>(null);
+  let companyNamePrefillEnabled = $state(false);
   /** Signed-in email, read once for the signed-in-as notice and invite matching. */
   let signedInEmail = $state<string | null>(null);
   /** A session already on this machine when onboarding opened (old ~/.hq). */
@@ -1292,6 +1294,24 @@
         'onboarding: company route lookup retry flag failed; leaving retry off',
         error,
       );
+      return false;
+    }
+  }
+
+  async function resolveCompanyNamePrefillFlag(): Promise<boolean> {
+    try {
+      const result = await onboardingFeatureFlags.identity.hasFeature(COMPANY_NAME_PREFILL_FLAG);
+      if (!result.ok) {
+        console.warn(
+          'onboarding: company name prefill flag unavailable; leaving prefill off',
+          result.reason,
+          result.code,
+        );
+        return false;
+      }
+      return result.value === true;
+    } catch (error) {
+      console.warn('onboarding: company name prefill flag failed; leaving prefill off', error);
       return false;
     }
   }
@@ -2467,9 +2487,14 @@
         membershipMeRead = null;
       },
     });
-    const [firstFolderEnabled, firstRunCompanyPath] = await Promise.all([
+    const companyNamePrefillPromise = firstRunCompanyPathPromise.then((resolved) => {
+      if (!resolved || !('route' in resolved) || resolved.route.kind !== 'create') return false;
+      return resolveCompanyNamePrefillFlag();
+    });
+    const [firstFolderEnabled, firstRunCompanyPath, namePrefillEnabled] = await Promise.all([
       resolveFirstFolderSyncStepFlag(),
       firstRunCompanyPathPromise,
+      companyNamePrefillPromise,
     ]);
     // Resolve invite eligibility after the company route has completed its
     // retry so it can use the recovered shared membership response.
@@ -2480,9 +2505,12 @@
     if (!stillCurrent()) return;
     if (firstRunCompanyPath && 'route' in firstRunCompanyPath) {
       companyPath = firstRunCompanyPath.route;
+      companyNamePrefillEnabled =
+        namePrefillEnabled && firstRunCompanyPath.route.kind === 'create';
       recordCompanyRoute(firstRunCompanyPath.route, firstRunCompanyPath.summary);
     } else {
       companyPath = null;
+      companyNamePrefillEnabled = false;
       if (firstRunCompanyPath?.kind === 'lookup_failed') recordCompanyRouteLookupFailed();
     }
     showFirstFolderSyncStep = firstFolderEnabled;
@@ -3409,6 +3437,7 @@
             ? 'provisioning_retry'
             : event.action;
     const details: StepTelemetryDetails = { outcome };
+    if (event.action === 'company_created') details.namePrefill = event.namePrefill;
     if (event.action === 'provisioning_failed') details.provisioningStep = event.step;
     if (event.action === 'provisioning_ready') details.attemptCount = event.attemptCount;
     if (event.action === 'create_another') details.decision = 'created_another';
@@ -3933,6 +3962,8 @@
         {#if currentStep === COMPANY_STEP_INDEX && companyPath && companyPath.kind !== 'skip'}
           <CompanyStep
             path={companyPath}
+            namePrefillEnabled={companyNamePrefillEnabled}
+            signedInEmail={signedInEmail}
             invoke={invokeCommand}
             onswitchaccount={() => void switchAccount('company')}
             openUrl={(url) => openExternal(url)}
