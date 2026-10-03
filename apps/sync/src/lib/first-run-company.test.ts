@@ -160,6 +160,39 @@ describe('resolveFirstRunCompanyPath', () => {
     warn.mockRestore();
   });
 
+  it('bypasses a cached malformed membership response on retry and resolves the recovered company route', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let cachedMembershipRead: Promise<Record<string, unknown>> | null = null;
+    let requestCount = 0;
+    const hqProJson = vi.fn(() => {
+      if (!cachedMembershipRead) {
+        requestCount += 1;
+        cachedMembershipRead = Promise.resolve(
+          requestCount === 1
+            ? {}
+            : { memberships: [{ companyUid: 'cmp_recovered', status: 'active', role: 'member' }] },
+        );
+      }
+      return cachedMembershipRead;
+    });
+    const invalidateMembershipMeRead = vi.fn(() => {
+      cachedMembershipRead = null;
+    });
+
+    const result = await resolveFirstRunCompanyRoute({
+      hqProJson,
+      invoke: vi.fn() as unknown as InvokeFn,
+      enableMembershipLookupRetry: true,
+      sleep: async () => {},
+      invalidateMembershipMeRead,
+    });
+
+    expect(requestCount).toBe(2);
+    expect(invalidateMembershipMeRead).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({ route: { kind: 'skip', decision: 'joined_existing', company: { companyUid: 'cmp_recovered' } } });
+    warn.mockRestore();
+  });
+
   it('returns lookup_failed after two failed reads without creating a company', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const sleep = vi.fn(async () => {});

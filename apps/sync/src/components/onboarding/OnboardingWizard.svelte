@@ -2304,12 +2304,20 @@
       signedInEmail: email,
       anonId,
       enableMembershipLookupRetry: retryCompanyLookup,
+      invalidateMembershipMeRead: () => {
+        membershipMeRead = null;
+      },
     });
-    const [firstFolderEnabled, inviteContext, firstRunCompanyPath] = await Promise.all([
+    const [firstFolderEnabled, firstRunCompanyPath] = await Promise.all([
       resolveFirstFolderSyncStepFlag(),
-      resolveInviteTeammateContext(),
       firstRunCompanyPathPromise,
     ]);
+    // Resolve invite eligibility after the company route has completed its
+    // retry so it can use the recovered shared membership response.
+    const inviteContext =
+      firstRunCompanyPath !== null && 'route' in firstRunCompanyPath
+        ? await resolveInviteTeammateContext()
+        : null;
     if (!stillCurrent()) return;
     if (firstRunCompanyPath && 'route' in firstRunCompanyPath) {
       companyPath = firstRunCompanyPath.route;
@@ -3267,9 +3275,6 @@
     recordStep(COMPANY_STEP_INDEX, 'started', {
       outcome: 'route_lookup_failed',
       decision: 'lookup_failed',
-      existingCompanies: 0,
-      paidCompany: false,
-      pendingInvites: 0,
     });
   }
 

@@ -3575,6 +3575,7 @@ describe('company onboarding step', () => {
 
   async function reachCompanyScenario(options: {
     memberships?: Array<Record<string, unknown>>;
+    companyMembers?: Array<Record<string, unknown>>;
     membershipFailures?: number;
     companyRouteLookupRetryEnabled?: boolean;
     pendingInvites?: Array<{ slug: string; displayName: string }>;
@@ -3664,6 +3665,9 @@ describe('company onboarding step', () => {
           }
           if (typeof args?.url === 'string' && args.url.startsWith('/membership/me?anonId=')) {
             return { status: 200, body: JSON.stringify(options.anonLookup ?? { memberships: [] }) };
+          }
+          if (args?.url === '/membership/company/cmp_demo' && options.companyMembers) {
+            return { status: 200, body: JSON.stringify({ members: options.companyMembers }) };
           }
           if (args?.url === '/membership/pending-by-email') {
             return { status: 200, body: JSON.stringify({ invites: options.pendingByEmail ?? [] }) };
@@ -3782,6 +3786,29 @@ describe('company onboarding step', () => {
     expect(onboardingFlags.hasFeature).toHaveBeenCalledWith('desktop.company-route-lookup-retry-v1');
   });
 
+  it('uses the recovered membership read to resolve the teammate-invite step', async () => {
+    await reachCompanyScenario({
+      memberships: [
+        { companyUid: 'cmp_demo', companySlug: 'demo', personUid: 'prs_me', status: 'active', role: 'owner', bucketName: 'b' },
+      ],
+      companyMembers: [{ companyUid: 'cmp_demo', personUid: 'prs_me', status: 'active' }],
+      membershipFailures: 1,
+      companyRouteLookupRetryEnabled: true,
+    });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-invite-teammate"]')));
+
+    expect(
+      tauri.invoke.mock.calls.filter(
+        ([command, args]) => command === 'hq_pro_fetch' && (args as { url?: string })?.url === '/membership/me',
+      ),
+    ).toHaveLength(2);
+    expect(
+      tauri.invoke.mock.calls.some(
+        ([command, args]) => command === 'hq_pro_fetch' && (args as { url?: string })?.url === '/membership/company/cmp_demo',
+      ),
+    ).toBe(true);
+  });
+
   it('records lookup_failed after the retry and leaves the existing setup recovery as the path', async () => {
     await reachCompanyScenario({
       membershipFailures: 2,
@@ -3806,6 +3833,20 @@ describe('company onboarding step', () => {
         ([command, args]) => command === 'run_card_action' && (args as { cardId?: string })?.cardId === 'card_create_company',
       ),
     ).toBe(false);
+  });
+
+  it('omits unknown membership counts from lookup-failure telemetry', async () => {
+    await reachCompanyScenario({
+      membershipFailures: 2,
+      companyRouteLookupRetryEnabled: true,
+    });
+    await flushUntil(() => companyRows().some((row) => row.decision === 'lookup_failed'));
+
+    const row = companyRows().find((candidate) => candidate.decision === 'lookup_failed');
+    expect(row).toBeDefined();
+    expect(row).not.toHaveProperty('existingCompanies');
+    expect(row).not.toHaveProperty('paidCompany');
+    expect(row).not.toHaveProperty('pendingInvites');
   });
 
   it('keeps the original one-read behavior when the company-route retry flag is off', async () => {

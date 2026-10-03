@@ -108,6 +108,8 @@ export async function resolveFirstRunCompanyRoute(deps: {
   now?: () => number;
   enableMembershipLookupRetry?: CompanyRouteRetryGate;
   sleep?: CompanyRouteRetrySleep;
+  /** Drop a fulfilled but unreadable cached response before issuing the retry. */
+  invalidateMembershipMeRead?: () => void;
 }): Promise<FirstRunCompanyRouteResult | null> {
   let retryEnabled = deps.enableMembershipLookupRetry ?? false;
   const retryIsEnabled = async (): Promise<boolean> => {
@@ -133,6 +135,7 @@ export async function resolveFirstRunCompanyRoute(deps: {
         break;
       }
       lastLookupError = new Error('membership lookup returned an unreadable payload');
+      deps.invalidateMembershipMeRead?.();
     } catch (error) {
       lastLookupError = error;
     }
