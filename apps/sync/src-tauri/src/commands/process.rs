@@ -8289,8 +8289,9 @@ mod process_output_backpressure_tests;
 mod lock_poison_recovery_tests {
     use super::*;
 
-    /// Clears a poison this test leaves behind if an assertion fails before a
-    /// recovered call takes the guard. A recovered call already clears it.
+    /// Clears the poison this test leaves behind. `into_inner` recovers the
+    /// guard but does not clear the flag, so without this the skipped sites
+    /// that still unwrap would panic in later tests.
     struct ClearPoison;
 
     impl Drop for ClearPoison {
