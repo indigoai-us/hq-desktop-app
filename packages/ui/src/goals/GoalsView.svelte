@@ -7,6 +7,7 @@
    * session cache because board.json is read-only from this app.
    */
   import { onMount } from "svelte";
+  import { withReadDeadline } from "../common/read-deadline.js";
   import type { PlatformAdapter } from "@hq/platform";
   import "../home/tokens.css";
   import "../common/button/rail-type.css";
@@ -111,7 +112,7 @@
     projectsError = null;
     try {
       configureProjectsApi(adapter.projects);
-      const allProjects = await loadLocalProjects();
+      const allProjects = await withReadDeadline(loadLocalProjects(), "company projects");
       if (slug !== active) return;
       projects = allProjects;
       projectsLoaded = true;
@@ -136,7 +137,8 @@
     error = null;
     try {
       configureProjectsApi(adapter.projects);
-      const goals = await loadCompanyGoals(active);
+      // BLANK-1: a read that never answers falls to the failed-read state.
+      const goals = await withReadDeadline(loadCompanyGoals(active), "company goals");
       if (slug !== active) return;
       const cached = readGoalsCache(storage, active);
       // Key results added in this app stay on their board objective after a refresh.
