@@ -407,6 +407,10 @@ export async function runCreateCloudBotEntry(
     // The person talks to the bot in a direct message. A server that knows
     // this value makes no channel for the bot; an older one ignores it.
     conversation: "dm",
+    // Where the create came from. The agents service picks its chat-first
+    // setup order (runtime before the audit, so Slack never waits on the
+    // first file sync) only for this value; an older server ignores it.
+    surface: "desktop_new_bot",
     ...(authMode === "apiKey" && draft.apiKey ? { apiKey: draft.apiKey } : {}),
   };
 

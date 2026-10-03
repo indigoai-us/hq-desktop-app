@@ -138,6 +138,7 @@ describe("runCreateCloudBotEntry", () => {
         authMode: "subscription",
         deferChannels: "true",
         conversation: "dm",
+        surface: "desktop_new_bot",
       },
     });
     expect(logToFile).not.toHaveBeenCalled();
@@ -174,7 +175,7 @@ describe("runCreateCloudBotEntry", () => {
     await runCreateCloudBotEntry(api, "cmp_acme", { ...DRAFT, title: "Analyst" });
     const sent = runCardAction.mock.calls[0]![0] as { values: Record<string, string> };
     expect(Object.keys(sent.values).sort()).toEqual(
-      ["authMode", "conversation", "deferChannels", "handle", "name", "runtime", "size"].sort(),
+      ["authMode", "conversation", "deferChannels", "handle", "name", "runtime", "size", "surface"].sort(),
     );
   });
 
