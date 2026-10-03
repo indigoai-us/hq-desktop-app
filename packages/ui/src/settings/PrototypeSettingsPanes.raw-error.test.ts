@@ -39,7 +39,7 @@ afterEach(async () => {
 function render(props: Record<string, unknown>) {
   host = document.createElement("div");
   document.body.appendChild(host);
-  component = mount(PrototypeSettingsPanes, { target: host, props });
+  component = mount(PrototypeSettingsPanes, { target: host, props: props as never });
   flushSync();
 }
 
