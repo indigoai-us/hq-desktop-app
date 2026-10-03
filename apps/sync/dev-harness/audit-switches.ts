@@ -123,7 +123,7 @@ export function switchedHandler(
         'desktop.rail-shortcut-editing-v1': true,
         'desktop.rail-workforce-limits-v1': true,
       };
-      return { value: { status: 200, body: JSON.stringify({ flags }) } };
+      return { value: { status: 200, body: JSON.stringify({ version: 1, flags }) } };
     }
     if (url.startsWith('/v1/identity/features/')) {
       return { value: { status: 200, body: 'true' } };
