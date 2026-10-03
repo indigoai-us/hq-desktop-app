@@ -91,6 +91,7 @@
       pairing = candidate && ["https://auth.openai.com/codex/device", "https://auth.openai.com/device"].includes(candidate.url ?? "") && /^[A-Z0-9]{4,8}-[A-Z0-9]{4,8}$/.test(candidate.code ?? "")
         ? { url: candidate.url!, code: candidate.code! } : null;
       await onchanged?.();
+    // raw-error-ok: shown only inside the collapsed Technical details disclosure
     } catch (error) { if (bot.agentUid === uid) promotionError = error instanceof Error ? error.message : "Could not continue promotion."; }
     finally { if (bot.agentUid === uid) promoting = false; }
   }

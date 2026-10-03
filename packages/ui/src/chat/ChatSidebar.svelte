@@ -1207,6 +1207,7 @@
         companyHomeEnsuring = rest;
         return;
       } catch (err) {
+        // raw-error-ok: log only
         const reason = err instanceof Error ? err.message : String(err);
         companiesLog(
           `open-failed company=${label} attempt=${attempt}/${ENSURE_HOME_CHANNEL_MAX_ATTEMPTS} reason=${reason}`,
@@ -2158,6 +2159,7 @@
             sidebarLog("boot-error", {
               source: "list_contacts",
               timeout: err instanceof BootTimeoutError,
+              // raw-error-ok: telemetry payload only
               message: err instanceof Error ? err.message : String(err),
             });
             console.error("chat-sidebar: list_contacts failed", err);
@@ -2175,6 +2177,7 @@
           sidebarLog("boot-error", {
             source: "list_dm_requests",
             timeout: err instanceof BootTimeoutError,
+            // raw-error-ok: telemetry payload only
             message: err instanceof Error ? err.message : String(err),
           });
           console.error("chat-sidebar: list_dm_requests failed", err);
@@ -2200,6 +2203,7 @@
       loadError = "Couldn’t load conversations.";
       sidebarLog("boot-error", {
         source: "refresh",
+        // raw-error-ok: telemetry payload only
         message: err instanceof Error ? err.message : String(err),
       });
       console.error("chat-sidebar: refresh failed", err);
@@ -2274,6 +2278,7 @@
       sidebarLog("boot-error", {
         source: "list_dm_requests",
         timeout: err instanceof BootTimeoutError,
+        // raw-error-ok: telemetry payload only
         message: err instanceof Error ? err.message : String(err),
       });
       console.error("chat-sidebar: list_dm_requests failed", err);

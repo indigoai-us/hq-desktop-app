@@ -363,6 +363,7 @@
       avatarPreview = previewDataUrl;
     } catch (err) {
       profileError =
+        // raw-error-ok: avatar-image errors are app-written copy
         err instanceof Error ? err.message : "Couldn't read that image.";
     } finally {
       avatarBusy = false;

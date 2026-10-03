@@ -1347,6 +1347,7 @@
       }
     } catch (err) {
       console.warn("[update] install pending update failed", err);
+      // raw-error-ok: update-toast plainError maps it to plain copy
       updateInstallError = err instanceof Error ? err.message : "Could not restart.";
       updateInstalling = false;
     }
@@ -5457,6 +5458,7 @@
         channelActionError = ownerCannotLeave ? OWNER_CANNOT_LEAVE_MESSAGE : fallbackMessage;
       }
     } catch (err) {
+      // raw-error-ok: classified only; the screen gets fixed copy
       const message = (err instanceof Error ? err.message : String(err)).trim();
       const fallbackMessage = isSelfLeave
         ? "Couldn't leave this channel. Refresh and try again."

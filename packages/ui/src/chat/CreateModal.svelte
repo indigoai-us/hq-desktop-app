@@ -1359,6 +1359,7 @@
         personUid: outcome?.personUid?.trim() || null,
       };
     } catch (err) {
+      // raw-error-ok: logged and classified; the screen gets fixed copy
       const raw = err instanceof Error ? err.message : String(err ?? "");
       console.warn("[create-modal] email send failed", raw);
       emailError = /\[http-429\]|\b429\b/.test(raw)

@@ -694,6 +694,7 @@
       try {
         attachments = await onuploadfiles([...pendingFiles]);
       } catch (err) {
+        // raw-error-ok: formatComposerSendError maps it to plain copy
         const raw = err instanceof Error ? err.message.trim() : "";
         attachError = formatComposerSendError(raw, true);
         attachUpgradeUrl = uploadErrorUpgradeUrl(err);
@@ -770,6 +771,7 @@
     err: unknown,
     mentions: readonly MentionTarget[],
   ): { sendError: string; sendFatal: boolean } {
+    // raw-error-ok: formatComposerSendError maps it to plain copy
     const raw = err instanceof Error ? err.message.trim() : "";
     return {
       sendError: formatComposerSendError(
