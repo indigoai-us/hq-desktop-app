@@ -2023,8 +2023,59 @@ describe('anonymous installer step pings', () => {
       .map(([, args]) => args as { sessionId: string })[0];
     expect(body.installSessionId).toBe(installAttemptId);
     expect(onboardingEvent?.sessionId).toBe(installAttemptId);
+    const welcomeEntries = tauri.invoke.mock.calls.filter(
+      ([command, args]) =>
+        command === 'emit_desktop_operational_telemetry' &&
+        (args as {
+          eventName?: string;
+          properties?: { step?: string; action?: string };
+        }).eventName === 'desktop_onboarding_step' &&
+        (args as {
+          properties?: { step?: string; action?: string };
+        }).properties?.step === 'welcome-signin' &&
+        (args as {
+          properties?: { step?: string; action?: string };
+        }).properties?.action === 'entered',
+    );
+    expect(welcomeEntries).toHaveLength(1);
     expect(onboardingFlags.hasFeature).toHaveBeenCalledWith(
       'desktop.first-launch-join-key-v1',
+    );
+  });
+
+  it('persists queued step telemetry synchronously on pagehide while identity is unresolved', async () => {
+    const unresolvedIdentity = new Promise<unknown>(() => undefined);
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'is_first_run':
+          return unresolvedIdentity;
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        default:
+          return undefined;
+      }
+    });
+    component = mount(OnboardingWizard, {
+      target: host,
+      props: { initialStep: 0 },
+    });
+
+    await flush();
+    window.dispatchEvent(new PageTransitionEvent('pagehide'));
+    await flush();
+
+    const stored = JSON.parse(localStorage.getItem(__INTERNALS__.STORAGE_KEY) ?? '{}') as {
+      pending?: Array<{ properties: { step: string; action: string } }>;
+    };
+    expect(stored.pending).toContainEqual(
+      expect.objectContaining({
+        properties: expect.objectContaining({
+          step: 'welcome-signin',
+          action: 'entered',
+        }),
+      }),
     );
   });
 

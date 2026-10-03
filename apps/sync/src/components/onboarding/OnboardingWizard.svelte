@@ -287,10 +287,17 @@
     invoke: (command, args) => invoke(command, args),
   });
   let onboardingIdentityPromise:
-    | Promise<{ firstLaunch: boolean; context: ContinuationContext | null }>
+    | Promise<{
+        context: ContinuationContext | null;
+        firstLaunchReceiptRecorded: boolean;
+      }>
     | null = null;
   let onboardingIdentityPrepared = false;
-  const queuedOnboardingStepRecords: Array<() => void> = [];
+  const queuedOnboardingStepRecords: Array<{
+    step: number;
+    action: OnboardingAction;
+    record: () => void;
+  }> = [];
 
   let activeInitialStep = $state<number | null>(null);
   let router = $state(createWizardRouter());
@@ -527,9 +534,11 @@
     if (consentOnly || replay) return;
     if (!onboardingIdentityPrepared) {
       const queuedDetails = { ...details };
-      queuedOnboardingStepRecords.push(() =>
-        recordStepNow(step, action, queuedDetails, flow),
-      );
+      queuedOnboardingStepRecords.push({
+        step,
+        action,
+        record: () => recordStepNow(step, action, queuedDetails, flow),
+      });
       return;
     }
     recordStepNow(step, action, details, flow);
@@ -575,11 +584,26 @@
   }
 
   function recordOnboardingAbandonment(): void {
+    if (!consentOnly && !replay) flushQueuedOnboardingStepRecords();
     if (consentOnly || replay || finishing || finishInProgress || onboardingCompleted || onboardingAbandoned) return;
     const durationMs = Date.now() - currentStepVisibleAt;
     if (durationMs < MIN_VISIBLE_MS_FOR_ABANDON) return;
     onboardingAbandoned = true;
     recordStep(currentStep, 'abandoned', { durationMs });
+  }
+
+  function flushQueuedOnboardingStepRecords(suppressFirstLaunchWelcomeEntry = false): void {
+    onboardingIdentityPrepared = true;
+    for (const queued of queuedOnboardingStepRecords.splice(0)) {
+      if (
+        suppressFirstLaunchWelcomeEntry &&
+        queued.step === WELCOME_SIGNIN_STEP_INDEX &&
+        queued.action === 'entered'
+      ) {
+        continue;
+      }
+      queued.record();
+    }
   }
 
   /**
@@ -1032,11 +1056,8 @@
    * and never starts a browser session continuation.
    */
   async function recordLaunch(): Promise<void> {
-    const { firstLaunch, context } = await prepareOnboardingTelemetryIdentity();
-    if (!context) {
-      if (firstLaunch) onboardingTelemetry.recordFirstLaunch();
-      return;
-    }
+    const { context, firstLaunchReceiptRecorded } = await prepareOnboardingTelemetryIdentity();
+    if (!context) return;
     // The anonymous launch receipt and later authenticated desktop auth events
     // share this opaque id. Use it as the onboarding session join key too.
     onboardingTelemetry.setInstallAttemptId(context.installAttemptId);
@@ -1045,17 +1066,14 @@
     // `firstLaunchRecorded` is the existing durable first-installation gate.
     // It survives re-renders and a resumed wizard, while recordReceipt keeps
     // an undelivered receipt's event id and timestamp stable for retry.
-    if (
-      shouldSendFirstLaunchReceipt(firstLaunch, context.suppressFirstLaunchTelemetry) &&
-      onboardingTelemetry.recordFirstLaunch()
-    ) {
+    if (firstLaunchReceiptRecorded) {
       void recordReceipt(deps, launchReceipt(deps)).catch(() => undefined);
     }
   }
 
   function prepareOnboardingTelemetryIdentity(): Promise<{
-    firstLaunch: boolean;
     context: ContinuationContext | null;
+    firstLaunchReceiptRecorded: boolean;
   }> {
     if (!onboardingIdentityPromise) {
       onboardingIdentityPromise = (async () => {
@@ -1094,18 +1112,25 @@
           readNativeId: loadInstallAttemptId,
         });
         if (installAttemptId) onboardingTelemetry.setInstallAttemptId(installAttemptId);
-        return { firstLaunch, context };
+        const firstLaunchReceiptRecorded = context
+          ? shouldSendFirstLaunchReceipt(firstLaunch, context.suppressFirstLaunchTelemetry) &&
+            onboardingTelemetry.recordFirstLaunch()
+          : firstLaunch && onboardingTelemetry.recordFirstLaunch();
+        return { context, firstLaunchReceiptRecorded };
       })()
         .catch((error) => {
           console.warn(
             'onboarding: telemetry identity preparation failed; using the local session id',
             error,
           );
-          return { firstLaunch: false, context: null };
+          return {
+            context: null,
+            firstLaunchReceiptRecorded: false,
+          };
         })
-        .finally(() => {
-          onboardingIdentityPrepared = true;
-          for (const record of queuedOnboardingStepRecords.splice(0)) record();
+        .then((result) => {
+          flushQueuedOnboardingStepRecords(result.firstLaunchReceiptRecorded);
+          return result;
         });
     }
     return onboardingIdentityPromise;

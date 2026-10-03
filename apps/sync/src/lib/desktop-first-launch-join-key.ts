@@ -13,11 +13,14 @@ export async function resolveFirstLaunchJoinKey(
   options: ResolveFirstLaunchJoinKeyOptions,
 ): Promise<string | null> {
   const continuationId = options.continuationInstallAttemptId;
-  if (typeof continuationId === 'string' && INSTALL_ATTEMPT_ID_RE.test(continuationId)) {
-    return continuationId;
-  }
-  if (!options.firstLaunch) return null;
+  const validContinuationId =
+    typeof continuationId === 'string' && INSTALL_ATTEMPT_ID_RE.test(continuationId)
+      ? continuationId
+      : null;
+  if (!options.firstLaunch) return validContinuationId;
 
+  // On first launch, even a continuation id is only adopted early when the
+  // rollout gate is enabled. The later receipt path retains its old behavior.
   let enabled = false;
   try {
     enabled = (await options.isEnabled()) === true;
@@ -26,6 +29,10 @@ export async function resolveFirstLaunchJoinKey(
     return null;
   }
   if (!enabled) return null;
+
+  if (validContinuationId) {
+    return validContinuationId;
+  }
 
   try {
     const nativeId = await options.readNativeId();
