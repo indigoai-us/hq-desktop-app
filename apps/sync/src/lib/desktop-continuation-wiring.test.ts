@@ -171,6 +171,27 @@ describe('Microsoft work accounts are not sent to MicrosoftPersonal', () => {
   });
 });
 
+describe('web authorize is gated and does not replace flag-off OAuth', () => {
+  it('registers the new commands next to today\'s OAuth commands', () => {
+    expect(main).toContain('commands::oauth::start_oauth_login');
+    expect(main).toContain('commands::oauth::web_authorize_enabled');
+    expect(main).toContain('commands::oauth::start_web_authorize');
+  });
+
+  it('does not change start_oauth_login to open the website page', () => {
+    const start = rustFunction(oauth, 'start_oauth_login');
+    expect(start).toContain('arm_oauth_flow');
+    expect(start).not.toContain('build_authorize_page_url');
+    expect(start).not.toContain('hqforwork.com/authorize/desktop');
+  });
+
+  it('falls back to provider buttons when web authorize fails', () => {
+    expect(signInPrompt).toContain("webAuthorizeEnabled = false");
+    expect(onboardingWizard).toContain("webAuthorizeEnabled = false");
+    expect(signInPrompt).toContain('Choose your provider and try once more.');
+  });
+});
+
 describe('the first-run wizard never opens the browser on its own', () => {
   it('imports none of the continuation attempt functions', () => {
     // The first-run wizard opened the browser on the raw Cognito provider

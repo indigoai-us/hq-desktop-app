@@ -23,6 +23,10 @@ export function mapSignInError(message: string, provider?: SignInProvider): stri
     return 'We couldn’t finish preparing sign-in. Please try again.';
   }
 
+  if (structured?.code === 'WEB_AUTHORIZE_URL_INVALID') {
+    return 'That sign-in did not finish. Choose your provider and try once more.';
+  }
+
   if (structured?.code === 'OAUTH_PORT_IN_USE') {
     return (
       structured.message ||

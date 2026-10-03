@@ -1298,6 +1298,11 @@ This final paragraph verifies spacing after a thematic break.
   desktop_continuation_confirm: () => null,
   desktop_continuation_cancel: () => null,
   desktop_continuation_deliver: () => 200,
+  web_authorize_enabled: () => false,
+  start_web_authorize: () => ({
+    authorizeUrl: 'https://hqforwork.com/authorize/desktop',
+    state: 'preview-web-authorize',
+  }),
   // Scenarios let the Ready screen be inspected in every machine state the
   // real detector can produce: `?scenario=tools-claude-only` (the fresh-VM
   // case that has only Claude Code), `?scenario=tools-codex-only`, and

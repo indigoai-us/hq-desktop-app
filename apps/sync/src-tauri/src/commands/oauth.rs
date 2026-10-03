@@ -46,6 +46,7 @@ use hq_desktop_core::oauth::{
     cognito_token_url, compute_code_challenge, generate_code_verifier, parse_callback,
     AuthorizeRequest, CallbackOutcome, CallbackRejection, REDIRECT_URI,
 };
+use hq_desktop_core::web_authorize;
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
@@ -375,8 +376,8 @@ const SUCCESS_HTML: &str = r#"<!doctype html>
 <body>
 <div class="wrap"><div class="card">
   <div class="check">&check;</div>
-  <h1>You are signed in</h1>
-  <p>You can close this tab and return to HQ.</p>
+  <h1>You're signed in</h1>
+  <p>You can close this tab and return to HQ Desktop.</p>
 </div></div>
 <script>
   // The authorization code is single-use and the app has already taken it
@@ -473,6 +474,43 @@ pub async fn start_oauth_login(
     }
     Ok(OAuthFlowInit {
         authorize_url,
+        state: armed.state,
+    })
+}
+
+/// Public hq-flags gate for the web authorize page. Fail closed.
+#[tauri::command]
+pub async fn web_authorize_enabled() -> bool {
+    let install_id =
+        tauri::async_runtime::spawn_blocking(super::first_run::install_attempt_id)
+            .await
+            .ok()
+            .flatten();
+    let client = hq_desktop_core::client_info::build_client();
+    web_authorize::resolve_enabled(install_id.as_deref(), |url| async move {
+        let response = client.get(url).send().await.map_err(|_| ())?;
+        let status = response.status().as_u16();
+        let body = response.text().await.unwrap_or_default();
+        Ok::<_, ()>((status, body))
+    })
+    .await
+}
+
+/// Arm loopback PKCE like today's provider flow, but open the website
+/// authorize page instead of Cognito Hosted UI. Tokens stay on the desktop.
+#[tauri::command]
+pub async fn start_web_authorize(app: AppHandle) -> Result<OAuthFlowInit, String> {
+    let nonce = hq_desktop_core::oauth::generate_nonce();
+    let armed = arm_oauth_flow(&app, None, Some(&nonce))?;
+    let Some(page_url) = web_authorize::build_authorize_page_url(&armed.authorize_url) else {
+        let _ = oauth_cancel_listen(Some(armed.state.clone()));
+        return Err(structured_error(
+            "WEB_AUTHORIZE_URL_INVALID",
+            "Sign-in could not open the HQ authorize page. Try another way to sign in.",
+        ));
+    };
+    Ok(OAuthFlowInit {
+        authorize_url: page_url,
         state: armed.state,
     })
 }
