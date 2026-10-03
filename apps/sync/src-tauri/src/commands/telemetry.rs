@@ -1224,6 +1224,12 @@ fn build_desktop_telemetry_event(
             .and_then(Value::as_str)
             .filter(|value| is_safe_label_value(value))
             .map(str::to_string)
+    } else if event_name == crate::commands::cdp_mirror::OP_APP_OPENED
+        && properties["isFirstLaunch"].as_bool() == Some(true)
+    {
+        crate::commands::first_run::install_attempt_id()
+            .filter(|id| is_safe_label_value(id))
+            .map(|id| crate::commands::cdp_mirror::first_open_idempotency_key(&id))
     } else {
         None
     };
@@ -1252,7 +1258,8 @@ fn build_desktop_telemetry_event(
     if matches!(
         event_name.as_str(),
         "desktop_onboarding_step" | "desktop_setup_completed" | "desktop_post_ready_action"
-    ) {
+    ) || crate::commands::cdp_mirror::is_funnel_operational_row(&event_name)
+    {
         properties["appVersion"] = Value::String(crate::app_version::current().to_string());
     }
     if is_post_ready_action {
@@ -1419,6 +1426,24 @@ pub async fn emit_desktop_operational_telemetry(
     .await
 }
 
+/// hq-pro only, for a row whose CDP copy was queued earlier.
+pub async fn emit_desktop_operational_telemetry_unmirrored(
+    event_name: &str,
+    properties: Value,
+) -> Result<(), String> {
+    let access_token = crate::commands::cognito::get_valid_access_token().await?;
+    let api_url = resolve_vault_api_url()?;
+    let vault = VaultClient::new(&api_url, &access_token);
+    emit_desktop_operational_telemetry_with_vault(
+        &vault,
+        event_name.to_string(),
+        Some(properties),
+        None,
+        None,
+    )
+    .await
+}
+
 /// Queue consent-free updater outcome telemetry without delaying installation.
 pub fn emit_desktop_operational_telemetry_best_effort(event_name: &'static str, properties: Value) {
     tauri::async_runtime::spawn(async move {
@@ -1452,13 +1477,12 @@ pub fn emit_desktop_telemetry_best_effort(event_name: &'static str, properties: 
     });
 }
 
-fn build_daily_active_event(utc_day: chrono::NaiveDate) -> RawTelemetryEvent {
-    let day = utc_day.format("%Y-%m-%d");
-    let occurred_at = utc_day
-        .and_hms_opt(0, 0, 0)
-        .expect("midnight is a valid UTC time")
-        .and_utc()
-        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+/// `occurredAt` is the send time. The once-per-day guarantee comes from the
+/// day in `idempotencyKey` (hq-pro keeps one row per subject, event and key);
+/// a midnight timestamp would put every row outside any daytime query window.
+fn build_daily_active_event(now: chrono::DateTime<chrono::Utc>) -> RawTelemetryEvent {
+    let day = now.date_naive().format("%Y-%m-%d");
+    let occurred_at = now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
 
     RawTelemetryEvent {
         event_name: "desktop_app_daily_active".to_string(),
@@ -1480,10 +1504,10 @@ fn build_daily_active_event(utc_day: chrono::NaiveDate) -> RawTelemetryEvent {
 
 async fn emit_daily_active_with_vault(
     vault: &VaultClient,
-    utc_day: chrono::NaiveDate,
+    now: chrono::DateTime<chrono::Utc>,
 ) -> Result<(), String> {
     let batch = TelemetryEventsBatch {
-        events: vec![build_daily_active_event(utc_day)],
+        events: vec![build_daily_active_event(now)],
     };
     vault
         .post_telemetry_events(&batch)
@@ -1491,12 +1515,12 @@ async fn emit_daily_active_with_vault(
         .map_err(|e| e.to_string())
 }
 
-async fn emit_daily_active_for_utc_day(utc_day: chrono::NaiveDate) {
+async fn emit_daily_active_at(now: chrono::DateTime<chrono::Utc>) {
     let result = async {
         let access_token = crate::commands::cognito::get_valid_access_token().await?;
         let api_url = resolve_vault_api_url()?;
         let vault = VaultClient::new(&api_url, &access_token);
-        emit_daily_active_with_vault(&vault, utc_day).await
+        emit_daily_active_with_vault(&vault, now).await
     }
     .await;
 
@@ -1505,11 +1529,18 @@ async fn emit_daily_active_for_utc_day(utc_day: chrono::NaiveDate) {
     }
 }
 
-/// Start a best-effort daily-active emit without delaying application startup.
+/// How often a running app re-sends daily-active. hq-pro keeps the first row
+/// per UTC day, so repeats cost one request and cover a launch that had no
+/// session yet and an app left running past midnight.
+const DAILY_ACTIVE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+
+/// Start best-effort daily-active emits without delaying application startup.
 pub fn setup_daily_active_emit() {
-    let utc_day = chrono::Utc::now().date_naive();
     tauri::async_runtime::spawn(async move {
-        emit_daily_active_for_utc_day(utc_day).await;
+        loop {
+            emit_daily_active_at(chrono::Utc::now()).await;
+            tokio::time::sleep(DAILY_ACTIVE_INTERVAL).await;
+        }
     });
 }
 
@@ -3872,6 +3903,8 @@ mod codex_telemetry_tests {
 
     #[tokio::test]
     async fn test_operational_telemetry_rejects_non_operational_event_names() {
+        // Builds mint the install id under the current HOME.
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let server = MockServer::start().await;
         let vault = VaultClient::new(server.uri(), "test-jwt");
 
@@ -3964,13 +3997,262 @@ mod codex_telemetry_tests {
     }
 
     #[test]
+    fn funnel_operational_rows_carry_the_trusted_app_version() {
+        // Builds mint the install id under the current HOME.
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        // Regression: the PR 1264 funnel rows reached hq-pro with no version.
+        for (op, _, _) in crate::commands::cdp_mirror::OPERATIONAL_MIRRORS {
+            let event = build_desktop_telemetry_event(
+                op.to_string(),
+                Some(json!({ "appVersion": "renderer-controlled-version" })),
+                None,
+                None,
+                "no-consent",
+            );
+            assert_eq!(
+                event.properties["appVersion"],
+                crate::app_version::current(),
+                "{op} must carry the build's app version"
+            );
+        }
+    }
+
+    async fn first_open_posts(server: &MockServer) -> Vec<Value> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|request| request.method == wiremock::http::Method::POST)
+            .map(|request| serde_json::from_slice::<Value>(&request.body).unwrap())
+            // HQ_VAULT_API_URL is process-wide, so a test running alongside
+            // can post its own rows here; count only the first-open rows.
+            .filter(|body| body["events"][0]["eventName"] == "desktop_app_opened")
+            .collect()
+    }
+
+    async fn first_open_server(status: u16) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/telemetry/events"))
+            .respond_with(ResponseTemplate::new(status).set_body_string("{}"))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    fn first_open_held(home: &std::path::Path) -> bool {
+        hq_desktop_core::first_run::read_menubar_obj(&home.join(".hq/menubar.json"))
+            .get(crate::commands::cdp_mirror::FIRST_OPEN_PENDING_KEY)
+            .and_then(Value::as_bool)
+            == Some(true)
+    }
+
+    #[tokio::test]
+    async fn first_launch_app_opened_is_held_until_a_session_exists() {
+        // Regression: the first launch has no session, so its
+        // `desktop_app_opened isFirstLaunch=true` row was dropped and only
+        // signed-in relaunches (`false`) ever reached hq-pro.
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = first_open_server(200).await;
+        let home = setup_home();
+        write_menubar(home.path(), "{}");
+        let _home = scoped_home(home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        // What `cdp_mirror::init` does on a first launch.
+        crate::commands::cdp_mirror::hold_first_open();
+
+        let without_session = crate::commands::cdp_mirror::flush_pending_first_open_now().await;
+        assert!(!without_session, "no session: the row stays held");
+        assert!(first_open_held(home.path()));
+        write_valid_access_token(home.path());
+        assert!(
+            crate::commands::cdp_mirror::flush_pending_first_open_now().await,
+            "the held row is sent once a session exists"
+        );
+        assert!(!first_open_held(home.path()));
+        assert!(
+            !crate::commands::cdp_mirror::flush_pending_first_open_now().await,
+            "sent once"
+        );
+        std::env::remove_var("HQ_VAULT_API_URL");
+
+        let posts = first_open_posts(&server).await;
+        assert_eq!(posts.len(), 1);
+        let event = &posts[0]["events"][0];
+        assert_eq!(event["eventName"], "desktop_app_opened");
+        assert_eq!(event["properties"]["isFirstLaunch"], true);
+        assert_eq!(
+            event["properties"]["appVersion"],
+            crate::app_version::current()
+        );
+    }
+
+    #[tokio::test]
+    async fn overlapping_first_open_flushes_send_one_row() {
+        // Regression: a flush checked the pending flag before taking the guard,
+        // so a flush that checked, then took the guard after another flush had
+        // sent and released it, sent the row a second time.
+        use crate::commands::cdp_mirror::{
+            flush_pending_first_open_now, FirstOpenGuardHook, FIRST_OPEN_GUARD_HOOK,
+        };
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = first_open_server(200).await;
+        let home = setup_home();
+        write_menubar(home.path(), "{}");
+        let _home = scoped_home(home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+        write_valid_access_token(home.path());
+        crate::commands::cdp_mirror::hold_first_open();
+
+        let hook = std::sync::Arc::new(FirstOpenGuardHook {
+            reached: tokio::sync::Notify::new(),
+            resume: tokio::sync::Notify::new(),
+        });
+        let late =
+            tokio::spawn(FIRST_OPEN_GUARD_HOOK.scope(hook.clone(), flush_pending_first_open_now()));
+        // `late` has seen the pending row and is parked before the guard.
+        hook.reached.notified().await;
+        let early = flush_pending_first_open_now().await;
+        hook.resume.notify_one();
+        let late = late.await.unwrap();
+        std::env::remove_var("HQ_VAULT_API_URL");
+
+        assert!(early, "the first flush sends the row");
+        assert!(!late, "the overlapping flush finds it already sent");
+        assert!(!first_open_held(home.path()));
+        let posts = first_open_posts(&server).await;
+        assert_eq!(posts.len(), 1, "exactly one POST");
+        let install = crate::commands::first_run::install_attempt_id().unwrap();
+        assert_eq!(
+            posts[0]["events"][0]["idempotencyKey"],
+            crate::commands::cdp_mirror::first_open_idempotency_key(&install)
+        );
+    }
+
+    #[test]
+    fn first_launch_app_opened_carries_a_stable_install_idempotency_key() {
+        // Regression: the held first-launch row had no idempotencyKey, so a
+        // repeated send was stored twice by hq-pro.
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        write_menubar(home.path(), "{}");
+        let _home = scoped_home(home.path());
+        let build = |first: bool| {
+            build_desktop_telemetry_event(
+                "desktop_app_opened".to_string(),
+                Some(json!({ "isFirstLaunch": first })),
+                None,
+                None,
+                "no-consent",
+            )
+        };
+        let first = build(true);
+        let retry = build(true);
+        let install = crate::commands::first_run::install_attempt_id().unwrap();
+        let key = first.idempotency_key.clone().unwrap();
+        assert_eq!(key, format!("hq-desktop-app:first-open:{install}"));
+        assert_eq!(retry.idempotency_key.as_deref(), Some(key.as_str()));
+        // hq-pro's envelope accepts [A-Za-z0-9_.:#-]{1,200} for idempotencyKey.
+        assert!(key.len() <= 200);
+        assert!(key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_.:#-".contains(&b)));
+        assert_eq!(
+            serde_json::to_value(&first).unwrap()["idempotencyKey"],
+            json!(key)
+        );
+        assert!(
+            build(false).idempotency_key.is_none(),
+            "relaunch rows are not deduped"
+        );
+    }
+
+    fn first_open_warnings(log: &std::path::Path) -> Vec<String> {
+        std::fs::read_to_string(log)
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| line.contains("[cdp] WARN first_open"))
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn first_open_failures_are_logged_as_warnings() {
+        // Regression: the hold write, the send and the clear write each
+        // dropped their error without a trace.
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let logs = TempDir::new().unwrap();
+        let log = logs.path().join("hq-sync.log");
+        let _log = hq_desktop_core::logfile::LogOverrideGuard::new(log.clone());
+        let server = first_open_server(500).await;
+        let home = setup_home();
+        let _home = scoped_home(home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        // Hold: menubar.json is a directory, so the write fails.
+        std::fs::create_dir_all(home.path().join(".hq/menubar.json")).unwrap();
+        crate::commands::cdp_mirror::hold_first_open();
+        let warnings = first_open_warnings(&log);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("hold_write_failed"), "{warnings:?}");
+        std::fs::remove_dir_all(home.path().join(".hq/menubar.json")).unwrap();
+
+        // Send: hq-pro answers 500; the row stays held.
+        write_menubar(home.path(), "{}");
+        write_valid_access_token(home.path());
+        crate::commands::cdp_mirror::hold_first_open();
+        assert!(!crate::commands::cdp_mirror::flush_pending_first_open_now().await);
+        assert!(first_open_held(home.path()));
+        let warnings = first_open_warnings(&log);
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(
+            warnings[1].contains("send_failed_held_for_retry"),
+            "{warnings:?}"
+        );
+
+        // Clear: the send succeeds but the config directory is read-only.
+        #[cfg(unix)]
+        {
+            server.reset().await;
+            Mock::given(method("POST"))
+                .and(path("/v1/telemetry/events"))
+                .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+                .mount(&server)
+                .await;
+            crate::commands::first_run::install_attempt_id().unwrap();
+            let hq_dir = home.path().join(".hq");
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hq_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+            let sent = crate::commands::cdp_mirror::flush_pending_first_open_now().await;
+            std::fs::set_permissions(&hq_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::env::remove_var("HQ_VAULT_API_URL");
+            assert!(sent);
+            let warnings = first_open_warnings(&log);
+            assert_eq!(warnings.len(), 3, "{warnings:?}");
+            assert!(warnings[2].contains("clear_write_failed"), "{warnings:?}");
+        }
+        std::env::remove_var("HQ_VAULT_API_URL");
+    }
+
+    #[test]
     fn test_daily_active_event_uses_stable_utc_day_values() {
-        let utc_day = chrono::NaiveDate::from_ymd_opt(2026, 7, 15).unwrap();
+        let now = chrono::DateTime::parse_from_rfc3339("2026-07-15T14:30:05.250Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
 
-        let first = build_daily_active_event(utc_day);
-        let retry = build_daily_active_event(utc_day);
+        let first = build_daily_active_event(now);
+        let retry = build_daily_active_event(now);
 
-        assert_eq!(first.occurred_at, "2026-07-15T00:00:00.000Z");
+        // Regression: the row used to be stamped 00:00:00Z, so every daytime
+        // read of hq-pro telemetry returned no daily-active rows.
+        assert_eq!(first.occurred_at, "2026-07-15T14:30:05.250Z");
+        let later_same_day = build_daily_active_event(now + chrono::Duration::hours(6));
+        assert_eq!(
+            later_same_day.idempotency_key, first.idempotency_key,
+            "re-sends on the same UTC day share one idempotency key"
+        );
         assert_eq!(
             first.idempotency_key.as_deref(),
             Some("hq-desktop-app:daily-active:2026-07-15")
@@ -4016,9 +4298,9 @@ mod codex_telemetry_tests {
             .await;
 
         let vault = VaultClient::new(server.uri(), "test-jwt");
-        let utc_day = chrono::NaiveDate::from_ymd_opt(2026, 7, 15).unwrap();
+        let now = chrono::Utc::now();
 
-        let result = emit_daily_active_with_vault(&vault, utc_day).await;
+        let result = emit_daily_active_with_vault(&vault, now).await;
 
         assert!(result.is_ok());
         let reqs = server.received_requests().await.unwrap();
@@ -4041,7 +4323,7 @@ mod codex_telemetry_tests {
     async fn test_daily_active_missing_or_invalid_token_does_not_fail_startup() {
         let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let server = MockServer::start().await;
-        let utc_day = chrono::NaiveDate::from_ymd_opt(2026, 7, 15).unwrap();
+        let now = chrono::Utc::now();
 
         for token_contents in [None, Some("{not valid json")] {
             let home = setup_home();
@@ -4051,7 +4333,7 @@ mod codex_telemetry_tests {
 
             std::env::set_var("HQ_TEST_HOME", home.path());
             std::env::set_var("HQ_VAULT_API_URL", server.uri());
-            emit_daily_active_for_utc_day(utc_day).await;
+            emit_daily_active_at(now).await;
             std::env::remove_var("HQ_TEST_HOME");
             std::env::remove_var("HQ_VAULT_API_URL");
         }
@@ -4079,8 +4361,8 @@ mod codex_telemetry_tests {
         std::env::set_var("HQ_TEST_HOME", home.path());
         std::env::set_var("HQ_VAULT_API_URL", server.uri());
 
-        let utc_day = chrono::NaiveDate::from_ymd_opt(2026, 7, 15).unwrap();
-        emit_daily_active_for_utc_day(utc_day).await;
+        let now = chrono::Utc::now();
+        emit_daily_active_at(now).await;
 
         std::env::remove_var("HQ_TEST_HOME");
         std::env::remove_var("HQ_VAULT_API_URL");
