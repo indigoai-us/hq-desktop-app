@@ -168,7 +168,8 @@
             <span class="time">{row.time}</span>
           {/if}
           <span class="t">{row.title}</span>
-          {#if row.companyMark}<span class="mark" title={row.companyLabel ?? row.companyUid ?? undefined} data-testid="meetings-row-company">{row.companyMark}<span class="sr">{row.companyLabel ?? ""}</span></span>{/if}
+          {#if row.companyLabel}<span class="co" title={row.companyLabel} data-testid="meetings-row-company"><CompanyLabel name={row.companyLabel} companyUid={row.companyUid} iconOnly /></span>
+          {:else if row.companyMark}<span class="mark" title={row.companyUid ?? undefined} aria-hidden="true">{row.companyMark}</span>{/if}
           {#if row.hasRecap}
             <span class="notes" aria-label="Recap saved" data-testid="meetings-row-recap">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 3h7l5 5v13H7z" /><path d="M14 3v5h5M9 13h6M9 17h6" /></svg>
@@ -352,13 +353,9 @@
     cursor: pointer;
   }
 
-  .sr {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    white-space: nowrap;
+  .co {
+    display: inline-flex;
+    flex: 0 0 auto;
   }
 
   .popover {
