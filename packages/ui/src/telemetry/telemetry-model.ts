@@ -144,6 +144,8 @@ export interface TelemetrySnapshot {
    * showing an empty table and a false "0". Absent means rows are real.
    */
   sessionsAvailable?: boolean;
+  /** OWNER-R29: every exact model the source reports, largest first. */
+  exactModels?: import("./telemetry-models.js").ExactModelUsage[];
   skills: SkillUse[];
   bots: BotActor[];
   models: ModelUsage[];

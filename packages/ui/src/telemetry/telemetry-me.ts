@@ -19,6 +19,7 @@ import {
   type TelemetrySnapshot,
 } from "./telemetry-model.js";
 import { compactNumber } from "../common/compact-number.js";
+import { exactModels } from "./telemetry-models.js";
 
 export interface MyTelemetryApi {
   getMyTelemetry?(from: string, to: string): AdapterPromise<Json>;
@@ -318,6 +319,7 @@ export function snapshotFromMe(body: unknown, range: TelemetryRange): TelemetryS
       none: 0,
       other: Math.max(0, 100 - deployedShare - shippedShare),
     },
+    exactModels: exactModels(totals.tokensByModel),
     notice: "",
     sessionsAvailable: false,
     optedOut: root.optedOut === true,
