@@ -1682,7 +1682,15 @@ This final paragraph verifies spacing after a thematic break.
       { name: 'Figma', description: 'Inspect product designs in Figma.', scope: 'package', tags: ['design'], invoke: '/figma' },
     ],
   }),
-  hq_pro_fetch: (args) => String(args?.url ?? '').startsWith('/v1/integrations/admin') ? ({
+  hq_pro_fetch: (args) => String(args?.url ?? '').startsWith('/v1/agents/mobile-roster') ? ({
+    status: 200,
+    // Two cloud bots, neither local nor live, so Bots' Local and Live filters
+    // have nothing to show (QA-106 guard).
+    body: JSON.stringify({ agents: [
+      { agentUid: 'agt_preview_scout', displayName: 'Scout', setupPhase: 'ready' },
+      { agentUid: 'agt_preview_ranger', displayName: 'Ranger', setupPhase: 'ready' },
+    ] }),
+  }) : String(args?.url ?? '').startsWith('/v1/integrations/admin') ? ({
     status: 200,
     // Company connected apps, shaped like hq-pro readAdminSurface.
     body: JSON.stringify({

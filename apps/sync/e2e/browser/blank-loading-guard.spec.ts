@@ -281,3 +281,59 @@ test.describe('BLANK-1/2/3: no blank screens, a loader while waiting, no empty c
     });
   }
 });
+
+/**
+ * QA-106: a filter or search that matches nothing must say so. Walks every
+ * destination as the default (data-rich) persona, clicks each filter tab and
+ * types a query no row can match into each search field, and fails when the
+ * result shows a zero count or no rows without a no-match line.
+ */
+const NO_MATCH = 'zzqx-no-such-row';
+const NO_MATCH_LINE = /No [a-z ]*match|No matches|No results|Nothing matches|Nothing (here|yet)|No [a-z ]+ yet/i;
+
+async function zeroWithoutLine(page: Page): Promise<string | null> {
+  return page.evaluate((src) => {
+    const main = document.querySelector('main.desktop-main') as HTMLElement | null;
+    if (!main) return null;
+    // List counts live in the header meta lines ("0 bots", "0 of 35 bots",
+    // "Secrets · 0"); presence counters such as "0 live" are not list counts.
+    const zero = [...main.querySelectorAll('[data-meta-line]')]
+      .map((el) => (el.textContent || '').replace(/\s+/g, ' ').trim())
+      .find((t) => /^0( of \d[\d,]*)? (?!live\b|online\b|unread\b)[a-z]+\b|· 0$/.test(t));
+    if (!zero) return null;
+    const text = (main.innerText || '').replace(/\s+/g, ' ');
+    return new RegExp(src, 'i').test(text) ? null : `${zero} | ${text.slice(0, 160)}`;
+  }, NO_MATCH_LINE.source);
+}
+
+test('QA-106: no zero-result filter or search leaves a blank list', async ({ page, browserName }) => {
+  test.skip(browserName !== 'chromium', 'one browser covers the copy check');
+  test.setTimeout(300_000);
+  await boot(page, '');
+  const dests = await destinations(page);
+  const failures: string[] = [];
+  for (const dest of dests) {
+    await open(page, dest);
+    await expectSettled(page, dest).catch(() => {});
+    const tabs = await page.$$eval('main.desktop-main [role="tab"]', (els) =>
+      els.map((e, i) => ({ i, label: (e.textContent || '').trim() })).filter((t) => t.label),
+    );
+    for (const tab of tabs) {
+      await page.evaluate((i) => (document.querySelectorAll('main.desktop-main [role="tab"]')[i] as HTMLElement | undefined)?.click(), tab.i);
+      await page.waitForTimeout(150);
+      const bad = await zeroWithoutLine(page);
+      if (bad) failures.push(`${dest} filter "${tab.label}": ${bad}`);
+    }
+    if (tabs.length) await page.evaluate(() => (document.querySelector('main.desktop-main [role="tab"]') as HTMLElement | null)?.click());
+    const searches = await page.$$('main.desktop-main input[type="search"], main.desktop-main input[placeholder*="Search" i], main.desktop-main input[placeholder*="Filter" i]');
+    for (const input of searches) {
+      if (!(await input.isVisible())) continue;
+      await input.fill(NO_MATCH);
+      await page.waitForTimeout(250);
+      const bad = await zeroWithoutLine(page);
+      if (bad) failures.push(`${dest} search: ${bad}`);
+      await input.fill('');
+    }
+  }
+  expect(failures, failures.join('\n')).toEqual([]);
+});

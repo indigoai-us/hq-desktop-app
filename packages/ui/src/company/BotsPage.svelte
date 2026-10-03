@@ -1,5 +1,6 @@
 <script lang="ts">
   import ReadLoader from "../common/ReadLoader.svelte";
+  import ListEmptyState from "../common/ListEmptyState.svelte";
   import RailButton from "../common/button/RailButton.svelte";
   /**
    * Company Bots page (console-rail US-027).
@@ -81,6 +82,9 @@
   }
 
   const rows = $derived(filterBots([...localRows(), ...cloud], filter));
+  // QA-106: the company total, so a filter that hides every bot can say so.
+  const totalBots = $derived(localRows().length + cloud.length);
+  const filteredOut = $derived(filter !== "all" && rows.length === 0 && totalBots > 0);
   // The sidepane Bots row shows this same total, before the filter (QA-014).
   $effect(() => {
     if (cloudPhase === "ready" && !cloudFailed) publishCompanyPageCount(companyUid, "bots", localRows().length + cloud.length);
@@ -178,7 +182,7 @@
     <!-- BLANK-2: no "0 bots" next to a failed read with nothing loaded.
          BLANK-3: nor while the first read is still loading. -->
     {#if !(cloudFailed && rows.length === 0) && !(cloudPhase === "shimmer" && rows.length === 0)}
-      <span class="meta-line" data-meta-line data-testid="bots-count">{rows.length === 1 ? "1 bot" : `${rows.length} bots`}</span>
+      <span class="meta-line" data-meta-line data-testid="bots-count">{rows.length === totalBots ? (rows.length === 1 ? "1 bot" : `${rows.length} bots`) : `${rows.length} of ${totalBots} bots`}</span>
     {/if}
     <RailButton icon="plus" variant="primary" type="button" data-testid="bots-new" onclick={() => onaddbot?.()}>New bot</RailButton>
   </div>
@@ -200,6 +204,9 @@
           </div>
         {/if}
         {#if cloudPhase === "shimmer"}<ReadLoader testid="bots-loader" onretry={() => void loadCloud()} />{/if}
+        {#if filteredOut}
+          <ListEmptyState total={totalBots} shown={0} filtered noun={["bot", "bots"]} scope="in this company" clearLabel="Show all bots" onclear={() => (filter = "all")} testid="bots-filter-empty" />
+        {/if}
         {#each page.rows as row (row.uid)}
           <button
             type="button"
