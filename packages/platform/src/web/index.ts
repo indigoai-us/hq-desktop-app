@@ -38,10 +38,11 @@ import {
 } from "../library-shelf.js";
 import {
   bearerTokenFromHeaders,
-  createFeatureFlagGate,
+  createScopedFeatureFlagGates,
+  DESKTOP_AGENT_CREATION_FLAG,
   PERSONAL_WORKSPACE_BOARD_FLAG,
   PERSONAL_TRANSCRIPTS_FLAG,
-  type FeatureFlagGate,
+  type ScopedFeatureFlagGates,
 } from "../flags.js";
 import {
   retryThrottled,
@@ -154,6 +155,8 @@ export const WEB_PATHS = {
     `/v1/google/accounts/${encodeURIComponent(id)}`,
   calendarCalendars: "/v1/calendar/calendars",
   botList: "/v1/bot/list",
+  /** Recorded meeting history (`?companyId=` scopes to one company). */
+  meetingsList: "/v1/meetings",
   botInvite: "/v1/bot/invite",
   botJoinNow: "/v1/bot/join-now",
   botCancel: (id: string) => `/v1/bot/${encodeURIComponent(id)}/cancel`,
@@ -234,6 +237,7 @@ export const WEB_PATHS = {
   agentMobileRoster: AGENT_PATHS.mobileRoster,
   agentOwners: AGENT_PATHS.owners,
   agentCompanyTelemetry: AGENT_PATHS.companyTelemetry,
+  myTelemetry: AGENT_PATHS.myTelemetry,
 } as const;
 
 export interface WebPlatformAdapterConfig {
@@ -458,7 +462,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
   private readonly fetchFn: typeof globalThis.fetch;
   private readonly headers: Record<string, string>;
   private readonly onUnauthorized: () => void;
-  private readonly flags: FeatureFlagGate;
+  private readonly flagsFor: ScopedFeatureFlagGates;
   private readonly requestPolicy: RequestPolicyOptions;
   private activeCompany: string | null = null;
 
@@ -472,7 +476,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
     this.headers = config.headers ?? {};
     this.onUnauthorized = config.onUnauthorized ?? defaultOnUnauthorized;
     this.requestPolicy = config.requestPolicy ?? {};
-    this.flags = createFeatureFlagGate({
+    this.flagsFor = createScopedFeatureFlagGates({
       endpoint: this.baseUrl,
       getToken: () => bearerTokenFromHeaders(this.headers),
       fetch: this.fetchFn,
@@ -491,6 +495,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
     if (
       flag === "meetings" ||
       flag === "agents.claude-provider" ||
+      flag === DESKTOP_AGENT_CREATION_FLAG ||
       flag === PERSONAL_WORKSPACE_BOARD_FLAG ||
       flag === PERSONAL_TRANSCRIPTS_FLAG
     ) {
@@ -602,14 +607,16 @@ export class WebPlatformAdapter implements PlatformAdapter {
   readonly identity: PlatformAdapter["identity"] = {
     whoami: () => this.get(WEB_PATHS.whoami),
     isAdmin: () => this.get(WEB_PATHS.isAdmin),
-    hasFeature: (flag) =>
+    hasFeature: (flag, scope) =>
       WEB_REGISTRY_EXCLUDED_FLAGS.has(flag)
         ? this.legacyHasFeature(flag)
-        : this.flags.resolve(flag, () => this.legacyHasFeature(flag)),
+        : this.flagsFor(scope?.companyUid).resolve(flag, () =>
+            this.legacyHasFeature(flag),
+          ),
     subscribeFeature: (flag, onChange) =>
       WEB_REGISTRY_EXCLUDED_FLAGS.has(flag)
         ? () => {}
-        : this.flags.subscribe(
+        : this.flagsFor(null).subscribe(
             flag,
             () => this.legacyHasFeature(flag),
             onChange,
@@ -900,6 +907,27 @@ export class WebPlatformAdapter implements PlatformAdapter {
       if (!result.ok) return result;
       return ok(unwrapNamedArray(result.value, ["bots"]));
     },
+    listRecorded: (companyId) =>
+      this.get<Json>(
+        companyId
+          ? `${WEB_PATHS.meetingsList}?companyId=${encodeURIComponent(companyId)}&limit=50`
+          : `${WEB_PATHS.meetingsList}?limit=50`,
+      ),
+    getRecorded: (meetingId, companyId) =>
+      this.get<Json>(
+        `${WEB_PATHS.meetingsList}/${encodeURIComponent(meetingId)}${
+          companyId ? `?companyId=${encodeURIComponent(companyId)}` : ""
+        }`,
+      ),
+    readRecordedBody: async (url) => {
+      try {
+        const res = await fetch(url);
+        if (!res.ok) return failure("network", `meeting notes HTTP ${res.status}`);
+        return ok(await res.text());
+      } catch (err) {
+        return failure("network", err instanceof Error ? err.message : String(err));
+      }
+    },
     inviteBot: (payload) =>
       this.post(
         withCompanyQuery(WEB_PATHS.botInvite, payload),
@@ -966,6 +994,16 @@ export class WebPlatformAdapter implements PlatformAdapter {
   };
 
   readonly agents: PlatformAdapter["agents"] = {
+    fetch: async (path, init) => {
+      const res = await this.fetchFn(`${this.baseUrl}${path}`, {
+        method: init.method,
+        credentials: "same-origin",
+        headers: { ...(init.headers ?? {}), ...this.headers },
+        body: init.body,
+      });
+      if (res.status === 401) this.onUnauthorized();
+      return res;
+    },
     getProvisionOptions: (companyUid) =>
       this.get<AgentProvisionOptionsView>(AGENT_PATHS.provisionOptions(companyUid)),
     getStatus: (agentUid) => this.get(WEB_PATHS.agentStatus(agentUid)),
@@ -984,6 +1022,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
       this.get(WEB_PATHS.agentOwners(companyUid, agentUid)),
     getCompanyTelemetry: (companyUid, from, to) =>
       this.get(WEB_PATHS.agentCompanyTelemetry(companyUid, from, to)),
+    getMyTelemetry: (from, to) => this.get(WEB_PATHS.myTelemetry(from, to)),
   };
 
   readonly company: PlatformAdapter["company"] = {
@@ -1079,10 +1118,13 @@ export class WebPlatformAdapter implements PlatformAdapter {
   readonly files: PlatformAdapter["files"] = {
     listDir: async () => NO_API,
     getFileContent: async () => NO_API,
-    listVaultPrefix: (companyUid, prefix) =>
+    listVaultPrefix: (companyUid, prefix, cursor) =>
       this.get(
-        `${WEB_PATHS.filesList}?company=${encodeURIComponent(companyUid)}&prefix=${encodeURIComponent(prefix)}`,
+        `${WEB_PATHS.filesList}?company=${encodeURIComponent(companyUid)}&prefix=${encodeURIComponent(prefix)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
       ),
+    getAccessTree: (companyUid, prefix) =>
+      this.get(`/files/${encodeURIComponent(companyUid)}/acl/tree?prefix=${encodeURIComponent(prefix)}`),
+    listAccessGroups: (companyUid) => this.get(`/secrets/${encodeURIComponent(companyUid)}/groups`),
     presignVaultGet: (companyUid, key) =>
       this.post(WEB_PATHS.filesPresign, {
         company: companyUid,

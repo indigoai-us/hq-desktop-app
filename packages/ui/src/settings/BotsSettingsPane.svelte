@@ -1,4 +1,6 @@
 <script lang="ts">
+  import CompanyLabel from "../company/CompanyLabel.svelte";
+  import RailButton from "../common/button/RailButton.svelte";
   /**
    * Settings → Bots — the one pane for every bot the user works with.
    *
@@ -62,9 +64,11 @@
     cloudBotInitial,
     cloudBotStatusLabel,
     cloudBotsFromRoster,
+    fetchCloudRoster,
     type CloudBotRow,
   } from "./cloud-bots.js";
   import "./settings-chrome.css";
+  import { friendlyApiError } from "../common/api-error.js";
 
   interface Props {
     adapter?: PlatformAdapter | null;
@@ -72,8 +76,14 @@
     companies?: Workspace[] | null;
     /** Explicit admin override (host-known); null defers to membership roles. */
     isAdmin?: boolean | null;
+    /**
+     * Open the one New bot modal (the Messages "New" flow). The host closes
+     * Settings first; creating lands in the bot's DM. Without it the pane
+     * falls back to its own local-only dialog.
+     */
+    onnewbot?: (() => void) | null;
   }
-  let { adapter = null, companies = null, isAdmin = null }: Props = $props();
+  let { adapter = null, companies = null, isAdmin = null, onnewbot = null }: Props = $props();
 
   type Runtime = LocalBotRow["runtime"];
   const RUNTIMES = LOCAL_BOT_RUNTIMES;
@@ -234,7 +244,7 @@
     }
     const result = await api.list();
     if (!result.ok) {
-      loadError = result.message || "Could not read your local bots.";
+      loadError = friendlyApiError(result, "Could not read your local bots.", "bots");
     } else {
       bots = result.value.bots ?? [];
       loadError = "";
@@ -250,7 +260,7 @@
     lineIsError = false;
     const result = await api[verb](name);
     if (!result.ok) {
-      line = result.message || `Could not ${verb} ${name}.`;
+      line = friendlyApiError(result, `Could not ${verb} ${name}.`, "bots");
       lineIsError = true;
     } else {
       line = "";
@@ -261,6 +271,10 @@
   }
 
   async function openCreate(): Promise<void> {
+    if (onnewbot) {
+      onnewbot();
+      return;
+    }
     if (!adapter?.bots) return;
     createError = null;
     createOpen = true;
@@ -288,7 +302,7 @@
     createError = null;
     const result = await api.create(input);
     if (!result.ok) {
-      createError = result.message || `Could not create ${input.name}.`;
+      createError = friendlyApiError(result, `Could not create ${input.name}.`, "bots");
       createBusy = null;
       return;
     }
@@ -431,15 +445,18 @@
       cloudError = "";
     }
     try {
-      const result = await agents.listMobileRoster(null);
-      if (!result.ok) {
-        cloudError = result.message || "Could not read your cloud bots.";
+      const roster = await fetchCloudRoster(
+        (uid) => agents.listMobileRoster(uid),
+        (companies ?? []).map((company) => company.cloudUid),
+      );
+      if (roster.failure) {
+        cloudError = friendlyApiError(roster.failure, "Could not read your cloud bots.", "bots");
       } else {
-        cloudBots = cloudBotsFromRoster(result.value, { companies, isAdmin });
+        cloudBots = cloudBotsFromRoster({ agents: roster.agents }, { companies, isAdmin });
         cloudError = "";
       }
     } catch (error) {
-      cloudError = error instanceof Error ? error.message : "Could not read your cloud bots.";
+      cloudError = friendlyApiError(error, "Could not read your cloud bots.", "bots");
     }
     cloudLoading = false;
   }
@@ -460,7 +477,7 @@
           ? await agents.start(bot.uid)
           : await agents.deprovision(bot.uid);
     if (!result.ok) {
-      cloudLine = result.message || `Could not ${verb} ${bot.displayName}.`;
+      cloudLine = friendlyApiError(result, `Could not ${verb} ${bot.displayName}.`, "bots");
       cloudLineIsError = true;
     } else {
       cloudLine = "";
@@ -586,14 +603,13 @@
             </div>
             {#if remoteFailure !== "server-unsupported"}
               <div class="actions">
-                <button
-                  type="button"
+                <RailButton icon="refresh"
                   data-testid="settings-bots-remote-recheck"
                   disabled={restoreBusy || Boolean(adoptBusy)}
                   onclick={() => void loadRemote()}
                 >
                   Check again
-                </button>
+                </RailButton>
               </div>
             {/if}
           </div>
@@ -723,7 +739,10 @@
               <BotKindChip kind="cloud" variant="label" />
             </strong>
             <small>
-              {#if bot.companyLabel}{bot.companyLabel} · {/if}{pausedCloud.has(bot.uid)
+              {#if bot.companyLabel}<CompanyLabel
+                  name={bot.companyLabel}
+                  companyUid={bot.companyUid}
+                /> · {/if}{pausedCloud.has(bot.uid)
                 ? "Paused"
                 : cloudBotStatusLabel(bot.status, bot.phase)}
             </small>

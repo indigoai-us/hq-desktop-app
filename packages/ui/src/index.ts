@@ -171,6 +171,16 @@ export { default as LinkContextMenu } from "./common/LinkContextMenu.svelte";
 export * from "./common/external-links.js";
 
 export { default as DesktopApp } from "./shell/DesktopApp.svelte";
+export { default as ToastStack } from "./shell/ToastStack.svelte";
+export {
+  dismissToast,
+  dismissToastByKey,
+  pushToast,
+  toastItems,
+  type ToastAction,
+  type ToastInput,
+  type ToastItem,
+} from "./shell/toast-stack.svelte.js";
 export * from "./shell/embedded-navigation.js";
 export * from "./shell/notification-recovery.js";
 export { default as NotificationActionRecovery } from "./shell/NotificationActionRecovery.svelte";
@@ -193,6 +203,7 @@ export {
   reportInstallFailed,
   reportIdleWait,
   applyAvailableUpdate,
+  setBackgroundUpdatesOff,
   applyRecommendBanner,
   dismissRecommendBanner,
   clearRecommendBanner,
@@ -307,3 +318,8 @@ export {
 } from "./chat/tasks/task-feed-controller.svelte";
 export * from "./chat/tasks/visible-tasks";
 export { TOUR_SEEN_STORAGE_KEY } from "./tour/guided-tour.js";
+
+// Atlas map (US-012): lazy door only — never re-export ./atlas statically.
+export { loadAtlas } from "./shell/atlas-lazy.js";
+// Personal telemetry (US-032): lazy door only — never re-export ./telemetry statically.
+export { loadTelemetry } from "./shell/telemetry-lazy.js";

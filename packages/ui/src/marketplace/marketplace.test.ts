@@ -43,6 +43,7 @@ import {
   requestCreatorAccess,
   toClaimError,
   toPublishError,
+  PUBLISH_ERROR_COPY,
   updateCreatorProfile,
   uploadCreatorAvatar,
   yankMarketplaceListing,
@@ -775,10 +776,10 @@ describe("US-013 publish — looksNotVerified classifier", () => {
 });
 
 describe("US-013 publish — toPublishError / isPublishError", () => {
-  it("passes a structured PublishError through unchanged", () => {
+  it("keeps a structured PublishError's flag but swaps its text for plain copy", () => {
     const pe = { message: "nope", notVerified: true };
     expect(isPublishError(pe)).toBe(true);
-    expect(toPublishError(pe)).toEqual(pe);
+    expect(toPublishError(pe)).toEqual({ message: PUBLISH_ERROR_COPY, notVerified: true });
   });
 
   it("wraps a bare Error, classifying not-verified from its text (AC3)", () => {
@@ -788,18 +789,18 @@ describe("US-013 publish — toPublishError / isPublishError", () => {
       ),
     );
     expect(wrapped.notVerified).toBe(true);
-    expect(wrapped.message).toMatch(/creator account is verified/);
+    expect(wrapped.message).toBe(PUBLISH_ERROR_COPY);
   });
 
   it("wraps a validation Error as inline (notVerified=false) (AC2)", () => {
     const wrapped = toPublishError(new Error("package.yaml is invalid"));
     expect(wrapped.notVerified).toBe(false);
-    expect(wrapped.message).toBe("package.yaml is invalid");
+    expect(wrapped.message).toBe(PUBLISH_ERROR_COPY);
   });
 
   it("coerces a non-Error rejection to a safe default", () => {
     expect(toPublishError(undefined)).toEqual({
-      message: "Publish failed.",
+      message: PUBLISH_ERROR_COPY,
       notVerified: false,
     });
   });
@@ -915,15 +916,19 @@ describe("US-016 — desktop Profile tab", () => {
       taken: true,
     };
     expect(isClaimError(taken)).toBe(true);
-    expect(toClaimError(taken)).toBe(taken);
-    // A bare string / Error is wrapped with taken=false.
+    expect(toClaimError(taken)).toEqual({
+      message: "That handle is already claimed. Try another.",
+      code: "HANDLE_ALREADY_CLAIMED",
+      taken: true,
+    });
+    // A bare string / Error is wrapped with taken=false and plain copy.
     expect(toClaimError("boom")).toEqual({
-      message: "boom",
+      message: "Couldn't claim that handle. Try again.",
       code: "",
       taken: false,
     });
     expect(toClaimError(new Error("net"))).toEqual({
-      message: "net",
+      message: "Couldn't claim that handle. Try again.",
       code: "",
       taken: false,
     });
@@ -1108,5 +1113,29 @@ describe("loadMyCreator — prefill the Profile tab from GET /v1/creators/me", (
     );
     const res = await loadMyCreator(api);
     expect(res).toMatchObject({ ok: false, reason: "error" });
+  });
+});
+
+describe("AUDIT-3c raw errors — toPublishError / toClaimError", () => {
+  const RAW = '[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}';
+  it("toPublishError never returns raw text and logs it", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    for (const v of [new Error(RAW), RAW, { ok: false, reason: "error", message: RAW }]) {
+      const pe = toPublishError(v);
+      expect(pe.message).not.toContain("boom");
+      expect(pe.message).toMatch(/try again/i);
+    }
+    expect(warn).toHaveBeenCalledWith("[marketplace] publish failed", RAW);
+    warn.mockRestore();
+  });
+  it("toClaimError never returns raw text and logs it", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    for (const v of [new Error(RAW), RAW, { ok: false, reason: "error", message: RAW }]) {
+      const ce = toClaimError(v);
+      expect(ce.message).not.toContain("boom");
+      expect(ce.message).toBe("Couldn't claim that handle. Try again.");
+    }
+    expect(warn).toHaveBeenCalledWith("[marketplace] handle claim failed", RAW);
+    warn.mockRestore();
   });
 });

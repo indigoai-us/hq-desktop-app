@@ -20,6 +20,7 @@
   import { createSetupInstallGuideCallbacks } from './lib/install-guide-adapter';
   import {
     applyAvailableUpdate,
+    setBackgroundUpdatesOff,
     applyRecommendBanner,
     clearRecommendBanner,
     createChatWakeBus,
@@ -36,6 +37,7 @@
     toSelfIdentity,
     workspacesFromMembershipRows,
     common,
+    ToastStack,
     type ConversationRow,
     type EmbeddedNavigationTarget,
     type SelfIdentity,
@@ -50,6 +52,7 @@
   import type { DmRequestContact } from '../lib/dmRequests';
   import { dismissBootLoader } from './boot-loader';
   import SignInPrompt from '../components/SignInPrompt.svelte';
+  import { lifecycleForAuthStatus } from './lib/auth-lifecycle';
   import { openApprovedExternalUrl, openBrowserUrl } from './external-open';
   import {
     applyDesktopAltRoute,
@@ -440,8 +443,10 @@
 
   const HOST_REQUEST_TIMEOUT_MS = 15_000;
 
-  function readableError(error: unknown, fallback: string): string {
-    return error instanceof Error && error.message ? error.message : fallback;
+  // AUDIT-3c: never show thrown transport text; log it and show app copy.
+  function readableError(error: unknown, fallback: string, what = 'request'): string {
+    console.warn(`[hq-work] ${what} failed`, error);
+    return fallback;
   }
 
   function isUnauthenticated(result: { code?: string; message?: string }): boolean {
@@ -517,32 +522,17 @@
     signOutError = null;
     navigation.clear();
 
-    if (
-      next.status === 'credentials_absent' ||
-      next.status === 'credentials_read_error'
-    ) {
-      signedOutReason = 'signed-out';
+    // Usable credentials that are not a person's stay distinct from 'invalid'
+    // so the screen can explain the actual situation. An unreadable token
+    // store goes to recovery, not signed-out (see lib/auth-lifecycle.ts).
+    const verdict = lifecycleForAuthStatus(next.status);
+    if (verdict.lifecycle === 'signed-out') {
+      signedOutReason = verdict.reason;
       lifecycle = 'signed-out';
       flushSync();
       return;
     }
-    if (next.status === 'credentials_invalid') {
-      signedOutReason = 'invalid';
-      lifecycle = 'signed-out';
-      flushSync();
-      return;
-    }
-    // Usable credentials that are not a person's. Kept distinct from
-    // 'invalid' so the screen can explain the actual situation — retrying or
-    // signing out will not change anything while the machine credential is
-    // still the one on disk.
-    if (next.status === 'non_human_principal') {
-      signedOutReason = 'non-human';
-      lifecycle = 'signed-out';
-      flushSync();
-      return;
-    }
-    if (next.status === 'refresh_temporarily_unavailable') {
+    if (verdict.lifecycle === 'recovery') {
       lifecycle = 'recovery';
       flushSync();
       return;
@@ -722,7 +712,7 @@
       return true;
     } catch (error) {
       if (!isCurrent()) return true;
-      workspaceError = readableError(error, 'Couldn’t load company workspaces.');
+      workspaceError = readableError(error, 'Couldn’t load company workspaces.', 'workspace load');
       return false;
     }
   }
@@ -773,7 +763,8 @@
           signedOutReason = 'expired';
           lifecycle = 'signed-out';
         } else {
-          identityError = who.message ?? 'Couldn’t verify your account.';
+          console.warn('[hq-work] identity lookup failed', who.code, who.message);
+          identityError = 'Couldn’t verify your account. Try again.';
           lifecycle = 'identity-error';
         }
         return;
@@ -802,7 +793,7 @@
       sendQueuedCompanyInvites();
     } catch (error) {
       if (request !== hydration || expectedGeneration !== authGeneration) return;
-      identityError = readableError(error, 'Couldn’t verify your account.');
+      identityError = readableError(error, 'Couldn’t verify your account. Try again.', 'identity lookup');
       lifecycle = 'identity-error';
     }
 
@@ -851,7 +842,7 @@
       signedOutReason = 'signed-out';
       lifecycle = 'signed-out';
     } catch (error) {
-      signOutError = readableError(error, 'Couldn’t sign out. Please try again.');
+      signOutError = readableError(error, 'Couldn’t sign out. Try again.', 'sign out');
     } finally {
       signingOut = false;
     }
@@ -1129,6 +1120,12 @@
       if (typeof id === 'string' && id) common.runShortcut(id);
     }).catch(() => () => {});
 
+    // QA-051: About says automatic updates are off in dev and debug builds.
+    void invokeFn('background_updates_off')
+      .then((off) => {
+        if (!cancelled) setBackgroundUpdatesOff(off === true);
+      })
+      .catch((err: unknown) => console.warn('[updates] background_updates_off failed', err));
     const updateEvents = [
       'update:available',
       'update:cleared',
@@ -1338,6 +1335,9 @@
 </script>
 
 <div class="hq-work-embedded" data-testid="hq-work-embedded-shell">
+  <!-- OWNER-003: the app's one toast layer (update, copied). Paused uploads
+       go to the notifications panel instead (#1255). -->
+  <ToastStack />
   {#if lifecycle === 'loading'}
     <section class="lifecycle-state" data-testid="hq-work-loading" role="status">
       <div class="hq-work-boot" data-testid="hq-work-boot" aria-busy="true" aria-live="polite">
@@ -1346,32 +1346,27 @@
     </section>
   {:else if lifecycle === 'signed-out'}
     <section class="lifecycle-state" data-testid="hq-work-signed-out" role="status">
-      <h1>
-        {signedOutReason === 'expired'
-          ? 'Your session expired'
-          : signedOutReason === 'invalid'
-            ? 'Your sign-in is no longer valid'
-            : signedOutReason === 'non-human'
-              ? 'These credentials belong to an agent'
-              : 'You are signed out'}
-      </h1>
-      <p>
-        {signedOutReason === 'expired'
-          ? 'Sign in again to continue using HQ Work.'
-          : signedOutReason === 'non-human'
-            ? 'The HQ credentials saved on this device belong to a fleet agent, not to a person, so HQ Work will not open as that identity. Sign in with your own HQ account to continue.'
-            : 'This device no longer has an active HQ Work session.'}
-      </p>
+      <!-- OWNER-D 5 (AUDIT-3-20): the card's "Sign in to HQ" is the page's one
+           heading; why the person is signed out is a short line under it. -->
       <div class="workspace-signin">
         <SignInPrompt
+          layout="column"
+          version={version}
+          note={signedOutReason === 'expired'
+            ? 'Your session expired.'
+            : signedOutReason === 'invalid'
+              ? 'Your saved sign-in is no longer valid.'
+              : signedOutReason === 'non-human'
+                ? 'The sign-in saved here belongs to an agent, not a person.'
+                : undefined}
           reauth={signedOutReason === 'expired' ||
             signedOutReason === 'invalid' ||
             signedOutReason === 'non-human'}
           bringMainToFront={false}
           onsuccess={handleWorkspaceSignInSuccess}
+          onretry={() => void hydrateSession()}
         />
       </div>
-      <button type="button" class="secondary" onclick={() => void hydrateSession()}>Retry</button>
     </section>
   {:else if lifecycle === 'recovery'}
     <section class="lifecycle-state" data-testid="hq-work-auth-recovery" role="status">
@@ -1520,14 +1515,32 @@
     width: 100%;
     height: 100%;
     padding: 32px;
-    color: #f1f5f9;
-    background: #121417;
+    /* OWNER-015: this page renders before any session exists, outside the
+       chat shell where --font-ui lives, so it names the app sans with its own
+       fallback. Without it the heading and body dropped to the serif default. */
+    font-family: var(--font-sans, "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+    font-size: 13px;
+    line-height: 1.45;
+    color: var(--v4-text-1, #ededed);
+    background: var(--v4-ground, #121417);
   }
 
   .lifecycle-state h1,
   .lifecycle-state p {
     max-width: 440px;
     margin: 0;
+  }
+
+  /* Sheet-title row of the console-rail type scale. */
+  .lifecycle-state h1 {
+    font-size: 15px;
+    font-weight: 600;
+    line-height: 20px;
+  }
+
+  .lifecycle-state p {
+    font-size: 13px;
+    color: var(--v4-text-2, #b0b0b0);
   }
 
   .lifecycle-state > button {
@@ -1546,10 +1559,19 @@
     width: min(100%, 420px);
   }
 
+  /* The card uses the overlay surface tokens (OWNER-006). No backdrop-filter
+     on a rounded card in WKWebView. */
   .workspace-signin :global(.sign-in-container) {
     width: 100%;
     height: auto;
     min-height: 0;
+    padding: 24px;
+    border: 1px solid var(--overlay-border, var(--v4-hairline, rgba(255, 255, 255, 0.12)));
+    border-radius: 12px;
+    background: var(--overlay-bg, var(--v4-popover-strong, #242424));
+    box-shadow: var(--overlay-shadow, var(--v4-shadow-popover, 0 22px 55px rgba(0, 0, 0, 0.22)));
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
   }
 
   .workspace-warning {

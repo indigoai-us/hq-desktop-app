@@ -91,9 +91,7 @@ function press(node: EventTarget, key: string) {
 }
 
 function openModal(): void {
-  host
-    .querySelector<HTMLButtonElement>('[data-testid="chat-new-message"]')
-    ?.click();
+  (component as unknown as { openCreateChannel: () => void }).openCreateChannel();
 }
 
 function queryInput(): HTMLInputElement {
@@ -134,20 +132,17 @@ describe("ChatSidebar create flow", () => {
       '[data-testid="chat-new-message"]',
     );
     expect(plus).toBeTruthy();
-    expect(plus?.getAttribute("aria-haspopup")).toBe("dialog");
+    expect(plus?.getAttribute("aria-haspopup")).toBe("menu");
     plus?.click();
     await tick();
 
-    expect(
-      document.querySelector('[data-testid="chat-create-modal"]'),
-    ).toBeTruthy();
-    // The old dropdown is gone for good (it also rendered clipped).
-    expect(
-      document.querySelector('[data-testid="chat-plus-new-message"]'),
-    ).toBeNull();
-    expect(
-      document.querySelector('[data-testid="chat-plus-new-channel"]'),
-    ).toBeNull();
+    const menu = document.querySelector('[data-testid="chat-create-menu"]');
+    expect(menu?.textContent).toContain("New message");
+    expect(menu?.textContent).toContain("New channel");
+    expect(menu?.textContent).toContain("New bot");
+    expect(menu?.textContent).not.toContain("New company");
+    expect(document.querySelector('[data-testid="chat-create-modal"]')).toBeNull();
+    expect(document.querySelector('[data-testid="chat-plus-new-message"]')).toBeNull();
   });
 
   it("picking a channel opens that conversation", async () => {
@@ -270,6 +265,7 @@ describe("ChatSidebar create flow", () => {
           sendChannelMessage,
         },
         companies: [INDIGO],
+        scopeUid: INDIGO.cloudUid,
         seedDirectory,
       },
     });
@@ -328,8 +324,13 @@ describe("ChatSidebar create flow", () => {
       channelId: "chn_new",
       body: "kicking this off",
     });
-    // The new channel is in the rail immediately (optimistic upsert).
-    expect(host.textContent).toContain("Q4 board");
+    // Company channels paint under Activity for the selected company, not
+    // in the Home day groups. The optimistic upsert still shows immediately.
+    const activity = host.querySelector('[data-testid="company-activity-channels"]');
+    expect(activity?.textContent).toContain("Q4 board");
+    expect(
+      host.querySelector('[data-testid="chat-today"]')?.textContent ?? "",
+    ).not.toContain("Q4 board");
     // …and the open request carries its NAME, so the header never paints the
     // raw `chn_…` id while the directory feed catches up (reported bug).
     expect(takePendingChannelOpen()).toMatchObject({

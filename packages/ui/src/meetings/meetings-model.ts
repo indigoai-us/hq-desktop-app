@@ -28,6 +28,60 @@ export interface MeetingEvent {
   sourceCompanyUid?: string;
   sourceAccountId?: string;
   signals?: unknown;
+  /** Calendar attendees (Google shape); the room strip shows them as invited. */
+  attendees?: MeetingAttendee[];
+  /** US-021: live room presence from the notetaker, when the host has it. */
+  room?: MeetingRoom | null;
+  /** US-021: agenda outline for the live canvas. */
+  outline?: MeetingOutlineEntry[];
+  /** US-021: notetaker notes for the live canvas. */
+  notes?: MeetingNoteEntry[];
+  /** Calendar event body; often HTML from Google. The canvas reads it as the agenda. */
+  description?: string | null;
+  location?: string | null;
+  organizer?: { email?: string; displayName?: string | null; self?: boolean } | null;
+  htmlLink?: string | null;
+  conferenceData?: { entryPoints?: Array<{ entryPointType?: string; uri?: string }> } | null;
+  /** Set when the row comes from recorded meeting history, not the calendar. */
+  recorded?: { meetingId: string; durationLabel: string | null; hasSignals: boolean } | null;
+}
+
+export interface MeetingAttendee {
+  email?: string;
+  displayName?: string | null;
+  responseStatus?: string;
+  self?: boolean;
+  resource?: boolean;
+  organizer?: boolean;
+}
+
+export interface MeetingRoom {
+  live?: boolean;
+  speakerId?: string | null;
+  participants?: Array<{
+    id: string;
+    name?: string;
+    kind?: "human" | "bot";
+    live?: boolean;
+    speaking?: boolean;
+  }>;
+}
+
+export interface MeetingOutlineEntry {
+  id?: string;
+  title: string;
+  detail?: string | null;
+  state?: "done" | "now" | "todo";
+  children?: Array<{ id?: string; title: string; done?: boolean }>;
+}
+
+export interface MeetingNoteEntry {
+  id?: string;
+  author?: string;
+  kind?: "human" | "bot";
+  at?: string;
+  text?: string;
+  typing?: boolean;
 }
 
 export interface ScheduledBot {
@@ -42,6 +96,8 @@ export interface ScheduledBot {
   scheduledStartTime?: string | null;
   autoScheduled: boolean;
   errorMessage?: string | null;
+  /** Company whose vault receives the transcript (hq-pro `companyId`). */
+  companyId?: string | null;
   /**
    * US-010 — the real source-landed signal from hq-pro: true only when the
    * transcript has actually been persisted to the vault as a queryable source
@@ -705,6 +761,23 @@ export function eventMeetingUrl(e: MeetingEvent): string | null {
 }
 
 /**
+ * Whether a calendar event belongs in the Meetings list at all. Hidden:
+ * free/busy placeholders ("Busy") and untitled events, and anything with
+ * neither a location nor a join link. A physical address counts as a
+ * location. Every consumer (rail sections, live pick, toolbar counts, canvas
+ * next/previous) reads the store's already-filtered list, so they agree.
+ */
+export function isListableMeeting(
+  e: Pick<MeetingEvent, "summary" | "location" | "meetingUrl" | "hangoutLink" | "conferenceData">,
+): boolean {
+  const title = (e.summary ?? "").trim().toLowerCase();
+  if (!title || title === "busy") return false;
+  if ((e.location ?? "").trim()) return true;
+  if ((e.meetingUrl ?? "").trim() || (e.hangoutLink ?? "").trim()) return true;
+  return Boolean(e.conferenceData?.entryPoints?.some((p) => (p.uri ?? "").trim()));
+}
+
+/**
  * Human platform label for a meeting row — "Google Meet" / "Zoom" / "Teams" /
  * "Webex", else empty string when the URL is missing or unrecognized.
  */
@@ -842,30 +915,15 @@ export function rowButtonLabel(kind: RowButtonKind, pending: boolean): string {
 }
 
 /**
- * Map a raw invoke rejection to friendly, recoverable copy. Tries to parse a
- * JSON `{ error | message }` payload first, then falls back to HTTP-status
+ * Map a raw invoke rejection to friendly, recoverable copy. Uses HTTP-status
  * heuristics (409 already-scheduled, 401 re-auth, 403 forbidden, 5xx server),
  * else the caller-supplied fallback. Mirrors the classic MeetingsWindow.
  */
 export function friendlyError(err: unknown, fallback: string): string {
   const raw = String(err ?? "").trim();
-  const jsonStart = raw.indexOf("{");
-  if (jsonStart >= 0) {
-    try {
-      const parsed = JSON.parse(raw.slice(jsonStart)) as {
-        error?: string;
-        message?: string;
-      };
-      if (typeof parsed.error === "string" && parsed.error.length > 0) {
-        return parsed.error;
-      }
-      if (typeof parsed.message === "string" && parsed.message.length > 0) {
-        return parsed.message;
-      }
-    } catch {
-      // Not JSON — fall through to HTTP-status heuristics below.
-    }
-  }
+  // The raw rejection (including any server JSON body) is logged, never
+  // shown: only the fixed copy below reaches the screen.
+  if (raw) console.warn("[meetings] request failed", raw);
   if (/\b409\b/.test(raw))
     return "A bot is already scheduled for this meeting.";
   if (/\b401\b/.test(raw)) return "You need to sign in again.";

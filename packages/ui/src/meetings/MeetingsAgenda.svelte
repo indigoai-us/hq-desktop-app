@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CompanyLabel from "../company/CompanyLabel.svelte";
   import {
     botAttachmentState,
     botForEvent,
@@ -220,7 +221,10 @@
                 {/if}
               </div>
               <div class="mcompany">
-                {companyLabel(event, companyNames)}{#if dur}
+                {#if event.sourceCompanyUid}<CompanyLabel
+                    name={companyLabel(event, companyNames)}
+                    companyUid={event.sourceCompanyUid}
+                  />{:else}Personal{/if}{#if dur}
                   · {dur}{/if}
               </div>
               {#if openingFailures.has(event.id) && url}
@@ -547,14 +551,14 @@
   .panel-header h2 {
     margin: 0;
     color: var(--v4-text-1);
-    font-size: var(--type-section, 14px);
-    font-weight: 600;
+    font-size: var(--type-section, 13px);
+    font-weight: 500;
     line-height: 18px;
   }
 
   .panel-header span {
     color: var(--v4-text-3);
-    font-size: var(--type-secondary, 11px);
+    font-size: var(--type-secondary, 13px);
   }
 
   .day-section {
@@ -565,7 +569,7 @@
     margin-top: 0;
   }
 
-  /* Day separator — uppercase metadata, no card chrome. */
+  /* Day separator: 13px sans section label, no card chrome. */
   .day-heading {
     display: flex;
     align-items: center;
@@ -575,12 +579,10 @@
     margin: 0;
     padding: 12px 8px 4px;
     color: var(--t2, var(--v4-text-3));
-    font-family: var(--font-mono, ui-monospace, Menlo, monospace);
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: 1px;
+    font-variant-numeric: tabular-nums;
+    font-size: 13px;
+    font-weight: 500;
     line-height: 14.5px;
-    text-transform: uppercase;
   }
 
   .day-count {
@@ -593,7 +595,7 @@
   .agenda-list {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 0;
     border-radius: 0;
     background: transparent;
     box-shadow: none;
@@ -604,28 +606,17 @@
     align-items: center;
     gap: 10px;
     box-sizing: border-box;
-    min-height: 46px;
-    padding: 10px 14px;
-    border: 1px solid var(--line, var(--v4-hairline));
-    border-radius: 10px;
-    background: var(--raised, var(--v4-raised));
-    transition:
-      background-color 0.12s,
-      border-color 0.12s;
-  }
-
-  .meeting-row:last-child {
-    border-bottom: 1px solid var(--line, var(--v4-hairline));
+    /* Messages sidebar row: 31px, 7px 8px, radius 8, no card chrome. */
+    min-height: 31px;
+    padding: 7px 8px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    line-height: 17px;
   }
 
   .meeting-row:not(.empty-row):hover {
-    background: var(--btn-bg, var(--v4-active-row));
-    border-color: var(--line2, var(--v4-control-border));
-  }
-
-  .meeting-row.live {
-    background: color-mix(in srgb, var(--ok, #34c759) 9%, transparent);
-    border-color: color-mix(in srgb, var(--ok, #34c759) 32%, transparent);
+    background: var(--hover, var(--v4-active-row));
   }
 
   .meeting-row.past {
@@ -633,16 +624,15 @@
   }
 
   .meeting-row.focused {
-    background: var(--v4-active-row);
-    box-shadow: inset 0 0 0 1px var(--v4-hairline);
+    background: var(--sel, var(--v4-active-row));
+    box-shadow: none;
   }
 
   .mtime {
     flex: 0 0 52px;
     color: var(--t3, var(--v4-text-3));
-    font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: 0.3px;
+    font-variant-numeric: tabular-nums;
+    font-size: 13px;
     white-space: nowrap;
   }
 
@@ -673,7 +663,7 @@
     color: var(--t1, var(--v4-text-1));
     font-size: 13px;
     font-weight: 500;
-    line-height: 18.85px;
+    line-height: 17px;
     white-space: nowrap;
   }
 
@@ -721,7 +711,7 @@
     margin-right: auto;
     overflow: hidden;
     color: var(--t3, var(--v4-text-3));
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 400;
     line-height: 15.95px;
     text-overflow: ellipsis;
@@ -734,7 +724,7 @@
     gap: 8px;
     margin-top: 2px;
     color: var(--v4-error);
-    font-size: var(--type-metadata, 10px);
+    font-size: var(--type-metadata, 13px);
     line-height: 14px;
   }
 
@@ -744,38 +734,35 @@
     background: transparent;
     color: currentColor;
     font: inherit;
-    font-weight: 600;
+    font-weight: 500;
     cursor: pointer;
   }
 
   .msig {
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, 10px);
+    font-size: var(--type-metadata, 13px);
     white-space: nowrap;
   }
 
-  /* Discrete status payloads may keep pill radius. */
+  /* Status is plain 13px text (dot for live), not a bordered pill. */
   .pill {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
-    padding: 2px 8px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-pill);
+    gap: 6px;
+    padding: 0;
+    border: 0;
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, 10px);
+    font-size: var(--type-metadata, 13px);
     line-height: 14px;
     white-space: nowrap;
   }
 
   .pill.ok {
-    color: var(--v4-ok);
-    border-color: var(--v4-control-border);
+    color: var(--v4-text-2);
   }
 
   .pill.live {
     color: var(--v4-ok);
-    border-color: var(--v4-control-border);
   }
 
   .pill.live::before {
@@ -789,7 +776,7 @@
   }
 
   .pill .check {
-    font-size: var(--type-metadata, 10px);
+    font-size: var(--type-metadata, 13px);
   }
 
   /* ── Action cluster (parity 5th column) ───────────────────────────────
@@ -819,7 +806,7 @@
     background: var(--v4-active-row);
     color: var(--v4-text-2);
     font: inherit;
-    font-size: var(--type-body, 12px);
+    font-size: var(--type-body, 13px);
     cursor: pointer;
     transition:
       background 120ms ease,
@@ -856,7 +843,7 @@
     color: var(--t2, var(--v4-text-2));
     background: transparent;
     border: 1px solid var(--line2, var(--v4-hairline));
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 500;
     opacity: 0;
   }
@@ -980,7 +967,7 @@
   .empty-row {
     display: block;
     color: var(--v4-text-2);
-    font-size: var(--type-body, 12px);
+    font-size: var(--type-body, 13px);
     line-height: 18px;
     border-bottom: none;
   }

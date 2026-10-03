@@ -89,7 +89,7 @@ describe("tourSteps", () => {
 
   it("points steps 2 and 3 at the buttons that get there, not the surfaces", () => {
     const steps = tourSteps({ hasCompany: true });
-    expect(steps[1].targets).toEqual(['[data-testid="titlebar-files"]']);
+    expect(steps[1].targets).toEqual(['[data-testid="rail-library"]']);
     expect(steps[2].title).toBe("Make your own bots");
     expect(steps[2].body).toMatch(/^Click \+ to start a new bot/);
     expect(steps[2].targets).toEqual(['[data-testid="chat-new-message"]']);
@@ -100,9 +100,10 @@ describe("tourSteps", () => {
     expect(steps[3].title).toBe("Bring in your team");
     expect(steps[3].targets).toEqual([
       '[data-testid="team-invite"]',
+      '[data-testid="rail-company"]',
       '[data-testid="chat-companies-section"]',
     ]);
-    expect(steps[4].targets).toEqual(['[data-testid="titlebar-meetings"]']);
+    expect(steps[4].targets).toEqual(['[data-testid="rail-meetings"]']);
     expect(steps[7].title).toBe(`Find anything with ${formatShortcut("Mod+K")}`);
     expect(steps[7].targets).toEqual(['[data-testid="command-palette"]']);
   });

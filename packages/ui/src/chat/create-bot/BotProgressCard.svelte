@@ -128,7 +128,7 @@
     margin: 12px 16px;
     padding: 14px 16px;
     border: 1px solid var(--v4-hairline);
-    border-radius: 12px;
+    border-radius: 8px;
     background: var(--v4-control-faint, rgba(127, 127, 127, 0.06));
     color: var(--t1);
     font-size: 13px;
@@ -140,11 +140,11 @@
     gap: 8px;
   }
   .progress-title {
-    font-weight: 600;
+    font-weight: 500;
   }
   .progress-hint {
     color: var(--t3);
-    font-size: 11px;
+    font-size: 13px;
   }
   .progress-steps {
     display: flex;
@@ -157,7 +157,8 @@
   .progress-step {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
+    min-height: 20px;
     color: var(--t3);
   }
   .progress-step[data-step-state="done"] {
@@ -169,27 +170,28 @@
   .progress-step[data-step-state="failed"] {
     color: var(--v4-error, #d9534f);
   }
+  /* Status is a 6px dot plus text. Done is neutral; red only on failure. */
   .progress-dot {
-    display: grid;
-    place-items: center;
-    width: 16px;
-    height: 16px;
+    width: 6px;
+    height: 6px;
     border-radius: 50%;
-    border: 1.5px solid currentColor;
+    background: currentColor;
+    opacity: 0.6;
     flex: 0 0 auto;
   }
-  .progress-step[data-step-state="done"] .progress-dot {
-    background: var(--v4-ok, #2e9e5b);
-    border-color: var(--v4-ok, #2e9e5b);
-    color: #fff;
+  .progress-dot :global(svg) {
+    display: none;
   }
   .progress-step[data-step-state="active"] .progress-dot {
-    border-style: dashed;
-    animation: spin 1.6s linear infinite;
+    opacity: 1;
+    animation: pulse 1.2s ease-in-out infinite;
   }
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
+  .progress-step[data-step-state="failed"] .progress-dot {
+    opacity: 1;
+  }
+  @keyframes pulse {
+    50% {
+      opacity: 0.3;
     }
   }
   @media (prefers-reduced-motion: reduce) {
@@ -212,12 +214,13 @@
   }
   .progress-retry {
     font: inherit;
-    font-size: 12px;
-    padding: 5px 12px;
+    font-size: 13px;
+    height: 28px;
+    padding: 0 12px;
     border: 0;
     border-radius: 6px;
-    background: var(--v4-cta-bg, var(--v4-brand-accent, #4c6fff));
-    color: var(--v4-cta-text, #fff);
+    background: var(--t1, #111);
+    color: var(--panel-bg, #fff);
     cursor: pointer;
   }
   .progress-retry:disabled {

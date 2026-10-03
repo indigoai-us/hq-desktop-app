@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { isDropdownOpen } from "../common/dropdown-open.js";
+  import Dropdown from "../common/LazyDropdown.svelte";
   /**
    * The unified create modal — one search-first dialog behind the sidebar "+".
    *
@@ -27,8 +29,12 @@
   import { formatShortcut } from "../common/keyboard-shortcuts";
   import type { LocalBotEntryResult } from "./local-bots.js";
   import type { AvatarPack } from "../avatars/types.js";
-  import CreateBotFlow, { type CreateBotExtras } from "./create-bot/CreateBotFlow.svelte";
+  import type { CreateBotExtras } from "./create-bot/CreateBotFlow.svelte";
+  import LazyDoor from "../shell/LazyDoor.svelte";
+  import { createBotFlowDoor } from "../shell/lazy-doors.js";
   import type { BotRuntime } from "./create-bot/create-bot-model.js";
+  import type { DirectCloudFlowSeam } from "./create-bot/direct-cloud-lazy.js";
+  import type { CreateErrorFix } from "@hq/agents";
   import type { RuntimeSignInApi } from "./create-bot/RuntimeSignIn.svelte";
   import type { ChatSidebarApi } from "./chat-api.js";
   import type {
@@ -71,7 +77,6 @@
     parseCreateChannelError,
     rosterFromMembers,
     slugInputValue,
-    stripRawUids,
     suggestFreeSlug,
     type CompanyRoster,
     type FindRow,
@@ -142,6 +147,8 @@
       | null;
     loadClaudeProviderFlag?: (() => AdapterPromise<boolean>) | null;
     loadCloudProvisionOptions?: ((companyUid: string) => AdapterPromise<AgentProvisionOptionsView>) | null;
+    /** `agents.desktop-agent-creation` seam for the New bot flow. */
+    directCloud?: DirectCloudFlowSeam | null;
     /** Companies an agent can be added to (cloud companies the user is in). */
     agentCompanies?: ScopeCompany[] | null;
     /**
@@ -201,7 +208,11 @@
      * Which step to open on. "company" is the New company entry: the modal
      * opens straight on its second step, with no name typed yet.
      */
-    initialStep?: "find" | "company";
+    initialStep?: "find" | "company" | "bot";
+    /** Company the New bot flow was opened from; its Cloud step starts there. */
+    botCompanyUid?: string | null;
+    /** Slug of that company, so a Local bot starts as its company bot. */
+    botCompanySlug?: string | null;
   }
 
   let {
@@ -220,6 +231,7 @@
     oncreateagent = null,
     loadClaudeProviderFlag = null,
     loadCloudProvisionOptions = null,
+    directCloud = null,
     agentCompanies = null,
     oncreatebot = null,
     botRuntimeReady = null,
@@ -239,6 +251,8 @@
     loadAvatarPacks = null,
     initialKind = "channel",
     initialStep = "find",
+    botCompanyUid = null,
+    botCompanySlug = null,
   }: Props = $props();
 
   /** Company channel vs project channel; only meaningful inside a company. */
@@ -266,6 +280,8 @@
   );
   let entryBusy = $state<"company" | "agent" | "bot" | null>(null);
   let entryError = $state<string | null>(null);
+  /** The fix for `entryError`, when the direct cloud create named one. */
+  let entryFix = $state<CreateErrorFix | null>(null);
 
   async function runEntry(
     kind: "company" | "agent" | "bot",
@@ -274,6 +290,7 @@
     if (entryBusy) return;
     entryBusy = kind;
     entryError = null;
+    entryFix = null;
     try {
       const result = await run();
       if (result.ok) {
@@ -281,8 +298,10 @@
         return;
       }
       entryError = result.reason;
+      entryFix = "fix" in result ? (result.fix ?? null) : null;
     } catch (err) {
-      entryError = err instanceof Error ? err.message : String(err);
+      console.warn("[create-modal] entry failed", err);
+      entryError = "That didn't work. Try again.";
     } finally {
       entryBusy = null;
     }
@@ -423,7 +442,8 @@
       companyValues = seeded;
       startCompanySlugWatch(result.form, seeded);
     } catch (err) {
-      companyError = err instanceof Error ? err.message : String(err);
+      console.warn("[create-modal] company step failed", err);
+      companyError = "That didn't work. Try again.";
     } finally {
       companyOpening = false;
     }
@@ -506,7 +526,8 @@
       }
       onclose();
     } catch (err) {
-      companyError = err instanceof Error ? err.message : String(err);
+      console.warn("[create-modal] company step failed", err);
+      companyError = "That didn't work. Try again.";
     } finally {
       companyCreating = false;
     }
@@ -528,7 +549,8 @@
       companyUnprovisionedUid = null;
       if (companyInviteFailures.length === 0) onclose();
     } catch (err) {
-      companyError = err instanceof Error ? err.message : String(err);
+      console.warn("[create-modal] company step failed", err);
+      companyError = "That didn't work. Try again.";
     } finally {
       companyCreating = false;
     }
@@ -643,10 +665,19 @@
   // step. Read once, at mount — a later prop change must not yank the person
   // out of the step they are on.
   let initialStepApplied = false;
+  // True while the bot step is the one the modal opened on (Messages > New >
+  // New bot, Settings > Bots > New bot). Escape then closes the modal instead
+  // of dropping the person on a search step they never saw; the back arrow
+  // still returns to search, and clears this so later visits step back.
+  let botOpenedDirect = false;
   $effect(() => {
     if (initialStepApplied) return;
     initialStepApplied = true;
     if (initialStep === "company" && companyCreate) void enterCompanyStep("");
+    else if (initialStep === "bot") {
+      botOpenedDirect = true;
+      newBot();
+    }
   });
   let query = $state("");
   let queryDebounced = $state("");
@@ -1330,12 +1361,11 @@
         personUid: outcome?.personUid?.trim() || null,
       };
     } catch (err) {
+      // raw-error-ok: logged and classified; the screen gets fixed copy
       const raw = err instanceof Error ? err.message : String(err ?? "");
-      // Bridges prefix the machine code (`[http-429] …`); the person reading
-      // this wants the sentence, not the code.
-      const cleaned = stripRawUids(raw.replace(/^\[[^\]]+\]\s*/, "")).trim();
-      emailError = cleaned
-        ? `Couldn't send: ${cleaned}`
+      console.warn("[create-modal] email send failed", raw);
+      emailError = /\[http-429\]|\b429\b/.test(raw)
+        ? "Couldn't send: you've hit the daily invite limit. Try again tomorrow."
         : "Couldn't send. Check your connection and try again.";
     } finally {
       emailSending = false;
@@ -1419,6 +1449,8 @@
         return;
       }
       if (event.key !== "Escape") return;
+      // OWNER-R6: Escape in an open dropdown closes only the menu.
+      if (isDropdownOpen()) return;
       event.preventDefault();
       event.stopPropagation();
       if (confirmSubject) {
@@ -1432,6 +1464,10 @@
       }
       if (step === "bot") {
         if (entryBusy) return;
+        if (botOpenedDirect) {
+          closeAll();
+          return;
+        }
         entryError = null;
         step = "find";
         return;
@@ -1846,7 +1882,10 @@
         const exists = await createdChannelAlreadyExists(name);
         createUnconfirmed = exists;
         createError = unconfirmedCreateMessage({
-          detail: failure.message.replace(/\.$/, ""),
+          detail:
+            failure.code === "unknown"
+              ? "the request did not go through"
+              : failure.message.replace(/\.$/, ""),
           name,
           exists,
         });
@@ -1982,11 +2021,10 @@
    * in-flight guard every impatient click fired another request.
    */
   function markRetryFailed(key: string, err: unknown): void {
-    const raw = err instanceof Error ? err.message : String(err ?? "");
-    const cleaned = stripRawUids(raw);
+    console.warn("[create-modal] retry failed", err);
     patchIssue(key, {
       pending: false,
-      error: cleaned ? `Still failing: ${cleaned}` : "That didn't work either.",
+      error: "That didn't work either. Try again.",
     });
   }
 
@@ -2085,6 +2123,10 @@
     if (issue.reason === "member-other") return true;
     return issue.reason === "member-unreachable" && !offersEmailFallback(issue);
   }
+
+  // Start loading the New bot flow as soon as the modal opens, so the bot
+  // step usually paints with it already loaded.
+  createBotFlowDoor.preload();
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -2157,6 +2199,7 @@
             disabled={creating || emailSending || entryBusy !== null || companyBusy}
             onclick={() => {
               if (step === "bot") {
+                botOpenedDirect = false;
                 entryError = null;
                 step = "find";
               } else if (step === "company") backFromCompany();
@@ -2164,7 +2207,7 @@
               else backToFind();
             }}
           >
-            <span aria-hidden="true">‹</span>
+            <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8.5 3.5 5 7l3.5 3.5" /></svg>
           </button>
         {/if}
         <h2 id="create-modal-title" class="create-title">
@@ -2191,7 +2234,7 @@
         disabled={creating || emailSending}
         onclick={closeAll}
       >
-        <span aria-hidden="true">×</span>
+        <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 3.5l7 7M10.5 3.5l-7 7" /></svg>
       </button>
     </div>
 
@@ -2417,19 +2460,15 @@
                 >{field.label}</span
               >
               {#if field.control === "select"}
-                <select
-                  class="create-select"
-                  data-testid={`chat-create-company-field-${field.id}`}
-                  aria-labelledby={`create-company-${field.id}-label`}
+                <Dropdown
+                  block
+                  testid={`chat-create-company-field-${field.id}`}
+                  label={field.label}
                   disabled={companyBusy}
                   value={companyValues[field.id] ?? ""}
-                  onchange={(event) =>
-                    setCompanyValue(field.id, event.currentTarget.value)}
-                >
-                  {#each field.options as option (option.id)}
-                    <option value={option.id}>{option.label}</option>
-                  {/each}
-                </select>
+                  options={field.options.map((option) => ({ value: option.id, label: option.label }))}
+                  onchange={(v) => setCompanyValue(field.id, v)}
+                />
               {:else}
                 <input
                   class="create-input"
@@ -2516,16 +2555,14 @@
             </div>
             <div class="create-field">
               <span class="create-label" id="create-company-role-label">Role</span>
-              <select
-                class="create-select"
-                data-testid="chat-create-company-role"
-                aria-labelledby="create-company-role-label"
+              <Dropdown
+                block
+                testid="chat-create-company-role"
+                label="Role"
                 disabled={companyBusy}
                 bind:value={companyRole}
-              >
-                <option value="member">Member</option>
-                <option value="owner">Owner</option>
-              </select>
+                options={[{ value: "member", label: "Member" }, { value: "owner", label: "Owner" }]}
+              />
             </div>
             <p class="create-help">
               Each address gets an invite once the company exists. Nobody is
@@ -2599,33 +2636,43 @@
         {/if}
       </div>
     {:else if step === "bot"}
-      <CreateBotFlow
-        {botRuntimeReady}
-        {botRuntimeStatus}
-        {onrecheckruntimes}
-        {aiTools}
-        {hqFolderPath}
-        {onopenassistant}
-        {onassistedinstall}
-        {onrequestaitools}
-        {botWorkers}
-        existingNames={existingBotNames}
-        {botCompanies}
-        agentTargets={canCreateCloudBot ? agentTargets : []}
-        onCloudCreate={canCreateCloudBot ? newAgentFor : null}
-        {loadClaudeProviderFlag}
-        {loadCloudProvisionOptions}
-        oncreate={canCreateLocalBot ? submitLocalBot : null}
-        onback={() => {
-          entryError = null;
-          step = "find";
+      <!-- The flow loads on first open (preloaded when this modal mounts), so
+           it stays out of the shell's startup JS. -->
+      <LazyDoor
+        door={createBotFlowDoor}
+        props={{
+          botRuntimeReady,
+          botRuntimeStatus,
+          onrecheckruntimes,
+          aiTools,
+          hqFolderPath,
+          onopenassistant,
+          onassistedinstall,
+          onrequestaitools,
+          botWorkers,
+          existingNames: existingBotNames,
+          botCompanies,
+          agentTargets: canCreateCloudBot ? agentTargets : [],
+          initialCompanyUid: botCompanyUid,
+          initialCompanySlug: botCompanySlug,
+          onCloudCreate: canCreateCloudBot ? newAgentFor : null,
+          loadClaudeProviderFlag,
+          loadCloudProvisionOptions,
+          directCloud,
+          oncreate: canCreateLocalBot ? submitLocalBot : null,
+          onback: () => {
+            botOpenedDirect = false;
+            entryError = null;
+            step = "find";
+          },
+          entryBusy,
+          entryError,
+          entryFix,
+          signInApi: botSignIn,
+          onsignedin: onbotsignedin,
+          avatarPacks,
+          loadAvatarPacks,
         }}
-        {entryBusy}
-        {entryError}
-        signInApi={botSignIn}
-        onsignedin={onbotsignedin}
-        {avatarPacks}
-        {loadAvatarPacks}
       />
     {:else if step === "email"}
       {#if emailOutcome}
@@ -2821,24 +2868,17 @@
         {#if scopeMode === "company"}
           <div class="create-field">
             <span class="create-label" id="create-company-label">Company</span>
-            <select
-              class="create-select"
-              data-testid="chat-channel-scope"
-              aria-labelledby="create-company-label"
+            <Dropdown
+              block
+              testid="chat-channel-scope"
+              label="Company"
               disabled={creating}
               bind:value={companyUid}
-            >
-              {#each targetCompanies as company (company.companyUid)}
-                {@const blocked = scopeUnavailable.find(
-                  (row) => row.company.companyUid === company.companyUid,
-                )}
-                <option value={company.companyUid} disabled={Boolean(blocked)}>
-                  {blocked
-                    ? `${company.label} — ${blocked.reason}`
-                    : company.label}
-                </option>
-              {/each}
-            </select>
+              options={targetCompanies.map((company) => {
+                const blocked = scopeUnavailable.find((row) => row.company.companyUid === company.companyUid);
+                return { value: company.companyUid, label: company.label, detail: blocked?.reason ?? null, disabled: Boolean(blocked) };
+              })}
+            />
           </div>
         {/if}
         {#if scopeMode === "company" && scopeUnavailable.length > 0}
@@ -3046,7 +3086,7 @@
             >{blockReason}</span
           >
         {:else}
-          <span class="create-hint" aria-hidden="true">{formatShortcut("Mod+Enter")} TO CREATE</span>
+          <span class="create-hint" aria-hidden="true">{formatShortcut("Mod+Enter")} to create</span>
         {/if}
         <button
           type="button"
@@ -3194,7 +3234,7 @@
     border-radius: 14px;
     /* Never --v4-ground here — that token is glass and lets timeline text
        bleed through. */
-    background: var(--v4-surface-solid, #fff);
+    background: var(--overlay-bg);
     box-shadow: var(--v4-shadow-window, var(--panel-shadow));
     outline: none;
   }
@@ -3238,8 +3278,8 @@
   .create-title {
     margin: 0;
     color: var(--t1);
-    font-size: 14px;
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
   }
 
   .create-spacer {
@@ -3253,7 +3293,7 @@
     background: transparent;
     color: var(--t1);
     font: inherit;
-    font-size: 15px;
+    font-size: 13px;
     outline: none;
   }
 
@@ -3265,13 +3305,13 @@
   .create-close {
     display: grid;
     place-items: center;
-    width: 26px;
-    height: 26px;
+    width: 24px;
+    height: 24px;
+    padding: 0;
     border: none;
-    border-radius: 7px;
+    border-radius: 6px;
     background: transparent;
     color: var(--t2);
-    font-size: 18px;
     line-height: 1;
     cursor: pointer;
   }
@@ -3337,10 +3377,8 @@
 
   .create-group {
     padding: 10px 10px 4px;
-    color: var(--t3);
-    font: 500 10px/1 var(--font-mono);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    color: var(--t2);
+    font: 500 13px/17px var(--font-ui);
   }
 
   .create-row {
@@ -3377,7 +3415,7 @@
     place-items: center;
     width: 22px;
     color: var(--t3);
-    font-size: 14px;
+    font-size: 13px;
   }
 
   /* Round monogram = person. Square (6px) monogram = agent — that pairing
@@ -3390,8 +3428,8 @@
     border-radius: 999px;
     background: var(--v4-control-bg);
     color: var(--t2);
-    font-size: 9px;
-    font-weight: 600;
+    font-size: 10px;
+    font-weight: 500;
   }
 
   .create-mono.agent {
@@ -3412,7 +3450,7 @@
     flex: 0 0 auto;
     margin-left: auto;
     color: var(--t2);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .create-note {
@@ -3424,7 +3462,7 @@
 
   .create-email-note {
     padding: 14px 16px 0;
-    font-size: 12px;
+    font-size: 13px;
   }
 
   /* Lifecycle entry points: a hairline, a mono label, ghost rows. */
@@ -3475,13 +3513,13 @@
   .create-entry-hint {
     flex: 0 0 auto;
     color: var(--t3);
-    font-size: 11px;
+    font-size: 13px;
   }
 
   .create-entry-error {
     padding: 6px 10px 2px;
     color: var(--danger, #e5484d);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .create-field {
@@ -3527,7 +3565,7 @@
     background: transparent;
     color: var(--t1);
     font: inherit;
-    font-size: 14px;
+    font-size: 13px;
     outline: none;
   }
 
@@ -3553,7 +3591,7 @@
     margin: 0;
     padding: 0 16px 8px 96px;
     color: var(--t2);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .create-slug-echo {
@@ -3573,7 +3611,7 @@
     margin: 0;
     padding: 0 16px 8px 96px;
     color: var(--t2);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .create-slug-status[data-status="available"] {
@@ -3605,7 +3643,7 @@
     appearance: none;
     -webkit-appearance: none;
     padding: 6px 8px;
-    border: 1px solid var(--line2, rgba(255, 255, 255, 0.12));
+    border: 1px solid var(--overlay-border);
     border-radius: 8px;
     background: transparent;
     color: var(--t1);
@@ -3620,7 +3658,7 @@
     border-radius: 6px;
     background: transparent;
     color: var(--v4-text-2, inherit);
-    font: 500 12px/1 var(--font-ui, system-ui);
+    font: 500 13px/1 var(--font-ui, system-ui);
     cursor: pointer;
   }
 
@@ -3651,7 +3689,7 @@
     border-radius: 999px;
     background: var(--v4-control-bg);
     color: var(--t1);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .create-chip-mono {
@@ -3662,8 +3700,8 @@
     border-radius: 999px;
     background: var(--hover);
     color: var(--t2);
-    font-size: 7px;
-    font-weight: 600;
+    font-size: 8px;
+    font-weight: 500;
   }
 
   .create-chip-mono.agent {
@@ -3699,9 +3737,7 @@
      the 3:1 non-text floor. --t2 measures 5.29:1. */
   .create-tag {
     color: var(--t2);
-    font: 500 10px/1 var(--font-mono);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    font: 400 13px/1 var(--font-ui);
   }
 
   /* D10's primary signal — agent vs person — gets a pill and full contrast. */
@@ -3736,23 +3772,23 @@
     max-height: calc(100% - 24px);
     overflow-y: auto;
     padding: 14px 16px;
-    border: 1px solid var(--line2, rgba(255, 255, 255, 0.12));
+    border: 1px solid var(--overlay-border);
     border-radius: 12px;
-    background: var(--v4-surface-solid, #fff);
-    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+    background: var(--overlay-bg);
+    box-shadow: var(--overlay-shadow);
   }
 
   .create-confirm-title {
     margin: 0 0 6px;
     color: var(--t1);
     font-size: 13px;
-    font-weight: 600;
+    font-weight: 500;
   }
 
   .create-confirm-body {
     margin: 0 0 6px;
     color: var(--t2);
-    font-size: 12px;
+    font-size: 13px;
     line-height: 1.5;
   }
 
@@ -3773,7 +3809,7 @@
     background: transparent;
     color: var(--t1);
     font: inherit;
-    font-size: 14px;
+    font-size: 13px;
     line-height: 1.4;
     outline: none;
     resize: none;
@@ -3788,7 +3824,7 @@
     margin: 0;
     padding: 6px 16px 0;
     color: var(--t2);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .create-footer {
@@ -3801,17 +3837,13 @@
 
   .create-hint {
     color: var(--t3);
-    font: 500 10px/1 var(--font-mono);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    font: 400 13px/1 var(--font-ui);
   }
 
   /* A disabled button with no explanation is a dead end — say why. */
   .create-hint-block {
     color: var(--t2);
-    font: 400 12px/1.4 var(--font-ui);
-    letter-spacing: 0;
-    text-transform: none;
+    font: 400 13px/1.4 var(--font-ui);
   }
 
   .create-submit {
@@ -3842,7 +3874,7 @@
     border: 0;
     background: transparent;
     color: var(--t1);
-    font: 500 12px/1.4 var(--font-ui);
+    font: 500 13px/1.4 var(--font-ui);
     text-decoration: underline;
     text-underline-offset: 2px;
     cursor: pointer;
@@ -3865,7 +3897,7 @@
   .create-summary-copy {
     flex: 1 1 auto;
     color: var(--t2);
-    font-size: 12px;
+    font-size: 13px;
     line-height: 1.5;
   }
 
@@ -3873,7 +3905,7 @@
     margin: 0;
     padding: 0 16px 10px;
     color: var(--t2);
-    font-size: 12px;
+    font-size: 13px;
     line-height: 1.5;
     white-space: pre-wrap;
     user-select: text;
@@ -3883,13 +3915,13 @@
   :global(:root[data-force-theme="dark"]) .create-confirm,
   :global(.dark) .create-card,
   :global(.dark) .create-confirm {
-    background: var(--v4-surface-solid, #303030);
+    background: var(--overlay-bg);
   }
 
   @media (prefers-color-scheme: dark) {
     :global(:root:not([data-force-theme="light"])) .create-card,
     :global(:root:not([data-force-theme="light"])) .create-confirm {
-      background: var(--v4-surface-solid, #303030);
+      background: var(--overlay-bg);
     }
   }
 </style>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ReadLoader from "../common/ReadLoader.svelte";
   /**
    * Company Goals — portfolio list + stable selected-goal detail (DESKTOP-007).
    *
@@ -697,11 +698,7 @@
         testid="goals-unavailable"
       />
     {:else if loading}
-      <div class="goals-loading" aria-busy="true" data-testid="goals-loading">
-        {#each [0, 1, 2] as row (row)}
-          <div class="goal-skeleton"></div>
-        {/each}
-      </div>
+      <ReadLoader testid="goals-loading" />
     {:else if objectives.length === 0}
       <div class="empty-state" data-testid="empty-goals-state">
         <span>No goals yet</span>
@@ -963,8 +960,8 @@
   .goals-heading h2 {
     margin: 0;
     color: var(--v4-text-1);
-    font-size: var(--type-section, var(--text-section));
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     line-height: 1.2;
   }
 
@@ -973,7 +970,7 @@
     margin: 0;
     overflow: hidden;
     color: var(--v4-text-3);
-    font-size: var(--type-secondary, var(--text-sm));
+    font-size: 13px;
     font-weight: 400;
     line-height: 1.3;
     text-overflow: ellipsis;
@@ -991,7 +988,7 @@
     max-width: 160px;
     overflow: hidden;
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, var(--text-micro));
+    font-size: 13px;
     line-height: 1.25;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1006,7 +1003,7 @@
     background: var(--v4-primary-bg);
     color: var(--v4-primary-fg);
     font: inherit;
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
     font-weight: 500;
     line-height: 30px;
     cursor: pointer;
@@ -1035,7 +1032,7 @@
     border-radius: 0;
     background: transparent;
     color: var(--v4-error);
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
     font-weight: 400;
     line-height: 1.35;
   }
@@ -1081,7 +1078,7 @@
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
     text-align: left;
     cursor: pointer;
     transition: background 140ms ease;
@@ -1104,7 +1101,7 @@
   .goal-row-title {
     overflow: hidden;
     color: var(--v4-text-1);
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
     font-weight: 500;
     line-height: 1.25;
     text-overflow: ellipsis;
@@ -1114,7 +1111,7 @@
   .goal-row-meta {
     overflow: hidden;
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, var(--text-micro));
+    font-size: 13px;
     font-weight: 400;
     line-height: 1.3;
     text-overflow: ellipsis;
@@ -1157,7 +1154,7 @@
     background: var(--v4-control-faint);
     color: var(--v4-text-2);
     font: inherit;
-    font-size: var(--type-secondary, var(--text-sm));
+    font-size: 13px;
     font-weight: 500;
     cursor: pointer;
   }
@@ -1184,8 +1181,8 @@
     min-width: 0;
     overflow: hidden;
     color: var(--v4-text-1);
-    font-size: var(--type-detail, var(--text-lg));
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     line-height: 1.2;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1197,16 +1194,15 @@
     align-items: center;
     gap: 6px;
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, var(--text-micro));
+    font-size: 13px;
     font-weight: 400;
     line-height: 1.2;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
+    letter-spacing: 0;
   }
 
   .goal-meta {
     color: var(--v4-text-3);
-    font-size: var(--type-secondary, var(--text-sm));
+    font-size: 13px;
     font-weight: 400;
     line-height: 1.3;
   }
@@ -1214,7 +1210,7 @@
   .goal-description {
     margin: 0;
     color: var(--v4-text-2);
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
     font-weight: 400;
     line-height: 1.45;
   }
@@ -1231,11 +1227,10 @@
   .section-label {
     margin: 0;
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, var(--text-micro));
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     line-height: 1.2;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
+    letter-spacing: 0;
   }
 
   .status-dot {
@@ -1278,11 +1273,10 @@
     padding: 0 0 8px;
     border-bottom: 1px solid var(--v4-rowline);
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, var(--text-micro));
+    font-size: 13px;
     font-weight: 400;
     line-height: 1.2;
     text-align: left;
-    text-transform: uppercase;
   }
 
   .kr-table th:nth-child(1) {
@@ -1303,7 +1297,7 @@
     border-bottom: 1px solid var(--v4-rowline);
     overflow: hidden;
     color: var(--v4-text-2);
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
     font-weight: 400;
     line-height: 1.25;
     text-overflow: ellipsis;
@@ -1317,7 +1311,7 @@
 
   .kr-table td.kr-empty {
     color: var(--v4-text-3);
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
     text-align: center;
   }
 
@@ -1327,7 +1321,7 @@
     align-items: center;
     gap: 8px;
     color: var(--v4-text-2);
-    font-size: var(--type-metadata, var(--text-micro));
+    font-size: 13px;
     font-weight: 400;
     line-height: 1.2;
     font-variant-numeric: tabular-nums;
@@ -1355,7 +1349,7 @@
     padding: 8px 0;
     border-top: 1px solid var(--v4-hairline);
     color: var(--v4-text-2);
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
     font-weight: 400;
     line-height: 1.25;
   }
@@ -1377,7 +1371,7 @@
     background: var(--v4-control-faint);
     color: var(--v4-text-2);
     font: inherit;
-    font-size: var(--type-secondary, var(--text-sm));
+    font-size: 13px;
     font-weight: 500;
     cursor: pointer;
   }
@@ -1416,7 +1410,7 @@
     background: var(--v4-control-faint);
     color: var(--v4-text-2);
     font: inherit;
-    font-size: var(--type-secondary, var(--text-sm));
+    font-size: 13px;
     font-weight: 400;
     line-height: 1;
     text-overflow: ellipsis;
@@ -1441,7 +1435,7 @@
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
-    font-size: var(--type-secondary, var(--text-sm));
+    font-size: 13px;
     font-weight: 500;
     text-align: left;
     text-overflow: ellipsis;
@@ -1466,7 +1460,7 @@
     border-radius: 0;
     background: transparent;
     color: var(--v4-text-3);
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
     font-weight: 400;
     line-height: 1.35;
     text-align: center;
@@ -1481,7 +1475,7 @@
   .goal-detail-empty span,
   .empty-state span {
     color: var(--v4-text-2);
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
     font-weight: 500;
   }
 
@@ -1490,35 +1484,8 @@
     margin: 0;
   }
 
-  .goals-loading {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    min-width: 0;
-    padding: 6px 0;
-  }
-
-  .goal-skeleton {
-    height: 48px;
-    border: 0;
-    border-bottom: 1px solid var(--v4-rowline);
-    border-radius: 0;
-    background: transparent;
-    animation: goals-skeleton-pulse 1.3s ease-in-out infinite;
-  }
-
   .goals-footnote {
     flex: 0 0 auto;
-  }
-
-  @keyframes goals-skeleton-pulse {
-    0%,
-    100% {
-      opacity: 0.5;
-    }
-    50% {
-      opacity: 1;
-    }
   }
 
   @media (max-width: 820px) {
@@ -1559,10 +1526,6 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .goal-skeleton {
-      animation: none;
-    }
-
     .goal-list-row {
       transition: none;
     }

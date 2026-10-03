@@ -130,7 +130,9 @@ describe("DesktopApp lifecycle card accept", () => {
     await settle();
     expect(host.querySelector<HTMLInputElement>('input.lc-input')!.value).toBe("Acme Retry");
     expect(host.querySelector<HTMLButtonElement>('[data-testid="lifecycle-action-create"]')!.disabled).toBe(false);
-    expect(host.textContent).toContain("Connection timed out");
+    // AUDIT-3c: the server's own sentence goes to the log; the card shows plain copy.
+    expect(host.textContent).not.toContain("Connection timed out");
+    expect(host.textContent).toContain("Couldn't reach HQ. Check your connection and try again.");
     host.querySelector<HTMLButtonElement>('[data-testid="lifecycle-action-create"]')!.click();
     await vi.waitFor(() => expect(runCardAction).toHaveBeenCalledTimes(2));
     await settle();

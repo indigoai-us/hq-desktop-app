@@ -24,6 +24,7 @@
   import { safeUnlisten, type UnlistenFn } from "../library/library-refresh.js";
   import type { PackagesEvents } from "../library/packages-events.js";
   import UnavailableNote from "../common/UnavailableNote.svelte";
+  import ReadLoader from "../common/ReadLoader.svelte";
   import {
     shortSource,
     packIdentity,
@@ -261,6 +262,9 @@
               if (payload.error || !payload.packs) {
                 // A background network/update probe must never erase a valid
                 // local installed-pack snapshot.
+                if (payload.error) {
+                  console.warn("[installed-packs] update probe failed", payload.error);
+                }
                 updateProbeError = payload.error ?? "Update check failed";
                 return;
               }
@@ -498,7 +502,6 @@
             <span
               class="pack-action-error"
               role="alert"
-              title={repairCommandError}
             >
               Couldn’t copy to the clipboard.
               <button
@@ -520,7 +523,7 @@
     {/if}
 
     {#if updateProbeError}
-      <p class="probe-note" role="status" title={updateProbeError}>
+      <p class="probe-note" role="status">
         Update availability could not be refreshed. Installed packs remain
         available.
       </p>
@@ -546,10 +549,8 @@
     {/if}
 
     {#if loading}
-      <div class="grid-skeleton" aria-busy="true">
-        {#each [0, 1, 2, 3] as cell (cell)}
-          <div class="card-skeleton"></div>
-        {/each}
+      <div aria-busy="true">
+        <ReadLoader testid="installed-packs-loading" onretry={() => void refresh()} />
       </div>
     {:else if hasPackSnapshot}
       <section class="group" data-testid="installed-group">
@@ -616,7 +617,6 @@
                   <p
                     class="pack-action-error"
                     role="alert"
-                    title={failure.message}
                   >
                     <span>Couldn’t copy to the clipboard.</span>
                     <button
@@ -676,7 +676,6 @@
                   <p
                     class="pack-action-error"
                     role="alert"
-                    title={failure.message}
                   >
                     <span>Couldn’t copy to the clipboard.</span>
                     <button
@@ -1377,35 +1376,6 @@
     font-size: var(--text-micro);
   }
 
-  .grid-skeleton {
-    display: flex;
-    flex-direction: column;
-    gap: var(--v4-space-2);
-  }
-
-  .card-skeleton {
-    height: 56px;
-    border: 0;
-    border-bottom: 1px solid var(--v4-hairline);
-    border-radius: 0;
-    background:
-      linear-gradient(var(--v4-control-faint), var(--v4-control-faint)) 0 13px /
-        36% 10px no-repeat,
-      linear-gradient(var(--v4-control-faint), var(--v4-control-faint)) 0 33px /
-        62% 8px no-repeat;
-    animation: installed-skeleton-pulse 1.3s ease-in-out infinite;
-  }
-
-  @keyframes installed-skeleton-pulse {
-    0%,
-    100% {
-      opacity: 0.5;
-    }
-    50% {
-      opacity: 1;
-    }
-  }
-
   @media (prefers-reduced-motion: reduce) {
     .refresh,
     .action,
@@ -1414,8 +1384,7 @@
     .setup-prompt-copy {
       transition: none;
     }
-    .spinner,
-    .card-skeleton {
+    .spinner {
       animation: none;
     }
   }

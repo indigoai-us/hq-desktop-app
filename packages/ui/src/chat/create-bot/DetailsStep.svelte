@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CompanyLabel from "../../company/CompanyLabel.svelte";
   /**
    * Step C — Details for a Local bot: name, an optional job title, the avatar
    * (pack picker when the host supplies packs, else the generated mark), who
@@ -292,8 +293,7 @@
               disabled={disabled}
               onclick={() => toggleCompany(company.slug)}
             >
-              <span class="cb-pill-dot" class:ready={on} aria-hidden="true"></span>
-              {company.label}
+              <CompanyLabel name={company.label} companyUid={company.slug} />
             </button>
           {/each}
         </div>
@@ -396,7 +396,7 @@
     overflow-y: auto;
     padding: 8px;
     border: 1px solid var(--v4-hairline);
-    border-radius: 10px;
+    border-radius: 8px;
   }
   .brings {
     padding: 8px 10px;

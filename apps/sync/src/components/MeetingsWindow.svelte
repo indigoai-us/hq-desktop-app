@@ -1269,10 +1269,8 @@
   function timeLabel(e: MeetingEvent): string {
     const d = eventStart(e);
     if (!d) return '';
-    return d.toLocaleTimeString(undefined, {
-      hour: 'numeric',
-      minute: '2-digit',
-    });
+    // 24-hour clock, matching the Meetings rail page.
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
   }
 
   function personalTranscriptDateLabel(createdAt: string | null): string {
@@ -2412,10 +2410,8 @@
   .active-meetings-label {
     margin: 0 0 2px;
     font-size: var(--text-base);
-    font-weight: 600;
+    font-weight: 500;
     color: var(--c-muted);
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
   }
   .active-row {
     display: flex;
@@ -2450,7 +2446,7 @@
     background: transparent;
     color: currentColor;
     font: inherit;
-    font-weight: 600;
+    font-weight: 500;
     cursor: pointer;
   }
   .active-info {
@@ -2574,10 +2570,8 @@
   .day-heading {
     margin: 14px 0 6px;
     font-size: var(--text-base);
-    font-weight: 600;
+    font-weight: 500;
     color: var(--c-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
   }
   .day-heading:first-of-type {
     margin-top: 6px;
@@ -2591,17 +2585,17 @@
   }
   /* Compacted row — was 10px vertical, now 6px. Gap from meta to
      action cluster tightened to match the smaller icon buttons. */
+  /* One-line 31px rows like the Messages sidebar: time and title side by side. */
   .event-row {
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 6px 4px;
-    border-bottom: 1px solid var(--c-field-bg);
+    gap: 8px;
+    min-height: 31px;
+    padding: 4px 8px;
     border-radius: 0;
-    transition: background 140ms ease, box-shadow 140ms ease;
   }
-  .event-row:last-child {
-    border-bottom: 0;
+  .event-row:hover {
+    background: var(--pop-hover);
   }
   .event-row-focused {
     background: var(--pop-hover);
@@ -2611,13 +2605,15 @@
     flex: 1 1 auto;
     min-width: 0;
     display: flex;
-    flex-direction: column;
-    gap: 1px;
+    align-items: baseline;
+    gap: 8px;
   }
   .event-time {
+    flex: 0 0 40px;
     font-size: var(--text-base);
     color: var(--c-muted);
-    line-height: 1.2;
+    font-variant-numeric: tabular-nums;
+    line-height: 17px;
   }
   .event-title-row {
     display: inline-flex;
@@ -2626,7 +2622,7 @@
     min-width: 0;
     white-space: nowrap;
     overflow: hidden;
-    line-height: 1.3;
+    line-height: 17px;
   }
   .event-title {
     min-width: 0;
@@ -2842,10 +2838,8 @@
     padding: 6px;
     border-radius: 8px;
     border: 1px solid var(--pop-border);
-    background: var(--pop-bg);
+    background: var(--overlay-bg, var(--pop-bg));
     box-shadow: var(--pop-shadow), inset 0 1px 0 var(--pop-highlight);
-    backdrop-filter: var(--glass-filter-soft, blur(16px) saturate(112%) contrast(101%));
-    -webkit-backdrop-filter: var(--glass-filter-soft, blur(16px) saturate(112%) contrast(101%));
   }
   .filter-actions {
     display: flex;
@@ -2862,8 +2856,6 @@
     background: transparent;
     color: var(--c-muted);
     font-size: var(--text-base);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
     cursor: pointer;
   }
   .filter-action:hover {
@@ -2880,8 +2872,6 @@
   }
   .filter-group-label {
     font-size: var(--text-base);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
     color: var(--dot);
     margin: 0 0 4px;
     padding: 0 6px;
@@ -2924,8 +2914,6 @@
     background: var(--c-divider);
     color: var(--c-muted);
     font-size: var(--text-base);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
   }
   /* Neutral swatch matches the compact row dot. 10x10 keeps it visible
      beside the checkbox without tinting the calendar row or surface. */

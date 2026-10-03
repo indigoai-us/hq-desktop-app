@@ -163,7 +163,9 @@ describe('company icon — surfaces', () => {
     );
     const popover = ui('src/chat/ChannelStatusPopover.svelte');
     expect(popover).toContain('data-testid="status-company"');
-    expect(popover).toContain('<CompanyIcon iconUrl={model.companyIconUrl');
+    expect(popover).toContain('iconUrl={model.companyIconUrl ?? null}');
+    expect(popover).toMatch(/<CompanyLabel\s+name=\{model\.companyLabel\}\s+iconUrl=\{model\.companyIconUrl/);
+    expect(ui('src/company/CompanyLabel.svelte')).toContain('<CompanyIcon iconUrl={resolved}');
   });
 
   it('sizes the mark 16px in the rail and larger in headers/switcher/cmd-K', () => {

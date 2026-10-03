@@ -9,6 +9,7 @@
    */
   import { tick } from "svelte";
   import { renderMarkdown } from "../../common/markdown.js";
+  import { handleMarkdownLinkClick } from "../../common/markdown-links.js";
   import { outlineOf, splitFrontmatter, plural, type NoteProperty, type OutlineItem } from "./vault-model.js";
 
   interface Props {
@@ -28,6 +29,9 @@
     scrollTo?: { index: number; seq: number } | null;
     /** Shown on a truncated note: opens the whole file elsewhere. */
     onopenfull?: () => void;
+    /** Whether a relative Markdown link target exists in this vault (QA-104).
+     *  Missing targets get an inline note instead of opening. */
+    linkexists?: (path: string) => Promise<boolean>;
   }
 
   let {
@@ -41,7 +45,23 @@
     onlinktargets,
     scrollTo = null,
     onopenfull,
+    linkexists,
   }: Props = $props();
+
+  /** Plain-language note when a relative link points at a missing file. */
+  let linkNote = $state<string | null>(null);
+
+  async function openLinkedFile(target: string, newTab: boolean): Promise<void> {
+    const from = path;
+    linkNote = null;
+    const exists = linkexists ? await linkexists(target) : true;
+    if (path !== from) return;
+    if (!exists) {
+      linkNote = `${target.split("/").pop() ?? target} isn't in this vault`;
+      return;
+    }
+    onopen(target, { newTab });
+  }
 
   let article = $state<HTMLElement | null>(null);
 
@@ -121,7 +141,16 @@
   function followLink(event: MouseEvent | KeyboardEvent): void {
     const link = (event.target as HTMLElement | null)?.closest<HTMLElement>(".markdown-wikilink");
     const target = link?.dataset.target;
-    if (!target) return;
+    if (!target) {
+      if (event instanceof MouseEvent) {
+        const newTab = event.metaKey || event.ctrlKey;
+        handleMarkdownLinkClick(event, {
+          currentPath: path,
+          onopenfile: (p) => void openLinkedFile(p, newTab),
+        });
+      }
+      return;
+    }
     if (event instanceof KeyboardEvent && event.key !== "Enter") return;
     event.preventDefault();
     onopen(target, { newTab: event.metaKey || event.ctrlKey });
@@ -177,6 +206,10 @@
     </dl>
   {/if}
 
+  {#if linkNote}
+    <p class="link-note" role="status" data-testid="note-link-note">{linkNote}</p>
+  {/if}
+
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <article
     class="markdown-body"
@@ -190,6 +223,10 @@
 </div>
 
 <style>
+  .link-note {
+    margin: 0 0 12px;
+    color: var(--v4-text-2);
+  }
   .note {
     box-sizing: border-box;
     max-width: 740px;
@@ -202,8 +239,8 @@
   .note-title {
     margin: 0;
     color: var(--v4-text-1);
-    font-size: 30px;
-    font-weight: 650;
+    font-size: var(--type-title, 20px);
+    font-weight: var(--type-title-weight, 500);
     letter-spacing: -0.02em;
     line-height: 1.2;
     overflow-wrap: anywhere;
@@ -211,7 +248,7 @@
   .note-meta {
     margin: 6px 0 0;
     color: var(--v4-text-3);
-    font-size: 12px;
+    font-size: 13px;
   }
   .note-large {
     display: flex;
@@ -233,7 +270,7 @@
     background: transparent;
     color: var(--v4-text-1);
     font: inherit;
-    font-size: 12.5px;
+    font-size: 13px;
     cursor: pointer;
     white-space: nowrap;
   }
@@ -274,7 +311,7 @@
     border-radius: 999px;
     background: var(--v4-control-faint);
     color: var(--v4-text-2);
-    font-size: 12px;
+    font-size: 13px;
   }
   .pill.tag {
     color: var(--v4-link);
@@ -282,7 +319,7 @@
 
   .markdown-body {
     color: var(--v4-text-1);
-    font-size: 15.5px;
+    font-size: 13px;
     line-height: 1.72;
     overflow-wrap: anywhere;
   }
@@ -293,17 +330,17 @@
   .markdown-body :global(h5),
   .markdown-body :global(h6) {
     color: var(--v4-text-1);
-    font-weight: 620;
+    font-weight: 500;
     letter-spacing: -0.01em;
     line-height: 1.3;
     scroll-margin-top: 24px;
   }
-  .markdown-body :global(h1) { font-size: 24px; margin: 1.6em 0 0.6em; }
-  .markdown-body :global(h2) { font-size: 20px; margin: 1.5em 0 0.5em; padding-bottom: 6px; border-bottom: 1px solid var(--v4-hairline); }
-  .markdown-body :global(h3) { font-size: 17px; margin: 1.3em 0 0.4em; }
+  .markdown-body :global(h1) { font-size: 13px; margin: 1.6em 0 0.6em; }
+  .markdown-body :global(h2) { font-size: 13px; margin: 1.5em 0 0.5em; padding-bottom: 6px; border-bottom: 1px solid var(--v4-hairline); }
+  .markdown-body :global(h3) { font-size: 13px; margin: 1.3em 0 0.4em; }
   .markdown-body :global(h4),
   .markdown-body :global(h5),
-  .markdown-body :global(h6) { font-size: 15px; margin: 1.2em 0 0.3em; color: var(--v4-text-2); }
+  .markdown-body :global(h6) { font-size: 13px; margin: 1.2em 0 0.3em; color: var(--v4-text-2); }
   .markdown-body :global(:first-child) { margin-top: 0; }
   .markdown-body :global(p) { margin: 0 0 0.9em; }
   .markdown-body :global(ul),
@@ -344,7 +381,7 @@
     border-radius: 5px;
     background: var(--v4-control-faint);
     font-family: ui-monospace, "SF Mono", Menlo, monospace;
-    font-size: 0.86em;
+    font-size: 13px;
   }
   .markdown-body :global(pre) {
     margin: 0 0 1em;
@@ -355,7 +392,7 @@
     overflow-x: auto;
     line-height: 1.55;
   }
-  .markdown-body :global(pre code) { padding: 0; background: none; font-size: 12.5px; }
+  .markdown-body :global(pre code) { padding: 0; background: none; font-size: 13px; }
   .markdown-body :global(blockquote) {
     margin: 0 0 1em;
     padding: 2px 0 2px 16px;
@@ -367,7 +404,7 @@
     width: 100%;
     margin: 0 0 1.1em;
     border-collapse: collapse;
-    font-size: 13.5px;
+    font-size: 13px;
     display: block;
     overflow-x: auto;
   }
@@ -378,7 +415,7 @@
     text-align: left;
     vertical-align: top;
   }
-  .markdown-body :global(th) { color: var(--v4-text-2); font-weight: 600; }
+  .markdown-body :global(th) { color: var(--v4-text-2); font-weight: 500; }
   .markdown-body :global(input[type="checkbox"]) { margin-right: 6px; accent-color: var(--v4-link); }
 
   @media (max-width: 900px) {

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ReadLoader from "../common/ReadLoader.svelte";
   /**
    * ProjectListView — the Board project list (US-007).
    *
@@ -24,6 +25,7 @@
     progressiveWindow,
   } from "../common/progressive-collection.js";
   import ProjectRow from "./ProjectRow.svelte";
+  import ListEmptyState from "../common/ListEmptyState.svelte";
 
   interface Props {
     projects: Project[];
@@ -158,11 +160,7 @@
 
   <div class="list-body">
     {#if loading && projects.length === 0}
-      <div class="list-loading" aria-busy="true">
-        {#each [0, 1, 2] as row (row)}
-          <div class="skeleton-row"></div>
-        {/each}
-      </div>
+      <ReadLoader testid="project-list-loading" />
     {:else if !hasProjects && !error}
       <div class="list-empty">
         <p class="empty-title">No projects found</p>
@@ -171,12 +169,15 @@
         </p>
       </div>
     {:else if noResults}
-      <div class="list-empty">
-        <p class="empty-title">No projects match your filters</p>
-        <button type="button" class="link-button" onclick={clearFilters}>
-          Clear all filters
-        </button>
-      </div>
+      <ListEmptyState
+        total={projects.length}
+        shown={0}
+        query={debouncedQuery}
+        filtered={statusFilter !== "all"}
+        noun={["project", "projects"]}
+        onclear={clearFilters}
+        testid="project-list-no-matches"
+      />
     {:else}
       {#each sections as section (section.key)}
         {@const renderWindow = progressiveWindow(
@@ -258,7 +259,7 @@
     background: var(--row-active);
     color: var(--fg);
     font: inherit;
-    font-size: var(--text-base);
+    font-size: 13px;
     transition:
       background 140ms ease,
       border-color 140ms ease;
@@ -292,8 +293,8 @@
     background: transparent;
     color: var(--muted);
     font: inherit;
-    font-size: var(--text-base);
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     cursor: pointer;
     transition:
       color 140ms ease,
@@ -334,8 +335,8 @@
     background: transparent;
     color: var(--muted);
     font: inherit;
-    font-size: var(--text-base);
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     cursor: pointer;
     transition:
       border-color 140ms ease,
@@ -365,7 +366,7 @@
     border-radius: 0;
     background: transparent;
     color: var(--v4-error);
-    font-size: var(--text-base);
+    font-size: 13px;
   }
 
   .list-body {
@@ -404,7 +405,7 @@
   .chevron {
     flex: 0 0 auto;
     color: var(--muted-3);
-    font-size: var(--text-base);
+    font-size: 13px;
     line-height: 1;
     transition: transform 150ms ease;
   }
@@ -415,8 +416,8 @@
 
   .section-label {
     color: var(--muted-2);
-    font-size: var(--text-base);
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     text-transform: capitalize;
   }
 
@@ -425,9 +426,9 @@
     border-radius: 0;
     background: transparent;
     color: var(--muted-3);
-    font-size: var(--text-base);
+    font-size: 13px;
     font-variant-numeric: tabular-nums;
-    font-weight: 600;
+    font-weight: 500;
     line-height: 16px;
   }
 
@@ -452,7 +453,7 @@
     background: transparent;
     color: var(--muted-2);
     font: inherit;
-    font-size: var(--text-base);
+    font-size: 13px;
     text-align: left;
     cursor: pointer;
   }
@@ -471,25 +472,6 @@
     outline-offset: -2px;
   }
 
-  .list-loading {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2);
-  }
-
-  .skeleton-row {
-    height: 64px;
-    border: 0;
-    border-bottom: 1px solid var(--border);
-    border-radius: 0;
-    background:
-      linear-gradient(var(--row-active), var(--row-active)) 0 16px / 42% 10px
-        no-repeat,
-      linear-gradient(var(--row-active), var(--row-active)) 0 36px / 68% 8px
-        no-repeat;
-    animation: skeleton-pulse 1.3s ease-in-out infinite;
-  }
-
   .list-empty {
     display: flex;
     flex-direction: column;
@@ -501,13 +483,13 @@
   .empty-title {
     margin: 0;
     color: var(--muted-2);
-    font-size: var(--text-base);
+    font-size: 13px;
   }
 
   .empty-detail {
     margin: 0;
     color: var(--muted-3);
-    font-size: var(--text-base);
+    font-size: 13px;
   }
 
   .link-button {
@@ -515,20 +497,10 @@
     background: transparent;
     color: var(--fg);
     font: inherit;
-    font-size: var(--text-base);
+    font-size: 13px;
     text-decoration: underline;
     text-underline-offset: 2px;
     cursor: pointer;
-  }
-
-  @keyframes skeleton-pulse {
-    0%,
-    100% {
-      opacity: 0.5;
-    }
-    50% {
-      opacity: 1;
-    }
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -538,10 +510,6 @@
     .chevron,
     .search-input {
       transition: none;
-    }
-
-    .skeleton-row {
-      animation: none;
     }
   }
 </style>

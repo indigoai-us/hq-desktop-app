@@ -2279,6 +2279,7 @@ fn shortcut_id_for_menu_item(menu_id: &str) -> Option<&'static str> {
     match menu_id {
         MENU_SHORTCUT_NEXT_CONVERSATION_ID => Some("conversation.next"),
         MENU_SHORTCUT_PREVIOUS_CONVERSATION_ID => Some("conversation.previous"),
+        // ⌘N opens exactly one thing, the search-first create dialog (QA-077).
         MENU_SHORTCUT_NEW_CHAT_ID => Some("chat.new"),
         MENU_SHORTCUT_CHEAT_SHEET_ID => Some("help.shortcuts"),
         _ => None,
@@ -2377,8 +2378,39 @@ fn notify_manual_check(app: &AppHandle, body: &str) {
 /// the auto-installer pulls it, hands off, and quits the dev process ten
 /// seconds after launch — every `tauri dev` session died to this on
 /// 2026-09-02 once 0.10.175 shipped. Manual "Check for updates" is untouched.
+///
+/// A `tauri build --debug` bundle is not `is_dev()` (it embeds its assets), so
+/// it used to self-update: on 2026-10-02 a local debug bundle at 0.10.373
+/// pulled stable 0.10.377 over itself and relaunched as the old app. Any build
+/// with debug assertions now skips the background checker too, unless
+/// `HQ_DEV_ALLOW_AUTO_UPDATE=1` is set to exercise the updater on purpose.
 pub fn background_updates_disabled() -> bool {
-    dev_env_flag_set("HQ_DEV_NO_AUTO_UPDATE") || tauri::is_dev()
+    background_updates_disabled_for(
+        tauri::is_dev(),
+        cfg!(debug_assertions),
+        dev_env_flag_set("HQ_DEV_NO_AUTO_UPDATE"),
+        dev_env_flag_set("HQ_DEV_ALLOW_AUTO_UPDATE"),
+    )
+}
+
+fn background_updates_disabled_for(
+    is_dev: bool,
+    debug_build: bool,
+    no_auto_update: bool,
+    allow_auto_update: bool,
+) -> bool {
+    if no_auto_update || is_dev {
+        return true;
+    }
+    debug_build && !allow_auto_update
+}
+
+/// Whether this build skips the background update checker (dev or debug
+/// build, or `HQ_DEV_NO_AUTO_UPDATE=1`). Settings → About uses it to say
+/// automatic updates are off instead of implying the app is current (QA-051).
+#[tauri::command]
+pub fn background_updates_off() -> bool {
+    background_updates_disabled()
 }
 
 /// Whether the bundled updater config names at least one feed endpoint.
@@ -2413,7 +2445,7 @@ pub fn setup_update_checker(app: &AppHandle) {
     if background_updates_disabled() {
         log(
             "updater",
-            "background update checker disabled (dev build or HQ_DEV_NO_AUTO_UPDATE=1)",
+            "background update checker disabled (dev or debug build, or HQ_DEV_NO_AUTO_UPDATE=1)",
         );
         return;
     }
@@ -3629,6 +3661,20 @@ mod tests {
         // the checker must be disabled even with the env flag unset. A release
         // build flips this to depend on the env flag alone.
         assert!(background_updates_disabled());
+    }
+
+    #[test]
+    fn debug_bundles_never_self_update_unless_opted_in() {
+        use super::background_updates_disabled_for as off;
+        // `tauri build --debug`: not is_dev, but debug assertions are on.
+        assert!(off(false, true, false, false));
+        assert!(!off(false, true, false, true));
+        // Release bundle: on by default, off with the opt-out flag.
+        assert!(!off(false, false, false, false));
+        assert!(off(false, false, true, false));
+        // `tauri dev` and the opt-out flag always win over the opt-in.
+        assert!(off(true, true, false, true));
+        assert!(off(false, true, true, true));
     }
 }
 

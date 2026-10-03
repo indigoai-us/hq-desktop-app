@@ -246,4 +246,29 @@ describe("DesktopApp agent avatar picker", () => {
     });
     expect(listContacts).toHaveBeenCalled();
   });
+
+  it("never shows raw transport error text when the avatar save fails", async () => {
+    const RAW = '[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}';
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const selectAgentAvatar = vi.fn(async () => {
+      throw new Error(RAW);
+    });
+    await mountApp({ adapter: adapter({ selectAgentAvatar: selectAgentAvatar as never }) });
+    (host.querySelector('[data-testid="agent-edit-profile"]') as HTMLButtonElement).click();
+    await settle(20);
+    (host.querySelector('[data-item="v2-dot"]') as HTMLButtonElement).click();
+    await settle();
+    (host.querySelector('[data-testid="avatar-pack-save"]') as HTMLButtonElement).click();
+    await settle(20);
+    const panel = host.querySelector('[data-testid="agent-detail-panel"]');
+    expect(selectAgentAvatar).toHaveBeenCalled();
+    expect(panel?.textContent).toContain("Could not save the avatar. Try again.");
+    expect(panel?.textContent).not.toContain("boom");
+    expect(panel?.textContent).not.toContain("HTTP 500");
+    for (const el of Array.from(panel?.querySelectorAll("[title]") ?? [])) {
+      expect(el.getAttribute("title")).not.toContain("boom");
+    }
+    expect(warn.mock.calls.some((a) => a.some((x) => String(x).includes("boom")))).toBe(true);
+    warn.mockRestore();
+  });
 });

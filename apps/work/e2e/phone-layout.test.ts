@@ -43,11 +43,11 @@ test.describe("phone layout", () => {
     await signIn(context);
     await page.goto("/");
     await expect(page.getByTestId("chat-sidebar")).toBeHidden();
-    // The list falls back to #setup once the directory fails or the boot
+    // The list falls back to #welcome once the directory fails or the boot
     // window elapses (ChatSidebar.auto-open-setup.test.ts). Asserting the
     // settled channel rather than the skeleton matters: the skeleton is the
     // pre-timeout state and shows whether or not anything is ever selected.
-    await expect(page.getByRole("heading", { name: "setup" })).toBeVisible({
+    await expect(page.getByRole("heading", { name: "welcome", exact: true })).toBeVisible({
       timeout: 20_000,
     });
     await expect(page.getByTestId("conversation-boot-error")).toHaveCount(0);

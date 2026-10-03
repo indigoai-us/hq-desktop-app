@@ -81,7 +81,6 @@ function ctx(over: Partial<CreateBotContext> = {}): CreateBotContext {
     templates: WORKERS,
     claudeProviderEnabled: true,
     cloudQuoteStatus: "ready",
-    cloudApiKeyPresent: true,
     cloudProvisionOptions: {
       defaultInstanceType: "t4g.medium",
       catalogVersion: "test",
@@ -123,9 +122,18 @@ describe("initialDraft", () => {
 
   it("opens on Cloud when this Mac cannot host a bot", () => {
     expect(initialDraft(ctx({ canLocal: false })).home).toBe("cloud");
-    expect(initialDraft(ctx({ canLocal: false })).runtime).toBe("codex");
+    expect(initialDraft(ctx({ canLocal: false })).runtime).toBe("claude");
+    expect(initialDraft(ctx({ canLocal: false, claudeProviderEnabled: false })).runtime).toBe("codex");
     expect(firstReadyRuntime(null)).toBe("claude");
     expect(firstReadyRuntime({ claude: false, codex: false, grok: false })).toBe("claude");
+  });
+
+  it("starts a Cloud bot on Claude when agents.desktop-agent-creation is on, with no Claude flag", () => {
+    const on = ctx({ canLocal: false, claudeProviderEnabled: false, directCloudOn: true });
+    expect(initialDraft(on).runtime).toBe("claude");
+    expect(stepIssue("details", draft({ home: "cloud", runtime: "claude", name: "scout", handle: "scout" }, on), on)).not.toBe(
+      "Claude isn’t available for this account.",
+    );
   });
 });
 
@@ -337,7 +345,6 @@ describe("steps", () => {
     expect(stepIssue("details", base, ctx({ claudeProviderEnabled: false }))).toContain("Claude isn’t available");
     expect(stepIssue("details", { ...base, runtime: "codex" }, ctx({ cloudQuoteStatus: "loading" }))).toContain("Checking company pricing");
     expect(stepIssue("details", { ...base, runtime: "codex", size: "power" }, ctx())).toBe("Choose an available size.");
-    expect(stepIssue("details", { ...base, runtime: "codex", authMode: "apiKey" }, ctx({ cloudApiKeyPresent: false }))).toBe("Enter an API key to continue.");
     expect(stepIssue("details", { ...base, runtime: "codex" }, ctx())).toBeNull();
   });
 
@@ -452,5 +459,69 @@ describe("toCreateInput", () => {
     expect(thinksWithLine(draft(), c)).toBe("thinks with Claude Code");
     expect(thinksWithLine(draft({ runtime: "grok", model: "grok-4" }), c)).toBe("thinks with Grok · grok-4");
     expect(thinksWithLine(draft({ home: "cloud", companyUid: "cmp_acme" }), c)).toBe("hosted by Acme");
+  });
+});
+
+describe("template labels from raw worker.yaml values (QA-042)", () => {
+  const raw = [
+    { id: "cfo-{product}", name: "CFO Worker - {Product}", path: "companies/globex/workers/cfo", company: "[object Object]", skillCount: 0, source: "company" as const },
+    { id: "{product}-analytics", name: "{Product} Analytics", path: "companies/acme/workers/analytics", company: "{product}", source: "company" as const },
+  ];
+
+  it("takes the company from the worker folder when the declared one is unusable", () => {
+    const groups = groupTemplates(raw);
+    expect(groups.map((g) => g.label)).toEqual(["Acme", "Globex"]);
+    const shown = groups.flatMap((g) => [g.label, ...g.templates.flatMap((t) => [t.name, t.summary, t.company ?? ""])]);
+    expect(shown.join(" ")).not.toMatch(/object Object|\{product\}|\{Product\}/);
+  });
+
+  it("fills {Product} placeholders in names with the company name", () => {
+    expect(templateCard(raw[0]!).name).toBe("CFO Worker - Globex");
+    expect(templateCard(raw[1]!).name).toBe("Acme Analytics");
+    expect(templateCard(raw[0]!).company).toBe("globex");
+  });
+});
+
+describe("initialDraft company (QA-043)", () => {
+  const ctx = {
+    canLocal: true,
+    canCloud: true,
+    existingNames: [],
+    runtimeReady: null,
+    companies: [
+      { companyUid: "cmp_first", label: "First" },
+      { companyUid: "cmp_origin", label: "Origin" },
+    ],
+  };
+
+  it("starts on the company the flow was opened from", () => {
+    expect(initialDraft(ctx, "cmp_origin").companyUid).toBe("cmp_origin");
+  });
+
+  it("falls back to the first company when the origin is unknown", () => {
+    expect(initialDraft(ctx).companyUid).toBe("cmp_first");
+    expect(initialDraft(ctx, "cmp_gone").companyUid).toBe("cmp_first");
+  });
+
+  // Round 12-19: Local → Details defaulted to Personal with no company ticked.
+  it("starts a Local bot as the origin company's bot", () => {
+    const withOwners = {
+      ...ctx,
+      ownerCompanies: [
+        { slug: "first", label: "First" },
+        { slug: "origin", label: "Origin" },
+      ],
+    };
+    const draft = initialDraft(withOwners, "cmp_origin", "origin");
+    expect(draft.scope).toBe("company");
+    expect(draft.companySlugs).toEqual(["origin"]);
+  });
+
+  it("stays Personal when opened without a company or with an unknown one", () => {
+    const withOwners = { ...ctx, ownerCompanies: [{ slug: "origin", label: "Origin" }] };
+    expect(initialDraft(withOwners).scope).toBe("personal");
+    const unknown = initialDraft(withOwners, "cmp_gone", "gone");
+    expect(unknown.scope).toBe("personal");
+    expect(unknown.companySlugs).toEqual([]);
   });
 });

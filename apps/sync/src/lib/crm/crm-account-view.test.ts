@@ -8,7 +8,6 @@
  * the load-bearing contracts of the read-only Accounts surface:
  *
  *   • the `accounts` CompanyTab is registered on the V4 route union + sidebar;
- *   • CompanyPage renders AccountView for the accounts tab;
  *   • AccountView reads the vault-synced projection via the local-first +
  *     vault-API loader and makes NO network call to Attio / Stripe / PandaDoc /
  *     Neon (the US-010 e2e contract: one surface, zero external network);

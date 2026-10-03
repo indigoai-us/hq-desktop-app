@@ -44,6 +44,7 @@ describe("WebPlatformAdapter agents", () => {
     await adapter.agents.listMobileRoster("cmp_1");
     await adapter.agents.listOwners("cmp_1", "agt_1");
     await adapter.agents.getCompanyTelemetry("cmp_1", "2026-08-01", "2026-09-01");
+    await adapter.agents.getMyTelemetry?.("2026-08-01", "2026-09-01");
     expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([
       `GET ${AGENT_PATHS.provisionOptions("cmp_1")}`,
       `GET ${AGENT_PATHS.status("agt_1")}`,
@@ -51,6 +52,7 @@ describe("WebPlatformAdapter agents", () => {
       `GET ${AGENT_PATHS.mobileRoster("cmp_1")}`,
       `GET ${AGENT_PATHS.owners("cmp_1", "agt_1")}`,
       `GET ${AGENT_PATHS.companyTelemetry("cmp_1", "2026-08-01", "2026-09-01")}`,
+      "GET /v1/telemetry/me?from=2026-08-01&to=2026-09-01",
     ]);
   });
 

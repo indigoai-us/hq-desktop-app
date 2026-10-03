@@ -36,6 +36,7 @@
     "vitest": "^4.1.5"
   },
   "dependencies": {
+    "@hq/agents": "workspace:*",
     "@hq/core": "workspace:*",
     "@hq/platform": "workspace:*"
   }

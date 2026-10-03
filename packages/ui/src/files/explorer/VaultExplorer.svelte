@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ReadLoader from "../../common/ReadLoader.svelte";
   /**
    * VaultExplorer: the Files page. An Obsidian-style, read-only explorer over
    * the local HQ folder, one vault at a time: Personal, or a company the
@@ -19,14 +20,20 @@
    */
   import { untrack } from "svelte";
   import { formatShortcut } from "../../common/keyboard-shortcuts.js";
-  import { isMac } from "../../common/platform.js";
+  import { platformStrings } from "../../common/platform-strings.js";
   import type { PlatformAdapter, VaultFileHit, VaultNoteLinks, VaultSummaryWire } from "@hq/platform";
   import type { Workspace } from "../../chat/workspaces.js";
-  import FilePreviewPane from "../FilePreviewPane.svelte";
   import OpenFileInClaudeCode from "../OpenFileInClaudeCode.svelte";
   import NoteView from "./NoteView.svelte";
   import QuickSwitcher from "./QuickSwitcher.svelte";
+  import ShareFileSheet from "./ShareFileSheet.svelte";
   import VaultTree from "./VaultTree.svelte";
+  import RailButton from "../../common/button/RailButton.svelte";
+  import type { AdapterPromise, Json } from "@hq/platform";
+  import LazyDoor from "../../shell/LazyDoor.svelte";
+  import { vaultFolderViewDoor } from "../../shell/lazy-doors.js";
+  import FilePreviewPane from "../FilePreviewPane.svelte";
+  import VaultRail from "./VaultRail.svelte";
   import {
     PERSONAL_VAULT,
     breadcrumbs,
@@ -34,6 +41,7 @@
     noteTitle,
     pathInVault,
     plural,
+    shareTarget,
     vaultRelativePath,
     vaultsFor,
     type OutlineItem,
@@ -50,14 +58,28 @@
     path?: string | null;
     /** Reports where the explorer is, for navigation history. */
     onlocationchange?: (location: { vaultId: string; path: string | null }) => void;
+    /** OWNER-R13: open only this vault (the company Vault page), with no vault menu. */
+    lockedVault?: Vault | null;
+    /** OWNER-R13: selecting a folder shows its contents in the main area. */
+    folderView?: boolean;
+    /** OWNER-R17: reads (and the grant hand-off) for the right pane's Access section. */
+    access?: {
+      companyUidFor: (vault: Vault) => string | null;
+      readTree?: ((companyUid: string, prefix: string) => AdapterPromise<Json>) | null;
+      readGroups?: ((companyUid: string) => AdapterPromise<Json>) | null;
+      ongrant?: ((path: string, isDir: boolean) => void) | null;
+    } | null;
+    /** OWNER-R13: reads a note that is in the cloud vault but not on this Mac. */
+    cloudRead?: ((path: string) => Promise<string | null>) | null;
   }
 
-  let { adapter, companies, vaultId = null, path = null, onlocationchange }: Props = $props();
-  const fileManagerName = $derived(isMac() ? "Finder" : "file manager");
+  let { adapter, companies, vaultId = null, path = null, onlocationchange, lockedVault = null, folderView = false, access = null, cloudRead = null }: Props = $props();
+  const fileManagerName = $derived(platformStrings().fileManager);
+  if (untrack(() => folderView)) vaultFolderViewDoor.preload();
 
-  const vaults = $derived(vaultsFor(companies));
-  let currentVaultId = $state<string>(untrack(() => vaultId) ?? PERSONAL_VAULT.id);
-  const vault = $derived<Vault>(vaults.find((v) => v.id === currentVaultId) ?? PERSONAL_VAULT);
+  const vaults = $derived(lockedVault ? [lockedVault] : vaultsFor(companies));
+  let currentVaultId = $state<string>(untrack(() => lockedVault?.id ?? vaultId) ?? PERSONAL_VAULT.id);
+  const vault = $derived<Vault>(lockedVault ?? vaults.find((v) => v.id === currentVaultId) ?? PERSONAL_VAULT);
   const vaultApi = $derived(adapter.files.vault ?? null);
   let showSystem = $state(false);
 
@@ -116,12 +138,24 @@
     const api = vaultApi;
     if (!api) return;
     summaryLoading = true;
-    await ensureScope(v);
-    const res = await api.summary(v.root, includeSystem);
+    const res = await ensureScope(v).then(() => api.summary(v.root, includeSystem)).catch((err: unknown) => {
+      console.warn("VaultExplorer: vault summary did not finish:", err);
+      return { ok: false as const, message: "vault summary did not finish" };
+    });
     if (gen !== summaryGeneration) return;
     summaryLoading = false;
     if (res.ok) summary = res.value;
-    else summaryError = res.message || "This vault could not be read.";
+    else {
+      // AUDIT-3: plain copy only; the host message goes to the log.
+      console.warn("VaultExplorer: vault summary failed:", res.message);
+      summaryError = "Couldn't read this vault.";
+    }
+  }
+
+  // AUDIT-3-22: one Try again retries both the tree and the vault home.
+  function retryVault(): void {
+    treeReload += 1;
+    void loadSummary(vault, showSystem);
   }
 
   $effect(() => {
@@ -135,7 +169,9 @@
   let tabs = $state<string[]>([]);
   let activeTab = $state(0);
   const activePath = $derived(tabs[activeTab] ?? null);
-  let content = $state<Record<string, { text?: string; size?: number; truncated?: boolean; error?: string }>>({});
+  // AUDIT-3-22: the vault home owns the one Try again while it is shown with an error.
+  const homeOwnsRetry = $derived(!activePath && summaryError !== null && !summary && !summaryLoading);
+  let content = $state<Record<string, { text?: string; size?: number; truncated?: boolean; error?: string; cloud?: boolean }>>({});
   let treeReload = $state(0);
 
   function report(): void {
@@ -151,6 +187,7 @@
     outline = [];
     noteLinks = null;
     vaultMenuOpen = false;
+    focus = null;
     treeReload += 1;
     if (opts.report !== false) report();
   }
@@ -175,28 +212,58 @@
     }
     if (isMarkdownPath(p) && content[p]?.text === undefined) void loadContent(p);
     outline = [];
+    focus = { path: p, isDir: false };
     if (opts.report !== false) report();
   }
 
+  // ---- focus and folder view (OWNER-R13, OWNER-R17) -----------------------------
+  /** The file or folder last selected; the Access section describes it. */
+  let focus = $state<{ path: string; isDir: boolean } | null>(null);
+  const showFolder = $derived(folderView && focus?.isDir === true && !activePath);
+
+  function focusFolder(p: string): void {
+    focus = { path: p, isDir: true };
+    if (folderView) activeTab = -1;
+  }
+
+
+
   /** Note text: the native capped reader when present, else the whole file. */
+  /** Whether a relative Markdown link target exists in this vault (QA-104). */
+  async function linkExists(p: string): Promise<boolean> {
+    if (!pathInVault(vault, p)) return false;
+    await ensureScope(vault);
+    const parent = p.split("/").slice(0, -1).join("/");
+    const res = await adapter.files.listDir(parent);
+    if (!res.ok) {
+      console.warn("Markdown link folder unreadable:", parent, res.message);
+      return false;
+    }
+    return (res.value as Array<{ path?: string; isDir?: boolean }>).some((entry) => entry.path === p && !entry.isDir);
+  }
+
   async function loadContent(p: string): Promise<void> {
     await ensureScope(vault);
     const api = vaultApi;
+    let local: { text?: string; size?: number; truncated?: boolean; error?: string; cloud?: boolean };
     if (api) {
       const res = await api.readNote(p);
-      content = {
-        ...content,
-        [p]: res.ok
-          ? { text: res.value.text, size: res.value.size, truncated: res.value.truncated }
-          : { error: res.message || "This file could not be read." },
-      };
-      return;
+      local = res.ok
+        ? { text: res.value.text, size: res.value.size, truncated: res.value.truncated }
+        : { error: "Couldn't read this file." };
+    } else {
+      const res = await adapter.files.getFileContent(p);
+      local = res.ok ? { text: String(res.value ?? "") } : { error: "Couldn't read this file." };
     }
-    const res = await adapter.files.getFileContent(p);
-    content = {
-      ...content,
-      [p]: res.ok ? { text: String(res.value ?? "") } : { error: res.message || "This file could not be read." },
-    };
+    // OWNER-R13: a file only in the cloud vault reads through the vault instead.
+    if (local.error && cloudRead) {
+      const text = await cloudRead(p).catch((err: unknown) => {
+        console.warn("VaultExplorer: cloud read failed:", p, err);
+        return null;
+      });
+      if (text !== null) local = { text, cloud: true };
+    }
+    content = { ...content, [p]: local };
   }
 
   function closeTab(i: number): void {
@@ -255,6 +322,7 @@
   }
 
   let copied = $state(false);
+  let sharePath = $state<string | null>(null);
   async function copyPath(p: string): Promise<void> {
     try {
       await navigator.clipboard.writeText(p);
@@ -269,7 +337,10 @@
   async function reveal(p: string): Promise<void> {
     revealError = null;
     const res = await adapter.files.revealInFinder(p);
-    if (!res.ok) revealError = res.message || `Could not open ${fileManagerName}.`;
+    if (!res.ok) {
+      console.warn("VaultExplorer: reveal failed:", res.message);
+      revealError = `Could not open ${fileManagerName}.`;
+    }
   }
 
   const canReveal = $derived(adapter.isAvailable("localFiles"));
@@ -285,6 +356,12 @@
   <aside class="vx-side" aria-label="Vault">
     <div class="vx-side-head">
       <div class="vx-vault">
+        {#if lockedVault}
+          <div class="vx-vault-btn" data-testid="vault-root-label">
+            <span class="vx-avatar">{vaultInitial(vault)}</span>
+            <span class="vx-vault-name">{vault.label}</span>
+          </div>
+        {:else}
         <button
           type="button"
           class="vx-vault-btn"
@@ -297,6 +374,7 @@
           <span class="vx-vault-name">{vault.label}</span>
           <svg viewBox="0 0 16 16" class="vx-caret" aria-hidden="true"><path d="M4.5 6.5 8 10l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" /></svg>
         </button>
+        {/if}
         {#if vaultMenuOpen}
           <div class="vx-menu" role="menu" aria-label="Vaults">
             {#each vaults as v (v.id)}
@@ -323,7 +401,7 @@
       </button>
     </div>
     <div class="vx-tree">
-      <VaultTree {vault} {listDir} {activePath} {showSystem} reloadKey={treeReload} onopen={(p, o) => openFile(p, o)} />
+      <VaultTree {vault} {listDir} {activePath} {showSystem} reloadKey={treeReload} onopen={(p, o) => openFile(p, o)} retryHere={!homeOwnsRetry} onretry={retryVault} onfocusdir={focusFolder} />
     </div>
     <footer class="vx-side-foot">
       {#if vault.kind === "personal"}
@@ -333,7 +411,7 @@
         </label>
       {/if}
       <span class="vx-count">
-        {#if summaryLoading}Indexing…{:else if summary}{plural(summary.notes, "note")} · {plural(summary.files, "file")}{summary.truncated ? "+" : ""}{/if}
+        {#if summaryLoading}{:else if summary}{plural(summary.notes, "note")} · {plural(summary.files, "file")}{summary.truncated ? "+" : ""}{/if}
       </span>
     </footer>
   </aside>
@@ -363,17 +441,18 @@
             <span class="vx-crumb" class:is-leaf={i === breadcrumbs(vault, activePath).length - 1}>{c.label}</span>
           {/each}
         </nav>
-        {#if isMarkdownPath(activePath)}
-          <div class="vx-actions">
+        <div class="vx-actions">
+          {#if !lockedVault}<button type="button" class="vx-action" data-testid="vault-share" onclick={() => (sharePath = activePath)}>Share</button>{/if}
+          {#if isMarkdownPath(activePath)}
             {#if canLaunchClaude}
               <OpenFileInClaudeCode shell={adapter.shell} file={activePath} authorizedFile variant="compact" />
             {/if}
             <button type="button" class="vx-action" onclick={() => copyPath(activePath)}>{copied ? "Copied" : "Copy path"}</button>
-            {#if canReveal}
+            {#if canReveal && !content[activePath]?.cloud}
               <button type="button" class="vx-action" onclick={() => reveal(activePath)} title={revealError ?? `Show in ${fileManagerName}`}>{`Show in ${fileManagerName}`}</button>
             {/if}
-          </div>
-        {/if}
+          {/if}
+        </div>
         <button
           type="button"
           class="vx-icon"
@@ -388,7 +467,12 @@
 
     <div class="vx-body">
       <div class="vx-scroll" data-testid="vault-content">
-        {#if !activePath}
+        {#if showFolder && focus}
+          <LazyDoor
+            door={vaultFolderViewDoor}
+            props={{ vault, path: focus.path, showSystem, listDir, onfocusfolder: focusFolder, onopen: (p: string, o: { newTab: boolean }) => openFile(p, o) }}
+          />
+        {:else if !activePath}
           <section class="vx-home" data-testid="vault-home">
             <p class="vx-eyebrow">{vault.kind === "personal" ? "Personal vault" : "Company vault"}</p>
             <h1>{vault.label}</h1>
@@ -406,9 +490,12 @@
                 <div><strong>{summary.links.toLocaleString()}</strong><span>{summary.links === 1 ? "link" : "links"}</span></div>
               </div>
             {:else if summaryLoading}
-              <p class="vx-muted">Reading the vault…</p>
+              <ReadLoader testid="vault-home-loader" onretry={retryVault} />
             {:else if summaryError}
-              <p class="vx-muted">{summaryError}</p>
+              <div class="vx-load-error" role="alert" data-testid="vault-home-error">
+                <p class="vx-muted">{summaryError}</p>
+                <RailButton icon="refresh" data-testid="vault-home-retry" onclick={retryVault}>Try again</RailButton>
+              </div>
             {:else if !vaultApi}
               <p class="vx-muted">Pick a file on the left to start reading.</p>
             {/if}
@@ -454,6 +541,7 @@
                 onlinktargets={(targets) => resolveLinks(activePath, targets)}
                 {scrollTo}
                 onopenfull={canReveal ? () => reveal(activePath) : undefined}
+                linkexists={linkExists}
               />
             {/key}
             {#if backlinks.length > 0}
@@ -474,70 +562,44 @@
           {:else if c?.error}
             <p class="vx-empty">{c.error}</p>
           {:else}
-            <div class="vx-note-skeleton" aria-hidden="true">
-              <span style="width:46%;height:26px"></span>
-              <span style="width:92%"></span><span style="width:86%"></span><span style="width:64%"></span>
+            <div class="vx-note-loading">
+              <ReadLoader testid="vault-note-loading" />
             </div>
           {/if}
         {:else}
           {#key activePath}
-            <div class="vx-preview"><FilePreviewPane {adapter} path={activePath} /></div>
+            <div class="vx-preview"><FilePreviewPane
+                {adapter}
+                path={activePath}
+                scopeRoot={vault.kind === "company" ? vault.root : null}
+                scopeLabel="vault"
+                onopenpath={(p) => openFile(p, { newTab: false })}
+              /></div>
           {/key}
         {/if}
       </div>
 
-      {#if activePath && rightOpen}
-        <aside class="vx-rail" aria-label="Outline and links" data-testid="vault-rail">
-          {#if outline.length > 0}
-            <section>
-              <h3>Outline</h3>
-              <ul class="vx-outline">
-                {#each outline as item (item.index)}
-                  <li style={`--lvl:${item.level}`}>
-                    <button type="button" onclick={() => (scrollTo = { index: item.index, seq: (scrollTo?.seq ?? 0) + 1 })}>{item.text}</button>
-                  </li>
-                {/each}
-              </ul>
-            </section>
-          {/if}
-          <section data-testid="vault-backlinks">
-            <h3>Linked here <span class="vx-badge">{backlinkCount}</span></h3>
-            {#if backlinks.length === 0}
-              <p class="vx-muted small">{current ? "No other note links here yet." : "Finding links…"}</p>
-            {:else}
-              <ul class="vx-links">
-                {#each backlinks as b (b.path)}
-                  <li>
-                    <button type="button" onclick={(e) => openFile(b.path, { newTab: e.metaKey || e.ctrlKey })}>
-                      <span>{noteTitle(b.path)}</span>
-                      <span class="vx-muted small">{vaultRelativePath(vault, b.path).split("/").slice(0, -1).join(" / ")}</span>
-                    </button>
-                  </li>
-                {/each}
-              </ul>
-              {#if backlinkCount > backlinks.length}
-                <p class="vx-muted small">and {plural(backlinkCount - backlinks.length, "more note")}</p>
-              {/if}
-            {/if}
-          </section>
-          {#if outgoing.length > 0}
-            <section>
-              <h3>Links out <span class="vx-badge">{outgoing.length}</span></h3>
-              <ul class="vx-links">
-                {#each outgoing as o (o.path)}
-                  <li>
-                    <button type="button" onclick={(e) => openFile(o.path, { newTab: e.metaKey || e.ctrlKey })}>
-                      <span>{o.isMarkdown ? noteTitle(o.path) : o.name}</span>
-                    </button>
-                  </li>
-                {/each}
-              </ul>
-            </section>
-          {/if}
+      {#if focus && rightOpen && (activePath || focus.isDir)}
+        <aside class="vx-rail" aria-label="Access, outline and links" data-testid="vault-rail">
+          <VaultRail
+            {vault}
+            {focus}
+            showFileSections={Boolean(activePath && focus.path === activePath)}
+            {outline}
+            links={current}
+            {access}
+            onopen={(p, o) => openFile(p, o)}
+            onscrollto={(index) => (scrollTo = { index, seq: (scrollTo?.seq ?? 0) + 1 })}
+            onfocusfolder={focusFolder}
+          />
         </aside>
       {/if}
     </div>
   </main>
+
+  {#if sharePath}
+    <ShareFileSheet target={shareTarget(vault, sharePath)} onclose={() => (sharePath = null)} />
+  {/if}
 
   {#if switcherOpen}
     <QuickSwitcher
@@ -587,8 +649,8 @@
     background: transparent;
     color: var(--v4-text-1);
     font: inherit;
-    font-size: 14px;
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     cursor: pointer;
   }
   .vx-vault-btn:hover {
@@ -615,7 +677,7 @@
     background: color-mix(in srgb, var(--v4-link) 18%, var(--v4-raised));
     color: var(--v4-link);
     font-size: 12px;
-    font-weight: 700;
+    font-weight: 500;
   }
   .vx-avatar.personal {
     background: var(--v4-control-faint);
@@ -664,7 +726,7 @@
   .vx-menu-kind {
     margin-left: auto;
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: 13px;
   }
   .vx-search {
     display: flex;
@@ -689,6 +751,7 @@
   .vx-search kbd {
     margin-left: auto;
     font: inherit;
+    font-family: var(--font-mono, ui-monospace, Menlo, monospace);
     font-size: 11px;
   }
   .vx-tree {
@@ -702,7 +765,7 @@
     padding: 10px 14px 12px;
     border-top: 1px solid var(--v4-hairline);
     color: var(--v4-text-3);
-    font-size: 11.5px;
+    font-size: 13px;
   }
   .vx-toggle {
     display: flex;
@@ -754,7 +817,7 @@
     background: transparent;
     color: inherit;
     font: inherit;
-    font-size: 12.5px;
+    font-size: 13px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -801,7 +864,7 @@
     gap: 6px;
     min-width: 0;
     color: var(--v4-text-3);
-    font-size: 12.5px;
+    font-size: 13px;
     white-space: nowrap;
     overflow: hidden;
   }
@@ -845,7 +908,7 @@
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
     cursor: pointer;
   }
   .vx-action:hover {
@@ -901,17 +964,10 @@
     color: var(--v4-text-3);
     text-align: center;
   }
-  .vx-note-skeleton {
-    display: grid;
-    gap: 14px;
+  .vx-note-loading {
     max-width: 740px;
     margin: 0 auto;
     padding: 48px;
-  }
-  .vx-note-skeleton span {
-    height: 12px;
-    border-radius: 6px;
-    background: var(--v4-control-faint);
   }
 
   /* ---- vault home ---- */
@@ -923,28 +979,26 @@
   .vx-eyebrow {
     margin: 0 0 8px;
     color: var(--v4-text-3);
-    font-size: 12px;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    font-size: 13px;
   }
   .vx-home h1 {
     margin: 0;
-    font-size: 36px;
-    font-weight: 680;
-    letter-spacing: -0.025em;
+    font-size: var(--type-title, 20px);
+    font-weight: var(--type-title-weight, 500);
+    line-height: var(--type-title-line, 1.25);
   }
   .vx-lede {
     max-width: 560px;
     margin: 12px 0 28px;
     color: var(--v4-text-2);
-    font-size: 15px;
-    line-height: 1.6;
+    font-size: 13px;
+    line-height: 1.45;
   }
   .vx-home h2 {
     margin: 36px 0 12px;
     color: var(--v4-text-2);
     font-size: 13px;
-    font-weight: 600;
+    font-weight: 500;
   }
   .vx-stats {
     display: grid;
@@ -960,13 +1014,13 @@
     background: var(--v4-raised);
   }
   .vx-stats strong {
-    font-size: 24px;
-    font-weight: 650;
+    font-size: 13px;
+    font-weight: 500;
     font-variant-numeric: tabular-nums;
   }
   .vx-stats span {
     color: var(--v4-text-3);
-    font-size: 12px;
+    font-size: 13px;
   }
   .vx-areas {
     display: grid;
@@ -981,12 +1035,12 @@
     border-radius: 10px;
   }
   .vx-area-name {
-    font-size: 14px;
-    font-weight: 550;
+    font-size: 13px;
+    font-weight: 500;
   }
   .vx-area-count {
     color: var(--v4-text-3);
-    font-size: 12px;
+    font-size: 13px;
   }
   .vx-list {
     display: grid;
@@ -1007,7 +1061,7 @@
     background: transparent;
     color: var(--v4-text-1);
     font: inherit;
-    font-size: 13.5px;
+    font-size: 13px;
     text-align: left;
     cursor: pointer;
   }
@@ -1018,11 +1072,13 @@
   .vx-list .vx-muted {
     margin-left: auto;
   }
+  .vx-load-error { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+  .vx-load-error p { margin: 0; }
   .vx-muted {
     color: var(--v4-text-3);
   }
   .small {
-    font-size: 12px;
+    font-size: 13px;
   }
 
   /* ---- right rail ---- */
@@ -1033,53 +1089,20 @@
     border-left: 1px solid var(--v4-hairline);
     overflow-y: auto;
   }
-  .vx-rail section + section {
-    margin-top: 24px;
-  }
-  .vx-rail h3 {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin: 0 0 8px 6px;
-    color: var(--v4-text-3);
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-  }
   .vx-badge {
     padding: 0 6px;
     border-radius: 999px;
     background: var(--v4-control-faint);
     color: var(--v4-text-2);
-    font-size: 10.5px;
+    font-size: 13px;
     letter-spacing: 0;
   }
-  .vx-outline,
   .vx-links {
     display: grid;
     gap: 1px;
     margin: 0;
     padding: 0;
     list-style: none;
-  }
-  .vx-outline button {
-    display: block;
-    width: 100%;
-    padding: 4px 6px 4px calc(6px + (var(--lvl) - 1) * 12px);
-    border: 0;
-    border-radius: 6px;
-    background: transparent;
-    color: var(--v4-text-2);
-    font: inherit;
-    font-size: 12.5px;
-    line-height: 1.4;
-    text-align: left;
-    cursor: pointer;
-  }
-  .vx-outline button:hover {
-    background: var(--v4-control-faint);
-    color: var(--v4-text-1);
   }
   .vx-links button {
     flex-direction: column;
@@ -1089,7 +1112,7 @@
     font-size: 13px;
   }
   .vx-links .small {
-    font-size: 11px;
+    font-size: 13px;
   }
 
   /* The note keeps its reading width; below that the rail folds into the
@@ -1111,8 +1134,8 @@
     gap: 6px;
     margin: 0 0 8px;
     color: var(--v4-text-3);
-    font-size: 11px;
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     letter-spacing: 0.05em;
     text-transform: uppercase;
   }

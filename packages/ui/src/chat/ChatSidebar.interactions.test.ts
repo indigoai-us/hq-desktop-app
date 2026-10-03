@@ -75,6 +75,7 @@ describe("ChatSidebar right-click context menu", () => {
       target: host,
       props: {
         api: stubApi(), seedDirectory: [companyRow],
+        scopeUid: "cmp_1",
         rowExtras: () => ({ children: [{ id: 'new', label: 'New session', kind: 'action', onselect: vi.fn() }] }),
       },
     });
@@ -210,9 +211,11 @@ describe("ChatSidebar sign out", () => {
     expect(onsignout).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps the confirmation open and surfaces a rejected sign-out callback", async () => {
+  it("keeps the confirmation open and surfaces a rejected sign-out callback as plain copy", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const raw = new Error('[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}');
     const onsignout = vi.fn(async () => {
-      throw new Error("native token store unavailable");
+      throw raw;
     });
     component = mount(ChatSidebar, {
       target: host,
@@ -239,10 +242,14 @@ describe("ChatSidebar sign out", () => {
     await vi.waitFor(() => {
       expect(onsignout).toHaveBeenCalledOnce();
       expect(document.querySelector('[data-testid="confirm-dialog"]')).toBeTruthy();
-      expect(document.body.textContent).toContain(
-        "Couldn’t sign out: Error: native token store unavailable",
-      );
+      expect(document.body.textContent).toContain("Couldn’t sign out. Try again.");
     });
+    expect(document.body.textContent).not.toContain("boom");
+    for (const el of document.querySelectorAll("[title]")) {
+      expect(el.getAttribute("title")).not.toContain("boom");
+    }
+    expect(warn).toHaveBeenCalledWith("[chat-sidebar] sign out failed", raw);
+    warn.mockRestore();
   });
 });
 
@@ -826,11 +833,16 @@ describe("ChatSidebar resolves a name for a bare-uid DM peer", () => {
 });
 
 describe("ChatSidebar channel rail stamp on the owner's own send", () => {
-  /** A channel last active 10 days ago is folded away under "Last week". */
+  /**
+   * A project channel last active 10 days ago is folded away under "Last week".
+   * Company-scoped channels no longer use the Home day groups (US-008); they
+   * render in the selected company's Activity list, so this stamp regression
+   * stays on a project row, which Home still day-groups.
+   */
   const staleRow: ChannelDirectoryRow = {
     channelId: "chn_hq_dev",
-    type: "company",
-    scope: "company",
+    type: "project",
+    scope: "project",
     companyUid: "cmp_indigo",
     name: "hq-dev",
     lastActivityAt: new Date(Date.now() - 10 * 86_400_000).toISOString(),

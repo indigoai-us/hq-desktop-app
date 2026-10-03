@@ -644,7 +644,7 @@
     <p class="note inline-note" role="status" aria-live="polite">Getting things ready…</p>
   {:else if phase === 'details'}
     <h2 class="h" id="onboarding-title-company" tabindex="-1" data-scene-heading>Name your company</h2>
-    <p class="body">Your company is where your team shares files, agents and work in HQ.</p>
+    <p class="body">Your company is where your team shares files, bots and work in HQ.</p>
     {#if error}<p class="note inline-note warning" role="alert" data-testid="onboarding-company-error">{error}</p>{/if}
     {#if planLimit}
       <p class="note inline-note" role="status" data-testid="onboarding-company-plan-limit">

@@ -1,4 +1,6 @@
 <script lang="ts">
+  import Dropdown from "../common/LazyDropdown.svelte";
+  import CompanyLabel from "../company/CompanyLabel.svelte";
   /**
    * ChannelStatusPopover (US-005) — opened from the channel-header member pill.
    *
@@ -18,7 +20,6 @@
   import { botKindFor } from "./bot-kind.js";
   import { projectReposForDisplay } from "./channel-status-model.js";
   import { isSelf, type SelfIdentity } from "../identity/self.js";
-  import CompanyIcon from "../company/CompanyIcon.svelte";
   import "./tokens.css";
   import "./chat-tokens.css";
 
@@ -261,9 +262,11 @@
       <div class="p-item kv static" data-testid="status-company">
         <span class="k">Company</span>
         <span class="status-company-val">
-          <CompanyIcon iconUrl={model.companyIconUrl ?? null} size={16} />
           <span class="val" data-testid="status-company-name"
-            >{model.companyLabel}</span
+            ><CompanyLabel
+              name={model.companyLabel}
+              iconUrl={model.companyIconUrl ?? null}
+            /></span
           >
         </span>
       </div>
@@ -271,16 +274,12 @@
     <div class="p-item kv static">
       <span class="k">Branch</span>
       {#if currentBranches.length > 1}
-        <select
-          class="status-branch-select"
-          data-testid="status-branch-select"
-          aria-label="Project branches"
+        <Dropdown
+          testid="status-branch-select"
+          label="Project branches"
           bind:value={selectedBranch}
-        >
-          {#each currentBranches as branch (branch)}
-            <option value={branch}>{branch}</option>
-          {/each}
-        </select>
+          options={currentBranches.map((branch) => ({ value: branch, label: branch }))}
+        />
       {:else}
         <span class="val" data-testid="status-branch">{shownBranch ?? "—"}</span
         >
@@ -621,14 +620,12 @@
     overflow-x: hidden;
     overflow-y: auto;
     padding: 6px;
-    border: 1px solid var(--panel-border);
+    border: 1px solid var(--overlay-border);
     border-radius: 12px;
-    background: var(--panel-bg);
+    background: var(--overlay-bg);
     box-shadow: var(--panel-shadow);
     color: var(--t1);
     font: 400 13px/1.4 var(--font-ui);
-    backdrop-filter: blur(40px) saturate(1.5);
-    -webkit-backdrop-filter: blur(40px) saturate(1.5);
   }
 
   .status-popover > section {
@@ -696,17 +693,17 @@
     height: 4px;
     overflow: hidden;
     border-radius: 2px;
-    background: rgba(255, 255, 255, 0.11);
+    background: var(--overlay-field-bg);
   }
 
   :global([data-force-theme="light"]) .progress {
-    background: rgba(0, 0, 0, 0.1);
+    background: var(--overlay-field-bg);
   }
 
   .progress-fill {
     display: block;
     height: 100%;
-    background: var(--ice-ink);
+    background: var(--t2);
   }
 
   .p-sec {
@@ -836,7 +833,7 @@
     max-width: calc(100% - 60px);
     min-width: 0;
     padding: 1px 4px;
-    border: 1px solid var(--panel-border);
+    border: 1px solid var(--overlay-border);
     border-radius: 6px;
     background: var(--raised);
     color: var(--t1);
@@ -852,7 +849,7 @@
     width: 20px;
     height: 20px;
     border-radius: 50%;
-    background: rgba(255, 255, 255, 0.11);
+    background: var(--overlay-field-bg);
     color: var(--t1);
     font-size: 9px;
     font-weight: 600;
@@ -873,7 +870,7 @@
     bottom: -1px;
     width: 6px;
     height: 6px;
-    border: 1.5px solid var(--panel-bg, var(--v4-ground, #151515));
+    border: 1.5px solid var(--overlay-bg);
     border-radius: 50%;
     background: var(--v4-ok, #42d77d);
   }
@@ -887,8 +884,8 @@
   }
 
   .m-ava.ai {
-    background: color-mix(in srgb, var(--ice-ink) 22%, #2c3d52);
-    color: var(--ice-ink);
+    background: var(--overlay-field-bg);
+    color: var(--t1);
   }
 
   .member-row {

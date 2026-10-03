@@ -6,7 +6,7 @@
  * adapter's `bots` group and opens its DM even before the intro message has
  * landed (synthetic row), so the user is never left staring at the modal.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import { ok, type PlatformAdapter } from "@hq/platform";
 
@@ -14,6 +14,13 @@ import DesktopApp from "./DesktopApp.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { WELCOME_SETUP_RUN_KEY } from "../chat/setup-channel.js";
+import { createBotFlowDoor } from "./lazy-doors.js";
+
+// The create modal preloads the New bot flow when it opens; load it once here
+// so the flow paints in the same tick these tests click into it.
+beforeAll(async () => {
+  await createBotFlowDoor.load();
+});
 
 // Setup already ran on this "Mac": the setup bot must not start by itself here.
 beforeEach(() => {
@@ -131,8 +138,8 @@ async function openBotFlow(): Promise<void> {
   await vi.waitFor(() => expect(host.querySelector('[data-testid="chat-new-message"]')).toBeTruthy());
   await settle();
   host.querySelector<HTMLButtonElement>('[data-testid="chat-new-message"]')!.click();
-  await vi.waitFor(() => expect(q('[data-testid="chat-create-new-bot"]')).toBeTruthy());
-  click('[data-testid="chat-create-new-bot"]');
+  await vi.waitFor(() => expect(q('[data-testid="chat-create-menu-agent"]')).toBeTruthy());
+  click('[data-testid="chat-create-menu-agent"]');
   await settle();
   expect(q('[data-testid="create-bot-kind-step"]')).toBeTruthy();
 }

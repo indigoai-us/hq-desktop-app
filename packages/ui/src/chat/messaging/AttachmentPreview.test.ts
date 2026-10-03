@@ -116,6 +116,26 @@ describe("AttachmentPreview image detail pane", () => {
     });
   });
 
+  it("shows plain copy, never the raw error, when resolving the file throws", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const raw = new Error('[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}');
+    mountPreview({
+      item: item({ name: "notes.txt", contentType: "text/plain", kind: "file" }),
+      resolveUrl: async () => {
+        throw raw;
+      },
+    });
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain("Could not load the file. Try again.");
+    });
+    expect(host.textContent).not.toContain("boom");
+    for (const el of host.querySelectorAll("[title]")) {
+      expect(el.getAttribute("title")).not.toContain("boom");
+    }
+    expect(warn).toHaveBeenCalledWith("[attachment-preview] load failed", raw);
+    warn.mockRestore();
+  });
+
   it("releases its resolved desktop object URL on unmount", async () => {
     const onreleaseurl = vi.fn();
     mountPreview({

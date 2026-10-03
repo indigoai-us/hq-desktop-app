@@ -34,7 +34,7 @@
     background: var(--chip-bg);
     color: var(--chip-fg);
     font-size: var(--text-base);
-    font-weight: 600;
+    font-weight: 500;
     line-height: 16px;
     text-overflow: ellipsis;
     white-space: nowrap;

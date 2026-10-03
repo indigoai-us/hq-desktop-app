@@ -755,6 +755,8 @@ export interface PortfolioSessionRef {
   tool?: string;
   model?: string;
   source?: string;
+  /** Bot (agent) display name running the session, when the event carries one. */
+  agent?: string;
 }
 
 /** Whether a session status counts as a live execution signal for Active. */
@@ -947,6 +949,11 @@ export interface ProjectLiveRunView {
   progressPercent: number | null;
   /** Freshest lastActivityAt ISO, when any live session has one. */
   lastSignalAt: string | null;
+  /**
+   * One label per live bot session (agent name when known, else "bot").
+   * Optional so older literal views stay valid.
+   */
+  bots?: string[];
 }
 
 const LIVE_PHASE_LABEL: Record<string, string> = {
@@ -1028,6 +1035,7 @@ export function projectLiveRunView(
     subagents: null,
     progressPercent: progress.total > 0 ? progress.percent : null,
     lastSignalAt,
+    bots: sorted.map((s) => s.agent?.trim() || "bot"),
   };
 }
 
@@ -1200,6 +1208,39 @@ export function taskColumn(
   return "not-started";
 }
 
+/** Task pane status label for each task column (pane copy; To do = not started). */
+export const TASK_PANE_STATUS_LABEL: Record<TaskColumn, string> = {
+  "not-started": "To do",
+  "in-progress": "In progress",
+  active: "Active",
+  complete: "Complete",
+};
+
+/**
+ * Status shown in the task pane. Uses the same `taskColumn` rule as the task
+ * list so the row group and the pane can never disagree (QA-036). The pane's
+ * To do / Done control writes `story.passes`; pass the pending value as
+ * `passesOverride` so the badge follows an in-flight write.
+ */
+export function taskPaneStatus(
+  story: Story,
+  allStories: readonly Story[],
+  sessions: readonly PortfolioSessionRef[],
+  passesOverride: boolean | null = null,
+): { column: TaskColumn; label: string } {
+  const passes = passesOverride ?? story.passes;
+  const effective = passes === story.passes ? story : { ...story, passes };
+  const pool = allStories.some((entry) => entry.id === story.id)
+    ? allStories.map((entry) => (entry.id === story.id ? effective : entry))
+    : [...allStories, effective];
+  const column = taskColumn(
+    effective,
+    pool,
+    storyHasLiveSignal(effective, sessions),
+  );
+  return { column, label: TASK_PANE_STATUS_LABEL[column] };
+}
+
 /** Classify all stories into task columns (empty columns kept by group helper). */
 export function classifyTasks(
   stories: Story[],
@@ -1354,4 +1395,54 @@ export function projectFilesRootFromPrdPath(
     parts.pop();
   }
   return parts.join("/");
+}
+
+/**
+ * The status the project detail header shows (QA-062). It is the same value
+ * the board column uses ({@link projectListStatus}), mapped onto the editable
+ * enum, so a project the board files under Complete never reads "Planned".
+ * Only a pending rollup falls back to the raw board status (planned vs PRD).
+ */
+export function headerEditableStatus(
+  project: Pick<Project, "status" | "storiesComplete" | "storiesTotal">,
+): EditableProjectStatus {
+  switch (projectListStatus(project)) {
+    case "complete":
+      return "completed";
+    case "archived":
+      return "archived";
+    case "live":
+    case "in-progress":
+      return "in_progress";
+    default:
+      return toEditableStatus(project.status);
+  }
+}
+
+/**
+ * The separately recorded planning status, shown as a secondary "Plan: …"
+ * label only when it differs from the header status. Null when they agree.
+ */
+export function secondaryPlanStatusLabel(
+  project: Pick<Project, "status" | "storiesComplete" | "storiesTotal">,
+): string | null {
+  if (!(project.status ?? "").trim()) return null;
+  const raw = toEditableStatus(project.status);
+  if (raw === headerEditableStatus(project)) return null;
+  return `Plan: ${EDITABLE_PROJECT_STATUS_LABEL[raw]}`;
+}
+
+/**
+ * How many of a company's projects the Projects board files under In progress
+ * or Active (QA-065). Uses {@link portfolioColumn} without a live signal, so a
+ * project counts here exactly when the board shows it as started but not
+ * complete. The Atlas company summary reads this instead of its own graph.
+ */
+export function boardProjectsInProgress(
+  projects: readonly Pick<Project, "company" | "status" | "storiesComplete" | "storiesTotal">[],
+  companySlug: string,
+): number {
+  return projects.filter(
+    (p) => p.company === companySlug && portfolioColumn(p, false) === "in-progress",
+  ).length;
 }

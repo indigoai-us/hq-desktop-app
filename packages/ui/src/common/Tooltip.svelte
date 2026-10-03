@@ -29,16 +29,30 @@
     delay?: number;
     /** Horizontal alignment of the bubble relative to the trigger. */
     align?: "center" | "start" | "end";
+    /** Which side of the trigger the bubble opens on. The app rail uses right. */
+    side?: "bottom" | "right";
     /** The control this tooltip describes. Receives the tooltip element id. */
     trigger: Snippet<[string]>;
   }
 
-  let { label = null, delay = 400, align = "center", trigger }: Props =
-    $props();
+  let {
+    label = null,
+    delay = 400,
+    align = "center",
+    side = "bottom",
+    trigger,
+  }: Props = $props();
 
   const id = `tooltip-${Math.random().toString(36).slice(2, 10)}`;
   let open = $state(false);
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let wrap: HTMLSpanElement | null = $state(null);
+
+  /** A control whose menu or popover is open must not keep its tooltip on
+   *  top of that menu (the Launch tooltip sat over the open Launch menu). */
+  function controlExpanded(): boolean {
+    return wrap?.querySelector('[aria-expanded="true"]') != null;
+  }
 
   function clearTimer(): void {
     if (timer !== null) {
@@ -48,17 +62,17 @@
   }
 
   function showAfterDelay(): void {
-    if (!label) return;
+    if (!label || controlExpanded()) return;
     clearTimer();
     timer = setTimeout(() => {
-      open = true;
+      open = !controlExpanded();
       timer = null;
     }, delay);
   }
 
   /** Focus is intentional — no dwell delay. */
   function showNow(): void {
-    if (!label) return;
+    if (!label || controlExpanded()) return;
     clearTimer();
     open = true;
   }
@@ -78,7 +92,9 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <span
   class="tooltip-wrap"
+  bind:this={wrap}
   onpointerenter={showAfterDelay}
+  onpointerdown={hide}
   onpointerleave={hide}
   onfocusin={showNow}
   onfocusout={hide}
@@ -90,6 +106,7 @@
       class="tooltip-bubble"
       class:align-start={align === "start"}
       class:align-end={align === "end"}
+      class:side-right={side === "right"}
       role="tooltip"
       {id}
       data-testid="tooltip-bubble"
@@ -121,7 +138,7 @@
     padding: 4px 8px;
     border: 1px solid var(--panel-border, var(--line2));
     border-radius: 6px;
-    background: var(--v4-popover-strong, var(--panel-bg));
+    background: var(--overlay-bg);
     box-shadow: var(--panel-shadow, 0 4px 12px rgba(0, 0, 0, 0.22));
     color: var(--t1);
     font-size: 11px;
@@ -141,6 +158,21 @@
     left: auto;
     right: 0;
     transform: none;
+  }
+
+  .tooltip-bubble.side-right {
+    top: 50%;
+    left: calc(100% + 8px);
+    right: auto;
+    transform: translateY(-50%);
+    animation-name: tooltip-in-right;
+  }
+
+  @keyframes tooltip-in-right {
+    from {
+      opacity: 0;
+      transform: translateY(-50%) translateX(-2px);
+    }
   }
 
   @keyframes tooltip-in {

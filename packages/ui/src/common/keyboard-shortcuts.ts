@@ -138,6 +138,12 @@ export function eventKeyNames(event: KeyboardEvent): string[] {
   if (fromCode) names.push(fromCode);
   // Digit1..Digit9 keep working with Shift/Alt held (e.g. Alt+3 → "£").
   if (event.code && /^Digit\d$/.test(event.code)) names.push(event.code.slice(5));
+  // Option/Alt on macOS rewrites event.key (⌥N is not "n"). The physical key
+  // still matches letter shortcuts such as ⌥⌘N.
+  if (event.code && /^Key[A-Z]$/.test(event.code)) {
+    const letter = event.code.slice(3).toLowerCase();
+    if (!names.includes(letter)) names.push(letter);
+  }
   const raw = normalizeKeyName(event.key ?? "");
   if (raw && !names.includes(raw)) names.push(raw);
   return names;

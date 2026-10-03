@@ -75,7 +75,7 @@
     display: grid;
     place-items: center;
     padding: 24px;
-    background: rgba(8, 8, 10, 0.72);
+    background: rgba(0, 0, 0, 0.72);
   }
 
   .about-dialog {
@@ -87,7 +87,7 @@
     border-radius: 12px;
     /* D-03: never use --v4-ground here — that token is glass and lets
        timeline text bleed through the description. */
-    background: var(--v4-surface-solid, #161618);
+    background: var(--overlay-bg);
     box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
     outline: none;
   }

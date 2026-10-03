@@ -3,7 +3,7 @@
  * link the desktop window opens into the HQ console.
  *
  * Centralised so the "all links resolve to the right place" guarantee lives in
- * one file rather than scattered string literals (CompanyPage, MeetingsPage,
+ * one file rather than scattered string literals (TeamPanel, MeetingsPage,
  * MarketplacePanel, the shell's secondary-sidebar footer all consume these).
  * Every link opens in the system browser via the host platform's external-
  * `open()`.
@@ -43,6 +43,11 @@ export function companySettingsUrl(slug: string): string {
  */
 export function companyInviteUrl(slug: string): string {
   return `${companyConsoleUrl(slug)}/team/invites`;
+}
+
+/** A company's Integrations page in the console (`/companies/{slug}/integrations`). */
+export function companyIntegrationsUrl(slug: string): string {
+  return `${companyConsoleUrl(slug)}/integrations`;
 }
 
 /** Personal Console Integrations (calendar / meeting-bot connect). */

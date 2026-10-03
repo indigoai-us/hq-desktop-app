@@ -320,7 +320,8 @@ describe("DesktopApp native setup run wiring", () => {
     const messages = Array.from(host.querySelectorAll('[data-testid="conversation-message"]')).map((el) => el.textContent ?? "");
     expect(messages.some((text) => text.includes("has hit its usage limit"))).toBe(true);
     const prompt = host.querySelector('[data-testid="setup-agent-prompt"]')!;
-    expect(prompt.querySelector('[data-testid="setup-connect-detail"]')?.textContent).toBe(reason);
+    // AUDIT-3c: the engine's own text (with its URL) goes to the log, not the screen.
+    expect(prompt.textContent).not.toContain("chatgpt.com/codex/settings/usage");
     expect(prompt.textContent).toContain("that coding tool has hit its usage limit");
     prompt.querySelector<HTMLButtonElement>('[data-testid="setup-connect-claude-run"]')!.click();
     await settle();

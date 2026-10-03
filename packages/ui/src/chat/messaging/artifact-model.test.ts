@@ -54,7 +54,7 @@ describe("artifactSizeLabel", () => {
   });
 
   it("abbreviates large counts", () => {
-    expect(artifactSizeLabel("x".repeat(1800))).toContain("1.8k chars");
+    expect(artifactSizeLabel("x".repeat(1800))).toContain("1.8K chars");
   });
 });
 

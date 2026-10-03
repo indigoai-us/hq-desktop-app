@@ -34,9 +34,23 @@
      * its own sign-in surface and must stay focused (`false`).
      */
     bringMainToFront?: boolean;
+    /**
+     * `column` is the desktop window before sign-in (US-016): no rail, centered
+     * copy, one primary button. The compact popover keeps the default card.
+     */
+    layout?: "card" | "column";
+    /** Column layout: one short line under the heading saying why sign-in is needed. */
+    note?: string;
+    version?: string;
+    /**
+     * Re-check the saved session without signing in again. The desktop
+     * signed-out page passes this so Retry sits inside the card, under the
+     * providers, instead of floating below it (OWNER-015).
+     */
+    onretry?: () => void;
   }
 
-  let { reauth = false, onsuccess, bringMainToFront = true }: Props = $props();
+  let { reauth = false, onsuccess, bringMainToFront = true, layout = "card", version = "", onretry, note }: Props = $props();
 
   const providers: { key: SignInProvider; label: string }[] = [
     { key: 'Google', label: 'Google' },
@@ -44,6 +58,7 @@
   ];
 
   let loadingProvider = $state<SignInProvider | null>(null);
+  let showAlternate = $state(false);
   let error = $state('');
   let microsoftEmail = $state('');
   let microsoftEmailPrompt = $state(false);
@@ -397,9 +412,19 @@
   }
 </script>
 
-<div class="sign-in-container">
+<div
+  class="sign-in-container"
+  class:sign-in-column={layout === "column"}
+  data-testid="sign-in-window"
+  data-layout={layout}
+  data-rail="off"
+  data-sidepane="off"
+>
   <div class="sign-in-card">
-    <div class="icon">
+    {#if layout === "column"}
+      <div class="wm">HQ</div>
+    {/if}
+    <div class="icon" class:hidden-mark={layout === "column"}>
       <svg
         width="48"
         height="48"
@@ -429,9 +454,13 @@
       </svg>
     </div>
 
-    <h1>{reauth ? 'Keep sync moving' : 'Sign in to HQ'}</h1>
-    <p class="description">
-      {reauth
+    <h1>{reauth && layout !== "column" ? 'Keep sync moving' : 'Sign in to HQ'}</h1>
+    <p class="description" data-testid="sign-in-description">
+      {layout === "column" && note
+        ? note
+        : layout === "column" && !reauth
+        ? 'Your companies, files, and bots follow your account.'
+        : reauth
         ? 'Your files are safe. Continue with your provider and HQ will resume syncing.'
         : 'Use Google or Microsoft to sync your HQ files.'}
     </p>
@@ -464,13 +493,30 @@
       </button>
     {/if}
 
+    {#if layout === "column" && !showAlternate && continuation.phase !== 'confirming'}
+      <button
+        type="button"
+        class="sign-in-btn big"
+        data-testid="sign-in-with-hq"
+        onclick={() => handleSignIn('Google')}
+        disabled={loadingProvider !== null || quitting}
+      >
+        {loadingProvider ? 'Waiting for browser…' : 'Sign in with HQ'}
+      </button>
+      <p class="loading-hint">Opens your browser for a secure sign-in, then returns here.</p>
+      <button type="button" class="magic-link" data-testid="magic-link" onclick={() => (showAlternate = true)}>
+        Use a magic link instead
+      </button>
+    {/if}
+
     <div
       class="sign-in-actions"
       class:secondary={continuation.phase === 'confirming'}
       hidden={
         continuation.phase === 'opening' ||
         continuation.phase === 'waiting' ||
-        loadingProvider !== null
+        loadingProvider !== null ||
+        (layout === 'column' && !showAlternate && continuation.phase !== 'confirming')
       }
     >
       {#each providers as provider}
@@ -549,13 +595,29 @@
       </button>
     {/if}
 
+    {#if onretry}
+      <button
+        type="button"
+        class="sign-in-btn session-retry"
+        data-testid="sign-in-session-retry"
+        onclick={() => onretry?.()}
+        disabled={loadingProvider !== null || quitting}
+      >
+        <svg class="provider-glyph" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M13 8a5 5 0 1 1-1.5-3.6M13 2.5v2.5h-2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        Retry
+      </button>
+    {/if}
+
     <button
+      type="button"
       class="quit-btn"
       onclick={handleQuit}
       disabled={quitting}
       aria-busy={quitting}
     >
-      {quitting ? 'Quitting…' : 'Quit HQ Sync'}
+      {quitting ? 'Quitting…' : 'Quit HQ'}
     </button>
 
     {#if error}
@@ -575,6 +637,9 @@
     {/if}
 
     <p class="footer">Powered by Indigo</p>
+    {#if layout === "column"}
+      <p class="vf" data-testid="sign-in-version">HQ Desktop {version || "—"} · macOS</p>
+    {/if}
   </div>
 </div>
 
@@ -632,7 +697,7 @@
     backdrop-filter: var(--glass-filter, blur(36px) saturate(118%) contrast(102%));
     -webkit-backdrop-filter: var(--glass-filter, blur(36px) saturate(118%) contrast(102%));
     color: var(--pop-text);
-    font-family: var(--font-sans);
+    font-family: var(--font-sans, "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
     overflow: hidden;
     /* Rounded corners — requires tauri window transparent:true +
        decorations:false + macOSPrivateApi:true for the OS to honor
@@ -642,6 +707,39 @@
     box-shadow: var(--pop-shadow), inset 0 1px 0 var(--pop-highlight);
   }
 
+  .sign-in-column {
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    background: var(--v4-ground, var(--pop-bg));
+  }
+  .sign-in-column .sign-in-card { max-width: 340px; }
+  .sign-in-column .hidden-mark { display: none; }
+  .sign-in-column .footer { display: none; }
+  .wm {
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    margin-bottom: 14px;
+  }
+  .magic-link {
+    margin-top: 14px;
+    font-size: 13px;
+    color: var(--v4-text-2, var(--pop-text));
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    background: none;
+    border: 0;
+    cursor: pointer;
+  }
+  .vf {
+    margin-top: 28px;
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--v4-idle, var(--pop-text-3));
+  }
   .sign-in-card {
     display: flex;
     flex-direction: column;
@@ -656,14 +754,14 @@
   }
 
   h1 {
-    font-size: 1.25rem;
-    font-weight: 600;
+    font-size: 20px;
+    font-weight: 500;
     color: var(--pop-text);
     margin: 0 0 0.5rem 0;
   }
 
   .description {
-    font-size: 0.8125rem;
+    font-size: 13px;
     color: var(--pop-muted);
     margin: 0 0 1.5rem 0;
     line-height: 1.4;
@@ -698,7 +796,7 @@
   }
 
   .microsoft-email label {
-    font-size: 0.75rem;
+    font-size: 12px;
     color: var(--pop-muted);
     line-height: 1.4;
   }
@@ -713,7 +811,7 @@
     background: transparent;
     color: var(--pop-text);
     font: inherit;
-    font-size: 0.8125rem;
+    font-size: 13px;
   }
 
   .microsoft-email input:focus-visible {
@@ -730,7 +828,7 @@
 
   .continuation-lead {
     margin: 0;
-    font-size: 0.8125rem;
+    font-size: 13px;
     opacity: 0.75;
   }
 
@@ -746,11 +844,14 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 0.5rem;
+    gap: 8px;
+    box-sizing: border-box;
     width: 100%;
-    padding: 0.625rem 1.25rem;
-    font-size: 0.875rem;
+    height: 36px;
+    padding: 0 16px;
+    font-size: 12px;
     font-weight: 500;
+    line-height: 16px;
     font-family: inherit;
     color: var(--pop-acc-fg);
     background-color: var(--pop-accent);
@@ -801,14 +902,14 @@
   }
 
   .error {
-    font-size: 0.75rem;
+    font-size: 12px;
     color: var(--pop-muted);
     margin: 0;
     line-height: 1.4;
   }
 
   .loading-hint {
-    font-size: 0.6875rem;
+    font-size: 11px;
     color: var(--pop-muted);
     margin: 0.75rem 0 0 0;
     line-height: 1.4;
@@ -819,7 +920,7 @@
   .retry-btn {
     margin-top: 0.875rem;
     padding: 0.375rem 0.625rem;
-    font-size: 0.75rem;
+    font-size: 12px;
     font-family: inherit;
     color: var(--pop-muted);
     background: none;
@@ -838,6 +939,15 @@
 
   .provider-glyph {
     flex-shrink: 0;
+  }
+
+  /* Secondary rail button (OWNER-007): hairline on the control fill, so the
+     provider buttons stay the primary actions. */
+  .session-retry {
+    margin-top: 0.625rem;
+    color: var(--v4-text-1, var(--pop-text));
+    background: var(--v4-control-bg, transparent);
+    border: 1px solid var(--v4-control-border, var(--pop-border));
   }
 
   .microsoft-glyph {
@@ -865,7 +975,7 @@
   }
 
   .footer {
-    font-size: 0.6875rem;
+    font-size: 11px;
     color: var(--dot);
     margin: 1.5rem 0 0 0;
     letter-spacing: 0.02em;

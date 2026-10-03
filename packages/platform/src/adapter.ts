@@ -335,6 +335,11 @@ export interface SelectAgentAvatarResult {
   slackUpdated?: boolean;
 }
 
+/** Evaluation context for a feature flag. */
+export interface FeatureScope {
+  companyUid?: string | null;
+}
+
 export interface IdentityApi {
   whoami(): AdapterPromise<WhoAmI>;
   /** Native auth envelope; accountId is the Cognito subject used by local writers. */
@@ -345,7 +350,11 @@ export interface IdentityApi {
     reason: string | null;
   }>;
   isAdmin(): AdapterPromise<boolean>;
-  hasFeature(flag: string): AdapterPromise<boolean>;
+  /**
+   * `scope.companyUid` evaluates the flag in that company's context, which is
+   * the only way a company-targeted flag reads as on. Omitted → person-only.
+   */
+  hasFeature(flag: string, scope?: FeatureScope): AdapterPromise<boolean>;
   /** Force a fresh hq-flags snapshot after the authenticated identity changes. */
   refreshFeatureFlags?(): Promise<void>;
   /**
@@ -890,6 +899,25 @@ export interface MeetingsApi {
   listMemberships(): AdapterPromise<Json[]>;
   listUpcoming(): AdapterPromise<Json[]>;
   listScheduledBots(): AdapterPromise<Json[]>;
+  /**
+   * Recorded meeting history, newest first (`GET /v1/meetings`). Pass a
+   * company uid for that company's meetings; omit it for the caller's
+   * unattributed (personal) meetings. Returns the raw `{ meetings, nextToken }`
+   * envelope; callers coerce rows at their parse boundary.
+   */
+  listRecorded(companyId?: string | null): AdapterPromise<Json>;
+  /**
+   * One recorded meeting (`GET /v1/meetings/{id}`): source frontmatter plus
+   * its signals grouped by type, each with a presigned body URL. Raw
+   * envelope; callers coerce it.
+   */
+  getRecorded(meetingId: string, companyId?: string | null): AdapterPromise<Json>;
+  /**
+   * Text behind a presigned vault URL from `getRecorded` (the meeting
+   * document or a signal body). On desktop the native side reads it: the
+   * vault buckets send no CORS headers, so a webview fetch is blocked.
+   */
+  readRecordedBody(url: string): AdapterPromise<string>;
   inviteBot(payload: Json): AdapterPromise<Json>;
   cancelBot(id: string): AdapterPromise<void>;
   /** Same payload as inviteBot — hq-pro `POST /v1/bot/join-now`. */
@@ -913,7 +941,54 @@ export interface MeetingsApi {
    * permission and starts the detector as soon as everything is granted.
    */
   openPermissionsSetup(): AdapterPromise<void>;
+  /**
+   * One live-transcript poll (`GET /v1/meetings/{recallBotId}?view=live`).
+   * Optional: only hosts with the native fetch implement it; callers show
+   * an honest "no live view" state when it is absent.
+   */
+  fetchLiveTranscript?(
+    req: LiveTranscriptRequest,
+  ): AdapterPromise<LiveTranscriptResult>;
 }
+
+export interface LiveTranscriptRequest {
+  recallBotId: string;
+  companyId: string;
+  sinceRevision?: number | null;
+  etag?: string | null;
+}
+
+export interface LiveTranscriptSegmentWire {
+  segmentId: string;
+  participantId?: string | null;
+  speaker?: string | null;
+  startSeconds: number;
+  endSeconds?: number | null;
+  text: string;
+}
+
+export interface LiveTranscriptPartialWire {
+  participantId?: string | null;
+  speaker?: string | null;
+  startSeconds: number;
+  text: string;
+}
+
+/** Tagged result of one poll, as produced by the native fetch. */
+export type LiveTranscriptResult =
+  | {
+      kind: "ok";
+      revision: number;
+      etag?: string | null;
+      updatedAt?: string | null;
+      provisional?: boolean;
+      truncated?: boolean;
+      segments: LiveTranscriptSegmentWire[];
+      partial?: LiveTranscriptPartialWire | null;
+    }
+  | { kind: "not-modified" }
+  | { kind: "disabled" }
+  | { kind: "not-found" };
 
 export interface MarketplaceApi {
   listListings(opts?: Json): AdapterPromise<Json>;
@@ -950,9 +1025,45 @@ export interface CreatorProfileUpdate {
 
 export interface CompanyApi {
   getDeployments(slug: string): AdapterPromise<Json[]>;
+  /**
+   * The company's connected apps from hq-pro `GET /v1/integrations/admin`:
+   * `{ companyUid, viewer, connections: [{ id, provider, status, scopes,
+   * createdByName, updatedAt, … }], audit }`. Desktop only.
+   */
+  listIntegrations?(companyUid: string): AdapterPromise<Json>;
+  /**
+   * Raw hq-deploy `/api/apps` rows for one scope (company slug or
+   * `personal`): `{ scope, callerSub, apps }`. Desktop only.
+   */
+  listDeployApps?(scope: string): AdapterPromise<Json>;
+  /**
+   * One hq-deploy access call (`access-policy`, `access-mode`,
+   * `allowed-emails` under `/api/apps/:id`) for a scope. Desktop only; the
+   * host refuses any other route.
+   */
+  deployAccessRequest?(
+    scope: string,
+    method: "GET" | "PUT" | "POST" | "DELETE",
+    path: string,
+    body?: Json,
+  ): AdapterPromise<Json>;
   getSecrets(slug: string): AdapterPromise<Json[]>;
   listMembers(slug: string): AdapterPromise<Json[]>;
-  getTeamTelemetry(slug: string): AdapterPromise<Json>;
+  /**
+   * OWNER-R9: the company's membership roster with role, acceptedAt, origin and
+   * membershipKey (`GET /membership/company/{uid}` → `{members}`). Desktop only.
+   */
+  listCompanyMemberships?(companyUid: string): AdapterPromise<Json>;
+  /** OWNER-R9: unclaimed invites (`GET /membership/company/{uid}/pending` → `{pending}`). */
+  listPendingMemberships?(companyUid: string): AdapterPromise<Json>;
+  /** OWNER-R9: files and secrets one member can reach (`GET /files/{uid}/members/{personUid}/access`). */
+  getMemberAccess?(companyUid: string, personUid: string): AdapterPromise<Json>;
+  /** OWNER-R9: change a member's role (`POST /membership/role`). Server enforces who may. */
+  setMemberRole?(companyUid: string, membershipKey: string, newRole: string): AdapterPromise<Json>;
+  /** OWNER-R9: remove a member or revoke an invite (`POST /membership/revoke`). Server keeps the last owner. */
+  revokeMembership?(companyUid: string, membershipKey: string): AdapterPromise<Json>;
+  /** Company telemetry; `range` is a `YYYY-MM-DD` window (the host defaults to the last 30 days). */
+  getTeamTelemetry(slug: string, range?: { from: string; to: string }): AdapterPromise<Json>;
   claimPendingInvite(slug: string): AdapterPromise<Json>;
   connectToCloud(slug: string): AdapterPromise<Json>;
   getSummary(slug: string): AdapterPromise<Json>;
@@ -1071,13 +1182,52 @@ export interface VaultApi {
   readFrontmatter(path: string): AdapterPromise<string>;
 }
 
+export interface AtlasLocalApi {
+  /** District roots and direct children, `{ revision, complete, objects }`. */
+  firstPage(companySlug: string): AdapterPromise<Json | null>;
+  /** Every object under the districts, cached on disk by folder revision. */
+  listing(companySlug: string): AdapterPromise<Json | null>;
+  /** Text of one object under the districts (project PRDs). */
+  readText(companySlug: string, key: string): AdapterPromise<string | null>;
+}
+
+/** Result of `FilesApi.createFile`. */
+export interface CreatedFile {
+  path: string;
+  cloudSync: boolean;
+}
+
 export interface FilesApi {
   listDir(relPath: string): AdapterPromise<Json[]>;
   /** Files explorer vault index. Desktop only; hosts without it omit it. */
   vault?: VaultApi;
   getFileContent(path: string): AdapterPromise<string>;
-  /** ACL-filtered vault browse (hq-pro GET /v1/files/list). */
-  listVaultPrefix(companyUid: string, prefix: string): AdapterPromise<Json>;
+  /**
+   * Create a new text file at an HQ-relative path in the synced HQ folder
+   * (QA-072). Refuses an existing file. `cloudSync` is true when the company
+   * is cloud-backed and syncing, so HQ Sync carries the file to the vault.
+   * Desktop only; hosts without it omit it.
+   */
+  createFile?(path: string, contents: string): AdapterPromise<CreatedFile>;
+  /**
+   * ACL-filtered vault browse (hq-pro GET /v1/files/list). Pass the previous
+   * page's `cursor` to continue a listing.
+   */
+  listVaultPrefix(companyUid: string, prefix: string, cursor?: string): AdapterPromise<Json>;
+  /**
+   * OWNER-R17: who can open one vault path, with inherited grants and display
+   * names (hq-pro GET /files/{companyUid}/acl/tree, the read the web console's
+   * access panel uses). Read-only. Hosts without it omit it.
+   */
+  getAccessTree?(companyUid: string, prefix: string): AdapterPromise<Json>;
+  /** OWNER-R17: the company's groups, for names (hq-pro GET /secrets/{companyUid}/groups). Read-only. */
+  listAccessGroups?(companyUid: string): AdapterPromise<Json>;
+  /**
+   * Atlas map listing from the company folder synced to this machine
+   * (QA-016). Desktop only. Each call resolves null when the company folder is
+   * not on this machine; the caller then falls back to `listVaultPrefix`.
+   */
+  atlasLocal?: AtlasLocalApi;
   /** Presigned GET for a vault key (hq-pro POST /v1/files/presign). */
   presignVaultGet(companyUid: string, key: string): AdapterPromise<Json>;
   /**
@@ -1127,6 +1277,12 @@ export interface AgentProfilePatch {
   description?: string;
 }
 
+/** hq-pro personal Outpost routes (owner-scoped by the caller's token). */
+export const OUTPOST_PATHS = {
+  status: "/outpost/status",
+  jobsStatus: "/outpost/jobs/status",
+} as const;
+
 export const AGENT_PATHS = {
   provisionOptions: (companyUid: string) =>
     `/v1/agents/provision-options?companyUid=${encodeURIComponent(companyUid)}`,
@@ -1154,6 +1310,20 @@ export const AGENT_PATHS = {
     `/v1/fleet/${encodeURIComponent(companyUid)}/agents/${encodeURIComponent(agentUid)}/owners`,
   companyTelemetry: (companyUid: string, from: string, to: string) =>
     `/v1/telemetry/company?companyUid=${encodeURIComponent(companyUid)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+  myTelemetry: (from: string, to: string) =>
+    `/v1/telemetry/me?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+} as const;
+
+/** One company's connected apps (hq-pro integrations-admin; any member may read). */
+export const COMPANY_INTEGRATION_PATHS = {
+  list: (companyUid: string) =>
+    `/v1/integrations/admin?companyUid=${encodeURIComponent(companyUid)}`,
+} as const;
+
+/** The caller's personal integrations, as read by the console's Personal Integrations page. */
+export const PERSONAL_INTEGRATION_PATHS = {
+  googleAccounts: "/v1/google/accounts",
+  slackAccounts: "/v1/slack/personal/accounts",
 } as const;
 
 export interface AgentProvisionSizeOption {
@@ -1177,7 +1347,23 @@ export interface AgentProvisionOptionsView {
   options: readonly AgentProvisionSizeOption[];
 }
 
+/**
+ * Raw hq-pro REST transport for framework-free clients (`@hq/agents`). Paths
+ * are relative (`/v1/agents`); the adapter owns the base URL and the auth.
+ * Non-2xx answers resolve with their status, never throw, so callers can read
+ * the server's refusal body. Only a transport failure rejects.
+ */
+export type HqProFetch = (
+  path: string,
+  init: { method: string; headers?: Record<string, string>; body?: string },
+) => Promise<{ status: number; text(): Promise<string> }>;
+
 export interface AgentsApi {
+  /**
+   * The REST transport `@hq/agents` runs on. Absent on adapters that cannot
+   * reach hq-pro; callers keep their older path then.
+   */
+  fetch?: HqProFetch;
   /** GET /v1/agents/provision-options?companyUid= — tenant-priced sizes. */
   getProvisionOptions(
     companyUid: string,
@@ -1209,6 +1395,31 @@ export interface AgentsApi {
     from: string,
     to: string,
   ): AdapterPromise<Json>;
+  /**
+   * GET /v1/telemetry/me?from=&to= — the caller's own cross-company rollups
+   * (daily series + totals). Optional so older test doubles stay valid.
+   */
+  getMyTelemetry?(from: string, to: string): AdapterPromise<Json>;
+  /**
+   * OWNER-R27: session history recorded on this Mac in the HQ workspace
+   * folder (workspace/sessions + workspace/threads), newest first. Native
+   * hosts only; `from`/`to` are YYYY-MM-DD.
+   */
+  listLocalSessions?(
+    range: { from: string; to: string },
+    page?: { offset?: number; limit?: number },
+  ): AdapterPromise<Json>;
+  /**
+   * POST /outpost/status — the caller's own Outpost row (state, region,
+   * instance state, telemetry timestamps). A 404 failure means no Outpost.
+   */
+  getMyOutpostStatus?(): AdapterPromise<Json>;
+  /** GET /outpost/jobs/status — the caller's scheduled-job status rows. */
+  listMyOutpostJobs?(): AdapterPromise<Json>;
+  /** GET /v1/google/accounts — the caller's connected Google accounts. */
+  listMyGoogleAccounts?(): AdapterPromise<Json>;
+  /** GET /v1/slack/personal/accounts — the caller's personal Slack accounts. */
+  listMySlackAccounts?(): AdapterPromise<Json>;
 }
 
 export interface FeedbackApi {

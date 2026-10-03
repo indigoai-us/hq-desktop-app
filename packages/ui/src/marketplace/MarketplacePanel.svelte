@@ -1,4 +1,6 @@
 <script lang="ts">
+  import Dropdown from "../common/LazyDropdown.svelte";
+  import ReadLoader from "../common/ReadLoader.svelte";
   /**
    * MarketplacePanel — the desktop-alt **Marketplace** tab body (US-008).
    *
@@ -141,10 +143,8 @@
             installResult = { ok: true, message: "Installed." };
           },
           onError: (message) => {
-            installResult = {
-              ok: false,
-              message: message || "Install failed.",
-            };
+            if (message) console.warn("[marketplace] install failed", message);
+            installResult = { ok: false, message: INSTALL_ERROR_COPY };
           },
         })
         .then((fn) => {
@@ -156,6 +156,8 @@
       safeUnlisten(unlistenProgress)();
     };
   });
+
+  const INSTALL_ERROR_COPY = "Couldn't install this pack. Try again.";
 
   async function runInstall(): Promise<void> {
     if (!selected || installing) return;
@@ -193,12 +195,15 @@
         target.scope,
       );
     } else {
+      if (installRes.reason !== "unavailable") {
+        console.warn("[marketplace] install failed", installRes.message);
+      }
       installResult = {
         ok: false,
         message:
           installRes.reason === "unavailable"
             ? "Packs install into your local HQ folder from the desktop app."
-            : (installRes.message ?? "Install failed."),
+            : INSTALL_ERROR_COPY,
       };
     }
     installing = false;
@@ -346,11 +351,7 @@
       {error}
     </div>
   {:else if loading}
-    <div class="grid-skeleton" aria-busy="true">
-      {#each [0, 1, 2, 3, 4, 5] as cell (cell)}
-        <div class="card-skeleton"></div>
-      {/each}
-    </div>
+    <ReadLoader testid="marketplace-loading" />
   {:else if visible.length === 0}
     <div class="state-empty" data-testid="marketplace-empty">
       <p>No listings</p>
@@ -604,29 +605,20 @@
         >
           <h3 class="section-title">Install</h3>
           <label class="scope-label" for="marketplace-scope">Scope</label>
-          <select
-            id="marketplace-scope"
-            class="scope-select"
-            data-testid="marketplace-scope-select"
-            bind:value={scopeIndex}
+          <Dropdown
+            block
+            testid="marketplace-scope-select"
+            label="Scope"
+            value={String(scopeIndex)}
             disabled={installing}
-          >
-            {#each installTargets as target, i (i)}
-              <option
-                value={i}
-                disabled={!target.enabled}
-                data-testid="marketplace-scope-option"
-                data-enabled={target.enabled}
-                data-slug={target.scope.kind === "company"
-                  ? target.scope.slug
-                  : "personal"}
-              >
-                {target.label}{target.enabled
-                  ? ""
-                  : ` — ${target.reason ?? "unavailable"}`}
-              </option>
-            {/each}
-          </select>
+            options={installTargets.map((target, i) => ({
+              value: String(i),
+              label: target.label,
+              detail: target.enabled ? null : (target.reason ?? "unavailable"),
+              disabled: !target.enabled,
+            }))}
+            onchange={(v) => (scopeIndex = Number(v))}
+          />
 
           <p class="scope-hint" data-testid="marketplace-scope-hint">
             {selectedScopeLabel}
@@ -699,8 +691,7 @@
     min-height: 0;
   }
 
-  .grid,
-  .grid-skeleton {
+  .grid {
     padding-bottom: 12px;
   }
 
@@ -1126,30 +1117,6 @@
     font-size: var(--text-base);
   }
 
-  .grid-skeleton {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(272px, 1fr));
-    gap: var(--v4-space-3);
-  }
-
-  .card-skeleton {
-    height: 212px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-card);
-    background: var(--v4-raised);
-    animation: mk-skeleton-pulse 1.3s ease-in-out infinite;
-  }
-
-  @keyframes mk-skeleton-pulse {
-    0%,
-    100% {
-      opacity: 0.5;
-    }
-    50% {
-      opacity: 1;
-    }
-  }
-
   /* ---- detail slide-over (mirrors LibraryDetailPanel) ------------------- */
   .detail-backdrop {
     position: fixed;
@@ -1512,7 +1479,6 @@
     .card:hover .cover-img {
       transform: none;
     }
-    .card-skeleton,
     .detail-backdrop,
     .detail-panel {
       animation: none;

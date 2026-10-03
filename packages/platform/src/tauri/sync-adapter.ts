@@ -18,6 +18,9 @@ import {
   type WhoAmI,
   type VersionInfo,
   AGENT_PATHS,
+  OUTPOST_PATHS,
+  PERSONAL_INTEGRATION_PATHS,
+  COMPANY_INTEGRATION_PATHS,
   buildSendReplyRequest,
   failure,
   normalizeReplyThreadValue,
@@ -32,6 +35,8 @@ import { TAURI_CAPABILITIES, type Capability } from '../capabilities.js';
 import { WEB_PATHS } from '../web/index.js';
 import {
   CLAUDE_PROVIDER_FLAG,
+  RAIL_GATE_EVERYONE_DEFAULT,
+  DESKTOP_AGENT_CREATION_FLAG,
   COMPANY_NAME_PREFILL_FLAG,
   DESKTOP_LIMIT_STATUS_PUSH_FLAG,
   FIRST_FOLDER_SYNC_STEP_FLAG,
@@ -44,8 +49,9 @@ import {
   POST_READY_ACTION_TELEMETRY_FLAG,
   READY_FIRST_ACTION_FLAG,
   SETUP_DEPS_TIMEOUT_RETRY_FLAG,
-  createFeatureFlagGate,
   createHqProFlagFetch,
+  createHqProRestFetch,
+  createScopedFeatureFlagGates,
   MIRROR_QUARANTINE_MOVE_NOT_DELETION_FLAG,
   type FeatureFlagGateOptions,
 } from '../flags.js';
@@ -57,6 +63,7 @@ import {
   type RequestPolicyOptions,
 } from '../request-policy.js';
 import { hqProFailure, parseHqProErrorBody } from '../plan-limit.js';
+import { scrubTransportFailure } from '../api-error.js';
 import { dispatchPostReadyAction } from '../post-ready-actions.js';
 
 export type SyncInvokeFn = (
@@ -82,6 +89,17 @@ export interface SyncPlatformAdapterConfig {
    */
   requestPolicy?: RequestPolicyOptions;
 }
+
+/** Request bound for recorded-meeting list and detail reads (native side clamps to 60 s). */
+export const RECORDED_DETAIL_TIMEOUT_SECS = 45;
+
+/**
+ * OWNER-R15: GET /v1/integrations/admin for Indigo (135 connections plus the
+ * audit list) answered in 7-10 s warm on 2026-10-03, close to the native
+ * client's shared 15 s bound, so a cold read failed as "Could not load
+ * connected apps." The company integrations read asks for a longer bound.
+ */
+export const COMPANY_INTEGRATIONS_TIMEOUT_SECS = 45;
 
 const NOT_MAPPED = unavailable(
   'not-yet-mapped',
@@ -181,13 +199,14 @@ export function createSyncPlatformAdapter(
   let mirrorQuarantineDisposePromise: Promise<void> | null = null;
   let mirrorQuarantineWindowLifecycleInstalled = false;
   let unsubscribeMirrorQuarantineFlag: (() => void) | null = null;
-  const flags = createFeatureFlagGate({
+  const flagsFor = createScopedFeatureFlagGates({
     // Rust `hq_pro_fetch` already prefixes the hq-pro base URL.
     endpoint: '',
     getToken: () => '',
     fetch: createHqProFlagFetch(invokeFn),
     createClient: config.createFlagClient,
   });
+  const flags = flagsFor(null);
 
   function hasFeatureLegacy(flag: string): AdapterPromise<boolean> {
     if (flag === COMPANY_NAME_PREFILL_FLAG) {
@@ -241,8 +260,13 @@ export function createSyncPlatformAdapter(
       // branch keeps the legacy path consistent.
       return Promise.resolve(ok(HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT));
     }
-    if (flag === CLAUDE_PROVIDER_FLAG) {
+    if (flag === CLAUDE_PROVIDER_FLAG || flag === DESKTOP_AGENT_CREATION_FLAG) {
       return Promise.resolve(ok(false));
+    }
+    if (flag in RAIL_GATE_EVERYONE_DEFAULT) {
+      // Console-rail gates: without a configured registry row the surface
+      // keeps its everyone-default (Indigo-only for all but Atlas).
+      return Promise.resolve(ok(RAIL_GATE_EVERYONE_DEFAULT[flag] === true));
     }
     if (flag === 'meetings') {
       return call<boolean>('meetings_feature_enabled');
@@ -377,6 +401,7 @@ export function createSyncPlatformAdapter(
     method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
     path: string,
     body?: unknown,
+    timeoutSecs?: number,
   ): Promise<{
     result: AdapterResult<T>;
     status: number | null;
@@ -386,8 +411,9 @@ export function createSyncPlatformAdapter(
       url: path,
       method,
       body: body === undefined ? null : JSON.stringify(body),
+      ...(timeoutSecs === undefined ? {} : { timeoutSecs }),
     });
-    if (!raw.ok) return { result: raw, status: null };
+    if (!raw.ok) return { result: scrubTransportFailure(raw), status: null };
     const rec = asRecord(raw.value);
     if (rec && typeof rec.status === 'number') {
       const text = typeof rec.body === 'string' ? rec.body : '';
@@ -401,7 +427,11 @@ export function createSyncPlatformAdapter(
           text,
           `${method} ${path} failed`,
         );
-        return { result: hqProFailure(details), status: rec.status, retryAfter };
+        return {
+          result: scrubTransportFailure(hqProFailure(details)),
+          status: rec.status,
+          retryAfter,
+        };
       }
       if (rec.status === 204 || !text.trim()) {
         return { result: ok(undefined as T), status: rec.status };
@@ -431,9 +461,10 @@ export function createSyncPlatformAdapter(
     method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
     path: string,
     body?: unknown,
+    timeoutSecs?: number,
   ): AdapterPromise<T> {
     const attempted = await retryThrottled(
-      () => hqProAttempt<T>(method, path, body),
+      () => hqProAttempt<T>(method, path, body, timeoutSecs),
       (outcome) => ({ status: outcome.status, retryAfter: outcome.retryAfter }),
       requestPolicy,
     );
@@ -573,11 +604,11 @@ export function createSyncPlatformAdapter(
         });
       },
       isAdmin: () => call<boolean>('desktop_alt_is_admin'),
-      hasFeature: (flag) =>
+      hasFeature: (flag, scope) =>
         flag === HUMAN_ONLY_CONVERSATIONS_FLAG
           ? // Pinned per release; the registry cannot turn it off.
             Promise.resolve(ok(HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT))
-          : flags.resolve(flag, () => hasFeatureLegacy(flag)),
+          : flagsFor(scope?.companyUid).resolve(flag, () => hasFeatureLegacy(flag)),
       subscribeFeature: (flag, onChange) =>
         flag === HUMAN_ONLY_CONVERSATIONS_FLAG
           ? () => {}
@@ -960,6 +991,38 @@ export function createSyncPlatformAdapter(
       listMemberships: () => call('meetings_list_memberships'),
       listUpcoming: () => call('meetings_list_upcoming'),
       listScheduledBots: () => call('meetings_list_scheduled_bots'),
+      // OWNER-R1: the list for a company with many meetings takes up to
+      // ~10 s alone and longer while every scope loads at once; the 15 s
+      // shared bound turned those into "could not load".
+      listRecorded: (companyId) =>
+        hqProJson(
+          'GET',
+          withQuery(WEB_PATHS.meetingsList, {
+            companyId: companyId || undefined,
+            limit: 50,
+          }),
+          undefined,
+          RECORDED_DETAIL_TIMEOUT_SECS,
+        ),
+      // OWNER-019: a company meeting detail with signals answers in 14-16 s
+      // (hq-pro presigns every signal), past the shared 15 s bound.
+      getRecorded: (meetingId, companyId) =>
+        hqProJson(
+          'GET',
+          withQuery(`${WEB_PATHS.meetingsList}/${encodeURIComponent(meetingId)}`, {
+            companyId: companyId || undefined,
+          }),
+          undefined,
+          RECORDED_DETAIL_TIMEOUT_SECS,
+        ),
+      readRecordedBody: (url) => call('meetings_read_recorded_body', { url }),
+      fetchLiveTranscript: (req) =>
+        call('meetings_fetch_live_transcript', {
+          recallBotId: req.recallBotId,
+          companyId: req.companyId,
+          sinceRevision: req.sinceRevision ?? null,
+          etag: req.etag ?? null,
+        }),
       inviteBot: (payload) => {
         const rec = asRecord(payload) ?? {};
         return call('meetings_invite_bot', {
@@ -1070,6 +1133,7 @@ export function createSyncPlatformAdapter(
     },
 
     agents: {
+      fetch: createHqProRestFetch(invokeFn),
       getProvisionOptions: (companyUid) =>
         hqProJson<AgentProvisionOptionsView>(
           'GET',
@@ -1092,15 +1156,38 @@ export function createSyncPlatformAdapter(
         hqProJson('GET', AGENT_PATHS.owners(companyUid, agentUid)),
       getCompanyTelemetry: (companyUid, from, to) =>
         hqProJson('GET', AGENT_PATHS.companyTelemetry(companyUid, from, to)),
+      getMyTelemetry: (from, to) =>
+        hqProJson('GET', AGENT_PATHS.myTelemetry(from, to)),
+      listLocalSessions: (range, page) =>
+        call('list_local_sessions', { from: range.from, to: range.to, offset: page?.offset ?? 0, limit: page?.limit ?? 50 }),
+      getMyOutpostStatus: () => hqProJson('POST', OUTPOST_PATHS.status, {}),
+      listMyOutpostJobs: () => hqProJson('GET', OUTPOST_PATHS.jobsStatus),
+      listMyGoogleAccounts: () => hqProJson('GET', PERSONAL_INTEGRATION_PATHS.googleAccounts),
+      listMySlackAccounts: () => hqProJson('GET', PERSONAL_INTEGRATION_PATHS.slackAccounts),
     },
 
     company: {
       getDeployments: (slug) => call('get_company_deployments', { slug }),
+      listIntegrations: (companyUid) =>
+        hqProJson('GET', COMPANY_INTEGRATION_PATHS.list(companyUid), undefined, COMPANY_INTEGRATIONS_TIMEOUT_SECS),
+      listDeployApps: (scope) => call('list_deploy_apps', { scope }),
+      deployAccessRequest: (scope, method, path, body) =>
+        call('deploy_access_request', { scope, method, path, body: body ?? null }),
       getSecrets: (slug) => call('get_company_secrets', { slug }),
       listMembers: (slug) =>
         call('list_company_members', { companyUid: slug }),
-      getTeamTelemetry: (slug) =>
-        call('get_company_team_telemetry', { slug }),
+      listCompanyMemberships: (companyUid) =>
+        hqProJson('GET', `/membership/company/${encodeURIComponent(companyUid)}`),
+      listPendingMemberships: (companyUid) =>
+        hqProJson('GET', `/membership/company/${encodeURIComponent(companyUid)}/pending`),
+      getMemberAccess: (companyUid, personUid) =>
+        hqProJson('GET', `/files/${encodeURIComponent(companyUid)}/members/${encodeURIComponent(personUid)}/access`),
+      setMemberRole: (companyUid, membershipKey, newRole) =>
+        hqProJson('POST', '/membership/role', { companyUid, membershipKey, newRole }),
+      revokeMembership: (companyUid, membershipKey) =>
+        hqProJson('POST', '/membership/revoke', { companyUid, membershipKey }),
+      getTeamTelemetry: (slug, range) =>
+        call('get_company_team_telemetry', range ? { slug, from: range.from, to: range.to } : { slug }),
       claimPendingInvite: (slug) =>
         call('claim_pending_company_invite', { slug, route: 'company_page' }),
       connectToCloud: (slug) =>
@@ -1174,14 +1261,25 @@ export function createSyncPlatformAdapter(
         readFrontmatter: (path) => call('read_vault_note_frontmatter', { path }),
       },
       getFileContent: (path) => call('get_company_file_content', { path }),
-      listVaultPrefix: (companyUid, prefix) =>
+      createFile: (path, contents) => call('create_project_file', { path, contents }),
+      listVaultPrefix: (companyUid, prefix, cursor) =>
         hqProJson(
           'GET',
           withQuery(WEB_PATHS.filesList, {
             company: companyUid,
             prefix,
+            cursor,
           }),
         ),
+      getAccessTree: (companyUid, prefix) =>
+        hqProJson('GET', withQuery(`/files/${encodeURIComponent(companyUid)}/acl/tree`, { prefix })),
+      listAccessGroups: (companyUid) =>
+        hqProJson('GET', `/secrets/${encodeURIComponent(companyUid)}/groups`),
+      atlasLocal: {
+        firstPage: (companySlug) => call('atlas_local_first_page', { companySlug }),
+        listing: (companySlug) => call('atlas_local_listing', { companySlug }),
+        readText: (companySlug, key) => call('atlas_local_read_text', { companySlug, key }),
+      },
       presignVaultGet: (companyUid, key) =>
         hqProJson('POST', WEB_PATHS.filesPresign, {
           company: companyUid,

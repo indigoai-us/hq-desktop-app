@@ -54,8 +54,8 @@
     margin: 0;
     overflow: hidden;
     color: var(--fg);
-    font-size: var(--text-base);
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     line-height: 18px;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
@@ -77,11 +77,10 @@
     border-radius: 999px;
     background: var(--row-active);
     color: var(--fg);
-    font-size: var(--text-micro);
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     line-height: 28px;
     text-align: center;
-    text-transform: uppercase;
     white-space: nowrap;
   }
 
@@ -90,8 +89,8 @@
     min-width: 0;
     overflow: hidden;
     color: var(--muted-3);
-    font-size: var(--text-base);
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     line-height: 18px;
     text-overflow: ellipsis;
     white-space: nowrap;

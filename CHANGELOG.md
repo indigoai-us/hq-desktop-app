@@ -28,9 +28,12 @@ The release moves it under the version it ships in.
 - Keep a company's cloud binding in `companies/manifest.yaml` when it is absent
   from the signed-in person's membership list. The app now waits for an
   authoritative deletion signal before unlinking a workspace.
-- Internal tests: four more desktop UI tests (task strip, task chip, page header, agents settings) now render the components instead of searching their source text. Nothing changes in the app.
-- Desktop Core baseline refresh now retries GitHub timeouts before reporting a pending baseline; persistent timeouts remain reported.
 
+- Company names now show the company favicon beside them across the app: the New bot company chips, project header, More companies, command palette, Connections, settings, bot membership lists, Meetings, Telemetry, and Atlas. Companies without a website show their initials instead of a grey dot.
+- Company favicons now show in the left rail for companies that have a website set. The app was dropping the icon the server sends, so every company showed initials. The company list also reloads when you switch companies, so an icon added later replaces the initials.
+- New cloud bots created from the desktop New bot flow sign in with your model subscription. The API key option is no longer offered there.
+- Behind `agents.desktop-agent-creation` (Indigo only): New bot in Messages is one three-step flow (what kind, where it runs, its details). Choosing Cloud creates the bot directly, without Slack, and opens its DM. New cloud bots start on Claude, with Codex and Grok offered. Cloud stays visible when it can't be used and says why (admin role, plan, or no company). Settings › Bots › New bot closes Settings and opens the same flow. The flag is checked for the company you pick, and the cloud create code loads only when the flow opens, so startup is not slower.
+- Internal tests: four more desktop UI tests (task strip, task chip, page header, agents settings) now render the components instead of searching their source text. Nothing changes in the app.
 - Internal: CLI update failure reports now record which CLI version was running when the update failed, as a SemVer value or the word unknown, with no file path.
 - Release builds: the macOS release check now confirms its test sign-in is still valid before it opens the app. An expired test sign-in failed v0.10.383 with a message that looked like the app was stuck loading; it now says the test sign-in expired and how to renew it.
 - Add bounded marker and refresh rejection attribution to unexpected startup diagnostics.
@@ -45,6 +48,7 @@ The release moves it under the version it ships in.
 - CI launches of the desktop app no longer add first-run rows to the install funnel, including through the CDP mirror.
 - Past meetings can show meeting transcripts you saved privately on this computer, including older ones, when the personal transcripts feature is turned on for your account. Transcripts from another account signed in on the same computer stay hidden.
 - Internal tests: four desktop tests that only searched the source text for strings now check what the code does. Nothing changes in the app.
+- Desktop Core baseline refresh now retries GitHub timeouts before reporting a pending baseline; persistent timeouts remain reported.
 
 - After a Windows Core update, HQ puts its managed CLI ahead of stale CLI paths in the HQ Claude settings file so the updated version is selected.
 
@@ -91,6 +95,7 @@ The release moves it under the version it ships in.
 
 - Closing the main window no longer logs an error.
 
+- Settings › Updates now shows what is holding a requested restart (a recording, a transcript that is still saving, or an HQ Core update) under the Desktop app row, and the update notice says the same instead of always mentioning a recording.
 - "Restart to update" works again while sync is running. Only a meeting recording, a transcript that is still saving, or an HQ Core update holds a restart you asked for, and the update card now says which one instead of always mentioning a recording.
 
 - When hq-flags enables `desktop.setup-deps-timeout-retry-v1`, a dependency setup timeout gets one automatic retry before setup is marked passed with that step skipped.

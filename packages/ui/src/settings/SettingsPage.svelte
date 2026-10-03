@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Dropdown from "../common/LazyDropdown.svelte";
   import { onMount } from "svelte";
   import type { AdapterResult, PlatformAdapter } from "@hq/platform";
   import type {
@@ -33,6 +34,8 @@
     appearanceThemeOptions,
   } from "./shell-settings-model";
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
+  import { updateStore } from "./update-store.svelte.js";
+  import { autoUpdateRow } from "../account/account-pages.js";
   import "../chat/tokens.css";
   import "../chat/chat-tokens.css";
 
@@ -283,6 +286,10 @@
   // app, CLI, and hq-core. Default ON. Read fresh by the native auto-installers
   // and re-read on popover focus, so it takes effect without a restart.
   let autoUpdate = $state(true);
+  // QA-061: same build capability the About line reads.
+  const autoRow = $derived(
+    autoUpdateRow({ autoUpdate, backgroundUpdatesOff: updateStore.backgroundUpdatesOff }),
+  );
   let stagingChannel = $state(true);
   let releaseChannel = $state<Channel | null>(null);
   let startAtLogin = $state(true);
@@ -1911,8 +1918,8 @@
                 </label>
                 <label class="setting-row">
                   <span
-                    ><strong>Sync personal vault</strong><small
-                      >Include personal HQ files in the fanout.</small
+                    ><strong>Also sync my personal HQ files to the cloud</strong><small
+                      >Your personal folder (notes, knowledge, and settings outside any company) is backed up and kept the same on your other computers.</small
                     ></span
                   >
                   <input
@@ -2071,19 +2078,20 @@
                 <label class="setting-row">
                   <span
                     ><strong>Automatic updates</strong><small
-                      >Install HQ Core, desktop app, and CLI updates
-                      automatically in the background — no prompts.</small
+                      data-testid="auto-update-description">{autoRow.description}</small
                     ></span
                   >
                   <input
                     id="toggle-auto-update"
                     type="checkbox"
-                    bind:checked={autoUpdate}
-                    onchange={() =>
+                    checked={autoRow.checked}
+                    onchange={(e) => {
+                      autoUpdate = (e.currentTarget as HTMLInputElement).checked;
                       void persistSettingsControl("auto-update", {
                         autoUpdate,
-                      })}
-                    disabled={isSettingsControlPending("auto-update")}
+                      });
+                    }}
+                    disabled={autoRow.disabled || isSettingsControlPending("auto-update")}
                     aria-busy={isSettingsControlPending("auto-update")}
                     aria-label="Automatic updates"
                   />
@@ -2112,23 +2120,24 @@
                       >Stable is the default. Opt into Beta for pre-release builds.</small
                     ></span
                   >
-                  <select
+                  <Dropdown
+                    label="Release channel"
+                    testid="settings-release-channel-select"
                     disabled={isSettingsControlPending("release-channel") ||
                       availableChannels.length <= 1 ||
                       coreInstalling}
-                    aria-busy={isSettingsControlPending("release-channel") ||
-                      coreInstalling}
-                    bind:value={releaseChannel}
-                    onchange={() =>
+                    value={releaseChannel ?? ""}
+                    options={[
+                      { value: "", label: `Default (${displayedChannel})` },
+                      ...availableChannels.map((channel) => ({ value: channel, label: channel })),
+                    ]}
+                    onchange={(v) => {
+                      releaseChannel = (v || null) as typeof releaseChannel;
                       void persistSettingsControl("release-channel", {
                         releaseChannel,
-                      })}
-                  >
-                    <option value={null}>Default ({displayedChannel})</option>
-                    {#each availableChannels as channel (channel)}
-                      <option value={channel}>{channel}</option>
-                    {/each}
-                  </select>
+                      });
+                    }}
+                  />
                 </label>
                 <div class="setting-row">
                   <span>
@@ -2220,15 +2229,15 @@
                         onclick={handleCopyCoreInstallLogPath}
                         disabled={coreLogCopyState === "copying"}
                         aria-busy={coreLogCopyState === "copying"}
-                        title={`Copy install log path: ${coreInstallLogPath}`}
+                        title={`Copy install log location: ${coreInstallLogPath}`}
                       >
                         {coreLogCopyState === "copying"
                           ? "Copying…"
                           : coreLogCopyState === "copied"
-                            ? "Path copied"
+                            ? "Location copied"
                             : coreLogCopyState === "failed"
                               ? "Copy failed"
-                              : "Copy log path"}
+                              : "Copy log location"}
                       </button>
                       <button
                         type="button"
@@ -2666,8 +2675,8 @@
                   <span>
                     <strong>Window opacity</strong>
                     <small
-                      >100% is fully solid. Lower values reveal more native
-                      vibrancy.</small
+                      >100% is fully solid. Lower values let more of your
+                      desktop show through.</small
                     >
                   </span>
                   <span class="range-control">
@@ -2812,30 +2821,24 @@
                       >Attribution for new recordings. Changeable per-recording.</small
                     ></span
                   >
-                  <select
+                  <Dropdown
+                    label="Default recording company"
+                    testid="settings-default-recording-company"
                     value={defaultRecordingCompanyUid ?? ""}
-                    aria-label="Default recording company"
                     disabled={isSettingsControlPending(
                       "default-recording-company",
                     )}
-                    aria-busy={isSettingsControlPending(
-                      "default-recording-company",
-                    )}
-                    onchange={(event) => {
-                      const v = event.currentTarget.value;
+                    options={[
+                      { value: "", label: "Personal" },
+                      ...memberships.map((m) => ({ value: m.companyUid, label: m.companyName?.trim() || "Company" })),
+                    ]}
+                    onchange={(v) => {
                       defaultRecordingCompanyUid = v === "" ? null : v;
                       void persistSettingsControl("default-recording-company", {
                         defaultRecordingCompanyUid,
                       });
                     }}
-                  >
-                    <option value="">Personal</option>
-                    {#each memberships as m (m.companyUid)}
-                      <option value={m.companyUid}
-                        >{m.companyName?.trim() || "Company"}</option
-                      >
-                    {/each}
-                  </select>
+                  />
                 </label>
               {/if}
               <!-- Meeting permissions monitor — the only place to grant the macOS TCC

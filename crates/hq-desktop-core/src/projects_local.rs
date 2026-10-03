@@ -817,6 +817,68 @@ pub fn resolve_project_write_path(
     resolve_project_path(hq_root, rel_path, expected_filename)
 }
 
+/// Largest text file the New file form may create.
+pub const MAX_NEW_PROJECT_FILE_BYTES: usize = 1024 * 1024;
+
+/// Create a new text file at an HQ-relative path (QA-072). The parent folder
+/// must already exist, may not traverse a symlink, and must resolve inside
+/// the same company it names. The file is opened exclusive and no-follow, so
+/// an existing file or a racing symlink is refused rather than overwritten.
+/// Returns the HQ-relative path written.
+pub fn create_project_text_file(
+    hq_root: &Path,
+    rel_path: &str,
+    contents: &str,
+) -> Result<String, String> {
+    let normalized = validate_hq_relative_path(rel_path, false)?;
+    let relative = Path::new(&normalized);
+    let file_name = relative
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "new file needs a name".to_string())?
+        .to_string();
+    if file_name.starts_with('.') {
+        return Err("new file name cannot start with a dot".to_string());
+    }
+    if contents.len() > MAX_NEW_PROJECT_FILE_BYTES {
+        return Err("new file is too large".to_string());
+    }
+    let parent = relative
+        .parent()
+        .and_then(|parent| parent.to_str())
+        .filter(|parent| !parent.is_empty())
+        .ok_or_else(|| "new file must go inside a folder".to_string())?
+        .to_string();
+    reject_project_write_symlinks(hq_root, &parent)?;
+    let canonical_parent = canonical_hq_relative_path(hq_root, &parent, false)?;
+    if canonical_parent != parent {
+        return Err("new file folder resolves to a different folder".to_string());
+    }
+    matching_project_company_scope(&normalized, &format!("{canonical_parent}/{file_name}"))?;
+
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    let opened = open_hq_scoped_directory(hq_root, &parent)?
+        .create_new_file(std::ffi::OsStr::new(&file_name));
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    let opened = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(hq_root.join(&normalized));
+    let mut file = opened.map_err(|error| {
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            "a file with that name is already in this folder".to_string()
+        } else {
+            format!("could not create file: {error}")
+        }
+    })?;
+
+    use std::io::Write;
+    file.write_all(contents.as_bytes())
+        .and_then(|()| file.sync_all())
+        .map_err(|error| format!("could not write file: {error}"))?;
+    Ok(normalized)
+}
+
 fn require_same_project_write_target(
     hq_root: &Path,
     original: &ResolvedProjectPath,
@@ -4650,5 +4712,41 @@ mod tests {
         assert!(s.ends_with('Z'));
         assert_eq!(&s[4..5], "-");
         assert_eq!(&s[10..11], "T");
+    }
+
+    #[test]
+    fn create_project_text_file_writes_new_file_once() {
+        let root = make_fixture_tree();
+        let rel = "companies/indigo/projects/flagship/welcome-v2.md";
+        let written = create_project_text_file(&root, rel, "# Welcome\n").unwrap();
+        assert_eq!(written, rel);
+        assert_eq!(fs::read_to_string(root.join(rel)).unwrap(), "# Welcome\n");
+
+        let again = create_project_text_file(&root, rel, "other").unwrap_err();
+        assert!(again.contains("already in this folder"), "{again}");
+        assert_eq!(fs::read_to_string(root.join(rel)).unwrap(), "# Welcome\n");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn create_project_text_file_refuses_missing_folder_dotfile_and_escape() {
+        let root = make_fixture_tree();
+        assert!(create_project_text_file(&root, "companies/indigo/nope/a.md", "").is_err());
+        assert!(create_project_text_file(&root, "companies/indigo/projects/flagship/.env", "").is_err());
+        assert!(create_project_text_file(&root, "companies/indigo/../x.md", "").is_err());
+        assert!(create_project_text_file(&root, "a.md", "").is_err());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_project_text_file_refuses_symlinked_folder() {
+        let root = make_fixture_tree();
+        let other = root.join("companies").join("beta");
+        fs::create_dir_all(&other).unwrap();
+        std::os::unix::fs::symlink(&other, root.join("companies/indigo/link")).unwrap();
+        assert!(create_project_text_file(&root, "companies/indigo/link/a.md", "").is_err());
+        assert!(!other.join("a.md").exists());
+        let _ = fs::remove_dir_all(&root);
     }
 }

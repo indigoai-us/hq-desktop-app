@@ -29,6 +29,7 @@
     type NotificationsFeedState,
     type NotificationsFilter,
   } from "./notifications-model";
+  import { publishNotificationsCache } from "./notifications-cache.svelte.js";
   import "../chat/tokens.css";
   import "../chat/chat-tokens.css";
 
@@ -96,6 +97,14 @@
   let feedReady = $state(false);
   let loadingMore = $state(false);
   let loadMoreError = $state<string | null>(null);
+
+  $effect(() => {
+    publishNotificationsCache({
+      items: feedState.items,
+      ready: feedReady,
+      loading,
+    });
+  });
 
   // Re-fetch when All | Unread toggles, or when a mesh wake bumps wakeSeq —
   // never when items/unreadCount update.

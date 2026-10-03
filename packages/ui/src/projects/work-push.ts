@@ -30,6 +30,8 @@ export type WorkPush =
       event: string;
       chatId: string;
       companyUid: string;
+      /** Bot name running the session; empty when the event omits it. */
+      agent?: string;
     };
 
 function str(value: unknown): string {
@@ -58,6 +60,7 @@ export function parseWorkPush(eventName: string, payload: unknown): WorkPush | n
       event,
       chatId: str(body.chatId),
       companyUid: str(body.companyUid),
+      agent: str(body.agentName) || str(body.agent) || undefined,
     };
   }
   return null;
@@ -96,6 +99,7 @@ export function sessionRefFromSessionEvent(
     status,
     source: push.chatId || storyId,
     lastActivityAt: nowIso,
+    ...(push.agent ? { agent: push.agent } : {}),
   };
 }
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CompanyLabel from "../company/CompanyLabel.svelte";
   /** Mission Control — running hq-pack-agency teams + per-worker status. */
   import { agencyStore } from "../chat/agency-store.svelte";
   import {
@@ -45,7 +46,7 @@
         <section class="team">
           <div class="team-head">
             <span class="tname">{t.team}</span>
-            <span class="tco">{t.company}</span>
+            <span class="tco"><CompanyLabel name={t.company} companyUid={t.company} /></span>
             <span class="tsummary">
               {runningCount(t.workers)}/{t.workers.length} running
               {#if pendingFor(t.company, t.team)}<span class="waiting"

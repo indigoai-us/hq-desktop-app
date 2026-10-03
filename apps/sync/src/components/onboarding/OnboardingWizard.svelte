@@ -3724,7 +3724,7 @@
     <div class="corelabel" bind:this={refs.corelabel} aria-hidden="true">company cloud</div>
     <div class="copy" bind:this={refs.cloudCopy}>
       <h2 class="h h-lg" id="welcome-title-cloud" tabindex="-1" data-scene-heading>Your folder is local. Your team is not.</h2>
-      <p class="body">Every machine syncs to the same company cloud. People and agents share one context.</p>
+      <p class="body">Every machine syncs to the same company cloud. People and bots share one context.</p>
     </div>
     {#each ORBIT_INNER as name, i (name)}
       <div class="pill tool" aria-hidden="true" bind:this={innerChips[i]}>{name}</div>
