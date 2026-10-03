@@ -92,8 +92,9 @@ describe('resolveFirstRunCompanyPath', () => {
           : { invites: [{ companyUid: 'cmp_acme', invitedBy: 'prs_owner', inviterName: 'Pat' }] },
       invoke: (async () => ({ workspaces: [pendingWorkspace('acme', 'Acme')] })) as unknown as InvokeFn,
     });
-    expect(result?.route).toMatchObject({ kind: 'join', invites: [{ companyUid: 'cmp_acme', name: 'Acme', inviter: 'Pat' }] });
-    expect(result?.summary).toEqual({ existingCompanies: 0, paidCompany: false, pendingInvites: 1, decision: 'join_invite' });
+    if (result === null || !('route' in result)) throw new Error('Expected the invite route to resolve.');
+    expect(result.route).toMatchObject({ kind: 'join', invites: [{ companyUid: 'cmp_acme', name: 'Acme', inviter: 'Pat' }] });
+    expect(result.summary).toEqual({ existingCompanies: 0, paidCompany: false, pendingInvites: 1, decision: 'join_invite' });
   });
 
   it('asks a brand-new person to name a company', async () => {
