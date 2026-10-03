@@ -156,7 +156,20 @@
     let cancelled = false;
     void (async () => {
       try {
-        const read = await readCompanyTeam({ slug: key, companyUid, company, messaging });
+        const read = await readCompanyTeam({
+          slug: key,
+          companyUid,
+          company,
+          messaging,
+          // BLANK-3: people show as soon as the roster answers; the slower
+          // telemetry fills in skills and activity when it arrives. A cached
+          // view (which already has telemetry) is not replaced by the roster.
+          onRoster: (early) => {
+            if (cancelled || hit) return;
+            view = early;
+            phase = "ready";
+          },
+        });
         if (cancelled) return;
         if (read.error) {
           view = { ...emptyView, error: read.error };

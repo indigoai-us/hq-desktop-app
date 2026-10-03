@@ -284,8 +284,15 @@ export async function readCompanyTeam(opts: {
   companyUid?: string | null;
   company: Pick<CompanyApi, "getTeamTelemetry" | "listMembers">;
   messaging?: Pick<MessagingApi, "listContacts"> | null;
+  /**
+   * BLANK-3: the roster answers in about 0.3 s while the telemetry route can
+   * take several seconds (3-4 s for 58 members, more under load). Called with
+   * the roster-only view as soon as the roster arrives, so the page can show
+   * people without waiting; the returned read still carries the full view.
+   */
+  onRoster?: (view: TeamTelemetryView) => void;
 }): Promise<CompanyTeamRead> {
-  const { slug, companyUid, company, messaging } = opts;
+  const { slug, companyUid, company, messaging, onRoster } = opts;
   const empty: TeamTelemetryView = { members: [], humans: [], agents: [], error: null, empty: true };
   const rosterRead = async (): Promise<unknown[]> => {
     if (messaging && companyUid) {
@@ -299,7 +306,21 @@ export async function readCompanyTeam(opts: {
     });
     return res && res.ok && Array.isArray(res.value) ? res.value : [];
   };
-  const [rawRes, roster] = await Promise.all([company.getTeamTelemetry(slug), rosterRead()]);
+  let telemetrySettled = false;
+  // A rejected telemetry read counts as a failed one, so it never fails the roster.
+  const telemetry = Promise.resolve(company.getTeamTelemetry(slug))
+    .catch((err: unknown) => {
+      console.warn("[team] telemetry read rejected", err);
+      return { ok: false as const, reason: "network" as const, message: "telemetry read rejected" };
+    })
+    .finally(() => {
+      telemetrySettled = true;
+    });
+  const rosterFirst = rosterRead().then((rows) => {
+    if (!telemetrySettled && rows.length > 0) onRoster?.(mergeRosterIntoTeamView(empty, rows));
+    return rows;
+  });
+  const [rawRes, roster] = await Promise.all([telemetry, rosterFirst]);
   const labels: Record<string, { email?: string | null; displayName?: string | null }> = {};
   for (const row of roster) {
     if (!row || typeof row !== "object") continue;
