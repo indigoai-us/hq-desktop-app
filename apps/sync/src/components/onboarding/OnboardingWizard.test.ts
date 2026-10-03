@@ -3191,8 +3191,31 @@ describe('invite teammate onboarding step', () => {
     const rows = inviteStepRows();
     expect(rows.map((row) => row.action)).toEqual(['entered', 'completed']);
     expect(rows.every((row) => row.companyUid === 'cmp_demo')).toBe(true);
+    expect(rows.find((row) => row.action === 'completed')?.invitesSent).toBe(1);
     expect(rows.some((row) => 'email' in row || 'inviteeEmail' in row)).toBe(false);
     expect(JSON.stringify(rows)).not.toContain(inviteEmail);
+  });
+
+  it('records a skipped invite step with its company scope', async () => {
+    await reachInviteScenario();
+    clickInviteControl('onboarding-invite-skip');
+    await flush();
+
+    const rows = inviteStepRows();
+    expect(rows.map((row) => row.action)).toEqual(['entered', 'skipped']);
+    expect(rows.every((row) => row.companyUid === 'cmp_demo')).toBe(true);
+  });
+
+  it('records a failed invite step with its company scope', async () => {
+    await reachInviteScenario({
+      inviteResponses: [{ status: 500, body: { error: 'temporary failure' } }],
+    });
+    await submitInvite();
+    await flushUntil(() => host.querySelector('[data-testid="onboarding-invite-error"]') !== null);
+
+    const rows = inviteStepRows();
+    expect(rows.map((row) => row.action)).toEqual(['entered', 'failed']);
+    expect(rows.every((row) => row.companyUid === 'cmp_demo')).toBe(true);
   });
 });
 

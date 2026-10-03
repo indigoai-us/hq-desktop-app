@@ -83,6 +83,10 @@ export interface OnboardingStepProperties {
   setupRunId?: string;
   /** Company scope for the invite and company steps; never attach invitee data here. */
   companyUid?: string;
+  /** Explicitly marks an invite-step event whose company context was unavailable. */
+  companyUidMissing?: boolean;
+  /** Count of invitations successfully sent from the invite step, bounded to 0..20. */
+  invitesSent?: number;
   /** Company step route decision (look before create). Counts only, never names. */
   existingCompanies?: number;
   /** Bounded status for the optional name suggestion; never the name itself. */
@@ -353,6 +357,19 @@ export function desktopPropertiesForOnboardingStep(
     event.properties.companyUid.startsWith('cmp_')
   ) {
     properties.companyUid = event.properties.companyUid;
+  }
+  if (event.properties.step === 'invite-teammate') {
+    if (event.properties.companyUidMissing === true) properties.companyUidMissing = true;
+    const invitesSent = event.properties.invitesSent;
+    if (
+      event.properties.action === 'completed' &&
+      typeof invitesSent === 'number' &&
+      Number.isInteger(invitesSent) &&
+      invitesSent >= 0 &&
+      invitesSent <= 20
+    ) {
+      properties.invitesSent = invitesSent;
+    }
   }
   if (event.properties.step === 'connector-import') {
     if (event.properties.outcome !== undefined) {
