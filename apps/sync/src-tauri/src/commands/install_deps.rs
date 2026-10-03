@@ -4041,39 +4041,51 @@ const BUNDLED_HQ_CLI_RESOURCE_PATH: &str = "hq-cli/hq-cli.tgz";
 /// escapes the signed application resources directory. Missing resources and
 /// path-resolution failures deliberately preserve the ordinary release path.
 #[cfg(not(windows))]
-fn hq_cli_install_spec(resource_dir: Option<&Path>) -> String {
+fn hq_cli_install_spec_with_mode(resource_dir: Option<&Path>) -> (String, &'static str) {
     let Some(resource_dir) = resource_dir.and_then(|path| path.canonicalize().ok()) else {
-        return HQ_CLI_REGISTRY_SPEC.to_string();
+        return (HQ_CLI_REGISTRY_SPEC.to_string(), "registry_fallback");
     };
     let Some(package) = resource_dir
         .join(BUNDLED_HQ_CLI_RESOURCE_PATH)
         .canonicalize()
         .ok()
     else {
-        return HQ_CLI_REGISTRY_SPEC.to_string();
+        return (HQ_CLI_REGISTRY_SPEC.to_string(), "registry_fallback");
     };
 
     if package.is_file() && package.starts_with(&resource_dir) {
-        package
-            .into_os_string()
-            .into_string()
-            .unwrap_or_else(|_| HQ_CLI_REGISTRY_SPEC.to_string())
+        match package.into_os_string().into_string() {
+            Ok(spec) => (spec, "resource"),
+            Err(_) => (HQ_CLI_REGISTRY_SPEC.to_string(), "registry_fallback"),
+        }
     } else {
-        HQ_CLI_REGISTRY_SPEC.to_string()
+        (HQ_CLI_REGISTRY_SPEC.to_string(), "registry_fallback")
     }
+}
+
+#[cfg(not(windows))]
+fn hq_cli_install_spec(resource_dir: Option<&Path>) -> String {
+    hq_cli_install_spec_with_mode(resource_dir).0
 }
 
 /// A test/release bundle can require its own CLI version. Keep the marker
 /// alongside the package inside signed resources; never consult a neighboring kit.
 #[cfg(not(windows))]
 pub fn bundled_hq_cli_ready(app: &AppHandle) -> bool {
+    bundled_hq_cli_diagnostics(app).0
+}
+
+#[cfg(not(windows))]
+pub fn bundled_hq_cli_diagnostics(app: &AppHandle) -> (bool, &'static str) {
     let resource_dir = app.path().resource_dir().ok();
-    let spec = hq_cli_install_spec(resource_dir.as_deref());
-    if spec == HQ_CLI_REGISTRY_SPEC { return true; }
+    let (spec, mode) = hq_cli_install_spec_with_mode(resource_dir.as_deref());
+    if mode == "registry_fallback" {
+        return (true, mode);
+    }
     let expected = Path::new(&spec).parent()
         .and_then(|dir| std::fs::read_to_string(dir.join("version.txt")).ok());
     let actual = check_dep_impl("hq", None).version;
-    bundled_cli_version_matches(expected.as_deref(), actual.as_deref())
+    (bundled_cli_version_matches(expected.as_deref(), actual.as_deref()), mode)
 }
 
 #[cfg(not(windows))]
@@ -6747,14 +6759,7 @@ async fn install_hq_cli_windows(app: AppHandle) -> Result<String, String> {
     // budget (HQ-DESKTOP-6J) instead of failing the deps stage, off the async
     // worker via spawn_blocking; the guard is held through the streamed install.
     let cancellation = InstallCancellationRegistration::new(&app);
-    let recovery_enabled = crate::commands::hq_pro::feature_flag_enabled(
-        crate::commands::hq_cli_update::WINDOWS_HQ_CLI_CONTENTION_RECOVERY_FLAG,
-    )
-    .await;
-    let lock_wait_budget =
-        hq_desktop_core::cli_update_lock::cli_install_lock_wait_budget_for_recovery(
-            recovery_enabled,
-        );
+    let lock_wait_budget = hq_desktop_core::cli_update_lock::CLI_INSTALL_LOCK_WAIT_BUDGET;
     let lock_wait_handle = cancellation.handle.clone();
     let result = async {
         let _install_lock = acquire_cli_install_lock_for_setup_with_budget(
@@ -6762,15 +6767,13 @@ async fn install_hq_cli_windows(app: AppHandle) -> Result<String, String> {
             &cancellation,
             lock_wait_budget,
             move |app, line| {
-                if recovery_enabled {
-                    // Control signal for the named question: is this setup install handle still waiting on the shared CLI lock?
-                    // The frontend uses it only to keep the deps timeout alive; it is not funnel telemetry.
-                    let _ = app.emit_to(
-                        "main",
-                        "setup:cli-install-lock-wait",
-                        lock_wait_handle.clone(),
-                    );
-                }
+                // The frontend uses this signal only to keep the setup deps
+                // timeout alive for this install handle; it is not telemetry.
+                let _ = app.emit_to(
+                    "main",
+                    "setup:cli-install-lock-wait",
+                    lock_wait_handle.clone(),
+                );
                 emit_progress(app, line);
             },
         )
@@ -11033,6 +11036,10 @@ mod bundled_hq_cli_tests {
             hq_cli_install_spec(Some(&resource_dir)),
             package.canonicalize().unwrap().to_string_lossy()
         );
+        assert_eq!(
+            hq_cli_install_spec_with_mode(Some(&resource_dir)).1,
+            "resource"
+        );
     }
 
     #[test]
@@ -11046,6 +11053,11 @@ mod bundled_hq_cli_tests {
             HQ_CLI_REGISTRY_SPEC
         );
         assert_eq!(hq_cli_install_spec(None), HQ_CLI_REGISTRY_SPEC);
+        assert_eq!(
+            hq_cli_install_spec_with_mode(Some(&resource_dir)).1,
+            "registry_fallback"
+        );
+        assert_eq!(hq_cli_install_spec_with_mode(None).1, "registry_fallback");
     }
 
     #[test]

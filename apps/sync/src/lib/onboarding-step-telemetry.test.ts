@@ -685,3 +685,88 @@ describe('onboarding step telemetry', () => {
     ]);
   });
 });
+
+describe('invite-teammate failure telemetry', () => {
+  const base = {
+    sessionId: '11111111-1111-4111-8111-111111111111',
+    occurredAt: '2026-10-02T10:00:00.000Z',
+  };
+
+  it('carries the invite errorKind and HTTP status', () => {
+    const properties = desktopPropertiesForOnboardingStep({
+      ...base,
+      properties: {
+        step: 'invite-teammate',
+        action: 'failed',
+        errorKind: 'plan_limit',
+        statusCode: 402,
+        surface: 'desktop_installer',
+        platform: 'macos',
+      },
+    });
+    expect(properties.errorKind).toBe('plan_limit');
+    expect(properties.statusCode).toBe(402);
+  });
+
+  it('bounds unknown kinds and bad statuses', () => {
+    const properties = desktopPropertiesForOnboardingStep({
+      ...base,
+      properties: {
+        step: 'invite-teammate',
+        action: 'failed',
+        errorKind: 'person@example.com' as never,
+        statusCode: 9000,
+        surface: 'desktop_installer',
+        platform: 'macos',
+      },
+    });
+    expect(properties.errorKind).toBe('request_failed');
+    expect(properties.statusCode).toBeUndefined();
+    expect(JSON.stringify(properties)).not.toContain('example.com');
+  });
+
+  it('carries the company route decision, provisioning step and self-heal, bounded', () => {
+    const route = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-10-02T10:00:00.000Z',
+      properties: {
+        step: 'company',
+        action: 'started',
+        decision: 'paid_existing',
+        existingCompanies: 2,
+        paidCompany: true,
+        pendingInvites: 0,
+        companyUid: 'cmp_a',
+        surface: 'desktop_installer',
+        platform: 'macos',
+      },
+    });
+    expect(route).toMatchObject({
+      decision: 'paid_existing',
+      existingCompanies: 2,
+      paidCompany: true,
+      pendingInvites: 0,
+      companyUid: 'cmp_a',
+    });
+    const odd = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-10-02T10:00:00.000Z',
+      properties: {
+        step: 'first-folder-sync',
+        action: 'failed',
+        decision: 'made up',
+        provisioningStep: 'Has Spaces',
+        selfHeal: 'failed',
+        companyUid: 'cmp_b',
+        existingCompanies: -1,
+        surface: 'desktop_installer',
+        platform: 'macos',
+      },
+    });
+    expect(odd.decision).toBe('unknown');
+    expect(odd.provisioningStep).toBe('unknown');
+    expect(odd.selfHeal).toBe('failed');
+    expect(odd.companyUid).toBe('cmp_b');
+    expect(odd.existingCompanies).toBeUndefined();
+  });
+});

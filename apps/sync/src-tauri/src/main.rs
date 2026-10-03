@@ -932,6 +932,7 @@ fn main() {
             commands::desktop_alt::desktop_alt_is_admin,
             commands::desktop_alt::set_desktop_active_company,
             commands::desktop_alt::get_desktop_active_company,
+            commands::cdp_mirror::web_visitor_anon_id,
             commands::desktop_alt::get_company_summary,
             commands::desktop_alt::get_company_board,
             commands::desktop_alt::ensure_company_home_channel,
@@ -1060,6 +1061,7 @@ fn main() {
             commands::messages::send_channel_message,
             commands::messages::run_card_action,
             commands::messages::check_company_slug,
+            commands::messages::activate_company_cloud,
             commands::messages::get_company_tab,
             commands::messages::run_company_tab_action,
             crate::deep_link::take_pending_setup_target,
@@ -1184,6 +1186,10 @@ fn main() {
 
             commands::lifecycle::setup_lifecycle(app.handle());
             let launch_kind = commands::first_run::classify_launch(app.handle());
+            commands::cdp_mirror::init(
+                app.handle(),
+                launch_kind == hq_desktop_core::first_run::LaunchKind::FirstRun,
+            );
 
             // US-104: cold-start hqwork:// on argv (if the OS delivered one).
             // Not an OS-scheme registration — only handle what we were given.
@@ -1639,6 +1645,9 @@ fn main() {
                     _app_handle,
                     commands::calls::DISPOSE_WAIT,
                 );
+                // Funnel mirror: queue setup_abandoned when quitting before
+                // sign-in/install and give the sender a bounded window.
+                commands::cdp_mirror::on_exit_requested(_app_handle);
                 commands::process::terminate_all_for_exit(std::time::Duration::from_millis(500));
             }
 

@@ -34,9 +34,11 @@ use crate::util::{logfile::log, paths};
 
 pub use hq_desktop_core::first_run::{
     classify_from_map, classify_from_menubar_read, ensure_install_attempt_id, merge_menubar_flags,
-    notice_shown_in_map, read_menubar, read_menubar_obj, should_autoshow_on_launch, LaunchKind,
-    MenubarRead,
+    notice_shown_in_map, read_menubar, read_menubar_obj, should_autoshow_on_launch,
+    should_sync_after_first_run_handoff, LaunchKind, MenubarRead,
 };
+
+pub const FIRST_LAUNCH_SYNC_FLAG: &str = "desktop.first-launch-sync-v1";
 
 /// `ensure_install_attempt_id` reads and, on the first call, writes the shared
 /// menubar settings file. Serialize this wrapper because receipt preparation
@@ -223,9 +225,38 @@ pub fn set_main_window_vibrancy(app: AppHandle, enabled: bool) {
 /// actually opened. If opening fails, the error is returned with the card
 /// still on screen rather than leaving the user with no window at all.
 #[tauri::command]
-pub async fn show_main_window_at_tray(app: AppHandle) -> Result<(), String> {
+pub async fn show_main_window_at_tray(
+    app: AppHandle,
+    state: State<'_, LaunchKindState>,
+) -> Result<(), String> {
     crate::commands::desktop_alt::open_desktop_alt_window_inner(app.clone(), None).await?;
     crate::tray::hide_onboarding_window(&app);
+    let launch_kind = state.0;
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let flag_enabled =
+            crate::commands::hq_pro::feature_flag_enabled(FIRST_LAUNCH_SYNC_FLAG).await;
+        if !should_sync_after_first_run_handoff(
+            flag_enabled,
+            launch_kind,
+            crate::commands::daemon::is_realtime_sync_enabled(),
+        ) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        if let Err(error) = crate::commands::sync::start_sync_with_trigger(
+            handle,
+            None,
+            crate::commands::cdp_mirror::SyncTrigger::First,
+        )
+        .await
+        {
+            crate::util::logfile::log(
+                "first-run",
+                &format!("first-launch sync did not start: {error}"),
+            );
+        }
+    });
     Ok(())
 }
 

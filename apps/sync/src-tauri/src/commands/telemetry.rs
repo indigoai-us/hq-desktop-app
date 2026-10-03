@@ -17,6 +17,9 @@ use sha2::{Digest, Sha256};
 use hq_desktop_core::agent_usage_scan::{
     enumerate_rollout_files, resolve_claude_projects_dirs, RolloutFile,
 };
+use hq_desktop_core::usage_upload_plan::{
+    AddUsageEvent, UsageUploadBatch, UsageUploadPlanner, UsageUploadSource,
+};
 
 use crate::commands::sync::resolve_vault_api_url;
 use crate::commands::vault_client::{
@@ -852,12 +855,32 @@ const ALLOWED_DESKTOP_PROPERTY_KEYS: &[&str] = &[
     "errorOperation",
     "errorIoKind",
     "errorCode",
+    "statusCode",
     "deferralCount",
     "firstDeferralAgeSeconds",
     "lockTimeoutSeconds",
     "holdReason",
     "requiredGitVersion",
     "detectedGitVersion",
+    "found",
+    // Company step route decision + provisioning + self-heal (look before create).
+    "existingCompanies",
+    "paidCompany",
+    "pendingInvites",
+    "decision",
+    "provisioningStep",
+    "selfHeal",
+    // Funnel rows mirrored to the CDP (cdp_mirror::OPERATIONAL_MIRRORS).
+    "isFirstLaunch",
+    "userHash",
+    "companyHash",
+    "success",
+    "errorClass",
+    "trigger",
+    "downloadedCount",
+    "count",
+    "route",
+    "plan",
 ];
 
 const SYMLINK_ERROR_OPERATION_VALUES: &[&str] = &[
@@ -1052,6 +1075,11 @@ fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
                     .as_u64()
                     .filter(|code| *code <= 65_535)
                     .map(|_| Value::Number(number.clone())),
+                ("statusCode", Value::Number(number)) => number
+                    .as_u64()
+                    .filter(|status| (100..=599).contains(status))
+                    .map(|_| Value::Number(number.clone())),
+                ("statusCode", _) => None,
                 ("detectedSourceSet", Value::String(value)) => Some(Value::String(
                     normalize_closed_label(&value, CONNECTOR_IMPORT_SOURCE_SET_VALUES),
                 )),
@@ -1063,7 +1091,15 @@ fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
                 }
                 (_, Value::Bool(_)) => matches!(
                     key.as_str(),
-                    "enabled" | "autoUpdateEnabled" | "eligible" | "versionBehind" | "npxResolved"
+                    "enabled"
+                        | "autoUpdateEnabled"
+                        | "eligible"
+                        | "versionBehind"
+                        | "npxResolved"
+                        | "found"
+                        | "paidCompany"
+                        | "success"
+                        | "isFirstLaunch"
                 )
                 .then_some(value),
                 (_, Value::Number(n)) => {
@@ -1078,6 +1114,16 @@ fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
     }
 
     Value::Object(out)
+}
+
+/// Onboarding rows that may name their company: the company step, and the
+/// missing-bucket self-heal (any step).
+fn properties_company_scoped(input: Option<&Map<String, Value>>) -> bool {
+    let Some(input) = input else {
+        return false;
+    };
+    input.get("step").and_then(Value::as_str) == Some("company")
+        || input.get("selfHeal").and_then(Value::as_str).is_some()
 }
 
 fn sanitize_post_ready_action_properties(properties: Option<Value>) -> Value {
@@ -1112,6 +1158,19 @@ fn sanitize_post_ready_action_properties(properties: Option<Value>) -> Value {
     Value::Object(out)
 }
 
+/// Tag every hq-pro desktop row with the website visitor id the CDP mirror
+/// uses, so the web→desktop funnel joins on one id. Only a safe label is
+/// attached; a caller-supplied `anonId` is never trusted.
+fn attach_anon_id(properties: &mut Value, anon_id: Option<String>) {
+    let Some(object) = properties.as_object_mut() else {
+        return;
+    };
+    object.remove("anonId");
+    if let Some(anon) = anon_id.filter(|id| is_safe_label_value(id)) {
+        object.insert("anonId".to_string(), Value::String(anon));
+    }
+}
+
 fn build_desktop_telemetry_event(
     event_name: String,
     properties: Option<Value>,
@@ -1130,16 +1189,31 @@ fn build_desktop_telemetry_event(
             })
             .unwrap_or(false);
     let is_post_ready_action = event_name == "desktop_post_ready_action";
+    let raw_company_scope = properties.as_ref().and_then(Value::as_object).cloned();
     let mut properties = if is_post_ready_action {
         sanitize_post_ready_action_properties(properties)
     } else {
         sanitize_desktop_properties(properties)
     };
+    // The company step (route decision, provisioning, join) and the first-sync
+    // self-heal carry the company they are about; hq-pro takes it as the
+    // event-level `companyUid` (and checks the caller is a member).
+    let company_scoped_onboarding_row = event_name == "desktop_onboarding_step"
+        && properties_company_scoped(raw_company_scope.as_ref());
     let company_uid = if is_post_ready_action {
         properties
             .get("companyUid")
             .and_then(Value::as_str)
             .filter(|value| value.starts_with("cmp_") && value.len() <= 128)
+            .map(str::to_string)
+    } else if company_scoped_onboarding_row {
+        raw_company_scope
+            .as_ref()
+            .and_then(|input| input.get("companyUid"))
+            .and_then(Value::as_str)
+            .filter(|value| {
+                value.starts_with("cmp_") && value.len() <= 128 && is_safe_label_value(value)
+            })
             .map(str::to_string)
     } else {
         None
@@ -1184,9 +1258,16 @@ fn build_desktop_telemetry_event(
     if is_post_ready_action {
         properties["os"] = Value::String(std::env::consts::OS.to_string());
     }
-    let install_attempt_id = (event_name == "desktop_setup_completed")
-        .then(crate::commands::first_run::install_attempt_id)
-        .flatten();
+    attach_anon_id(
+        &mut properties,
+        crate::commands::cdp_mirror::current_anon_id(),
+    );
+    let install_attempt_id = matches!(
+        event_name.as_str(),
+        "desktop_setup_completed" | "desktop_onboarding_step"
+    )
+    .then(crate::commands::first_run::install_attempt_id)
+    .flatten();
     RawTelemetryEvent {
         event_name,
         app: "hq-desktop-app".to_string(),
@@ -1294,6 +1375,17 @@ const OPERATIONAL_DESKTOP_EVENT_NAMES: &[&str] = &[
     "desktop_auto_update_post_cap_outcome",
     "oauth_signin_succeeded",
     "telemetry_preference_changed",
+    "install_tag_read",
+    crate::commands::cdp_mirror::OP_APP_OPENED,
+    crate::commands::cdp_mirror::OP_ACCOUNT_LINKED,
+    crate::commands::cdp_mirror::OP_AGENT_SESSION_LAUNCHED,
+    crate::commands::cdp_mirror::OP_SYNC_STARTED,
+    crate::commands::cdp_mirror::OP_SYNC_COMPLETED,
+    crate::commands::cdp_mirror::OP_SYNC_FAILED,
+    crate::commands::cdp_mirror::OP_INVITE_SENT,
+    crate::commands::cdp_mirror::OP_INVITE_FAILED,
+    crate::commands::cdp_mirror::OP_COMPANY_JOINED,
+    crate::commands::cdp_mirror::OP_PLAN_SELECTED,
 ];
 
 fn is_operational_desktop_event_name(event_name: &str) -> bool {
@@ -1309,6 +1401,9 @@ pub async fn emit_desktop_operational_telemetry(
     session_id: Option<String>,
     occurred_at: Option<String>,
 ) -> Result<(), String> {
+    // Mirror the funnel stage to the CDP before any auth work: a queue push
+    // only, and independent of whether hq-pro accepts the row.
+    crate::commands::cdp_mirror::note_operational_event(&event_name, properties.as_ref());
     let access_token = crate::commands::cognito::get_valid_access_token().await?;
     let api_url = resolve_vault_api_url()?;
     let vault = VaultClient::new(&api_url, &access_token);
@@ -1976,27 +2071,6 @@ impl CodexRolloutScanner {
     }
 }
 
-/// Per-line tracking used to commit acknowledged or zero-event scan progress.
-struct RowSource {
-    file_path: String,
-    end_offset: u64,
-    mtime: u64,
-    context: Option<CodexUsageContext>,
-}
-
-fn record_source(sources: &mut Vec<RowSource>, source: RowSource) {
-    if let Some(existing) = sources
-        .iter_mut()
-        .find(|existing| existing.file_path == source.file_path)
-    {
-        if source.end_offset > existing.end_offset {
-            *existing = source;
-        }
-    } else {
-        sources.push(source);
-    }
-}
-
 #[derive(Debug, Deserialize)]
 struct UsageAck {
     ok: bool,
@@ -2081,6 +2155,7 @@ enum FlushOutcome {
     Accepted,
     Unaccepted { reason: &'static str },
     ConsentRevoked,
+    BudgetReached,
 }
 
 impl FlushOutcome {
@@ -2202,10 +2277,18 @@ async fn send_telemetry_if_opted_in_at<R: tauri::Runtime>(
     // Resolved once per collection run — a login-shell probe, not worth
     // repeating per batch. None (CLI absent/unresolvable) omits the field.
     let cli_version = crate::commands::hq_cli_update::get_hq_cli_version().await;
-
-    let mut batch_events: Vec<Value> = Vec::new();
-    let mut batch_sources: Vec<RowSource> = Vec::new();
+    let empty_batch_bytes = serde_json::to_vec(&json!({
+        "machineId": machine_id,
+        "installerVersion": installer_version,
+        "events": []
+    }))
+    .expect("empty usage batch serializes")
+    .len();
+    let batch_overhead_bytes = empty_batch_bytes.saturating_sub(2); // remove `[]`
+    let mut upload_plan =
+        UsageUploadPlanner::for_desktop_usage(batch_overhead_bytes, MAX_BATCH_BYTES);
     let mut upload_failed = false;
+    let mut sync_budget_reached = false;
 
     'claude_files: for file_path in &file_paths {
         let path_str = normalize_cursor_file_key(file_path);
@@ -2288,56 +2371,67 @@ async fn send_telemetry_if_opted_in_at<R: tauri::Runtime>(
             };
 
             if !single_event_fits(&machine_id, &installer_version, &sanitized) {
-                record_source(
-                    &mut batch_sources,
-                    RowSource {
-                        file_path: path_str.clone(),
-                        end_offset: line_end_offsets[i],
-                        mtime: current_mtime,
-                        context: None,
-                    },
-                );
+                upload_plan.record_source(UsageUploadSource {
+                    file_path: path_str.clone(),
+                    end_offset: line_end_offsets[i],
+                    mtime: current_mtime,
+                    context: None,
+                });
                 continue;
             }
 
-            // Check if adding this row would exceed 1 MB
-            if !batch_events.is_empty() {
-                let candidate =
-                    build_wire_payload(&machine_id, &installer_version, &batch_events, &sanitized);
-                if candidate.len() > MAX_BATCH_BYTES {
-                    // Flush current batch
-                    if !flush_batch(
-                        &vault,
-                        &api_url,
-                        jwt,
-                        &machine_id,
-                        &installer_version,
-                        cli_version.as_deref(),
-                        &mut cursor,
-                        unix_now_secs(),
-                        &mut batch_events,
-                        &mut batch_sources,
-                        &mut newly_committed,
-                    )
-                    .await
-                    .is_accepted()
-                    {
+            let source = UsageUploadSource {
+                file_path: path_str.clone(),
+                end_offset: line_end_offsets[i],
+                mtime: current_mtime,
+                context: None,
+            };
+            loop {
+                match upload_plan.add_event(sanitized.clone(), source.clone()) {
+                    Ok(AddUsageEvent::Added) => break,
+                    Ok(AddUsageEvent::TooLarge) => {
+                        eprintln!("[telemetry] usage row exceeds batch cap; leaving source offset uncommitted");
+                        upload_failed = true;
+                        break 'claude_files;
+                    }
+                    Ok(AddUsageEvent::FlushCurrentBatch) => {
+                        let batch = upload_plan.take_batch().expect("planner requested a flush");
+                        match flush_batch(
+                            &vault,
+                            &api_url,
+                            jwt,
+                            &machine_id,
+                            &installer_version,
+                            cli_version.as_deref(),
+                            &mut cursor,
+                            unix_now_secs(),
+                            &mut upload_plan,
+                            batch,
+                            &mut newly_committed,
+                        )
+                        .await
+                        {
+                            FlushOutcome::Accepted if upload_plan.budget_exhausted() => {
+                                sync_budget_reached = true;
+                                break 'claude_files;
+                            }
+                            FlushOutcome::Accepted => continue,
+                            FlushOutcome::BudgetReached => {
+                                sync_budget_reached = true;
+                                break 'claude_files;
+                            }
+                            FlushOutcome::Unaccepted { .. } | FlushOutcome::ConsentRevoked => {
+                                upload_failed = true;
+                                break 'claude_files;
+                            }
+                        }
+                    }
+                    Err(_) => {
                         upload_failed = true;
                         break 'claude_files;
                     }
                 }
             }
-
-            batch_events.push(sanitized);
-            record_source(
-                &mut batch_sources,
-                RowSource {
-                    file_path: path_str.clone(),
-                    end_offset: line_end_offsets[i],
-                    mtime: current_mtime,
-                    context: None,
-                },
-            );
         }
     }
 
@@ -2347,7 +2441,7 @@ async fn send_telemetry_if_opted_in_at<R: tauri::Runtime>(
     let mut codex_batches_sent = 0usize;
     let mut codex_bytes_scanned = 0u64;
     let mut codex_next_rollout = cursor.codex_next_rollout.clone();
-    if !upload_failed {
+    if !upload_failed && !sync_budget_reached {
         let rollouts = codex_rollouts_freshest_first(&home.join(".codex"));
         let mut pending_rollouts: Vec<_> = rollouts
             .into_iter()
@@ -2391,7 +2485,7 @@ async fn send_telemetry_if_opted_in_at<R: tauri::Runtime>(
             let mut rollout_bytes_scanned = 0u64;
             let mut rollout_batches_sent = 0usize;
             let rollout_batch_allowance = rollout_batch_allowance(rollout_index, pending_count);
-            loop {
+            'rollout_records: loop {
                 let global_remaining =
                     MAX_CODEX_SCAN_BYTES_PER_SYNC.saturating_sub(codex_bytes_scanned);
                 if global_remaining == 0 {
@@ -2417,64 +2511,92 @@ async fn send_telemetry_if_opted_in_at<R: tauri::Runtime>(
                 rollout_bytes_scanned = rollout_bytes_scanned.saturating_add(scanned);
                 previous_offset = end_offset;
 
+                let source = UsageUploadSource {
+                    file_path: path_str.clone(),
+                    end_offset,
+                    mtime: system_time_secs(rollout.mtime),
+                    context: Some(
+                        serde_json::to_value(&context).expect("Codex context serializes"),
+                    ),
+                };
                 if let Some(sanitized) = sanitized {
-                    if !batch_events.is_empty() {
-                        let candidate_payload = build_wire_payload(
-                            &machine_id,
-                            &installer_version,
-                            &batch_events,
-                            &sanitized,
-                        );
-                        if candidate_payload.len() > MAX_BATCH_BYTES {
-                            let batch_contains_codex =
-                                batch_sources.iter().any(|source| source.context.is_some());
-                            if !flush_batch(
-                                &vault,
-                                &api_url,
-                                jwt,
-                                &machine_id,
-                                &installer_version,
-                                cli_version.as_deref(),
-                                &mut cursor,
-                                unix_now_secs(),
-                                &mut batch_events,
-                                &mut batch_sources,
-                                &mut newly_committed,
-                            )
-                            .await
-                            .is_accepted()
-                            {
+                    loop {
+                        match upload_plan.add_event(sanitized.clone(), source.clone()) {
+                            Ok(AddUsageEvent::Added) => break,
+                            Ok(AddUsageEvent::TooLarge) => {
+                                eprintln!("[telemetry] usage row exceeds batch cap; leaving source offset uncommitted");
                                 upload_failed = true;
                                 break 'codex_files;
                             }
-                            if batch_contains_codex {
-                                codex_batches_sent += 1;
-                                rollout_batches_sent += 1;
-                                if codex_batches_sent >= MAX_CODEX_BATCHES_PER_SYNC {
-                                    hit_sync_limit = true;
-                                    codex_next_rollout = pending_paths
-                                        .get((rollout_index + 1) % pending_count)
-                                        .cloned();
-                                    break 'codex_files;
+                            Ok(AddUsageEvent::FlushCurrentBatch) => {
+                                let batch =
+                                    upload_plan.take_batch().expect("planner requested a flush");
+                                let batch_contains_codex = batch.contains_codex();
+                                match flush_batch(
+                                    &vault,
+                                    &api_url,
+                                    jwt,
+                                    &machine_id,
+                                    &installer_version,
+                                    cli_version.as_deref(),
+                                    &mut cursor,
+                                    unix_now_secs(),
+                                    &mut upload_plan,
+                                    batch,
+                                    &mut newly_committed,
+                                )
+                                .await
+                                {
+                                    FlushOutcome::Accepted => {
+                                        if batch_contains_codex {
+                                            codex_batches_sent += 1;
+                                            rollout_batches_sent += 1;
+                                            if codex_batches_sent >= MAX_CODEX_BATCHES_PER_SYNC {
+                                                hit_sync_limit = true;
+                                                codex_next_rollout = pending_paths
+                                                    .get((rollout_index + 1) % pending_count)
+                                                    .cloned();
+                                                break 'codex_files;
+                                            }
+                                            if rollout_batches_sent >= rollout_batch_allowance {
+                                                hit_sync_limit = true;
+                                                codex_next_rollout = pending_paths
+                                                    .get((rollout_index + 1) % pending_count)
+                                                    .cloned();
+                                                break 'rollout_records;
+                                            }
+                                        }
+                                        if upload_plan.budget_exhausted() {
+                                            hit_sync_limit = true;
+                                            codex_next_rollout =
+                                                pending_paths.get(rollout_index).cloned();
+                                            sync_budget_reached = true;
+                                            break 'codex_files;
+                                        }
+                                        continue;
+                                    }
+                                    FlushOutcome::BudgetReached => {
+                                        hit_sync_limit = true;
+                                        codex_next_rollout =
+                                            pending_paths.get(rollout_index).cloned();
+                                        sync_budget_reached = true;
+                                        break 'codex_files;
+                                    }
+                                    FlushOutcome::Unaccepted { .. }
+                                    | FlushOutcome::ConsentRevoked => {
+                                        upload_failed = true;
+                                        break 'codex_files;
+                                    }
                                 }
-                                if rollout_batches_sent >= rollout_batch_allowance {
-                                    break;
-                                }
+                            }
+                            Err(_) => {
+                                upload_failed = true;
+                                break 'codex_files;
                             }
                         }
                     }
-                    batch_events.push(sanitized);
                 }
-
-                record_source(
-                    &mut batch_sources,
-                    RowSource {
-                        file_path: path_str.clone(),
-                        end_offset,
-                        mtime: system_time_secs(rollout.mtime),
-                        context: Some(context),
-                    },
-                );
+                upload_plan.record_source(source);
 
                 if codex_bytes_scanned >= MAX_CODEX_SCAN_BYTES_PER_SYNC {
                     hit_sync_limit = true;
@@ -2488,15 +2610,15 @@ async fn send_telemetry_if_opted_in_at<R: tauri::Runtime>(
                 }
             }
         }
-        if !hit_sync_limit && !upload_failed {
+        if !hit_sync_limit && !upload_failed && !sync_budget_reached {
             codex_next_rollout = None;
         }
     }
 
     // POST pending emitted rows before committing their scanned-line progress.
     // A zero-event scan slice can advance locally without making a request.
-    if !upload_failed {
-        if !batch_events.is_empty() {
+    if !upload_failed && !sync_budget_reached {
+        if let Some(batch) = upload_plan.take_batch() {
             let _ = flush_batch(
                 &vault,
                 &api_url,
@@ -2506,13 +2628,13 @@ async fn send_telemetry_if_opted_in_at<R: tauri::Runtime>(
                 cli_version.as_deref(),
                 &mut cursor,
                 unix_now_secs(),
-                &mut batch_events,
-                &mut batch_sources,
+                &mut upload_plan,
+                batch,
                 &mut newly_committed,
             )
             .await;
-        } else if !batch_sources.is_empty() {
-            commit_acknowledged_sources(&batch_sources, &mut newly_committed);
+        } else if let Some(sources) = upload_plan.take_zero_event_sources() {
+            commit_acknowledged_sources(&sources, &mut newly_committed);
         }
     }
 
@@ -2541,7 +2663,7 @@ async fn send_telemetry_if_opted_in_at<R: tauri::Runtime>(
     Ok(())
 }
 
-/// Build the full wire payload JSON for size-checking.
+/// Build the existing batch-size estimate used by the collector.
 fn build_wire_payload(
     machine_id: &str,
     installer_version: &str,
@@ -2550,7 +2672,7 @@ fn build_wire_payload(
 ) -> Vec<u8> {
     let mut events = existing.to_vec();
     events.push(candidate.clone());
-    let payload = serde_json::json!({
+    let payload = json!({
         "machineId": machine_id,
         "installerVersion": installer_version,
         "events": events,
@@ -2563,7 +2685,7 @@ fn single_event_fits(machine_id: &str, installer_version: &str, event: &Value) -
 }
 
 fn commit_acknowledged_sources(
-    sources: &[RowSource],
+    sources: &[UsageUploadSource],
     newly_committed: &mut HashMap<String, CursorEntry>,
 ) {
     let mut max_per_file: HashMap<String, CursorEntry> = HashMap::new();
@@ -2571,7 +2693,10 @@ fn commit_acknowledged_sources(
         let entry = CursorEntry {
             offset: src.end_offset,
             mtime: src.mtime,
-            context: src.context.clone(),
+            context: src.context.as_ref().map(|context| {
+                serde_json::from_value(context.clone())
+                    .expect("Codex context from the rollout scanner must round-trip")
+            }),
         };
         max_per_file
             .entry(src.file_path.clone())
@@ -2594,31 +2719,42 @@ async fn flush_batch(
     cli_version: Option<&str>,
     cursor: &mut TelemetryCursor,
     cycle_started_at_unix_secs: u64,
-    batch_events: &mut Vec<Value>,
-    batch_sources: &mut Vec<RowSource>,
+    planner: &mut UsageUploadPlanner,
+    plan_batch: UsageUploadBatch,
     newly_committed: &mut HashMap<String, CursorEntry>,
 ) -> FlushOutcome {
     // Consent is checked at the request boundary, including the first and only
     // batch in a cycle. A withdrawal while files are being scanned must prevent
     // the pending payload from ever leaving the machine.
     if !resolve_telemetry_enabled(vault).await {
-        batch_events.clear();
-        batch_sources.clear();
         return FlushOutcome::ConsentRevoked;
     }
-    let event_count = batch_events.len();
-    let batch = UsageBatch {
+    let wire_batch = UsageBatch {
         machine_id: machine_id.to_string(),
         installer_version: installer_version.to_string(),
         cli_version: cli_version.map(str::to_string),
-        events: std::mem::take(batch_events),
+        events: plan_batch.events.clone(),
     };
-    let sources = std::mem::take(batch_sources);
+    let event_count = wire_batch.events.len();
+    let body = match serde_json::to_vec(&wire_batch) {
+        Ok(body) => body,
+        Err(_) => {
+            eprintln!("[telemetry] usage flush not accepted: serialization_failed");
+            record_unaccepted_flush(cursor, unix_now_secs().max(cycle_started_at_unix_secs));
+            return FlushOutcome::Unaccepted {
+                reason: "serialization_failed",
+            };
+        }
+    };
+    if !planner.reserve_request(body.len()) {
+        return FlushOutcome::BudgetReached;
+    }
 
     let response = match build_client()
         .post(format!("{}/v1/usage", api_url.trim_end_matches('/')))
         .bearer_auth(jwt)
-        .json(&batch)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(body)
         .send()
         .await
     {
@@ -2660,6 +2796,7 @@ async fn flush_batch(
 
     let skipped_count = ack.skipped.len();
     if usage_ack_is_complete(&ack, event_count) {
+        let sources = UsageUploadPlanner::committable_sources(&plan_batch, true);
         commit_acknowledged_sources(&sources, newly_committed);
         reset_unaccepted_flushes(cursor);
         if skipped_count > 0 {
@@ -2705,6 +2842,61 @@ mod codex_telemetry_tests {
     use tempfile::TempDir;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn company_step_route_row_keeps_decision_counts_and_lifts_company_uid() {
+        let event = build_desktop_telemetry_event(
+            "desktop_onboarding_step".to_string(),
+            Some(json!({
+                "step": "company",
+                "action": "started",
+                "outcome": "joined_invite",
+                "decision": "joined_invite",
+                "existingCompanies": 0,
+                "paidCompany": false,
+                "pendingInvites": 1,
+                "companyUid": "cmp_company-1",
+                "email": "ada@example.com",
+            })),
+            Some("session-1".to_string()),
+            None,
+            "no-consent",
+        );
+        assert_eq!(event.company_uid.as_deref(), Some("cmp_company-1"));
+        assert_eq!(event.properties["decision"], "joined_invite");
+        assert_eq!(event.properties["existingCompanies"], 0);
+        assert_eq!(event.properties["paidCompany"], false);
+        assert_eq!(event.properties["pendingInvites"], 1);
+        assert!(event.properties.get("email").is_none());
+        assert!(event.properties.get("companyUid").is_none());
+    }
+
+    #[test]
+    fn self_heal_row_lifts_company_uid_but_other_steps_do_not() {
+        let heal = build_desktop_telemetry_event(
+            "desktop_onboarding_step".to_string(),
+            Some(json!({
+                "step": "first-folder-sync",
+                "action": "started",
+                "selfHeal": "triggered",
+                "companyUid": "cmp_company-2",
+            })),
+            None,
+            None,
+            "no-consent",
+        );
+        assert_eq!(heal.company_uid.as_deref(), Some("cmp_company-2"));
+        assert_eq!(heal.properties["selfHeal"], "triggered");
+
+        let other = build_desktop_telemetry_event(
+            "desktop_onboarding_step".to_string(),
+            Some(json!({"step": "welcome-signin", "action": "entered", "companyUid": "cmp_x"})),
+            None,
+            None,
+            "no-consent",
+        );
+        assert!(other.company_uid.is_none());
+    }
 
     #[test]
     fn post_ready_action_event_keeps_only_join_fields_and_server_environment() {
@@ -2820,6 +3012,65 @@ mod codex_telemetry_tests {
         assert!(unsafe_values.get("errorOperation").is_none());
         assert!(unsafe_values.get("errorIoKind").is_none());
         assert!(unsafe_values.get("errorCode").is_none());
+    }
+
+    #[test]
+    fn cdp_funnel_rows_are_operational_and_keep_their_props() {
+        let samples = json!({
+            "isFirstLaunch": true,
+            "userHash": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            "companyHash": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            "provider": "claude",
+            "surface": "terminal",
+            "success": false,
+            "errorClass": "not_found",
+            "trigger": "manual",
+            "flow": "runner",
+            "downloadedCount": 12,
+            "count": 1,
+            "route": "onboarding",
+            "plan": "workforce",
+        });
+        for (op, _, keys) in crate::commands::cdp_mirror::OPERATIONAL_MIRRORS {
+            assert!(is_operational_desktop_event_name(op), "{op} not approved");
+            let input: Map<String, Value> = keys
+                .iter()
+                .map(|key| ((*key).to_string(), samples[*key].clone()))
+                .collect();
+            let out = sanitize_desktop_properties(Some(Value::Object(input)));
+            for key in keys.iter() {
+                assert_eq!(out[*key], samples[*key], "{op}.{key} dropped");
+            }
+        }
+        // Identifiers and emails never pass, whatever the row.
+        let leaky = sanitize_desktop_properties(Some(json!({
+            "userHash": "prs_01ABC@example.com",
+            "personUid": "prs_01ABC",
+            "inviteeEmail": "a@b.c",
+        })));
+        assert!(leaky.as_object().unwrap().is_empty(), "{leaky}");
+    }
+
+    #[test]
+    fn invite_step_failure_keeps_error_kind_and_bounded_http_status() {
+        let sanitized = sanitize_desktop_properties(Some(json!({
+            "step": "invite-teammate",
+            "action": "failed",
+            "errorKind": "plan_limit",
+            "statusCode": 402,
+            "inviteeEmail": "person@example.com"
+        })));
+        assert_eq!(sanitized["errorKind"], "plan_limit");
+        assert_eq!(sanitized["statusCode"], 402);
+        assert!(sanitized.get("inviteeEmail").is_none());
+
+        for bad in [json!(99), json!(600), json!(-1), json!("409")] {
+            let sanitized = sanitize_desktop_properties(Some(json!({
+                "step": "invite-teammate",
+                "statusCode": bad
+            })));
+            assert!(sanitized.get("statusCode").is_none());
+        }
     }
 
     #[test]
@@ -2971,12 +3222,30 @@ mod codex_telemetry_tests {
                 "errorOperation",
                 "errorIoKind",
                 "errorCode",
+                "statusCode",
                 "deferralCount",
                 "firstDeferralAgeSeconds",
                 "lockTimeoutSeconds",
                 "holdReason",
                 "requiredGitVersion",
                 "detectedGitVersion",
+                "found",
+                "existingCompanies",
+                "paidCompany",
+                "pendingInvites",
+                "decision",
+                "provisioningStep",
+                "selfHeal",
+                "isFirstLaunch",
+                "userHash",
+                "companyHash",
+                "success",
+                "errorClass",
+                "trigger",
+                "downloadedCount",
+                "count",
+                "route",
+                "plan",
             ]
         );
         for key in ALLOWED_DESKTOP_PROPERTY_KEYS {
@@ -3048,6 +3317,10 @@ mod codex_telemetry_tests {
             crate::app_version::current()
         );
         assert_eq!(event.properties["step"], "connector-import");
+        assert_eq!(
+            serde_json::to_value(&event).unwrap()["installAttemptId"],
+            install_attempt_id
+        );
 
         let completed = build_desktop_telemetry_event(
             "desktop_setup_completed".to_string(),
@@ -3154,6 +3427,41 @@ mod codex_telemetry_tests {
         ResponseTemplate::new(200).set_body_json(json!({
             "ok": true, "written": event_count, "deduped": 0, "skipped": []
         }))
+    }
+
+    fn test_upload_batch(
+        machine_id: &str,
+        installer_version: &str,
+        cli_version: Option<&str>,
+        events: Vec<Value>,
+        sources: Vec<UsageUploadSource>,
+    ) -> (UsageUploadPlanner, UsageUploadBatch) {
+        assert_eq!(events.len(), sources.len());
+        let empty = UsageBatch {
+            machine_id: machine_id.to_string(),
+            installer_version: installer_version.to_string(),
+            cli_version: cli_version.map(str::to_string),
+            events: Vec::new(),
+        };
+        let overhead = serde_json::to_vec(&empty).unwrap().len() - 2;
+        let mut planner = UsageUploadPlanner::new(overhead, MAX_BATCH_BYTES, None);
+        for (event, source) in events.into_iter().zip(sources) {
+            assert_eq!(
+                planner.add_event(event, source).unwrap(),
+                AddUsageEvent::Added
+            );
+        }
+        let batch = planner.take_batch().unwrap();
+        (planner, batch)
+    }
+
+    fn test_source(path: &str, offset: u64) -> UsageUploadSource {
+        UsageUploadSource {
+            file_path: path.to_string(),
+            end_offset: offset,
+            mtime: 1,
+            context: Some(serde_json::to_value(CodexUsageContext::default()).unwrap()),
+        }
     }
 
     /// Create a temp HOME with ~/.hq/ and ~/.claude/projects/ structure.
@@ -3451,6 +3759,8 @@ mod codex_telemetry_tests {
         let home = setup_home();
         write_menubar(home.path(), r#"{"machineId":"mid-desktop-on"}"#);
         std::env::set_var("HOME", home.path());
+        let install_attempt_id = crate::commands::first_run::install_attempt_id()
+            .expect("the persisted install attempt id is available");
 
         let vault = VaultClient::new(server.uri(), "test-jwt");
         let result = emit_desktop_operational_telemetry_with_vault(
@@ -3491,6 +3801,7 @@ mod codex_telemetry_tests {
         assert_eq!(event["schemaVersion"], 1);
         assert_eq!(event["occurredAt"], "2026-08-31T10:00:00.000Z");
         assert_eq!(event["sessionId"], "11111111-1111-4111-8111-111111111111");
+        assert_eq!(event["installAttemptId"], install_attempt_id);
 
         let allowed_event_keys = [
             "eventName",
@@ -3501,6 +3812,7 @@ mod codex_telemetry_tests {
             "schemaVersion",
             "idempotencyKey",
             "sessionId",
+            "installAttemptId",
             "properties",
         ];
         let event_keys = event.as_object().unwrap();
@@ -5537,15 +5849,15 @@ mod codex_telemetry_tests {
             })))
             .mount(&partial_server)
             .await;
-        let source = || RowSource {
-            file_path: "rollout".to_string(),
-            end_offset: 99,
-            mtime: 1,
-            context: Some(CodexUsageContext::default()),
-        };
+        let source = || test_source("rollout", 99);
         let event = || json!({"uuid": "stable-event", "inputTokens": 1});
-        let mut events = vec![event()];
-        let mut sources = vec![source()];
+        let (mut planner, batch) = test_upload_batch(
+            "machine",
+            "version",
+            Some("9.9.9"),
+            vec![event()],
+            vec![source()],
+        );
         let mut committed = HashMap::new();
         let mut cursor = TelemetryCursor::default();
 
@@ -5559,8 +5871,8 @@ mod codex_telemetry_tests {
                 Some("9.9.9"),
                 &mut cursor,
                 1_000,
-                &mut events,
-                &mut sources,
+                &mut planner,
+                batch,
                 &mut committed,
             )
             .await,
@@ -5583,8 +5895,13 @@ mod codex_telemetry_tests {
             .respond_with(complete_ack)
             .mount(&full_server)
             .await;
-        let mut retry_events = vec![event()];
-        let mut retry_sources = vec![source()];
+        let (mut retry_planner, retry_batch) = test_upload_batch(
+            "machine",
+            "version",
+            Some("9.9.9"),
+            vec![event()],
+            vec![source()],
+        );
         assert!(flush_batch(
             &full_vault,
             &full_server.uri(),
@@ -5594,8 +5911,8 @@ mod codex_telemetry_tests {
             Some("9.9.9"),
             &mut cursor,
             1_001,
-            &mut retry_events,
-            &mut retry_sources,
+            &mut retry_planner,
+            retry_batch,
             &mut committed,
         )
         .await
@@ -5797,13 +6114,13 @@ mod codex_telemetry_tests {
             .await;
 
         let vault = VaultClient::new(server.uri(), "token");
-        let mut events = vec![json!({"uuid": "event", "inputTokens": 1})];
-        let mut sources = vec![RowSource {
-            file_path: "rollout".to_string(),
-            end_offset: 99,
-            mtime: 1,
-            context: Some(CodexUsageContext::default()),
-        }];
+        let (mut planner, batch) = test_upload_batch(
+            "machine",
+            "version",
+            None,
+            vec![json!({"uuid": "event", "inputTokens": 1})],
+            vec![test_source("rollout", 99)],
+        );
         let mut cursor = TelemetryCursor {
             consecutive_unaccepted_flushes: 2,
             ..TelemetryCursor::default()
@@ -5820,8 +6137,8 @@ mod codex_telemetry_tests {
                 None,
                 &mut cursor,
                 1,
-                &mut events,
-                &mut sources,
+                &mut planner,
+                batch,
                 &mut committed,
             )
             .await,
@@ -5859,13 +6176,13 @@ mod codex_telemetry_tests {
             .await;
 
         let vault = VaultClient::new(server.uri(), "token");
-        let mut events = vec![json!({"uuid": "event", "inputTokens": 1})];
-        let mut sources = vec![RowSource {
-            file_path: "rollout".to_string(),
-            end_offset: 99,
-            mtime: 1,
-            context: Some(CodexUsageContext::default()),
-        }];
+        let (mut planner, batch) = test_upload_batch(
+            "machine",
+            "version",
+            None,
+            vec![json!({"uuid": "event", "inputTokens": 1})],
+            vec![test_source("rollout", 99)],
+        );
         let mut cursor = TelemetryCursor::default();
         let mut committed = HashMap::new();
 
@@ -5879,8 +6196,8 @@ mod codex_telemetry_tests {
                 None,
                 &mut cursor,
                 1_000,
-                &mut events,
-                &mut sources,
+                &mut planner,
+                batch,
                 &mut committed,
             )
             .await,
@@ -5894,17 +6211,12 @@ mod codex_telemetry_tests {
 
     #[test]
     fn source_checkpoints_coalesce_per_file() {
-        let source = |path: &str, offset: u64| RowSource {
-            file_path: path.to_string(),
-            end_offset: offset,
-            mtime: 1,
-            context: Some(CodexUsageContext::default()),
-        };
-        let mut sources = Vec::new();
+        let mut planner = UsageUploadPlanner::new(0, MAX_BATCH_BYTES, None);
         for offset in 1..=10_000 {
-            record_source(&mut sources, source("rollout-a", offset));
+            planner.record_source(test_source("rollout-a", offset));
         }
-        record_source(&mut sources, source("rollout-b", 7));
+        planner.record_source(test_source("rollout-b", 7));
+        let sources = planner.take_zero_event_sources().unwrap();
 
         assert_eq!(sources.len(), 2);
         assert_eq!(
@@ -6879,5 +7191,37 @@ mod codex_telemetry_tests {
         let (row, offset, _) = scanner.next_bounded(record.len() as u64).unwrap();
         assert_eq!(row.unwrap()["model"], "final-model");
         assert_eq!(offset, record.len() as u64);
+    }
+
+    #[test]
+    fn anon_id_is_attached_only_as_a_safe_label() {
+        let mut props = serde_json::json!({ "step": "x", "anonId": "spoofed" });
+        attach_anon_id(&mut props, Some("vyg-abc".into()));
+        assert_eq!(props["anonId"], "vyg-abc");
+        let mut props = serde_json::json!({ "anonId": "spoofed" });
+        attach_anon_id(&mut props, Some("bad id/with?url".into()));
+        assert!(props.get("anonId").is_none());
+        let mut props = serde_json::json!({});
+        attach_anon_id(&mut props, None);
+        assert!(props.get("anonId").is_none());
+    }
+
+    #[test]
+    fn install_tag_read_is_operational_and_keeps_only_labels() {
+        assert!(is_operational_desktop_event_name("install_tag_read"));
+        let event = build_desktop_telemetry_event(
+            "install_tag_read".into(),
+            Some(serde_json::json!({
+                "found": true,
+                "source": "whereFroms",
+                "url": "https://x.com/HQ.dmg?aid=vyg-1&secret=1"
+            })),
+            None,
+            None,
+            "no-consent",
+        );
+        assert_eq!(event.properties["found"], true);
+        assert_eq!(event.properties["source"], "whereFroms");
+        assert!(event.properties.get("url").is_none());
     }
 }

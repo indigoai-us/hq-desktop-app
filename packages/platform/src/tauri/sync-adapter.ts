@@ -36,16 +36,14 @@ import {
   FIRST_FOLDER_SYNC_STEP_FLAG,
   HUMAN_ONLY_CONVERSATIONS_FLAG,
   HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT,
-  INVITE_TEAMMATE_STEP_FLAG,
   LOGIN_RECEIPT_DURABILITY_FLAG,
   PERSONAL_WORKSPACE_BOARD_FLAG,
   POST_READY_ACTION_TELEMETRY_FLAG,
   READY_FIRST_ACTION_FLAG,
+  SETUP_DEPS_TIMEOUT_RETRY_FLAG,
   createFeatureFlagGate,
   createHqProFlagFetch,
   MIRROR_QUARANTINE_MOVE_NOT_DELETION_FLAG,
-  SETUP_DIRECTORY_PARENT_FALLBACK_FLAG,
-  SETUP_STAGE_TIMEOUT_FIX_FLAG,
   type FeatureFlagGateOptions,
 } from '../flags.js';
 import { updateSettings, type SettingsInvoker } from './settings-mutations.js';
@@ -203,24 +201,13 @@ export function createSyncPlatformAdapter(
       // Missing rows and registry outages preserve event-only behavior.
       return Promise.resolve(ok(false));
     }
-    if (flag === SETUP_DIRECTORY_PARENT_FALLBACK_FLAG) {
-      // This rollout is opt-in. A missing registry value or unavailable
-      // registry stays off until the manager creates and enables it.
+    if (flag === SETUP_DEPS_TIMEOUT_RETRY_FLAG) {
+      // Dependency timeout retries are opt-in until hq-flags explicitly enables them.
       return Promise.resolve(ok(false));
     }
     if (flag === FIRST_FOLDER_SYNC_STEP_FLAG) {
       // The first-folder onboarding step is a rollout; fail closed until
       // a manager explicitly enables its hq-flags value.
-      return Promise.resolve(ok(false));
-    }
-    if (flag === INVITE_TEAMMATE_STEP_FLAG) {
-      // This optional onboarding step stays off on missing or unreadable
-      // registry values until a manager explicitly enables it.
-      return Promise.resolve(ok(false));
-    }
-    if (flag === SETUP_STAGE_TIMEOUT_FIX_FLAG) {
-      // Setup timeout mitigation is opt-in and stays off until a manager
-      // explicitly enables its hq-flags value.
       return Promise.resolve(ok(false));
     }
     if (flag === PERSONAL_WORKSPACE_BOARD_FLAG) {
@@ -760,6 +747,8 @@ export function createSyncPlatformAdapter(
           idempotencyKey: args.idempotencyKey ?? null,
         }),
       checkCompanySlug: (slug) => call('check_company_slug', { slug }),
+      activateCompanyCloud: (companyUid) =>
+        call('activate_company_cloud', { companyUid }),
       getCompanyTab: (companyUid, tab) =>
         call('get_company_tab', { companyUid, tab }),
       runCompanyTabAction: (args) =>
@@ -1096,7 +1085,7 @@ export function createSyncPlatformAdapter(
       getTeamTelemetry: (slug) =>
         call('get_company_team_telemetry', { slug }),
       claimPendingInvite: (slug) =>
-        call('claim_pending_company_invite', { slug }),
+        call('claim_pending_company_invite', { slug, route: 'company_page' }),
       connectToCloud: (slug) =>
         call('connect_workspace_to_cloud', { slug }),
       getSummary: (slug) => call('get_company_summary', { slug }),

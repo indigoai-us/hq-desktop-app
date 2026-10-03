@@ -114,7 +114,7 @@ pub use hq_desktop_core::hq_cli_update::{
     should_retry_windows_busy_install_target, suppress_for_dismissal,
     unattributed_install_stderr_origin, user_prefix_aim_decision, version_from_hq_binary,
     version_if_hq_cli, windows_busy_cli_version_unchanged, windows_busy_deferral_decision,
-    windows_busy_install_target_retry_delay_for_recovery, windows_busy_install_target_retry_rung,
+    windows_busy_install_target_retry_delay, windows_busy_install_target_retry_rung,
     AsyncSingleFlight, DeliveredPrefixShim, ExecutedCopyAim, ExecutedCopyReaim,
     ExecutedCopyReaimGate, HqCliUpdateInfo, InstallEnvironment, InstallExecutor,
     InstallFailureEpisode, InstallFailureKind, InterpreterRecovery, LaunchCliCheck,
@@ -588,8 +588,6 @@ async fn run_npm_install(
 }
 
 const MAX_NPM_INSTALL_ATTEMPTS: usize = 4;
-pub(crate) const WINDOWS_HQ_CLI_CONTENTION_RECOVERY_FLAG: &str =
-    "desktop.windows-hq-cli-contention-recovery-v1";
 
 #[derive(Debug)]
 struct NpmInstallAttempt {
@@ -620,6 +618,7 @@ struct NpmInstallRun {
     windows_busy_retry_attempts: Option<u8>,
     windows_busy_retry_outcome: WindowsBusyRetryOutcome,
     lock_holder_diagnostic: Option<NpmLockHolderDiagnostic>,
+    previous_install_restored: bool,
 }
 
 async fn read_hq_cli_package_holders(prefix: Option<&str>) -> RestartManagerHolderObservation {
@@ -1047,7 +1046,6 @@ async fn run_npm_install_local_recovery_ladder(
     // Never terminate or signal the holder.
     if !output.status.success() {
         let mut retries_started = 0usize;
-        let mut extended_recovery_enabled = None;
         loop {
             let detail = npm_output_detail(&output);
             let is_locked_target =
@@ -1115,20 +1113,7 @@ async fn run_npm_install_local_recovery_ladder(
                 };
                 break;
             }
-            let extended = match extended_recovery_enabled {
-                Some(enabled) => enabled,
-                None => {
-                    let enabled = crate::commands::hq_pro::feature_flag_enabled(
-                        WINDOWS_HQ_CLI_CONTENTION_RECOVERY_FLAG,
-                    )
-                    .await;
-                    extended_recovery_enabled = Some(enabled);
-                    enabled
-                }
-            };
-            let Some(delay) =
-                windows_busy_install_target_retry_delay_for_recovery(retry_number, extended)
-            else {
+            let Some(delay) = windows_busy_install_target_retry_delay(retry_number) else {
                 *windows_busy_retry_attempts = Some(retries_started as u8);
                 *windows_busy_retry_outcome = if retries_started > 0 {
                     WindowsBusyRetryOutcome::Failed
@@ -1177,6 +1162,236 @@ async fn run_npm_install_local_recovery_ladder(
     Ok(output)
 }
 
+struct HqCliInstallBackup {
+    targets: Vec<PathBuf>,
+    moved: Vec<(PathBuf, PathBuf)>,
+    active: bool,
+}
+
+fn hq_cli_install_targets(prefix: &str) -> Vec<PathBuf> {
+    let root = Path::new(prefix);
+    let package = npm_global_package_scope_dir_for(
+        prefix,
+        cfg!(target_os = "windows"),
+        "@indigoai-us/hq-cli",
+    )
+    .join("hq-cli");
+    let bin = if cfg!(target_os = "windows") {
+        root.to_path_buf()
+    } else {
+        root.join("bin")
+    };
+    let mut targets = vec![package];
+    for shim in [
+        "hq",
+        "hq.cmd",
+        "hq.ps1",
+        "hq-auth-refresh",
+        "hq-auth-refresh.cmd",
+        "hq-auth-refresh.ps1",
+    ] {
+        targets.push(bin.join(shim));
+    }
+    targets
+}
+
+fn path_entry_exists(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok()
+}
+
+fn remove_install_path(path: &Path) -> Result<(), String> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("inspect {}: {error}", path.display())),
+    };
+    if metadata.file_type().is_dir() {
+        std::fs::remove_dir_all(path).map_err(|error| format!("remove {}: {error}", path.display()))
+    } else {
+        std::fs::remove_file(path).map_err(|error| format!("remove {}: {error}", path.display()))
+    }
+}
+
+fn copy_install_path(source: &Path, destination: &Path) -> Result<(), String> {
+    let metadata = std::fs::symlink_metadata(source)
+        .map_err(|error| format!("inspect {}: {error}", source.display()))?;
+    if metadata.file_type().is_symlink() {
+        let target = std::fs::read_link(source)
+            .map_err(|error| format!("read link {}: {error}", source.display()))?;
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, destination)
+            .map_err(|error| format!("copy link {}: {error}", source.display()))?;
+        #[cfg(windows)]
+        {
+            let is_dir = std::fs::metadata(source)
+                .map(|target| target.is_dir())
+                .unwrap_or(false);
+            if is_dir {
+                std::os::windows::fs::symlink_dir(target, destination)
+                    .map_err(|error| format!("copy link {}: {error}", source.display()))?;
+            } else {
+                std::os::windows::fs::symlink_file(target, destination)
+                    .map_err(|error| format!("copy link {}: {error}", source.display()))?;
+            }
+        }
+        #[cfg(not(any(unix, windows)))]
+        return Err(format!(
+            "cannot preserve link {} on this platform",
+            source.display()
+        ));
+        return Ok(());
+    }
+    if metadata.is_dir() {
+        std::fs::create_dir(destination)
+            .map_err(|error| format!("create backup {}: {error}", destination.display()))?;
+        for entry in std::fs::read_dir(source)
+            .map_err(|error| format!("list install directory {}: {error}", source.display()))?
+        {
+            let entry = entry
+                .map_err(|error| format!("list install directory {}: {error}", source.display()))?;
+            copy_install_path(&entry.path(), &destination.join(entry.file_name()))?;
+        }
+        std::fs::set_permissions(destination, metadata.permissions()).map_err(|error| {
+            format!("set backup permissions {}: {error}", destination.display())
+        })?;
+        return Ok(());
+    }
+    std::fs::copy(source, destination)
+        .map(|_| ())
+        .map_err(|error| format!("copy install file {}: {error}", source.display()))
+}
+
+fn preserve_hq_cli_install(prefix: &str) -> Result<HqCliInstallBackup, String> {
+    let targets = hq_cli_install_targets(prefix);
+    let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for target in &targets {
+        match std::fs::symlink_metadata(target) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!(
+                    "inspect existing install {}: {error}",
+                    target.display()
+                ))
+            }
+        }
+        let parent = target
+            .parent()
+            .ok_or_else(|| format!("install path has no parent: {}", target.display()))?;
+        let backup = parent.join(format!("hq-cli-install-backup-{}", ulid::Ulid::new()));
+        if let Err(error) = copy_install_path(target, &backup) {
+            let _ = remove_install_path(&backup);
+            for (_, saved) in moved.iter().rev() {
+                let _ = remove_install_path(saved);
+            }
+            return Err(format!(
+                "preserve existing install {}: {error}",
+                target.display()
+            ));
+        }
+        moved.push((target.clone(), backup));
+    }
+    Ok(HqCliInstallBackup {
+        targets,
+        moved,
+        active: true,
+    })
+}
+
+impl HqCliInstallBackup {
+    fn finish(&mut self, install_succeeded: bool) -> Result<bool, String> {
+        let had_previous_install = self
+            .moved
+            .iter()
+            .any(|(target, _)| target.ends_with(Path::new("hq-cli")));
+        if !install_succeeded {
+            self.restore()?;
+            return Ok(had_previous_install);
+        }
+
+        for (target, saved) in &self.moved {
+            if !path_entry_exists(target) {
+                // npm can exit 0 without recreating a shim/package in a reachable target.
+                // Keep the old artifact so the caller's convergence check can still use it.
+                if let Err(error) = std::fs::rename(saved, target) {
+                    log(
+                        "hq-cli-update",
+                        &format!(
+                            "could not restore {} after incomplete install: {error}",
+                            target.display()
+                        ),
+                    );
+                }
+            } else if let Err(error) = remove_install_path(saved) {
+                log(
+                    "hq-cli-update",
+                    &format!("could not remove install backup: {error}"),
+                );
+            }
+        }
+        self.active = false;
+        Ok(false)
+    }
+
+    fn restore(&mut self) -> Result<(), String> {
+        // Targets without backups were absent before install, so remove any
+        // partially installed artifacts. Backed-up targets are handled below:
+        // if a prior restore consumed their backup, preserve the restored target.
+        for target in &self.targets {
+            let had_previous_entry = self
+                .moved
+                .iter()
+                .any(|(moved_target, _)| moved_target == target);
+            if !had_previous_entry {
+                remove_install_path(target)?;
+            }
+        }
+        for (target, saved) in &self.moved {
+            if path_entry_exists(saved) {
+                remove_install_path(target)?;
+                std::fs::rename(saved, target).map_err(|error| {
+                    format!("restore previous install {}: {error}", target.display())
+                })?;
+            }
+        }
+        self.active = false;
+        Ok(())
+    }
+}
+
+impl Drop for HqCliInstallBackup {
+    fn drop(&mut self) {
+        if self.active {
+            if let Err(error) = self.restore() {
+                log(
+                    "hq-cli-update",
+                    &format!("failed to restore previous hq-cli install: {error}"),
+                );
+            }
+        }
+    }
+}
+
+fn npm_install_failure_message(
+    raw_detail: &str,
+    user_detail: &str,
+    previous_install_restored: bool,
+) -> String {
+    let cause = npm_lifecycle_cause(raw_detail);
+    let step = match cause {
+        "toolchain-missing" | "prebuild-unavailable" => "native module build",
+        "postinstall-script" => "package lifecycle script",
+        _ if raw_detail.to_ascii_lowercase().contains("gyp err!") => "native module build",
+        _ => "npm install",
+    };
+    let restored = if previous_install_restored {
+        " The previous working hq-cli was restored."
+    } else {
+        ""
+    };
+    format!("HQ CLI {step} failed.{restored} {user_detail}")
+}
+
 async fn run_npm_install_with_retries(
     npm: &str,
     path: &str,
@@ -1184,6 +1399,7 @@ async fn run_npm_install_with_retries(
     prefix: Option<&str>,
     base_args: Vec<String>,
 ) -> Result<NpmInstallRun, String> {
+    let mut backup = prefix.map(preserve_hq_cli_install).transpose()?;
     let mut ledger = Vec::with_capacity(MAX_NPM_INSTALL_ATTEMPTS);
     let mut missing_target_state = MissingTargetState::Unknown;
     let mut windows_busy_retry_attempts = None;
@@ -1287,6 +1503,10 @@ async fn run_npm_install_with_retries(
         break;
     }
 
+    let previous_install_restored = match backup.as_mut() {
+        Some(backup) => backup.finish(output.status.success())?,
+        _ => false,
+    };
     log_npm_install_attempt_ledger(&ledger);
     let final_attempt_forced = ledger.last().is_some_and(|attempt| attempt.forced);
     let rungs = ledger.iter().map(|attempt| attempt.rung).collect();
@@ -1298,6 +1518,7 @@ async fn run_npm_install_with_retries(
         windows_busy_retry_attempts,
         windows_busy_retry_outcome,
         lock_holder_diagnostic,
+        previous_install_restored,
     })
 }
 
@@ -2775,6 +2996,11 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
             prefix.as_deref(),
             install_run.final_attempt_forced,
             &install_env,
+        );
+        let detail = npm_install_failure_message(
+            &raw_detail,
+            &detail,
+            install_run.previous_install_restored,
         );
         log(
             "hq-cli-update",
@@ -5246,6 +5472,74 @@ mod tests {
         assert_eq!(
             command.get_args().collect::<Vec<_>>(),
             args.iter().map(OsStr::new).collect::<Vec<_>>(),
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn failed_npm_install_restores_the_previous_cli_package_and_shim() {
+        use std::fs;
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let temp = tempfile::tempdir().unwrap();
+        let prefix = temp.path().join("npm prefix with spaces");
+        let package = prefix.join("lib/node_modules/@indigoai-us/hq-cli");
+        let bin = prefix.join("bin");
+        fs::create_dir_all(&package).unwrap();
+        fs::create_dir_all(&bin).unwrap();
+        fs::write(
+            package.join("package.json"),
+            r#"{"name":"@indigoai-us/hq-cli","version":"5.77.8"}"#,
+        )
+        .unwrap();
+        fs::write(package.join("working.js"), "previous package").unwrap();
+        let shim_target = package.join("working.js");
+        symlink(&shim_target, bin.join("hq")).unwrap();
+
+        let npm = temp.path().join("fake-npm");
+        let script = format!(
+            r#"#!/bin/sh
+prefix="{}"
+package="$prefix/lib/node_modules/@indigoai-us/hq-cli"
+rm -rf "$package"
+mkdir -p "$package/dist"
+printf '%s' 'partial package' > "$package/dist/index.js"
+rm -f "$prefix/bin/hq"
+ln -s "$package/missing.js" "$prefix/bin/hq"
+printf '%s\n' 'gyp ERR! build error' >&2
+exit 1
+"#,
+            prefix.display(),
+        );
+        fs::write(&npm, script).unwrap();
+        let mut permissions = fs::metadata(&npm).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&npm, permissions).unwrap();
+        let npm_cache = temp.path().join("app-cache/npm");
+        fs::create_dir_all(&npm_cache).unwrap();
+
+        let run = run_npm_install_with_retries(
+            npm.to_str().unwrap(),
+            &std::env::var("PATH").unwrap(),
+            &npm_cache,
+            Some(prefix.to_str().unwrap()),
+            install_argv(Some(prefix.to_str().unwrap()), Some("5.101.0")),
+        )
+        .await
+        .unwrap();
+
+        assert!(!run.output.status.success(), "fake npm must fail");
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(package.join("package.json")).unwrap()).unwrap();
+        assert_eq!(manifest["version"], "5.77.8");
+        assert_eq!(
+            fs::read_to_string(package.join("working.js")).unwrap(),
+            "previous package"
+        );
+        assert_eq!(fs::read_link(bin.join("hq")).unwrap(), shim_target);
+        assert!(
+            !package.join("dist/index.js").exists(),
+            "partial package was removed"
         );
     }
 

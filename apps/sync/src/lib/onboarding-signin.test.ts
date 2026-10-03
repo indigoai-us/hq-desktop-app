@@ -2,6 +2,17 @@ import { describe, expect, it } from 'vitest';
 import { mapSignInError } from './onboarding-signin';
 
 describe('mapSignInError', () => {
+  it('maps referral persistence failures to neutral retryable copy', () => {
+    const error = mapSignInError(
+      '{"code":"OAUTH_REFERRAL_PERSIST_FAILED","message":"diagnostic: token=secret; raw={\\"user_id\\":123}"}',
+      'Google',
+    );
+
+    expect(error).toBe('We couldn’t finish preparing sign-in. Please try again.');
+    expect(error).not.toContain('diagnostic');
+    expect(error).toContain('try again');
+  });
+
   it('uses friendly copy for the structured port-in-use error', () => {
     expect(mapSignInError('{"code":"OAUTH_PORT_IN_USE"}', 'Google')).toBe(
       'Sign-in could not open a registered local callback port (53682, 8765, or 3000). Close another sign-in window or app using one, then retry.',

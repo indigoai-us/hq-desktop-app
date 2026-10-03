@@ -14,6 +14,9 @@
 //! feeds (see `sync_progress_watch`).
 
 use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Condvar, Mutex};
@@ -21,16 +24,16 @@ use std::time::{Duration, Instant};
 
 use hq_desktop_core::daemon::{
     compose_runner_spawn_flags, effective_runner_heap_ceiling, is_autostart_enabled,
-    is_instant_sync_enabled, is_pid_alive, is_realtime_sync_enabled, resolve_hq_folder_path,
-    sync_child_env, DaemonStatus,
+    is_instant_sync_enabled, is_pid_alive, is_realtime_sync_enabled, read_menubar_bool,
+    resolve_hq_folder_path, sync_child_env, DaemonStatus,
 };
 use hq_desktop_core::hq_daemon::{
     after_daemon_exit, choose_sync_host, cli_supports_daemon_instant_sync, daemon_run_args,
     default_daemon_paths, read_daemon_state, running_daemon_pid, DaemonState, HostAction, LastPass,
-    SyncHostMode, HQ_DAEMON_FLAG,
+    SyncHostMode, HQ_DAEMON_FLAG, HQ_DAEMON_HOST_MIN_CLI,
 };
 use hq_desktop_core::hq_resolver::{resolve_hq, HqInvocation};
-use tauri::{AppHandle, Runtime};
+use tauri::{AppHandle, Listener, Manager, Runtime};
 
 use crate::commands::daemon::{handle_watch_stdout_line, WatcherPhaseContext};
 use crate::commands::process::{
@@ -54,6 +57,17 @@ const RESERVE_RETRY: Duration = Duration::from_secs(5);
 const INSTANT_SYNC_UNSUPPORTED_MESSAGE: &str = "Instant Sync is off, but this HQ CLI version cannot apply that setting. Update HQ CLI to use Instant Sync controls.";
 const HOST_PHASE_WAIT_SECONDS: u64 = 15;
 const HOST_PHASE_RETRY_MESSAGE: &str = "Sync setup is still resolving. Try again in a moment.";
+const HOST_FLAG_RETRY_INITIAL: Duration = Duration::from_secs(2);
+const HOST_FLAG_RETRY_MAX: Duration = Duration::from_secs(60);
+const HOST_FLAG_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
+const HOST_FLAG_CACHE_FILE: &str = "hq-daemon-host-flag.json";
+const AUTH_SESSION_READY_EVENT: &str = "auth:session-ready";
+const DAEMON_OFF_NEXT_LAUNCH_MESSAGE: &str =
+    "desktop.hq-daemon turned off; the switch applies on the next launch (daemon-off-by-flag)";
+/// Rollout gate for honoring the existing Sync on launch preference when
+/// background Auto-sync is disabled. The lead creates this hq-flags key with
+/// defaultValue=false before enabling the behavior.
+pub const SYNC_ON_LAUNCH_RECONCILE_FLAG: &str = "desktop.sync-on-launch-reconcile-v1";
 static INSTANT_SYNC_CLI_SUPPORTED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +83,7 @@ pub enum HostPhase {
 static PHASE: AtomicU8 = AtomicU8::new(if cfg!(test) { 1 } else { 0 });
 static PHASE_WAIT_LOCK: Mutex<()> = Mutex::new(());
 static PHASE_CHANGED: Condvar = Condvar::new();
+static HOST_TRANSITION_LOCK: Mutex<()> = Mutex::new(());
 /// Pid of the running daemon child, 0 when none.
 static CHILD_PID: AtomicU32 = AtomicU32::new(0);
 /// Set to relaunch the child at once (its environment changed).
@@ -81,6 +96,184 @@ static TEST_DAEMON_COMMANDS_ENABLED: AtomicBool = AtomicBool::new(false);
 static TEST_DAEMON_COMMANDS: Mutex<Vec<Vec<String>>> = Mutex::new(Vec::new());
 #[cfg(test)]
 static TEST_PHASE_LOCK: Mutex<()> = Mutex::new(());
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostFlagReason {
+    FlagValue,
+    CachedAfterReadFailure,
+    UnreadableUsingDefault,
+}
+
+impl HostFlagReason {
+    fn describe(self, enabled: bool) -> &'static str {
+        match (self, enabled) {
+            (Self::FlagValue, true) => "desktop.hq-daemon is on",
+            (Self::FlagValue, false) => "desktop.hq-daemon is off",
+            (Self::CachedAfterReadFailure, true) => {
+                "hq-flags was unreadable; using the cached on value"
+            }
+            (Self::CachedAfterReadFailure, false) => {
+                "hq-flags was unreadable; using the cached off value"
+            }
+            (Self::UnreadableUsingDefault, _) => {
+                "hq-flags was unreadable and no value is cached; keeping the legacy default"
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HostFlagResolution {
+    enabled: bool,
+    cache_write: Option<bool>,
+    reason: HostFlagReason,
+}
+
+fn resolve_host_flag_read(
+    read: Result<Option<bool>, ()>,
+    cached_value: Option<bool>,
+) -> HostFlagResolution {
+    match read {
+        Ok(value) => {
+            let enabled = value.unwrap_or(false);
+            HostFlagResolution {
+                enabled,
+                cache_write: Some(enabled),
+                reason: HostFlagReason::FlagValue,
+            }
+        }
+        Err(()) => match cached_value {
+            Some(enabled) => HostFlagResolution {
+                enabled,
+                cache_write: None,
+                reason: HostFlagReason::CachedAfterReadFailure,
+            },
+            None => HostFlagResolution {
+                enabled: false,
+                cache_write: None,
+                reason: HostFlagReason::UnreadableUsingDefault,
+            },
+        },
+    }
+}
+
+fn host_mode_for_flag_resolution(
+    resolution: HostFlagResolution,
+    cli_installed_locally: bool,
+    cli_version: Option<&str>,
+) -> SyncHostMode {
+    choose_sync_host(resolution.enabled, cli_installed_locally, cli_version)
+}
+
+fn queue_auth_session_reresolve(sender: &tokio::sync::mpsc::UnboundedSender<()>) {
+    let _ = sender.send(());
+}
+
+fn choose_sync_host_for_cli_probe(
+    flag_enabled: bool,
+    cli_installed_locally: bool,
+    cli_version: Option<&str>,
+) -> Option<SyncHostMode> {
+    if !flag_enabled || !cli_installed_locally {
+        return Some(choose_sync_host(flag_enabled, cli_installed_locally, None));
+    }
+    cli_version.map(|version| choose_sync_host(true, true, Some(version)))
+}
+
+fn launch_reconcile_for_host_selection(initial_selection: bool, configured: bool) -> bool {
+    initial_selection && configured
+}
+
+fn should_defer_daemon_to_legacy(current: HostPhase, next: HostPhase) -> bool {
+    current == HostPhase::Daemon && next == HostPhase::Legacy
+}
+
+fn next_host_flag_retry_delay(current: Duration, read_failed: bool, sign_in: bool) -> Duration {
+    if !read_failed {
+        HOST_FLAG_REFRESH_INTERVAL
+    } else if sign_in {
+        HOST_FLAG_RETRY_INITIAL
+    } else {
+        (current * 2).min(HOST_FLAG_RETRY_MAX)
+    }
+}
+
+fn host_flag_cache_path(app: &AppHandle) -> Option<PathBuf> {
+    app.path()
+        .app_data_dir()
+        .ok()
+        .map(|path| path.join(HOST_FLAG_CACHE_FILE))
+}
+
+fn read_host_flag_cache(path: Option<&Path>) -> Result<Option<bool>, String> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let contents = match fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    contents
+        .trim()
+        .parse()
+        .map(Some)
+        .map_err(|error: std::str::ParseBoolError| error.to_string())
+}
+
+fn write_host_flag_cache(path: Option<&Path>, value: bool) -> Result<(), String> {
+    let path = path.ok_or_else(|| "application data directory is unavailable".to_string())?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| "host flag cache has no parent directory".to_string())?;
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
+    let mut file = File::create(&temporary).map_err(|error| error.to_string())?;
+    writeln!(file, "{value}").map_err(|error| error.to_string())?;
+    file.sync_all().map_err(|error| error.to_string())?;
+    #[cfg(windows)]
+    if path.exists() {
+        fs::remove_file(path).map_err(|error| error.to_string())?;
+    }
+    fs::rename(&temporary, path).map_err(|error| error.to_string())
+}
+
+fn run_host_transition<StopLegacy, PauseDaemon, StartLegacy, StartDaemon>(
+    from: HostPhase,
+    to: HostPhase,
+    stop_legacy: StopLegacy,
+    pause_daemon: PauseDaemon,
+    start_legacy: StartLegacy,
+    start_daemon: StartDaemon,
+) -> Result<(), String>
+where
+    StopLegacy: FnOnce() -> Result<(), String>,
+    PauseDaemon: FnOnce() -> Result<(), String>,
+    StartLegacy: FnOnce(),
+    StartDaemon: FnOnce() -> Result<(), String>,
+{
+    match (from, to) {
+        (current, next) if current == next => Ok(()),
+        (HostPhase::Legacy, HostPhase::Daemon) => {
+            stop_legacy()?;
+            start_daemon()?;
+            Ok(())
+        }
+        (HostPhase::Daemon, HostPhase::Legacy) => {
+            drop(pause_daemon);
+            Ok(())
+        }
+        (_, HostPhase::Legacy) => {
+            start_legacy();
+            Ok(())
+        }
+        (_, HostPhase::Daemon) => {
+            start_daemon()?;
+            Ok(())
+        }
+        (_, HostPhase::Pending) => Ok(()),
+    }
+}
 
 pub fn current_phase() -> HostPhase {
     match PHASE.load(Ordering::Acquire) {
@@ -556,28 +749,206 @@ pub fn setup_sync_host(app: &AppHandle) {
         // The previous app may have exited during an automatic update after
         // pausing daemon sync. Resume before the hosted daemon starts new work.
         crate::updater::resume_daemon_sync_after_update(&handle).await;
-        match resolve_mode().await {
-            SyncHostMode::Legacy(reason) => {
+        let cache_path = host_flag_cache_path(&handle);
+        let mut auth_events = install_host_mode_auth_listener(&handle);
+        let ((mode, flag_resolution), launch_reconcile_enabled) = tokio::join!(
+            resolve_mode(cache_path.as_deref()),
+            crate::commands::hq_pro::feature_flag_enabled(SYNC_ON_LAUNCH_RECONCILE_FLAG),
+        );
+        log_host_flag_resolution(flag_resolution);
+        if let Some(mode) = mode {
+            apply_host_mode(
+                handle.clone(),
+                mode,
+                flag_resolution,
+                launch_reconcile_enabled,
+                true,
+            );
+        } else {
+            start_initial_legacy_after_cli_probe_failure(handle.clone(), launch_reconcile_enabled);
+        }
+
+        let mut retry_delay = HOST_FLAG_RETRY_INITIAL;
+        loop {
+            let sign_in = tokio::select! {
+                _ = tokio::time::sleep(retry_delay) => false,
+                event = auth_events.recv() => event.is_some(),
+            };
+            if app_exit_requested() {
+                return;
+            }
+            let (mode, resolution) = resolve_mode(cache_path.as_deref()).await;
+            log_host_flag_resolution(resolution);
+            if let Some(mode) = mode {
+                apply_host_mode(
+                    handle.clone(),
+                    mode,
+                    resolution,
+                    launch_reconcile_enabled,
+                    false,
+                );
+            } else {
                 log(
                     LOG_TAG,
-                    &format!("running the app's own sync services: {}", reason.describe()),
+                    "HQ CLI version is unreadable; keeping the current sync host",
                 );
-                set_phase(HostPhase::Legacy);
-                start_legacy_services(handle);
             }
-            SyncHostMode::Daemon => {
-                log(LOG_TAG, "hq daemon runs background services on this launch");
-                set_phase(HostPhase::Daemon);
-                std::thread::spawn(move || enter_daemon_mode(handle));
-            }
+            let read_failed = matches!(
+                resolution.reason,
+                HostFlagReason::CachedAfterReadFailure | HostFlagReason::UnreadableUsingDefault
+            );
+            retry_delay = next_host_flag_retry_delay(retry_delay, read_failed, sign_in);
         }
     });
 }
 
-async fn resolve_mode() -> SyncHostMode {
-    let flag_on = crate::commands::hq_pro::feature_flag_enabled(HQ_DAEMON_FLAG).await;
+fn install_host_mode_auth_listener<R: Runtime>(
+    app: &AppHandle<R>,
+) -> tokio::sync::mpsc::UnboundedReceiver<()> {
+    let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+    app.listen(AUTH_SESSION_READY_EVENT, move |_| {
+        queue_auth_session_reresolve(&sender);
+    });
+    receiver
+}
+
+fn log_host_flag_resolution(resolution: HostFlagResolution) {
+    if matches!(
+        resolution.reason,
+        HostFlagReason::CachedAfterReadFailure | HostFlagReason::UnreadableUsingDefault
+    ) {
+        log(
+            LOG_TAG,
+            &format!(
+                "host selection: {}",
+                resolution.reason.describe(resolution.enabled)
+            ),
+        );
+    }
+}
+
+fn start_initial_legacy_after_cli_probe_failure(handle: AppHandle, launch_reconcile_enabled: bool) {
+    let _transition = HOST_TRANSITION_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if current_phase() != HostPhase::Pending {
+        return;
+    }
+    log(
+        LOG_TAG,
+        "HQ CLI version is unreadable at startup; using the legacy sync host and retrying",
+    );
+    set_phase(HostPhase::Legacy);
+    start_legacy_services(
+        handle,
+        launch_reconcile_for_host_selection(true, launch_reconcile_enabled),
+    );
+}
+
+fn apply_host_mode(
+    handle: AppHandle,
+    mode: SyncHostMode,
+    resolution: HostFlagResolution,
+    launch_reconcile_enabled: bool,
+    initial_selection: bool,
+) {
+    let (next, mode_reason) = match mode {
+        SyncHostMode::Legacy(reason) => {
+            let reason = if !resolution.enabled
+                && matches!(
+                    resolution.reason,
+                    HostFlagReason::CachedAfterReadFailure | HostFlagReason::UnreadableUsingDefault
+                ) {
+                resolution.reason.describe(resolution.enabled).to_string()
+            } else {
+                reason.describe()
+            };
+            (HostPhase::Legacy, reason)
+        }
+        SyncHostMode::Daemon => (HostPhase::Daemon, "desktop.hq-daemon is on".to_string()),
+    };
+    let _transition = HOST_TRANSITION_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let previous = current_phase();
+    if should_defer_daemon_to_legacy(previous, next) {
+        log(LOG_TAG, DAEMON_OFF_NEXT_LAUNCH_MESSAGE);
+        return;
+    }
+    if previous == next {
+        return;
+    }
+    if next == HostPhase::Legacy {
+        log(
+            LOG_TAG,
+            &format!("running the app's own sync services: {mode_reason}"),
+        );
+    } else {
+        log(LOG_TAG, "hq daemon runs background services on this launch");
+    }
+    set_phase(HostPhase::Pending);
+    let result = run_host_transition(
+        previous,
+        next,
+        || {
+            crate::commands::daemon::stop_watch_runner()
+                .map(|_| ())
+                .map_err(|error| format!("could not stop the legacy watch runner: {error}"))
+        },
+        || set_daemon_sync(false),
+        || {
+            set_phase(HostPhase::Legacy);
+            start_legacy_services(
+                handle.clone(),
+                launch_reconcile_for_host_selection(initial_selection, launch_reconcile_enabled),
+            );
+        },
+        || {
+            set_phase(HostPhase::Daemon);
+            let daemon_handle = handle.clone();
+            let launch_sync = launch_reconcile_for_host_selection(
+                initial_selection,
+                hq_desktop_core::daemon::should_run_sync_on_launch(
+                    launch_reconcile_enabled,
+                    sync_on_launch_enabled(),
+                    is_realtime_sync_enabled(),
+                    is_autostart_enabled(),
+                ),
+            );
+            std::thread::spawn(move || enter_daemon_mode(daemon_handle, launch_sync));
+            Ok(())
+        },
+    );
+    if let Err(error) = result {
+        set_phase(previous);
+        log(LOG_TAG, &format!("host mode transition failed: {error}"));
+    }
+}
+
+async fn resolve_mode(cache_path: Option<&Path>) -> (Option<SyncHostMode>, HostFlagResolution) {
+    let cached = match read_host_flag_cache(cache_path) {
+        Ok(cached) => cached,
+        Err(error) => {
+            log(LOG_TAG, &format!("could not read host flag cache: {error}"));
+            None
+        }
+    };
+    let read = crate::commands::hq_pro::feature_flag_read(HQ_DAEMON_FLAG).await;
+    let resolution = resolve_host_flag_read(read, cached);
+    if let Some(value) = resolution.cache_write {
+        if let Err(error) = write_host_flag_cache(cache_path, value) {
+            log(
+                LOG_TAG,
+                &format!("could not write host flag cache: {error}"),
+            );
+        }
+    }
+    let flag_on = resolution.enabled;
     if !flag_on {
-        return choose_sync_host(false, false, None);
+        return (
+            Some(host_mode_for_flag_resolution(resolution, false, None)),
+            resolution,
+        );
     }
     let invocation = tauri::async_runtime::spawn_blocking(resolve_hq).await.ok();
     let local = matches!(invocation, Some(HqInvocation::Local(_)));
@@ -586,15 +957,22 @@ async fn resolve_mode() -> SyncHostMode {
     } else {
         None
     };
-    INSTANT_SYNC_CLI_SUPPORTED.store(
-        cli_supports_daemon_instant_sync(version.as_deref()),
-        Ordering::Release,
-    );
-    choose_sync_host(true, local, version.as_deref())
+    match (local, version.as_deref()) {
+        (true, Some(version)) => INSTANT_SYNC_CLI_SUPPORTED.store(
+            cli_supports_daemon_instant_sync(Some(version)),
+            Ordering::Release,
+        ),
+        (false, _) => INSTANT_SYNC_CLI_SUPPORTED.store(false, Ordering::Release),
+        (true, None) => {}
+    }
+    (
+        choose_sync_host_for_cli_probe(flag_on, local, version.as_deref()),
+        resolution,
+    )
 }
 
 /// Today's launch behaviour: warm the npx cache and start the watch runner.
-fn start_legacy_services(handle: AppHandle) {
+fn start_legacy_services(handle: AppHandle, launch_reconcile_enabled: bool) {
     crate::commands::prewarm::spawn_prewarm();
     let dev_disable_auto_sync = std::env::var("HQ_DEV_DISABLE_AUTO_SYNC_ON_LAUNCH")
         .ok()
@@ -608,7 +986,38 @@ fn start_legacy_services(handle: AppHandle) {
             std::thread::sleep(Duration::from_secs(2));
             let _ = crate::commands::daemon::start_daemon_for_app_launch(handle);
         });
+    } else if !dev_disable_auto_sync
+        && hq_desktop_core::daemon::should_run_sync_on_launch(
+            launch_reconcile_enabled,
+            sync_on_launch_enabled(),
+            is_realtime_sync_enabled(),
+            is_autostart_enabled(),
+        )
+    {
+        schedule_sync_on_launch(handle);
     }
+}
+
+fn sync_on_launch_enabled() -> bool {
+    read_menubar_bool(|prefs| prefs.sync_on_launch, true)
+}
+
+fn schedule_sync_on_launch(app: AppHandle) {
+    std::thread::spawn(move || {
+        // Let the app finish choosing its sync host before the one-shot pass.
+        std::thread::sleep(Duration::from_secs(2));
+        tauri::async_runtime::spawn(async move {
+            if let Err(error) = crate::commands::sync::start_sync_with_trigger(
+                app,
+                None,
+                crate::commands::cdp_mirror::SyncTrigger::Auto,
+            )
+            .await
+            {
+                log(LOG_TAG, &format!("sync-on-launch pass failed: {error}"));
+            }
+        });
+    });
 }
 
 /// Sync should run: Auto-sync on, cloud not paused, and no dev kill switch.
@@ -622,7 +1031,7 @@ fn sync_wanted() -> bool {
         && (is_autostart_enabled() || is_realtime_sync_enabled())
 }
 
-fn enter_daemon_mode(handle: AppHandle) {
+fn enter_daemon_mode(handle: AppHandle, launch_sync: bool) {
     // A watch runner from an earlier session would sync the same folder twice.
     if let Err(e) = crate::commands::daemon::stop_watch_runner() {
         log(
@@ -639,14 +1048,17 @@ fn enter_daemon_mode(handle: AppHandle) {
             &format!("could not remove the separate Work Mesh unit: {e}"),
         );
     }
+    std::thread::spawn(watch_env_changes);
+    crate::commands::sync_progress_watch::setup_last_pass_watch(&handle);
     if let Err(e) = set_daemon_sync(sync_wanted()) {
         log(
             LOG_TAG,
             &format!("could not apply the Auto-sync setting: {e}"),
         );
     }
-    std::thread::spawn(watch_env_changes);
-    crate::commands::sync_progress_watch::setup_last_pass_watch(&handle);
+    if launch_sync {
+        schedule_sync_on_launch(handle.clone());
+    }
     host_loop();
 }
 
@@ -922,6 +1334,197 @@ mod tests {
         assert!(!legacy_services_enabled(HostPhase::Pending));
         assert!(legacy_services_enabled(HostPhase::Legacy));
         assert!(!legacy_services_enabled(HostPhase::Daemon));
+    }
+
+    #[test]
+    fn unreadable_flag_uses_cached_daemon_mode_and_keeps_the_read_failure_reason() {
+        let resolution = resolve_host_flag_read(Err(()), Some(true));
+        assert_eq!(resolution.enabled, true);
+        assert_eq!(resolution.reason, HostFlagReason::CachedAfterReadFailure);
+        assert_eq!(resolution.cache_write, None);
+        assert_eq!(
+            host_mode_for_flag_resolution(resolution, true, Some(HQ_DAEMON_HOST_MIN_CLI)),
+            SyncHostMode::Daemon
+        );
+    }
+
+    #[test]
+    fn unreadable_flag_without_cache_uses_legacy_then_a_retry_can_select_daemon() {
+        let initial = resolve_host_flag_read(Err(()), None);
+        assert_eq!(initial.enabled, false);
+        assert_eq!(initial.reason, HostFlagReason::UnreadableUsingDefault);
+        assert_eq!(initial.cache_write, None);
+        assert_eq!(
+            host_mode_for_flag_resolution(initial, false, None),
+            SyncHostMode::Legacy(hq_desktop_core::hq_daemon::LegacyReason::FlagOff)
+        );
+
+        let retry = resolve_host_flag_read(Ok(Some(true)), None);
+        assert_eq!(retry.enabled, true);
+        assert_eq!(retry.reason, HostFlagReason::FlagValue);
+        assert_eq!(retry.cache_write, Some(true));
+        assert_eq!(
+            host_mode_for_flag_resolution(retry, true, Some(HQ_DAEMON_HOST_MIN_CLI)),
+            SyncHostMode::Daemon
+        );
+    }
+
+    #[test]
+    fn successful_off_flag_read_is_cached_and_selects_legacy() {
+        let resolution = resolve_host_flag_read(Ok(Some(false)), Some(true));
+        assert_eq!(resolution.enabled, false);
+        assert_eq!(resolution.reason, HostFlagReason::FlagValue);
+        assert_eq!(resolution.cache_write, Some(false));
+        assert_eq!(
+            host_mode_for_flag_resolution(resolution, true, Some(HQ_DAEMON_HOST_MIN_CLI)),
+            SyncHostMode::Legacy(hq_desktop_core::hq_daemon::LegacyReason::FlagOff)
+        );
+    }
+
+    #[test]
+    fn host_flag_cache_persists_successful_values_and_preserves_them_on_failures() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join(HOST_FLAG_CACHE_FILE);
+        assert_eq!(read_host_flag_cache(Some(&path)).unwrap(), None);
+
+        let off = resolve_host_flag_read(Ok(Some(false)), None);
+        write_host_flag_cache(Some(&path), off.cache_write.unwrap()).unwrap();
+        assert_eq!(read_host_flag_cache(Some(&path)).unwrap(), Some(false));
+
+        let failed = resolve_host_flag_read(Err(()), read_host_flag_cache(Some(&path)).unwrap());
+        assert_eq!(failed.cache_write, None);
+        assert_eq!(read_host_flag_cache(Some(&path)).unwrap(), Some(false));
+    }
+
+    #[test]
+    fn sign_in_requests_a_fresh_host_mode_resolution() {
+        let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+        queue_auth_session_reresolve(&sender);
+        assert!(events.try_recv().is_ok());
+    }
+
+    #[test]
+    fn flag_reads_retry_with_a_bounded_backoff_and_poll_after_success() {
+        assert_eq!(
+            next_host_flag_retry_delay(HOST_FLAG_RETRY_INITIAL, true, false),
+            Duration::from_secs(4)
+        );
+        assert_eq!(
+            next_host_flag_retry_delay(HOST_FLAG_RETRY_MAX, true, false),
+            HOST_FLAG_RETRY_MAX
+        );
+        assert_eq!(
+            next_host_flag_retry_delay(HOST_FLAG_RETRY_MAX, true, true),
+            HOST_FLAG_RETRY_INITIAL
+        );
+        assert_eq!(
+            next_host_flag_retry_delay(HOST_FLAG_RETRY_MAX, false, false),
+            HOST_FLAG_REFRESH_INTERVAL
+        );
+    }
+
+    #[test]
+    fn host_transition_stops_legacy_runner_before_daemon_sync_starts() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let stop_events = events.clone();
+        let pause_events = events.clone();
+        let legacy_events = events.clone();
+        let daemon_events = events.clone();
+        let result = run_host_transition(
+            HostPhase::Legacy,
+            HostPhase::Daemon,
+            || {
+                stop_events.lock().unwrap().push("stop-legacy-runner");
+                Ok(())
+            },
+            || {
+                pause_events.lock().unwrap().push("pause-daemon-sync");
+                Ok(())
+            },
+            || legacy_events.lock().unwrap().push("start-legacy"),
+            || {
+                daemon_events.lock().unwrap().push("start-daemon-sync");
+                Ok(())
+            },
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(
+            *events.lock().unwrap(),
+            ["stop-legacy-runner", "start-daemon-sync"]
+        );
+    }
+
+    #[test]
+    fn failed_legacy_stop_never_starts_daemon() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let stop_events = events.clone();
+        let start_events = events.clone();
+        let stopped = run_host_transition(
+            HostPhase::Legacy,
+            HostPhase::Daemon,
+            || Err("runner still active".to_string()),
+            || Ok(()),
+            || start_events.lock().unwrap().push("start-legacy"),
+            || {
+                stop_events.lock().unwrap().push("start-daemon");
+                Ok(())
+            },
+        );
+        assert_eq!(stopped, Err("runner still active".to_string()));
+        assert!(events.lock().unwrap().is_empty());
+    }
+    #[test]
+    fn daemon_host_keeps_running_when_refresh_reads_flag_off() {
+        let resolution = resolve_host_flag_read(Ok(Some(false)), Some(true));
+        assert_eq!(resolution.cache_write, Some(false));
+        let mode = host_mode_for_flag_resolution(resolution, true, Some(HQ_DAEMON_HOST_MIN_CLI));
+        assert_eq!(
+            mode,
+            SyncHostMode::Legacy(hq_desktop_core::hq_daemon::LegacyReason::FlagOff)
+        );
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let pause_events = events.clone();
+        let legacy_events = events.clone();
+        let defer = should_defer_daemon_to_legacy(HostPhase::Daemon, HostPhase::Legacy);
+        assert!(defer);
+        assert_eq!(
+            DAEMON_OFF_NEXT_LAUNCH_MESSAGE,
+            "desktop.hq-daemon turned off; the switch applies on the next launch (daemon-off-by-flag)"
+        );
+        // The transition itself must also be a no-op, so a caller that skips
+        // the deferral check still never pauses the daemon or starts legacy.
+        run_host_transition(
+            HostPhase::Daemon,
+            HostPhase::Legacy,
+            || Ok(()),
+            || {
+                pause_events.lock().unwrap().push("pause-daemon");
+                Ok(())
+            },
+            || legacy_events.lock().unwrap().push("start-legacy"),
+            || Ok(()),
+        )
+        .unwrap();
+        assert!(events.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn unreadable_cli_version_keeps_the_current_mode_for_retry() {
+        assert_eq!(choose_sync_host_for_cli_probe(true, true, None), None);
+        assert_eq!(
+            choose_sync_host_for_cli_probe(true, false, None),
+            Some(SyncHostMode::Legacy(
+                hq_desktop_core::hq_daemon::LegacyReason::CliNotInstalled
+            ))
+        );
+    }
+
+    #[test]
+    fn launch_reconcile_runs_only_during_initial_host_selection() {
+        assert!(launch_reconcile_for_host_selection(true, true));
+        assert!(!launch_reconcile_for_host_selection(false, true));
     }
 
     // ── settings toggles change the daemon's saved config ────────────────

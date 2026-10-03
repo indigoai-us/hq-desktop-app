@@ -9,6 +9,84 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - The git mirror commits deletions from readable roots in the same sync pass; verified scope-quarantine moves remain preserved.
+- Internal tests: four desktop tests that only searched the source text for strings now check what the code does. Nothing changes in the app.
+
+## [0.10.385] — 2026-10-03
+
+- The vyg CDP mirror now also records app opens (every launch), one daily-active row per day, account linking after sign-in (sha256 hashes of the person and company ids only), Claude/Codex/Grok session launches, sync start and end, teammate invites, joining a company from an invite, and the plan picked during setup. The same rows go to HQ's operational telemetry. The `desktop.cdp-mirror` flag is now re-checked every 6 hours, so turning it on or off no longer needs a relaunch.
+- Referral links now carry through desktop sign-in regardless of the signup experiment. HQ retries referral confirmation after connection failures or a restart and keeps each referral tied to the account that signed in.
+- Release builds: a daily check now fails, and opens an issue, once the release test sign-in is 25 days old, five days before it expires, so it is renewed before a release depends on it. The renewal steps no longer need AWS keys or a shared GitHub token.
+- The updater now refuses a beta or alpha build unless you chose that release channel in Settings. People on the stable channel stay on stable releases even if a test build is ever published by mistake.
+
+## [0.10.384] — 2026-10-03
+
+- Release builds: the macOS release check now confirms its test sign-in is still valid before it opens the app. An expired test sign-in failed v0.10.383 with a message that looked like the app was stuck loading; it now says the test sign-in expired and how to renew it.
+- Desktop onboarding step telemetry now includes the install-attempt identifier so sign-in progress can be joined to that installation’s first launch.
+
+- If the desktop cannot read the HQ daemon flag at startup, it uses the last successfully read value and retries with bounded backoff. After a failed startup read, a later successful on value can recover from the Legacy host to daemon sync without relaunching the app. Turning the flag off while the daemon is running sync takes effect on the next launch. Sign-in also triggers a retry.
+- Cognito refresh failures now log the status and sanitized provider error details. HTTP 401, invalid_grant, and Cognito NotAuthorizedException responses require sign-in; invalid_client keeps the session and parks retries for 15 minutes. Other failures retry with bounded backoff. The shared token lock uses the CLI-compatible PID-file protocol.
+- When a plan limit pauses new files for a company, the app now adds a notification to the notifications panel instead of a banner across the top of the window. Before, someone in many paused companies got one banner per company stacked over the window. Each company gets one notification per pause, a refresh or a reopened window does not repeat it, opening it goes to that company's upgrade page, and the system banner follows your notification settings and is sent once per sync pass however many companies were paused. The main window also stays solid at full opacity, so other apps no longer show through behind it.
+- The main window no longer shows a stack of "New files are paused" notices, one per company, with other apps showing through behind them. A paused company now gets one small notice inside its own pane, personal pages show none, and Dismiss hides it for the rest of the session. The window stays solid at full opacity.
+- Setup now checks what you already have before it asks you to name a company. A paid company, or one you joined, is selected and the company step is skipped. A company you own shows "Use <name>" with "Create another" beside it. A pending invite shows "Join <company>" and never the create form; an invite sent to a different email offers to switch account, and an expired one says to ask the inviter to resend it. If your website sign-up made a company under another account, setup says which (masked email) and offers to switch before offering create.
+- A new company shows "Setting up your company…" until its cloud storage is ready, and only then sends invites and offers a plan. If a setup step fails, the screen names the step and "Try again" retries setup for the same company instead of creating a second one. A company left half set up by an earlier run resumes at that state.
+- Creating a company past the free plan's limit shows the upgrade prompt inline instead of an error.
+- When the first sync finds a company with no storage yet, setup shows "Finishing setup…" and finishes it instead of showing the raw error; "Try again" still works.
+- On first launch over an old HQ folder that is still signed in, the sign-in screen says which account is signed in and lets you continue or switch before anything is created.
+
+## [0.10.382] — 2026-10-03
+
+- Creating a company from the desktop app now sets up its cloud storage right away. Before, the app created the company but never provisioned its vault, so the first sync failed with "has no bucket provisioned. Run VLT-2 bucket provisioning first" and teammate invites could not go out. The New company form shows "Setting up cloud storage..." while this runs, its Try again button re-runs only the setup step, and the sync banner's Try again now repairs companies created by earlier builds.
+- Core update failures now report the available snapshot disk space instead of the required snapshot size.
+
+## [0.10.381] — 2026-10-02
+
+- Sync works again for everyone whose app runs sync itself. Since 0.10.369 the app passed a launcher option to hq-cloud runners 6.18.25 to 6.18.37 that made every sync pass fail, so nothing synced. The app now passes it only to runners from 6.18.38, which handle it correctly.
+- Inviting a teammate after setup no longer fails when that address was already invited: HQ resends the existing invitation and says so. Other invite failures now name the cause (plan limit, invalid email, no connection, server problem) instead of a generic message, and the setup telemetry records the error kind and HTTP status.
+- When you name a new company during setup, HQ now waits for the company's cloud storage to be ready before sending invites. If it isn't ready yet, the invites are queued and sent the next time the app sees the company ready, and the setup screen says they are pending instead of reporting them sent.
+- The "Name your company" setup form no longer shows "(optional)" twice on the Website label, and the Invite teammates box now matches the other fields.
+- On first launch, HQ reads the website visitor id and download surface from the address the installer was downloaded from (macOS download metadata, Windows Zone.Identifier), so a download can be linked to its website visit before sign-in. Only those two values are kept; the address itself is never stored or logged, and an id already linked through sign-in is never replaced.
+
+## [0.10.380] — 2026-10-02
+
+- Keep desktop recording recovery entries after local SDK errors until hq-pro reconciliation reaches a terminal status.
+- Sync reports when another HQ process holds the operation lock, bounds the wait to ten minutes, retries lock timeouts with backoff, and restarts watchers that have not started a pass after thirty minutes.
+
+## [0.10.379] — 2026-10-02
+
+- Closing the main window no longer logs an error.
+
+- When hq-flags enables `desktop.setup-deps-timeout-retry-v1`, a dependency setup timeout gets one automatic retry before setup is marked passed with that step skipped.
+
+
+
+
+
+- Internal: startup diagnostics now label observed CLI resolver candidates, managed package state, and bundled CLI source.
+
+## [0.10.378] — 2026-10-02
+
+- The desktop setup funnel can now be followed end to end in the vyg CDP. When you sign in through the browser, hqforwork.com tells the app which website visitor downloaded it, and the app mirrors first launch, each onboarding step shown, sign-in, company creation, first sync, and a quit before sign-in to the CDP under that visitor, with app version, OS version, chip, and install source. Off by default; turned on remotely with the `desktop.cdp-mirror` flag. No email, name, or token is ever sent.
+
+- Desktop no longer shows your personal space in the Companies list, where clicking it looped between Setting up and Tap to retry.
+
+- Windows-visible copy now uses PC controls, the system tray, and file manager labels where older screens assumed a Mac, menu bar, or Finder.
+
+- Platform wording and keyboard hints now follow the visitor's or desktop's OS instead of assuming macOS.
+
+- Fixes a race in the agent sign-in test when reading the child process ID.
+
+- Desktop usage uploads are limited to four requests and 4 MB per sync; remaining records resume on later syncs.
+
+- Behind `desktop.sync-on-launch-reconcile-v1`, the desktop app honors the existing Sync on launch preference with a one-shot sync when background Auto-sync is disabled.
+
+- When an HQ CLI update fails partway through installing, the desktop app now
+  puts the previous HQ CLI back instead of leaving a broken or missing `hq`
+  command. Before this, a failed update could leave sync unable to run until
+  the CLI was reinstalled by hand.
+
+- Behind `desktop.first-launch-sync-v1`, a fresh install schedules its first sync after the ready handoff when Auto-sync remains enabled.
+
+## [0.10.377] — 2026-10-02
 
 - Automatic updates now install after the idle cap even when sync stays busy. HQ pauses new sync cycles and waits up to a minute for active transfers before installing. A meeting recording, transcript processing, or another core update can still delay installation.
 

@@ -21,8 +21,6 @@ const app = vi.hoisted(() => ({
 }));
 const onboardingFlags = vi.hoisted(() => ({
   firstFolderSyncEnabled: false,
-  inviteTeammateEnabled: false,
-  setupStageTimeoutFixEnabled: false,
   hasFeature: vi.fn(),
   startSync: vi.fn(),
 }));
@@ -42,10 +40,8 @@ vi.mock('@tauri-apps/api/app', () => ({ getVersion: app.getVersion }));
 vi.mock('@tauri-apps/plugin-shell', () => ({ open: tauri.open }));
 vi.mock('@tauri-apps/plugin-http', () => ({ fetch: httpFetch }));
 vi.mock('@hq/platform', () => ({
-  SETUP_DIRECTORY_PARENT_FALLBACK_FLAG: 'desktop.setup-directory-parent-fallback',
-  SETUP_STAGE_TIMEOUT_FIX_FLAG: 'desktop.setup-stage-timeout-fix-v1',
+  hostComputerNoun: () => 'computer',
   FIRST_FOLDER_SYNC_STEP_FLAG: 'desktop.first-folder-sync-step-v1',
-  INVITE_TEAMMATE_STEP_FLAG: 'desktop.invite-teammate-step-v1',
   retryThrottled: async <T>(
     attempt: (attemptIndex: number) => Promise<T>,
     classify: (result: T) => { status: number | null },
@@ -61,41 +57,10 @@ vi.mock('@hq/platform', () => ({
   createSyncPlatformAdapter: vi.fn(() => ({
     identity: {
       hasFeature: (flag: string) => {
-        if (
-          flag === 'desktop.first-folder-sync-step-v1' ||
-          flag === 'desktop.invite-teammate-step-v1' ||
-          flag === 'desktop.setup-stage-timeout-fix-v1'
-        ) {
+        if (flag === 'desktop.first-folder-sync-step-v1') {
           return onboardingFlags.hasFeature(flag);
         }
-        if (flag !== 'desktop.setup-directory-parent-fallback') {
-          return Promise.resolve({ ok: true, value: false });
-        }
-        return (async () => {
-          try {
-            const raw = await tauri.invoke('hq_pro_fetch', {
-              url: '/v1/flags/resolve',
-              method: 'GET',
-              body: null,
-            });
-            const response =
-              raw && typeof raw === 'object'
-                ? (raw as { body?: unknown })
-                : {};
-            const body =
-              typeof response.body === 'string' ? JSON.parse(response.body) : null;
-            return {
-              ok: true,
-              value: body?.flags?.[flag] === true,
-            };
-          } catch {
-            return {
-              ok: false,
-              reason: 'test flag transport unavailable',
-              code: 'test-transport-failed',
-            };
-          }
-        })();
+        return Promise.resolve({ ok: true, value: false });
       },
     },
     sync: {
@@ -232,6 +197,16 @@ function expectReadyWithConsent(): void {
   expect(host.querySelector('[data-testid="ready-consent"]')).not.toBeNull();
   // First-run onboarding has no separate consent screen.
   expect(host.querySelector('[data-testid="onboarding-consent"]')).toBeNull();
+}
+
+/** Properties of every `emit_desktop_operational_telemetry` row named `eventName`. */
+function operationalRows(eventName: string): Record<string, unknown>[] {
+  return tauri.invoke.mock.calls.flatMap(([command, rawArgs]) => {
+    const args = rawArgs as { eventName?: string; properties?: Record<string, unknown> };
+    return command === 'emit_desktop_operational_telemetry' && args.eventName === eventName
+      ? [args.properties ?? {}]
+      : [];
+  });
 }
 
 function firstFolderSyncActions(): string[] {
@@ -462,17 +437,11 @@ beforeEach(() => {
     text: async () => '',
   });
   onboardingFlags.firstFolderSyncEnabled = false;
-  onboardingFlags.inviteTeammateEnabled = false;
-  onboardingFlags.setupStageTimeoutFixEnabled = false;
   onboardingFlags.hasFeature.mockReset().mockImplementation(async (flag: string) => ({
     ok: true,
     value:
-      (flag === 'desktop.first-folder-sync-step-v1' &&
-        onboardingFlags.firstFolderSyncEnabled) ||
-      (flag === 'desktop.invite-teammate-step-v1' &&
-        onboardingFlags.inviteTeammateEnabled) ||
-      (flag === 'desktop.setup-stage-timeout-fix-v1' &&
-        onboardingFlags.setupStageTimeoutFixEnabled),
+      flag === 'desktop.first-folder-sync-step-v1' &&
+      onboardingFlags.firstFolderSyncEnabled,
   }));
   onboardingFlags.startSync.mockReset().mockResolvedValue({
     ok: true,
@@ -519,14 +488,6 @@ describe('onboarding directory selection', () => {
           return args?.path === defaultPath
             ? { exists: true, isHq: false, nonEmpty: true }
             : { exists: false, isHq: false, nonEmpty: false };
-        case 'hq_pro_fetch':
-          return {
-            status: 200,
-            body: JSON.stringify({
-              version: 1,
-              flags: { 'desktop.setup-directory-parent-fallback': true },
-            }),
-          };
         default:
           return undefined;
       }
@@ -575,14 +536,6 @@ describe('onboarding directory selection', () => {
           return args?.path === selectedPath
             ? { exists: true, isHq: false, nonEmpty: true }
             : { exists: false, isHq: false, nonEmpty: false };
-        case 'hq_pro_fetch':
-          return {
-            status: 200,
-            body: JSON.stringify({
-              version: 1,
-              flags: { 'desktop.setup-directory-parent-fallback': true },
-            }),
-          };
         default:
           return undefined;
       }
@@ -700,14 +653,6 @@ describe('onboarding directory selection', () => {
           return false;
         case 'detect_hq':
           return { exists: true, isHq: false, nonEmpty: true };
-        case 'hq_pro_fetch':
-          return {
-            status: 200,
-            body: JSON.stringify({
-              version: 1,
-              flags: { 'desktop.setup-directory-parent-fallback': true },
-            }),
-          };
         default:
           return undefined;
       }
@@ -765,7 +710,7 @@ describe('onboarding directory selection', () => {
     host
       .querySelector<HTMLButtonElement>('[data-testid="onboarding-directory"] .choose')
       ?.click();
-    await flushUntil(() => host.textContent?.includes('The folder could not be checked') === true);
+    await flushUntil(() => host.textContent?.includes('HQ could not check this folder') === true);
 
     expect(host.textContent).toContain('Choose another location');
     expect(host.textContent).not.toContain(transportError);
@@ -813,6 +758,45 @@ describe('first-run sign-in screen', () => {
     await flushUntil(() => deliveredLaunches.length === 2);
     expect(deliveredLaunches[1]).toEqual(deliveredLaunches[0]);
     expect(localStorage.getItem(__INTERNALS__.STORAGE_KEY)).toContain('"firstLaunchRecorded":true');
+  });
+
+  it("says who is already signed in on this machine before anything is created, and can switch", async () => {
+    stubContinuationInvoke({ config: { ...CONTINUATION_CONFIG, variant: 'control' } });
+    const fallback = tauri.invoke.getMockImplementation();
+    let signedIn = true;
+    tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === 'get_auth_state') {
+        return signedIn ? { authenticated: true, email: 'old@previous.com' } : { authenticated: false };
+      }
+      if (command === 'sign_out') {
+        signedIn = false;
+        return undefined;
+      }
+      return fallback?.(command, args);
+    });
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-signed-in-as"]')));
+    expect(host.querySelector('[data-testid="onboarding-signed-in-as"]')?.textContent).toContain(
+      "You're signed in as old@previous.com.",
+    );
+    expect(tauri.invoke.mock.calls.some(([command]) => command === 'run_card_action')).toBe(false);
+    host.querySelector<HTMLButtonElement>('[data-testid="onboarding-signed-in-as-switch"]')?.click();
+    await flushUntil(() => !host.querySelector('[data-testid="onboarding-signed-in-as"]'));
+    expect(tauri.invoke.mock.calls.some(([command]) => command === 'sign_out')).toBe(true);
+  });
+
+  it('continues with the session already on this machine', async () => {
+    stubContinuationInvoke({ config: { ...CONTINUATION_CONFIG, variant: 'control' } });
+    const fallback = tauri.invoke.getMockImplementation();
+    tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === 'get_auth_state') return { authenticated: true, email: 'me@acme.com' };
+      return fallback?.(command, args);
+    });
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-signed-in-as-continue"]')));
+    host.querySelector<HTMLButtonElement>('[data-testid="onboarding-signed-in-as-continue"]')?.click();
+    await flushUntil(() => host.querySelector('.hq-welcome')?.getAttribute('data-current-scene') !== 'welcome');
+    expect(tauri.invoke.mock.calls.some(([command]) => command === 'sign_out')).toBe(false);
   });
 
   it('restarts sign-in once after an expired OAuth attempt', async () => {
@@ -2125,6 +2109,10 @@ describe('setup restart', () => {
       switch (command) {
         case 'resolve_hq_path':
           return '/Users/test/hq';
+        case 'detect_hq':
+          return { exists: false, isHq: false, nonEmpty: false };
+        case 'check_writable':
+          return true;
         case 'detect_ai_tools':
           return NO_AI_TOOLS;
         case 'fetch_and_extract_template':
@@ -2156,6 +2144,10 @@ describe('setup restart', () => {
       switch (command) {
         case 'resolve_hq_path':
           return '/Users/test/hq';
+        case 'detect_hq':
+          return { exists: false, isHq: false, nonEmpty: false };
+        case 'check_writable':
+          return true;
         case 'detect_ai_tools':
           return NO_AI_TOOLS;
         case 'fetch_and_extract_template':
@@ -2187,6 +2179,10 @@ describe('setup restart', () => {
       switch (command) {
         case 'resolve_hq_path':
           return '/Users/test/hq';
+        case 'detect_hq':
+          return { exists: false, isHq: false, nonEmpty: false };
+        case 'check_writable':
+          return true;
         case 'detect_ai_tools':
           return NO_AI_TOOLS;
         case 'fetch_and_extract_template':
@@ -2373,6 +2369,73 @@ describe('first-folder sync onboarding step', () => {
     ).toBe(true);
   });
 
+  function stubProvisioning(answer: { ok: boolean; bucketName?: string; error?: string }, gate?: Promise<void>): void {
+    const fallback = tauri.invoke.getMockImplementation();
+    tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === 'activate_company_cloud') {
+        if (gate) await gate;
+        if (!answer.ok) throw new Error(answer.error ?? 'failed');
+        return { bucketName: answer.bucketName };
+      }
+      return fallback?.(command, args);
+    });
+  }
+
+  const missingBucket = 'Entity cmp_01ABC (newco) has no bucket provisioned. Run VLT-2 bucket provisioning first.';
+
+  it('self-heals a company with no bucket: "Finishing setup…", provisions, then syncs again', async () => {
+    await reachPostSetupStep(true);
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    stubProvisioning({ ok: true, bucketName: 'hq-vault-newco' }, gate);
+    host.querySelector<HTMLButtonElement>('[data-testid="onboarding-first-folder-sync-start"]')?.click();
+    await flush();
+    emitTauriEvent('sync:error', { company: 'newco', path: '(company)', message: missingBucket });
+    emitTauriEvent('sync:all-complete', { companiesAttempted: 1, filesDownloaded: 0, bytesDownloaded: 0, errors: [] });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-first-folder-finishing-setup"]')));
+    expect(host.textContent).toContain('Finishing setup…');
+    expect(host.textContent).not.toContain('has no bucket provisioned');
+    release();
+    await flushUntil(() => (onboardingFlags.startSync as ReturnType<typeof vi.fn>).mock.calls.length === 2);
+    expect(tauri.invoke).toHaveBeenCalledWith('activate_company_cloud', { companyUid: 'cmp_01ABC' });
+    emitTauriEvent('sync:all-complete', { companiesAttempted: 1, filesDownloaded: 1, bytesDownloaded: 1, errors: [] });
+    await vi.advanceTimersByTimeAsync(500);
+    await flush();
+    const heal = tauri.invoke.mock.calls.flatMap(([command, raw]) => {
+      const args = raw as { eventName?: string; properties?: Record<string, unknown> };
+      return command === 'emit_desktop_operational_telemetry' && args.properties?.selfHeal ? [args.properties] : [];
+    });
+    expect(heal.map((row) => row.selfHeal)).toEqual(['triggered', 'succeeded']);
+    expect(heal[0]?.companyUid).toBe('cmp_01ABC');
+    expect(firstFolderSyncActions()).toContain('completed');
+  });
+
+  it('shows "Finishing setup…" while provisioning and keeps Try again working when it fails', async () => {
+    await reachPostSetupStep(true);
+    stubProvisioning({ ok: false, error: '[server_error] Request failed (status 500)' });
+    host.querySelector<HTMLButtonElement>('[data-testid="onboarding-first-folder-sync-start"]')?.click();
+    await flush();
+    emitTauriEvent('sync:all-complete', {
+      companiesAttempted: 1,
+      filesDownloaded: 0,
+      bytesDownloaded: 0,
+      errors: [{ company: 'newco', message: missingBucket }],
+    });
+    await flushUntil(() => Boolean(host.querySelector('[role="alert"]')));
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('could not sync this folder');
+    expect(host.textContent).not.toContain('VLT-2');
+    const failed = tauri.invoke.mock.calls.flatMap(([command, raw]) => {
+      const args = raw as { properties?: Record<string, unknown> };
+      return command === 'emit_desktop_operational_telemetry' && args.properties?.selfHeal === 'failed' ? [args.properties] : [];
+    });
+    expect(failed[0]).toMatchObject({ provisioningStep: 'activate-cloud:server_error', companyUid: 'cmp_01ABC' });
+    const button = host.querySelector<HTMLButtonElement>('[data-testid="onboarding-first-folder-sync-start"]');
+    expect(button?.disabled).toBe(false);
+    button?.click();
+    await flush();
+    expect(onboardingFlags.startSync).toHaveBeenCalledTimes(2);
+  });
+
   it('shows a retryable error when sync authentication fails without all-complete', async () => {
     await reachPostSetupStep(true);
     const syncButton = host.querySelector<HTMLButtonElement>(
@@ -2446,10 +2509,12 @@ describe('invite teammate onboarding step', () => {
     personUid: 'prs_owner',
     status: 'active',
     role: 'owner',
+    // A paid company skips the company step (look before create), so these
+    // scenarios go straight to the follow-on steps they exercise.
+    teamPlanEnabled: true,
   };
 
   async function reachInviteScenario(options: {
-    flagEnabled?: boolean;
     firstFolderEnabled?: boolean;
     companyMembers?: Array<Record<string, unknown>>;
     fetchResponses?: Record<
@@ -2460,7 +2525,6 @@ describe('invite teammate onboarding step', () => {
     inviteResponses?: Array<{ status: number; body: unknown }>;
   } = {}): Promise<void> {
     onboardingFlags.firstFolderSyncEnabled = options.firstFolderEnabled ?? false;
-    onboardingFlags.inviteTeammateEnabled = options.flagEnabled ?? true;
     let inviteResponseIndex = 0;
     const fetchResponseIndexes: Record<string, number> = {};
     mountWizard(vi.fn(), SETUP_STEP_INDEX);
@@ -2547,25 +2611,6 @@ describe('invite teammate onboarding step', () => {
     button.click();
   }
 
-  it('fails closed with the flag off and reads no roster', async () => {
-    await reachInviteScenario({ flagEnabled: false });
-
-    expect(onboardingFlags.hasFeature).toHaveBeenCalledWith(
-      'desktop.invite-teammate-step-v1',
-    );
-    expect(host.querySelector('[data-testid="onboarding-invite-teammate"]')).toBeNull();
-    const membershipReads = tauri.invoke.mock.calls
-      .filter(
-        ([command, args]) =>
-          command === 'hq_pro_fetch' &&
-          (args as { url?: string })?.url?.startsWith('/membership/'),
-      )
-      .map(([, args]) => (args as { url?: string }).url);
-    // The only read is the company step's own membership check; the invite
-    // step adds nothing while its flag is off.
-    expect(membershipReads).toEqual(['/membership/me']);
-  });
-
   it('does not show the step when the company has multiple active members', async () => {
     await reachInviteScenario({
       companyMembers: [
@@ -2582,6 +2627,15 @@ describe('invite teammate onboarding step', () => {
           (args as { url?: string })?.url === '/membership/company/cmp_demo',
       ),
     ).toBe(true);
+  });
+
+  it('shows the invite step for a one-member company without a feature flag', async () => {
+    await reachInviteScenario();
+
+    expect(host.querySelector('[data-testid="onboarding-invite-teammate"]')).not.toBeNull();
+    expect(onboardingFlags.hasFeature).toHaveBeenCalledExactlyOnceWith(
+      'desktop.first-folder-sync-step-v1',
+    );
   });
 
   it('ignores non-active roster rows when checking the single active member', async () => {
@@ -2708,6 +2762,9 @@ describe('invite teammate onboarding step', () => {
       inviteeEmail: inviteEmail,
       sendEmail: true,
     });
+    await flushUntil(() => operationalRows('desktop_invite_sent').length > 0);
+    expect(operationalRows('desktop_invite_sent')).toEqual([{ count: 1 }]);
+    expect(operationalRows('desktop_invite_failed')).toEqual([]);
   });
 
   it('labels the optional action Skip before send and Continue after success', async () => {
@@ -2766,7 +2823,7 @@ describe('invite teammate onboarding step', () => {
     expect(
       inviteStepRows().some(
         (row) =>
-          row.action === 'failed' && row.inviteErrorKind === 'email_delivery_failed',
+          row.action === 'failed' && row.errorKind === 'email_delivery_failed',
       ),
     ).toBe(true);
     expect(
@@ -2785,6 +2842,118 @@ describe('invite teammate onboarding step', () => {
       inviteeEmail: inviteEmail,
       resend: true,
     });
+  });
+
+  async function submitInvite(): Promise<void> {
+    const email = host.querySelector<HTMLInputElement>(
+      '[data-testid="onboarding-invite-email"]',
+    );
+    if (!email) throw new Error('Expected the invite email field.');
+    email.value = inviteEmail;
+    email.dispatchEvent(new Event('input', { bubbles: true }));
+    await flush();
+    host.querySelector<HTMLButtonElement>('[data-testid="onboarding-invite-send"]')?.click();
+  }
+
+  function inviteRequestBodies(): Array<Record<string, unknown>> {
+    return tauri.invoke.mock.calls
+      .filter(
+        ([command, args]) =>
+          command === 'hq_pro_fetch' &&
+          (args as { url?: string })?.url === '/membership/invite',
+      )
+      .map(([, args]) => JSON.parse((args as { body: string }).body));
+  }
+
+  it('resends instead of failing when the address already has a pending invite (409)', async () => {
+    await reachInviteScenario({
+      inviteResponses: [
+        {
+          status: 409,
+          body: { error: 'Membership already exists', code: 'MEMBERSHIP_ALREADY_EXISTS' },
+        },
+        { status: 200, body: { resent: true, emailSent: true, emailSkipped: false } },
+      ],
+    });
+    await submitInvite();
+    await flushUntil(() =>
+      host.textContent?.includes('This person was already invited. HQ sent the invitation again.') ===
+      true,
+    );
+
+    expect(host.textContent).not.toContain('HQ could not send the invitation');
+    expect(host.querySelector('[data-testid="onboarding-invite-error"]')).toBeNull();
+    const bodies = inviteRequestBodies();
+    expect(bodies).toHaveLength(2);
+    expect(bodies[0]).toMatchObject({ sendEmail: true });
+    expect(bodies[1]).toMatchObject({
+      companyUid: 'cmp_demo',
+      inviteeEmail: inviteEmail,
+      resend: true,
+    });
+    expect(bodies[1]).not.toHaveProperty('sendEmail');
+    const rows = inviteStepRows();
+    expect(rows.some((row) => row.action === 'failed')).toBe(false);
+    expect(rows.some((row) => row.action === 'completed' && row.outcome === 'resent')).toBe(true);
+  });
+
+  it('says the person is already a member when the 409 has no pending invite to resend', async () => {
+    await reachInviteScenario({
+      inviteResponses: [
+        { status: 409, body: { code: 'MEMBERSHIP_ALREADY_EXISTS' } },
+        { status: 404, body: { code: 'INVITE_NOT_PENDING' } },
+      ],
+    });
+    await submitInvite();
+    await flushUntil(() =>
+      host.querySelector('[data-testid="onboarding-invite-error"]') !== null,
+    );
+
+    expect(host.textContent).toContain('This person is already a member of your company.');
+    expect(
+      inviteStepRows().some(
+        (row) =>
+          row.action === 'failed' && row.errorKind === 'already_member' && row.statusCode === 404,
+      ),
+    ).toBe(true);
+  });
+
+  it('names a plan limit and records its errorKind and HTTP status', async () => {
+    await reachInviteScenario({
+      inviteResponses: [{ status: 402, body: { error: 'plan limit', code: 'PLAN_LIMIT' } }],
+    });
+    await submitInvite();
+    await flushUntil(() =>
+      host.querySelector('[data-testid="onboarding-invite-error"]') !== null,
+    );
+
+    expect(host.textContent).toContain('Your plan has no free seats for another teammate.');
+    expect(host.textContent).not.toContain('HQ could not send the invitation.');
+    expect(inviteRequestBodies()).toHaveLength(1);
+    expect(
+      inviteStepRows().some(
+        (row) =>
+          row.action === 'failed' && row.errorKind === 'plan_limit' && row.statusCode === 402,
+      ),
+    ).toBe(true);
+    expect(operationalRows('desktop_invite_failed')).toEqual([
+      { count: 1, errorClass: 'plan_limit' },
+    ]);
+    expect(operationalRows('desktop_invite_sent')).toEqual([]);
+  });
+
+  it('names an invalid email address', async () => {
+    await reachInviteScenario({
+      inviteResponses: [{ status: 400, body: { error: 'Invalid inviteeEmail' } }],
+    });
+    await submitInvite();
+    await flushUntil(() =>
+      host.querySelector('[data-testid="onboarding-invite-error"]') !== null,
+    );
+    expect(host.textContent).toContain('HQ could not use that email address.');
+    expect(
+      inviteStepRows().some((row) => row.errorKind === 'invalid_email' && row.statusCode === 400),
+    ).toBe(true);
   });
 
   it('records invite shown and sent with companyUid and no email', async () => {
@@ -2974,8 +3143,7 @@ describe('setup progress direction', () => {
     expect(failure.properties.errorKind).toBe('setup_stage_timeout');
   });
 
-  it('renews the deps inactivity timeout for installer output when the hq flag is on', async () => {
-    onboardingFlags.setupStageTimeoutFixEnabled = true;
+  it('renews the deps inactivity timeout for installer output', async () => {
     let resolveInstall: (() => void) | undefined;
     tauri.invoke.mockImplementation(async (command: string) => {
       switch (command) {
@@ -3033,8 +3201,7 @@ describe('setup progress direction', () => {
     );
   });
 
-  it('renews the deps inactivity timeout for matching preflight installer output when the hq flag is on', async () => {
-    onboardingFlags.setupStageTimeoutFixEnabled = true;
+  it('renews the deps inactivity timeout for matching preflight installer output', async () => {
     let resolveInstall: (() => void) | undefined;
     tauri.invoke.mockImplementation(async (command: string) => {
       switch (command) {
@@ -3087,8 +3254,7 @@ describe('setup progress direction', () => {
     );
   });
 
-  it('renews the content inactivity timeout for download progress when the hq flag is on', async () => {
-    onboardingFlags.setupStageTimeoutFixEnabled = true;
+  it('renews the content inactivity timeout for download progress', async () => {
     let resolveContent: (() => void) | undefined;
     tauri.invoke.mockImplementation(async (command: string) => {
       switch (command) {
@@ -3146,8 +3312,7 @@ describe('setup progress direction', () => {
     );
   });
 
-  it('renews the indexing inactivity timeout for reindex output when the hq flag is on', async () => {
-    onboardingFlags.setupStageTimeoutFixEnabled = true;
+  it('renews the indexing inactivity timeout for reindex output', async () => {
     let resolveReindex: (() => void) | undefined;
     tauri.invoke.mockImplementation(async (command: string) => {
       switch (command) {
@@ -3214,42 +3379,7 @@ describe('setup progress direction', () => {
     );
   });
 
-  it('keeps the existing deps timeout when the new hq flag is off', async () => {
-    onboardingFlags.setupStageTimeoutFixEnabled = false;
-    tauri.invoke.mockImplementation(async (command: string) => {
-      switch (command) {
-        case 'resolve_hq_path':
-          return '/Users/test/hq';
-        case 'detect_ai_tools':
-          return NO_AI_TOOLS;
-        case 'install_deps':
-          return new Promise<void>(() => {});
-        default:
-          return undefined;
-      }
-    });
-
-    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
-    await flushUntil(() =>
-      tauri.invoke.mock.calls.some(([command]) => command === 'install_deps') &&
-      eventHarness.handlers.has('install:progress'),
-    );
-    emitTauriEvent('install:progress', { handle: 'setup-installer-handle' });
-    await vi.advanceTimersByTimeAsync(stageTimeoutMs('deps'));
-
-    const failure = tauri.invoke.mock.calls.find(
-      ([command, args]) =>
-        command === 'emit_desktop_operational_telemetry' &&
-        (args as { properties?: { action?: string; failureStage?: string } }).properties
-          ?.action === 'failed' &&
-        (args as { properties?: { failureStage?: string } }).properties?.failureStage ===
-          'deps',
-    )?.[1] as { properties: Record<string, unknown> } | undefined;
-    expect(failure?.properties.errorKind).toBe('setup_stage_timeout');
-  });
-
-  it('continues timing out at the hard elapsed ceiling despite ongoing progress when the hq flag is on', async () => {
-    onboardingFlags.setupStageTimeoutFixEnabled = true;
+  it('continues timing out at the hard elapsed ceiling despite ongoing progress', async () => {
     tauri.invoke.mockImplementation(async (command: string) => {
       switch (command) {
         case 'resolve_hq_path':
@@ -3305,107 +3435,6 @@ describe('setup progress direction', () => {
     // usage-data line; first run has no separate consent screen).
     await skipToReady();
     expectReadyWithConsent();
-  });
-
-  it('keeps the content wall-clock timeout when the new hq flag is off', async () => {
-    onboardingFlags.setupStageTimeoutFixEnabled = false;
-    tauri.invoke.mockImplementation(async (command: string) => {
-      switch (command) {
-        case 'resolve_hq_path':
-          return '/Users/test/hq';
-        case 'detect_ai_tools':
-          return NO_AI_TOOLS;
-        case 'fetch_and_extract_template':
-          return new Promise<void>(() => {});
-        default:
-          return undefined;
-      }
-    });
-
-    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
-    await flushUntil(() =>
-      tauri.invoke.mock.calls.some(([command]) => command === 'fetch_and_extract_template') &&
-      eventHarness.handlers.has('content:progress'),
-    );
-    const contentArgs = tauri.invoke.mock.calls.find(
-      ([command]) => command === 'fetch_and_extract_template',
-    )?.[1] as { handle: string };
-
-    await vi.advanceTimersByTimeAsync(stageTimeoutMs('content') - 1);
-    emitTauriEvent('content:progress', {
-      handle: contentArgs.handle,
-      phase: 'download',
-      receivedBytes: 1,
-    });
-    await vi.advanceTimersByTimeAsync(1);
-    await flushUntil(() =>
-      tauri.invoke.mock.calls.some(
-        ([command, args]) =>
-          command === 'emit_desktop_operational_telemetry' &&
-          (args as { properties?: { action?: string; failureStage?: string; errorKind?: string } })
-            .properties?.action === 'failed' &&
-          (args as { properties?: { failureStage?: string } }).properties?.failureStage ===
-            'content' &&
-          (args as { properties?: { errorKind?: string } }).properties?.errorKind ===
-            'setup_stage_timeout',
-      ),
-    );
-  });
-
-  it('keeps indexing wall-clock timeout and omits activityTimeoutEnabled when the new hq flag is off', async () => {
-    onboardingFlags.setupStageTimeoutFixEnabled = false;
-    tauri.invoke.mockImplementation(async (command: string) => {
-      switch (command) {
-        case 'resolve_hq_path':
-          return '/Users/test/hq';
-        case 'detect_ai_tools':
-          return NO_AI_TOOLS;
-        case 'read_install_manifest':
-          return {
-            installPath: '/Users/test/hq',
-            startedAt: '2026-07-28T12:00:00.000Z',
-            completedAt: null,
-            steps: {
-              content: { status: 'ok' },
-              deps: { status: 'ok' },
-              'initial-sync': { status: 'ok' },
-              'git-init': { status: 'ok' },
-              personalize: { status: 'ok' },
-              indexing: { status: 'pending' },
-            },
-          };
-        case 'register_search_index':
-          return new Promise<void>(() => {});
-        default:
-          return undefined;
-      }
-    });
-
-    component = mount(OnboardingWizard, { target: host, props: { initialStep: 2 } });
-    await flushUntil(() =>
-      tauri.invoke.mock.calls.some(([command]) => command === 'register_search_index') &&
-      eventHarness.handlers.has('setup:reindex-progress'),
-    );
-    const indexingArgs = tauri.invoke.mock.calls.find(
-      ([command]) => command === 'register_search_index',
-    )?.[1] as { failureScope: { setupRunId: string } };
-    expect(indexingArgs).not.toHaveProperty('activityTimeoutEnabled');
-
-    await vi.advanceTimersByTimeAsync(stageTimeoutMs('indexing') - 1);
-    emitTauriEvent('setup:reindex-progress', indexingArgs.failureScope.setupRunId);
-    await vi.advanceTimersByTimeAsync(1);
-    await flushUntil(() =>
-      tauri.invoke.mock.calls.some(
-        ([command, args]) =>
-          command === 'emit_desktop_operational_telemetry' &&
-          (args as { properties?: { action?: string; failureStage?: string; errorKind?: string } })
-            .properties?.action === 'failed' &&
-          (args as { properties?: { failureStage?: string } }).properties?.failureStage ===
-            'indexing' &&
-          (args as { properties?: { errorKind?: string } }).properties?.errorKind ===
-            'setup_stage_timeout',
-      ),
-    );
   });
 
   function sampleProgress(): ProgressSample {
@@ -3540,9 +3569,25 @@ describe('company onboarding step', () => {
     memberships?: Array<Record<string, unknown>>;
     pendingInvites?: Array<{ slug: string; displayName: string }>;
     checkout?: { status: number; body: unknown };
+    /** Whether GET /entity/cmp_new reports the new company provisioned. */
+    provisioned?: boolean;
+    /** Polls of GET /entity/cmp_new that answer "provisioning" before it is ready. */
+    pendingPolls?: number;
+    /** Every GET /entity/cmp_new answers failed at this step (until a provision call). */
+    failedStep?: string;
+    /** Extra GET /entity/{uid} answers keyed by uid. */
+    entities?: Record<string, Record<string, unknown>>;
+    pendingByEmail?: Array<Record<string, unknown>>;
+    claimResult?: Record<string, unknown>;
+    anonId?: string | null;
+    anonLookup?: Record<string, unknown>;
+    createError?: string;
+    signedInEmail?: string;
   } = {}): Promise<void> {
     onboardingFlags.firstFolderSyncEnabled = false;
-    onboardingFlags.inviteTeammateEnabled = false;
+    let entityPolls = 0;
+    let provisionCalled = false;
+    let activations = 0;
     mountWizard(vi.fn(), SETUP_STEP_INDEX);
     tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
       switch (command) {
@@ -3561,10 +3606,24 @@ describe('company onboarding step', () => {
             })),
           };
         case 'claim_pending_company_invite':
-          return { ok: true, claimedSlugs: [args?.companySlug], message: 'Joined' };
+          return options.claimResult ?? { ok: true, claimedSlugs: [args?.companySlug], message: 'Joined' };
+        case 'web_visitor_anon_id':
+          return options.anonId ?? null;
+        case 'activate_company_cloud':
+          activations += 1;
+          // The create flow's own activation happens once; only a retry flips the entity.
+          if (activations > 1 || !options.failedStep) provisionCalled = activations > 1;
+          return { activated: true };
+        case 'get_auth_state':
+          return options.signedInEmail
+            ? { authenticated: true, email: options.signedInEmail }
+            : { authenticated: false };
         case 'run_card_action':
           if (args?.cardId === 'companies_summary') {
             throw new Error('[not_found] Request failed (status 404)');
+          }
+          if (options.createError && args?.cardId === 'card_create_company') {
+            throw new Error(options.createError);
           }
           return { state: 'done', companyUid: 'cmp_new', companyChannelId: 'ch_new' };
         case 'fetch_channel':
@@ -3586,6 +3645,46 @@ describe('company onboarding step', () => {
         case 'hq_pro_fetch': {
           if (args?.url === '/membership/me') {
             return { status: 200, body: JSON.stringify({ memberships: options.memberships ?? [] }) };
+          }
+          if (typeof args?.url === 'string' && args.url.startsWith('/membership/me?anonId=')) {
+            return { status: 200, body: JSON.stringify(options.anonLookup ?? { memberships: [] }) };
+          }
+          if (args?.url === '/membership/pending-by-email') {
+            return { status: 200, body: JSON.stringify({ invites: options.pendingByEmail ?? [] }) };
+          }
+          if (typeof args?.url === 'string' && args.url.startsWith('/entity/') && args.url !== '/entity/cmp_new') {
+            const uid = args.url.slice('/entity/'.length);
+            const entity = options.entities?.[uid];
+            if (entity) {
+              const ready = provisionCalled || entityPolls++ >= (options.pendingPolls ?? 0);
+              return {
+                status: 200,
+                body: JSON.stringify({ entity: ready ? { ...entity, status: 'active', bucketName: 'hq-vault-x' } : entity }),
+              };
+            }
+            return { status: 404, body: '{}' };
+          }
+          if (args?.url === '/entity/cmp_new' && options.failedStep && !provisionCalled) {
+            return {
+              status: 200,
+              body: JSON.stringify({
+                entity: { uid: 'cmp_new', provisioningStatus: 'failed', provisioningFailedStep: options.failedStep },
+              }),
+            };
+          }
+          if (args?.url === '/entity/cmp_new') {
+            const pendingPoll = entityPolls++ < (options.pendingPolls ?? 0);
+            const ready = (options.provisioned ?? true) && !pendingPoll;
+            return {
+              status: 200,
+              body: JSON.stringify({
+                entity: {
+                  uid: 'cmp_new',
+                  status: ready ? 'active' : 'provisioning',
+                  bucketName: ready ? 'hq-vault-cmp-new' : '',
+                },
+              }),
+            };
           }
           if (args?.url === '/v1/billing/checkout/team') {
             const answer = options.checkout ?? {
@@ -3638,12 +3737,189 @@ describe('company onboarding step', () => {
     await flush();
   }
 
-  it('skips the step for a person who already belongs to a company', async () => {
+  it('skips the step for a person who already joined a company and selects it', async () => {
     await reachCompanyScenario({
-      memberships: [{ companyUid: 'cmp_demo', personUid: 'prs_owner', status: 'active' }],
+      memberships: [
+        { companyUid: 'cmp_demo', companySlug: 'demo', personUid: 'prs_me', status: 'active', role: 'member' },
+      ],
     });
     expect(host.querySelector('[data-testid="onboarding-company"]')).toBeNull();
     expect(tauri.invoke.mock.calls.some(([command]) => command === 'run_card_action')).toBe(false);
+    expect(tauri.invoke).toHaveBeenCalledWith('set_desktop_active_company', { companySlug: 'demo' });
+    const route = companyRows().find((row) => row.decision === 'joined_existing');
+    expect(route).toMatchObject({ action: 'skipped', existingCompanies: 1, paidCompany: false, pendingInvites: 0, companyUid: 'cmp_demo' });
+  });
+
+  it('skips "Name your company" for a paid company and selects it', async () => {
+    await reachCompanyScenario({
+      memberships: [
+        { companyUid: 'cmp_paid', companySlug: 'paid', status: 'active', role: 'owner', planTier: 'team', bucketName: 'b' },
+      ],
+    });
+    expect(host.querySelector('[data-testid="onboarding-company"]')).toBeNull();
+    expect(host.textContent).not.toContain('Name your company');
+    expect(tauri.invoke).toHaveBeenCalledWith('set_desktop_active_company', { companySlug: 'paid' });
+    expect(companyRows().find((row) => row.decision === 'paid_existing')).toMatchObject({ paidCompany: true });
+  });
+
+  it('offers "Use <name>" by default for an owned company, or "Create another"', async () => {
+    await reachCompanyScenario({
+      memberships: [
+        { companyUid: 'cmp_mine', companySlug: 'mine', companyName: 'Mine Co', status: 'active', role: 'owner', bucketName: 'b' },
+      ],
+    });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-use-existing"]')));
+    expect(host.querySelector('[data-testid="onboarding-company-use-existing"]')?.textContent).toContain('Use Mine Co');
+    expect(host.querySelector('[data-testid="onboarding-company-create-another"]')).not.toBeNull();
+    expect(host.textContent).not.toContain('Name your company');
+    click('onboarding-company-use-existing');
+    await settle();
+    expect(host.querySelector('[data-testid="onboarding-company"]')).toBeNull();
+    expect(tauri.invoke).toHaveBeenCalledWith('set_desktop_active_company', { companySlug: 'mine' });
+    expect(tauri.invoke.mock.calls.some(([command]) => command === 'run_card_action')).toBe(false);
+    expect(
+      companyRows().some((row) => row.action === 'completed' && row.decision === 'used_existing' && row.companyUid === 'cmp_mine'),
+    ).toBe(true);
+  });
+
+  it('opens the create form from "Create another"', async () => {
+    await reachCompanyScenario({
+      memberships: [{ companyUid: 'cmp_mine', companyName: 'Mine Co', status: 'active', role: 'owner', bucketName: 'b' }],
+    });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-create-another"]')));
+    click('onboarding-company-create-another');
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')));
+    expect(companyRows().some((row) => row.decision === 'created_another')).toBe(true);
+  });
+
+  it('shows "Setting up your company…" and sends invites only once provisioning is ready', async () => {
+    localStorage.removeItem('hq.pendingCompanyInvites.v1');
+    await reachCompanyScenario({ pendingPolls: 3 });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')));
+    typeInto('onboarding-company-field-name', 'Acme Studio');
+    typeInto('onboarding-company-invites', 'pat@acme.com');
+    await settle();
+    click('onboarding-company-create');
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-provisioning"]')));
+    expect(host.textContent).toContain('Setting up your company…');
+    expect(host.querySelector('[data-testid="onboarding-plan-starter"]')).toBeNull();
+    expect(tauri.invoke.mock.calls.some(([command]) => command === 'run_company_tab_action')).toBe(false);
+    expect(companyRows().some((row) => row.outcome === 'company_created')).toBe(false);
+    for (let i = 0; i < 10 && !host.querySelector('[data-testid="onboarding-plan-starter"]'); i += 1) {
+      await vi.advanceTimersByTimeAsync(2_000);
+      await flush();
+    }
+    expect(host.querySelector('[data-testid="onboarding-plan-starter"]')).not.toBeNull();
+    expect(tauri.invoke).toHaveBeenCalledWith(
+      'run_company_tab_action',
+      expect.objectContaining({ companyUid: 'cmp_new', values: expect.objectContaining({ email: 'pat@acme.com' }) }),
+    );
+    const rows = companyRows();
+    expect(rows.some((row) => row.outcome === 'provisioning_wait')).toBe(true);
+    expect(rows.some((row) => row.outcome === 'provisioning_ready')).toBe(true);
+    expect(rows.find((row) => row.outcome === 'company_created')?.companyUid).toBe('cmp_new');
+    // Only the create flow's own activation ran; no extra provisioning call.
+    expect(tauri.invoke.mock.calls.filter(([command]) => command === 'activate_company_cloud')).toHaveLength(1);
+    localStorage.removeItem('hq.pendingCompanyInvites.v1');
+  });
+
+  it('reports a failed provisioning step and retries provisioning, not create', async () => {
+    await reachCompanyScenario({ failedStep: 'kms-create' });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')));
+    typeInto('onboarding-company-field-name', 'Acme');
+    await settle();
+    click('onboarding-company-create');
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-provisioning-retry"]')));
+    expect(host.textContent).toContain('step: kms-create');
+    expect(host.querySelector('[data-testid="onboarding-plan-starter"]')).toBeNull();
+    expect(companyRows().find((row) => row.outcome === 'provisioning_failed')).toMatchObject({
+      action: 'failed',
+      provisioningStep: 'kms-create',
+    });
+    const creates = () =>
+      tauri.invoke.mock.calls.filter(
+        ([command, args]) => command === 'run_card_action' && (args as { cardId?: string }).cardId === 'card_create_company',
+      ).length;
+    expect(creates()).toBe(1);
+    click('onboarding-company-provisioning-retry');
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-plan-starter"]')));
+    expect(tauri.invoke.mock.calls.filter(([command]) => command === 'activate_company_cloud')).toEqual([
+      ['activate_company_cloud', { companyUid: 'cmp_new' }],
+      ['activate_company_cloud', { companyUid: 'cmp_new' }],
+    ]);
+    expect(creates()).toBe(1);
+  });
+
+  it('resumes a half-finished company at "Setting up…" instead of creating a second one', async () => {
+    await reachCompanyScenario({
+      memberships: [{ companyUid: 'cmp_half', companySlug: 'half', companyName: 'Half', status: 'active', role: 'owner' }],
+      entities: { cmp_half: { uid: 'cmp_half', status: 'provisioning' } },
+      pendingPolls: 2,
+    });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-provisioning"]')));
+    expect(host.textContent).not.toContain('Name your company');
+    for (let i = 0; i < 10 && !host.querySelector('[data-testid="onboarding-plan-starter"]'); i += 1) {
+      await vi.advanceTimersByTimeAsync(2_000);
+      await flush();
+    }
+    expect(host.querySelector('[data-testid="onboarding-plan-starter"]')).not.toBeNull();
+    expect(
+      tauri.invoke.mock.calls.some(
+        ([command, args]) => command === 'run_card_action' && (args as { cardId?: string }).cardId === 'card_create_company',
+      ),
+    ).toBe(false);
+    expect(companyRows().find((row) => row.decision === 'resume_setup')).toMatchObject({ existingCompanies: 1 });
+  });
+
+  it('offers to switch account when the website visitor made a company under another email', async () => {
+    await reachCompanyScenario({
+      signedInEmail: 'corey@gmail.com',
+      anonId: 'vyg-anon-1',
+      anonLookup: { memberships: [], webIdentity: { maskedEmail: 'c•••@acme.com', companyName: 'Acme' } },
+    });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-other-account"]')));
+    expect(host.textContent).toContain('Your company Acme is on c•••@acme.com.');
+    expect(host.textContent).not.toContain('Name your company');
+    expect(tauri.invoke).toHaveBeenCalledWith('hq_pro_fetch', expect.objectContaining({ url: '/membership/me?anonId=vyg-anon-1' }));
+    expect(companyRows().find((row) => row.decision === 'company_other_account')).toBeTruthy();
+    click('onboarding-company-create-here');
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')));
+  });
+
+  it('shows the upgrade prompt inline when create hits the free plan limit', async () => {
+    await reachCompanyScenario({
+      createError: '[plan-limit url=https://hq.computer/billing/upgrade] Starter includes one company.',
+    });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')));
+    typeInto('onboarding-company-field-name', 'Second');
+    await settle();
+    click('onboarding-company-create');
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-plan-limit"]')));
+    expect(host.textContent).toContain('Starter includes one company.');
+    expect(host.querySelector('[data-testid="onboarding-company-error"]')).toBeNull();
+    click('onboarding-company-plan-upgrade');
+    await flush();
+    expect(tauri.open).toHaveBeenCalledWith('https://hq.computer/billing/upgrade');
+    expect(companyRows().some((row) => row.outcome === 'company_create_plan_limit')).toBe(true);
+  });
+
+  it('does not double "(optional)" when the server label already includes it', async () => {
+    const website = createCompanyCard.fields[2];
+    const original = website.label;
+    website.label = "Website (optional) — we'll use its icon for your company";
+    try {
+      await reachCompanyScenario();
+      await flushUntil(() =>
+        Boolean(host.querySelector('[data-testid="onboarding-company-field-website"]')),
+      );
+      const websiteLabel = host.querySelector('label[for="onboarding-company-website"]')?.textContent?.trim();
+      expect(websiteLabel).toBe("Website (optional) — we'll use its icon for your company");
+      expect(websiteLabel?.match(/\(optional\)/g)).toHaveLength(1);
+      const inviteLabel = host.querySelector('label[for="onboarding-company-invites"]')?.textContent?.trim();
+      expect(inviteLabel).toBe('Invite teammates (optional)');
+    } finally {
+      website.label = original;
+    }
   });
 
   it('names a company, invites a teammate, and starts on Starter', async () => {
@@ -3694,6 +3970,7 @@ describe('company onboarding step', () => {
     const rows = companyRows();
     expect(rows.find((row) => row.outcome === 'company_created')?.companyUid).toBe('cmp_new');
     expect(rows.some((row) => row.outcome === 'plan_starter')).toBe(true);
+    expect(operationalRows('desktop_plan_selected')).toEqual([{ plan: 'starter' }]);
     expect(rows.some((row) => row.action === 'completed' && row.outcome === 'created_starter')).toBe(true);
     for (const row of rows) {
       expect(JSON.stringify(row)).not.toContain('pat@acme.com');
@@ -3773,10 +4050,62 @@ describe('company onboarding step', () => {
 
     click('onboarding-company-join');
     await settle();
-    expect(tauri.invoke).toHaveBeenCalledWith('claim_pending_company_invite', { companySlug: 'acme' });
+    expect(tauri.invoke).toHaveBeenCalledWith('claim_pending_company_invite', {
+      companySlug: 'acme',
+      route: 'onboarding',
+    });
     expect(host.querySelector('[data-testid="onboarding-company"]')).toBeNull();
     expect(tauri.invoke.mock.calls.some(([command]) => command === 'run_card_action')).toBe(false);
-    expect(companyRows().some((row) => row.action === 'completed' && row.outcome === 'joined')).toBe(true);
+    const done = companyRows().find((row) => row.action === 'completed' && row.outcome === 'joined_invite');
+    expect(done).toMatchObject({ decision: 'joined_invite', companyUid: 'cmp_acme' });
+    expect(tauri.invoke).toHaveBeenCalledWith('set_desktop_active_company', { companySlug: 'acme' });
+    expect(host.textContent).not.toContain('Name your company');
+  });
+
+  it('never offers "Name your company" to an invited person', async () => {
+    await reachCompanyScenario({ pendingInvites: [{ slug: 'acme', displayName: 'Acme' }] });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-join"]')));
+    expect(host.querySelector('[data-testid="onboarding-company-create-instead"]')).toBeNull();
+    expect(host.textContent).not.toContain('Name your company');
+    expect(companyRows().find((row) => row.decision === 'join_invite')).toMatchObject({ pendingInvites: 1 });
+  });
+
+  it('says the invite went to a different email and offers to switch account', async () => {
+    await reachCompanyScenario({
+      signedInEmail: 'me@other.com',
+      pendingInvites: [{ slug: 'acme', displayName: 'Acme' }],
+      claimResult: { ok: true, claimedSlugs: [], message: 'No email-keyed pending invite for acme.' },
+    });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-join"]')));
+    click('onboarding-company-join');
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-invite-other-email"]')));
+    expect(host.textContent).toContain('Your invite was sent to a different email.');
+    click('onboarding-company-switch-account');
+    await settle();
+    expect(tauri.invoke.mock.calls.some(([command]) => command === 'sign_out')).toBe(true);
+    expect(host.querySelector('[data-testid="onboarding-signin"]')?.classList.contains('on')).toBe(true);
+    expect(host.querySelector('[data-testid="onboarding-company"]')).toBeNull();
+  });
+
+  it('routes an invite addressed to another email straight to the switch prompt', async () => {
+    await reachCompanyScenario({
+      signedInEmail: 'me@other.com',
+      pendingByEmail: [{ companyUid: 'cmp_acme', companyName: 'Acme', inviteeEmail: 'me@acme.com' }],
+    });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-invite-other-email"]')));
+    expect(companyRows().find((row) => row.decision === 'invite_other_email')).toBeTruthy();
+  });
+
+  it('asks the inviter to resend an expired invite', async () => {
+    await reachCompanyScenario({
+      pendingByEmail: [
+        { companyUid: 'cmp_acme', companyName: 'Acme', inviterName: 'Pat', expiresAt: '2020-01-01T00:00:00.000Z' },
+      ],
+    });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-invite-expired"]')));
+    expect(host.textContent).toContain('Your invite to Acme has expired. Ask Pat to resend it');
+    expect(host.textContent).not.toContain('Name your company');
+    expect(companyRows().find((row) => row.decision === 'invite_expired')).toBeTruthy();
   });
 
   it('can be skipped', async () => {
