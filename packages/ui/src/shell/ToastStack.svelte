@@ -141,7 +141,12 @@
 {/if}
 
 <style>
+  /* QA-095: the layer is portaled to <body>, outside .chat-shell where
+     --font-ui is defined, so it carries its own sans fallback. Without it
+     the font shorthand is invalid and the toast drops to the serif default. */
   .ts-stack {
+    --ts-font: var(--font-ui, "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+    font-family: var(--ts-font);
     position: fixed;
     right: 16px;
     bottom: var(--toast-bottom-inset, 84px);
@@ -166,7 +171,7 @@
     border-radius: 10px;
     box-shadow: var(--v4-shadow-popover, 0 8px 24px rgba(0, 0, 0, 0.28));
     color: var(--v4-text-1);
-    font: 400 13px/1.45 var(--font-ui);
+    font: 400 13px/1.45 var(--ts-font);
   }
 
   .ts-toast {
@@ -285,7 +290,7 @@
     border-radius: 6px;
     background: transparent;
     color: var(--v4-text-1);
-    font: 500 13px/1 var(--font-ui);
+    font: 500 13px/1 var(--ts-font);
     cursor: default;
   }
 
@@ -321,6 +326,6 @@
     align-self: flex-end;
     padding: 2px 8px;
     color: var(--v4-text-2);
-    font: 400 13px/1.45 var(--font-ui);
+    font: 400 13px/1.45 var(--ts-font);
   }
 </style>

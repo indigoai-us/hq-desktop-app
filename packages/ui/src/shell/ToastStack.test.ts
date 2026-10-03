@@ -301,3 +301,15 @@ describe("sync toast copy guard", () => {
     expect(syncToastCopy(emptySyncStatus(), false, true).title).toBe("Sync is paused");
   });
 });
+
+describe("toast typography outside the chat shell (QA-095)", () => {
+  it("never depends on --font-ui without a sans fallback, since the layer is portaled to <body>", () => {
+    const own = readFileSync(join(SRC, "shell/ToastStack.svelte"), "utf8");
+    const style = own.slice(own.indexOf("<style>"));
+    expect(style).not.toMatch(/var\(--font-ui\)/);
+    expect(style).toMatch(/\.ts-stack\s*\{[^}]*--ts-font:\s*var\(--font-ui,[^;]*sans-serif\)/);
+    for (const rule of style.matchAll(/(?<![-\w])font:\s*[^;]+;/g)) {
+      expect(rule[0]).toContain("var(--ts-font)");
+    }
+  });
+});
