@@ -8,12 +8,16 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 - Internal tests: four more desktop UI tests (conversation rail ready signal, mute bell, notification focus ring, quick-react toolbar) now render the components instead of searching their source text. Nothing changes in the app.
+- Keep a company's cloud binding in `companies/manifest.yaml` when it is absent
+  from the signed-in person's membership list. The app now waits for an
+  authoritative deletion signal before unlinking a workspace.
 - Internal tests: four more desktop UI tests (task strip, task chip, page header, agents settings) now render the components instead of searching their source text. Nothing changes in the app.
 - Desktop Core baseline refresh now retries GitHub timeouts before reporting a pending baseline; persistent timeouts remain reported.
 
 - Shelltest builds now report to a separate Sentry environment; release telemetry remains in production.
 - Past meetings can list local personal notes and your own desktop recordings, behind the desktop.meetings-personal-transcripts flag (off by default).
 - Desktop sign-in now records each stage from choosing a provider through the browser callback and token exchange. When it fails, HQ records only the failing stage and a safe error category, so the download-to-sign-in drop can be measured without collecting sign-in details.
+- Desktop onboarding retries a failed company lookup once and records when the lookup stays unavailable, without creating a company from incomplete data.
 - The Meet native Windows test build now pins its signing and Rust toolchain actions to exact versions. Nothing changes in the app.
 - Setup failure events now fill a missing stage from the bounded component and keep error categories on the closed list.
 - CI launches of the desktop app no longer add first-run rows to the install funnel, including through the CDP mirror.
