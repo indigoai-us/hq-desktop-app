@@ -1602,6 +1602,7 @@ fn handle_sync_line<R: tauri::Runtime>(
             app.emit(EVENT_SYNC_NEW_FILES, payload.clone())
         }
         SyncEvent::AllComplete(payload) => {
+            crate::commands::cdp_mirror::note_sync_files(payload.files_downloaded);
             // Persist summary journal before emitting — the frontend's
             // SyncStats refresh reads this file on popover mount.
             let (conflicts, uploads_pass) = {
@@ -2465,9 +2466,48 @@ pub(crate) fn start_sync_cloud_gate() -> Result<(), String> {
     hq_desktop_core::daemon::ensure_sync_spawn_allowed()
 }
 
-/// Returns the handle string on success (always `"hq-sync"`).
+/// Returns the handle string on success (always `"hq-sync"`). Every webview
+/// caller is a person pressing Sync; Rust callers name their own trigger via
+/// [`start_sync_with_trigger`].
 #[tauri::command]
 pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<String, String> {
+    start_sync_with_trigger(
+        app,
+        company_slug,
+        crate::commands::cdp_mirror::SyncTrigger::Manual,
+    )
+    .await
+}
+
+/// [`start_sync`] with the trigger reported on `sync_started` / `sync_completed`
+/// / `sync_failed`.
+pub(crate) async fn start_sync_with_trigger(
+    app: AppHandle,
+    company_slug: Option<String>,
+    trigger: crate::commands::cdp_mirror::SyncTrigger,
+) -> Result<String, String> {
+    let result = start_sync_inner(app, company_slug, trigger).await;
+    match &result {
+        Ok(handle) if handle == "hq-daemon-sync" => {
+            crate::commands::cdp_mirror::note_sync_started(trigger, "daemon");
+        }
+        // Only a pass this call registered is in flight; "already running"
+        // belongs to the other pass and must not end it.
+        Err(error) if error != SYNC_ALREADY_RUNNING => {
+            crate::commands::cdp_mirror::note_sync_start_failed();
+        }
+        _ => {}
+    }
+    result
+}
+
+const SYNC_ALREADY_RUNNING: &str = "Sync is already running";
+
+async fn start_sync_inner(
+    app: AppHandle,
+    company_slug: Option<String>,
+    trigger: crate::commands::cdp_mirror::SyncTrigger,
+) -> Result<String, String> {
     // V2 Cloud Off (US-001 / US-016): sync is paused on this device. Gate EVERY
     // caller of this command — the V2 window's Sync, the menubar popover's Sync
     // Now, sync-on-launch, and notification retries — at the single Rust choke
@@ -2501,8 +2541,9 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
         log("sync", "BAIL: already running");
         #[cfg(debug_assertions)]
         eprintln!("[sync] BAIL: already running");
-        return Err("Sync is already running".to_string());
+        return Err(SYNC_ALREADY_RUNNING.to_string());
     };
+    crate::commands::cdp_mirror::note_sync_started(trigger, "runner");
 
     // Best-effort machineId bootstrap — log on failure but do not abort sync.
     if let Err(e) = ensure_machine_id() {
@@ -3306,6 +3347,9 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                     // triggers an immediate heartbeat.
                     let final_totals = totals.lock().unwrap_or_else(|e| e.into_inner()).clone();
                     crate::commands::client_health::record_sync_run_ended(success, &final_totals);
+                    crate::commands::cdp_mirror::note_sync_ended(
+                        crate::commands::client_health::sync_failure_class(success, &final_totals),
+                    );
                     // Remove this run's report directory if it still exists (a clean
                     // success wrote none; the capture path's read already removed it).
                     // One terminal cleanup for every exit branch, bounding disk under
@@ -3332,6 +3376,7 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                 // No child existed, so no Exit event will close this run for
                 // client health — record the failed attempt here.
                 crate::commands::client_health::record_sync_run_ended(false, &RunTotals::default());
+                crate::commands::cdp_mirror::note_sync_ended(Some("spawn_failed"));
                 ("(spawn)", message)
             } else {
                 // Preserve the existing user-visible error text. The typed
