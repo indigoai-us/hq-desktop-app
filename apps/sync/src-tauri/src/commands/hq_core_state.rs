@@ -3494,6 +3494,8 @@ fn resolve_channel() -> (Channel, String) {
 // ─── Target resolution ───────────────────────────────────────────────────────
 
 const GITHUB_FETCH_FAILURE_CLASS_MARKER: &str = "[github_fetch_failure_class=";
+const BASELINE_FETCH_MAX_ATTEMPTS: usize = 3;
+const BASELINE_FETCH_RETRY_DELAY: Duration = Duration::from_millis(250);
 
 fn github_fetch_failure_class_from_detail(detail: &str) -> &'static str {
     let value = detail
@@ -3517,6 +3519,35 @@ fn github_fetch_failure_class_from_detail(detail: &str) -> &'static str {
         "invalid_response" => "invalid_response",
         _ => "unknown",
     }
+}
+
+async fn fetch_baseline_tree_with_timeout_retries<F, Fut>(
+    source: &str,
+    commit: &str,
+    token: Option<String>,
+    mut fetcher: F,
+) -> Result<BTreeMap<String, (String, u64)>, String>
+where
+    F: FnMut(String, String, Option<String>) -> Fut,
+    Fut: Future<Output = Result<BTreeMap<String, (String, u64)>, String>>,
+{
+    // A short bounded retry lets transient GitHub timeouts recover before the
+    // caller records a durable pending-baseline warning. Exhaustion still
+    // returns the final timeout unchanged so the pending state remains visible.
+    for attempt in 0..BASELINE_FETCH_MAX_ATTEMPTS {
+        match fetcher(source.to_string(), commit.to_string(), token.clone()).await {
+            Ok(tree) => return Ok(tree),
+            Err(error) => {
+                let is_retryable_timeout =
+                    github_fetch_failure_class_from_detail(&error) == "timeout";
+                if !is_retryable_timeout || attempt + 1 == BASELINE_FETCH_MAX_ATTEMPTS {
+                    return Err(error);
+                }
+                tokio::time::sleep(BASELINE_FETCH_RETRY_DELAY * (attempt as u32 + 1)).await;
+            }
+        }
+    }
+    unreachable!("baseline fetch attempts always return or exhaust")
 }
 
 fn github_fetch_failure(class: &'static str, detail: impl AsRef<str>) -> String {
@@ -4081,7 +4112,7 @@ async fn persist_applied_rescue_baseline_with_fetcher<F, Fut>(
     fetcher: F,
 ) -> Result<AppliedRescueBaseline, String>
 where
-    F: FnOnce(String, String, Option<String>) -> Fut,
+    F: FnMut(String, String, Option<String>) -> Fut,
     Fut: Future<Output = Result<BTreeMap<String, (String, u64)>, String>>,
 {
     persist_applied_rescue_baseline_with_fetcher_and_path(
@@ -4106,14 +4137,15 @@ async fn persist_applied_rescue_baseline_with_fetcher_and_path<F, Fut>(
     fetcher: F,
 ) -> Result<AppliedRescueBaseline, String>
 where
-    F: FnOnce(String, String, Option<String>) -> Fut,
+    F: FnMut(String, String, Option<String>) -> Fut,
     Fut: Future<Output = Result<BTreeMap<String, (String, u64)>, String>>,
 {
     let stamp = required_local_source_stamp(hq_folder)?;
-    let remote_tree = fetcher(
-        stamp.source.clone(),
-        stamp.commit.clone(),
+    let remote_tree = fetch_baseline_tree_with_timeout_retries(
+        &stamp.source,
+        &stamp.commit,
         token.map(str::to_string),
+        fetcher,
     )
     .await;
     persist_applied_rescue_baseline_from_stamp_with_path(
@@ -5725,7 +5757,7 @@ async fn retry_pending_baseline_refresh_at<F, Fut>(
     fetcher: F,
 ) -> bool
 where
-    F: FnOnce(String, String, Option<String>) -> Fut,
+    F: FnMut(String, String, Option<String>) -> Fut,
     Fut: Future<Output = Result<BTreeMap<String, (String, u64)>, String>>,
 {
     retry_pending_baseline_refresh_at_with_path(channel, hq_folder, token, None, fetcher).await
@@ -5739,7 +5771,7 @@ async fn retry_pending_baseline_refresh_at_with_path<F, Fut>(
     fetcher: F,
 ) -> bool
 where
-    F: FnOnce(String, String, Option<String>) -> Fut,
+    F: FnMut(String, String, Option<String>) -> Fut,
     Fut: Future<Output = Result<BTreeMap<String, (String, u64)>, String>>,
 {
     let Some(pending) = persisted_baseline_refresh_target(channel, injected_path) else {
@@ -5774,7 +5806,8 @@ where
         return false;
     }
 
-    let remote_tree = fetcher(source.clone(), stamped_commit.clone(), token).await;
+    let remote_tree =
+        fetch_baseline_tree_with_timeout_retries(&source, &stamped_commit, token, fetcher).await;
     match remote_tree {
         Ok(tree) => match refresh_pending_baseline_from_tree_with_path(
             hq_folder,
@@ -6718,6 +6751,105 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn transient_timeout_during_applied_baseline_fetch_retries_before_reporting_pending() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        let home = TempDir::new().unwrap();
+        let root = TempDir::new().unwrap();
+        let source = "indigoai-us/hq-core";
+        let commit = "b".repeat(40);
+        let old_path = "core/policies/old.md";
+        std::fs::create_dir_all(root.path().join("core/policies")).unwrap();
+        std::fs::write(root.path().join(old_path), b"local\n").unwrap();
+        std::fs::write(
+            root.path().join("core/core.yaml"),
+            format!(
+                "rules:\n  locked:\n    - core/policies/\nreplaced_from_source:\n  source: {source}\n  last_sync_sha: {commit}\n"
+            ),
+        )
+        .unwrap();
+        let menubar_path = home.path().join("menubar.json");
+        let previous_paths = [old_path.to_string()].into_iter().collect::<BTreeSet<_>>();
+        let mut remote = BTreeMap::new();
+        remote.insert(
+            "core/policies/remote.md".to_string(),
+            ("remote-blob".to_string(), 1),
+        );
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_fetch = Arc::clone(&calls);
+        let result = persist_applied_rescue_baseline_with_fetcher_and_path(
+            root.path(),
+            Some(&previous_paths),
+            "",
+            Channel::Release,
+            None,
+            Some(&menubar_path),
+            move |_, _, _| {
+                let attempt = calls_for_fetch.fetch_add(1, Ordering::AcqRel);
+                let remote_for_attempt = remote.clone();
+                async move {
+                    if attempt == 0 {
+                        Err(github_fetch_failure("timeout", "request timed out"))
+                    } else {
+                        Ok(remote_for_attempt)
+                    }
+                }
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(result.baseline_persisted);
+        assert!(!result.refresh_pending);
+        assert_eq!(calls.load(Ordering::Acquire), 2);
+        assert!(persisted_baseline_refresh_target(Channel::Release, Some(&menubar_path)).is_none());
+        let baseline =
+            hq_desktop_core::drift_scope::load_core_drift_baseline(root.path(), source, &commit)
+                .unwrap();
+        assert_eq!(
+            baseline.normalized_blobs.get("core/policies/remote.md"),
+            Some(&"remote-blob".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn baseline_refresh_reports_timeout_after_bounded_fetch_retries_are_exhausted() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        let home = TempDir::new().unwrap();
+        let root = TempDir::new().unwrap();
+        let source = "indigoai-us/hq-core";
+        let commit = "c".repeat(40);
+        std::fs::create_dir_all(root.path().join("core")).unwrap();
+        std::fs::write(
+            root.path().join("core/core.yaml"),
+            format!("replaced_from_source:\n  source: {source}\n  last_sync_sha: {commit}\n"),
+        )
+        .unwrap();
+        let menubar_path = home.path().join("menubar.json");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_fetch = Arc::clone(&calls);
+        let result = persist_applied_rescue_baseline_with_fetcher_and_path(
+            root.path(),
+            None,
+            "",
+            Channel::Release,
+            None,
+            Some(&menubar_path),
+            move |_, _, _| {
+                calls_for_fetch.fetch_add(1, Ordering::AcqRel);
+                async { Err(github_fetch_failure("timeout", "request timed out")) }
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(!result.baseline_persisted);
+        assert!(result.refresh_pending);
+        assert_eq!(result.fetch_failure_class, Some("timeout"));
+        assert_eq!(calls.load(Ordering::Acquire), 3);
+        assert!(persisted_baseline_refresh_target(Channel::Release, Some(&menubar_path)).is_some());
+    }
+
+    #[tokio::test]
     async fn baseline_refresh_scheduled_retry_fetches_tree_without_installer() {
         let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
         let home = TempDir::new().unwrap();
@@ -6818,9 +6950,10 @@ mod tests {
                 root.path(),
                 None,
                 Some(&menubar_path),
-                move |_, _, _| async move {
+                move |_, _, _| {
                     successful_fetch_calls.fetch_add(1, Ordering::AcqRel);
-                    Ok(remote)
+                    let remote_for_attempt = remote.clone();
+                    async move { Ok(remote_for_attempt) }
                 },
             )
             .await
