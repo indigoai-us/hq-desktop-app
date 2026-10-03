@@ -4175,6 +4175,55 @@ mod codex_telemetry_tests {
         );
     }
 
+    #[tokio::test]
+    async fn background_telemetry_flushes_keep_the_home_captured_when_scheduled() {
+        // A task spawned by an earlier test can start after another test has
+        // changed HOME. The flush must retain the home active at scheduling.
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = first_open_server(200).await;
+        let scheduled_home = setup_home();
+        let later_home = setup_home();
+        write_menubar(scheduled_home.path(), "{}");
+
+        let mut later_menu = serde_json::Map::new();
+        later_menu.insert(
+            crate::commands::cdp_mirror::FIRST_OPEN_PENDING_KEY.to_string(),
+            json!(true),
+        );
+        write_menubar(later_home.path(), &Value::Object(later_menu).to_string());
+        write_valid_access_token(later_home.path());
+        crate::commands::cdp_mirror::hold_auth_row_at(
+            &later_home.path().join(".hq/menubar.json"),
+            "desktop_auth_failure",
+            Some(&json!({ "provider": "google", "step": "callback_received" })),
+            chrono::Utc::now().timestamp_millis() as u64,
+        )
+        .unwrap();
+
+        let _scheduled_home = scoped_home(scheduled_home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+        crate::commands::cdp_mirror::hold_first_open();
+        crate::commands::cdp_mirror::hold_auth_row(
+            "desktop_auth_failure",
+            Some(&json!({ "provider": "google", "step": "provider_page_opened" })),
+        );
+        let first_open_task = crate::commands::cdp_mirror::pending_first_open_flush_task();
+        let held_auth_task = crate::commands::cdp_mirror::held_auth_flush_task();
+
+        // Delay polling both futures until a different HOME is active, just as
+        // a queued async-runtime task can be delayed after it is spawned.
+        let _later_home = scoped_home(later_home.path());
+        assert!(first_open_task.await);
+        assert_eq!(held_auth_task.await, 1);
+
+        assert!(!first_open_held(scheduled_home.path()));
+        assert!(first_open_held(later_home.path()));
+        assert!(held_auth_rows(scheduled_home.path()).is_empty());
+        assert_eq!(held_auth_rows(later_home.path()).len(), 1);
+        assert_eq!(first_open_posts(&server).await.len(), 1);
+        assert_eq!(auth_failure_posts(&server).await.len(), 1);
+    }
+
     #[test]
     fn first_launch_app_opened_carries_a_stable_install_idempotency_key() {
         // Regression: the held first-launch row had no idempotencyKey, so a
