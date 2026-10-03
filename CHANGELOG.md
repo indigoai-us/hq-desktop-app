@@ -10,11 +10,15 @@ The release moves it under the version it ships in.
 
 - Company names now show the company favicon beside them across the app: the New bot company chips, project header, More companies, command palette, Connections, settings, bot membership lists, Meetings, Telemetry, and Atlas. Companies without a website show their initials instead of a grey dot.
 - Company favicons now show in the left rail for companies that have a website set. The app was dropping the icon the server sends, so every company showed initials. The company list also reloads when you switch companies, so an icon added later replaces the initials.
+- New cloud bots created from the desktop New bot flow sign in with your model subscription. The API key option is no longer offered there.
+- Behind `agents.desktop-agent-creation` (Indigo only): New bot in Messages is one three-step flow (what kind, where it runs, its details). Choosing Cloud creates the bot directly, without Slack, and opens its DM. New cloud bots start on Claude, with Codex and Grok offered. Cloud stays visible when it can't be used and says why (admin role, plan, or no company). Settings › Bots › New bot closes Settings and opens the same flow. The flag is checked for the company you pick, and the cloud create code loads only when the flow opens, so startup is not slower.
+
+## [0.10.385] — 2026-10-03
+
 - The vyg CDP mirror now also records app opens (every launch), one daily-active row per day, account linking after sign-in (sha256 hashes of the person and company ids only), Claude/Codex/Grok session launches, sync start and end, teammate invites, joining a company from an invite, and the plan picked during setup. The same rows go to HQ's operational telemetry. The `desktop.cdp-mirror` flag is now re-checked every 6 hours, so turning it on or off no longer needs a relaunch.
 - Referral links now carry through desktop sign-in regardless of the signup experiment. HQ retries referral confirmation after connection failures or a restart and keeps each referral tied to the account that signed in.
 - Release builds: a daily check now fails, and opens an issue, once the release test sign-in is 25 days old, five days before it expires, so it is renewed before a release depends on it. The renewal steps no longer need AWS keys or a shared GitHub token.
 - The updater now refuses a beta or alpha build unless you chose that release channel in Settings. People on the stable channel stay on stable releases even if a test build is ever published by mistake.
-- Behind `agents.desktop-agent-creation` (Indigo only): New bot in Messages is one three-step flow (what kind, where it runs, its details). Choosing Cloud creates the bot directly, without Slack, and opens its DM. New cloud bots start on Claude, with Codex and Grok offered. Cloud stays visible when it can't be used and says why (admin role, plan, or no company). Settings › Bots › New bot closes Settings and opens the same flow. The flag is checked for the company you pick, and the cloud create code loads only when the flow opens, so startup is not slower.
 
 ## [0.10.384] — 2026-10-03
 
@@ -52,8 +56,6 @@ The release moves it under the version it ships in.
 ## [0.10.379] — 2026-10-02
 
 - Closing the main window no longer logs an error.
-
-- New cloud bots created from the desktop New bot flow sign in with your model subscription. The API key option is no longer offered there.
 
 - When hq-flags enables `desktop.setup-deps-timeout-retry-v1`, a dependency setup timeout gets one automatic retry before setup is marked passed with that step skipped.
 
