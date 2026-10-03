@@ -8,18 +8,72 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+This beta brings the new HQ interface. A rail on the left holds your companies, and each company opens into its own set of panes: Atlas, Projects, Goals, Activity, Team, Bots, Files and Settings. Home, Messages, Meetings and your personal pages sit at the top of the rail, so everything is in one window.
+
+### Rail and navigation
+
+- The left rail shows your pinned companies with their favicons, or their initials when a company has no website. More companies lists the rest, and you can pin and reorder them.
+- Clicking a company opens its panes beside the rail. Switching companies keeps you on the same kind of page where it exists.
+- Opening a company lands on Atlas, a map of the company's folders, projects and people.
+- The command palette (Cmd+K) searches pages, companies, projects and people. Cmd+N opens the create menu, Cmd+Shift+K starts a new message and Cmd+Shift+A opens Atlas.
+- Notices such as update ready, sync progress and copy confirmations appear as small toasts in one corner instead of banners across the window.
+
+### Home and Messages
+
+- Home shows a welcome checklist for new accounts and your recent messages, meetings and work.
+- Messages keeps channels, direct messages and bot conversations in one list, with threads in a side panel.
+- Pending company invites appear in the notifications bell, where you can accept them.
+
+### Projects and goals
+
+- Projects has a board and a list view. Opening a task shows it in a side pane with its status, owner and files.
+- Each project has a Files tab, and you can create a new file from it.
+- Goals lists the company's goals with their progress and linked projects.
+
+### Company pages
+
+- Team lists people and bots with their roles, and you can invite people from the same page.
+- Bots shows the company's bots. New bot starts on the company you opened it from.
+- Files and Knowledge show the company vault with a preview pane.
+- Policies, Workers and Skills each have their own page.
+- Settings covers General, Brand, Groups, Grants and Workforce. Integrations is view only; manage connections in the web console.
+- Secrets lists secret names without ever showing their values.
+- Deployments lists the company's deployed apps with their links and access.
+
+### Meetings
+
+- Meetings shows your calendar, live meetings and recaps in one page. When the desktop detects a meeting it shows recording controls on the Meetings page.
+
+### New companies and setup
+
+- New company opens a sheet beside the rail and sets up the company's cloud storage before it finishes.
+
+### Settings and account
+
+- Settings, Profile and Billing open from your account at the bottom of the rail. Light appearance is supported across the new pages.
+
+### Other changes
+
 - The updater now refuses a beta or alpha build unless you chose that release channel in Settings. People on the stable channel stay on stable releases even if a test build is ever published by mistake.
-- Company names now show the company favicon beside them across the app: the New bot company chips, project header, More companies, command palette, Connections, settings, bot membership lists, Meetings, Telemetry, and Atlas. Companies without a website show their initials instead of a grey dot.
-- Company favicons now show in the left rail for companies that have a website set. The app was dropping the icon the server sends, so every company showed initials. The company list also reloads when you switch companies, so an icon added later replaces the initials.
+- Desktop onboarding step telemetry now includes the install-attempt identifier so sign-in progress can be joined to that installation’s first launch.
 - If the desktop cannot read the HQ daemon flag at startup, it uses the last successfully read value and retries with bounded backoff. After a failed startup read, a later successful on value can recover from the Legacy host to daemon sync without relaunching the app. Turning the flag off while the daemon is running sync takes effect on the next launch. Sign-in also triggers a retry.
 - Cognito refresh failures now log the status and sanitized provider error details. HTTP 401, invalid_grant, and Cognito NotAuthorizedException responses require sign-in; invalid_client keeps the session and parks retries for 15 minutes. Other failures retry with bounded backoff. The shared token lock uses the CLI-compatible PID-file protocol.
-- Desktop onboarding step telemetry now includes the install-attempt identifier so sign-in progress can be joined to that installation’s first launch.
 - When a plan limit pauses new files for a company, the app now adds a notification to the notifications panel instead of a banner across the top of the window. Before, someone in many paused companies got one banner per company stacked over the window. Each company gets one notification per pause, a refresh or a reopened window does not repeat it, opening it goes to that company's upgrade page, and the system banner follows your notification settings and is sent once per sync pass however many companies were paused. The main window also stays solid at full opacity, so other apps no longer show through behind it.
 - Setup now checks what you already have before it asks you to name a company. A paid company, or one you joined, is selected and the company step is skipped. A company you own shows "Use <name>" with "Create another" beside it. A pending invite shows "Join <company>" and never the create form; an invite sent to a different email offers to switch account, and an expired one says to ask the inviter to resend it. If your website sign-up made a company under another account, setup says which (masked email) and offers to switch before offering create.
 - A new company shows "Setting up your company…" until its cloud storage is ready, and only then sends invites and offers a plan. If a setup step fails, the screen names the step and "Try again" retries setup for the same company instead of creating a second one. A company left half set up by an earlier run resumes at that state.
 - Creating a company past the free plan's limit shows the upgrade prompt inline instead of an error.
 - When the first sync finds a company with no storage yet, setup shows "Finishing setup…" and finishes it instead of showing the raw error; "Try again" still works.
 - On first launch over an old HQ folder that is still signed in, the sign-in screen says which account is signed in and lets you continue or switch before anything is created.
+
+### Known gaps for the beta
+
+- Telemetry and Outpost editing are available to Indigo team members only for now. Others see Coming soon.
+- The Grok mark in the launch menu is a placeholder.
+- Performance has not yet been measured on a quiet machine, so the new interface may feel slower than it will at release.
+- Atlas is slow to draw the first map for large companies. A faster map needs a server change that is not in this beta.
+- Deployments cannot redeploy from the desktop yet, and the Your bots filter is empty.
+- Workforce shows the seat limit as unavailable until the plan limits are connected.
+- Custom keyboard shortcuts in the Edit shortcuts sheet are not saved yet.
 
 ## [0.10.382] — 2026-10-03
 
