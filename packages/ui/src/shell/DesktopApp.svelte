@@ -5349,8 +5349,10 @@
       }
       await refreshAvatarsAfterSave();
     } catch (err) {
-      agentAvatarSaveError =
-        err instanceof Error ? err.message : "Could not save the avatar.";
+      // Thrown text can be transport/server output (a failed image fetch);
+      // it is logged, and the picker shows plain copy.
+      console.warn("[avatar] agent avatar save failed", err);
+      agentAvatarSaveError = "Could not save the avatar. Try again.";
     } finally {
       agentAvatarSaving = false;
     }
