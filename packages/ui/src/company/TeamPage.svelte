@@ -468,9 +468,9 @@
       <div class="menu" role="menu" data-testid="team-row-menu">
         <span class="menu-note">Change role</span>
         {#each ["Owner", "Admin", "Member"] as role (role)}
-          <button type="button" role="menuitemradio" aria-checked={roleLine(member) === role} onclick={() => setRole(member, role)}>{role}</button>
+          <button type="button" class="mi" role="menuitemradio" aria-checked={roleLine(member) === role} onclick={() => setRole(member, role)}>{role}</button>
         {/each}
-        <button type="button" role="menuitem" data-testid={`team-remove-${member.id}`} onclick={() => (removeId = member.id)}>Remove</button>
+        <button type="button" class="mi" role="menuitem" data-testid={`team-remove-${member.id}`} onclick={() => (removeId = member.id)}>Remove</button>
         {#if bot}<span class="menu-note">Reports to its owner</span>{/if}
       </div>
     {/if}
@@ -498,6 +498,19 @@
 />
 
 <style>
+  /* Hit area (AUDIT-2-10..13): every control here has at least a 28x28 px
+     clickable box. The ::after pad grows only the axes under 28 px, so the
+     drawn size and layout stay as they are. Kept first so a later
+     position rule (e.g. absolute) still wins. */
+  .tab, .icon, .row-main, .mi { position: relative; }
+  .tab::after,
+  .icon::after,
+  .row-main::after,
+  .mi::after {
+    content: "";
+    position: absolute;
+    inset: min(0px, calc(50% - 14px));
+  }
   /* Segmented controls size to their tabs; nothing stretches or centres them. */
   .tabs, .seg { width: max-content; flex: none; justify-content: flex-start; }
   .team-page {

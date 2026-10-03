@@ -11952,6 +11952,16 @@
 </div>
 
 <style>
+  /* Hit area (AUDIT-2-10..13): every control here has at least a 28x28 px
+     clickable box. The ::after pad grows only the axes under 28 px, so the
+     drawn size and layout stay as they are. Kept first so a later
+     position rule (e.g. absolute) still wins. */
+  .edit-profile-btn { position: relative; }
+  .edit-profile-btn::after {
+    content: "";
+    position: absolute;
+    inset: min(0px, calc(50% - 14px));
+  }
   .desktop-shell {
     position: relative;
     display: flex;

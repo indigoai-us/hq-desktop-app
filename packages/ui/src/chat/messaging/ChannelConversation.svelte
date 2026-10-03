@@ -2772,8 +2772,12 @@
     white-space: nowrap;
   }
 
+  /* Hit area (AUDIT-2-11): the name clips with an ellipsis, which would clip
+     a pseudo-element pad too, so the clickable box grows with padding that a
+     matching negative margin takes back out of the layout. */
   button.dm-msg-author-btn {
-    padding: 0;
+    padding: 5px 0;
+    margin-block: -5px;
     border: none;
     background: transparent;
     font-family: inherit;
@@ -2787,7 +2791,7 @@
 
   button.dm-msg-author-btn:focus-visible {
     outline: 2px solid var(--v4-focus-ring, var(--t1));
-    outline-offset: 2px;
+    outline-offset: -3px;
     border-radius: 4px;
   }
 
