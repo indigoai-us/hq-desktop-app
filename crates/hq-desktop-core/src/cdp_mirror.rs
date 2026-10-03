@@ -87,6 +87,10 @@ pub const EVENT_INVITE_FAILED: &str = "invite_failed";
 pub const EVENT_COMPANY_JOINED: &str = "company_joined";
 /// A plan was chosen in the onboarding company step.
 pub const EVENT_PLAN_SELECTED: &str = "plan_selected";
+/// A pre-auth desktop sign-in stage for the download-to-login funnel.
+pub const EVENT_AUTH_PROGRESS: &str = "auth_progress";
+/// A pre-auth desktop sign-in failure with only a closed error category.
+pub const EVENT_AUTH_FAILURE: &str = "auth_failure";
 
 /// Lowercase sha256 hex of a trimmed identifier, or `None` when it is empty.
 /// The only form in which a person or company uid may reach the CDP: hq-pro

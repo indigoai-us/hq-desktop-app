@@ -2,7 +2,12 @@
   import { invoke } from '@tauri-apps/api/core';
   import { open } from '@tauri-apps/plugin-shell';
   import CopyPromptButton from './CopyPromptButton.svelte';
-  import { emitDesktopOperationalTelemetry } from '../lib/desktop-telemetry';
+  import {
+    emitDesktopAuthFailure,
+    emitDesktopAuthProgress,
+    emitDesktopOperationalTelemetry,
+    type DesktopAuthProgressStep,
+  } from '../lib/desktop-telemetry';
   import {
     continuationDeps,
     loadContinuationContext,
@@ -188,6 +193,9 @@
     lastProvider = provider;
     activeState = null;
     console.info('[signin] OAuth runner started', { provider });
+    const telemetryProvider = provider === 'Google' ? 'google' : 'microsoft';
+    let authStep: DesktopAuthProgressStep = 'sign_in_started';
+    void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep });
 
     try {
       // Step 1: Start OAuth login. This binds both loopback listener families
@@ -208,6 +216,8 @@
       // Step 2: Open browser for user to authenticate
       console.info('[signin] OAuth browser open requested', { provider });
       await open(authorizeUrl);
+      authStep = 'provider_page_opened';
+      void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep });
       console.info('[signin] OAuth browser opened', { provider });
       if (!isCurrentSignInRun(run)) return;
 
@@ -217,6 +227,8 @@
         'oauth_listen_for_code',
         { state }
       );
+      authStep = 'callback_received';
+      void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep });
       if (!isCurrentSignInRun(run)) return;
 
       // Step 4: Exchange code for tokens
@@ -225,6 +237,10 @@
         authenticated: boolean;
         expiresAt: string;
       }>('oauth_exchange_code', { code });
+      authStep = 'token_exchange_ok';
+      if (result.authenticated) {
+        void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep });
+      }
       if (!isCurrentSignInRun(run)) return;
 
       // Step 5: Notify parent of success
@@ -249,10 +265,16 @@
         console.info('[signin] OAuth runner succeeded', { provider });
         onsuccess?.(result);
       } else {
+        void emitDesktopAuthFailure({
+          provider: telemetryProvider,
+          step: authStep,
+          error: 'authentication rejected',
+        });
         error = 'That sign-in did not finish. Choose your provider and try once more.';
       }
     } catch (err) {
       if (!isCurrentSignInRun(run)) return;
+      void emitDesktopAuthFailure({ provider: telemetryProvider, step: authStep, error: err });
       console.error('[signin] OAuth runner failed:', err);
       error = mapSignInError(
         err instanceof Error ? err.message : String(err),

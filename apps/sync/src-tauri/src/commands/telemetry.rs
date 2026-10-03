@@ -1386,6 +1386,8 @@ const OPERATIONAL_DESKTOP_EVENT_NAMES: &[&str] = &[
     crate::commands::cdp_mirror::OP_INVITE_FAILED,
     crate::commands::cdp_mirror::OP_COMPANY_JOINED,
     crate::commands::cdp_mirror::OP_PLAN_SELECTED,
+    crate::commands::cdp_mirror::OP_AUTH_PROGRESS,
+    crate::commands::cdp_mirror::OP_AUTH_FAILURE,
 ];
 
 fn is_operational_desktop_event_name(event_name: &str) -> bool {
