@@ -280,7 +280,7 @@ describe("shared update store", () => {
         installPhase: updateStore.installPhase,
         downloadPercent: null,
       }),
-    ).toBe("WILL RESTART AFTER RECORDING");
+    ).toBe("WAITING TO RESTART");
   });
 
   it("hydrates a package downloaded while the surface was closed into Restart to update", async () => {
@@ -602,8 +602,8 @@ describe("shared store keeps pane and popover in lockstep", () => {
       .click();
     await vi.waitFor(() => {
       flushSync();
-      expect(popoverHost.textContent).toContain("WILL RESTART AFTER RECORDING");
-      expect(paneHost.textContent).toContain("WILL RESTART AFTER RECORDING");
+      expect(popoverHost.textContent).toContain("WAITING TO RESTART");
+      expect(paneHost.textContent).toContain("WAITING TO RESTART");
       expect(popoverHost.querySelector('[data-testid="core-popover-restart-update"]')).toBeNull();
       expect(paneHost.querySelector('[data-testid="settings-app-restart"]')).toBeNull();
     });

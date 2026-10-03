@@ -3,6 +3,7 @@ import type { FlagClient, FlagSnapshot } from "@indigoai-us/hq-flags-client";
 import { failure, ok } from "./adapter.js";
 import {
   CLAUDE_PROVIDER_FLAG,
+  COMPANY_NAME_PREFILL_FLAG,
   COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
   DESKTOP_LIMIT_STATUS_PUSH_FLAG,
   FIRST_LAUNCH_JOIN_KEY_FLAG,
@@ -49,6 +50,11 @@ function deferred<T = void>(): {
 }
 
 describe("registry key mapping", () => {
+  it("maps company name prefill to its hq-flags key", () => {
+    expect(COMPANY_NAME_PREFILL_FLAG).toBe("desktop.company-name-prefill-v1");
+    expect(registryKeyFor(COMPANY_NAME_PREFILL_FLAG)).toBe(COMPANY_NAME_PREFILL_FLAG);
+  });
+
   it("maps the meetings and Claude provider registry flags", () => {
     expect(registryKeyFor("meetings")).toBe(MEETINGS_REGISTRY_KEY);
     expect(registryKeyFor(MEETINGS_LEGACY_FLAG)).toBe("desktop.meetings");
