@@ -284,7 +284,7 @@
       </header>
       <div class="split secrets">
         <div class="list" data-testid="personal-secrets-list">
-          <div class="head"><span>Name</span><span>Scope</span><span>Mode</span><span>Last rotated</span><span>Bound apps</span></div>
+          <div class="head secret-grid"><span>Name</span><span>Scope</span><span>Mode</span><span>Last rotated</span><span>Bound apps</span></div>
           {#if secretsError && secretsState === "ready"}
             <p class="meta" data-testid="personal-secrets-stale">
               Showing saved rows. {secretsError}
@@ -320,9 +320,9 @@
             />
           {/if}
           {#each secretPage.rows as row (row.id)}
-            <button class="srow" type="button" aria-current={row.id === secretCurrent?.id} onclick={() => (selectedSecret = row.id)}>
-              <span>
-                <span class="nm mono">{row.name}</span>
+            <button class="srow secret-grid" type="button" aria-current={row.id === secretCurrent?.id} onclick={() => (selectedSecret = row.id)}>
+              <span class="name-cell">
+                <span class="nm mono" title={row.name}>{row.name}</span>
                 <span class="meta">{row.version}{row.host ? ` · ${row.host}` : ""}</span>
               </span>
               <span>Personal</span>
@@ -568,7 +568,7 @@
   /* Console-rail page chrome measured from Messages (docs/design-standard-console-rail.md):
      one 20px/500 title, 13px everywhere else, 31px rows, status as dot plus text,
      background-only selection, mono only for secret names, paths and MCP ids. */
-  .page { display: grid; grid-template-columns: 260px minmax(0, 1fr); height: 100%; min-height: 0; color: var(--t1, var(--v4-text-1)); background: var(--v4-ground); position: relative; font: 400 13px/1.45 var(--font-ui, "Geist", -apple-system, sans-serif); }
+  .page { display: grid; grid-template-columns: clamp(180px, 26%, 260px) minmax(0, 1fr); height: 100%; min-height: 0; color: var(--t1, var(--v4-text-1)); background: var(--v4-ground); position: relative; font: 400 13px/1.45 var(--font-ui, "Geist", -apple-system, sans-serif); }
   button { font: inherit; font-size: 13px; }
   .pane { border-right: 1px solid var(--line, var(--v4-rowline)); padding: 12px 14px; overflow: auto; background: var(--v4-secondary-sidebar); display: flex; flex-direction: column; gap: 1px; }
   h1 { font-size: var(--type-title, 20px); font-weight: var(--type-title-weight, 500); line-height: var(--type-title-line, 1.25); margin: 0 4px 0 0; }
@@ -576,8 +576,12 @@
   .nav span { color: var(--t3, var(--v4-text-3)); font-variant-numeric: tabular-nums; }
   .nav:hover, .srow:hover, .link:hover { background: var(--hover, var(--v4-hover)); }
   .nav[aria-current="true"], .seg .tab[aria-pressed="true"], .srow[aria-current="true"] { background: var(--sel, var(--v4-active-row)); color: var(--t1, var(--v4-text-1)); box-shadow: none; }
-  .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-  .toolbar { display: flex; align-items: center; gap: 8px; height: 52px; flex: none; box-sizing: border-box; padding: 0 20px; border-bottom: 1px solid var(--line, var(--v4-rowline)); }
+  .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; container-type: inline-size; }
+  /* QA-099: the header wraps at narrow widths instead of pushing the primary
+     button past the right edge; the search box is the part that gives. */
+  .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 52px; flex: none; box-sizing: border-box; padding: 10px 20px; border-bottom: 1px solid var(--line, var(--v4-rowline)); }
+  .toolbar .search { flex: 0 1 180px; min-width: 96px; }
+  .toolbar :global([data-rail-btn]) { flex: none; }
   .grow { flex: 1; }
   .sub, .meta, .kind, .foot, .count { color: var(--t3, var(--v4-text-3)); font-size: 13px; }
   .meta, .kind, .foot { margin: 8px 0; }
@@ -591,11 +595,25 @@
   .dot[data-status="reconnect"] { background: var(--red, var(--v4-error)); }
   .search, .secret { height: 28px; box-sizing: border-box; border-radius: 6px; border: 1px solid var(--line2, var(--v4-control-border)); background: var(--btn-bg, var(--v4-control-faint)); color: var(--t1, var(--v4-text-1)); padding: 0 8px; font: inherit; font-size: 13px; }
   .link { height: 26px; border: 0; border-radius: 6px; padding: 0 8px; background: transparent; color: var(--t2, var(--v4-text-2)); cursor: pointer; justify-self: end; white-space: nowrap; }
-  .split { display: grid; grid-template-columns: minmax(0, 1fr) 320px; min-height: 0; flex: 1; }
+  .split { display: grid; grid-template-columns: minmax(0, 1fr) clamp(240px, 32%, 320px); min-height: 0; flex: 1; }
   .list, .inspector { min-height: 0; overflow: auto; }
-  .list { padding: 8px 12px; }
+  .list { padding: 8px 12px; container-type: inline-size; }
   .inspector { border-left: 1px solid var(--line, var(--v4-rowline)); background: var(--v4-secondary-sidebar); padding: 24px 20px; }
   .head, .srow { display: grid; grid-template-columns: minmax(0, 1.4fr) 110px 100px 90px minmax(0, 1fr); gap: 8px; align-items: center; padding: 0 8px; }
+  /* QA-099: Name always keeps a usable share and Scope is a fixed narrow
+     column, so names ellipsize instead of collapsing under Scope. */
+  .secret-grid { grid-template-columns: minmax(120px, 1.4fr) 72px 92px 84px minmax(0, 1fr); }
+  .name-cell { display: flex; align-items: baseline; min-width: 0; }
+  .name-cell .nm { display: block; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .name-cell .meta { flex: 0 1000 auto; min-width: 0; white-space: nowrap; }
+  @container (max-width: 560px) {
+    .secret-grid { grid-template-columns: minmax(0, 1fr) 72px 92px; }
+    .secret-grid > :nth-child(n + 4), .name-cell .meta { display: none; }
+  }
+  @container (max-width: 640px) {
+    .split { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
+    .inspector { border-left: 0; border-top: 1px solid var(--line, var(--v4-rowline)); max-height: 40%; }
+  }
   .head.agents, .agent-row { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) 48px auto; }
   .head { height: 31px; color: var(--t3, var(--v4-text-3)); }
   .srow { width: 100%; height: 31px; box-sizing: border-box; text-align: left; border: 0; background: transparent; color: var(--t2, var(--v4-text-2)); border-radius: 8px; cursor: pointer; }
