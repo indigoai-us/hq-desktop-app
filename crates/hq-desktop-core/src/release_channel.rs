@@ -344,6 +344,24 @@ pub fn should_offer_update(
     policy.marks_running_version_bad(current)
 }
 
+/// Whether a feed target's version belongs to a channel the user subscribed
+/// to. The feed URL already picks the channel, so this is a second check: if a
+/// stable feed ever served a prerelease (a mis-flagged GitHub release, a stale
+/// `releases/latest` pointer), a Stable user must not install it. Stable takes
+/// only versions without a prerelease part; Beta takes stable and `-beta.N`;
+/// Alpha takes everything.
+pub fn channel_accepts_version(channel: ReleaseChannel, offered: &semver::Version) -> bool {
+    let offered_channel = if offered.pre.is_empty() {
+        ReleaseChannel::Stable
+    } else {
+        match offered.pre.as_str().split('.').next() {
+            Some("beta") => ReleaseChannel::Beta,
+            _ => ReleaseChannel::Alpha,
+        }
+    };
+    channel.includes(offered_channel)
+}
+
 /// Recovery "Reinstall latest": always install the feed target, including
 /// when it matches the running version, so a wedged same-version install
 /// can still be replaced. Signature verification still applies.
@@ -451,6 +469,19 @@ pub async fn fetch_release_tags() -> Result<Vec<String>, String> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn stable_channel_refuses_a_prerelease_feed_target() {
+        let v = |s: &str| semver::Version::parse(s).unwrap();
+        assert!(channel_accepts_version(ReleaseChannel::Stable, &v("0.10.383")));
+        assert!(!channel_accepts_version(ReleaseChannel::Stable, &v("0.11.0-beta.1")));
+        assert!(!channel_accepts_version(ReleaseChannel::Stable, &v("0.11.0-alpha.1")));
+        assert!(channel_accepts_version(ReleaseChannel::Beta, &v("0.11.0-beta.1")));
+        assert!(channel_accepts_version(ReleaseChannel::Beta, &v("0.10.383")));
+        assert!(!channel_accepts_version(ReleaseChannel::Beta, &v("0.11.0-alpha.1")));
+        assert!(channel_accepts_version(ReleaseChannel::Alpha, &v("0.11.0-alpha.1")));
+        assert!(channel_accepts_version(ReleaseChannel::Alpha, &v("0.11.0-beta.1")));
+    }
 
     #[test]
     fn channel_selection_resolves_the_newest_applicable_release() {
