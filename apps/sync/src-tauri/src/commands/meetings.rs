@@ -57,6 +57,16 @@ pub async fn meetings_feature_enabled() -> Result<bool, String> {
     Ok(crate::util::feature_gate::desktop_features_enabled().await)
 }
 
+/// Rollout gate for the local personal-transcript rows in Past meetings.
+/// Missing and unreadable hq-flags values stay off through the shared resolver.
+#[tauri::command]
+pub async fn meetings_personal_transcripts_enabled() -> Result<bool, String> {
+    Ok(crate::commands::hq_pro::feature_flag_enabled(
+        "desktop.meetings-personal-transcripts",
+    )
+    .await)
+}
+
 /// Fetch ontology-resolved participants for a meeting, with a hard 2-second
 /// timeout. Returns an empty vec on any error (timeout, network, non-200) so
 /// the bot invite is never blocked. Called just before `POST /v1/bot/invite`.
