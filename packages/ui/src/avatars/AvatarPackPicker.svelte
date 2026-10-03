@@ -99,8 +99,9 @@
       .catch((err: unknown) => {
         if (cancelled) return;
         remotePacks = [];
-        loadError =
-          err instanceof Error ? err.message : "Could not load avatar packs.";
+        // AUDIT-3c: log the raw failure; show app copy.
+        console.warn("[avatars] pack load failed", err);
+        loadError = "Could not load avatar packs. Try again.";
       })
       .finally(() => {
         if (!cancelled) loadingRemote = false;
