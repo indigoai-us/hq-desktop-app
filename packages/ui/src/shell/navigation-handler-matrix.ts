@@ -94,6 +94,8 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   applyFetchedTimeline: "none",
   openMemberProfile: "none",
   openNewChat: "none",
+  // Closes Settings (replace), then opens the New bot modal over the rail.
+  openNewBotFromSettings: "replace",
   openNewMessage: "none",
   openAtlasShortcut: "push",
   closeMemberProfile: "none",

@@ -26,10 +26,7 @@
     PlatformAdapter,
     RemoteBotRow,
   } from "@hq/platform";
-  import { CLAUDE_PROVIDER_FLAG, hostComputerNoun, startJitteredPoll } from "@hq/platform";
-  import type { CreateErrorFix } from "@hq/agents";
-  import type { DirectCloudCreate } from "../chat/create-bot/cloud-create.js";
-  import type { CloudBotDraft, EntryPointResult } from "../chat/lifecycle-entry-points.js";
+  import { hostComputerNoun, startJitteredPoll } from "@hq/platform";
   import type { Workspace } from "../chat/workspaces.js";
   import BotKindChip from "../chat/BotKindChip.svelte";
   import { LOCAL_BOT_RUNTIMES, localBotCompanies, localBotKindLabel } from "../chat/local-bots.js";
@@ -80,20 +77,13 @@
     /** Explicit admin override (host-known); null defers to membership roles. */
     isAdmin?: boolean | null;
     /**
-     * `agents.desktop-agent-creation`: with the flag on for one of these
-     * companies, the New bot dialog here can create cloud bots too.
+     * Open the one New bot modal (the Messages "New" flow). The host closes
+     * Settings first; creating lands in the bot's DM. Without it the pane
+     * falls back to its own local-only dialog.
      */
-    directCloud?: DirectCloudCreate | null;
-    /** The host's direct cloud create; it closes Settings and opens the DM. */
-    oncreatecloudbot?: ((companyUid: string, draft: CloudBotDraft) => Promise<EntryPointResult>) | null;
+    onnewbot?: (() => void) | null;
   }
-  let {
-    adapter = null,
-    companies = null,
-    isAdmin = null,
-    directCloud = null,
-    oncreatecloudbot = null,
-  }: Props = $props();
+  let { adapter = null, companies = null, isAdmin = null, onnewbot = null }: Props = $props();
 
   type Runtime = LocalBotRow["runtime"];
   const RUNTIMES = LOCAL_BOT_RUNTIMES;
@@ -118,32 +108,8 @@
   let runtimeStatuses = $state<Record<string, RuntimeStatus> | null>(null);
   /** The New bot flow, hosted in a lightweight dialog over the pane. */
   let createOpen = $state(false);
-  let createBusy = $state<"bot" | "agent" | null>(null);
+  let createBusy = $state<"bot" | null>(null);
   let createError = $state<string | null>(null);
-  let createFix = $state<CreateErrorFix | null>(null);
-  /** Companies a cloud bot could be added to. */
-  const cloudTargets = $derived(
-    (companies ?? [])
-      .filter((w) => w.kind !== "personal" && Boolean(w.cloudUid?.trim()))
-      .map((w) => ({ companyUid: w.cloudUid!.trim(), label: w.displayName?.trim() || w.slug })),
-  );
-  /** The flag is on for this person or one of `cloudTargets`, and the host can create. */
-  let cloudCreateOn = $state(false);
-  $effect(() => {
-    const seam = directCloud;
-    const uids = cloudTargets.map((c) => c.companyUid);
-    if (!seam || !oncreatecloudbot) {
-      cloudCreateOn = false;
-      return;
-    }
-    let active = true;
-    void seam.anyEnabled(uids).then((on) => {
-      if (active) cloudCreateOn = on;
-    });
-    return () => {
-      active = false;
-    };
-  });
   let workers = $state<LocalBotWorkerOption[] | null>(null);
   let confirmRemove = $state<string | null>(null);
   let stopPoll: (() => void) | undefined;
@@ -305,6 +271,10 @@
   }
 
   async function openCreate(): Promise<void> {
+    if (onnewbot) {
+      onnewbot();
+      return;
+    }
     if (!adapter?.bots) return;
     createError = null;
     createOpen = true;
@@ -319,28 +289,6 @@
     if (createBusy) return;
     createOpen = false;
     createError = null;
-    createFix = null;
-  }
-
-  /** Cloud, flag on: the host creates the bot, closes Settings and opens its DM. */
-  async function createCloud(companyUid: string, draft: CloudBotDraft): Promise<void> {
-    if (!oncreatecloudbot || createBusy) return;
-    createBusy = "agent";
-    createError = null;
-    createFix = null;
-    try {
-      const result = await oncreatecloudbot(companyUid, draft);
-      if (result.ok) {
-        createOpen = false;
-        return;
-      }
-      createError = result.reason;
-      createFix = result.fix ?? null;
-    } catch (err) {
-      createError = err instanceof Error ? err.message : String(err);
-    } finally {
-      createBusy = null;
-    }
   }
 
   /** agentUid → display name, for bots whose label differs from their handle. */
@@ -879,16 +827,11 @@
         botWorkers={workers}
         existingNames={bots.map((b) => b.name)}
         botCompanies={localBotCompanies(companies)}
-        agentTargets={cloudCreateOn ? cloudTargets : []}
-        onCloudCreate={cloudCreateOn ? createCloud : null}
-        loadClaudeProviderFlag={cloudCreateOn && adapter ? () => adapter!.identity.hasFeature(CLAUDE_PROVIDER_FLAG) : null}
-        loadCloudProvisionOptions={cloudCreateOn && adapter ? (uid) => adapter!.agents.getProvisionOptions(uid) : null}
-        directCloud={cloudCreateOn ? directCloud : null}
+        agentTargets={[]}
         oncreate={create}
         onback={closeCreate}
         entryBusy={createBusy}
         entryError={createError}
-        entryFix={createFix}
         signInApi={botSignIn}
         onsignedin={() => loadPreflight()}
       />

@@ -107,12 +107,12 @@ function fakeAdapter(input: {
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 
-async function mountPane(adapter: PlatformAdapter) {
+async function mountPane(adapter: PlatformAdapter, extra: Record<string, unknown> = {}) {
   host = document.createElement("div");
   document.body.appendChild(host);
   component = mount(BotsSettingsPane, {
     target: host,
-    props: { adapter, companies: COMPANIES as never },
+    props: { adapter, companies: COMPANIES as never, ...extra },
   });
   await tick();
 }
@@ -186,6 +186,20 @@ describe("Settings → Bots (Work shell)", () => {
       expect(host.querySelector('[data-testid="settings-bots-create-dialog"]')).toBeNull();
     });
     expect(host.querySelector('[data-testid="settings-bots-status"]')?.textContent).toContain("scout");
+  });
+
+  it("with a host modal, New bot opens the shared Messages modal instead of its own dialog", async () => {
+    const onnewbot = vi.fn();
+    const adapter = fakeAdapter({ bots: { workers: vi.fn(async () => ok({ workers: [] })) } });
+    await mountPane(adapter, { onnewbot });
+    await vi.waitFor(() => {
+      expect(host.querySelector('[data-testid="settings-bots-create-button"]')).not.toBeNull();
+    });
+    host.querySelector<HTMLButtonElement>('[data-testid="settings-bots-create-button"]')!.click();
+    await settleFlow();
+    expect(onnewbot).toHaveBeenCalledOnce();
+    expect(host.querySelector('[data-testid="settings-bots-create-dialog"]')).toBeNull();
+    expect(host.querySelector('[data-testid="create-bot-kind-step"]')).toBeNull();
   });
 
   it("labels a local bot with its display name, falling back to the handle", async () => {

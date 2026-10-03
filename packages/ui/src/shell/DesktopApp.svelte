@@ -6543,8 +6543,6 @@
   async function createCloudBotDirect(
     companyUid: string,
     draft: CloudBotDraft,
-    /** Runs once the bot exists, before its DM opens (Settings closes itself). */
-    beforeOpen?: () => void,
   ): Promise<EntryPointResult> {
     if (!directCloudCreate || !draft.idempotencyKey || !draft.quote) {
       return { ok: false, reason: "Adding bots isn't available in this build", blocked: false };
@@ -6567,7 +6565,6 @@
       return { ok: false, reason: result.reason, blocked: result.blocked, fix: result.fix };
     }
     const agentUid = result.agentUid;
-    beforeOpen?.();
     const title = draft.title?.trim() ?? "";
     if (title) void saveNewBotProfile(agentUid, { title });
     const existing = railRows.find((r) => r.kind === "dm" && r.personUid === agentUid);
@@ -9579,6 +9576,15 @@
     withSidebar((actions) => actions.openNewAgent(companyUid));
   }
 
+  /**
+   * Settings › Bots "New bot": close Settings and open the same New bot modal
+   * as the Messages "New" menu. Creating there lands in the bot's DM.
+   */
+  function openNewBotFromSettings(): void {
+    closeSettings();
+    withSidebar((actions) => actions.openNewAgent(null));
+  }
+
   function openNewChat(): void {
     paletteOpen = false;
     cheatSheetOpen = false;
@@ -10291,10 +10297,7 @@
       {#key settingsLoadAttempt}
       {#await loadShellSettings() then { default: ShellSettings }}
         <ShellSettings
-          directCloud={directCloudCreate}
-          oncreatecloudbot={directCloudCreate
-            ? (companyUid, draft) => createCloudBotDirect(companyUid, draft, closeSettings)
-            : null}
+          onnewbot={openNewBotFromSettings}
           profile={resolvedSettingsProfile}
           {companies}
           {adapter}
