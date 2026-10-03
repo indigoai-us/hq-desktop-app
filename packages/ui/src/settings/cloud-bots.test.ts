@@ -38,3 +38,23 @@ describe("fetchCloudRoster (QA-080)", () => {
     expect(list).toHaveBeenCalledWith(null);
   });
 });
+
+describe("fetchCloudRoster raw errors (AUDIT-3c)", () => {
+  it.each([
+    '[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}',
+    'roster exploded {"message":"boom"}',
+  ])("never hands raw text to the bots pane: %s", async (raw) => {
+    const { friendlyApiError } = await import("../common/api-error.js");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const out = await fetchCloudRoster(async () => fail(raw), ["cmp_a"]);
+    const shown = friendlyApiError(out.failure, "Could not read your cloud bots.", "bots");
+    expect(shown).not.toContain("boom");
+    expect(shown).not.toContain(raw);
+    expect(shown).toMatch(/try again/i);
+    if (!/Internal Server Error/.test(raw)) {
+      expect(warn).toHaveBeenCalledWith("[bots] cloud roster failed", raw);
+    }
+    vi.restoreAllMocks();
+  });
+});
