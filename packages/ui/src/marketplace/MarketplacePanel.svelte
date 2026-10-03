@@ -141,10 +141,8 @@
             installResult = { ok: true, message: "Installed." };
           },
           onError: (message) => {
-            installResult = {
-              ok: false,
-              message: message || "Install failed.",
-            };
+            if (message) console.warn("[marketplace] install failed", message);
+            installResult = { ok: false, message: INSTALL_ERROR_COPY };
           },
         })
         .then((fn) => {
@@ -156,6 +154,8 @@
       safeUnlisten(unlistenProgress)();
     };
   });
+
+  const INSTALL_ERROR_COPY = "Couldn't install this pack. Try again.";
 
   async function runInstall(): Promise<void> {
     if (!selected || installing) return;
@@ -193,12 +193,15 @@
         target.scope,
       );
     } else {
+      if (installRes.reason !== "unavailable") {
+        console.warn("[marketplace] install failed", installRes.message);
+      }
       installResult = {
         ok: false,
         message:
           installRes.reason === "unavailable"
             ? "Packs install into your local HQ folder from the desktop app."
-            : (installRes.message ?? "Install failed."),
+            : INSTALL_ERROR_COPY,
       };
     }
     installing = false;
