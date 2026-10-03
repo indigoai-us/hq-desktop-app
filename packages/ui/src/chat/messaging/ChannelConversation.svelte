@@ -1842,7 +1842,7 @@
                       {answeredQuestionIds}
                       {answeredChoices}
                       connections={connections
-                        ? { views: connections.viewsFor(msg), onaction: connections.onaction }
+                        ? connections.cardsFor(msg)
                         : null}
                     />
                   {/if}

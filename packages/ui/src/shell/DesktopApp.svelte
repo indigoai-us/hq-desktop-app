@@ -4745,15 +4745,15 @@
     const input = cloudBotCardInput;
     if (!input || !cloudBotCardsShown) return null;
     return {
-      viewsFor: (message): Partial<Record<ConnectTarget, ConnectionCardView>> => {
+      cardsFor: (message) => {
         const at = Date.parse(message.createdAt ?? "");
         const messageAt = Number.isFinite(at) ? at : null;
-        return {
+        const views: Partial<Record<ConnectTarget, ConnectionCardView>> = {
           slack: connectionCardView("slack", { ...input, messageAt }),
           tools: connectionCardView("tools", { ...input, messageAt }),
         };
+        return { views, onaction: (detail) => handleConnectionAction(input.uid, detail) };
       },
-      onaction: (detail) => handleConnectionAction(input.uid, detail),
     };
   });
   /** The open card modal's content and what it is handed, or null. */

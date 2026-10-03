@@ -22,13 +22,34 @@ import { slackCapabilityFromStatus, slackRowFromStatus, slackRowStage, type Slac
 export type ConnectionCardState = "offered" | "connecting" | "connected" | "declined";
 
 /**
+ * Which card: one of the built-in cards, or an integration card. An
+ * integration card is further named by its `domain` (see
+ * {@link ConnectionCardView}); there is one such card per app.
+ */
+export type ConnectionCardTarget = ConnectTarget | "integration";
+
+/**
  * What a button on a card does. `open` opens the card's own modal (see
  * {@link CARD_MODAL_TARGETS}); the others act at once.
  */
 export type ConnectionCardAction = "connect" | "decline" | "allow" | "open";
 
-/** What a card's main button does: connect at once, or open the card's modal. */
-export type ConnectionCardPrimaryAction = "connect" | "open";
+/**
+ * What a card's main button does: connect at once, open the card's modal, or
+ * (an integration card that is connected but not shared) let the bot use it.
+ */
+export type ConnectionCardPrimaryAction = "connect" | "open" | "allow";
+
+/** How an integration connects: with nothing, in the browser, or with a pasted key. */
+export type IntegrationAuthClass = "none" | "oauth" | "key";
+
+/** The logo of an integration card: image sources tried in order, and the badge drawn until one loads. */
+export interface ConnectionCardLogo {
+  /** Image URLs the app built from the domain, tried in order. Never from the bot. */
+  sources: string[];
+  /** The two-letter badge. */
+  monogram: string;
+}
 
 /**
  * The cards whose main button opens a modal instead of connecting at once.
@@ -88,12 +109,21 @@ export interface ToolsCardRecord {
   baselineIds?: string[];
 }
 
+/** What this device remembers about one integration card, by its domain. */
+export interface AppCardRecord {
+  state: "connecting" | "declined";
+  /** When the person pressed the button (ms). */
+  since: number;
+}
+
 /** What this device remembers about one bot's cards. */
 export interface BotConnectionRecord {
   /** The bot's first message, the one the cards sit under. */
   helloEventId?: string;
   slack?: SlackCardRecord;
   tools?: ToolsCardRecord;
+  /** The integration cards, by normalized domain. */
+  apps?: Record<string, AppCardRecord>;
   /** Connections the person let the bot use from here (connection id → name). */
   granted?: Record<string, { name: string; at: number }>;
   /** Connection ids the bot has been told about. */
@@ -153,6 +183,17 @@ function cleanBotRecord(raw: unknown): BotConnectionRecord | null {
         ...(Array.isArray(raw.tools.baselineIds) ? { baselineIds: stringList(raw.tools.baselineIds) } : {}),
       };
     }
+  }
+  if (isRecord(raw.apps)) {
+    const apps: Record<string, AppCardRecord> = {};
+    for (const [domain, entry] of Object.entries(raw.apps)) {
+      if (!isRecord(entry) || Object.keys(apps).length >= MAX_REMEMBERED_IDS) continue;
+      const key = domain.trim().toLowerCase();
+      const state = cardState(entry.state);
+      const since = finiteTime(entry.since);
+      if (key && state && since !== null) apps[key] = { state, since };
+    }
+    if (Object.keys(apps).length > 0) out.apps = apps;
   }
   if (isRecord(raw.granted)) {
     const granted: Record<string, { name: string; at: number }> = {};
@@ -294,6 +335,39 @@ export function markSlackAnnounced(record: BotConnectionRecord | null | undefine
   const base = record ?? {};
   if (!base.slack || base.slack.announced) return base;
   return { ...base, slack: { ...base.slack, announced: true } };
+}
+
+/** The person pressed Connect (or Open again) on an integration card. */
+export function markAppConnecting(
+  record: BotConnectionRecord | null | undefined,
+  domain: string,
+  now: number,
+): BotConnectionRecord {
+  const base = record ?? {};
+  const key = domain.trim().toLowerCase();
+  if (!key) return base;
+  return { ...base, apps: { ...(base.apps ?? {}), [key]: { state: "connecting", since: now } } };
+}
+
+/** The person pressed "Not now" on an integration card. */
+export function markAppDeclined(
+  record: BotConnectionRecord | null | undefined,
+  domain: string,
+  now: number,
+): BotConnectionRecord {
+  const base = record ?? {};
+  const key = domain.trim().toLowerCase();
+  if (!key) return base;
+  return { ...base, apps: { ...(base.apps ?? {}), [key]: { state: "declined", since: now } } };
+}
+
+/** An integration card's wait or decline is over (it connected): forget what was pressed. */
+export function forgetAppCard(record: BotConnectionRecord | null | undefined, domain: string): BotConnectionRecord {
+  const base = record ?? {};
+  const key = domain.trim().toLowerCase();
+  if (!base.apps || !(key in base.apps)) return base;
+  const { [key]: _gone, ...rest } = base.apps;
+  return Object.keys(rest).length > 0 ? { ...base, apps: rest } : (({ apps: _apps, ...withoutApps }) => withoutApps)(base);
 }
 
 // ── Server facts ─────────────────────────────────────────────────────────
@@ -467,13 +541,17 @@ export function pendingAnnouncements(
 
 // ── The view ─────────────────────────────────────────────────────────────
 
-/** Stable name of one button press, for the "already pressed" bookkeeping. */
+/**
+ * Stable name of one button press, for the "already pressed" bookkeeping.
+ * An integration card is named by its domain, so two apps never share a key.
+ */
 export function connectionActionKey(
-  target: ConnectTarget,
+  target: ConnectionCardTarget,
   action: ConnectionCardAction,
   connectionId?: string | null,
+  domain?: string | null,
 ): string {
-  return `${target}:${action}${connectionId ? `:${connectionId}` : ""}`;
+  return `${target}${domain ? `[${domain}]` : ""}:${action}${connectionId ? `:${connectionId}` : ""}`;
 }
 
 export interface ConnectionCardRow {
@@ -486,10 +564,25 @@ export interface ConnectionCardRow {
   isNew: boolean;
 }
 
-/** Everything a card draws. Built by {@link connectionCardView}. */
+/**
+ * Everything a card draws. Built by {@link connectionCardView} for the
+ * built-in cards and by `integrationCardView` (integration-cards-model.ts)
+ * for an app's card. The integration fields are set on that card only.
+ */
 export interface ConnectionCardView {
-  target: ConnectTarget;
+  target: ConnectionCardTarget;
+  /** Set on an integration card. */
+  kind?: "integration";
+  /** The app's website domain, normalized. Integration cards only. */
+  domain?: string;
+  /** The app's logo: sources and badge. Integration cards only; Slack keeps its drawn icon. */
+  logo?: ConnectionCardLogo | null;
+  /** How the app connects, when known. Integration cards only. */
+  authClass?: IntegrationAuthClass | null;
+  /** The connection a card's "Let {bot} use it" button shares. Integration cards only. */
+  connectionId?: string | null;
   state: ConnectionCardState;
+  /** The card's name: "Slack", "Connect your tools", or the app's name. */
   title: string;
   line: string;
   /** Main button, or null when the state has none. */
@@ -739,17 +832,33 @@ export function connectionCardView(target: ConnectTarget, input: ConnectionCardI
 
 /** One button press on a card, as the host receives it. */
 export interface ConnectionCardActionDetail {
-  target: ConnectTarget;
+  target: ConnectionCardTarget;
   action: ConnectionCardAction;
-  /** The connection of an "allow" row. */
+  /** The connection of an "allow" press. */
   connectionId?: string;
+  /** The app of an integration card's press. */
+  domain?: string;
 }
 
 export type ConnectionCardActionHandler = (detail: ConnectionCardActionDetail) => void | Promise<void>;
 
-/** The cards of one message: a view per target, and where presses go. */
+/**
+ * The cards of one message: a view per built-in card, a view per integration
+ * item (or null for an app that draws no card), the link under the grid, and
+ * where presses go.
+ */
 export interface ConnectionCards {
   views: Partial<Record<ConnectTarget, ConnectionCardView>>;
+  /** The card of an app named by domain, or null when it draws none. Absent: no integration cards. */
+  integration?: ((item: { domain: string; why?: string }) => ConnectionCardView | null) | null;
+  /**
+   * Whether a block's row may draw yet: null means draw it. A row with apps
+   * in it waits while their lookups are unknown, so no card appears and then
+   * goes away. Absent: draw at once.
+   */
+  rowReady?: ((items: ReadonlyArray<{ app?: ConnectTarget; domain?: string }>) => boolean) | null;
+  /** The page "Browse all in HQ Integrations" opens, or null for no link. */
+  browseAllUrl?: string | null;
   onaction: ConnectionCardActionHandler;
 }
 
@@ -758,8 +867,7 @@ export interface ConnectionCards {
  * a card in a message written after a "Not now" is a new offer.
  */
 export interface ConversationConnectionCards {
-  viewsFor: (message: { eventId: string; createdAt?: string | null }) => Partial<Record<ConnectTarget, ConnectionCardView>>;
-  onaction: ConnectionCardActionHandler;
+  cardsFor: (message: { eventId: string; createdAt?: string | null }) => ConnectionCards;
 }
 
 // ── Asking for the cards again ───────────────────────────────────────────

@@ -500,7 +500,7 @@ describe("ChannelConversation with connection cards", () => {
   it("attaches the host's extra blocks to a message that carried none", () => {
     const viewsFor = vi.fn((_message: { eventId: string }) => views());
     const root = mountConversation({
-      connections: { viewsFor, onaction: () => {} },
+      connections: { cardsFor: (message: { eventId: string }) => ({ views: viewsFor(message), onaction: () => {} }) },
       extraBlocksByEventId: { evt_hello: [{ kind: "connect", items: [{ app: "slack" }, { app: "tools" }] }] },
     });
     const hello = message(root, "evt_hello");
@@ -518,8 +518,10 @@ describe("ChannelConversation with connection cards", () => {
     const record = markDeclined(null, "slack", Date.parse("2026-10-02T14:05:00.000Z"));
     const root = mountConversation({
       connections: {
-        viewsFor: (msg: ConversationMessageWire) => views({ record, messageAt: Date.parse(msg.createdAt ?? "") }),
-        onaction: () => {},
+        cardsFor: (msg: ConversationMessageWire) => ({
+          views: views({ record, messageAt: Date.parse(msg.createdAt ?? "") }),
+          onaction: () => {},
+        }),
       },
       extraBlocksByEventId: { evt_hello: [{ kind: "connect", items: [{ app: "slack" }, { app: "tools" }] }] },
     });
@@ -538,7 +540,7 @@ describe("ChannelConversation with connection cards", () => {
 
   it("sends a press to the host", () => {
     const onaction = vi.fn();
-    const root = mountConversation({ connections: { viewsFor: () => views(), onaction } });
+    const root = mountConversation({ connections: { cardsFor: () => ({ views: views(), onaction }) } });
     primary(card(message(root, "evt_offer"), "slack"))!.click();
     // The Slack card's main button opens its modal.
     expect(onaction).toHaveBeenCalledWith({ target: "slack", action: "open" });
