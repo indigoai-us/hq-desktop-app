@@ -7,6 +7,7 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+- Unexpected watcher-exit reports now include the runner phase and elapsed-time bucket as searchable Sentry tags.
 - Desktop setup invite telemetry now includes the company for each step outcome and the number of invitations sent. It does not include invitee details.
 - Background first-launch and sign-in telemetry flushes stay bound to the home
   directory that scheduled them, so delayed sends cannot consume another

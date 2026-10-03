@@ -4744,6 +4744,12 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
         ("sync_route", "watcher".to_string()),
         ("exit_producer", exit_producer.to_string()),
         ("watch_owner_result", watch_owner_result.to_string()),
+        // These values come from the closed runner phase and elapsed-bucket helpers.
+        ("runner_phase", context.runner_phase.clone()),
+        (
+            "runner_phase_elapsed_bucket",
+            context.runner_phase_elapsed_bucket.clone(),
+        ),
         ("stderr_cause", stderr_cause.to_string()),
         ("node_error_code", "unknown".to_string()),
         ("node_error_name", "unknown".to_string()),
@@ -9131,6 +9137,36 @@ mod tests {
                 _ => unreachable!(),
             }
         }
+    }
+
+    #[test]
+    fn unexpected_watcher_exit_21_capture_has_phase_tags() {
+        let mut effects = RecordingWatcherEffects::default();
+        let context = WatcherExitCaptureContext {
+            runner_phase: "pull".to_string(),
+            runner_phase_elapsed_bucket: "5m_to_30m".to_string(),
+            ..WatcherExitCaptureContext::default()
+        };
+
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(21),
+            None,
+            false,
+            false,
+            "/opt/homebrew/bin/npx",
+            Some("runner stopped after lease loss"),
+            current_termination_host(),
+            &context,
+        );
+
+        assert_eq!(effects.captures.len(), 1);
+        let capture = &effects.captures[0];
+        assert_eq!(recorded_tag(capture, "runner_phase"), "pull");
+        assert_eq!(
+            recorded_tag(capture, "runner_phase_elapsed_bucket"),
+            "5m_to_30m"
+        );
     }
 
     #[test]
