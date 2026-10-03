@@ -964,6 +964,13 @@ export function createSyncPlatformAdapter(
             limit: 50,
           }),
         ),
+      getRecorded: (meetingId, companyId) =>
+        hqProJson(
+          'GET',
+          withQuery(`${WEB_PATHS.meetingsList}/${encodeURIComponent(meetingId)}`, {
+            companyId: companyId || undefined,
+          }),
+        ),
       fetchLiveTranscript: (req) =>
         call('meetings_fetch_live_transcript', {
           recallBotId: req.recallBotId,

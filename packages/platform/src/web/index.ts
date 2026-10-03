@@ -907,6 +907,12 @@ export class WebPlatformAdapter implements PlatformAdapter {
           ? `${WEB_PATHS.meetingsList}?companyId=${encodeURIComponent(companyId)}&limit=50`
           : `${WEB_PATHS.meetingsList}?limit=50`,
       ),
+    getRecorded: (meetingId, companyId) =>
+      this.get<Json>(
+        `${WEB_PATHS.meetingsList}/${encodeURIComponent(meetingId)}${
+          companyId ? `?companyId=${encodeURIComponent(companyId)}` : ""
+        }`,
+      ),
     inviteBot: (payload) =>
       this.post(
         withCompanyQuery(WEB_PATHS.botInvite, payload),

@@ -38,7 +38,8 @@ describe("meetingsRailSections", () => {
     expect(sections.map((s) => s.id)).toEqual(["live", "today", "tomorrow", "past"]);
     expect(sections[0].rows.map((r) => r.id)).toEqual(["standup"]);
     expect(sections[0].rows[0].time).toBe("14m");
-    expect(sections[1].label).toBe("Today · Oct 1");
+    expect(sections[1].label).toBe("TODAY · OCT 1");
+    expect(sections[3].label).toBe("YESTERDAY · SEP 30");
     expect(sections[1].rows.map((r) => r.id)).toEqual(["flow"]);
     expect(sections[2].rows.map((r) => r.id)).toEqual(["pricing"]);
     expect(sections[3].rows.map((r) => r.id)).toEqual(["readout"]);
@@ -46,7 +47,8 @@ describe("meetingsRailSections", () => {
 
   it("shows time, company mark, and the recap mark on past rows", () => {
     expect(sections[1].rows[0]).toMatchObject({ time: "11:00", companyMark: "LR" });
-    expect(sections[3].rows[0]).toMatchObject({ time: "Sep 30", hasRecap: true });
+    // The day lives in the header; past rows carry only the start time.
+    expect(sections[3].rows[0]).toMatchObject({ time: "15:00", hasRecap: true });
     expect(defaultMeetingId(sections)).toBe("standup");
   });
 

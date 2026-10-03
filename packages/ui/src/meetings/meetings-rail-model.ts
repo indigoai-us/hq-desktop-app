@@ -17,6 +17,7 @@ import {
   type MeetingEvent,
   type ScheduledBot,
 } from "./meetings-model";
+import { daySectionLabel } from "../chat/sidebar-model";
 
 /** Past calendar rows shown before the "Earlier" affordance. */
 export const MEETINGS_PAST_ROW_LIMIT = 8;
@@ -28,7 +29,7 @@ export type MeetingsSectionId = "live" | "today" | "tomorrow" | "past";
 export interface MeetingsRailRow {
   id: string;
   title: string;
-  /** "11:00" for upcoming rows, "Sep 30" for past rows, elapsed for live. */
+  /** "11:00" start time; elapsed for live. Past rows sit under a day header. */
   time: string;
   companyUid: string | null;
   /** Two-letter company mark; null for personal calendars. */
@@ -47,6 +48,9 @@ export interface MeetingsRailRow {
 
 export interface MeetingsRailSection {
   id: MeetingsSectionId;
+  /** Unique render key; past splits into one section per local day. */
+  key: string;
+  /** Day-group label in the Messages grammar, e.g. "YESTERDAY · OCT 1". */
   label: string;
   rows: MeetingsRailRow[];
 }
@@ -207,7 +211,7 @@ export function meetingsRailSections(input: MeetingsRailInput): MeetingsRailSect
     if (recordedMeta) {
       past.push({
         at: start.getTime(),
-        row: { ...base, live: false, time: shortDateLabel(start), hasRecap: recap },
+        row: { ...base, live: false, time: clockLabel(start), hasRecap: recap },
         recorded: true,
       });
       continue;
@@ -219,7 +223,7 @@ export function meetingsRailSections(input: MeetingsRailInput): MeetingsRailSect
     if (end.getTime() <= now.getTime()) {
       past.push({
         at: end.getTime(),
-        row: { ...base, time: shortDateLabel(start), hasRecap: recap },
+        row: { ...base, time: clockLabel(start), hasRecap: recap },
         recorded: false,
       });
       continue;
@@ -246,17 +250,25 @@ export function meetingsRailSections(input: MeetingsRailInput): MeetingsRailSect
     .map((p) => p.row);
 
   const sections: MeetingsRailSection[] = [];
-  if (live.length) sections.push({ id: "live", label: "Live", rows: live });
+  if (live.length) sections.push({ id: "live", key: "live", label: "Live", rows: live });
   if (todayRows.length)
-    sections.push({ id: "today", label: `Today · ${shortDateLabel(now)}`, rows: todayRows });
+    sections.push({ id: "today", key: "today", label: daySectionLabel(now.getTime(), now.getTime()), rows: todayRows });
   if (tomorrowRows.length)
-    sections.push({ id: "tomorrow", label: "Tomorrow", rows: tomorrowRows });
-  if (pastRows.length)
-    sections.push({
-      id: "past",
-      label: "Past",
-      rows: pastRows,
-    });
+    sections.push({ id: "tomorrow", key: "tomorrow", label: "Tomorrow", rows: tomorrowRows });
+  // Past: one header per local day, the date shown only when it changes.
+  for (const row of pastRows) {
+    const day = dayKey(new Date(row.startMs ?? 0));
+    const key = `past-${day}`;
+    const last = sections.at(-1);
+    if (last?.key === key) {
+      last.rows.push(row);
+      continue;
+    }
+    let label = daySectionLabel(day, now.getTime());
+    // Today's upcoming header already reads TODAY; past rows from today follow it.
+    if (day === today && todayRows.length) label = label.replace(/^TODAY/, "EARLIER TODAY");
+    sections.push({ id: "past", key, label, rows: [row] });
+  }
   return sections;
 }
 

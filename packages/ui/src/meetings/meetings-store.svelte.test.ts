@@ -62,6 +62,8 @@ function wireApi(
       listScheduledBots: () => call("listScheduledBots") as never,
       listRecorded: (companyId?: string | null) =>
         call("listRecorded", companyId ?? null) as never,
+      getRecorded: (meetingId: string, companyId?: string | null) =>
+        call("getRecorded", { meetingId, companyId: companyId ?? null }) as never,
       inviteBot: (payload: Json) => call("inviteBot", payload) as never,
       cancelBot: (id: string) => call("cancelBot", id) as never,
       joinBotNow: (payload: Json) => call("joinBotNow", payload) as never,
@@ -519,6 +521,7 @@ describe("meetings store recording-company attribution", () => {
         listUpcoming: () => call("listUpcoming") as never,
         listScheduledBots: () => call("listScheduledBots") as never,
         listRecorded: () => Promise.resolve({ ok: true, value: { meetings: [] } }) as never,
+        getRecorded: () => Promise.resolve({ ok: true, value: { signals: {} } }) as never,
         inviteBot: (payload: Json) => call("inviteBot", payload) as never,
         cancelBot: (id: string) => call("cancelBot", id) as never,
         joinBotNow: (payload: Json) => call("joinBotNow", payload) as never,
@@ -1365,6 +1368,37 @@ describe("meetings store recorded history", () => {
     attributed: true,
   };
 
+  const ownBots = [personalRow, indigoRow].map((row) => ({
+    botId: row.meetingId,
+    meetingUrl: "",
+    platform: "zoom",
+    status: "completed",
+    autoScheduled: false,
+  }));
+
+  it("hides company meetings the caller did not attend or record, even as owner", async () => {
+    call.mockImplementation((method: string, payload?: unknown) => {
+      if (method === "listMemberships") {
+        return Promise.resolve(
+          ok([{ companyUid: "cmp_indigo", companyName: "Indigo", status: "active", role: "owner" }]),
+        );
+      }
+      // Only the personal meeting was recorded by the caller's notetaker.
+      if (method === "listScheduledBots") return Promise.resolve(ok([ownBots[0]]));
+      if (method === "listRecorded") {
+        return Promise.resolve(
+          ok({ meetings: payload === "cmp_indigo" ? [indigoRow] : [personalRow] }),
+        );
+      }
+      return Promise.resolve(ok([]));
+    });
+
+    await meetingsStore.refresh();
+
+    expect(meetingsStore.recorded.map((m) => m.title)).toEqual(["Corey<>Aliyya"]);
+    expect(saveMeetingsCache.mock.calls.at(-1)?.[0].recorded).toHaveLength(1);
+  });
+
   it("fans out across personal and every active company, newest first", async () => {
     call.mockImplementation((method: string, payload?: unknown) => {
       if (method === "listMemberships") {
@@ -1375,6 +1409,8 @@ describe("meetings store recorded history", () => {
           ]),
         );
       }
+      // The caller's own notetaker recorded both meetings (meetingId = bot id).
+      if (method === "listScheduledBots") return Promise.resolve(ok(ownBots));
       if (method === "listRecorded") {
         return Promise.resolve(
           ok({
@@ -1407,6 +1443,7 @@ describe("meetings store recorded history", () => {
           ok([{ companyUid: "cmp_indigo", companyName: "Indigo", status: "active" }]),
         );
       }
+      if (method === "listScheduledBots") return Promise.resolve(ok(ownBots));
       if (method === "listRecorded") {
         return Promise.resolve(
           payload === "cmp_indigo"

@@ -5,6 +5,7 @@
 </script>
 
 <script lang="ts">
+  import DayGroupHeader from "./DayGroupHeader.svelte";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   /**
    * Chat-first unified conversation sidebar (US-003).
@@ -3472,16 +3473,7 @@
     {/if}
 
     {#each grouped.sections as section (section.key)}
-      {@const [sectionName, sectionDate] = section.label.split(" · ")}
-      <div
-        class="chat-section-label chat-day-head"
-        id={`chat-sec-${section.key}`}
-      >
-        <span>{sectionName}</span>
-        {#if sectionDate}<span class="chat-day-date" data-testid="chat-day-date"
-            >{sectionDate}</span
-          >{/if}
-      </div>
+      <DayGroupHeader label={section.label} id={`chat-sec-${section.key}`} />
       <div
         class="chat-list"
         role={selectionMode ? "listbox" : "list"}
@@ -4750,23 +4742,6 @@
   .chat-companies-row-status-muted {
     color: var(--t3, inherit);
     opacity: 0.65;
-  }
-
-  /* Day-group header: name left, date right-aligned (D-13). */
-  .chat-day-head {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 8px;
-  }
-
-  .chat-day-date {
-    color: var(--t3);
-    font-family: var(--font-mono, inherit);
-    font-size: 10px;
-    font-weight: 400;
-    font-variant-numeric: tabular-nums;
-    letter-spacing: normal;
   }
 
   /* Real box so the pin control can sit beside the row (not nested in it). */

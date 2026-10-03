@@ -134,3 +134,144 @@ export function withRecordedEvents(
 ): MeetingEvent[] {
   return [...events, ...recorded.map(recordedToEvent)];
 }
+
+/**
+ * What the client knows about the signed-in person's own meetings. hq-pro's
+ * list rows carry no attendee, organizer or recorder field (only meetingId,
+ * title, startTime, companyId), and the list is ACL-filtered, so a company
+ * owner or admin can read every member's recordings. Each signal here is
+ * person-scoped on its own:
+ *  - `botIds`: the caller's notetaker bots (`GET /v1/bot/list` is keyed by the
+ *    caller's personUid). A recorded meeting's id is its recall bot id.
+ *  - `calendarEvents`: events from the caller's own connected calendars, so the
+ *    caller is on the invite.
+ *  - `localRecordingIds`: recordings started from this device.
+ */
+export interface OwnMeetingSignals {
+  botIds: Iterable<string>;
+  calendarEvents: readonly Pick<MeetingEvent, "summary" | "start">[];
+  localRecordingIds?: Iterable<string>;
+}
+
+/** A calendar match must start within this window of the recording. */
+const CALENDAR_MATCH_WINDOW_MS = 10 * 60_000;
+
+function normTitle(value: string | null | undefined): string {
+  return (value ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+/**
+ * Keep only meetings the signed-in person attended or recorded. Company role
+ * never widens the list. With no matching signal a row is hidden.
+ */
+export function ownRecordedMeetings(
+  rows: readonly RecordedMeeting[],
+  signals: OwnMeetingSignals,
+): RecordedMeeting[] {
+  const ids = new Set<string>([...signals.botIds, ...(signals.localRecordingIds ?? [])]);
+  const calendar = signals.calendarEvents
+    .map((e) => ({
+      title: normTitle(e.summary),
+      at: Date.parse(e.start?.dateTime ?? e.start?.date ?? ""),
+    }))
+    .filter((e) => e.title && Number.isFinite(e.at));
+  return rows.filter((m) => {
+    if (ids.has(m.meetingId)) return true;
+    const title = normTitle(m.title);
+    const at = Date.parse(m.startTime);
+    return calendar.some(
+      (e) => e.title === title && Math.abs(e.at - at) <= CALENDAR_MATCH_WINDOW_MS,
+    );
+  });
+}
+
+// ── Recorded meeting detail (`GET /v1/meetings/{id}`) ─────────────────────
+
+export type RecordedSignalKind = "summary" | "decisions" | "actions" | "questions";
+
+export interface RecordedSignalRef {
+  kind: RecordedSignalKind;
+  /** Server title when present; hq-pro usually omits it, so bodies are read. */
+  title: string | null;
+  url: string | null;
+}
+
+const SIGNAL_KIND: Record<string, RecordedSignalKind> = {
+  summary: "summary",
+  decision: "decisions",
+  decisions: "decisions",
+  action: "actions",
+  actions: "actions",
+  action_item: "actions",
+  action_items: "actions",
+  actionItem: "actions",
+  commitment: "actions",
+  question: "questions",
+  questions: "questions",
+  open_question: "questions",
+};
+
+/** Signal refs from a meeting detail envelope; unknown types are skipped. */
+export function parseRecordedDetail(raw: unknown): RecordedSignalRef[] {
+  const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : null;
+  const signals =
+    record?.signals && typeof record.signals === "object"
+      ? (record.signals as Record<string, unknown>)
+      : {};
+  const out: RecordedSignalRef[] = [];
+  for (const [type, list] of Object.entries(signals)) {
+    const kind = SIGNAL_KIND[type];
+    if (!kind || !Array.isArray(list)) continue;
+    for (const item of list) {
+      if (!item || typeof item !== "object") continue;
+      const s = item as Record<string, unknown>;
+      out.push({ kind, title: str(s.title), url: str(s.presigned_url) });
+    }
+  }
+  return out;
+}
+
+/** Markdown body without frontmatter, headings collapsed to plain text. */
+export function signalBodyText(markdown: string): string {
+  const body = markdown.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "");
+  return body
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^#+\s*/, "").trim())
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+}
+
+/** Upper bound on signal bodies read for one opened meeting. */
+export const RECORDED_SIGNAL_READ_LIMIT = 24;
+
+/**
+ * Build the recap `signals` object for a recorded meeting from its signal
+ * refs. Titles come from the server when present; otherwise the body is read
+ * from its presigned URL. A body that cannot be read is logged and skipped.
+ */
+export async function loadRecordedSignals(
+  refs: readonly RecordedSignalRef[],
+  readText: (url: string) => Promise<string>,
+): Promise<{ summary: string; decisions: { title: string }[]; actions: { title: string }[]; questions: { title: string }[] }> {
+  const out = { summary: "", decisions: [] as { title: string }[], actions: [] as { title: string }[], questions: [] as { title: string }[] };
+  const texts = await Promise.all(
+    refs.slice(0, RECORDED_SIGNAL_READ_LIMIT).map(async (ref) => {
+      if (ref.title) return ref.title;
+      if (!ref.url) return "";
+      try {
+        return signalBodyText(await readText(ref.url));
+      } catch (err) {
+        console.warn(`[meetings] could not read ${ref.kind} signal body`, err);
+        return "";
+      }
+    }),
+  );
+  refs.slice(0, RECORDED_SIGNAL_READ_LIMIT).forEach((ref, i) => {
+    const text = texts[i];
+    if (!text) return;
+    if (ref.kind === "summary") out.summary = out.summary ? `${out.summary} ${text}` : text;
+    else out[ref.kind].push({ title: text });
+  });
+  return out;
+}

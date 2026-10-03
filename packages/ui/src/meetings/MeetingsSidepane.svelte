@@ -2,7 +2,8 @@
   Meetings sidepane (console-rail US-021).
 
   Sidepane host with the Messages grammar: header with Filter and New meeting,
-  then Live, Today, Tomorrow, Past. Rows are a time slot, title, an optional
+  then Live, Today, Tomorrow, then one day header per past day (the shared
+  Messages day-group header). Rows are a time slot, title, an optional
   company mark, and a notes mark on past rows with a recap. Sections derive
   from the meetings-store snapshot, which hydrates from meetings-cache before
   the first refresh, so the pane paints from cache in the first frame and
@@ -10,6 +11,7 @@
 -->
 <script lang="ts">
   import CompanyLabel from "../company/CompanyLabel.svelte";
+  import DayGroupHeader from "../chat/DayGroupHeader.svelte";
   import Sidepane from "../shell/Sidepane.svelte";
   import type { SidepaneScrollMemory } from "../shell/sidepane-models.js";
   import {
@@ -74,7 +76,7 @@
 <Sidepane modelKey="meetings" {memory} label="Meetings">
   {#snippet header()}
     <div class="pane-head" data-testid="meetings-sidepane-header">
-      <span class="title">Meetings</span>
+      <span class="title">Your meetings</span>
       <button
         type="button"
         class="icon-btn"
@@ -149,8 +151,8 @@
         Some past meetings could not load. Tap to retry
       </button>
     {/if}
-    {#each sections as section (section.id)}
-      <div class="sec" data-testid="meetings-section" data-section={section.id}>{section.label}</div>
+    {#each sections as section (section.key)}
+      <DayGroupHeader label={section.label} testid="meetings-section" section={section.id} />
       {#each section.rows as row (row.id)}
         <button
           type="button"
@@ -278,11 +280,15 @@
     outline-offset: -1px;
   }
 
+  /* Fixed slot that fits "14:30" on one line; the title ellipsizes instead. */
   .time {
     flex: 0 0 38px;
+    width: 38px;
+    overflow: hidden;
     color: var(--t2);
     font-size: 13px;
     font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
 
   .time.live {

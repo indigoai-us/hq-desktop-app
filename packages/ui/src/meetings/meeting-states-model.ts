@@ -155,7 +155,7 @@ export function recapModel(event: MeetingEvent, bot?: ScheduledBot): RecapModel 
   const summary =
     (explicit && typeof explicit.summary === "string" && explicit.summary.trim()) ||
     event.notes?.map((n) => n.text?.trim()).filter(Boolean).slice(0, 2).join(" ") ||
-    (decisions[0] ? decisions.map((d) => d.title).join(" ") : "No recap summary yet. It appears here after the notetaker posts one.");
+    (decisions[0] ? decisions.map((d) => d.title).join(" ") : "");
   const by = bot?.sourceLanded ? "Recap saved to the company vault" : "Recap from this meeting";
   return { summary, decisions, actions, questions, meta: by };
 }
@@ -247,4 +247,36 @@ export function relativeUntil(start: Date, now: Date): string {
   const hours = Math.round(mins / 60);
   if (hours < 36) return `in ${hours} h`;
   return shortDateLabel(start);
+}
+
+export type PastNotesState = "ready" | "preparing" | "loading" | "none";
+
+/** Notes usually land this long after a recorded meeting ends. */
+export const NOTES_PREP_WINDOW_MS = 30 * 60_000;
+
+/**
+ * Whether a past meeting has real notes to show. Tabs and recap sections
+ * render only for "ready"; otherwise the canvas shows one quiet line and the
+ * calendar details. "preparing" means a recording exists and ended recently
+ * but no notes have landed; "loading" means the saved notes are being fetched.
+ */
+export function pastNotesState(
+  event: MeetingEvent,
+  now: Date,
+  opts: { bot?: ScheduledBot; detailLoading?: boolean } = {},
+): PastNotesState {
+  const model = recapModel(event, opts.bot);
+  const hasContent =
+    Boolean(model.summary) ||
+    model.decisions.length + model.actions.length + model.questions.length > 0 ||
+    transcriptTurns(event).length > 0 ||
+    (event.notes ?? []).some((n) => n.text?.trim());
+  if (hasContent) return "ready";
+  if (opts.detailLoading) return "loading";
+  const bot = opts.bot;
+  const recorded = Boolean(event.recorded) || Boolean(bot?.sourceLanded) ||
+    (bot ? bot.status === "recording" || bot.status === "processing" || bot.status === "completed" : false);
+  const end = eventEnd(event);
+  if (recorded && end && now.getTime() - end.getTime() < NOTES_PREP_WINDOW_MS) return "preparing";
+  return "none";
 }

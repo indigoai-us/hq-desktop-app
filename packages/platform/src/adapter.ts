@@ -888,6 +888,12 @@ export interface MeetingsApi {
    * envelope; callers coerce rows at their parse boundary.
    */
   listRecorded(companyId?: string | null): AdapterPromise<Json>;
+  /**
+   * One recorded meeting (`GET /v1/meetings/{id}`): source frontmatter plus
+   * its signals grouped by type, each with a presigned body URL. Raw
+   * envelope; callers coerce it.
+   */
+  getRecorded(meetingId: string, companyId?: string | null): AdapterPromise<Json>;
   inviteBot(payload: Json): AdapterPromise<Json>;
   cancelBot(id: string): AdapterPromise<void>;
   /** Same payload as inviteBot — hq-pro `POST /v1/bot/join-now`. */
