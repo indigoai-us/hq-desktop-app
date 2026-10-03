@@ -7,12 +7,14 @@
    * First frame is the cache or a shimmer. Refresh runs after paint.
    * Heavy enough to stay behind a lazy door.
    */
-  import type { AppShellApi, FilesApi, LibraryApi, SettingsApi, ShellApi } from "@hq/platform";
+  import type { AppShellApi, FilesApi, LibraryApi, PlatformAdapter, SettingsApi, ShellApi } from "@hq/platform";
   import { openAgentWorkflow } from "../agent-workflow.js";
   import { loadLibraryCompany } from "../../library/library.js";
   import type { DirEntry } from "../../files/file-tree.js";
   import ShowMoreRow from "../../shell/ShowMoreRow.svelte";
   import VaultTree from "../../files/explorer/VaultTree.svelte";
+  import WorkerDetailPane from "./WorkerDetailPane.svelte";
+  import { workerStatusLabel } from "./worker-detail.js";
   import type { TreeEntry, Vault } from "../../files/explorer/vault-model.js";
   import ListEmptyState from "../../common/ListEmptyState.svelte";
   import { publishCompanyPageCount } from "../../shell/company-page-counts.svelte.js";
@@ -47,7 +49,6 @@
     virtualWindow,
     workerCreatePrompt,
     workerRowFromLibrary,
-    workerRunPrompt,
     writeBrainCache,
     type BrainListLoad,
     type BrainPageId,
@@ -84,6 +85,8 @@
      */
     appShell?: Pick<AppShellApi, "setActiveCompany"> | null;
     onopenpage?: (rowId: string) => void;
+    /** OWNER-R12: the worker pane opens files in the Files preview, which reads through the adapter. */
+    adapter?: PlatformAdapter | null;
     /**
      * OWNER-R11: usage reads for the Skills Usage tab. `team` is hq-pro
      * company telemetry (the web Activity read); `mine` is /v1/telemetry/me.
@@ -104,6 +107,7 @@
     appShell = null,
     onopenpage,
     usage = null,
+    adapter = null,
   }: Props = $props();
 
   let cache = $state(emptyBrainCache());
@@ -631,7 +635,7 @@
               <button type="button" class="item" class:muted={worker.parked} aria-current={selectedWorker?.path === worker.path} onclick={() => (selected = worker.path)} data-testid="worker-row">
                 <span class="name">{worker.name}</span>
                 <span class="meta">{worker.description}</span>
-                <span class="meta" class:live={worker.live}>{worker.live ? "Live" : worker.lastRun || worker.scope}</span>
+                <span class="meta" class:live={worker.live} data-testid="worker-row-status">{worker.live ? "Live" : workerStatusLabel(worker.status)}</span>
               </button>
             {:else}
               {@const file = row as KnowledgeFile}
@@ -682,25 +686,17 @@
             <RailButton icon="link" onclick={() => (shareOpen = true)}>Share</RailButton>
           </div>
         {:else if page === "workers" && selectedWorker}
-          <div class="detail-head">
-            <h2>{selectedWorker.name}</h2>
-            <button type="button" class="icon-btn" onclick={() => (sheet = "picker")}>⋯</button>
-            <button type="button" class="icon-btn" onclick={() => (selected = null)} aria-label="Close">✕</button>
-          </div>
-          <p class="kind">{selectedWorker.scope}</p>
-          <p class="path">{selectedWorker.path}</p>
-          <p>{selectedWorker.description}</p>
-          <div class="actions">
-            <RailButton icon="play" variant="primary" data-testid="worker-run" onclick={() => runPrompt(workerRunPrompt(selectedWorker.id), selectedWorker.name)}>Run</RailButton>
-            <RailButton icon="claude-code" onclick={() => openInClaude(selectedWorker.path)}>Open in Claude Code</RailButton>
-            <RailButton icon="pencil" onclick={() => openPath(selectedWorker.path)}>Edit worker.yaml</RailButton>
-          </div>
-          {#each selectedWorker.skills as name (name)}
-            <div class="sub">
-              <span>{name}</span>
-              <RailButton icon="play" onclick={() => runPrompt(skillRunPrompt(name), name)}>Run</RailButton>
-            </div>
-          {/each}
+          <WorkerDetailPane
+            worker={selectedWorker}
+            {slug}
+            {files}
+            {adapter}
+            onrun={(prompt, label) => void runPrompt(prompt, label)}
+            onopenclaude={(path) => void openInClaude(path)}
+            onedit={(path) => void openPath(path)}
+            onclose={() => (selected = null)}
+            onmore={() => (sheet = "picker")}
+          />
         {:else if page === "policies" && selectedPolicy}
           <p class="path">{selectedPolicy.path}</p>
           <h2>{selectedPolicy.title}</h2>
@@ -985,7 +981,6 @@
     padding: 4px 8px;
   }
   .opt { text-align: left; padding: 6px 8px; border-color: var(--line2, var(--v4-control-border)); }
-  .sub { display: flex; justify-content: space-between; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--v4-rowline); }
   .brain { position: relative; }
   .load-error { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
   .load-error p { margin: 0; }

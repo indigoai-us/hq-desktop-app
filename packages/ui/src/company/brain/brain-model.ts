@@ -75,6 +75,8 @@ export interface WorkerRow {
   description: string;
   path: string;
   scope: "company" | "personal" | "root";
+  /** The worker's own status from worker.yaml (active, parked, ...). */
+  status: string;
   tools: string[];
   skills: string[];
   parked: boolean;
@@ -297,13 +299,16 @@ export function workerRowFromLibrary(worker: LibraryWorker): WorkerRow {
     description: worker.description,
     path: worker.path,
     scope: worker.scope === "company" ? "company" : worker.scope === "root" ? "root" : "personal",
+    status: worker.status ?? "",
     tools: [],
     skills: [],
     parked,
     mine: worker.scope !== "root",
     scheduled: false,
     live: worker.status.toLowerCase() === "live" || worker.status.toLowerCase() === "running",
-    lastRun: worker.status && !parked ? worker.status : "",
+    // OWNER-R12: no run history is read, so lastRun stays empty. It used to
+    // hold the status, which left a parked row showing its scope instead.
+    lastRun: "",
   };
 }
 
