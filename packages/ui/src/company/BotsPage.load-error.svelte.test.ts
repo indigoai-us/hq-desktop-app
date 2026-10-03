@@ -20,14 +20,18 @@ describe("BotsPage failed read (AUDIT-3-17)", () => {
   it("shows Try again instead of the empty line and loads on retry", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     let fail = true;
-    const adapter = {
-      agents: {
+    // Unlisted adapter calls (the bot profile pane's reads) resolve to an empty ok result.
+    const okEmpty = async () => ({ ok: true, value: [] });
+    const api = (own: Record<string, unknown>) =>
+      new Proxy(own, { get: (t, k) => (k in t ? t[k as string] : okEmpty) });
+    const adapter = new Proxy({
+      agents: api({
         listMobileRoster: async () =>
           fail
             ? { ok: false, reason: "HTTP 503 Service Unavailable" }
             : { ok: true, value: { agents: [{ agentUid: "agt_scout", displayName: "Scout", setupPhase: "ready" }] } },
-      },
-    };
+      }),
+    } as Record<string, unknown>, { get: (t, k) => (k in t ? t[k as string] : k === "isAvailable" ? () => false : api({})) });
     component = mount(BotsPage, { target: document.body, props: { companyUid: "cmp_acme", adapter, localBots: [], companies: [] } as never });
     flushSync();
     await expect.poll(() => document.querySelector("[data-testid='bots-load-error']")?.textContent ?? "").toContain("Couldn't read this company's cloud bots.");
