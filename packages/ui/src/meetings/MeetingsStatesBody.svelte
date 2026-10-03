@@ -9,7 +9,7 @@
   import type { PeoplePickerEntry } from "../chat/people-picker.js";
   import type { MeetingEvent, ScheduledBot } from "./meetings-model";
   import type { MeetingsRailSection } from "./meetings-rail-model";
-  import { clockLabel, initialsOf } from "./meetings-rail-model";
+  import { clockLabel, initialsOf, recapHeading } from "./meetings-rail-model";
   import {
     draftToEvent,
     emptyNewMeetingDraft,
@@ -245,7 +245,7 @@
       {/if}
       {#if yesterday}
         <div class="rule"></div>
-        <div class="kind">Yesterday's recap</div>
+        <div class="kind" data-testid="empty-recap-heading">{recapHeading(yesterday.startMs, now)}</div>
         <button type="button" class="recap-row" data-testid="empty-recap" onclick={() => onselect?.(yesterday.id)}>
           <span class="mini sq">⌁</span>
           <span>
