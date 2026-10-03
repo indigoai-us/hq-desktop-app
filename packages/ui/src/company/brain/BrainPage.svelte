@@ -101,6 +101,11 @@
   let scrollTop = $state(0);
   let selected = $state<string | null>(null);
   let sheet = $state<"policy" | "skill" | "worker" | "picker" | null>(null);
+  // QA-034: the skill picker is nested inside New worker, so dismissing it
+  // returns to that form instead of closing both.
+  function dismissSheet(): void {
+    sheet = sheet === "picker" ? "worker" : null;
+  }
   let shareOpen = $state(false);
 
   let policyDraft = $state<PolicyDraft>({
@@ -558,11 +563,11 @@
   {#if status}<p class="status" data-testid="brain-status">{status}</p>{/if}
 
   {#if sheet}
-    <div class="scrim" role="presentation" onclick={() => (sheet = null)}></div>
-    <div class="sheet" role="dialog" aria-label={sheet === "policy" ? "New policy" : sheet === "skill" ? "New skill" : sheet === "picker" ? "Skill picker" : "New worker"} data-testid="brain-sheet" use:dismissable={{ onclose: () => (sheet = null) }}>
+    <div class="scrim" role="presentation" onclick={dismissSheet}></div>
+    <div class="sheet" role="dialog" aria-label={sheet === "policy" ? "New policy" : sheet === "skill" ? "New skill" : sheet === "picker" ? "Skill picker" : "New worker"} data-testid="brain-sheet" use:dismissable={{ onclose: dismissSheet }}>
       <header class="sheet-head">
         <h2>{sheet === "policy" ? "New policy" : sheet === "skill" ? "New skill" : sheet === "picker" ? "Skills" : "New worker"}</h2>
-        <button type="button" class="icon-btn" aria-label="Close" onclick={() => (sheet = null)}>✕</button>
+        <button type="button" class="icon-btn" aria-label="Close" onclick={dismissSheet}>✕</button>
       </header>
       {#if sheet === "policy"}
         <label>Title <input bind:value={policyDraft.title} /></label>
