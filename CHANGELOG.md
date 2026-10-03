@@ -7,7 +7,9 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
-
+- The welcome sign-in window now advances when you are already signed in, keeps
+  you informed while browser sign-in is in progress, and gives you a clear Try
+  again path if it does not finish.
 - Desktop funnel telemetry fixes: the daily-active row is stamped with the time it was sent (it was stamped midnight, so daytime reports showed none) and is re-sent every 6 hours; a new install's first app-opened row is held until sign-in instead of being dropped; account-linked rows now carry the company hash after the first sync or first company push; and every desktop funnel row carries the app version.
 
 ## [0.10.386] — 2026-10-03
