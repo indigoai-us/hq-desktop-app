@@ -313,6 +313,8 @@ export function canonicalizeDestination(
       return { kind: "projects", company, project, tab };
     }
     case "library":
+      // OWNER-R23: the creator profile moved to Settings > Public profile.
+      if (destination.tab === "profile") return { kind: "settings", section: "public-profile" };
       return {
         kind: "library",
         tab: asLibraryTab(destination.tab),
@@ -443,6 +445,7 @@ export function entriesEqual(a: NavigationEntry, b: NavigationEntry): boolean {
 /** Nav labels that differ from the section id (owner vocabulary, 2026-09-11). */
 function settingsSectionLabel(section: string): string {
   if (section === "agents") return "AI tools";
+  if (section === "public-profile") return "Public profile";
   return titleCase(section);
 }
 

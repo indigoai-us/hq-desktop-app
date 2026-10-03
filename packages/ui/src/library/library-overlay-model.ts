@@ -140,7 +140,6 @@ export function buildLibraryNavRows(
     rows.push({ id: "installed", label: "Installed", count: null });
     rows.push({ id: "marketplace", label: "Marketplace", count: null });
     rows.push({ id: "submit", label: "Submit", count: null });
-    rows.push({ id: "profile", label: "Profile", count: null });
   }
   return rows;
 }

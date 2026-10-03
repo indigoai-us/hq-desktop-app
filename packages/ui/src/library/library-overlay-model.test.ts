@@ -95,7 +95,6 @@ describe("library-overlay-model (US-017)", () => {
         "Installed",
         "Marketplace",
         "Submit",
-        "Profile",
       ]);
     });
 

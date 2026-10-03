@@ -33,10 +33,10 @@ function mountSettings(props: Record<string, unknown>) {
 }
 
 describe("one Settings list (OWNER-R21)", () => {
-  it("lists Profile and Billing first, then General, Appearance, Notifications, Sync, Meetings, Updates", () => {
+  it("lists Profile, Public profile and Billing first, then General, Appearance, Notifications, Sync, Meetings, Updates", () => {
     mountSettings({});
     const nav = [...host.querySelectorAll('[data-testid^="settings-nav-"]')].map((el) => el.getAttribute("data-testid")!.slice("settings-nav-".length));
-    expect(nav.slice(0, 8)).toEqual(["profile", "billing", "general", "appearance", "notifications", "sync", "meetings", "updates"]);
+    expect(nav.slice(0, 9)).toEqual(["profile", "public-profile", "billing", "general", "appearance", "notifications", "sync", "meetings", "updates"]);
   });
 
   it("Billing renders inside Settings with Manage payment", () => {

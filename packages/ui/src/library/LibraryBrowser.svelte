@@ -165,7 +165,6 @@
     { id: "installed", label: "Installed" },
     { id: "marketplace", label: "Marketplace" },
     { id: "submit", label: "Submit" },
-    { id: "profile", label: "Profile" },
   ];
 
   function toggleFacet(facet: string): void {

@@ -43,6 +43,7 @@
 
   export type ShellSettingsSection =
     | "profile"
+    | "public-profile"
     | "billing"
     | "general"
     | "agents"
@@ -57,6 +58,8 @@
     [
       // OWNER-R21: one Settings list. Account first (Profile, Billing), then HQ.
       { id: "profile", label: "Profile" },
+      // OWNER-R23: the marketplace creator profile, moved here from Library.
+      { id: "public-profile", label: "Public profile" },
       { id: "billing", label: "Billing" },
       { id: "sep", label: "" },
       { id: "general", label: "General" },
@@ -699,6 +702,12 @@
             title="No data"
             copy="No profile data yet."
           />
+        {/if}
+      {:else if active === "public-profile"}
+        {#if adapter}
+          {#await import("../marketplace/ProfilePanel.svelte") then m}
+            <m.default {adapter} />
+          {/await}
         {/if}
       {:else if active === "billing"}
         <BillingSettingsPane {openExternal} />
