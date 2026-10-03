@@ -176,7 +176,10 @@
       {/each}
     </div>
     <span class="grow"></span>
-    <span class="meta-line" data-meta-line data-testid="bots-count">{rows.length === 1 ? "1 bot" : `${rows.length} bots`}</span>
+    <!-- BLANK-2: no "0 bots" next to a failed read with nothing loaded. -->
+    {#if !(cloudFailed && rows.length === 0)}
+      <span class="meta-line" data-meta-line data-testid="bots-count">{rows.length === 1 ? "1 bot" : `${rows.length} bots`}</span>
+    {/if}
     <RailButton icon="plus" variant="primary" type="button" data-testid="bots-new" onclick={() => onaddbot?.()}>New bot</RailButton>
   </div>
 

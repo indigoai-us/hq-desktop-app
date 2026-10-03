@@ -38,5 +38,9 @@ describe("BotsPage read deadline (BLANK-1)", () => {
     expect(document.querySelector("[data-testid='bots-load-error']")?.textContent).toContain("Couldn't read this company's cloud bots.");
     expect(document.querySelector("[data-testid='bots-retry']")).toBeTruthy();
     expect(logged).toHaveBeenCalled();
+    // BLANK-2: the failed read with nothing loaded shows no zero count.
+    expect(document.querySelector("[data-testid='bots-count']")).toBeNull();
+    expect(document.body.textContent).not.toMatch(/\b0 bots\b/);
+    expect(document.querySelector("[data-testid='bots-empty']")).toBeNull();
   });
 });
