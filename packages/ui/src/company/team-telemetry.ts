@@ -48,6 +48,8 @@ export interface TeamMemberLabel {
   name?: string | null;
 }
 
+const UNRESOLVED_NAMES = new Set(["Identity unavailable", "Unknown person", "Unknown bot"]);
+
 export function memberKindFromUid(uid: string): TeamMemberKind {
   const id = uid.trim().toLowerCase();
   if (id.startsWith("agt_") || id.startsWith("agent_")) return "agent";
@@ -90,9 +92,10 @@ export function displayNameFromMember(
   if (name) return name;
   const email = (raw.email || resolved?.email || "").trim();
   if (email) return email;
+  // OWNER-R5: a raw prs_/agt_ id is never shown as a name.
   const sourceUid = (raw.personUid ?? "").trim();
-  if (sourceUid) return sourceUid;
-  return "Identity unavailable";
+  if (/^(agt|agent)_/i.test(sourceUid)) return "Unknown bot";
+  return "Unknown person";
 }
 
 /** Display label only when the payload carries a real join or enroll timestamp. */
@@ -259,9 +262,9 @@ function mergeDuplicateMember(
     ...existing,
     displayName:
       (existing.displayName === existing.id ||
-        existing.displayName === "Identity unavailable") &&
+        UNRESOLVED_NAMES.has(existing.displayName)) &&
       incoming.displayName !== incoming.id &&
-      incoming.displayName !== "Identity unavailable"
+      !UNRESOLVED_NAMES.has(incoming.displayName)
         ? incoming.displayName
         : existing.displayName,
     email: existing.email ?? incoming.email,

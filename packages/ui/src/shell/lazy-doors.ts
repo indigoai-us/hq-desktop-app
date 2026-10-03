@@ -42,6 +42,9 @@ function door(importer: () => Promise<{ default: AnyComponent }>): Door {
 export const profilePaneDoor = door(
   () => import("./profile-panes/ProfilePaneHost.svelte"),
 );
+// OWNER-R5/R6: the shared styled dropdown loads with the first filter that
+// shows it, keeping it out of the start-up bundle.
+export const dropdownDoor = door(() => import("../common/Dropdown.svelte"));
 export const notificationsPopoverDoor = door(
   () => import("../inbox/NotificationsPopover.svelte"),
 );
@@ -82,6 +85,7 @@ export const meetingCanvasDoor = door(
 export function preloadDoorsWhenIdle(): () => void {
   const all = [
     profilePaneDoor,
+    dropdownDoor,
     notificationsPopoverDoor,
     moreCompaniesDoor,
     newMessageSheetDoor,

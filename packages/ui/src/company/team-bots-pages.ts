@@ -35,18 +35,9 @@ export type BotFilter = (typeof BOT_FILTERS)[number];
 export const JOB_ALERTS = ["dm", "none"] as const;
 export type JobAlert = (typeof JOB_ALERTS)[number];
 
-const teamCache = new Map<string, { view: TeamTelemetryView; invites: PendingInvite[] }>();
-
-export function readTeamCache(slug: string): { view: TeamTelemetryView; invites: PendingInvite[] } | null {
-  return teamCache.get(slug) ?? null;
-}
-
-export function writeTeamCache(
-  slug: string,
-  value: { view: TeamTelemetryView; invites: PendingInvite[] },
-): void {
-  if (slug) teamCache.set(slug, value);
-}
+// The Team cache lives in a tiny module so the shared people display can read
+// it without pulling this file into the start-up bundle.
+export { readTeamCache, writeTeamCache } from "./team-cache.js";
 
 export interface PendingInvite {
   id: string;
@@ -238,7 +229,8 @@ export function mergeRosterIntoTeamView(view: TeamTelemetryView, roster: readonl
     const role = str(rec.role) || str(rec.membershipRole) || undefined;
     added.push({
       id,
-      displayName: str(rec.displayName) || str(rec.name) || email || id,
+      // OWNER-R5: never the raw id as a name.
+      displayName: str(rec.displayName) || str(rec.name) || email || (kind === "agent" ? "Unknown bot" : "Unknown person"),
       email,
       kind,
       role,

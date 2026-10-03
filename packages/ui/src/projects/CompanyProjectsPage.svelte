@@ -79,6 +79,9 @@
     type NewProjectDraft,
   } from "./new-project.js";
   import ProvenanceLine from "../common/ProvenanceLine.svelte";
+  import Dropdown from "../common/LazyDropdown.svelte";
+  import { personMatches, uniquePeople } from "../common/people/people.js";
+  import { loadPeople, peopleFor, setActivePeopleCompany } from "../common/people/people-roster.svelte.js";
   import UnavailableNote from "../common/UnavailableNote.svelte";
   import "../home/tokens.css";
   import "../common/button/rail-type.css";
@@ -488,12 +491,28 @@
     return [...names].sort((a, b) => a.localeCompare(b));
   });
 
+  // OWNER-R5: people resolve through the company roster (Team read), so one
+  // person under several keys (id, email, handle, name) is one filter entry.
+  $effect(() => {
+    setActivePeopleCompany(slug);
+    void loadPeople({ slug, companyUid, company: adapter.company, messaging: adapter.messaging });
+  });
+  const roster = $derived(peopleFor(slug));
+  const personOptions = $derived([
+    { value: "", label: "Anyone", detail: null },
+    ...uniquePeople(roster.index, ownerOptions, { loading: roster.loading }).map((p) => ({
+      value: p.key,
+      label: p.name,
+      detail: p.detail,
+    })),
+  ]);
+
   const filteredCompanyProjects = $derived(
     companyProjects.filter((project) => {
       if (!matchesProjectFilter(project, projectFilter)) return false;
       const col = resolveColumn(project);
       if (!matchesPortfolioStateFilter(col, stateFilter)) return false;
-      if (ownerFilter && leadLabel(project) !== ownerFilter) return false;
+      if (ownerFilter && !personMatches(roster.index, leadLabel(project), ownerFilter, { loading: roster.loading })) return false;
       const q = searchQuery.trim().toLowerCase();
       if (!q) return true;
       const name = projectDisplayName(project).toLowerCase();
@@ -1059,22 +1078,13 @@
         </svg>
       </label>
 
-      <label class="tool-select">
-        <span class="visually-hidden">Filter by owner or creator</span>
-        <select
-          bind:value={ownerFilter}
-          data-testid="portfolio-owner-filter"
-          aria-label="Filter by project owner or creator"
-        >
-          <option value="">Person · Anyone</option>
-          {#each ownerOptions as owner (owner)}
-            <option value={owner}>{owner}</option>
-          {/each}
-        </select>
-        <svg class="select-caret" viewBox="0 0 16 16" aria-hidden="true">
-          <path d="M4.5 6.5 8 10l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
-      </label>
+      <Dropdown
+        bind:value={ownerFilter}
+        options={personOptions}
+        label="Filter by project owner or creator"
+        prefix="Person"
+        testid="portfolio-owner-filter"
+      />
 
       <!-- Legacy cycle filter (All / Active / Needs link) for link handoff + contracts. -->
       <button
