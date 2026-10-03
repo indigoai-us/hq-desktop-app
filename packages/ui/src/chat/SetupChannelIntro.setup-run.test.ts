@@ -184,11 +184,12 @@ describe("SetupChannelIntro with a Setup Agent", () => {
   });
 
   it("reports a start failure inline and keeps Run Setup available", async () => {
-    const api = fakeSetupRun({ start: vi.fn(async () => { throw new Error("Could not start the session."); }) });
+    const api = fakeSetupRun({ start: vi.fn(async () => { throw new Error('[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}'); }) });
     const agent = new SetupAgent(api);
     await mountIntro({ agent });
     await clickRunSetup();
-    expect(q('[data-testid="setup-run-start-error"]')?.textContent).toBe("Could not start the session.");
+    expect(q('[data-testid="setup-run-start-error"]')?.textContent).toBe("Setup could not start. Try again.");
+    expect(host.textContent).not.toContain("boom");
     expect(q('[data-testid="setup-run"]')).not.toBeNull();
   });
 
