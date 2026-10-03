@@ -111,6 +111,50 @@ export function atlasVisibleEdges(
   );
 }
 
+/** One shaded section: a circle around every object in the section. */
+export type AtlasDistrictShape = AtlasRegion & { r: number };
+
+const DISTRICT_PAD = 18;
+
+/**
+ * OWNER-D 7: the shaded area behind each section that has objects. Like the
+ * web Atlas region model (centre plus radius per section), the radius grows
+ * to enclose every object in the section with a little padding.
+ */
+export function atlasDistrictShapes(
+  placed: Pick<AtlasPlaced, "type" | "x" | "y" | "r">[],
+  regions: AtlasRegion[],
+): AtlasDistrictShape[] {
+  const out: AtlasDistrictShape[] = [];
+  for (const region of regions) {
+    const members = placed.filter((n) => n.type === region.type);
+    if (!members.length) continue;
+    const reach = Math.max(
+      ...members.map((n) => Math.hypot(n.x - region.x, n.y - region.y) + n.r),
+    );
+    out.push({ ...region, r: Math.max(40, reach + DISTRICT_PAD) });
+  }
+  return out;
+}
+
+/** Screen box of a section name, drawn centred above its shaded area. */
+export function atlasDistrictLabel(
+  shape: AtlasDistrictShape,
+  view: AtlasView,
+  measure: (text: string) => number,
+): AtlasScreenLabel {
+  const cx = shape.x * view.k + view.x;
+  const y = (shape.y - shape.r) * view.k + view.y - 6;
+  const w = measure(shape.label);
+  return {
+    id: `district:${shape.type}`,
+    text: shape.label,
+    x: cx,
+    y,
+    box: { left: cx - w / 2, top: y - 12, right: cx + w / 2, bottom: y + 4 },
+  };
+}
+
 /** Label size on screen (design standard body size); labels never scale with zoom. */
 export const ATLAS_LABEL_PX = 13;
 /** From this zoom up, every object may carry a label when there is room. */
@@ -149,6 +193,8 @@ export function atlasScreenLabels(input: {
   width: number;
   height: number;
   measure: (text: string) => number;
+  /** Boxes item labels must never cover (section names). */
+  reserved?: AtlasScreenLabel["box"][];
 }): AtlasScreenLabel[] {
   const { view, width, height } = input;
   const recent = (n: { touched?: number }) =>
@@ -175,21 +221,33 @@ export function atlasScreenLabels(input: {
   let ambient = 0;
   for (const { n, r } of candidates) {
     if (r >= 3 && !all && ambient >= ATLAS_FIT_LABEL_CAP) break;
-    const x = n.x * view.k + view.x + n.r * view.k + 5;
-    const y = n.y * view.k + view.y + 4;
+    const cx = n.x * view.k + view.x;
+    const cy = n.y * view.k + view.y;
+    const rr = n.r * view.k;
     const w = input.measure(n.label);
-    const box = { left: x, top: y - 12, right: x + w, bottom: y - 12 + LABEL_HEIGHT };
-    if (box.left < 0 || box.top < 0 || box.right > width || box.bottom > height) continue;
-    const hit = kept.some(
-      (k) =>
-        box.left < k.box.right + LABEL_GAP &&
-        k.box.left < box.right + LABEL_GAP &&
-        box.top < k.box.bottom + LABEL_GAP &&
-        k.box.top < box.bottom + LABEL_GAP,
-    );
-    if (hit) continue;
-    if (r >= 3) ambient += 1;
-    kept.push({ id: n.id, text: n.label, x, y, box });
+    // Right of the dot first, then left, above and below.
+    const spots = [
+      { x: cx + rr + 5, y: cy + 4, left: cx + rr + 5 },
+      { x: cx - rr - 5 - w, y: cy + 4, left: cx - rr - 5 - w },
+      { x: cx - w / 2, y: cy - rr - 6, left: cx - w / 2 },
+      { x: cx - w / 2, y: cy + rr + 16, left: cx - w / 2 },
+    ];
+    const taken = [...(input.reserved ?? []), ...kept.map((k) => k.box)];
+    for (const spot of spots) {
+      const box = { left: spot.left, top: spot.y - 12, right: spot.left + w, bottom: spot.y - 12 + LABEL_HEIGHT };
+      if (box.left < 0 || box.top < 0 || box.right > width || box.bottom > height) continue;
+      const hit = taken.some(
+        (k) =>
+          box.left < k.right + LABEL_GAP &&
+          k.left < box.right + LABEL_GAP &&
+          box.top < k.bottom + LABEL_GAP &&
+          k.top < box.bottom + LABEL_GAP,
+      );
+      if (hit) continue;
+      if (r >= 3) ambient += 1;
+      kept.push({ id: n.id, text: n.label, x: spot.x, y: spot.y, box });
+      break;
+    }
   }
   return kept;
 }

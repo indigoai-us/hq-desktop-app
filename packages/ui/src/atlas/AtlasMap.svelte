@@ -9,6 +9,8 @@
   import {
     ATLAS_LABEL_PX,
     atlasRelatedIds,
+    atlasDistrictLabel,
+    atlasDistrictShapes,
     atlasScreenLabels,
     atlasVisibleEdges,
     frameAll,
@@ -92,8 +94,11 @@
     // Fallback is a generous per-character width so estimates never under-count.
     return Math.ceil(measured && measured > 0 ? measured : text.length * ATLAS_LABEL_PX * 0.62);
   }
+  const districts = $derived(atlasDistrictShapes(placed, regions));
+  const districtLabels = $derived(districts.map((d) => atlasDistrictLabel(d, view, measureLabel)));
   const labels = $derived(
     atlasScreenLabels({
+      reserved: districtLabels.map((d) => d.box),
       placed,
       selected,
       hovered,
@@ -204,8 +209,16 @@
     onwheel={onwheel}
   >
     <g data-testid="atlas-world" transform={viewTransform(view)}>
-      {#each regions as region (region.type)}
-        <text class="region" x={region.x} y={region.y - 70} text-anchor="middle">{region.label}</text>
+      {#each districts as district (district.type)}
+        <circle
+          class="district"
+          data-testid={`atlas-district-${district.type}`}
+          data-district={district.type}
+          cx={district.x}
+          cy={district.y}
+          r={district.r}
+          vector-effect="non-scaling-stroke"
+        />
       {/each}
       {#each shownEdges as edge (`${edge.kind}:${edge.source}>${edge.target}`)}
         {@const a = byId.get(edge.source)}
@@ -278,6 +291,9 @@
       {/each}
     </g>
     <g class="labels" data-testid="atlas-labels">
+      {#each districtLabels as label (label.id)}
+        <text class="region" data-testid={`atlas-${label.id.replace(":", "-label-")}`} x={label.x} y={label.y} text-anchor="middle">{label.text}</text>
+      {/each}
       {#each labels as label (label.id)}
         <text
           class="label"
@@ -320,10 +336,23 @@
     cursor: grabbing;
   }
   .region {
-    /* AUDIT-3: section labels are sans, sentence case, no tracking. */
+    /* AUDIT-3: section labels are sans, sentence case, no tracking.
+       OWNER-D 7: drawn at 13px / 500 in full text colour, above item labels. */
     font-family: var(--font-ui, var(--font-sans, "Geist", sans-serif));
-    font-size: 11px;
-    fill: var(--v4-text-3);
+    font-size: 13px;
+    font-weight: 500;
+    fill: var(--v4-text-1);
+    paint-order: stroke;
+    stroke: var(--v4-ground);
+    stroke-width: 3px;
+    pointer-events: none;
+  }
+  /* OWNER-D 7: shaded section, neutral tokens in both themes (no accent). */
+  .district {
+    fill: var(--v4-text-1);
+    fill-opacity: 0.045;
+    stroke: var(--v4-hairline);
+    stroke-width: 1px;
     pointer-events: none;
   }
   .edge {

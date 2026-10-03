@@ -3,6 +3,8 @@ import {
   ATLAS_RECENT_MS,
   atlasEdges,
   atlasScreenLabels,
+  atlasDistrictShapes,
+  atlasDistrictLabel,
   ATLAS_LABEL_ALL_ZOOM,
   atlasRadius,
   atlasRelatedIds,
@@ -100,15 +102,16 @@ describe("atlas layout", () => {
         }
       }
     }
-    // Crowded: two objects on top of each other; the more recent one wins.
+    // Crowded: two objects on top of each other at the map's left edge, so only
+    // the right-hand spot fits; the more recent one wins it.
     const crowd = [
       { id: "old", label: "old", x: 0, y: 0, r: 9, touched: NOW - 5000 },
       { id: "new", label: "new", x: 1, y: 1, r: 2, touched: NOW - 10 },
     ];
     const args = { selected: null, hovered: null, related: new Set<string>(), nowMs: NOW, width: 500, height: 500, measure: () => 40 };
-    expect(atlasScreenLabels({ ...args, placed: crowd, view: { x: 100, y: 100, k: 1 } }).map((l) => l.id)).toEqual(["new"]);
+    expect(atlasScreenLabels({ ...args, placed: crowd, view: { x: 0, y: 100, k: 1 } }).map((l) => l.id)).toEqual(["new"]);
     // Hover reveals a hidden label, ahead of everything else.
-    expect(atlasScreenLabels({ ...args, placed: crowd, hovered: "old", view: { x: 100, y: 100, k: 1 } }).map((l) => l.id)).toEqual(["old"]);
+    expect(atlasScreenLabels({ ...args, placed: crowd, hovered: "old", view: { x: 0, y: 100, k: 1 } }).map((l) => l.id)).toEqual(["old"]);
   });
 
   it("reveals more labels as the map zooms in (OWNER-D 4)", () => {
@@ -128,6 +131,27 @@ describe("atlas layout", () => {
     });
     const shown = new Set(atFit.map((l) => l.id));
     expect(zoomed.some((l) => !shown.has(l.id))).toBe(true);
+  });
+
+  it("shades one area per section with objects, enclosing them, and keeps item labels off section names (OWNER-D 7)", () => {
+    const { placed, regions } = layoutAtlas(smokeAtlasGraph().nodes);
+    const shapes = atlasDistrictShapes(placed, regions);
+    const types = new Set(placed.map((n) => n.type));
+    expect(shapes.map((d) => d.type).sort()).toEqual([...types].sort());
+    for (const d of shapes) {
+      for (const n of placed.filter((p) => p.type === d.type)) {
+        expect(Math.hypot(n.x - d.x, n.y - d.y) + n.r).toBeLessThanOrEqual(d.r);
+      }
+    }
+    const view = frameAll(placed, 1000, 700);
+    const measure = (t: string) => t.length * 8;
+    const reserved = shapes.map((d) => atlasDistrictLabel(d, view, measure).box);
+    const labels = atlasScreenLabels({ placed, selected: null, hovered: null, related: new Set(), nowMs: NOW, view, width: 1000, height: 700, measure, reserved });
+    for (const l of labels) {
+      for (const r of reserved) {
+        expect(l.box.left < r.right && r.left < l.box.right && l.box.top < r.bottom && r.top < l.box.bottom).toBe(false);
+      }
+    }
   });
 
   it("frames all circles inside the viewport and zooms around the cursor", () => {
