@@ -757,9 +757,9 @@
     } catch (err) {
       if (!isCurrentStoryLoad(generation, companySlug, selectedIdentity))
         return;
-      console.error("get_local_project_prd failed:", err);
-      const detail = err instanceof Error ? err.message : String(err);
-      storiesError = `Could not load this project’s stories — ${detail}`;
+      // AUDIT-3c: log the raw failure; show app copy.
+      console.warn("[projects] story load failed", err);
+      storiesError = "Could not load this project’s stories. Try again.";
       stories = [];
     } finally {
       if (isCurrentStoryLoad(generation, companySlug, selectedIdentity)) {
@@ -796,10 +796,9 @@
         peekStories = nextStories;
         peekBranch = branch;
       } catch (err) {
-        console.error("task view stories failed:", err);
+        console.warn("[projects] task load failed", err);
         if (generation !== peekGeneration) return;
-        const detail = err instanceof Error ? err.message : String(err);
-        peekError = `Could not load this project’s tasks — ${detail}`;
+        peekError = "Could not load this project’s tasks. Try again.";
       } finally {
         if (generation === peekGeneration) peekLoading = false;
       }
