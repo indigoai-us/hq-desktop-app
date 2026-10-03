@@ -17,6 +17,7 @@ The release moves it under the version it ships in.
 - Setup failure events now fill a missing stage from the bounded component and keep error categories on the closed list.
 - CI launches of the desktop app no longer add first-run rows to the install funnel, including through the CDP mirror.
 - Internal tests: four desktop tests that only searched the source text for strings now check what the code does. Nothing changes in the app.
+- Desktop Core baseline refresh now retries GitHub timeouts before reporting a pending baseline; persistent timeouts remain reported.
 
 ## [0.10.385] — 2026-10-03
 
