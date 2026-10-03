@@ -5,13 +5,21 @@
  * Local bot, kind → home for a Cloud one. The flow owns the draft and the
  * keyboard; the host only runs the create.
  */
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import { failure, ok, type AgentProvisionOptionsView, type LocalBotWorkerOption } from "@hq/platform";
 
 import type { AvatarPack } from "../../avatars/types.js";
 import type { CloudBotDraft } from "../lifecycle-entry-points.js";
 import CreateBotFlow from "./CreateBotFlow.svelte";
+
+// These flows press ⌘↵: run them as the Mac host the app ships on, so the
+// platform's own create chord (OWNER-D 8) is Command, not Control.
+const MAC_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15";
+const priorUserAgent = navigator.userAgent;
+beforeAll(() => Object.defineProperty(navigator, "userAgent", { configurable: true, value: MAC_UA }));
+afterAll(() => Object.defineProperty(navigator, "userAgent", { configurable: true, value: priorUserAgent }));
+
 
 const WORKERS: LocalBotWorkerOption[] = [
   {

@@ -54,7 +54,10 @@ describe("create-bot wizard type contract", () => {
         expect(css).not.toMatch(/text-transform:\s*uppercase/);
         expect(css).not.toMatch(/letter-spacing:\s*0?\.\d*[1-9]/);
         // HomeStep keeps mono for the `hq agent enroll` command (code).
-        const nonCode = css.replace(/[^{}]*\.external code[^{}]*\{[^}]*\}/g, "");
+        // Keyboard chords are mono by the design standard (OWNER-D 8).
+        const nonCode = css
+          .replace(/[^{}]*\.external code[^{}]*\{[^}]*\}/g, "")
+          .replace(/[^{}]*\.chord[^{}]*\{[^}]*\}/g, "");
         expect(nonCode).not.toMatch(/font-mono/);
       });
 
@@ -65,6 +68,8 @@ describe("create-bot wizard type contract", () => {
             const px = Number(m[1]);
             if (px === 13) continue;
             if (px === 20 && selector === ".preview-name") continue;
+            // Keyboard chord: 11px mono, the app-wide chord style.
+            if (px === 11 && selector === ".chord") continue;
             // Company monogram tiles size their initials to the 24px tile.
             bad.push(`${selector} → ${m[0]}`);
           }
@@ -97,6 +102,6 @@ describe("create-bot wizard type contract", () => {
   it("writes the create shortcut hint in sentence case", () => {
     const flow = read("./CreateBotFlow.svelte");
     expect(flow).not.toContain("TO CREATE");
-    expect(flow).toContain("{primaryEnterHint} to create");
+    expect(flow).toContain("{primaryEnterHint}</kbd> to create");
   });
 });
