@@ -213,6 +213,16 @@ describe("US-002 pending console-rail contracts", () => {
     expect(rail).not.toMatch(/notifications/i);
   });
 
+  it("OWNER-R36: pages with no side pane hide the titlebar sidebar toggle instead of toggling an empty column", async () => {
+    const { readFileSync } = await import("node:fs");
+    const shell = readFileSync(join(REPO_ROOT, "packages/ui/src/shell/DesktopApp.svelte"), "utf8");
+    const block = shell.match(/const pageHasNoSidepane = \$derived\(([\s\S]*?)\);/)?.[1] ?? "";
+    for (const page of ['"rail-deployments"', 'railPlaceholder?.id === "telemetry"', 'railPlaceholder?.id === "secrets"', 'railPlaceholder?.id === "connections"']) {
+      expect(block).toContain(page);
+    }
+    expect(shell).toMatch(/sidebarToggleHidden=\{pageHasNoSidepane\}/);
+  });
+
   // OWNER-R21: Profile and Billing moved into the one Settings list.
   it("US-010: the avatar menu sits at the bottom of the rail with the identity block, Settings, and Sign out", async () => {
     const { readFileSync } = await import("node:fs");

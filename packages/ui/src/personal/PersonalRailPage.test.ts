@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import PersonalRailPage from "./PersonalRailPage.svelte";
 import { clearPersonalRailCache } from "./personal-rail-model.js";
 import { clearIntegrationsCache } from "./personal-integrations.js";
+import { chooseDropdown } from "../test-support/dropdown.js";
 
 vi.mock("../company/company-store.svelte.js", () => ({
   companyStore: {
@@ -228,7 +229,7 @@ describe("US-033 PersonalRailPage", () => {
     expect(target.textContent).toContain("me@example.com");
   });
 
-  it("is view-only: no add, manage, or disconnect, and the console link opens through the host", async () => {
+  it("is view-only: no add, manage, or disconnect, and Open console opens through the host", async () => {
     const opened: string[] = [];
     const api = integrationsApi();
     const target = mountPage("connections", { integrationsApi: api, openExternal: (url: string) => opened.push(url) });
@@ -239,9 +240,11 @@ describe("US-033 PersonalRailPage", () => {
     expect(target.querySelector("[data-testid='integration-disconnect']")).toBeNull();
     const buttons = [...target.querySelectorAll("button")].map((b) => b.textContent?.trim() ?? "");
     expect(buttons.filter((t) => /^(Add integration|Manage|Disconnect|Show)$/.test(t))).toEqual([]);
-    const link = target.querySelector("[data-testid='console-link']") as HTMLAnchorElement;
-    expect(link.textContent).toBe("Manage connections in the web console");
-    link.click();
+    // OWNER-R36: the header's Open console button replaced the text link under the table.
+    expect(target.querySelector("[data-testid='console-link']")).toBeNull();
+    const open = target.querySelector("[data-testid='connections-open-console']") as HTMLButtonElement;
+    expect(open.textContent?.trim()).toBe("Open console");
+    open.click();
     expect(opened).toEqual(["https://hq.computer/personal/integrations"]);
     expect(api.listMyGoogleAccounts).toHaveBeenCalledTimes(1);
     expect(api.listMySlackAccounts).toHaveBeenCalledTimes(1);
@@ -272,11 +275,10 @@ describe("US-033 PersonalRailPage", () => {
     expect(target.querySelector("[data-testid='company-connections-link']")).toBeNull();
   });
 
-  it("shows Allowed, Ask first, and Never on the Agents and MCP tab in the design fixture", () => {
+  it("shows Allowed, Ask first, and Never on the Agents and MCP tab in the design fixture", async () => {
     const target = mountPage("connections", { fixtures: true });
-    const tab = target.querySelector("[data-testid='agents-mcp']") as HTMLButtonElement;
-    tab.click();
-    flushSync();
+    // OWNER-R36: the fixture's view filter is a header pill, not a side list.
+    await chooseDropdown(target, "connections-view-pill", "agents");
     const policy = target.querySelector("[data-testid='policy-github']");
     expect(policy?.textContent).toContain("Allowed");
     expect(policy?.textContent).toContain("Ask first");

@@ -266,6 +266,28 @@ export function filterPersonalSecrets(
   });
 }
 
+/** OWNER-R36: the Secrets header pills (Mode, and the Not rotated in 90 d toggle). */
+export interface SecretFilterPills {
+  mode: "all" | "standard" | "proxy";
+  stale: boolean;
+}
+
+export const DEFAULT_SECRET_PILLS: SecretFilterPills = { mode: "all", stale: false };
+
+export function secretPillsAreDefault(pills: SecretFilterPills): boolean {
+  return pills.mode === "all" && !pills.stale;
+}
+
+/** Mode and staleness combine; the old side list could only pick one. */
+export function filterPersonalSecretsBy(
+  rows: readonly PersonalSecret[],
+  pills: SecretFilterPills,
+  query: string,
+): PersonalSecret[] {
+  const byMode = filterPersonalSecrets(rows, pills.mode, query);
+  return pills.stale ? filterPersonalSecrets(byMode, "stale", "") : byMode;
+}
+
 export function filterConnections(
   rows: readonly PersonalConnection[],
   tab: "connected" | "available" | "agents" | "attention",

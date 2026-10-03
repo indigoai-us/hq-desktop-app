@@ -9090,6 +9090,15 @@
         railPlaceholder?.id === "connections" ||
         railPlaceholder?.id === "outpost"),
   );
+  // OWNER-R36: these personal pages have no side pane at all, so the title
+  // bar's sidebar toggle is hidden there instead of toggling an empty column.
+  const pageHasNoSidepane = $derived(
+    view === "extra" &&
+      (extraPageId === "rail-deployments" ||
+        railPlaceholder?.id === "telemetry" ||
+        railPlaceholder?.id === "secrets" ||
+        railPlaceholder?.id === "connections"),
+  );
   // OWNER-R20: Profile's Companies and roles read the caller's role from each
   // company's membership roster (GET /membership/company/{uid}); the contacts
   // read used before carries no role and leaves the caller out, so every row
@@ -10084,6 +10093,7 @@
     {brandCompanyName}
     onopenSync={() => openSettings("sync")}
     {sidebarCollapsed}
+    sidebarToggleHidden={pageHasNoSidepane}
     coreUseFixtures={coreFixtures}
     ontogglesidebar={() => (sidebarCollapsed = !sidebarCollapsed)}
     onopenNotifications={toggleNotifications}

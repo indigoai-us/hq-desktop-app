@@ -60,6 +60,8 @@
     hqFolderPath?: string | null;
     accountInitials?: string | null;
     sidebarCollapsed?: boolean;
+    /** OWNER-R36: the page has no side pane, so there is nothing to show or hide. */
+    sidebarToggleHidden?: boolean;
     onsync?: () => void | Promise<void>;
     oncancel?: () => void | Promise<void>;
     onretry?: () => void | Promise<void>;
@@ -166,6 +168,7 @@
     onretryhydration,
     onresolveconflicts,
     sidebarCollapsed = false,
+    sidebarToggleHidden = false,
     ontogglesidebar,
     onopenNotifications,
     primaryAction,
@@ -636,6 +639,7 @@
         data-tauri-drag-region
       ></div>
     {/if}
+    {#if !sidebarToggleHidden}
     <button
       type="button"
       class="v4-icon-btn"
@@ -659,6 +663,7 @@
         <path d="M5.25 2.5v11" stroke="currentColor" stroke-width="1.2" />
       </svg>
     </button>
+    {/if}
     {#if brandEntitled}
       <!-- White-label header slot (PL-04): the tenant logo replaces the HQ
            wordmark, with the permanent powered-by lockup underneath. Gated on

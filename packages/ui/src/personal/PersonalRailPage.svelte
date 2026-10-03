@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Dropdown from "../common/LazyDropdown.svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import RailButton from "../common/button/RailButton.svelte";
@@ -30,7 +31,10 @@
     BOT_POLICY_LABEL,
     execSnippet,
     filterConnections,
-    filterPersonalSecrets,
+    filterPersonalSecretsBy,
+    secretPillsAreDefault,
+    DEFAULT_SECRET_PILLS,
+    type SecretFilterPills,
     emptyPersonalRail,
     fixturePersonalRail,
     personalSecretsErrorReason,
@@ -91,7 +95,8 @@
   );
   let secretsError = $state("");
   let query = $state("");
-  let secretTab = $state<"all" | "standard" | "proxy" | "stale">("all");
+  // OWNER-R36: Secrets filters are header pills (Mode, Not rotated in 90 d), not a side list.
+  let secretPills = $state<SecretFilterPills>({ ...DEFAULT_SECRET_PILLS });
   let connectionTab = $state<"connected" | "available" | "agents" | "attention">("connected");
   let selectedSecret = $state("");
   let selectedConnection = $state("github");
@@ -175,7 +180,11 @@
     if (company.slug) openExternal?.(companyIntegrationsUrl(company.slug));
   }
 
-  const secretRows = $derived(filterPersonalSecrets(data.secrets, secretTab, query));
+  const secretRows = $derived(filterPersonalSecretsBy(data.secrets, secretPills, query));
+  const secretModeCounts = $derived({
+    standard: data.secrets.filter((row) => row.kind === "standard").length,
+    proxy: data.secrets.filter((row) => row.kind === "proxy").length,
+  });
   const connectionRows = $derived(
     filterConnections(
       data.connections,
@@ -189,7 +198,8 @@
   $effect(() => {
     void page;
     void query;
-    void secretTab;
+    void secretPills.mode;
+    void secretPills.stale;
     void connectionTab;
     secretPages = connectionPages = 1;
   });
@@ -251,25 +261,6 @@
 </script>
 
 <section class="page" data-testid="personal-rail" data-page={page} data-story="US-033">
-  <aside class="pane" aria-label={page === "secrets" ? "Secrets" : "Connections"}>
-    {#if page === "secrets"}
-      <button class="nav" type="button" aria-current={secretTab === "all"} onclick={() => (secretTab = "all")}>All {#if secretsState !== "error"}<span>{data.secrets.length}</span>{/if}</button>
-      <button class="nav" type="button" aria-current={secretTab === "standard"} onclick={() => (secretTab = "standard")}>Standard</button>
-      <button class="nav" type="button" aria-current={secretTab === "proxy"} onclick={() => (secretTab = "proxy")}>Proxy-only</button>
-      <p class="sec">Scopes</p>
-      <button class="nav" type="button" aria-current="true" data-testid="scope-personal">Personal {#if secretsState === "ready"}<span>{data.secrets.length}</span>{/if}</button>
-      <p class="sec">Needs attention</p>
-      <button class="nav" type="button" aria-current={secretTab === "stale"} onclick={() => (secretTab = "stale")}>Not rotated in 90 d</button>
-    {:else if !useFixtures}
-      <button class="nav" type="button" aria-current="true" data-testid="connections-personal-nav">Personal {#if integrationsState === "ready"}<span>{integrations.length}</span>{/if}</button>
-    {:else}
-      <button class="nav" type="button" aria-current={connectionTab === "connected"} onclick={() => (connectionTab = "connected")}>Connected <span>{connectedCount}</span></button>
-      <button class="nav" type="button" aria-current={connectionTab === "available"} onclick={() => (connectionTab = "available")}>Available</button>
-      <button class="nav" type="button" aria-current={connectionTab === "agents"} data-testid="agents-mcp" onclick={() => (connectionTab = "agents")}>Agents & MCP</button>
-      <button class="nav" type="button" aria-current={connectionTab === "attention"} onclick={() => (connectionTab = "attention")}>Needs attention <span>{attentionCount}</span></button>
-    {/if}
-  </aside>
-
   <div class="main">
     {#if page === "secrets"}
       <header class="toolbar">
@@ -277,6 +268,25 @@
         <!-- BLANK-2: counts wait for a read that succeeded. -->
         {#if secretsState === "ready"}<span class="count" data-testid="personal-secrets-count">{countLabel("Secrets", secretRows.length)}</span>{/if}
         <span class="sub">Values never shown</span>
+        <span class="pills" data-testid="secrets-pills">
+          <Dropdown
+            pill
+            active={secretPills.mode !== "all"}
+            testid="secrets-mode-pill"
+            label="Mode"
+            value={secretPills.mode}
+            onchange={(v) => (secretPills = { ...secretPills, mode: v as SecretFilterPills["mode"] })}
+            options={[
+              { value: "all", label: "All modes" },
+              { value: "standard", label: "Standard", detail: secretModeCounts.standard.toLocaleString() },
+              { value: "proxy", label: "Proxy-only", detail: secretModeCounts.proxy.toLocaleString() },
+            ]}
+          />
+          <button type="button" class="toggle-pill" class:sel={secretPills.stale} aria-pressed={secretPills.stale} data-testid="secrets-stale-pill" onclick={() => (secretPills = { ...secretPills, stale: !secretPills.stale })}>Not rotated in 90 d</button>
+          {#if !secretPillsAreDefault(secretPills)}
+            <button type="button" class="clear-pills" data-testid="secrets-clear-filters" onclick={() => (secretPills = { ...DEFAULT_SECRET_PILLS })}>Clear</button>
+          {/if}
+        </span>
         <span class="grow"></span>
         <input class="search" placeholder="Search by name" bind:value={query} />
         <RailButton icon="copy" type="button" data-testid="secrets-exec" onclick={() => secretCurrent && copyExec(secretCurrent.name)}>
@@ -293,7 +303,6 @@
               <RailButton icon="refresh" size="compact" type="button" onclick={() => void refresh(true)}>Retry</RailButton>
             </p>
           {/if}
-          <p class="sec">Personal</p>
           {#if secretsState === "loading"}
             <div aria-busy="true">
               <ReadLoader testid="personal-secrets-loader" onretry={() => void refresh(true)} />
@@ -312,12 +321,12 @@
               total={data.secrets.length}
               shown={0}
               query={query}
-              filtered={secretTab !== "all"}
+              filtered={!secretPillsAreDefault(secretPills)}
               noun={["secret", "secrets"]}
               testid="personal-secrets-no-matches"
               onclear={() => {
                 query = "";
-                secretTab = "all";
+                secretPills = { ...DEFAULT_SECRET_PILLS };
               }}
             />
           {/if}
@@ -362,7 +371,11 @@
     {:else if !useFixtures}
       <header class="toolbar">
         <h1>Connections</h1>
+        <!-- OWNER-R36: the count sits beside the title; it waits for a read that succeeded. -->
+        {#if integrationsState === "ready"}<span class="count" data-testid="personal-integrations-count">{countLabel("Connections", integrations.length)}</span>{/if}
         <span class="sub">Apps connected to you, usable across your sessions, never owned by a company</span>
+        <span class="grow"></span>
+        <RailButton icon="external" variant="primary" type="button" data-testid="connections-open-console" onclick={openConsoleIntegrations}>Open console</RailButton>
       </header>
       <div class="split">
         <div class="list" data-testid="personal-integrations-list">
@@ -396,9 +409,6 @@
               </button>
             {/each}
           {/if}
-          {#if integrationsState === "ready" && integrations.length > 0}
-            <p class="meta console-line"><a class="console-link" href={PERSONAL_INTEGRATIONS_URL} data-testid="console-link" onclick={(e) => { e.preventDefault(); openConsoleIntegrations(); }}>Manage connections in the web console</a></p>
-          {/if}
           {#if activeCompany}
             <button class="srow company-link" type="button" data-testid="company-connections-link" onclick={() => openCompanyConsoleIntegrations(activeCompany)}>
               <span>Company connections</span><span class="meta"
@@ -428,6 +438,20 @@
         <span class="sub">{connectionTab === "agents" ? "Agents & MCP · your bots and servers, acting as you" : "Apps you personally use · yours across every company"}</span>
         <span class="status"><span class="dot" data-status="connected"></span>{connectedCount} connected</span>
         {#if attentionCount > 0}<span class="status"><span class="dot" data-status="reconnect"></span>{attentionCount} needs attention</span>{/if}
+        <Dropdown
+          pill
+          active={connectionTab !== "connected"}
+          testid="connections-view-pill"
+          label="Show"
+          value={connectionTab}
+          onchange={(v) => (connectionTab = v as typeof connectionTab)}
+          options={[
+            { value: "connected", label: "Connected", detail: connectedCount.toLocaleString() },
+            { value: "available", label: "Available" },
+            { value: "agents", label: "Agents & MCP" },
+            { value: "attention", label: "Needs attention", detail: attentionCount.toLocaleString() },
+          ]}
+        />
         <span class="grow"></span>
         <RailButton icon="plus" variant="primary" type="button" data-testid="add-connection" onclick={() => (sheet = "connect")}>Add connection</RailButton>
       </header>
@@ -571,8 +595,9 @@
      clickable box. The ::after pad grows only the axes under 28 px, so the
      drawn size and layout stay as they are. Kept first so a later
      position rule (e.g. absolute) still wins. */
-  .nav, .srow, .tab, .link, .console-link { position: relative; }
-  .nav::after,
+  .srow, .tab, .link, .console-link, .toggle-pill, .clear-pills { position: relative; }
+  .toggle-pill::after,
+  .clear-pills::after,
   .srow::after,
   .tab::after,
   .link::after,
@@ -584,14 +609,11 @@
   /* Console-rail page chrome measured from Messages (docs/design-standard-console-rail.md):
      one 20px/500 title, 13px everywhere else, 31px rows, status as dot plus text,
      background-only selection, mono only for secret names, paths and MCP ids. */
-  .page { display: grid; grid-template-columns: clamp(180px, 26%, 260px) minmax(0, 1fr); height: 100%; min-height: 0; color: var(--t1, var(--v4-text-1)); background: var(--v4-ground); position: relative; font: 400 13px/1.45 var(--font-ui, "Geist", -apple-system, sans-serif); }
+  .page { display: grid; grid-template-columns: minmax(0, 1fr); height: 100%; min-height: 0; color: var(--t1, var(--v4-text-1)); background: var(--v4-ground); position: relative; font: 400 13px/1.45 var(--font-ui, "Geist", -apple-system, sans-serif); }
   button { font: inherit; font-size: 13px; }
-  .pane { border-right: 1px solid var(--line, var(--v4-rowline)); padding: 12px 14px; overflow: auto; background: var(--v4-secondary-sidebar); display: flex; flex-direction: column; gap: 1px; }
   h1 { font-size: var(--type-title, 20px); font-weight: var(--type-title-weight, 500); line-height: var(--type-title-line, 1.25); margin: 0 4px 0 0; }
-  .nav { display: flex; justify-content: space-between; align-items: center; width: 100%; height: 31px; box-sizing: border-box; padding: 7px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--t2, var(--v4-text-2)); text-align: left; cursor: pointer; }
-  .nav span { color: var(--t3, var(--v4-text-3)); font-variant-numeric: tabular-nums; }
-  .nav:hover, .srow:hover, .link:hover { background: var(--hover, var(--v4-hover)); }
-  .nav[aria-current="true"], .seg .tab[aria-pressed="true"], .srow[aria-current="true"] { background: var(--sel, var(--v4-active-row)); color: var(--t1, var(--v4-text-1)); box-shadow: none; }
+  .srow:hover, .link:hover { background: var(--hover, var(--v4-hover)); }
+  .seg .tab[aria-pressed="true"], .srow[aria-current="true"] { background: var(--sel, var(--v4-active-row)); color: var(--t1, var(--v4-text-1)); box-shadow: none; }
   .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; container-type: inline-size; }
   /* QA-099: the header wraps at narrow widths instead of pushing the primary
      button past the right edge; the search box is the part that gives. */
@@ -599,9 +621,14 @@
   .toolbar .search { flex: 0 1 180px; min-width: 96px; }
   .toolbar :global([data-rail-btn]) { flex: none; }
   .grow { flex: 1; }
+  /* OWNER-R36: header filter pills, the Deployments pattern (69a00b720). */
+  .pills { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .toggle-pill, .clear-pills { min-height: 28px; padding: 0 12px; border: 1px solid var(--v4-hairline, var(--line)); border-radius: 999px; background: transparent; color: var(--t1, var(--v4-text-1)); font: inherit; cursor: pointer; }
+  .toggle-pill.sel { background: var(--sel, var(--v4-active-row)); border-color: transparent; }
+  .clear-pills { border-color: transparent; color: var(--t2, var(--v4-text-2)); }
   .sub, .meta, .kind, .foot, .count { color: var(--t3, var(--v4-text-3)); font-size: 13px; }
   .meta, .kind, .foot { margin: 8px 0; }
-  .sec, .label { color: var(--t2, var(--v4-text-2)); font-size: 13px; font-weight: 500; margin: 0; padding: 12px 8px 4px; }
+  .label { color: var(--t2, var(--v4-text-2)); font-size: 13px; font-weight: 500; margin: 0; padding: 12px 8px 4px; }
   .label { padding: 16px 0 6px; }
   .count { font-variant-numeric: tabular-nums; }
   .status { display: inline-flex; align-items: center; gap: 6px; color: var(--t2, var(--v4-text-2)); white-space: nowrap; }
@@ -654,8 +681,6 @@
   .kind { margin: 0 0 8px; display: flex; align-items: center; }
   .sheet { position: absolute; right: 16px; bottom: 16px; width: 320px; padding: 16px 20px; border: 1px solid var(--panel-border, var(--v4-rowline)); border-radius: 8px; background: var(--overlay-bg, var(--panel-bg, var(--v4-raised, var(--v4-ground)))); box-shadow: var(--panel-shadow, none); display: flex; flex-direction: column; gap: 8px; }
   .irow { grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.4fr) 110px 110px; }
-  .console-line { margin: 12px 0 0; }
-  .console-line a { color: inherit; }
   .company-link { display: flex; gap: 8px; margin-top: 12px; }
   .sources { list-style: none; margin: 0; padding: 0; color: var(--t2, var(--v4-text-2)); }
   .sources li { height: 28px; line-height: 28px; }

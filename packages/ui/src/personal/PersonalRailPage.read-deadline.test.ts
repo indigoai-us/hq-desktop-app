@@ -40,7 +40,9 @@ describe("PersonalRailPage pending read (BLANK-3)", () => {
     expect(document.querySelector("[data-testid='personal-secrets-error']")).toBeNull();
     // BLANK-2: no zero counts next to the failed read.
     expect(document.querySelector("[data-testid='personal-secrets-count']")).toBeNull();
-    expect(document.querySelector("[data-testid='scope-personal']")?.textContent?.trim()).toBe("Personal");
+    // OWNER-R36: no side nav and no lone Personal scope; the count waits for a read that succeeded.
+    expect(document.querySelector("[data-testid='scope-personal']")).toBeNull();
+    expect(document.querySelector("[data-testid='personal-secrets-count']")).toBeNull();
   });
 
   it("a connections read that never answers keeps loading with a waiting line and Try again, never a failed state", async () => {
@@ -55,7 +57,9 @@ describe("PersonalRailPage pending read (BLANK-3)", () => {
     expect(document.querySelector("[data-testid='personal-integrations-loader']")).toBeTruthy();
     await expectPendingRead(document, "personal-integrations-loader");
     expect(document.querySelector("[data-testid='personal-integrations-error']")).toBeNull();
-    expect(document.querySelector("[data-testid='connections-personal-nav']")?.textContent?.trim()).toBe("Personal");
+    // OWNER-R36: no side nav; the header count waits for a read that succeeded.
+    expect(document.querySelector("[data-testid='connections-personal-nav']")).toBeNull();
+    expect(document.querySelector("[data-testid='personal-integrations-count']")).toBeNull();
     expect(logged).not.toHaveBeenCalled();
   });
 });
