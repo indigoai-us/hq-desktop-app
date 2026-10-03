@@ -619,7 +619,7 @@ fn cancellation_requested_for_generation(handle: &str, generation: u64) -> bool 
     cancellation_records()
         .0
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .records
         .contains_key(&(handle.to_string(), generation))
 }
@@ -676,7 +676,7 @@ pub fn pre_register_handle_gen(handle: &str) -> u64 {
     let generation = next_process_generation();
     process_registry()
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .active
         .insert(handle.to_string(), ProcessEntry::new(generation));
     generation
@@ -691,7 +691,9 @@ pub fn pre_register_handle(handle: &str) {
 /// handle up after it might have been reused.
 pub fn try_register_handle_gen(handle: &str) -> Option<u64> {
     use std::collections::hash_map::Entry;
-    let mut reg = process_registry().lock().unwrap();
+    let mut reg = process_registry()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if UPDATE_QUIESCE_REQUESTED.load(Ordering::Acquire) {
         return None;
     }
@@ -722,7 +724,7 @@ pub fn try_register_handle(handle: &str) -> bool {
 pub fn generation_for_handle(handle: &str) -> Option<u64> {
     process_registry()
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .active
         .get(handle)
         .map(|entry| entry.generation)
@@ -888,7 +890,9 @@ pub fn register_job_handle(handle: &str, job: isize) {
     // on a KILL_ON_JOB_CLOSE job terminates a process tree, and no teardown
     // that heavyweight belongs inside this mutex.
     let attached = {
-        let mut registry = process_registry().lock().unwrap();
+        let mut registry = process_registry()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         match registry.active.get_mut(handle) {
             Some(entry) => {
                 debug_assert!(entry.job_handle.is_none());
@@ -923,7 +927,11 @@ fn close_process_entry(entry: ProcessEntry) {
 fn close_process_entry(_entry: ProcessEntry) {}
 
 pub fn deregister_process(handle: &str) {
-    let removed = process_registry().lock().unwrap().active.remove(handle);
+    let removed = process_registry()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .active
+        .remove(handle);
     if let Some(entry) = removed {
         close_process_entry(entry);
     }
@@ -991,7 +999,7 @@ pub fn abandon_process_generation(handle: &str, generation: u64) -> bool {
 pub fn lookup_pid(handle: &str) -> Option<u32> {
     process_registry()
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .active
         .get(handle)
         .and_then(|e| e.pid)
@@ -1000,7 +1008,7 @@ pub fn lookup_pid(handle: &str) -> Option<u32> {
 pub fn is_registered(handle: &str) -> bool {
     process_registry()
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .active
         .contains_key(handle)
 }
@@ -1760,7 +1768,7 @@ fn to_wide(value: &str) -> Vec<u16> {
 pub fn is_cancelled(handle: &str) -> bool {
     process_registry()
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .active
         .get(handle)
         .map(|e| e.cancelled)
@@ -1770,7 +1778,9 @@ pub fn is_cancelled(handle: &str) -> bool {
 /// Generation-aware cancellation lookup for owners that can outlive a handle
 /// reuse (notably the daemon watcher callback).
 pub fn is_cancelled_for_generation(handle: &str, generation: u64) -> bool {
-    let registry = process_registry().lock().unwrap();
+    let registry = process_registry()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     entry_for_generation(&registry, handle, generation)
         .map(|entry| entry.cancelled)
         .unwrap_or(false)
@@ -1816,7 +1826,9 @@ pub(crate) fn clear_cancellation_record_for_test(handle: &str, generation: u64) 
 }
 
 fn revoke_signal_authority_for_generation(handle: &str, generation: u64) -> bool {
-    let mut reg = process_registry().lock().unwrap();
+    let mut reg = process_registry()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     entry_for_generation_mut(&mut reg, handle, generation)
         .map(|entry| revoke_signal_authority_locked(entry, generation))
         .unwrap_or(false)
@@ -4341,7 +4353,9 @@ fn cancel_generation_os(handle: &str, generation: u64, sigkill_delay: Duration) 
 
     #[cfg(not(any(unix, target_os = "windows")))]
     {
-        let mut registry = process_registry().lock().unwrap();
+        let mut registry = process_registry()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let entry = registry
             .active
             .get_mut(handle)
@@ -4385,7 +4399,7 @@ pub fn registered_pids() -> Vec<(String, u32)> {
 fn registered_processes() -> Vec<RegisteredProcess> {
     process_registry()
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .active
         .iter()
         .filter_map(|(handle, entry)| {
@@ -4403,7 +4417,9 @@ fn registered_processes() -> Vec<RegisteredProcess> {
 }
 
 fn registered_processes_including_retired() -> Vec<RegisteredProcess> {
-    let registry = process_registry().lock().unwrap();
+    let registry = process_registry()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut processes: Vec<_> = registry
         .active
         .iter()
@@ -4439,7 +4455,7 @@ fn registered_processes_including_retired() -> Vec<RegisteredProcess> {
 fn registered_process_for(handle: &str, pid: u32) -> Option<RegisteredProcess> {
     process_registry()
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .active
         .get(handle)
         .filter(|entry| entry.pid == Some(pid))
@@ -4602,7 +4618,9 @@ pub async fn wait_for_cli_install_quiescence(
 
     loop {
         let active_possible_cli_process = {
-            let registry = process_registry().lock().unwrap();
+            let registry = process_registry()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             registry
                 .active
                 .keys()
@@ -8266,6 +8284,83 @@ mod child_env_tests {
 #[cfg(test)]
 #[path = "process_output_backpressure_tests.rs"]
 mod process_output_backpressure_tests;
+
+#[cfg(test)]
+mod lock_poison_recovery_tests {
+    use super::*;
+
+    /// Clears a poison this test leaves behind if an assertion fails before a
+    /// recovered call takes the guard. A recovered call already clears it.
+    struct ClearPoison;
+
+    impl Drop for ClearPoison {
+        fn drop(&mut self) {
+            process_registry().clear_poison();
+            cancellation_records().0.clear_poison();
+        }
+    }
+
+    fn poison_mutex<T: Send + 'static>(mutex: Arc<Mutex<T>>) {
+        let panicked = thread::spawn(move || {
+            let _guard = mutex
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            panic!("poison process bookkeeping mutex");
+        })
+        .join();
+        assert!(panicked.is_err(), "the fixture panic must poison the mutex");
+    }
+
+    #[test]
+    fn registry_bookkeeping_recovers_a_poisoned_mutex() {
+        let _clear = ClearPoison;
+        let handle = format!("poison-registry-{}", Uuid::new_v4());
+
+        poison_mutex(Arc::clone(process_registry()));
+
+        let generation = pre_register_handle_gen(&handle);
+        assert!(generation > 0);
+        assert!(is_registered(&handle));
+        assert_eq!(lookup_pid(&handle), None);
+        assert!(!is_cancelled(&handle));
+        assert_eq!(generation_for_handle(&handle), Some(generation));
+        assert!(!is_cancelled_for_generation(&handle, generation));
+        assert!(
+            !registered_pids()
+                .iter()
+                .any(|(registered, _)| registered == &handle),
+            "a registration with no pid is not a running child"
+        );
+        assert!(!registered_processes_including_retired()
+            .iter()
+            .any(|process| process.handle == handle));
+        assert!(registered_process_for(&handle, 1).is_none());
+        assert!(revoke_signal_authority_for_generation(&handle, generation));
+
+        let second = format!("poison-registry-{}", Uuid::new_v4());
+        if try_register_handle(&second) {
+            assert!(is_registered(&second));
+            deregister_process(&second);
+            assert!(!is_registered(&second));
+        }
+
+        deregister_process(&handle);
+        assert!(!is_registered(&handle));
+        assert!(generation_for_handle(&handle).is_none());
+        assert!(!revoke_signal_authority_for_generation(&handle, generation));
+
+        let panicked = thread::spawn(|| {
+            let _guard = cancellation_records()
+                .0
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            panic!("poison cancellation records");
+        })
+        .join();
+        assert!(panicked.is_err(), "the fixture panic must poison the mutex");
+        assert!(!cancellation_requested_for_generation(&handle, generation));
+    }
+}
 
 /// The hosted `hq daemon` is spawned by `hq_daemon_host`, not by this module,
 /// but a desktop update still has to be able to stop it: on Windows
