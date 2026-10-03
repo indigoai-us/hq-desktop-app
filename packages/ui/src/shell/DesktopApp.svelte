@@ -10538,6 +10538,7 @@
           <!-- RELEASE-001: with Atlas closed for this company, its landing
                shows company Activity instead. -->
           <ActivityRailHost
+            {adapter}
             slug={companyPaneCompany.slug ?? ""}
             companyLabel={companyPaneCompany.label}
           />
@@ -10618,6 +10619,7 @@
           />
         {:else if railPlaceholder?.id === "activity" && companyPaneCompany}
           <ActivityRailHost
+            {adapter}
             slug={companyPaneCompany.slug ?? ""}
             companyLabel={companyPaneCompany.label}
           />

@@ -4,11 +4,15 @@
   /**
    * Company Activity (US-026). Team, Tokens, and Live tabs with a range
    * and Export. The token chart loads only after Tokens is selected.
-   * First paint uses the session cache or a shimmer, then a background
-   * refresh. There is no live token feed in the desktop adapter yet, so
-   * refresh keeps the cached snapshot and records that the read finished.
+   * BLANK-1-31: Team and Tokens read company telemetry (hq-pro
+   * `GET /v1/telemetry/company`, the web Activity read) for the chosen range.
+   * The cached snapshot paints first and stays while a refresh runs; with no
+   * cache the shared loader shows; a failed read with nothing cached shows a
+   * plain line with Try again. Live has no feed in that response yet.
    */
   import { onMount } from "svelte";
+  import type { PlatformAdapter } from "@hq/platform";
+  import ReadLoader from "../common/ReadLoader.svelte";
   import { pushToast } from "../shell/toast-stack.svelte.js";
   import { publishCompanyPageCount } from "../shell/company-page-counts.svelte.js";
   import "../home/tokens.css";
@@ -21,6 +25,8 @@
     dayBars,
     EMPTY_ACTIVITY,
     formatTokens,
+    activityFromCompanyTelemetry,
+    rangeDays,
     readActivityCache,
     saveCsvViaDialog,
     writeActivityCache,
@@ -33,9 +39,10 @@
   interface Props {
     slug: string;
     companyLabel: string;
+    adapter?: Pick<PlatformAdapter, "company"> | null;
   }
 
-  let { slug, companyLabel }: Props = $props();
+  let { slug, companyLabel, adapter = null }: Props = $props();
 
   const storage = typeof localStorage === "undefined" ? null : localStorage;
 
@@ -43,6 +50,8 @@
   let range = $state<ActivityRange>("30d");
   let snapshot = $state<ActivitySnapshot | null>(null);
   let refreshing = $state(false);
+  let readError = $state<string | null>(null);
+  let readNonce = $state(0);
   let chart = $state<Awaited<ReturnType<typeof loadTokenDayStrip>> | null>(null);
 
   const bars = $derived<DayBar[]>(
@@ -55,25 +64,50 @@
     if (snapshot) publishCompanyPageCount(slug, "activity", snapshot.members.length);
   });
 
-  function paintCache(activeSlug: string): void {
-    snapshot = readActivityCache(storage, activeSlug) ?? EMPTY_ACTIVITY;
+  const read = $derived(adapter?.company?.getTeamTelemetry ?? null);
+  const cacheKey = (activeSlug: string, activeRange: ActivityRange) => `${activeSlug}:${activeRange}`;
+
+  function paintCache(activeSlug: string, activeRange: ActivityRange): void {
+    // With a read to run, no cache means the loader until it answers.
+    snapshot = readActivityCache(storage, cacheKey(activeSlug, activeRange)) ?? (read ? null : EMPTY_ACTIVITY);
   }
 
-  function refresh(activeSlug: string): void {
+  function isoDay(ms: number): string {
+    return new Date(ms).toISOString().slice(0, 10);
+  }
+
+  async function refresh(activeSlug: string, activeRange: ActivityRange): Promise<void> {
+    const alive = () => slug === activeSlug && range === activeRange;
+    if (!read || !activeSlug) {
+      readError = null;
+      return;
+    }
     refreshing = true;
-    queueMicrotask(() => {
-      if (slug !== activeSlug) return;
-      const next = readActivityCache(storage, activeSlug) ?? EMPTY_ACTIVITY;
-      snapshot = { ...next, updatedLabel: next.updatedLabel || "no token feed yet" };
-      writeActivityCache(storage, activeSlug, snapshot);
-      refreshing = false;
-    });
+    try {
+      const now = Date.now();
+      const res = await read(activeSlug, { from: isoDay(now - (rangeDays(activeRange) - 1) * 86_400_000), to: isoDay(now) });
+      if (!res.ok) throw new Error(res.message ?? res.reason);
+      const next = activityFromCompanyTelemetry(res.value);
+      if (!alive()) return;
+      snapshot = next;
+      readError = null;
+      writeActivityCache(storage, cacheKey(activeSlug, activeRange), next);
+    } catch (err) {
+      console.error("activity read failed:", err);
+      if (!alive()) return;
+      readError = "Could not load activity.";
+    } finally {
+      if (alive()) refreshing = false;
+    }
   }
 
   $effect(() => {
     const active = slug;
-    paintCache(active);
-    refresh(active);
+    const activeRange = range;
+    void readNonce;
+    readError = null;
+    paintCache(active, activeRange);
+    void refresh(active, activeRange);
   });
 
   $effect(() => {
@@ -84,7 +118,7 @@
   });
 
   onMount(() => {
-    if (!snapshot) paintCache(slug);
+    if (!snapshot) paintCache(slug, range);
   });
 
   async function exportCsv(): Promise<void> {
@@ -128,9 +162,14 @@
     <RailButton icon="download" onclick={() => void exportCsv()}>Export</RailButton>
   </header>
 
-  {#if !snapshot}
+  {#if !snapshot && readError}
+    <div class="canvas" role="alert" data-testid="activity-failed">
+      <p class="empty">{readError}</p>
+      <RailButton icon="refresh" data-testid="activity-retry" onclick={() => (readNonce += 1)}>Try again</RailButton>
+    </div>
+  {:else if !snapshot}
     <div class="canvas" data-testid="activity-skeleton" aria-busy="true">
-      {#each [0, 1, 2, 3] as i (i)}<div class="shimmer row"></div>{/each}
+      <ReadLoader testid="activity-loader" onretry={() => (readNonce += 1)} />
     </div>
   {:else if tab === "team"}
     <div class="canvas">

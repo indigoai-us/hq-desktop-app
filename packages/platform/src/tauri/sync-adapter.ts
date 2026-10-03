@@ -1155,8 +1155,8 @@ export function createSyncPlatformAdapter(
       getSecrets: (slug) => call('get_company_secrets', { slug }),
       listMembers: (slug) =>
         call('list_company_members', { companyUid: slug }),
-      getTeamTelemetry: (slug) =>
-        call('get_company_team_telemetry', { slug }),
+      getTeamTelemetry: (slug, range) =>
+        call('get_company_team_telemetry', range ? { slug, from: range.from, to: range.to } : { slug }),
       claimPendingInvite: (slug) =>
         call('claim_pending_company_invite', { slug, route: 'company_page' }),
       connectToCloud: (slug) =>

@@ -246,3 +246,82 @@ export function writeActivityCache(
     /* cache is best-effort */
   }
 }
+
+type Rec = Record<string, unknown>;
+const rec = (v: unknown): Rec => (v && typeof v === "object" ? (v as Rec) : {});
+const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+
+function tokenTotal(tokensByModel: unknown): number {
+  if (!Array.isArray(tokensByModel)) return 0;
+  return tokensByModel.reduce((sum: number, m) => {
+    const r = rec(m);
+    return sum + num(r.input) + num(r.output) + num(r.cacheCreation) + num(r.cacheRead);
+  }, 0);
+}
+
+function initials(name: string): string {
+  const parts = name.replace(/@.*/, "").split(/[\s._-]+/).filter(Boolean);
+  return ((parts[0]?.[0] ?? "") + (parts[1]?.[0] ?? "")).toUpperCase() || "?";
+}
+
+/**
+ * BLANK-1-31: company Activity from hq-pro `GET /v1/telemetry/company`, the
+ * read the web console's Activity and Team activity pages use
+ * (`{ range, daily: [{ date, tokensByModel }], perMember: [{ personUid, label,
+ * email, totals: { tokensByModel, skills: { bySkill }, distinctSessions,
+ * events }, outcomes?: { byType: { storyCompleted, deploySucceeded } } }],
+ * coverage: { attributed, unattributed } }`). Tokens add input, output and
+ * cache reads and writes, as the web does. Members with no activity in the
+ * range are left out. The response has no live-session or pulse feed, so
+ * those stay empty. A body without a `perMember` list is a failed read.
+ */
+export function activityFromCompanyTelemetry(body: unknown): ActivitySnapshot {
+  const root = rec(body);
+  if (!Array.isArray(root.perMember)) throw new Error("company telemetry has no perMember list");
+  const members: ActivityMember[] = [];
+  for (const item of root.perMember) {
+    const m = rec(item);
+    const id = typeof m.personUid === "string" ? m.personUid : "";
+    if (!id) continue;
+    const totals = rec(m.totals);
+    const tokens = tokenTotal(totals.tokensByModel);
+    const sessions = num(totals.distinctSessions);
+    if (tokens === 0 && sessions === 0 && num(totals.events) === 0) continue;
+    const label = [m.label, m.displayName].find((v): v is string => typeof v === "string" && !!v.trim())?.trim() ?? "";
+    const email = typeof m.email === "string" ? m.email.trim() : "";
+    const name = label || email || "Unnamed member";
+    const byType = rec(rec(m.outcomes).byType);
+    const bySkill = Array.isArray(rec(totals.skills).bySkill) ? (rec(totals.skills).bySkill as unknown[]) : [];
+    const top = rec(bySkill[0]).skill;
+    members.push({
+      id,
+      name,
+      mark: initials(name),
+      bot: id.startsWith("agt_"),
+      live: false,
+      tokens,
+      sessions,
+      stories: num(byType.storyCompleted),
+      deploys: num(byType.deploySucceeded),
+      topSkill: typeof top === "string" ? top : "",
+      outcomesPerMillion: null,
+      spendUsd: null,
+    });
+  }
+  members.sort((a, b) => b.tokens - a.tokens || a.name.localeCompare(b.name));
+  const daily = Array.isArray(root.daily) ? root.daily.map(rec) : [];
+  const dayWeights = daily
+    .filter((d) => typeof d.date === "string")
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)))
+    .map((d) => tokenTotal(d.tokensByModel));
+  const coverage = rec(root.coverage);
+  const covered = num(coverage.attributed) + num(coverage.unattributed);
+  return {
+    members,
+    live: [],
+    pulse: [],
+    dayWeights: dayWeights.some((w) => w > 0) ? dayWeights : [],
+    attributedPct: covered > 0 ? Math.round((num(coverage.attributed) / covered) * 100) : null,
+    updatedLabel: "Company telemetry",
+  };
+}

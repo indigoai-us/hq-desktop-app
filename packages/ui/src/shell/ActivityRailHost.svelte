@@ -4,13 +4,15 @@
    * so it stays off the boot path. The skeleton is that first frame.
    */
   import { onMount } from "svelte";
+  import type { PlatformAdapter } from "@hq/platform";
 
   interface Props {
     slug: string;
     companyLabel: string;
+    adapter?: Pick<PlatformAdapter, "company"> | null;
   }
 
-  let { slug, companyLabel }: Props = $props();
+  let { slug, companyLabel, adapter = null }: Props = $props();
 
   let View = $state<typeof import("../activity/ActivityView.svelte").default | null>(null);
 
@@ -23,7 +25,7 @@
 
 <div class="host" data-testid="activity-host">
   {#if View}
-    <View {slug} {companyLabel} />
+    <View {slug} {companyLabel} {adapter} />
   {:else}
     <div class="skeleton" data-testid="activity-skeleton" aria-busy="true">
       <div class="title"></div>

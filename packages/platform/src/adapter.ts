@@ -1047,7 +1047,8 @@ export interface CompanyApi {
   ): AdapterPromise<Json>;
   getSecrets(slug: string): AdapterPromise<Json[]>;
   listMembers(slug: string): AdapterPromise<Json[]>;
-  getTeamTelemetry(slug: string): AdapterPromise<Json>;
+  /** Company telemetry; `range` is a `YYYY-MM-DD` window (the host defaults to the last 30 days). */
+  getTeamTelemetry(slug: string, range?: { from: string; to: string }): AdapterPromise<Json>;
   claimPendingInvite(slug: string): AdapterPromise<Json>;
   connectToCloud(slug: string): AdapterPromise<Json>;
   getSummary(slug: string): AdapterPromise<Json>;
