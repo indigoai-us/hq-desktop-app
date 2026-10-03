@@ -58,11 +58,21 @@ export function endCardActionIdempotencyKey(
   if (existing.n <= 0) store.delete(id);
 }
 
-/** Strip adapter `[code] ` prefixes so the card shows the permission reason. */
+export const CARD_ACTION_FORBIDDEN_MESSAGE =
+  "You don't have permission to do this. Ask a workspace owner or admin.";
+export const CARD_ACTION_FAILED_MESSAGE = "That didn't work. Try again.";
+
+/**
+ * Plain copy for a failed card/lifecycle action. The raw adapter/server text
+ * is logged, never shown.
+ */
 export function cardActionFailureMessage(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
-  const stripped = raw.replace(/^\[[^\]]+]\s*/, "").trim();
-  return stripped || "This action isn't allowed";
+  console.warn("[card-action] action failed", raw);
+  if (/\b403\b|forbidden|permission|owners? only|only owners|cannot act|not allowed/i.test(raw)) {
+    return CARD_ACTION_FORBIDDEN_MESSAGE;
+  }
+  return CARD_ACTION_FAILED_MESSAGE;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
