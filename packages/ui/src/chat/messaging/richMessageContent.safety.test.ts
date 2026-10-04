@@ -141,35 +141,47 @@ describe("normalizeConnectDomain: only a public website", () => {
   });
 });
 
-describe("which envelopes are lifted", () => {
+describe("where a connect block is lifted from", () => {
+  // Every other kind is lifted wherever main lifted it, and the text is cut
+  // as main cut it: richMessageContent.main-parity.test.ts. A `connect`
+  // block draws live buttons, so it is kept only from where a bot writes its
+  // own envelope on purpose.
+  const cards = (got: { rich: { blocks: Array<{ kind: string }> } | null }): number =>
+    (got.rich?.blocks ?? []).filter((block) => block.kind === "connect").length;
+
   it("lifts every fence labelled hq-block, wherever it is", () => {
     const got = extractRichContentFromBody(`Hi.\n\n${fenced(SUGGESTIONS)}\n\nMore words.\n\n${fenced(CONNECT)}\n\nThe end.`);
     expect(got.text).toBe("Hi.\n\nMore words.\n\nThe end.");
     expect(got.rich?.blocks.map((block) => block.kind)).toEqual(["suggestions", "connect"]);
   });
 
-  it("leaves an example in a json fence as text when the message goes on after it", () => {
-    const body = `This is the block a bot writes:\n\n${fenced(CONNECT, "json")}\n\nIt draws one card per item.`;
-    const got = extractRichContentFromBody(body);
+  it("draws no card for an example in a json fence when the message goes on after it", () => {
+    const got = extractRichContentFromBody(`This is the block a bot writes:\n\n${fenced(CONNECT, "json")}\n\nIt draws one card per item.`);
     expect(got.rich).toBeNull();
-    expect(got.text).toBe(body);
+    // The envelope is cut, as it was before the app knew the kind.
+    expect(got.text).toBe("This is the block a bot writes:\n\nIt draws one card per item.");
   });
 
-  it("leaves an example in an unlabelled fence as text when the message goes on after it", () => {
-    const body = "Like this:\n\n```\n" + CONNECT + "\n```\n\nGot it?";
-    const got = extractRichContentFromBody(body);
+  it("draws no card for an example in an unlabelled fence when the message goes on after it", () => {
+    const got = extractRichContentFromBody("Like this:\n\n```\n" + CONNECT + "\n```\n\nGot it?");
     expect(got.rich).toBeNull();
-    expect(got.text).toBe(body);
+    expect(got.text).toBe("Like this:\n\nGot it?");
   });
 
-  it("leaves a json example as text and still lifts the bot's own hq-block fence after it", () => {
-    const example = fenced(CONNECT, "json");
-    const got = extractRichContentFromBody(`An example:\n\n${example}\n\nAnd here are your replies.\n\n${fenced(SUGGESTIONS)}`);
-    expect(got.text).toBe(`An example:\n\n${example}\n\nAnd here are your replies.`);
+  it("draws no card for a json example and still lifts the bot's own hq-block fence after it", () => {
+    const got = extractRichContentFromBody(`An example:\n\n${fenced(CONNECT, "json")}\n\nAnd here are your replies.\n\n${fenced(SUGGESTIONS)}`);
+    expect(got.text).toBe("An example:\n\nAnd here are your replies.");
     expect(got.rich?.blocks.map((block) => block.kind)).toEqual(["suggestions"]);
   });
 
-  it("never cuts an envelope out of a larger JSON object, an array or a string", () => {
+  it("keeps the block a loose envelope carries next to a connect block, and drops the connect block", () => {
+    const mixed = envelope({ kind: "connect", items: [{ domain: "linear.app" }] }, { kind: "markdown", text: "The read." });
+    const got = extractRichContentFromBody(`Look.\n\n${fenced(mixed, "json")}\n\nMore.`);
+    expect(got.rich?.blocks).toEqual([{ kind: "markdown", text: "The read." }]);
+    expect(got.text).toBe("Look.\n\nMore.");
+  });
+
+  it("never draws a card from an envelope inside a larger JSON object, an array, a string or inline code", () => {
     for (const body of [
       `Here is the request:\n\n{"message": ${CONNECT}}`,
       `Here is the request:\n\n{\n  "message":\n${CONNECT}\n}`,
@@ -181,46 +193,40 @@ describe("which envelopes are lifted", () => {
       `${fenced(`[${CONNECT}]`)}`,
     ]) {
       const got = extractRichContentFromBody(body);
+      expect(cards(got), body).toBe(0);
       expect(got.rich, body).toBeNull();
-      expect(got.text, body).toBe(body);
     }
   });
 
-  it("leaves an envelope with no fence as text when it is not the last thing in the message", () => {
-    const body = `Before.\n\n${CONNECT}\n\nAfter.`;
-    const got = extractRichContentFromBody(body);
+  it("draws no card from an envelope with no fence that is not the last thing in the message", () => {
+    const got = extractRichContentFromBody(`Before.\n\n${CONNECT}\n\nAfter.`);
     expect(got.rich).toBeNull();
-    expect(got.text).toBe(body);
+    expect(got.text).toBe("Before.\n\nAfter.");
   });
 
-  it("lifts one envelope with no fence at the very end, and only that one", () => {
+  it("lifts an envelope with no fence at the very end", () => {
     const one = extractRichContentFromBody(`All set.\n\n${CONNECT}\n  `);
     expect(one.text).toBe("All set.");
     expect(one.rich?.blocks.map((block) => block.kind)).toEqual(["connect"]);
-    // Two with no fence: the last is lifted, the one before it stays as text.
+    // Suggested replies before it are lifted from where they are, as they always were.
     const two = extractRichContentFromBody(`All set.\n\n${SUGGESTIONS}\n\n${CONNECT}`);
-    expect(two.rich?.blocks.map((block) => block.kind)).toEqual(["connect"]);
-    expect(two.text).toBe(`All set.\n\n${SUGGESTIONS}`);
+    expect(two.rich?.blocks.map((block) => block.kind)).toEqual(["suggestions", "connect"]);
+    expect(two.text).toBe("All set.");
   });
 
-  it("never lifts an hq-block fence that sits inside another fence", () => {
+  it("never draws a card from an hq-block fence that sits inside another fence", () => {
     const inner = fenced(CONNECT);
-    const body = "How a bot writes it:\n\n````markdown\nSome words.\n\n" + inner + "\n````\n\nThat is all.";
-    const got = extractRichContentFromBody(body);
-    expect(got.rich).toBeNull();
-    expect(got.text).toBe(body);
+    const mid = extractRichContentFromBody("How a bot writes it:\n\n````markdown\nSome words.\n\n" + inner + "\n````\n\nThat is all.");
+    expect(mid.rich).toBeNull();
     // The same example as the last thing in the message is still an example.
-    const last = "How a bot writes it:\n\n````markdown\nSome words.\n\n" + inner + "\n````";
-    expect(extractRichContentFromBody(last).rich).toBeNull();
-    expect(extractRichContentFromBody(last).text).toBe(last);
+    const last = extractRichContentFromBody("How a bot writes it:\n\n````markdown\nSome words.\n\n" + inner + "\n````");
+    expect(last.rich).toBeNull();
   });
 
-  it("leaves an hq-block fence whose content is not one envelope as text", () => {
+  it("draws no card from an hq-block fence whose content is more than one envelope", () => {
     for (const content of ["not json", `{"port":3000}`, `${CONNECT}\n${SUGGESTIONS}`, `see: ${CONNECT}`, ""]) {
-      const body = `Look.\n\n${fenced(content)}`;
-      const got = extractRichContentFromBody(body);
-      expect(got.rich, content).toBeNull();
-      expect(got.text, content).toBe(body);
+      const got = extractRichContentFromBody(`Look.\n\n${fenced(content)}`);
+      expect(cards(got), content).toBe(0);
     }
   });
 

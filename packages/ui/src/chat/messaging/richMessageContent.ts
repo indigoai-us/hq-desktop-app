@@ -826,24 +826,38 @@ export interface ExtractedRichContent {
 }
 
 /**
- * Which envelopes in a body are the bot's own, and which are just text.
+ * Which envelopes in a body are lifted, and what each may carry.
  *
- * The envelope is machine text. A person must never see the bot's own, and
- * must always see one that is only being talked about. So an envelope is
- * lifted in exactly two places:
+ * The envelope is machine text, and a person must never see it. Bots on
+ * older runtimes write it in every shape: in an ```hq-block fence, in a fence
+ * labelled `json` or not labelled at all, on a bare line, pretty-printed, in
+ * the middle of a message or at its end. So an envelope is FOUND wherever it
+ * is, exactly as the app has always found it: the body is scanned for a
+ * balanced JSON object that parses as an envelope, and that object (with the
+ * fence around it) is cut from the text. Every block kind the app drew before
+ * the connection cards (a table, a chart, a decision, suggested replies, the
+ * setup finish marker and the rest) is lifted from any of those places.
  *
- * 1. Inside a code fence labelled `hq-block`, anywhere in the body. That is
- *    the form a bot is told to write, and nothing else carries that label.
- * 2. As the last thing in the message: one envelope on its own after the
- *    prose, or one fence with no `hq-block` label whose whole content is the
- *    envelope. The setup bot sometimes drops the label or the fence, and the
- *    finish marker then showed as JSON at the end of its last message.
+ * A `connect` block is held to a stricter place ({@link STRICT_PLACEMENT_KINDS}),
+ * because it draws live buttons that give a bot access to an app. It is kept
+ * only from where a bot writes its own envelope on purpose:
  *
- * Everything else stays as text: an envelope in a fence that is followed by
- * more of the message (an example in a ```json block), an envelope inside a
- * larger JSON object or an array, one in the middle of a sentence, one inside
- * a fence that is itself inside another fence. Cutting those would take
- * words out of what the person is reading and draw cards nobody offered.
+ * 1. a top-level code fence labelled `hq-block` whose whole content is the
+ *    envelope, anywhere in the body; or
+ * 2. the last thing in the message: one envelope on its own after the prose,
+ *    or one fence (any label, or none) whose whole content is the envelope.
+ *
+ * Anywhere else (an example in a ```json fence with more of the message after
+ * it, an envelope inside a larger JSON object, an array or a quoted string,
+ * one in the middle of a sentence, an `hq-block` fence inside another fence)
+ * the `connect` block is dropped and no card is drawn. The text is left
+ * exactly as it was before connection cards existed, when `connect` was a
+ * kind the app did not know: the envelope is cut when it is a versioned
+ * envelope or carries another block the app draws, and stays otherwise.
+ *
+ * Whose message it is cannot be told here. The cards are drawn only under a
+ * message the bot of the direct message sent (connection-card-model.ts,
+ * `messageMayDrawCards`).
  */
 interface EnvelopeSpan {
   /** Index of the first character to cut. */
@@ -858,13 +872,36 @@ interface EnvelopeSpan {
   rich: RichContentModel | null;
 }
 
+/**
+ * The block kinds lifted only from a strict place (see {@link EnvelopeSpan}).
+ * Every other kind is lifted wherever its envelope is found.
+ */
+const STRICT_PLACEMENT_KINDS: ReadonlySet<RichBlock["kind"]> = new Set<RichBlock["kind"]>(["connect"]);
+
+/**
+ * How much scanning one body may cost, in characters read. The scan below
+ * starts over at every `{` that looks like the start of an envelope, so a
+ * body made of thousands of those costs its length squared (2.8 s at 100 KB).
+ * A message the server accepts (4,000 characters) cannot cost more than this,
+ * so every real message is scanned in full. A body that runs out is finished
+ * by one linear pass ({@link strictEnvelopeSpans}).
+ */
+const MAX_ENVELOPE_SCAN_WORK = 20_000_000;
+
+interface ScanBudget {
+  left: number;
+  exhausted: boolean;
+}
+
 /** End index of the JSON object starting at `open`, or -1. String-aware, so a
- *  brace inside a quoted value cannot end it early. Never reads past `limit`. */
-function jsonObjectEnd(body: string, open: number, limit = body.length): number {
+ *  brace inside a quoted value cannot end it early. Never reads past `limit`,
+ *  nor past what is left of `budget`. */
+function jsonObjectEnd(body: string, open: number, limit = body.length, budget?: ScanBudget): number {
+  const stop = budget ? Math.min(limit, open + Math.max(0, budget.left)) : limit;
   let depth = 0;
   let inString = false;
   let escaped = false;
-  for (let i = open; i < limit; i += 1) {
+  for (let i = open; i < stop; i += 1) {
     const ch = body[i]!;
     if (inString) {
       if (escaped) escaped = false;
@@ -876,10 +913,28 @@ function jsonObjectEnd(body: string, open: number, limit = body.length): number 
     else if (ch === "{") depth += 1;
     else if (ch === "}") {
       depth -= 1;
-      if (depth === 0) return i + 1;
+      if (depth === 0) {
+        if (budget) budget.left -= i + 1 - open;
+        return i + 1;
+      }
     }
   }
+  if (budget) {
+    budget.left -= stop - open;
+    if (stop < limit) budget.exhausted = true;
+  }
   return -1;
+}
+
+/** Widen a span over a code fence that wraps it, so no empty fence is left. */
+function withSurroundingFence(body: string, start: number, end: number): [number, number] {
+  const before = body.slice(0, start);
+  const openFence = /(^|\n)[ \t]*(`{3,}|~{3,})[ \t]*[A-Za-z0-9_-]*[ \t]*\n[ \t]*$/.exec(before);
+  if (!openFence) return [start, end];
+  const rest = body.slice(end);
+  const closeFence = new RegExp("^[ \\t]*\\n?[ \\t]*" + openFence[2] + "[ \\t]*").exec(rest);
+  if (!closeFence) return [start, end];
+  return [start - (openFence[0].length - openFence[1].length), end + closeFence[0].length];
 }
 
 /**
@@ -975,17 +1030,88 @@ function topLevelFences(body: string): CodeFence[] {
   return fences;
 }
 
-/** How many `hq-block` fences one body is lifted for: a bound on the work, never reached by a real message. */
+/** How many envelopes one body is lifted for: a bound on the work, never reached by a real message. */
 const MAX_ENVELOPES = MAX_BLOCKS;
 /**
  * A body longer than this is not scanned for envelopes at all: it is shown as
- * text. Every step below is one pass over the body, and this bounds the pass.
+ * text. It is far past anything the server accepts as one message.
  */
 export const MAX_ENVELOPE_SCAN_CHARS = 256_000;
 /** How far back from the end of a body an envelope written with no fence may start. */
 const MAX_BARE_ENVELOPE_CHARS = 64_000;
 /** How many unbalanced `{` are tried before the search for a bare envelope stops. */
 const MAX_BARE_ENVELOPE_TRIES = 16;
+
+/** Where a body's fences are and where its last character that is not a space is. Worked out once per body, when asked. */
+interface BodyLayout {
+  fences: CodeFence[];
+  tailEnd: number;
+}
+
+/**
+ * Where the object at `[start, end)` sits: the top-level fence whose whole
+ * content it is (or null), and whether that is a strict place (see
+ * {@link EnvelopeSpan}).
+ */
+function placementOf(body: string, layout: BodyLayout, start: number, end: number): { strict: boolean; wholeFence: CodeFence | null } {
+  const fence = layout.fences.find((f) => start >= f.contentStart && start < Math.max(f.contentEnd, f.end));
+  if (!fence) return { strict: end === layout.tailEnd, wholeFence: null };
+  const whole =
+    end <= fence.contentEnd &&
+    body.slice(fence.contentStart, start).trim() === "" &&
+    body.slice(end, fence.contentEnd).trim() === "";
+  if (!whole) return { strict: false, wholeFence: null };
+  return { strict: fence.label === HQ_BLOCK_FENCE_LANG || fence.end >= layout.tailEnd, wholeFence: fence };
+}
+
+/**
+ * The first envelope in a body, found the way the app has always found one: a
+ * balanced JSON object, anywhere, that parses as an envelope. Blocks of a
+ * strict kind are kept only from a strict place; an object left with nothing
+ * the app draws, and that is not a versioned envelope, is no envelope here
+ * and stays in the text.
+ */
+function findEnvelopeSpan(body: string, budget: ScanBudget): EnvelopeSpan | null {
+  if (!body.includes('"blocks"')) return null;
+  let layout: BodyLayout | null = null;
+  for (let i = body.indexOf("{"); i !== -1; i = body.indexOf("{", i + 1)) {
+    if (budget.exhausted || budget.left <= 0) {
+      budget.exhausted = true;
+      return null;
+    }
+    // Cheap gate: an envelope names its version or its blocks up front.
+    const head = body.slice(i, i + 64);
+    if (!head.includes('"v"') && !head.includes('"blocks"')) continue;
+    const end = jsonObjectEnd(body, i, body.length, budget);
+    if (end === -1) continue;
+    budget.left -= end - i;
+    let raw: unknown = null;
+    try {
+      raw = JSON.parse(body.slice(i, end));
+    } catch {
+      continue;
+    }
+    let rich = parseRichContent(raw);
+    if (!rich && !isUnknownEnvelope(raw)) continue;
+    layout ??= { fences: topLevelFences(body), tailEnd: body.trimEnd().length };
+    const placement = placementOf(body, layout, i, end);
+    if (rich && !placement.strict && rich.blocks.some((block) => STRICT_PLACEMENT_KINDS.has(block.kind))) {
+      const kept = rich.blocks.filter((block) => !STRICT_PLACEMENT_KINDS.has(block.kind));
+      rich = kept.length > 0 ? { blocks: kept } : null;
+      if (!rich && !isUnknownEnvelope(raw)) continue;
+    }
+    let [from, to] = withSurroundingFence(body, i, end);
+    // A fence that holds nothing but the envelope goes with it, also where
+    // the widening above does not reach (a blank line inside the fence, a
+    // fence left open at the end), so no empty fence is left behind.
+    if (placement.wholeFence) {
+      from = Math.min(from, placement.wholeFence.start);
+      to = Math.max(to, placement.wholeFence.end);
+    }
+    return { start: from, end: to, rich };
+  }
+  return null;
+}
 
 /**
  * The envelope written with no fence at the very end of a body: a JSON object
@@ -1020,28 +1146,33 @@ function bareTrailingEnvelope(body: string, fences: readonly CodeFence[], tailEn
   return null;
 }
 
-/** The spans to cut from a body and what each carries, in document order. */
-function envelopeSpans(body: string): EnvelopeSpan[] {
-  if (body.length > MAX_ENVELOPE_SCAN_CHARS || !body.includes('"blocks"')) return [];
+/**
+ * The envelopes in the strict places only, in document order, in one linear
+ * pass: every top-level `hq-block` fence whose whole content is an envelope,
+ * and the one envelope that is the last thing in the body. Used to finish a
+ * body the open-ended scan ran out of budget on, so a bot's own envelope is
+ * still lifted from a body built to be slow to scan.
+ */
+function strictEnvelopeSpans(body: string, max: number): EnvelopeSpan[] {
+  if (max <= 0 || !body.includes('"blocks"')) return [];
   const fences = topLevelFences(body);
   const spans: EnvelopeSpan[] = [];
   const tailEnd = body.trimEnd().length;
   for (const fence of fences) {
-    const labelled = fence.label === HQ_BLOCK_FENCE_LANG;
+    if (spans.length >= max) return spans;
     // A fence with another label, or none, counts only as the last thing in the message.
-    if (!labelled && fence.end < tailEnd) continue;
-    if (labelled && spans.length >= MAX_ENVELOPES) continue;
+    if (fence.label !== HQ_BLOCK_FENCE_LANG && fence.end < tailEnd) continue;
     const rich = envelopeFrom(body.slice(fence.contentStart, fence.contentEnd));
     if (rich === undefined) continue;
     spans.push({ start: fence.start, end: fence.end, rich });
   }
-  const bare = bareTrailingEnvelope(body, fences, tailEnd);
+  const bare = spans.length < max ? bareTrailingEnvelope(body, fences, tailEnd) : null;
   if (bare) spans.push(bare);
   return spans;
 }
 
 /**
- * Extract the bot's envelopes from a message body.
+ * Extract the envelopes from a message body.
  *
  * This is the mechanism a fleet agent can reliably produce with no server
  * support: it emits a plain-text answer AND one or more ```hq-block fenced
@@ -1050,29 +1181,47 @@ function envelopeSpans(body: string): EnvelopeSpan[] {
  * is invalid, the body is returned untouched so it degrades to ordinary
  * markdown (never a crash).
  *
- * A bot told to end with "a suggestions block, then a connect block" writes
- * two envelopes, so every `hq-block` fence is lifted, in document order,
- * their blocks merged into one model under the per-message caps, and every
- * span cut from the text. An envelope whose blocks this version does not
- * know is still cut. Which envelopes count as the bot's own, and which stay
- * as text, is said at {@link EnvelopeSpan}.
+ * The first envelope is found, cut and read exactly as it always was (see
+ * {@link EnvelopeSpan} for where, and for the one kind held to a stricter
+ * place). A bot told to end with "a suggestions block, then a connect block"
+ * writes two envelopes, and lifting only the first left the second in the
+ * text as a code block of JSON. So the scan then goes on: every further
+ * envelope is lifted the same way, in document order, their blocks merged
+ * into one model under the per-message caps, and every span cut from the
+ * text. An envelope whose blocks this version does not know is still cut.
  *
  * Prefers an explicit `richContent` wire field over the fence when both exist;
  * see `richContentForMessage`.
  */
 export function extractRichContentFromBody(body: string): ExtractedRichContent {
   if (!body) return { text: "", rich: null };
-  const spans = envelopeSpans(body);
-  if (spans.length === 0) return { text: body, rich: null };
-  let text = "";
-  let at = 0;
+  if (body.length > MAX_ENVELOPE_SCAN_CHARS) return { text: body, rich: null };
+  let text = body;
   const blocks: RichBlock[] = [];
-  for (const span of spans) {
-    text += body.slice(at, span.start);
-    at = span.end;
+  const budget: ScanBudget = { left: MAX_ENVELOPE_SCAN_WORK, exhausted: false };
+  let found = 0;
+  for (; found < MAX_ENVELOPES; found += 1) {
+    const span = findEnvelopeSpan(text, budget);
+    if (!span) break;
     if (span.rich) blocks.push(...span.rich.blocks);
+    text = text.slice(0, span.start) + text.slice(span.end);
   }
-  text = (text + body.slice(at)).replace(/\n{3,}/g, "\n\n").trim();
+  if (budget.exhausted) {
+    // What is left was too slow to scan openly. One linear pass still lifts
+    // the envelopes in the strict places.
+    const spans = strictEnvelopeSpans(text, MAX_ENVELOPES - found);
+    let rest = "";
+    let at = 0;
+    for (const span of spans) {
+      rest += text.slice(at, span.start);
+      at = span.end;
+      if (span.rich) blocks.push(...span.rich.blocks);
+    }
+    text = rest + text.slice(at);
+    found += spans.length;
+  }
+  if (found === 0) return { text: body, rich: null };
+  text = text.replace(/\n{3,}/g, "\n\n").trim();
   return { text, rich: blocks.length > 0 ? { blocks: withMessageCaps(blocks).slice(0, MAX_BLOCKS) } : null };
 }
 
