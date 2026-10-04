@@ -729,6 +729,14 @@ fn safe_cached_entry(entry: &Entry, root: &str, include_system: bool) -> bool {
     {
         return false;
     }
+    if root.is_empty()
+        && relative
+            .split('/')
+            .next()
+            .is_some_and(|part| PERSONAL_VAULT_EXCLUDED_TOP_LEVEL.contains(&part))
+    {
+        return false;
+    }
     let mut parts = relative.split('/').peekable();
     while let Some(part) = parts.next() {
         let is_dir = parts.peek().is_some();
@@ -1155,6 +1163,29 @@ mod tests {
         assert!(VaultSnapshot::load(&cache, "companies/acme", false).is_none());
         fs::write(&cache, r#"{"version":999,"root":"companies/acme","include_system":false,"entries":[],"truncated":false}"#).unwrap();
         assert!(VaultSnapshot::load(&cache, "companies/acme", false).is_none());
+    }
+
+    #[test]
+    fn persisted_personal_snapshot_rejects_other_vault_top_levels() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(root, "personal/notes/today.md", "");
+        let snapshot = VaultSnapshot::build(root, "", false, None).unwrap();
+        let cache = root.join("snapshot.json");
+        snapshot.save(&cache).unwrap();
+        let mut persisted: PersistedSnapshot =
+            serde_json::from_slice(&fs::read(&cache).unwrap()).unwrap();
+        persisted.entries.push(Entry {
+            path: "companies/acme/strategy.md".to_string(),
+            name: "strategy.md".to_string(),
+            is_markdown: true,
+            size: 0,
+            modified_ns: 0,
+            links: vec![],
+        });
+        fs::write(&cache, serde_json::to_vec(&persisted).unwrap()).unwrap();
+
+        assert!(VaultSnapshot::load(&cache, "", false).is_none());
     }
 
     #[test]
