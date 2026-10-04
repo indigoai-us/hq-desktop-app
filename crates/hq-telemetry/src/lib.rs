@@ -3324,7 +3324,9 @@ mod tests {
             ("unrecognized runner output", "other", "unknown"),
         ] {
             let mut event = Event::default();
-            event.fingerprint = vec!["existing-fingerprint".to_string()];
+            event.fingerprint = std::borrow::Cow::Owned(vec![
+                std::borrow::Cow::Borrowed("existing-fingerprint"),
+            ]);
             event.tags.insert("rescue_step".into(), "rsync".into());
             event
                 .tags
@@ -3347,10 +3349,8 @@ mod tests {
             assert_eq!(filtered.tags["rsync_exit_status"], expected_status);
             assert_eq!(filtered.tags["rsync_phase"], expected_phase);
             assert_eq!(filtered.tags["rsync_stderr_class"], "file_locked");
-            assert_eq!(
-                filtered.fingerprint,
-                vec!["existing-fingerprint".to_string()]
-            );
+            assert_eq!(filtered.fingerprint.len(), 1);
+            assert_eq!(filtered.fingerprint[0].as_ref(), "existing-fingerprint");
             assert!(filtered
                 .tags
                 .values()
