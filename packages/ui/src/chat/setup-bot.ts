@@ -541,14 +541,3 @@ export function setupToolOfferDue(
   }
   return null;
 }
-
-/**
- * The other way through setup, for people who already work in a coding tool:
- * shown on #welcome next to Run Setup, big enough to notice.
- */
-export const SETUP_ELSEWHERE_COPY = {
-  title: "Already use Claude Code or Codex?",
-  body:
-    "You can set up HQ there instead. Open your HQ folder with the Launch button in the top right, " +
-    "then type /setup. Or open it straight from here, with /setup ready to go:",
-} as const;
