@@ -275,6 +275,22 @@ describe("DesktopApp: the cards of a bot's message show with the message", () =>
     expect(w.getStatus).toHaveBeenCalledTimes(1);
   });
 
+  it("reads the list as a method of the adapter's own integrations object", async () => {
+    // An adapter's method may use `this`. A read taken off its object and
+    // called bare would lose it.
+    const calledOn: unknown[] = [];
+    const w = world({
+      listConnections: vi.fn(async function (this: unknown) {
+        calledOn.push(this);
+        return ok(LIST);
+      }),
+    });
+    await mountDm(w, createChatWakeBus());
+    await vi.waitFor(() => expect(w.listConnections).toHaveBeenCalledTimes(1));
+    expect(calledOn).toHaveLength(1);
+    expect((calledOn[0] as { listConnections?: unknown } | undefined)?.listConnections).toBe(w.listConnections);
+  });
+
   it("reads the list again for the status's company when the row named another one", async () => {
     window.localStorage.setItem("hq.chat.newCloudBots.v1", JSON.stringify([NOVA]));
     const w = world();

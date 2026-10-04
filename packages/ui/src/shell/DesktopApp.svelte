@@ -5872,10 +5872,11 @@
     };
     const readList = async (companyUid: string): Promise<{ value: unknown | null; refused: boolean }> => {
       try {
-        const read = adapter.integrations?.listConnections;
+        const integrations = adapter.integrations;
         // A host with no list to read has nothing to try again.
-        if (!read) return { value: null, refused: true };
-        const list = await read(companyUid);
+        if (!integrations?.listConnections) return { value: null, refused: true };
+        // Called on its own object, as before: an adapter's method may use `this`.
+        const list = await integrations.listConnections(companyUid);
         if (list.ok) return { value: list.value, refused: false };
         return { value: null, refused: botStatusReadRefused(list) };
       } catch {
