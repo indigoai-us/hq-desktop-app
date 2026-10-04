@@ -66,6 +66,22 @@ export const SLACK_APP_TOKEN_VERIFY_UNAVAILABLE = "SLACK_APP_TOKEN_VERIFY_UNAVAI
 // ── Sentences ────────────────────────────────────────────────────────────
 
 export const SLACK_ATTACH_RETRY_SENTENCE = "Slack did not answer. Try again.";
+/** Try again was pressed while a setup request that got no answer may still be running on the server. */
+export const SLACK_ATTACH_STILL_WORKING_SENTENCE = "Slack may still be setting this up. Wait a minute, then try again.";
+/**
+ * How long a setup request that got no answer is taken to be still running
+ * on the server. The request creates a real Slack app, and a request the app
+ * gave up on (a timeout, a dropped connection, a gateway error) can finish
+ * after that. Until this has passed, or the bot's status shows the setup, no
+ * second request is sent: it would create a second app.
+ */
+export const SLACK_ATTACH_SETTLE_MS = 2 * 60_000;
+
+/** Whether a new setup request may be sent, given when the last one went unanswered (ms), or null for none. */
+export function slackAttachMayRetry(unansweredAt: number | null | undefined, now: number): boolean {
+  if (typeof unansweredAt !== "number" || !Number.isFinite(unansweredAt)) return true;
+  return now - unansweredAt >= SLACK_ATTACH_SETTLE_MS;
+}
 export const SLACK_TOKEN_REJECTED_SENTENCE =
   "Slack did not accept that token. Check that it starts with xapp- and has the connections:write scope.";
 export const SLACK_TOKEN_RETRY_SENTENCE = "Could not check the token with Slack. Try again.";
@@ -113,13 +129,33 @@ export function slackTokenSteps(botName: string): SlackTokenStep[] {
 }
 
 /**
+ * An app-level token exactly as Slack writes one: `xapp-`, a digit, the app's
+ * id in capitals and digits, a number, and 64 lower-case hex digits.
+ */
+export const SLACK_APP_TOKEN_SHAPE = /^xapp-\d-[A-Z0-9]+-\d+-[a-f0-9]{64}$/;
+
+/**
  * Whether a value is, after trimming, the whole of an app-level token as
- * Slack writes them: `xapp-` and then letters, digits and dashes. A value
- * that is can be sent the moment it is pasted. Looser values (anything else
- * that starts with `xapp-`) still go through Connect and {@link checkSlackAppToken}.
+ * Slack writes them ({@link SLACK_APP_TOKEN_SHAPE}). Looser values (anything
+ * else that starts with `xapp-`) still go through Connect and
+ * {@link checkSlackAppToken}.
  */
 export function isWholeSlackAppToken(value: string): boolean {
-  return /^xapp-[A-Za-z0-9-]{10,}$/.test(value.trim());
+  return SLACK_APP_TOKEN_SHAPE.test(value.trim());
+}
+
+/**
+ * Whether what is in the field is sent by itself, with no press on Connect.
+ * Only a paste does that, and only of a whole token: the person put the whole
+ * thing in at once and there is nothing left for them to do. Typing never
+ * sends, however much the value looks like a token so far: a value sent while
+ * it is still being typed comes back refused and takes the field with it.
+ * A value this modal already sent by itself is not sent that way again.
+ */
+export function shouldAutoSubmitSlackToken(input: { value: string; pasted: boolean; alreadySent: string | null }): boolean {
+  if (!input.pasted) return false;
+  const whole = input.value.trim();
+  return isWholeSlackAppToken(whole) && whole !== input.alreadySent;
 }
 
 export function slackAccessPendingSentence(botName: string): string {
@@ -203,13 +239,25 @@ export type SlackAttachAnswer =
   | { kind: "attached"; attached: unknown }
   /** Not an error: the bot already has Slack. Read the status and go on from it. */
   | { kind: "continue" }
-  /** Nothing was created. The person can try again. */
-  | { kind: "retry"; sentence: string }
+  /**
+   * The setup did not go through. The person can try again. `unanswered`
+   * says the server never gave an answer of its own (the request threw, timed
+   * out, or a gateway answered for it): it may still be working on the
+   * request, so the next one waits (see {@link SLACK_ATTACH_SETTLE_MS}).
+   * False when the server itself said it failed: nothing is under way.
+   */
+  | { kind: "retry"; sentence: string; unanswered: boolean }
   | { kind: "blocked"; reason: SlackBlockedReason };
+
+/** The server refused the request itself (a 4xx): nothing was started. */
+function refused(result: Record<string, unknown>, code: string): boolean {
+  const status = typeof result.status === "number" ? result.status : null;
+  return (status !== null && status >= 400 && status < 500) || /^http-4\d\d$/.test(code);
+}
 
 /** Read the answer to `agents.attachSlack`. A request that threw is `null`. */
 export function readSlackAttachAnswer(result: unknown): SlackAttachAnswer {
-  if (!isRecord(result)) return { kind: "retry", sentence: SLACK_ATTACH_RETRY_SENTENCE };
+  if (!isRecord(result)) return { kind: "retry", sentence: SLACK_ATTACH_RETRY_SENTENCE, unanswered: true };
   if (result.ok === true) return { kind: "attached", attached: result.value };
   const code = failureCode(result);
   switch (code) {
@@ -225,11 +273,15 @@ export function readSlackAttachAnswer(result: unknown): SlackAttachAnswer {
       return { kind: "blocked", reason: "app-switch" };
     case SLACK_FACTORY_ROTATE_UNAVAILABLE:
     case SLACK_CHANNEL_ATTACH_FAILED:
-      return { kind: "retry", sentence: SLACK_ATTACH_RETRY_SENTENCE };
+      // The server's own word that the setup failed: nothing is under way.
+      return { kind: "retry", sentence: SLACK_ATTACH_RETRY_SENTENCE, unanswered: false };
   }
   if (notAllowed(result, code)) return { kind: "blocked", reason: "not-admin" };
-  // The network, or a failure this version does not know: nothing was created.
-  return { kind: "retry", sentence: SLACK_ATTACH_RETRY_SENTENCE };
+  // The network, a gateway answering in the server's place (a 5xx with no
+  // code of the server's), or a failure this version does not know. Unless
+  // the request was refused outright (a 4xx), the server may have started
+  // the setup and may still be working on it.
+  return { kind: "retry", sentence: SLACK_ATTACH_RETRY_SENTENCE, unanswered: !refused(result, code) };
 }
 
 export type SlackTokenAnswer =
