@@ -21,6 +21,8 @@ import {
   botDisplayName,
   nextStep,
   prevStep,
+  provisionOptionsProblem,
+  provisionOptionsProblemLine,
   scopeIssue,
   scopeLine,
   stepIssue,
@@ -151,6 +153,53 @@ describe("firstSignedInCloudRuntime", () => {
     // With the provider on, Claude is offered and a signed-in Claude leads.
     expect(cloudBrainChoices(true)).toEqual(["codex", "claude", "grok"]);
     expect(firstSignedInCloudRuntime({ claude: true, codex: true, grok: true }, cloudBrainChoices(true))).toBe("claude");
+  });
+});
+
+describe("provisionOptionsProblem", () => {
+  it("reads a refusal by code, by status or by the server's sentence", () => {
+    expect(provisionOptionsProblem({ ok: false, code: "CREATE_AGENTS_NOT_ALLOWED" }).kind).toBe("permission");
+    expect(provisionOptionsProblem({ ok: false, code: "http-403" }).kind).toBe("permission");
+    expect(provisionOptionsProblem({ ok: false, code: "SOMETHING", status: 403 }).kind).toBe("permission");
+    expect(provisionOptionsProblem({ ok: false, message: "Forbidden: createAgents capability required" }).kind).toBe("permission");
+  });
+
+  it("reads anything else, and nothing at all, as a failed load", () => {
+    expect(provisionOptionsProblem({ ok: false, code: "http-500" })).toEqual({ kind: "load", askNames: [] });
+    expect(provisionOptionsProblem({ ok: false, code: "http-404", message: "Not found" })).toEqual({ kind: "load", askNames: [] });
+    expect(provisionOptionsProblem(null)).toEqual({ kind: "load", askNames: [] });
+    expect(provisionOptionsProblem("boom")).toEqual({ kind: "load", askNames: [] });
+  });
+
+  it("names up to three people, skipping ids, blanks and repeats", () => {
+    const admins = [
+      { personUid: "prs_1", displayName: "Corey" },
+      { personUid: "prs_2", displayName: "prs_2" },
+      { personUid: "prs_3", displayName: " " },
+      { personUid: "prs_4", displayName: "Corey" },
+      "Dana",
+      { personUid: "prs_5", displayName: "Dana" },
+      { personUid: "prs_6", displayName: "Lee" },
+      { personUid: "prs_7", displayName: "Max" },
+    ];
+    expect(provisionOptionsProblem({ ok: false, code: "CREATE_AGENTS_NOT_ALLOWED", admins }).askNames).toEqual(["Corey", "Dana", "Lee"]);
+    // A list on a failed load is not a list of people to ask.
+    expect(provisionOptionsProblem({ ok: false, code: "http-500", admins }).askNames).toEqual([]);
+  });
+
+  it("writes one line for each reason", () => {
+    expect(provisionOptionsProblemLine({ kind: "permission", askNames: ["Corey"] }, "Acme")).toBe(
+      "You don't have permission to add bots in Acme. Ask Corey.",
+    );
+    expect(provisionOptionsProblemLine({ kind: "permission", askNames: ["Corey", "Dana", "Lee"] }, "Acme")).toBe(
+      "You don't have permission to add bots in Acme. Ask Corey, Dana or Lee.",
+    );
+    expect(provisionOptionsProblemLine({ kind: "permission", askNames: [] }, " ")).toBe(
+      "You don't have permission to add bots in this company. Ask an owner or admin.",
+    );
+    expect(provisionOptionsProblemLine({ kind: "load", askNames: [] }, "Acme")).toBe(
+      "We couldn't load the price for Acme. Check your connection and try again.",
+    );
   });
 });
 

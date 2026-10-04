@@ -2,7 +2,16 @@
   import { tick, untrack } from "svelte";
   import type { AdapterPromise, AgentProvisionOptionsView } from "@hq/platform";
   import type { EntryPointResult, EntryPointTarget, CloudBotDraft } from "../lifecycle-entry-points.js";
-  import { botHandle, cloudBrainChoices, cloudNameIssue, firstSignedInCloudRuntime, type BotRuntime } from "./create-bot-model.js";
+  import {
+    botHandle,
+    cloudBrainChoices,
+    cloudNameIssue,
+    firstSignedInCloudRuntime,
+    provisionOptionsProblem,
+    provisionOptionsProblemLine,
+    type BotRuntime,
+    type ProvisionOptionsProblem,
+  } from "./create-bot-model.js";
   import NewBotDawn from "./NewBotDawn.svelte";
 
   type Company = { companyUid: string; label: string };
@@ -47,6 +56,10 @@
   let runtime = $state<BotRuntime>(firstSignedInCloudRuntime(runtimeReady, cloudBrainChoices(claudeEnabled)));
   let options = $state<AgentProvisionOptionsView | null>(null);
   let quoteStatus = $state<"loading" | "ready" | "error">("loading");
+  /** Why the options did not load. Set while `quoteStatus` is "error". */
+  let quoteProblem = $state<ProvisionOptionsProblem | null>(null);
+  /** Bumped by Try again: reads the selected company's options once more. */
+  let quoteReload = $state(0);
   let selectedSize = $state<"basic" | "power" | "dev" | "">("");
   let runtimeChosen = $state(false);
   let moreOptions = $state(false);
@@ -112,7 +125,45 @@
       runtime = firstSignedInCloudRuntime(ready, offered);
     });
   });
-  $effect(() => { const uid = companyUid.trim(); const generation = ++quoteGeneration; options = null; quoteStatus = uid ? "loading" : "error"; if (!uid) return; let active = true; void loadProvisionOptions(uid).then((result) => { if (!active || generation !== quoteGeneration || !result.ok || !Array.isArray(result.value.options)) { if (active && generation === quoteGeneration) quoteStatus = "error"; return; } options = result.value; quoteStatus = "ready"; chooseSizeAfterLoad(result.value); }).catch(() => { if (active && generation === quoteGeneration) quoteStatus = "error"; }); return () => { active = false; }; });
+  // The selected company's options: what a bot costs there, and whether this
+  // person may add one. Create bot is off until they load, so a read that
+  // fails must say why and offer another try.
+  $effect(() => {
+    const uid = companyUid.trim();
+    void quoteReload;
+    const generation = ++quoteGeneration;
+    options = null;
+    quoteProblem = null;
+    quoteStatus = uid ? "loading" : "error";
+    if (!uid) return;
+    let active = true;
+    const current = (): boolean => active && generation === quoteGeneration;
+    const fail = (answer: unknown): void => {
+      if (!current()) return;
+      quoteProblem = provisionOptionsProblem(answer);
+      quoteStatus = "error";
+    };
+    void loadProvisionOptions(uid)
+      .then((result) => {
+        if (!current()) return;
+        if (!result.ok || !Array.isArray(result.value.options)) {
+          fail(result);
+          return;
+        }
+        options = result.value;
+        quoteStatus = "ready";
+        chooseSizeAfterLoad(result.value);
+      })
+      .catch(() => fail(null));
+    return () => {
+      active = false;
+    };
+  });
+  const selectedCompanyLabel = $derived(companies.find((company) => company.companyUid === companyUid)?.label ?? "");
+  const quoteProblemLine = $derived(
+    quoteStatus === "error" && companyUid ? provisionOptionsProblemLine(quoteProblem ?? { kind: "load", askNames: [] }, selectedCompanyLabel) : "",
+  );
+  function reloadOptions(): void { quoteReload += 1; }
   $effect(() => { focusStep(); });
   // The sun starts low and creeps while the create request is in flight; the
   // Waking up screen takes over from the same low position. One state change,
@@ -186,6 +237,12 @@
   <footer class="new-bot-create-foot">
     {#if attempted && nameIssue && step === 1}<p id="new-bot-create-issue" class="new-bot-create-error" role="alert">{nameIssue}</p>{/if}
     {#if refusal && step === finalStep}<p id="new-bot-create-issue" class="new-bot-create-error" role="alert">{refusal}</p>{/if}
+    {#if quoteProblemLine && step === finalStep}
+      <!-- Create bot is off because the company's options did not load. Say
+           which of the two reasons it is, and offer another try. -->
+      <p class="new-bot-create-error" role="alert" data-testid="new-bot-options-error" data-kind={quoteProblem?.kind ?? "load"}>{quoteProblemLine}</p>
+      <button type="button" class="new-bot-more" data-testid="new-bot-options-retry" onclick={reloadOptions}>Try again</button>
+    {/if}
     {#if step === 1}<button type="button" class="new-bot-create-submit" data-testid="new-bot-continue-name" onclick={continueName}>Continue</button>{#if onopenlocal}<button type="button" class="new-bot-takeover-local" data-testid="new-bot-takeover-local" onclick={onopenlocal}>Create a local bot instead</button>{/if}{:else if step === 2 && !singleCompany}<button type="button" class="new-bot-create-submit" data-testid="new-bot-continue-brain" onclick={() => go(3)}>Continue</button>{:else}{#if step === 3}<button type="button" class="new-bot-more" aria-expanded={moreOptions} onclick={() => (moreOptions = !moreOptions)}>More options</button>{/if}<button type="button" class="new-bot-create-submit" data-testid="new-bot-create-submit" disabled={!canSubmit} aria-busy={busy ? "true" : undefined} onclick={() => void submit()}>{busy ? "Creating bot..." : "Create bot"}</button>{#if defaultOption}<p class="new-bot-price" data-testid="new-bot-default-price">{optionPrice(defaultOption)} for {defaultOption.productName}.</p>{:else if quoteStatus === "loading"}<p class="new-bot-price" aria-live="polite">Loading the server's default price...</p>{/if}{/if}
   </footer>
 </div>

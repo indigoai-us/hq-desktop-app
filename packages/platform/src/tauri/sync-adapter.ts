@@ -59,6 +59,7 @@ import {
 } from '../flags.js';
 import { updateSettings, type SettingsInvoker } from './settings-mutations.js';
 import { localBotSettingsArgs } from './local-bot-settings.js';
+import { withCreateAgentsAdmins } from './provision-refusal.js';
 import { createCallsApi } from '../calls/api.js';
 import {
   isLambdaInvokeServiceErrorBody,
@@ -1148,11 +1149,21 @@ export function createSyncPlatformAdapter(
     },
 
     agents: {
-      getProvisionOptions: (companyUid) =>
-        hqProJson<AgentProvisionOptionsView>(
+      // A refusal keeps its HTTP status and the people the server says to
+      // ask (`admins`), so the New Bot screen can say why Create is off.
+      getProvisionOptions: async (companyUid) => {
+        const attempted = await hqProAttemptWithRetries<AgentProvisionOptionsView>(
           'GET',
           AGENT_PATHS.provisionOptions(companyUid),
-        ),
+        );
+        if (!attempted.result.ok && attempted.result.code === 'network') {
+          return attempted.result;
+        }
+        return withCreateAgentsAdmins(
+          withHttpStatus(attempted.result, attempted.status),
+          attempted.body,
+        );
+      },
       getStatus: (agentUid, brain) =>
         hqProJson('GET', AGENT_PATHS.status(agentUid, brain)),
       restartBrainApproval: (agentUid, brain) =>

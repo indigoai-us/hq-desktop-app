@@ -621,3 +621,62 @@ export const STEP_TITLES: Record<CreateBotStep, string> = {
   home: "Where does it run?",
   details: "Details",
 };
+
+// ── Why the New Bot flow cannot price a company ────────────────────────────
+
+/**
+ * Why the company's bot options could not be loaded. "permission": the
+ * server says this person may not add bots there. "load": the read failed
+ * for any other reason, and asking again may work.
+ */
+export interface ProvisionOptionsProblem {
+  kind: "permission" | "load";
+  /** People who can add a bot or allow it, as the server named them. At most three. */
+  askNames: string[];
+}
+
+/** The server's code for a member without the capability to add bots. */
+export const CREATE_AGENTS_NOT_ALLOWED_CODE = "CREATE_AGENTS_NOT_ALLOWED";
+
+/**
+ * Read a failed provision-options answer. The shape is loose on purpose:
+ * hosts differ in what they keep of the server's refusal (`code`, `status`,
+ * `admins`), and a thrown read arrives as null. Never throws.
+ */
+export function provisionOptionsProblem(result: unknown): ProvisionOptionsProblem {
+  const answer = typeof result === "object" && result !== null ? (result as Record<string, unknown>) : null;
+  const code = typeof answer?.code === "string" ? answer.code.trim() : "";
+  const message = typeof answer?.message === "string" ? answer.message : "";
+  const refused =
+    code === CREATE_AGENTS_NOT_ALLOWED_CODE ||
+    code === "http-403" ||
+    answer?.status === 403 ||
+    /\bforbidden\b|createAgents capability/i.test(message);
+  if (!refused) return { kind: "load", askNames: [] };
+  const askNames: string[] = [];
+  for (const entry of Array.isArray(answer?.admins) ? answer.admins : []) {
+    const row = typeof entry === "object" && entry !== null ? (entry as Record<string, unknown>) : null;
+    const name = typeof row?.displayName === "string" ? row.displayName.trim() : "";
+    // The server falls back to the person's id when it has no name for them.
+    if (!name || /^prs_/i.test(name) || askNames.includes(name)) continue;
+    askNames.push(name);
+    if (askNames.length >= 3) break;
+  }
+  return { kind: "permission", askNames };
+}
+
+/** "Corey", "Corey or Dana", "Corey, Dana or Lee". */
+function oneOf(names: readonly string[]): string {
+  if (names.length <= 1) return names[0] ?? "";
+  return `${names.slice(0, -1).join(", ")} or ${names[names.length - 1]}`;
+}
+
+/** The one line the New Bot screen shows when Create bot is off for this reason. */
+export function provisionOptionsProblemLine(problem: ProvisionOptionsProblem, companyLabel: string): string {
+  const company = companyLabel.trim() || "this company";
+  if (problem.kind === "permission") {
+    const ask = problem.askNames.length ? oneOf(problem.askNames) : "an owner or admin";
+    return `You don't have permission to add bots in ${company}. Ask ${ask}.`;
+  }
+  return `We couldn't load the price for ${company}. Check your connection and try again.`;
+}

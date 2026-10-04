@@ -145,6 +145,97 @@ describe("NewBotCreateScreen", () => {
       expect(oncreate).toHaveBeenCalledWith("cmp_only", expect.objectContaining({ runtime: "claude" }));
     });
   });
+  describe("when the company's options do not load (review A-C3)", () => {
+    const ONE_COMPANY = { companies: [{ companyUid: "cmp_only", label: "Only company" }], currentCompanyUid: "cmp_only" };
+    const createButton = () => document.querySelector<HTMLButtonElement>("[data-testid='new-bot-create-submit']")!;
+    const problem = () => document.querySelector<HTMLElement>("[data-testid='new-bot-options-error']");
+    const retry = () => document.querySelector<HTMLButtonElement>("[data-testid='new-bot-options-retry']");
+
+    it("tells a member who may not add bots why Create is off, names who to ask, and lets them try again", async () => {
+      // A regular member gets 403 from the provision-options read. Create bot
+      // was disabled with no message and no way forward.
+      const loadProvisionOptions = vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: false,
+          reason: "error",
+          code: "CREATE_AGENTS_NOT_ALLOWED",
+          status: 403,
+          message: "Forbidden: createAgents capability required",
+          admins: [
+            { personUid: "prs_corey", displayName: "Corey" },
+            { personUid: "prs_dana", displayName: "Dana" },
+          ],
+        })
+        .mockResolvedValueOnce({ ok: true, value: options });
+      const { oncreate } = render({ ...ONE_COMPANY, loadProvisionOptions });
+      await settle();
+      await advanceName();
+
+      expect(createButton().disabled).toBe(true);
+      expect(problem()?.getAttribute("role")).toBe("alert");
+      expect(problem()?.dataset.kind).toBe("permission");
+      expect(problem()?.textContent).toBe("You don't have permission to add bots in Only company. Ask Corey or Dana.");
+      expect(retry()?.textContent).toBe("Try again");
+
+      // An admin allowed it meanwhile: Try again reads the options once more.
+      retry()!.click();
+      await settle();
+      expect(loadProvisionOptions).toHaveBeenCalledTimes(2);
+      expect(problem()).toBeNull();
+      expect(retry()).toBeNull();
+      expect(createButton().disabled).toBe(false);
+      createButton().click();
+      await settle();
+      expect(oncreate).toHaveBeenCalledTimes(1);
+    });
+
+    it("says an owner or admin when the server names nobody", async () => {
+      render({ ...ONE_COMPANY, loadProvisionOptions: async () => ({ ok: false as const, reason: "error" as const, code: "http-403" }) });
+      await settle();
+      await advanceName();
+      expect(problem()?.textContent).toBe("You don't have permission to add bots in Only company. Ask an owner or admin.");
+    });
+
+    it.each([
+      ["answers with a server error", async () => ({ ok: false as const, reason: "error" as const, code: "http-500" })],
+      ["throws", async () => { throw new Error("offline"); }],
+      ["answers without a list of options", async () => ({ ok: true as const, value: { catalogVersion: "x" } })],
+    ])("says the price could not be loaded when the read %s, and offers Try again", async (_label, loadProvisionOptions) => {
+      render({ ...ONE_COMPANY, loadProvisionOptions });
+      await settle();
+      await advanceName();
+      expect(createButton().disabled).toBe(true);
+      expect(problem()?.dataset.kind).toBe("load");
+      expect(problem()?.textContent).toBe("We couldn't load the price for Only company. Check your connection and try again.");
+      expect(retry()).toBeTruthy();
+    });
+
+    it("shows the reason on the step that holds Create bot, for the company picked there", async () => {
+      const loadProvisionOptions = vi.fn(async (companyUid: string) =>
+        companyUid === "cmp_other"
+          ? { ok: false as const, reason: "error" as const, code: "CREATE_AGENTS_NOT_ALLOWED", admins: [{ personUid: "prs_lee", displayName: "Lee" }] }
+          : { ok: true as const, value: options },
+      );
+      render({ loadProvisionOptions });
+      await settle();
+      await advanceName();
+      // The brain step of a two-company flow has no Create bot, so no reason.
+      expect(problem()).toBeNull();
+      document.querySelector<HTMLButtonElement>("[data-testid='new-bot-continue-brain']")!.click();
+      await settle();
+      expect(problem()).toBeNull();
+      document.querySelector<HTMLButtonElement>("[data-company-uid='cmp_other']")!.click();
+      await settle();
+      expect(problem()?.textContent).toBe("You don't have permission to add bots in Other company. Ask Lee.");
+      expect(createButton().disabled).toBe(true);
+      // Back on a company where the person may add bots, the reason goes.
+      document.querySelector<HTMLButtonElement>("[data-company-uid='cmp_current']")!.click();
+      await settle();
+      expect(problem()).toBeNull();
+      expect(createButton().disabled).toBe(false);
+    });
+  });
   it("skips company selection for one company and creates from the brain step", async () => {
     const { oncreate } = render({
       companies: [{ companyUid: "cmp_only", label: "Only company" }],

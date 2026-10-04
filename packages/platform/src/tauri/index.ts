@@ -34,6 +34,7 @@ import {
 import { TAURI_CAPABILITIES, type Capability } from "../capabilities.js";
 import { WEB_PATHS } from "../web/index.js";
 import { localBotSettingsArgs } from "./local-bot-settings.js";
+import { withCreateAgentsAdmins } from "./provision-refusal.js";
 import { hqProFailure, parseHqProErrorBody } from "../plan-limit.js";
 import { createCallsApi } from "../calls/api.js";
 import {
@@ -179,7 +180,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
     path: string,
     body?: unknown,
-  ): Promise<{ result: AdapterResult<T>; status: number | null }> {
+  ): Promise<{ result: AdapterResult<T>; status: number | null; body?: string }> {
     let raw = await this.call<unknown>("hq_pro_fetch", {
       url: path,
       method,
@@ -215,6 +216,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
             parseHqProErrorBody(rec.status, text, `${method} ${path} failed`),
           ),
           status: rec.status,
+          body: text,
         };
       }
       try {
@@ -577,11 +579,19 @@ export class TauriPlatformAdapter implements PlatformAdapter {
   };
 
   readonly agents: PlatformAdapter["agents"] = {
-    getProvisionOptions: (companyUid) =>
-      this.hqProJson<AgentProvisionOptionsView>(
+    // A refusal keeps its HTTP status and the people the server says to ask
+    // (`admins`), so the New Bot screen can say why Create is off.
+    getProvisionOptions: async (companyUid) => {
+      const attempted = await this.hqProAttempt<AgentProvisionOptionsView>(
         "GET",
         AGENT_PATHS.provisionOptions(companyUid),
-      ),
+      );
+      if (!attempted.result.ok && attempted.result.code === "network") return attempted.result;
+      return withCreateAgentsAdmins(
+        withHttpStatus(attempted.result, attempted.status),
+        attempted.body,
+      );
+    },
     getStatus: (agentUid, brain) => this.hqProJson("GET", AGENT_PATHS.status(agentUid, brain)),
     restartBrainApproval: (agentUid, brain) =>
       this.hqProJson("POST", AGENT_PATHS.reauth(agentUid), { brain }),
