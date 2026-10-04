@@ -356,3 +356,58 @@ describe("where main left an empty code fence behind, the fence goes too", () =>
     expect(got.text).toBe("Done.");
   });
 });
+
+describe("a body with CRLF line endings", () => {
+  const crlf = (text: string): string => text.replace(/\n/g, "\r\n");
+
+  it("lifts a connect block from an hq-block fence, at the end and in the middle", () => {
+    const end = extractRichContentFromBody(crlf(`Hi Stefan.\n\n${fence(env(CONNECT), "hq-block")}`));
+    expect(end.rich?.blocks).toEqual([{ kind: "connect", items: [{ app: "slack" }, { domain: "linear.app" }] }]);
+    expect(end.text).toBe("Hi Stefan.");
+    const mid = extractRichContentFromBody(crlf(`Hi Stefan.\n\n${fence(env(CONNECT), "hq-block")}\n\nTell me which.`));
+    expect(mid.rich?.blocks.map((b) => b.kind)).toEqual(["connect"]);
+    expect(mid.text).not.toContain("```");
+    expect(mid.text).not.toContain('"connect"');
+    expect(mid.text.split(/\r?\n/).filter(Boolean)).toEqual(["Hi Stefan.", "Tell me which."]);
+    expect(messageHasConnectBlock({ body: crlf(`Hi.\n\n${fence(env(CONNECT), "hq-block")}\n`) })).toBe(true);
+  });
+
+  it("lifts a table from an hq-block fence, as main does, and leaves no empty fence where main left one", () => {
+    for (const body of [
+      crlf(`The plans.\n\n${fence(env(TABLE), "hq-block")}`),
+      crlf(`The plans.\n\n${fence(env(TABLE), "hq-block")}\n\nPick one.`),
+      crlf(`The plans.\n\n${fence(pretty(env(TABLE)), "json")}\n\nPick one.`),
+    ]) {
+      const main = mainExtract(body);
+      const got = extractRichContentFromBody(body);
+      // Main found the table in a CRLF body, and left the two fence lines behind.
+      expect(main.rich?.blocks.map((b) => b.kind)).toEqual(["table"]);
+      expect(main.text).toContain("```");
+      expect(got.rich).toEqual(main.rich);
+      expect(got.text).not.toContain("```");
+      expect(got.text).not.toContain("{");
+      expect(got.text.startsWith("The plans.")).toBe(true);
+    }
+  });
+
+  it("keeps a connect block in a json fence that is the last thing, and two hq-block fences in a row", () => {
+    const last = extractRichContentFromBody(crlf(`All set.\n\n${fence(env(CONNECT), "json")}\n`));
+    expect(last.rich?.blocks.map((b) => b.kind)).toEqual(["connect"]);
+    expect(last.text).toBe("All set.");
+    const suggestions = env({ kind: "suggestions", items: ["Summarize our files"] });
+    const two = extractRichContentFromBody(crlf(`Hi.\n\n${fence(suggestions, "hq-block")}\n${fence(env(CONNECT), "hq-block")}`));
+    expect(two.rich?.blocks.map((b) => b.kind)).toEqual(["suggestions", "connect"]);
+    expect(two.text).toBe("Hi.");
+  });
+
+  it("still drops a connect block from a loose place", () => {
+    const body = crlf(`An example:\n\n${fence(env(CONNECT), "json")}\n\nThat is all.`);
+    expect(extractRichContentFromBody(body).rich).toBeNull();
+    expect(messageHasConnectBlock({ body })).toBe(false);
+  });
+
+  it("joins the prose around a lifted envelope with one blank line", () => {
+    const got = extractRichContentFromBody(crlf(`One.\n\n${fence(env(TABLE), "hq-block")}\n\nTwo.`));
+    expect(got.text).toBe("One.\n\nTwo.");
+  });
+});

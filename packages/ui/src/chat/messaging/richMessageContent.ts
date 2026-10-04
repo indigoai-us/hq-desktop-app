@@ -978,8 +978,11 @@ interface CodeFence {
   contentEnd: number;
 }
 
+// A body can come with CRLF line endings. Lines are split at "\n", so each
+// then ends in "\r": the closing line allows for it (the opening line's
+// label stops at it, and the rest of that line takes it).
 const FENCE_OPEN_RE = /^[ \t]*(`{3,}|~{3,})[ \t]*([^\s`]*)([^\n]*)$/;
-const FENCE_CLOSE_RE = /^[ \t]*(`{3,}|~{3,})[ \t]*$/;
+const FENCE_CLOSE_RE = /^[ \t]*(`{3,}|~{3,})[ \t]*\r?$/;
 
 /**
  * The top-level code fences of a body, in order. One pass over its lines, the
@@ -1221,7 +1224,9 @@ export function extractRichContentFromBody(body: string): ExtractedRichContent {
     found += spans.length;
   }
   if (found === 0) return { text: body, rich: null };
-  text = text.replace(/\n{3,}/g, "\n\n").trim();
+  // The prose around what was cut is joined with one blank line, whichever
+  // line ending the body uses.
+  text = text.replace(/(?:\r?\n){3,}/g, "\n\n").trim();
   return { text, rich: blocks.length > 0 ? { blocks: withMessageCaps(blocks).slice(0, MAX_BLOCKS) } : null };
 }
 
