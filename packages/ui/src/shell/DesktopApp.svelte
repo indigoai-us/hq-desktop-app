@@ -224,6 +224,13 @@
   } from "../chat/agent-channel.js";
   import { composeCloudBotHello } from "../chat/cloud-bot-hello.js";
   import {
+    noteNoticeFailure,
+    noteNoticeSent,
+    noticeFailurePermanent,
+    noticeMaySend,
+    type NoticeLedger,
+  } from "./notice-retry.js";
+  import {
     AGENT_CHAT_READY_POLL_MS,
     nextReadinessPollMs,
     readinessReadDenied,
@@ -5582,14 +5589,37 @@
 
   /** Notices on their way to a bot, so one is never sent twice at once. */
   const connectionNoticesInFlight = new Set<string>();
-  /** Send the bot a notice the person never sees, the same way as the hello request. */
-  async function sendBotNotice(agentUid: string, body: string, idempotencyKey: string): Promise<boolean> {
+  /**
+   * Notices whose send failed, for this session: how many times, and when
+   * the next try may go (notice-retry.ts). The effect below runs every few
+   * seconds while a card waits and on every focus; without this a notice the
+   * server refuses was sent again each time, for ever.
+   */
+  const connectionNoticeFailures: NoticeLedger = new Map();
+  /**
+   * Send the bot a notice the person never sees, the same way as the hello
+   * request. `noticeKey` names the notice in the retry ledger. A send that is
+   * not due yet is not made, unless the person just pressed for it (`pressed`).
+   */
+  async function sendBotNotice(
+    agentUid: string,
+    body: string,
+    idempotencyKey: string,
+    noticeKey: string,
+    pressed = false,
+  ): Promise<boolean> {
+    if (!pressed && !noticeMaySend(connectionNoticeFailures, noticeKey, Date.now())) return false;
     try {
       const result = await adapter.messaging.sendDm(agentUid, body, { audience: "agent", idempotencyKey });
-      if (!result.ok) return false;
+      if (!result.ok) {
+        noteNoticeFailure(connectionNoticeFailures, noticeKey, Date.now(), noticeFailurePermanent(result));
+        return false;
+      }
     } catch {
+      noteNoticeFailure(connectionNoticeFailures, noticeKey, Date.now(), false);
       return false;
     }
+    noteNoticeSent(connectionNoticeFailures, noticeKey);
     // The bot answers the notice: show it as working in its conversation,
     // pinned to its newest message so only the answer ends the row. Unpinned,
     // a bot message from up to two minutes before the notice ended it on the
@@ -5609,8 +5639,12 @@
   function noticePersonName(): string {
     return (self?.displayName ?? "").trim().split(/\s+/)[0] ?? "";
   }
-  /** Tell the bot, once, about a connection it can now use. */
-  async function announceToolToBot(agentUid: string, connection: ToolConnection): Promise<void> {
+  /**
+   * Tell the bot, once, about a connection it can now use. `pressed`: the
+   * person just pressed a button for it, so it is tried now whatever failed
+   * before.
+   */
+  async function announceToolToBot(agentUid: string, connection: ToolConnection, pressed = false): Promise<void> {
     const key = `${agentUid}:${connection.id}`;
     if (connectionNoticesInFlight.has(key) || connectionRecords[agentUid]?.announced?.includes(connection.id)) return;
     connectionNoticesInFlight.add(key);
@@ -5624,6 +5658,8 @@
           connectionId: connection.id,
         }),
         `new-bot-conn-${agentUid}-${connection.id}`,
+        key,
+        pressed,
       );
       if (sent) setBotConnectionRecord(agentUid, markToolAnnounced(connectionRecords[agentUid], connection.id));
     } finally {
@@ -5640,6 +5676,7 @@
         agentUid,
         buildAgentSlackConnectedNotice({ personName: noticePersonName(), botName }),
         `new-bot-slack-${agentUid}`,
+        key,
       );
       if (sent) setBotConnectionRecord(agentUid, markSlackAnnounced(connectionRecords[agentUid]));
     } finally {
@@ -5737,15 +5774,20 @@
     }
     setConnectionNote(agentUid, noteKey, null);
     setBotConnectionRecord(agentUid, recordGrant(connectionRecords[agentUid], connection.id, connection.name, Date.now()));
-    await announceToolToBot(agentUid, {
-      id: connection.id,
-      name: connection.name,
-      provider: connection.provider.replace(/^factory:/i, ""),
-      createdAt: "",
-      isNew: true,
-      granted: true,
-      byViewer: true,
-    });
+    await announceToolToBot(
+      agentUid,
+      {
+        id: connection.id,
+        name: connection.name,
+        provider: connection.provider.replace(/^factory:/i, ""),
+        createdAt: "",
+        isNew: true,
+        granted: true,
+        byViewer: true,
+      },
+      // The person asked for this just now: tried whatever failed before.
+      true,
+    );
     return true;
   }
   /** "Let {bot} use it": share one connection with the bot, then tell the bot. */

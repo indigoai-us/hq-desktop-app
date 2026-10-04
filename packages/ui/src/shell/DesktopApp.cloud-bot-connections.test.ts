@@ -617,6 +617,106 @@ describe("DesktopApp connection cards: the hello found by when it was asked for 
   });
 });
 
+/**
+ * B-12: a notice to the bot that failed to send was sent again every time
+ * the cards were worked out (every 5 s while a card waits, and on every
+ * focus), including one the server refuses for good.
+ */
+describe("DesktopApp: a notice to the bot that fails to send (B-12)", () => {
+  /** A Slack card that is waiting keeps the cards rechecking on every focus. */
+  function seedWaitingSlackCard(): void {
+    window.localStorage.setItem(
+      BOT_CONNECTION_CARDS_STORAGE_KEY,
+      JSON.stringify({ [NOVA]: { helloEventId: "e2", slack: { state: "connecting", since: Date.now() } } }),
+    );
+  }
+  /** Hidden sends answer with `hiddenAnswer()`; the person's own messages go through. */
+  function worldWithHiddenSends(hiddenAnswer: () => unknown): World {
+    const w = world({ connections: [connection()] });
+    w.sendDm = vi.fn(async (_to: string, _body: string, extras?: { audience?: string }) =>
+      extras?.audience === "agent" ? hiddenAnswer() : ok({ eventId: "sent_1" }),
+    );
+    return w;
+  }
+  async function allowLinear(w: World): Promise<void> {
+    seedWaitingSlackCard();
+    await mountNewBotDm(w);
+    await vi.waitFor(() => expect(appPrimary("linear.app")).not.toBeNull());
+    appPrimary("linear.app")!.click();
+    await vi.waitFor(() => expect(w.grantConnectionAccess).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(hiddenNotices(w)).toHaveLength(1));
+    await settle(20);
+  }
+  const announced = (): string[] =>
+    JSON.parse(window.localStorage.getItem(BOT_CONNECTION_CARDS_STORAGE_KEY) ?? "{}")[NOVA]?.announced ?? [];
+
+  it("is not sent again after the server refuses it", async () => {
+    const w = worldWithHiddenSends(() => ({ ok: false, reason: "error", code: "http-403", message: "no" }));
+    await allowLinear(w);
+    const lists = w.listConnections.mock.calls.length;
+    for (let i = 0; i < 6; i += 1) await refocus();
+    // The cards did recheck on every focus; the refused notice did not go again.
+    expect(w.listConnections.mock.calls.length).toBeGreaterThan(lists);
+    expect(hiddenNotices(w)).toHaveLength(1);
+    expect(announced()).toEqual([]);
+  });
+
+  it("is retried further apart each time, then goes through and is not sent again", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      let serverUp = false;
+      const w = worldWithHiddenSends(() =>
+        serverUp ? ok({ eventId: "sent_hidden" }) : { ok: false, reason: "error", code: "http-503", message: "busy" },
+      );
+      await allowLinear(w);
+      // Rechecks right away do not send it again.
+      for (let i = 0; i < 4; i += 1) await refocus();
+      expect(hiddenNotices(w)).toHaveLength(1);
+
+      // 30 s later the next recheck sends it once.
+      vi.setSystemTime(Date.now() + 31_000);
+      for (let i = 0; i < 3; i += 1) await refocus();
+      expect(hiddenNotices(w)).toHaveLength(2);
+
+      // The wait doubled: 31 s is not enough now, 61 s is.
+      vi.setSystemTime(Date.now() + 31_000);
+      await refocus();
+      expect(hiddenNotices(w)).toHaveLength(2);
+      serverUp = true;
+      vi.setSystemTime(Date.now() + 30_000);
+      await refocus();
+      await vi.waitFor(() => expect(hiddenNotices(w)).toHaveLength(3));
+      await vi.waitFor(() => expect(announced()).toEqual(["acct_linear"]));
+
+      // Told once: later rechecks send nothing.
+      vi.setSystemTime(Date.now() + 300_000);
+      for (let i = 0; i < 3; i += 1) await refocus();
+      expect(hiddenNotices(w)).toHaveLength(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("gives up after four failed sends in a session", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const w = worldWithHiddenSends(() => ({ ok: false, reason: "error", code: "http-500", message: "boom" }));
+      await allowLinear(w);
+      for (const wait of [31_000, 61_000, 121_000]) {
+        vi.setSystemTime(Date.now() + wait);
+        await refocus();
+        await refocus();
+      }
+      expect(hiddenNotices(w)).toHaveLength(4);
+      vi.setSystemTime(Date.now() + 250_000);
+      for (let i = 0; i < 4; i += 1) await refocus();
+      expect(hiddenNotices(w)).toHaveLength(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("DesktopApp connection cards: whose messages draw them (I13)", () => {
   it("draws no cards under the person's own message that carries a connect block", async () => {
     // The person pasted the bot's block back (an example, a quote). It is
