@@ -28,6 +28,9 @@
 # No secrets: --no-bundle skips bundling, signing, notarization, and updater
 # signing. rust-cache stores only registry sources and dependency artifacts
 # and prunes the workspace crate's own artifacts.
+# On an exact rust-cache hit those shared dependency artifacts already exist.
+# Skip the rest of that warmer's work on a hit; a missing or fallback-only key
+# still runs the full job and writes the exact key for release/windows-check.
 name: Warm Rust caches
 
 on:
@@ -142,17 +145,21 @@ jobs:
           cargo metadata --no-deps --format-version 1 --manifest-path src-tauri/Cargo.toml >/dev/null
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        id: rust-cache
         with:
           workspaces: apps/sync/src-tauri
           shared-key: release-macos-universal
 
       - name: Install dependencies
+        if: steps.rust-cache.outputs.cache-hit != 'true'
         run: pnpm install --frozen-lockfile
 
       - name: Install Recall sidecar dependencies
+        if: steps.rust-cache.outputs.cache-hit != 'true'
         run: pnpm run sidecar:install
 
       - name: Compile release dependencies (universal)
+        if: steps.rust-cache.outputs.cache-hit != 'true'
         run: pnpm tauri build --no-bundle --target universal-apple-darwin --config src-tauri/tauri.macos.conf.json
 
   release-windows:
@@ -187,18 +194,21 @@ jobs:
           targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        id: rust-cache
         with:
           workspaces: apps/sync/src-tauri
           shared-key: release-${{ matrix.target }}
 
       - name: Install dependencies
+        if: steps.rust-cache.outputs.cache-hit != 'true'
         run: pnpm install --frozen-lockfile
 
       - name: Install Recall sidecar dependencies
+        if: steps.rust-cache.outputs.cache-hit != 'true'
         run: pnpm run sidecar:install
 
       - name: Download native ARM64 Node runtime for Recall launcher
-        if: matrix.target == 'aarch64-pc-windows-msvc'
+        if: matrix.target == 'aarch64-pc-windows-msvc' && steps.rust-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           $version = node -p "process.version"
@@ -232,6 +242,7 @@ jobs:
       # triple, so build and assert it before the bundle step rather than
       # publishing an installer with the Recall bridge resources but no launcher.
       - name: Build Recall SDK sidecar (${{ matrix.target }})
+        if: steps.rust-cache.outputs.cache-hit != 'true'
         shell: pwsh
         env:
           RECALL_SIDECAR_TARGET: ${{ matrix.target }}
@@ -243,6 +254,7 @@ jobs:
           }
 
       - name: Compile release dependencies (${{ matrix.target }})
+        if: steps.rust-cache.outputs.cache-hit != 'true'
         env:
           # Mirrors release.yml: Tauri runs the release overlay's
           # beforeBuildCommand, which rebuilds the launcher. Keep that nested
@@ -283,6 +295,7 @@ jobs:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        id: rust-cache
         with:
           workspaces: |
             .
@@ -291,24 +304,30 @@ jobs:
           cache-on-failure: true
 
       - name: Install JS deps
+        if: steps.rust-cache.outputs.cache-hit != 'true'
         run: pnpm install --no-frozen-lockfile
 
       - name: Install Recall sidecar deps (build.rs resource)
+        if: steps.rust-cache.outputs.cache-hit != 'true'
         run: pnpm run sidecar:install
 
       - name: Build Svelte bundle (satisfies tauri frontendDist)
+        if: steps.rust-cache.outputs.cache-hit != 'true'
         run: pnpm run build
 
       - name: Rust check (Windows target)
+        if: steps.rust-cache.outputs.cache-hit != 'true'
         working-directory: apps/sync/src-tauri
         run: cargo check --target x86_64-pc-windows-msvc
 
       - name: Build Windows test binaries
+        if: steps.rust-cache.outputs.cache-hit != 'true'
         timeout-minutes: 30
         working-directory: apps/sync/src-tauri
         run: cargo test --target x86_64-pc-windows-msvc --bins --no-run
 
       - name: Install Tauri WebDriver bridge
+        if: steps.rust-cache.outputs.cache-hit != 'true'
         run: cargo install tauri-driver --locked
 
   windows-installer-release:
@@ -340,6 +359,7 @@ jobs:
           targets: x86_64-pc-windows-msvc
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        id: rust-cache
         with:
           workspaces: |
             .
@@ -348,15 +368,19 @@ jobs:
           cache-on-failure: true
 
       - name: Install JS deps
+        if: steps.rust-cache.outputs.cache-hit != 'true'
         run: pnpm install --no-frozen-lockfile
 
       - name: Install Recall sidecar deps
+        if: steps.rust-cache.outputs.cache-hit != 'true'
         run: pnpm run sidecar:install
 
       - name: Install Tauri WebDriver bridge
+        if: steps.rust-cache.outputs.cache-hit != 'true'
         run: cargo install tauri-driver --locked
 
       - name: Compile release dependencies (x86_64-pc-windows-msvc)
+        if: steps.rust-cache.outputs.cache-hit != 'true'
         run: pnpm tauri build --no-bundle --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json --config src-tauri/tauri.windows.release.conf.json --config src-tauri/tauri.windows.ci.conf.json --features e2e-automation
 
   # The three jobs below build and store the exact `shell-*` caches
