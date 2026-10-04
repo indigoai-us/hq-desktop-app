@@ -28,6 +28,13 @@ import {
   setupProgressPercent,
   setupStageRecoveryAction,
   resolveFlagWithTimeout,
+  resolveFlagStatusWithTimeout,
+  normalizeDepsOperation,
+  depsRetryWasAttemptedForFailure,
+  depsTimeoutRetryTelemetry,
+  normalizeDepsRetryResult,
+  DEPS_OPERATIONS,
+  DEPS_RETRY_RESULTS,
   setupSubStatus,
   stageAutoRetryLimit,
   stageCreepAt,
@@ -98,6 +105,47 @@ function emitContentProgress(payload: unknown): void {
   handler({ payload });
 }
 
+describe('bounded deps retry telemetry values', () => {
+  it('normalizes only dependency registry ids and retry result values', () => {
+    expect(DEPS_OPERATIONS).toEqual([
+      'node', 'yq', 'qmd', 'hq-cli', 'git', 'jq', 'gh', 'claude-code', 'homebrew', 'unknown',
+    ]);
+    expect(normalizeDepsOperation('git')).toBe('git');
+    expect(normalizeDepsOperation('npm install -g package')).toBeUndefined();
+    expect(DEPS_RETRY_RESULTS).toEqual([
+      'not-eligible', 'recovered', 'failed-again', 'skipped-flag-off', 'skipped-flag-unreadable',
+    ]);
+    expect(normalizeDepsRetryResult('failed-again')).toBe('failed-again');
+    expect(normalizeDepsRetryResult('retry with command')).toBeUndefined();
+    expect(depsTimeoutRetryTelemetry({
+      flagStatus: 'enabled', timedOut: false, retrySuppressed: false,
+      retryAttempted: true, retryRecovered: true,
+    })).toEqual({ retryAttempted: false, retryResult: 'not-eligible' });
+    expect(depsTimeoutRetryTelemetry({
+      flagStatus: 'enabled', timedOut: true, retrySuppressed: false,
+      retryAttempted: true, retryRecovered: true,
+    })).toEqual({ retryAttempted: true, retryResult: 'recovered' });
+    expect(depsTimeoutRetryTelemetry({
+      flagStatus: 'disabled', timedOut: true, retrySuppressed: false,
+      retryAttempted: false, retryRecovered: false,
+    })).toEqual({ retryAttempted: false, retryResult: 'skipped-flag-off' });
+  });
+
+  it('attributes retry only to the failure whose own recovery scheduled it', () => {
+    expect(depsRetryWasAttemptedForFailure(true, true)).toBe(true);
+    // A later deps timeout can be in the same batch as an earlier generic retry,
+    // but it did not itself get another attempt after the retry limit was reached.
+    expect(depsRetryWasAttemptedForFailure(false, true)).toBe(false);
+  });
+
+  it('keeps unreadable, disabled, and enabled flag resolutions distinct within the same timeout', async () => {
+    await expect(resolveFlagStatusWithTimeout(Promise.resolve(true), 20)).resolves.toBe('enabled');
+    await expect(resolveFlagStatusWithTimeout(Promise.resolve(false), 20)).resolves.toBe('disabled');
+    await expect(resolveFlagStatusWithTimeout(Promise.resolve(null), 20)).resolves.toBe('unreadable');
+    await expect(resolveFlagStatusWithTimeout(Promise.reject(new Error('unavailable')), 20)).resolves.toBe('unreadable');
+  });
+});
+
 describe('setup failure telemetry diagnostics', () => {
   it('keeps bounded content diagnostics and rejects unscoped or path-shaped values', () => {
     expect(setupFailureTelemetryDetails({
@@ -130,7 +178,7 @@ describe('setup failure telemetry diagnostics', () => {
       errorIoKind: 'not_found',
       errorCode: 3,
       failedDependency: 'node',
-    })).toEqual({ errorCategory: 'unknown', failedDependency: 'node' });
+    })).toEqual({ errorCategory: 'unknown', failedDependency: 'node', depsOperation: 'node' });
   });
 });
 
