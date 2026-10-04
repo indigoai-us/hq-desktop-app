@@ -103,9 +103,6 @@ describe("ChatSidebar Cloud / Local kind chip", () => {
         seedDirectory: [seedRow],
         self: { uid: "prs_me" },
         localBots: [scout],
-        // Both bots are on the rail because they have talked to this user —
-        // a newly created agent never gets a row (agent-stub rule).
-        engagedAgentUids: [LOCAL_UID, CLOUD_UID],
       },
     });
 
@@ -129,7 +126,6 @@ describe("ChatSidebar Cloud / Local kind chip", () => {
         seedDirectory: [seedRow],
         self: { uid: "prs_me" },
         localBots: null,
-        engagedAgentUids: [LOCAL_UID, CLOUD_UID],
       },
     });
     await vi.waitFor(() => expect(chipFor(LOCAL_UID)).not.toBeNull());
