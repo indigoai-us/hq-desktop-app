@@ -1124,6 +1124,7 @@ fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
                     key.as_str(),
                     "enabled"
                         | "autoUpdateEnabled"
+                        | "autoUpdate"
                         | "eligible"
                         | "versionBehind"
                         | "npxResolved"
