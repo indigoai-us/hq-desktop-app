@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('svelte', async () => {
@@ -48,6 +49,7 @@ vi.mock('@hq/platform', () => ({
   FIRST_FOLDER_SYNC_STEP_FLAG: 'desktop.first-folder-sync-step-v1',
   COMPANY_NAME_PREFILL_FLAG: 'desktop.company-name-prefill-v1',
   FIRST_LAUNCH_JOIN_KEY_FLAG: 'desktop.first-launch-join-key-v1',
+  FIRST_LAUNCH_SIGNIN_REACH_FLAG: 'desktop.first-launch-signin-reach-telemetry-v1',
   COMPANY_ROUTE_LOOKUP_RETRY_FLAG: 'desktop.company-route-lookup-retry-v1',
   SETUP_DEPS_TIMEOUT_RETRY_FLAG: 'desktop.setup-deps-timeout-retry-v1',
   retryThrottled: async <T>(
@@ -72,6 +74,7 @@ vi.mock('@hq/platform', () => ({
         }
         if (
           flag === 'desktop.first-launch-join-key-v1' ||
+          flag === 'desktop.first-launch-signin-reach-telemetry-v1' ||
           flag === 'desktop.company-route-lookup-retry-v1' ||
           flag === 'desktop.company-name-prefill-v1'
         ) {
@@ -2025,6 +2028,15 @@ describe('anonymous installer step pings', () => {
 
   it('uses the persisted install id for the anonymous ping and onboarding session when the first-launch flag is on', async () => {
     const installAttemptId = '22222222-2222-4222-8222-222222222222';
+    httpFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        key: 'desktop.first-launch-signin-reach-telemetry-v1',
+        enabled: true,
+      }),
+      text: async () => '',
+    });
     onboardingFlags.hasFeature.mockResolvedValue({ ok: true, value: true });
     stubOnboardingInvoke({
       is_first_run: () => true,
@@ -2035,9 +2047,15 @@ describe('anonymous installer step pings', () => {
       props: { initialStep: 0 },
     });
 
-    await flushUntil(() => httpFetch.mock.calls.length > 0);
+    const isInstallerPing = (call: unknown[]) => {
+      const [url] = call as [string, RequestInit];
+      return String(url).includes('/v1/installer/step');
+    };
+    await flushUntil(() => httpFetch.mock.calls.some(isInstallerPing));
 
-    const init = (httpFetch.mock.calls[0] as unknown as [string, RequestInit])[1];
+    const installPing = httpFetch.mock.calls.find(isInstallerPing);
+    expect(installPing).toBeDefined();
+    const init = (installPing as unknown as [string, RequestInit])[1];
     const body = JSON.parse(String(init.body)) as { installSessionId: string };
     const onboardingEvent = tauri.invoke.mock.calls
       .filter(
@@ -2053,16 +2071,29 @@ describe('anonymous installer step pings', () => {
         command === 'emit_desktop_operational_telemetry' &&
         (args as {
           eventName?: string;
-          properties?: { step?: string; action?: string };
+          properties?: { step?: string; action?: string; outcome?: string };
         }).eventName === 'desktop_onboarding_step' &&
         (args as {
-          properties?: { step?: string; action?: string };
+          properties?: { step?: string; action?: string; outcome?: string };
         }).properties?.step === 'welcome-signin' &&
         (args as {
-          properties?: { step?: string; action?: string };
+          properties?: { step?: string; action?: string; outcome?: string };
         }).properties?.action === 'entered',
     );
     expect(welcomeEntries).toHaveLength(1);
+    expect((welcomeEntries[0]![1] as { properties: { outcome?: string } }).properties.outcome)
+      .toBe('reached-signin');
+    const publicFlagRequest = httpFetch.mock.calls.find((call) =>
+      String((call as unknown as [string, RequestInit])[0]).includes('/v1/flags/resolve-public'),
+    );
+    expect(publicFlagRequest).toBeDefined();
+    const publicFlagUrl = new URL(
+      String((publicFlagRequest as unknown as [string, RequestInit])[0]),
+    );
+    expect(publicFlagUrl.searchParams.get('key')).toBe(
+      'desktop.first-launch-signin-reach-telemetry-v1',
+    );
+    expect(publicFlagUrl.searchParams.get('visitorId')).toBe(installAttemptId);
     expect(onboardingFlags.hasFeature).toHaveBeenCalledWith(
       'desktop.first-launch-join-key-v1',
     );
@@ -2108,10 +2139,14 @@ describe('anonymous installer step pings', () => {
             properties?: { step?: string; action?: string };
           }).properties?.action === 'entered',
       )
-      .map(([, args]) => args as { properties: { flow?: string } });
+      .map(([, args]) => args as { properties: { flow?: string; outcome?: string } });
     expect(welcomeEntries.map((entry) => entry.properties.flow)).toEqual([
       'first_install',
       'first_launch',
+    ]);
+    expect(welcomeEntries.map((entry) => entry.properties.outcome)).toEqual([
+      undefined,
+      undefined,
     ]);
   });
 
@@ -4797,5 +4832,28 @@ describe('company onboarding step', () => {
     await settle();
     expect(host.querySelector('[data-testid="onboarding-company"]')).toBeNull();
     expect(companyRows().some((row) => row.action === 'skipped')).toBe(true);
+  });
+});
+
+describe('first-launch sign-in reach stays independent from the join-key rollout', () => {
+  it('does not seed shared onboarding telemetry identity from the reach-only flag', () => {
+    const source = readFileSync(join(__dirname, 'OnboardingWizard.svelte'), 'utf8');
+    const reachBlock = source.slice(
+      source.indexOf('if (signInReachEnabled)'),
+      source.indexOf('const firstLaunchReceiptRecorded'),
+    );
+
+    expect(reachBlock).not.toContain('onboardingTelemetry.setInstallAttemptId(');
+    expect(reachBlock).toContain('receiptReachOutcome ? reachInstallAttemptId ?? undefined : undefined');
+  });
+
+  it('does not use the standalone reporter when the native CI suppression marker is set', () => {
+    const source = readFileSync(join(__dirname, 'OnboardingWizard.svelte'), 'utf8');
+    const reachBlock = source.slice(
+      source.indexOf('if (signInReachOutcome && context?.suppressFirstLaunchTelemetry !== true)'),
+      source.indexOf('return { context, firstLaunchReceiptRecorded, installAttemptId }'),
+    );
+
+    expect(reachBlock).toContain('context?.suppressFirstLaunchTelemetry !== true');
   });
 });
