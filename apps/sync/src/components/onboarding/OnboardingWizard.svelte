@@ -101,8 +101,11 @@
     resumeStartStageFromManifest,
     setStageStatus,
     setupCompletionResult,
+    depsRetryWasAttemptedForFailure,
+    depsTimeoutRetryTelemetry,
     setupProgressPercent,
     setupStageRecoveryAction,
+    resolveFlagStatusWithTimeout,
     resolveFlagWithTimeout,
     stageCommandInvocations,
     stageTimeoutMs,
@@ -114,6 +117,8 @@
     withTimeout,
     type InstallManifest,
     type SetupRetryAttempt,
+    type DepsTimeoutRetryFlagStatus,
+    type DepsRetryResult,
     type SetupStageRecoveryAction,
     type StageId,
     type StageState,
@@ -172,6 +177,7 @@
     resolveFirstRunCompanyRoute,
     waitForProvisioning,
     type FirstRunCompanyPath,
+    type FirstRunPlan,
   } from '../../lib/first-run-company';
   import {
     createSyncPlatformAdapter,
@@ -419,6 +425,8 @@
    * `existing` or null (lookup failed) to skip it.
    */
   let companyPath = $state<FirstRunCompanyPath | null>(null);
+  /** The plan already picked on the website, when hq-pro says so; skips "Choose a plan". */
+  let companyPriorPlan = $state<FirstRunPlan | null>(null);
   let companyNamePrefillEnabled = $state(false);
   /** Signed-in email, read once for the signed-in-as notice and invite matching. */
   let signedInEmail = $state<string | null>(null);
@@ -433,6 +441,18 @@
   const firstFolderSelfHealTimeoutMs = 90_000;
   const firstFolderSelfHealIntervalMs = 2_000;
   let companyStepVisited = false;
+  /**
+   * The company route lookup. It starts on the second setup explainer, so the
+   * company step can run between the setup explainers and the ready
+   * ("Open HQ Desktop") screen instead of after it. Reset on an account switch.
+   */
+  let companyRouteResolution: Promise<void> | null = null;
+  let companyRouteGeneration = 0;
+  /** The company lookup has answered with a usable route (or none needed). */
+  let companyRouteResolved = $state(false);
+  /** Leaving the explainers waits this long at most for the company lookup. */
+  const COMPANY_ROUTE_WAIT_MS = 3_000;
+  let leavingExplainers = false;
   let companyStepCompanyUid: string | null = null;
   let inviteTeammateContext: { companyUid: string; personUid: string } | null = null;
   let inviteCreatedForEmail: string | null = null;
@@ -537,6 +557,7 @@
     action: OnboardingAction,
     details: StepTelemetryDetails = {},
     flow?: OnboardingFlow,
+    occurredAt?: string,
   ): void {
     if (consentOnly || replay) return;
     // Hold records only until first-launch eligibility is known. A disabled
@@ -547,16 +568,16 @@
       firstLaunchJoinKeyEnabled !== false
     ) {
       const queuedDetails = { ...details };
-      const occurredAt = new Date().toISOString();
+      const eventOccurredAt = occurredAt ?? new Date().toISOString();
       queuedOnboardingStepRecords.push({
         step,
         action,
-        occurredAt,
-        record: () => recordStepNow(step, action, queuedDetails, flow, occurredAt),
+        occurredAt: eventOccurredAt,
+        record: () => recordStepNow(step, action, queuedDetails, flow, eventOccurredAt),
       });
       return;
     }
-    recordStepNow(step, action, details, flow);
+    recordStepNow(step, action, details, flow, occurredAt);
   }
 
   function recordStepNow(
@@ -586,6 +607,22 @@
       },
       ...(occurredAt ? { occurredAt } : {}),
     });
+  }
+
+  function recordDeferredSetupFailure(
+    failure: DeferredDepsFailure,
+    fallback: Pick<RecordOnboardingStep['properties'], 'retryAttempted' | 'retryResult'>,
+  ): string {
+    return onboardingTelemetry.recordDeferred({
+      properties: {
+        step: 'setup',
+        action: 'failed',
+        ...failure.details,
+        appVersion: onboardingAppVersion,
+        flow: onboardingFlow,
+      },
+      occurredAt: failure.occurredAt,
+    }, fallback);
   }
 
   function resolveOnboardingAppVersion(): Promise<void> {
@@ -1213,6 +1250,16 @@
       void resolvePostSetupSteps(() => mounted);
       return;
     }
+    if (resumeAfterAccountSwitch && setupStarted && !setupCancelled) {
+      // Switched account from the company step while the install still runs:
+      // the folder is chosen and the install carries on, so look up the new
+      // account's company and go on from the ready screen (the company step
+      // comes back first when this account needs it).
+      resumeAfterAccountSwitch = false;
+      void resolveCompanyStep();
+      advanceTo(READY_STEP_INDEX, 'completed', { ...details, outcome: 'authenticated' }, 'ready');
+      return;
+    }
     // The consent question is asked later as its own step after setup.
     // Operational setup telemetry is emitted independently; skill usage
     // remains governed by that choice.
@@ -1428,7 +1475,9 @@
     signedInEmail = null;
     if (from === 'company') {
       companyPath = null;
+      companyPriorPlan = null;
       companyStepVisited = false;
+      resetCompanyRoute();
       postSetupStepsResolved = false;
       resumeAfterAccountSwitch = true;
       advanceTo(WELCOME_SIGNIN_STEP_INDEX, 'completed', { outcome: 'switch_account' }, 'welcome');
@@ -2128,10 +2177,28 @@
     }
   }
 
+  type DeferredDepsFailure = {
+    details: StepTelemetryDetails;
+    occurredAt: string;
+    flagStatus: DepsTimeoutRetryFlagStatus;
+    timedOut: boolean;
+    retrySuppressed: boolean;
+    retryScheduled: boolean;
+    telemetryId?: string;
+  };
+
   type StageRunResult =
     | { outcome: 'ok' }
-    | { outcome: 'cancelled' }
-    | { outcome: 'failed'; recovery: SetupStageRecoveryAction };
+    | {
+        outcome: 'cancelled';
+        retryAttempted?: boolean;
+        retryResult?: DepsRetryResult;
+      }
+    | {
+        outcome: 'failed';
+        recovery: SetupStageRecoveryAction;
+        depsFailure?: DeferredDepsFailure;
+      };
 
   const CANCELLED_STAGE_RUN: StageRunResult = { outcome: 'cancelled' };
 
@@ -2176,12 +2243,13 @@
     id: StageId,
     runId: number,
     attemptCount: number,
-    depsTimeoutRetryFlag: Promise<boolean>,
+    depsTimeoutRetryStatus: Promise<DepsTimeoutRetryFlagStatus>,
   ): Promise<StageRunResult> {
     if (!isCurrentRun(runId)) return CANCELLED_STAGE_RUN;
     const setupRunId = currentSetupRunId;
-    const depsTimeoutRetryEnabled =
-      id === 'deps' ? await depsTimeoutRetryFlag : false;
+    const depsRetryFlagStatus =
+      id === 'deps' ? await depsTimeoutRetryStatus : 'disabled';
+    const depsTimeoutRetryEnabled = depsRetryFlagStatus === 'enabled';
     if (!isCurrentRun(runId)) return CANCELLED_STAGE_RUN;
     const setupAttemptId =
       id === 'deps' && depsTimeoutRetryEnabled
@@ -2224,7 +2292,15 @@
         outcome: 'cancelled',
         setupRunId,
       });
-      return CANCELLED_STAGE_RUN;
+      return {
+        outcome: 'cancelled',
+        ...(id === 'deps' && attemptCount > 1
+          ? {
+              retryAttempted: true,
+              retryResult: result.kind === 'done' ? 'recovered' : 'failed-again',
+            }
+          : {}),
+      };
     }
 
     if (result.kind === 'done') {
@@ -2243,6 +2319,7 @@
       // Decide recovery before the status lands: a stage that will try again
       // must never pass through 'failed', which would count it as settled and
       // then un-count it, jolting the ring forward and straight back.
+      const occurredAt = new Date().toISOString();
       const recovery = setupStageRecoveryAction({
         stageId: id,
         message,
@@ -2260,8 +2337,15 @@
       );
       await journalStageFailure(id, message);
       const failureDetails = await stageFailureTelemetryDetails(id, result.err, failureScope);
-      if (!isCurrentRun(runId)) return CANCELLED_STAGE_RUN;
-      recordStep(SETUP_STEP_INDEX, 'failed', {
+      if (!isCurrentRun(runId)) {
+        return {
+          outcome: 'cancelled',
+          ...(id === 'deps' && attemptCount > 1
+            ? { retryAttempted: true, retryResult: 'failed-again' as const }
+            : {}),
+        };
+      }
+      const details: StepTelemetryDetails = {
         component: id,
         failureStage: id,
         attemptCount,
@@ -2269,7 +2353,23 @@
         outcome: 'stage_command_failed',
         setupRunId,
         ...failureDetails,
-      });
+      };
+      if (id === 'deps') {
+        return {
+          outcome: 'failed',
+          recovery,
+          depsFailure: {
+            details,
+            occurredAt,
+            flagStatus: depsRetryFlagStatus,
+            timedOut: result.err instanceof StageTimeoutError,
+            retrySuppressed:
+              result.err instanceof StageTimeoutError && result.err.retrySuppressed,
+            retryScheduled: false,
+          },
+        };
+      }
+      recordStep(SETUP_STEP_INDEX, 'failed', details, undefined, occurredAt);
       return { outcome: 'failed', recovery };
     }
     return CANCELLED_STAGE_RUN;
@@ -2401,10 +2501,54 @@
   async function runSetup(
     runId: number,
     startStage: StageId = STAGE_ORDER[0],
-    depsTimeoutRetryFlag: Promise<boolean> = Promise.resolve(false),
+    depsTimeoutRetryStatus: Promise<DepsTimeoutRetryFlagStatus> = Promise.resolve('disabled'),
   ) {
     const startIndex = Math.max(0, STAGE_ORDER.indexOf(startStage));
     const retryCounts = new Map<StageId, number>();
+    const pendingDepsFailures: DeferredDepsFailure[] = [];
+    const recordDepsFailure = (
+      failure: DeferredDepsFailure,
+      retryAttempted: boolean,
+      retryResult: DepsRetryResult,
+    ) => {
+      const didRetryThisFailure = depsRetryWasAttemptedForFailure(
+        failure.retryScheduled,
+        retryAttempted,
+      );
+      const retryTelemetry = depsTimeoutRetryTelemetry({
+        flagStatus: failure.flagStatus,
+        timedOut: failure.timedOut,
+        retrySuppressed: failure.retrySuppressed,
+        retryAttempted: didRetryThisFailure,
+        retryRecovered: didRetryThisFailure && retryResult === 'recovered',
+      });
+      if (failure.telemetryId) {
+        onboardingTelemetry.resolveDeferred(failure.telemetryId, retryTelemetry);
+      } else {
+        recordStep(
+          SETUP_STEP_INDEX,
+          'failed',
+          { ...failure.details, ...retryTelemetry },
+          undefined,
+          failure.occurredAt,
+        );
+      }
+    };
+    const flushPendingDepsFailures = (
+      retryAttempted: boolean,
+      retryResult: DepsRetryResult,
+    ) => {
+      for (const failure of pendingDepsFailures) {
+        recordDepsFailure(failure, retryAttempted, retryResult);
+      }
+      pendingDepsFailures.length = 0;
+    };
+    const skippedRetryResult = (failure: DeferredDepsFailure): DepsRetryResult => {
+      if (!failure.timedOut || failure.retrySuppressed) return 'not-eligible';
+      if (failure.flagStatus === 'unreadable') return 'skipped-flag-unreadable';
+      if (failure.flagStatus === 'disabled') return 'skipped-flag-off';
+      return 'not-eligible';
+    };
     for (const id of STAGE_ORDER.slice(startIndex)) {
       if (!isCurrentRun(runId)) return;
       while (isCurrentRun(runId)) {
@@ -2413,13 +2557,44 @@
           id,
           runId,
           attemptCount,
-          depsTimeoutRetryFlag,
+          depsTimeoutRetryStatus,
         );
-        if (result.outcome === 'cancelled') return;
-        if (result.outcome === 'ok') break;
+        if (result.outcome === 'cancelled') {
+          if (pendingDepsFailures.length > 0) {
+            flushPendingDepsFailures(
+              result.retryAttempted ?? false,
+              result.retryResult ?? 'not-eligible',
+            );
+          }
+          return;
+        }
+        if (result.outcome === 'ok') {
+          if (pendingDepsFailures.length > 0) {
+            flushPendingDepsFailures(true, 'recovered');
+          }
+          break;
+        }
 
+        if (result.depsFailure) {
+          const failure = result.depsFailure;
+          failure.retryScheduled = false;
+          failure.telemetryId = recordDeferredSetupFailure(failure, {
+            retryAttempted: false,
+            retryResult: skippedRetryResult(failure),
+          });
+          pendingDepsFailures.push(failure);
+        }
         const action = result.recovery;
-        if (action.kind !== 'retry') break;
+        if (action.kind !== 'retry') {
+          if (pendingDepsFailures.length > 1) {
+            flushPendingDepsFailures(true, 'failed-again');
+          } else if (pendingDepsFailures.length === 1) {
+            const [failure] = pendingDepsFailures;
+            if (failure) recordDepsFailure(failure, false, skippedRetryResult(failure));
+            pendingDepsFailures.length = 0;
+          }
+          break;
+        }
 
         retryCounts.set(id, action.nextRetryCount);
         // The stage keeps its place in the bands while it waits — it is still
@@ -2428,6 +2603,19 @@
         setupRetry = { stageId: id, attempt: setupRetryAttempt(id, action.nextRetryCount) };
         stageDetail = null;
         await waitForAutoRetry(action.delayMs);
+        if (!isCurrentRun(runId)) {
+          if (pendingDepsFailures.length > 0) {
+            flushPendingDepsFailures(false, 'not-eligible');
+          }
+          return;
+        }
+        const retryingFailure = pendingDepsFailures.at(-1);
+        if (retryingFailure) {
+          retryingFailure.retryScheduled = true;
+          if (retryingFailure.telemetryId) {
+            onboardingTelemetry.markDeferredRetryAttempted(retryingFailure.telemetryId);
+          }
+        }
       }
     }
 
@@ -2475,8 +2663,29 @@
     }
   }
 
-  /** The optional follow-on steps after setup; re-run after an account switch. */
-  async function resolvePostSetupSteps(stillCurrent: () => boolean): Promise<void> {
+  /** Forget the company lookup (account switch): the next call looks again. */
+  function resetCompanyRoute(): void {
+    companyRouteGeneration += 1;
+    companyRouteResolution = null;
+    companyRouteResolved = false;
+  }
+
+  /**
+   * Look up which way the company step goes (create, join, existing, skip),
+   * once. Started on the second setup explainer (or when the explainers are
+   * skipped) so the step can come before the ready screen; awaited again once setup completes. A lookup that fails is
+   * forgotten, so the post-setup call tries again (the person entity is
+   * provisioned during setup, and the old after-setup timing still works).
+   */
+  function resolveCompanyStep(): Promise<void> {
+    if (!companyRouteResolution) {
+      const generation = companyRouteGeneration;
+      companyRouteResolution = lookUpCompanyRoute(() => mounted && generation === companyRouteGeneration);
+    }
+    return companyRouteResolution;
+  }
+
+  async function lookUpCompanyRoute(stillCurrent: () => boolean): Promise<void> {
     const retryCompanyLookup = resolveCompanyRouteLookupRetryFlag();
     const [email, anonId] = await Promise.all([
       resolveSignedInEmail(),
@@ -2496,8 +2705,7 @@
       if (!resolved || !('route' in resolved) || resolved.route.kind !== 'create') return false;
       return resolveCompanyNamePrefillFlag();
     });
-    const [firstFolderEnabled, firstRunCompanyPath, namePrefillEnabled] = await Promise.all([
-      resolveFirstFolderSyncStepFlag(),
+    const [firstRunCompanyPath, namePrefillEnabled] = await Promise.all([
       firstRunCompanyPathPromise,
       companyNamePrefillPromise,
     ]);
@@ -2510,18 +2718,66 @@
     if (!stillCurrent()) return;
     if (firstRunCompanyPath && 'route' in firstRunCompanyPath) {
       companyPath = firstRunCompanyPath.route;
+      companyPriorPlan = firstRunCompanyPath.priorPlan;
       companyNamePrefillEnabled =
         namePrefillEnabled && firstRunCompanyPath.route.kind === 'create';
       recordCompanyRoute(firstRunCompanyPath.route, firstRunCompanyPath.summary);
-    } else {
-      companyPath = null;
-      companyNamePrefillEnabled = false;
-      if (firstRunCompanyPath?.kind === 'lookup_failed') recordCompanyRouteLookupFailed();
+      inviteTeammateContext = inviteContext;
+      showInviteTeammateStep = inviteContext !== null;
+      companyRouteResolved = true;
+      return;
     }
+    companyPath = null;
+    companyPriorPlan = null;
+    companyNamePrefillEnabled = false;
+    inviteTeammateContext = null;
+    showInviteTeammateStep = false;
+    if (firstRunCompanyPath?.kind === 'lookup_failed') recordCompanyRouteLookupFailed();
+    if (setupCompleted) {
+      // After setup there is no later attempt: settle on no company step.
+      companyRouteResolved = true;
+    } else {
+      // Too early (before setup); setup completion looks again.
+      companyRouteResolution = null;
+    }
+  }
+
+  /** The optional follow-on steps after setup; re-run after an account switch. */
+  async function resolvePostSetupSteps(stillCurrent: () => boolean): Promise<void> {
+    const [firstFolderEnabled] = await Promise.all([
+      resolveFirstFolderSyncStepFlag(),
+      resolveCompanyStep(),
+    ]);
+    if (!stillCurrent()) return;
     showFirstFolderSyncStep = firstFolderEnabled;
-    inviteTeammateContext = inviteContext;
-    showInviteTeammateStep = inviteContext !== null;
     postSetupStepsResolved = true;
+  }
+
+  /** Whether the company step still has to be shown; null while the lookup runs. */
+  function companyStepPending(): boolean | null {
+    if (!companyRouteResolved) return null;
+    return Boolean(companyPath && companyPath.kind !== 'skip' && !companyStepVisited);
+  }
+
+  /**
+   * Leave the setup explainers. The company step comes first when this
+   * person needs one, then the ready ("Open HQ Desktop") screen. A lookup
+   * that has not answered yet gets a short wait; if it answers later, the
+   * ready screen hands over to the company step then.
+   */
+  async function leaveExplainers(): Promise<void> {
+    if (leavingExplainers) return;
+    leavingExplainers = true;
+    try {
+      if (!consentOnly && !replay && companyStepPending() === null) {
+        const lookup = resolveCompanyStep();
+        await Promise.race([lookup, new Promise((resolve) => setTimeout(resolve, COMPANY_ROUTE_WAIT_MS))]);
+        if (!mounted) return;
+      }
+      advanceTo(!consentOnly && !replay && companyStepPending() ? COMPANY_STEP_INDEX : READY_STEP_INDEX, null);
+    } finally {
+      leavingExplainers = false;
+    }
   }
 
   interface SetupCompletionMetrics {
@@ -2692,20 +2948,23 @@
     const runId = beginSetupRun();
     inFlightRunId = runId;
     try {
-      const depsTimeoutRetryFlag = resolveFlagWithTimeout(
+      const depsTimeoutRetryStatus = resolveFlagStatusWithTimeout(
         Promise.resolve()
           .then(() =>
-            onboardingFeatureFlags.identity.hasFeature(
+            onboardingFeatureFlags.identity.resolveFeatureFlagStatus?.(
               SETUP_DEPS_TIMEOUT_RETRY_FLAG,
-            ),
+            ) ?? Promise.resolve({ ok: false as const, reason: 'unavailable' as const }),
           )
-          .then((result) => result.ok && result.value === true)
+          .then((result) => {
+            if (!result.ok || !result.value.configured) return null;
+            return result.value.enabled;
+          })
           .catch((error) => {
             console.warn(
               'onboarding: dependency timeout retry flag unavailable; leaving retry off',
               error,
             );
-            return false;
+            return null;
           }),
         2_000,
       );
@@ -2726,7 +2985,7 @@
         }
       }
       if (!isCurrentRun(runId)) return;
-      await runSetup(runId, startStage, depsTimeoutRetryFlag);
+      await runSetup(runId, startStage, depsTimeoutRetryStatus);
     } finally {
       // Only the run that still owns the guard may release it: a superseded
       // run finishing late must not clear a newer run's claim. Every exit —
@@ -3055,12 +3314,16 @@
         handleInstall();
         return;
       case 'cloud':
+        // Look up the company step while the second explainer plays, so it
+        // can come right after the explainers, before the ready screen.
+        void resolveCompanyStep();
         scene = 'shortcut';
         return;
       case 'shortcut':
         // Leaving the explainers is not the setup step "completing": the
-        // install records its own completion when it finishes.
-        advanceTo(READY_STEP_INDEX, null);
+        // install records its own completion when it finishes. The company
+        // step, when needed, comes before the ready screen.
+        void leaveExplainers();
         return;
       case 'consent':
         if (!consentFailure) void submitConsent();
@@ -3094,7 +3357,7 @@
   }
 
   function skipIntro(): void {
-    if (chrome.skip === 'ready') advanceTo(READY_STEP_INDEX, null);
+    if (chrome.skip === 'ready') void leaveExplainers();
     else if (chrome.skip === 'end') void finishReplay();
   }
 
@@ -3405,6 +3668,17 @@
   // the teammate invite (flag-gated, sole active member only), then the
   // connector import, which only shows itself if it has something to offer.
   // Each hands back to the ready screen, which picks the next one up here.
+  // The company step comes before the ready screen. When the lookup answers
+  // only after the person reached ready (a quick Skip intro), hand over then;
+  // this does not wait for the install.
+  $effect(() => {
+    if (consentOnly || replay || !companyRouteResolved) return;
+    if (currentStep !== READY_STEP_INDEX) return;
+    if (companyPath && companyPath.kind !== 'skip' && !companyStepVisited) {
+      advanceTo(COMPANY_STEP_INDEX, null);
+    }
+  });
+
   $effect(() => {
     if (consentOnly || replay || !setupCompleted || !postSetupStepsResolved) return;
     if (currentStep !== READY_STEP_INDEX) return;
@@ -3955,8 +4229,9 @@
     </section>
     {/if}
 
-    <!-- Name a company (or join an invite) and pick a plan, offered once the
-         install is done to anyone with no company yet. -->
+    <!-- Name a company (or join an invite) and pick a plan, for anyone with
+         no company yet: right after the setup explainers, before the ready
+         ("Open HQ Desktop") screen, while the install carries on. -->
     <section
       class="scene s-follow-on s-company"
       class:on={scene === 'company'}
@@ -3967,6 +4242,7 @@
         {#if currentStep === COMPANY_STEP_INDEX && companyPath && companyPath.kind !== 'skip'}
           <CompanyStep
             path={companyPath}
+            priorPlan={companyPriorPlan}
             namePrefillEnabled={companyNamePrefillEnabled}
             signedInEmail={signedInEmail}
             invoke={invokeCommand}

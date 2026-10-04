@@ -24,6 +24,7 @@ const onboardingFlags = vi.hoisted(() => ({
   companyNamePrefillEnabled: false,
   companyRouteLookupRetryEnabled: false,
   hasFeature: vi.fn(),
+  resolveFeatureFlagStatus: vi.fn(),
   startSync: vi.fn(),
   refreshFeatureFlags: vi.fn(),
 }));
@@ -64,6 +65,7 @@ vi.mock('@hq/platform', () => ({
   createSyncPlatformAdapter: vi.fn(() => ({
     identity: {
       refreshFeatureFlags: () => onboardingFlags.refreshFeatureFlags(),
+      resolveFeatureFlagStatus: (flag: string) => onboardingFlags.resolveFeatureFlagStatus(flag),
       hasFeature: (flag: string) => {
         if (flag === 'desktop.first-folder-sync-step-v1') {
           return onboardingFlags.hasFeature(flag);
@@ -455,6 +457,12 @@ beforeEach(() => {
   onboardingFlags.companyNamePrefillEnabled = false;
   onboardingFlags.companyRouteLookupRetryEnabled = false;
   onboardingFlags.refreshFeatureFlags.mockReset().mockResolvedValue(undefined);
+  onboardingFlags.resolveFeatureFlagStatus.mockReset().mockImplementation(async (flag: string) => {
+    const result = await onboardingFlags.hasFeature(flag);
+    return result.ok
+      ? { ok: true, value: { enabled: result.value, configured: true } }
+      : result;
+  });
   onboardingFlags.hasFeature.mockReset().mockImplementation(async (flag: string) => ({
     ok: true,
     value: flag === 'desktop.first-folder-sync-step-v1'
@@ -1925,19 +1933,19 @@ describe('onboarding connector telemetry', () => {
     await flushUntil(() => {
       const pending = JSON.parse(
         localStorage.getItem(__INTERNALS__.STORAGE_KEY) ?? '{}',
-      ) as { pending?: Array<{ properties: { step: string } }> };
+      ) as { pending?: Array<{ event: { properties: { step: string } } }> };
       return !(pending.pending ?? []).some(
-        (event) => event.properties.step === 'connector-import',
+        (record) => record.event.properties.step === 'connector-import',
       );
     });
 
     const stored = JSON.parse(localStorage.getItem(__INTERNALS__.STORAGE_KEY) ?? '{}') as {
-      pending?: Array<{ properties: { step: string; action: string } }>;
+      pending?: Array<{ event: { properties: { step: string; action: string } } }>;
     };
     expect(
       (stored.pending ?? [])
-        .filter((event) => event.properties.step === 'connector-import')
-        .map((event) => event.properties.action),
+        .filter((record) => record.event.properties.step === 'connector-import')
+        .map((record) => record.event.properties.action),
     ).toEqual([]);
   });
 });
@@ -2180,13 +2188,15 @@ describe('anonymous installer step pings', () => {
     await flush();
 
     const stored = JSON.parse(localStorage.getItem(__INTERNALS__.STORAGE_KEY) ?? '{}') as {
-      pending?: Array<{ properties: { step: string; action: string } }>;
+      pending?: Array<{ event: { properties: { step: string; action: string } } }>;
     };
     expect(stored.pending).toContainEqual(
       expect.objectContaining({
-        properties: expect.objectContaining({
-          step: 'welcome-signin',
-          action: 'entered',
+        event: expect.objectContaining({
+          properties: expect.objectContaining({
+            step: 'welcome-signin',
+            action: 'entered',
+          }),
         }),
       }),
     );
@@ -3811,6 +3821,10 @@ describe('company onboarding step', () => {
     companyMembers?: Array<Record<string, unknown>>;
     membershipFailures?: number;
     companyRouteLookupRetryEnabled?: boolean;
+    /** Keep the install running (initial sync never finishes) and stop on the explainers. */
+    holdInstall?: boolean;
+    /** Delay, in ms, before GET /membership/me answers. */
+    membershipDelayMs?: number;
     pendingInvites?: Array<{ slug: string; displayName: string }>;
     checkout?: { status: number; body: unknown };
     /** Whether GET /entity/cmp_new reports the new company provisioned. */
@@ -3827,6 +3841,10 @@ describe('company onboarding step', () => {
     anonLookup?: Record<string, unknown>;
     createError?: string;
     signedInEmail?: string;
+    /** Extra top-level fields on GET /membership/me (e.g. a plan picked on the website). */
+    membershipExtra?: Record<string, unknown>;
+    /** Answer for check_company_slug; defaults to every handle free. */
+    slugAnswer?: (slug: string) => Record<string, unknown>;
     companyNamePrefillEnabled?: boolean;
   } = {}): Promise<void> {
     onboardingFlags.firstFolderSyncEnabled = false;
@@ -3857,6 +3875,8 @@ describe('company onboarding step', () => {
           return options.claimResult ?? { ok: true, claimedSlugs: [args?.companySlug], message: 'Joined' };
         case 'web_visitor_anon_id':
           return options.anonId ?? null;
+        case 'start_initial_cloud_sync':
+          return options.holdInstall ? new Promise<never>(() => {}) : undefined;
         case 'activate_company_cloud':
           activations += 1;
           // The create flow's own activation happens once; only a retry flips the entity.
@@ -3887,16 +3907,30 @@ describe('company onboarding step', () => {
             ],
           };
         case 'check_company_slug':
-          return { valid: true, available: true, normalized: args?.slug, suggestion: null, reasons: [] };
+          return (
+            options.slugAnswer?.(String(args?.slug ?? '')) ?? {
+              valid: true,
+              available: true,
+              normalized: args?.slug,
+              suggestion: null,
+              reasons: [],
+            }
+          );
         case 'run_company_tab_action':
           return { state: 'done' };
         case 'hq_pro_fetch': {
           if (args?.url === '/membership/me') {
             membershipReads += 1;
+            if (options.membershipDelayMs) {
+              await new Promise((resolve) => setTimeout(resolve, options.membershipDelayMs));
+            }
             if (membershipReads <= (options.membershipFailures ?? 0)) {
               throw new Error('temporary membership lookup failure');
             }
-            return { status: 200, body: JSON.stringify({ memberships: options.memberships ?? [] }) };
+            return {
+              status: 200,
+              body: JSON.stringify({ ...(options.membershipExtra ?? {}), memberships: options.memberships ?? [] }),
+            };
           }
           if (typeof args?.url === 'string' && args.url.startsWith('/membership/me?anonId=')) {
             return { status: 200, body: JSON.stringify(options.anonLookup ?? { memberships: [] }) };
@@ -3956,11 +3990,102 @@ describe('company onboarding step', () => {
     });
 
     await vi.advanceTimersByTimeAsync(1_000);
+    if (options.holdInstall) {
+      await flushUntil(() =>
+        tauri.invoke.mock.calls.some(([command]) => command === 'start_initial_cloud_sync'),
+      );
+      return;
+    }
     await flushUntil(() =>
       tauri.invoke.mock.calls.some(([command]) => command === 'record_install_complete'),
     );
     await skipToReady();
   }
+
+  /** Next on the screen that is on show. */
+  async function nextOnScreen(): Promise<void> {
+    const button = [...host.querySelectorAll<HTMLButtonElement>('.scene.on button.btn-primary')].find(
+      (candidate) => candidate.textContent?.trim() === 'Next',
+    );
+    if (!button) throw new Error('Expected a Next button on the screen on show.');
+    button.click();
+    await vi.advanceTimersByTimeAsync(500);
+    await flush();
+  }
+
+  function onScreen(sceneId: string): boolean {
+    return host.querySelector(`.scene[data-scene="${sceneId}"]`)?.classList.contains('on') ?? false;
+  }
+
+  /** Steps in the order they were entered, from step telemetry. */
+  function enteredSteps(): string[] {
+    return tauri.invoke.mock.calls.flatMap(([command, rawArgs]) => {
+      const args = rawArgs as { eventName?: string; properties?: Record<string, unknown> };
+      return command === 'emit_desktop_operational_telemetry' &&
+        args.eventName === 'desktop_onboarding_step' &&
+        args.properties?.action === 'entered'
+        ? [String(args.properties.step)]
+        : [];
+    });
+  }
+
+  it('runs the company step after the setup explainers and before the ready screen, while the install runs', async () => {
+    await reachCompanyScenario({ holdInstall: true });
+    expect(onScreen('cloud')).toBe(true);
+    await nextOnScreen();
+    expect(onScreen('shortcut')).toBe(true);
+    await nextOnScreen();
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')));
+
+    // The install is still running, and "Open HQ Desktop" has not been shown.
+    expect(tauri.invoke.mock.calls.some(([command]) => command === 'record_install_complete')).toBe(false);
+    expect(onScreen('company')).toBe(true);
+    expect(onScreen('ready')).toBe(false);
+    expect(enteredSteps()).not.toContain('ready');
+
+    typeInto('onboarding-company-field-name', 'Acme');
+    await settle();
+    click('onboarding-company-create');
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-plan-choose-starter"]')));
+    click('onboarding-plan-choose-starter');
+    await settle();
+
+    // Then the ready screen, still waiting on the install.
+    expect(onScreen('ready')).toBe(true);
+    expect(host.querySelector('[data-testid="onboarding-company"]')).toBeNull();
+    const steps = enteredSteps();
+    expect(steps.indexOf('company')).toBeGreaterThanOrEqual(0);
+    expect(steps.indexOf('company')).toBeLessThan(steps.indexOf('ready'));
+  });
+
+  it('hands over from the ready screen to the company step when the lookup answers late', async () => {
+    await reachCompanyScenario({ holdInstall: true, membershipDelayMs: 5_000 });
+    await nextOnScreen();
+    await nextOnScreen();
+    // Leaving the explainers waits a short while, then shows ready.
+    await vi.advanceTimersByTimeAsync(3_000);
+    await flush();
+    expect(onScreen('ready')).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(3_000);
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')));
+    expect(onScreen('company')).toBe(true);
+    expect(tauri.invoke.mock.calls.some(([command]) => command === 'record_install_complete')).toBe(false);
+  });
+
+  it('does not show the company step to a member of a company, before or after ready', async () => {
+    await reachCompanyScenario({
+      holdInstall: true,
+      memberships: [
+        { companyUid: 'cmp_demo', companySlug: 'demo', personUid: 'prs_me', status: 'active', role: 'member' },
+      ],
+    });
+    await nextOnScreen();
+    await nextOnScreen();
+    await settle();
+    expect(onScreen('ready')).toBe(true);
+    expect(host.querySelector('[data-testid="onboarding-company"]')).toBeNull();
+  });
 
   function companyRows(): Array<Record<string, unknown>> {
     return tauri.invoke.mock.calls.flatMap(([command, rawArgs]) => {
@@ -4001,9 +4126,17 @@ describe('company onboarding step', () => {
     await settle();
 
     expect(host.querySelector<HTMLInputElement>('[data-testid="onboarding-company-field-name"]')?.value).toBe('Acme');
-    expect(host.querySelector<HTMLInputElement>('[data-testid="onboarding-company-field-slug"]')?.value).toBe('acme');
+    // The handle field is not shown; the handle made from the prefilled name is checked and submitted.
+    expect(host.querySelector('[data-testid="onboarding-company-field-slug"]')).toBeNull();
     expect(tauri.invoke).toHaveBeenCalledWith('check_company_slug', { slug: 'acme' });
     expect(host.querySelector<HTMLButtonElement>('[data-testid="onboarding-company-create"]')?.disabled).toBe(false);
+    click('onboarding-company-create');
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-plan-choose-starter"]')));
+    const submit = tauri.invoke.mock.calls.find(
+      ([command, args]) =>
+        command === 'run_card_action' && (args as { cardId?: string }).cardId === 'card_create_company',
+    );
+    expect((submit?.[1] as { values: Record<string, string> }).values).toMatchObject({ name: 'Acme', slug: 'acme' });
   });
 
   it('refreshes the hq-flags snapshot before resolving prefill on a create route after sign-in', async () => {
@@ -4177,14 +4310,14 @@ describe('company onboarding step', () => {
     click('onboarding-company-create');
     await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-provisioning"]')));
     expect(host.textContent).toContain('Setting up your company…');
-    expect(host.querySelector('[data-testid="onboarding-plan-starter"]')).toBeNull();
+    expect(host.querySelector('[data-testid="onboarding-plan-choose-starter"]')).toBeNull();
     expect(tauri.invoke.mock.calls.some(([command]) => command === 'run_company_tab_action')).toBe(false);
     expect(companyRows().some((row) => row.outcome === 'company_created')).toBe(false);
-    for (let i = 0; i < 10 && !host.querySelector('[data-testid="onboarding-plan-starter"]'); i += 1) {
+    for (let i = 0; i < 10 && !host.querySelector('[data-testid="onboarding-plan-choose-starter"]'); i += 1) {
       await vi.advanceTimersByTimeAsync(2_000);
       await flush();
     }
-    expect(host.querySelector('[data-testid="onboarding-plan-starter"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="onboarding-plan-choose-starter"]')).not.toBeNull();
     expect(tauri.invoke).toHaveBeenCalledWith(
       'run_company_tab_action',
       expect.objectContaining({ companyUid: 'cmp_new', values: expect.objectContaining({ email: 'pat@acme.com' }) }),
@@ -4206,7 +4339,7 @@ describe('company onboarding step', () => {
     click('onboarding-company-create');
     await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-provisioning-retry"]')));
     expect(host.textContent).toContain('step: kms-create');
-    expect(host.querySelector('[data-testid="onboarding-plan-starter"]')).toBeNull();
+    expect(host.querySelector('[data-testid="onboarding-plan-choose-starter"]')).toBeNull();
     expect(companyRows().find((row) => row.outcome === 'provisioning_failed')).toMatchObject({
       action: 'failed',
       provisioningStep: 'kms-create',
@@ -4217,7 +4350,7 @@ describe('company onboarding step', () => {
       ).length;
     expect(creates()).toBe(1);
     click('onboarding-company-provisioning-retry');
-    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-plan-starter"]')));
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-plan-choose-starter"]')));
     expect(tauri.invoke.mock.calls.filter(([command]) => command === 'activate_company_cloud')).toEqual([
       ['activate_company_cloud', { companyUid: 'cmp_new' }],
       ['activate_company_cloud', { companyUid: 'cmp_new' }],
@@ -4233,11 +4366,11 @@ describe('company onboarding step', () => {
     });
     await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-provisioning"]')));
     expect(host.textContent).not.toContain('Name your company');
-    for (let i = 0; i < 10 && !host.querySelector('[data-testid="onboarding-plan-starter"]'); i += 1) {
+    for (let i = 0; i < 10 && !host.querySelector('[data-testid="onboarding-plan-choose-starter"]'); i += 1) {
       await vi.advanceTimersByTimeAsync(2_000);
       await flush();
     }
-    expect(host.querySelector('[data-testid="onboarding-plan-starter"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="onboarding-plan-choose-starter"]')).not.toBeNull();
     expect(
       tauri.invoke.mock.calls.some(
         ([command, args]) => command === 'run_card_action' && (args as { cardId?: string }).cardId === 'card_create_company',
@@ -4306,13 +4439,15 @@ describe('company onboarding step', () => {
     typeInto('onboarding-company-field-name', 'Acme Studio');
     typeInto('onboarding-company-invites', 'pat@acme.com');
     await settle();
-    expect(
-      host.querySelector<HTMLInputElement>('[data-testid="onboarding-company-field-slug"]')?.value,
-    ).toBe('acme-studio');
+    // No handle field: the handle is made from the name and checked quietly.
+    expect(host.querySelector('[data-testid="onboarding-company-field-slug"]')).toBeNull();
+    expect(host.querySelector('label[for="onboarding-company-slug"]')).toBeNull();
+    expect(host.textContent).not.toContain('Company handle');
+    expect(host.textContent).not.toContain('is available');
     expect(tauri.invoke).toHaveBeenCalledWith('check_company_slug', { slug: 'acme-studio' });
 
     click('onboarding-company-create');
-    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-plan-starter"]')));
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-plan-choose-starter"]')));
 
     const submit = tauri.invoke.mock.calls.find(
       ([command, args]) =>
@@ -4333,7 +4468,7 @@ describe('company onboarding step', () => {
       }),
     );
 
-    click('onboarding-plan-continue');
+    click('onboarding-plan-choose-starter');
     await settle();
     expect(host.querySelector('[data-testid="onboarding-company"]')).toBeNull();
     expect(
@@ -4353,6 +4488,182 @@ describe('company onboarding step', () => {
     }
   });
 
+  it('moves to the suggested handle by itself when the name is taken', async () => {
+    await reachCompanyScenario({
+      slugAnswer: (slug) =>
+        slug === 'acme'
+          ? { valid: true, available: false, normalized: 'acme', suggestion: 'acme-hq', reasons: ['taken'] }
+          : { valid: true, available: true, normalized: slug, suggestion: null, reasons: [] },
+    });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')));
+    typeInto('onboarding-company-field-name', 'Acme');
+    await settle();
+    await settle(); // the taken answer starts a second debounced check
+    expect(tauri.invoke).toHaveBeenCalledWith('check_company_slug', { slug: 'acme' });
+    expect(tauri.invoke).toHaveBeenCalledWith('check_company_slug', { slug: 'acme-hq' });
+    expect(host.textContent).not.toContain('taken');
+    expect(host.querySelector('[data-testid="onboarding-company-name-problem"]')).toBeNull();
+
+    click('onboarding-company-create');
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-plan-choose-starter"]')));
+    const submit = tauri.invoke.mock.calls.find(
+      ([command, args]) =>
+        command === 'run_card_action' && (args as { cardId?: string }).cardId === 'card_create_company',
+    );
+    expect((submit?.[1] as { values: Record<string, string> }).values.slug).toBe('acme-hq');
+  });
+
+  it('adds a number to a taken handle when the server offers no suggestion', async () => {
+    await reachCompanyScenario({
+      slugAnswer: (slug) =>
+        slug === 'acme'
+          ? { valid: true, available: false, normalized: 'acme', suggestion: null, reasons: ['taken'] }
+          : { valid: true, available: true, normalized: slug, suggestion: null, reasons: [] },
+    });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')));
+    typeInto('onboarding-company-field-name', 'Acme');
+    await settle();
+    await settle(); // the taken answer starts a second debounced check
+    expect(tauri.invoke).toHaveBeenCalledWith('check_company_slug', { slug: 'acme-2' });
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="onboarding-company-create"]')?.disabled).toBe(false);
+  });
+
+  it('asks for a different name, not a handle, when no handle can be made from it', async () => {
+    await reachCompanyScenario();
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')));
+    typeInto('onboarding-company-field-name', '!!!');
+    await settle();
+    expect(host.querySelector('[data-testid="onboarding-company-name-problem"]')?.textContent).toContain(
+      'at least one letter or number',
+    );
+    expect(host.querySelector('[data-testid="onboarding-company-field-name"]')?.getAttribute('aria-invalid')).toBe('true');
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="onboarding-company-create"]')?.disabled).toBe(true);
+
+    typeInto('onboarding-company-field-name', 'Acme');
+    await settle();
+    expect(host.querySelector('[data-testid="onboarding-company-name-problem"]')).toBeNull();
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="onboarding-company-create"]')?.disabled).toBe(false);
+  });
+
+  it('keeps the form, plan cards and buttons on one centered column', async () => {
+    await reachCompanyScenario();
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')));
+    const actions = host.querySelector('[data-testid="onboarding-company-actions"]');
+    expect(actions?.classList.contains('company-actions')).toBe(true);
+    expect(actions?.classList.contains('split')).toBe(false);
+    expect(host.querySelector('form.company-form')).not.toBeNull();
+
+    typeInto('onboarding-company-field-name', 'Acme');
+    await settle();
+    click('onboarding-company-create');
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-plan-choose-starter"]')));
+    // The website's two cards, each with its own CTA and footnote; no radio
+    // and no separate Continue.
+    const cards = [...host.querySelectorAll('[data-testid="onboarding-plan-options"] .plan-card')];
+    expect(cards.map((card) => card.querySelector('.plan-name')?.textContent)).toEqual(['Starter', 'Workforce']);
+    expect(host.querySelector('[data-testid="onboarding-plan-options"] input')).toBeNull();
+    expect(host.querySelector('[data-testid="onboarding-plan-continue"]')).toBeNull();
+  });
+
+  it('shows the website plan cards: price, pitch, marked rows, badge, CTAs and footnotes', async () => {
+    await reachCompanyScenario();
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')));
+    typeInto('onboarding-company-field-name', 'Acme');
+    await settle();
+    click('onboarding-company-create');
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-plan-choose-starter"]')));
+
+    expect(host.querySelector('[data-testid="onboarding-company"] [data-scene-heading]')?.textContent).toBe('Choose how your HQ runs.');
+    const starter = host.querySelector('[data-testid="onboarding-plan-card-starter"]')!;
+    const workforce = host.querySelector('[data-testid="onboarding-plan-card-workforce"]')!;
+    expect(starter.querySelector('.plan-price')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('$0 / mo');
+    expect(workforce.querySelector('.plan-price')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('$500 / mo flat');
+    expect(starter.querySelector('.plan-blurb')?.textContent).toBe('The shared brain for your team.');
+    expect(workforce.querySelector('[data-testid="onboarding-plan-badge"]')?.textContent).toBe('Most popular');
+    expect(starter.querySelector('[data-testid="onboarding-plan-badge"]')).toBeNull();
+    // One mark per row, meaning what it means on the website.
+    expect([...starter.querySelectorAll('.plan-row')].map((row) => row.getAttribute('data-state'))).toEqual([
+      'capped',
+      'off',
+      'on',
+      'capped',
+    ]);
+    expect([...workforce.querySelectorAll('.plan-row')].every((row) => row.getAttribute('data-state') === 'on')).toBe(true);
+    expect(starter.querySelector('.plan-row')?.textContent).toContain('included with limits');
+    expect(host.querySelector('[data-testid="onboarding-plan-choose-starter"]')?.textContent).toBe('Get started free');
+    expect(host.querySelector('[data-testid="onboarding-plan-choose-workforce"]')?.textContent).toBe('Get started');
+    expect(starter.querySelector('.plan-cta-note')?.textContent).toBe('No card required to start');
+    expect(workforce.querySelector('.plan-cta-note')?.textContent).toBe('Month to month · cancel anytime');
+
+    click('onboarding-plan-book-call');
+    await flush();
+    expect(tauri.open).toHaveBeenCalledWith('https://hqforwork.com/call#book');
+    // Booking a call leaves the person on the plan screen.
+    expect(host.querySelector('[data-testid="onboarding-plan-choose-starter"]')).not.toBeNull();
+  });
+
+  it('shows "Choose a plan" when no plan was picked on the website', async () => {
+    await reachCompanyScenario();
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')));
+    typeInto('onboarding-company-field-name', 'Acme');
+    await settle();
+    click('onboarding-company-create');
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-plan-choose-starter"]')));
+    expect(host.textContent).toContain('Choose how your HQ runs.');
+  });
+
+  it('skips "Choose a plan" and starts on Starter when Starter was picked on the website', async () => {
+    await reachCompanyScenario({ membershipExtra: { planIntent: 'free' } });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')));
+    typeInto('onboarding-company-field-name', 'Acme');
+    await settle();
+    click('onboarding-company-create');
+    await flushUntil(() => host.querySelector('[data-testid="onboarding-company"]') === null);
+    await settle();
+    expect(host.textContent).not.toContain('Choose how your HQ runs.');
+    expect(
+      tauri.invoke.mock.calls.some(
+        ([command, args]) =>
+          command === 'hq_pro_fetch' && (args as { url?: string }).url === '/v1/billing/checkout/team',
+      ),
+    ).toBe(false);
+    const rows = companyRows();
+    expect(rows.some((row) => row.outcome === 'plan_starter')).toBe(true);
+    expect(rows.some((row) => row.action === 'completed' && row.outcome === 'created_starter')).toBe(true);
+  });
+
+  it('skips "Choose a plan" and opens checkout when Workforce was picked on the website', async () => {
+    await reachCompanyScenario({
+      anonId: 'anon_123',
+      anonLookup: { memberships: [], webIdentity: { samePerson: true, plan: 'team' } },
+    });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')));
+    typeInto('onboarding-company-field-name', 'Acme');
+    await settle();
+    click('onboarding-company-create');
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-checkout-done"]')));
+    expect(host.querySelector('[data-testid="onboarding-plan-choose-starter"]')).toBeNull();
+    expect(tauri.open).toHaveBeenCalledWith('https://checkout.stripe.com/c/pay/cs_test');
+  });
+
+  it('falls back to the plan screen when checkout for a website-picked Workforce plan fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await reachCompanyScenario({
+      membershipExtra: { planIntent: 'workforce' },
+      checkout: { status: 503, body: { code: 'team_signup_disabled' } },
+    });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-field-name"]')));
+    typeInto('onboarding-company-field-name', 'Acme');
+    await settle();
+    click('onboarding-company-create');
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-error"]')));
+    expect(host.querySelector('[data-testid="onboarding-plan-choose-starter"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="onboarding-company-error"]')?.textContent).toContain(
+      'Workforce sign-up is paused',
+    );
+    warn.mockRestore();
+  });
+
   it('opens Workforce checkout in the browser and finishes on the checkout return', async () => {
     await reachCompanyScenario();
     await flushUntil(() =>
@@ -4361,11 +4672,9 @@ describe('company onboarding step', () => {
     typeInto('onboarding-company-field-name', 'Acme');
     await settle();
     click('onboarding-company-create');
-    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-plan-workforce"]')));
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-plan-choose-workforce"]')));
 
-    click('onboarding-plan-workforce');
-    await flush();
-    click('onboarding-plan-continue');
+    click('onboarding-plan-choose-workforce');
     await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-checkout-done"]')));
 
     expect(tauri.invoke).toHaveBeenCalledWith('hq_pro_fetch', {
@@ -4404,10 +4713,8 @@ describe('company onboarding step', () => {
     typeInto('onboarding-company-field-name', 'Acme');
     await settle();
     click('onboarding-company-create');
-    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-plan-workforce"]')));
-    click('onboarding-plan-workforce');
-    await flush();
-    click('onboarding-plan-continue');
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-plan-choose-workforce"]')));
+    click('onboarding-plan-choose-workforce');
     await flushUntil(() => Boolean(host.querySelector('[data-testid="onboarding-company-error"]')));
 
     expect(host.querySelector('[data-testid="onboarding-company-error"]')?.textContent).toContain(

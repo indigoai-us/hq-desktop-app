@@ -400,6 +400,7 @@ pub fn write_workspace_sync_enabled(slug: &str, enabled: bool) -> Result<(), Str
             .map_err(|e| format!("create menubar config directory: {e}"))?;
     }
 
+    let _lock = crate::first_run::lock_menubar_writes();
     let mut root = serde_json::Value::Object(prepare_menubar_write(&path)?.unwrap_or_default());
 
     let obj = root
