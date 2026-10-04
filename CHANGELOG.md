@@ -11,6 +11,8 @@ The release moves it under the version it ships in.
 
 ## [0.10.391] — 2026-10-04
 
+- Desktop update checks now record bounded check, download, and install outcomes that can be joined to first launch.
+
 - Desktop mirror Git commands no longer pause while holding the Git index lock, so later mirror passes are not held behind a stopped Git process.
 - First-launch join-key rollout assignments now use the public flag resolver.
 - CLI update failure reports now identify known Node crash signatures with fixed, path-free categories.
